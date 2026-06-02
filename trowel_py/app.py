@@ -1,0 +1,38 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+# fastapi 应用工厂
+
+def create_app() -> FastAPI:
+    """
+    构建并返回 FastAPI 实例，工厂模式
+    FastAPI 注册了相关函数，可以被外界调用
+    """
+    app = FastAPI()
+
+    @app.get("/api/health") # 装饰器 - 将装饰的函数注释给某个系统使用
+    def health() -> dict[str, object]:
+        return {
+            "success": True,
+            "data": {
+                "status": "ok"
+            },
+            "error": None
+        }   # 默认 200 状态码
+    
+    @app.exception_handler(Exception)
+    def global_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        """
+        全局错误处理器（处理未被捕获的异常）
+        @param: exc - 异常实例的句柄
+        """
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "data": None,
+                "error": str(exc)   # 把异常信息转成字符串
+            }
+        )
+    
+    return app
