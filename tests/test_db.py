@@ -53,3 +53,49 @@ def test_migration_idempotent(db_connection: sqlite3.Connection):
         run_migrations(db_connection, migrations_dir=tmp)
         count = db_connection.execute("SELECT COUNT(*) as c FROM _migrations").fetchone()["c"]
         assert count == 1
+
+def test_001_migration(db_connection: sqlite3.Connection):
+    """
+    verify whether can run 001_create_cards.sql success
+    """
+    run_migrations(db_connection)
+    # check cards and cards_fts exists and cards's field
+    tables = db_connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    assert any('cards' == row["name"] for row in tables)
+    assert any('cards_fts' == row["name"] for row in tables)
+    column_names = [row["name"] for row in db_connection.execute("PRAGMA table_info('cards')").fetchall()]
+    assert column_names == ['id', 'title', 'category', 'explanation', 'example', 'difficulty', 'source', 'tags', 'status', 'created_at', 'updated_at']
+    # full-text search check
+    db_connection.execute(
+        "INSERT INTO cards (id, title, category, explanation, tags) VALUES (?, ?, ?, ?, ?)",
+        ('test-1', 'Test Python Card', 'python', 'A card for testing 001 migration', '["python", "test"]')
+    )
+    result =  db_connection.execute("SELECT * FROM cards_fts WHERE cards_fts MATCH 'python'").fetchall()
+    assert len(result) == 1
+
+def test_002_003_migration(db_connection: sqlite3.Connection):
+    """
+    verify migrations 002 and 003 create all tables and foreign key cascade works
+    """
+    run_migrations(db_connection)
+    # check tables are created correctly
+    tables = db_connection.execute("select name from sqlite_master where type='table'").fetchall()
+    table_names = {row["name"] for row in tables}
+    expected_tables = ['fsrs_state', 'review_logs', 'card_explanation_history', 'players', 'pets',
+                       'inventory', 'event_log', 'event_cooldowns', 'user_preferences', 'cold_start_answers']
+    assert all(t in table_names for t in expected_tables)
+    # test foreign key
+    db_connection.execute(
+        "insert into cards (id, title, category, explanation, tags) values (?, ?, ?, ?, ?)",
+        ('test-2', 'test fsrs_state foregin-key', 'java', "a card for testing 002 fsrs_state's foreign key", '["java", "test"]')
+    )
+    db_connection.execute(
+        "insert into fsrs_state (card_id, state) values (?, ?)",
+        ('test-2', 2)
+    )
+    db_connection.execute(
+        "delete from cards where id == 'test-2'"
+    )
+    result = db_connection.execute("select * from fsrs_state").fetchall()
+    assert len(result) == 0
+
