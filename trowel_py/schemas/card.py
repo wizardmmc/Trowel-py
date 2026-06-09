@@ -4,6 +4,9 @@ from datetime import datetime
 
 # map table cards into python data structure, and describe type check and type hint
 class Card(BaseModel):
+    """
+    pydantic model
+    """
     id: str = Field(min_length=1, max_length=64)
     title: str = Field(min_length=1)
     category: str = Field(min_length=1)

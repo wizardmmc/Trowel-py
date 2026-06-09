@@ -7,7 +7,7 @@
 | 001 | 项目骨架 + SQLite 连接 | completed | full-demo | pass |
 | 002 | 数据库 schema + 类型 + 校验 | completed | mixed | pass |
 | 003 | LLM 统一客户端 | completed | full-demo | pass |
-| 004 | 卡片提取管道 | pending | - | - |
+| 004 | 卡片提取管道 | completed | mixed | pass |
 | 005 | 卡片审核 UI | pending | - | - |
 | 006 | FSRS 复习引擎 | pending | - | - |
 | 007 | 复习会话 UI | pending | - | - |
@@ -55,6 +55,19 @@
 | Pydantic model_validate（从 dict 校验生成模型实例） | 003 | 仿写 |
 | type[BaseModel] 类型注解（类作为参数传入） | 003 | 示范 |
 | os.environ 环境变量读取 | 003 | 未实践 |
+| Pydantic 继承（子类继承父类字段） | 004 | 仿写 |
+| uuid（uuid4, hex, 切片生成唯一 ID） | 004 | 示范 |
+| Service 层编排（函数式，组合 Repository + LLM） | 004 | 示范 |
+| FastAPI APIRouter（模块级路由分组） | 004 | 示范 |
+| FastAPI include_router（prefix 挂载） | 004 | 仿写 |
+| FastAPI 请求体（Pydantic 自动解析 + 422 校验） | 004 | 示范 |
+| FastAPI 路径参数（{id} → 函数参数） | 004 | 仿写 |
+| FastAPI Depends 依赖注入（工厂函数 + override） | 004 | 示范 |
+| dict.update() 合并用户编辑 | 004 | 仿写 |
+| list[start:end] 分页切片 | 004 | 仿写 |
+| set 去重（seen_ids 模式） | 004 | 仿写 |
+| dependency_overrides（测试时替换依赖） | 004 | 示范 |
+| check_same_thread=False（SQLite 跨线程） | 004 | 示范 |
 
 ## Slice 教学记录
 
@@ -142,3 +155,32 @@
 - 常见拼写: desensilization→desensitization, EXREACT→EXTRACT, STSTEM→SYSTEM
 
 **学员表现**: 面对大量新概念没有畏难，能独立搭建整体结构。正则表达式是全新领域，需要多次纠正语法。Protocol 和 mock 是抽象概念，照示范能写但理解还需后续练习。prompt 工程展现出良好直觉（比示范更详细的 confidence 评估体系）。
+
+### Slice 004: 卡片提取管道
+
+**教学模式**: mixed（新概念导师示范 service/routes，学员写 schema + 部分 route，测试策略口述）
+
+**导师示范部分**:
+- Service 层设计（extract_cards, review_card, find_duplicates 三个无状态函数）
+- FastAPI 路由 + 依赖注入（APIRouter, Depends, dependency_overrides）
+- 完整测试代码（schema 校验、service 单元、route 集成、错误路径、去重、分页）
+
+**学员自主部分**:
+- API schema（ExtractRequest, CardDraft, ReviewRequest, CardListResponse）— 仿写级，基本正确
+- save_fsrs_state 方法（照 save_review_log 模式仿写，SQL 尾逗号 bug）
+- routes.py 框架（理解方向正确，路径参数/草稿存储/返回值逻辑需多次纠正）
+- 测试策略口述（数据层→单元→路由→端到端，层次递进，缺少错误路径补充后完善）
+
+**Review 发现的问题**:
+- api.py: ExtractRequest min_length=4→1, docstring 描述不准
+- service.py: source 字段语义混淆（学员删除，合理）, "bussiness"/"reivew" 拼写
+- save_fsrs_state: SQL 末尾多逗号、last_review 为 None 时 .isoformat() 崩溃
+- routes.py: _draft_store 用 title 而非 id 当 key、model_dump 漏括号、draft_id 路径参数未声明、草稿从 DB 找而非 _draft_store、reject 判断重复、dedup 传 id 而非 title、page/limit 类型为 str、CardListResponse 位置参数构造
+- 测试时发现: SQLite check_same_thread 限制、LLM API key min_length=16 导致测试 fixture 崩溃
+
+**学员表现**: 从"写零件"到"造机器"的转变。Service 层的编排逻辑（先做什么后做什么）理解到位。Route 层新概念多（路径参数、依赖注入、草稿生命周期），需要多次 review 纠正细节。测试策略思路清晰，主动提出"口述策略+导师写代码"的学习模式。
+
+**调试中修复的 bug**:
+- review/repository.py: save_fsrs_state 未处理 last_review=None
+- cards/service.py: source 字段语义问题（学员决定删除）
+- cards/routes.py: "reject" → "rejected" 字段名

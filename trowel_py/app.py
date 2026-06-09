@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from trowel_py.cards.routes import router as card_router
 
 # fastapi 应用工厂
 
@@ -34,5 +35,7 @@ def create_app() -> FastAPI:
                 "error": str(exc)   # 把异常信息转成字符串
             }
         )
+    
+    app.include_router(card_router, prefix="/api/cards")
     
     return app

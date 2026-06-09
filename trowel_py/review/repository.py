@@ -49,3 +49,19 @@ class ReviewRepository:
         row_dict["due"] = datetime.fromisoformat(row_dict["due"]) if row_dict["due"] else None
         row_dict["last_review"] = datetime.fromisoformat(row_dict["last_review"]) if row_dict["last_review"] else None
         return FSRSState(**row_dict)
+
+    def save_fsrs_state(self, fsrs_state: FSRSState) -> FSRSState:
+        """
+        record a card's fsrs state
+        """
+        # convert into dict
+        data = fsrs_state.model_dump()
+        data["due"] = data["due"].isoformat()
+        data["last_review"] = data["last_review"].isoformat() if data["last_review"] else None
+        
+        self.conn.execute(
+            "insert into fsrs_state (card_id, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, due, last_review) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+            (data["card_id"], data["stability"], data["difficulty"], data["elapsed_days"], data["scheduled_days"], data["reps"], data["lapses"], data["state"], data["due"], data["last_review"])
+        )
+        return fsrs_state
+

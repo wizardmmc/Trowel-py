@@ -4,6 +4,9 @@ from datetime import datetime
 
 
 class FSRSState(BaseModel):
+    """
+    pydantic model
+    """
     card_id: str = Field(min_length=1)  # references cards(id)
     stability: float = Field(default=0.0)  # memory stability
     difficulty: float = Field(default=0.0)
@@ -17,6 +20,9 @@ class FSRSState(BaseModel):
 
 
 class ReviewLog(BaseModel):
+    """
+    pydantic model
+    """
     id: str = Field(min_length=1)
     card_id: str = Field(min_length=1)  # references cards(id)
     rating: Literal[1, 2, 3, 4]  # 1:again, 2:hard, 3:good, 4:easy

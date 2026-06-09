@@ -1,0 +1,118 @@
+# intermediate layer between service layer and HTTP request
+from fastapi import APIRouter, Depends
+from trowel_py.cards.repository import CardRepository, create_card_repository
+from trowel_py.cards.service import extract_cards, review_card, find_duplicates
+from trowel_py.llm.client import LLMService, create_llm_service
+from trowel_py.review.repository import ReviewRepository, create_review_repository
+from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
+from trowel_py.schemas.card import Card
+from trowel_py.db.connection import create_db
+import sqlite3
+
+router = APIRouter()
+_draft_store: dict[str, CardDraft] = {} # {id: CardDraft}
+
+# inject function, convence test
+def _get_conn() -> sqlite3.Connection:
+    return create_db()
+
+def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+    return create_card_repository(conn)
+
+def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> ReviewRepository:
+    return create_review_repository(conn)
+
+def _get_llm_service() -> LLMService:
+    from trowel_py.llm.client import LLMConfig
+    import os
+
+    config = LLMConfig(
+        provider="openai",
+        model=os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
+        api_key=os.environ.get("LLM_API_KEY", "test-key"),
+    )
+    return create_llm_service(config)
+
+# route
+@router.post("/extract")
+def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)) -> dict:
+    drafts = extract_cards(request.content, llm_service)
+    for draft in drafts:
+        _draft_store[draft.id] = draft
+    return {
+        "success": True,
+        "data": {
+            "drafts": [d.model_dump() for d in drafts]    # convert pydantic to dict, to convert to json
+        },
+        "error": None
+    }
+
+@router.post("/{draft_id}/review")
+def review(draft_id: str,
+           request: ReviewRequest, 
+           card_repo: CardRepository = Depends(_get_card_repo),
+           review_repo: ReviewRepository = Depends(_get_review_repo)) -> dict:
+    draft = _draft_store.get(draft_id)
+    if draft is None:
+        return {
+            "success": False,
+            "data": None, 
+            "error": "Draft not found"
+        }
+    card = review_card(draft, request, card_repo, review_repo)
+    if card is None:
+        return {
+            "success": True,
+            "data": {
+                "rejected": True
+            },
+            "error": None
+        }
+    else:
+        return {
+            "success": True,
+            "data": {
+                "card": card.model_dump()
+            },
+            "error": None
+        }
+    
+@router.get("/{card_id}/dedup")
+def de_duplicate(card_id: str,
+                 card_repo: CardRepository = Depends(_get_card_repo),):
+    """
+    find duplicated card
+    """
+    draft = _draft_store.get(card_id)
+    if draft is None:
+        return {
+            "success": False, 
+            "data": None, 
+            "error": "Draft not found"
+        }
+    duplicates = find_duplicates(draft.title, card_repo)
+    return {
+        "success": True,
+        "data": {"duplicates": [d.model_dump() for d in duplicates]},
+        "error": None,
+    }
+
+@router.get("/")
+def get_all_cards(page: int = 1, 
+            limit: int = 20,
+            card_repo: CardRepository = Depends(_get_card_repo),) -> dict:
+    cards = card_repo.find_all()
+    # manual pagination
+    start = (page - 1) * limit
+    end = start + limit
+    page_cards = cards[start:end]
+    return {
+        "success": True,
+        "data": {
+            "cards": [c.model_dump() for c in page_cards],
+            "total": len(cards),
+            "page": page,
+            "limit": limit,
+        },
+        "error": None,
+    }
