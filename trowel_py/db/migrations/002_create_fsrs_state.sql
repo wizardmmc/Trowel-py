@@ -1,4 +1,4 @@
-CREATE TABLE fsrs_state(
+CREATE TABLE if not exists fsrs_state(
     card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE, -- auto delete related data when the referenced card is deleted
     stability REAL DEFAULT 0, -- memory stability
     difficulty REAL DEFAULT 0,
@@ -11,9 +11,9 @@ CREATE TABLE fsrs_state(
     last_review TEXT
 );
 
-CREATE INDEX idx_fsrs_state_due on fsrs_state(due);
+CREATE INDEX if not exists idx_fsrs_state_due on fsrs_state(due);
 
-CREATE TABLE review_logs(
+CREATE TABLE if not exists review_logs(
     id TEXT PRIMARY KEY,
     card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     rating INTEGER NOT NULL CHECK(rating BETWEEN 1 and 4), -- 1:again, 2:hard, 3:good, 4:easy
@@ -24,9 +24,9 @@ CREATE TABLE review_logs(
     created_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_review_log_card_id on review_logs(card_id);
+CREATE INDEX if not exists idx_review_log_card_id on review_logs(card_id);
 
-CREATE TABLE card_explanation_history(
+CREATE TABLE if not exists card_explanation_history(
     id TEXT PRIMARY KEY,
     card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE, -- foreign key card table's id field
     explanation TEXT NOT NULL,

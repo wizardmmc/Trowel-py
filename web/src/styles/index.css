@@ -1,0 +1,245 @@
+@import './tokens.css';
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-garden);
+  color: var(--text-primary);
+}
+
+/* App layout */
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.app__header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.app__title {
+  font-size: 1.5rem;
+  color: var(--garden-green);
+}
+
+.app__subtitle {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* ExtractionInput */
+.extraction-input__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.extraction-input__format {
+  font-size: 0.75rem;
+  color: var(--soil-brown);
+  background: var(--bg-card);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.extraction-input__textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--soil-brown);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-family: monospace;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+
+.extraction-input__textarea:focus {
+  outline: 2px solid var(--garden-green);
+  outline-offset: -1px;
+}
+
+.extraction-input__button {
+  padding: 8px 24px;
+  background: var(--garden-green);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.extraction-input__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ReviewModal */
+.review-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.review-modal__content {
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 560px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.review-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.review-modal__close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.review-modal__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.review-modal__btn {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.review-modal__btn--accept {
+  background: var(--garden-green);
+  color: var(--text-inverse);
+}
+
+.review-modal__btn--reject {
+  background: var(--soil-brown);
+  color: var(--text-inverse);
+}
+
+.review-modal__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.review-modal__nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.review-modal__nav button {
+  background: none;
+  border: 1px solid var(--soil-brown);
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.review-modal__nav button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* CardDetail */
+.card-detail__title {
+  font-size: 1.125rem;
+  margin-bottom: 4px;
+}
+
+.card-detail__category {
+  display: inline-block;
+  font-size: 0.75rem;
+  background: var(--sunshine);
+  color: var(--text-primary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.card-detail__explanation {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.card-detail__example {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: var(--bg-garden);
+  padding: 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.card-detail__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.card-detail__tag {
+  font-size: 0.6875rem;
+  background: var(--bg-garden);
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.card-detail__meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* NotificationBanner */
+.notification-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--sunshine);
+  color: var(--text-primary);
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 16px;
+}
+
+.notification-banner__text {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.notification-banner__action {
+  font-size: 0.8125rem;
+}

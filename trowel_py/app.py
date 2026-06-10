@@ -11,6 +11,14 @@ def create_app() -> FastAPI:
     """
     app = FastAPI()
 
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],    # vite dev server
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+
     @app.get("/api/health") # 装饰器 - 将装饰的函数注释给某个系统使用
     def health() -> dict[str, object]:
         return {

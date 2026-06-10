@@ -8,7 +8,7 @@
 | 002 | 数据库 schema + 类型 + 校验 | completed | mixed | pass |
 | 003 | LLM 统一客户端 | completed | full-demo | pass |
 | 004 | 卡片提取管道 | completed | mixed | pass |
-| 005 | 卡片审核 UI | pending | - | - |
+| 005 | 卡片审核 UI | completed | ai-coding | pass |
 | 006 | FSRS 复习引擎 | pending | - | - |
 | 007 | 复习会话 UI | pending | - | - |
 | 008 | 花园视图 | pending | - | - |
@@ -68,6 +68,8 @@
 | set 去重（seen_ids 模式） | 004 | 仿写 |
 | dependency_overrides（测试时替换依赖） | 004 | 示范 |
 | check_same_thread=False（SQLite 跨线程） | 004 | 示范 |
+
+> **Slice 005 决策记录**：前端（web/）采用 AI coding 模式完成，不作为学员知识点追踪。后端（trowel_py/）继续手撕训练模式。学员在 Slice 005 中实际练习的内容：CORS 中间件配置（后端 app.py 修改）。
 
 ## Slice 教学记录
 
@@ -184,3 +186,18 @@
 - review/repository.py: save_fsrs_state 未处理 last_review=None
 - cards/service.py: source 字段语义问题（学员决定删除）
 - cards/routes.py: "reject" → "rejected" 字段名
+
+### Slice 005: 卡片审核 UI
+
+**教学模式**: ai-coding（前端全部 AI 生成，非学员手撕训练范围）
+
+**决策**: 从 Slice 005 起，前端（web/）采用 AI coding，后端（trowel_py/）继续手撕训练。前端代码不计入学员知识点追踪。
+
+**学员练习部分**:
+- 后端 CORS 中间件添加（app.py，学员手写）
+
+**AI 交付内容**:
+- Vite + React 19 + TypeScript 前端项目
+- API Client + SSE handler + Zustand stores + 4 个 UI 组件
+- vitest 测试 30 个用例全部通过
+- TypeScript 类型检查 + 生产构建通过
