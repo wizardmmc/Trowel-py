@@ -1,6 +1,9 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from trowel_py.cards.routes import router as card_router
+import logging
+
+logger = logging.getLogger(__name__)
 
 # fastapi 应用工厂
 
@@ -35,6 +38,7 @@ def create_app() -> FastAPI:
         全局错误处理器（处理未被捕获的异常）
         @param: exc - 异常实例的句柄
         """
+        logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc)
         return JSONResponse(
             status_code=500,
             content={

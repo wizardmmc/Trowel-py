@@ -8,6 +8,8 @@ from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
 from trowel_py.schemas.card import Card
 from trowel_py.db.connection import create_db
 import sqlite3
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 _draft_store: dict[str, CardDraft] = {} # {id: CardDraft}
@@ -36,7 +38,9 @@ def _get_llm_service() -> LLMService:
 # route
 @router.post("/extract")
 def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)) -> dict:
+    logger.info("Extract request received, content length: %d", len(request.content))
     drafts = extract_cards(request.content, llm_service)
+    logger.info("Extraction complete, %d drafts generated", len(drafts))
     for draft in drafts:
         _draft_store[draft.id] = draft
     return {
@@ -49,18 +53,21 @@ def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_
 
 @router.post("/{draft_id}/review")
 def review(draft_id: str,
-           request: ReviewRequest, 
+           request: ReviewRequest,
            card_repo: CardRepository = Depends(_get_card_repo),
            review_repo: ReviewRepository = Depends(_get_review_repo)) -> dict:
+    logger.info("Review request for draft: %s, action: %s", draft_id, request.action)
     draft = _draft_store.get(draft_id)
     if draft is None:
+        logger.warning("Draft not found: %s", draft_id)
         return {
             "success": False,
-            "data": None, 
+            "data": None,
             "error": "Draft not found"
         }
     card = review_card(draft, request, card_repo, review_repo)
     if card is None:
+        logger.info("Draft %s rejected", draft_id)
         return {
             "success": True,
             "data": {
@@ -69,6 +76,7 @@ def review(draft_id: str,
             "error": None
         }
     else:
+        logger.info("Draft %s accepted as card: %s", draft_id, card.id)
         return {
             "success": True,
             "data": {
@@ -85,6 +93,7 @@ def de_duplicate(card_id: str,
     """
     draft = _draft_store.get(card_id)
     if draft is None:
+        logger.warning("Dedup request for unknown draft: %s", card_id)
         return {
             "success": False, 
             "data": None, 
@@ -102,6 +111,7 @@ def get_all_cards(page: int = 1,
             limit: int = 20,
             card_repo: CardRepository = Depends(_get_card_repo),) -> dict:
     cards = card_repo.find_all()
+    logger.info("Get all cards, page: %d, limit: %d, total: %d", page, limit, len(cards))
     # manual pagination
     start = (page - 1) * limit
     end = start + limit
