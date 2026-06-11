@@ -12,3 +12,5 @@ docs/
 dist/
 build/
 logs/
+.playwright-mcp/
+.vite/

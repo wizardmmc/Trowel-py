@@ -1,6 +1,7 @@
 import { ExtractionInput } from "./components/cards/ExtractionInput";
 import { ReviewModal } from "./components/cards/ReviewModal";
 import { NotificationBanner } from "./components/cards/NotificationBanner";
+import { ReviewSession } from "./components/review/ReviewSession";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useState } from "react";
@@ -18,6 +19,7 @@ function App() {
   } = useCardStore();
   const { addNotification } = useNotificationStore();
   const [showModal, setShowModal] = useState(false);
+  const [showReview, setShowReview] = useState(false);
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
 
@@ -60,10 +62,23 @@ function App() {
       />
 
       <main className="app__main">
-        <ExtractionInput
-          onExtract={handleExtract}
-          loading={loading}
-        />
+        {showReview ? (
+          <ReviewSession onClose={() => setShowReview(false)} />
+        ) : (
+          <>
+            <ExtractionInput
+              onExtract={handleExtract}
+              loading={loading}
+            />
+            <button
+              className="app__review-btn"
+              onClick={() => setShowReview(true)}
+              data-testid="start-review-btn"
+            >
+              🔄 Start Review
+            </button>
+          </>
+        )}
       </main>
 
       {showModal && (

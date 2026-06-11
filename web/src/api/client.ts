@@ -1,4 +1,5 @@
 const API_BASE = "http://localhost:8000/api/cards";
+const REVIEW_API_BASE = "http://localhost:8000/api/review";
 
 export interface CardDraft {
   id: string;
@@ -79,4 +80,69 @@ export async function getAllCards(
   limit = 20
 ): Promise<{ cards: Card[]; total: number; page: number; limit: number }> {
   return request(`${API_BASE}?page=${page}&limit=${limit}`);
+}
+
+// ── Review API types & functions ──
+
+export interface FSRSState {
+  card_id: string;
+  stability: number;
+  difficulty: number;
+  elapsed_days: number;
+  scheduled_days: number;
+  reps: number;
+  lapses: number;
+  state: 0 | 1 | 2 | 3;
+  due: string;
+  last_review: string | null;
+}
+
+export interface DueCard {
+  card: Card;
+  fsrs_state: FSRSState;
+  plant_stage: string;
+}
+
+export interface SubmitResult {
+  card: Card;
+  fsrs_state: FSRSState;
+  review_log: {
+    id: string;
+    card_id: string;
+    rating: number;
+    state: number;
+    elapsed_days: number;
+    scheduled_days: number;
+    duration_ms: number | null;
+    created_at: string;
+  };
+  plant_stage: string;
+  plant_changed: boolean;
+}
+
+export interface SessionStats {
+  total: number;
+  avg_rating: number;
+  accuracy: number;
+}
+
+export async function getDueCards(): Promise<DueCard[]> {
+  return request<DueCard[]>(`${REVIEW_API_BASE}/due`);
+}
+
+export async function submitReview(
+  cardId: string,
+  rating: number,
+): Promise<SubmitResult> {
+  return request<SubmitResult>(`${REVIEW_API_BASE}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_id: cardId, rating }),
+  });
+}
+
+export async function getSessionStats(since: string): Promise<SessionStats> {
+  return request<SessionStats>(
+    `${REVIEW_API_BASE}/session-stats?since=${encodeURIComponent(since)}`,
+  );
 }

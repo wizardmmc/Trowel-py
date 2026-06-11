@@ -13,8 +13,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_conn() -> sqlite3.Connection:
-    return create_db()
+def _get_conn():
+    """Yield a DB connection; commit and close after the request."""
+    conn = create_db()
+    try:
+        yield conn
+    finally:
+        conn.commit()
+        conn.close()
 
 
 def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:

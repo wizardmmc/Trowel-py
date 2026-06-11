@@ -32,6 +32,7 @@ def bootstrap() -> None:
 
     conn = create_db()
     run_migrations(conn)
+    conn.close()  # release write lock so request connections can write
     app = create_app()
     uvicorn.run(app, host="127.0.0.1", port=8000)
 

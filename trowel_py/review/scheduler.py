@@ -45,7 +45,8 @@ def schedule_review(state: FSRSState, rating: int, now: datetime | None = None) 
 
     # calculate elapsed_days and scheduled_days
     if state.last_review is not None:
-        elapsed_days = (now - state.last_review).days
+        last = state.last_review.replace(tzinfo=timezone.utc) if state.last_review.tzinfo is None else state.last_review
+        elapsed_days = (now - last).days
     else:
         elapsed_days = 0
     scheduled = (new_card.due - now).days
