@@ -65,3 +65,53 @@ class ReviewRepository:
         )
         return fsrs_state
 
+    def update_fsrs_state(self, fsrs_state: FSRSState) -> FSRSState:
+        """
+        update a existing FSRS state after review
+        """
+        data = fsrs_state.model_dump()
+        data["due"] = data["due"].isoformat()
+        data["last_review"] = data["last_review"].isoformat() if data["last_review"] else None
+        self.conn.execute(
+            "update fsrs_state set stability=?, difficulty=?, elapsed_days=?, "
+            "scheduled_days=?, reps=?, lapses=?, state=?, due=?, last_review=? "
+            "where card_id=?",
+            (data["stability"], data["difficulty"], data["elapsed_days"],
+            data["scheduled_days"], data["reps"], data["lapses"],
+            data["state"], data["due"], data["last_review"], data["card_id"])
+        )
+        return fsrs_state
+    
+    def find_by_card_id(self, card_id: str) -> FSRSState | None:
+        """
+        find FSRS state by card id
+        """
+        row = self.conn.execute(
+            "select * from fsrs_state where card_id = ?", (card_id, )
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_fsrs_state(row)
+    
+    def get_session_stats(self, since: str) -> dict:
+        """
+        aggregate review statistics since a given timestamp
+        """
+        row = self.conn.execute(
+            "select count(*) as total, avg(rating) as avg_rating, "
+            "sum(case when rating >= 3 then 1 else 0 end) as correct "
+            "from review_logs where created_at >= ?", (since, )
+        ).fetchone()    # case when ... then ... else ... end
+        if row is None or row["total"] == 0:
+            return {
+                "total": 0,
+                "avg_rating": 0.0,
+                "accuracy": 0.0
+            }
+        total = row["total"]
+        accuracy = round((row["correct"] / total) * 100, 1)
+        return {
+            "total": total,
+            "avg_rating": round(row["avg_rating"], 2),
+            "accuracy": accuracy
+        }

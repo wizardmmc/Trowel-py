@@ -23,12 +23,17 @@ class ReviewRequest(BaseModel):
     action: Literal["accept", "edit", "reject"]
     edits: dict | None = None   # like {"title": "新标题", "difficulty": 4}
 
+class SubmitRequest(BaseModel):
+    """Request body for submitting a card review rating."""
+    card_id: str = Field(min_length=1)
+    rating: int = Field(ge=1, le=4)  # 1=Again, 2=Hard, 3=Good, 4=Easy
+
 class CardListResponse(BaseModel):
     """
     pydantic model, all responsed cards
     """
     data: list[Card]
-    total: int 
-    page: int  
-    limit: int 
+    total: int
+    page: int
+    limit: int
 

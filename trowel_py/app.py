@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from trowel_py.cards.routes import router as card_router
+from trowel_py.review.routes import router as review_router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,5 +50,6 @@ def create_app() -> FastAPI:
         )
     
     app.include_router(card_router, prefix="/api/cards")
-    
+    app.include_router(review_router, prefix="/api/review")
+
     return app
