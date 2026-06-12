@@ -1,5 +1,6 @@
 const API_BASE = "http://localhost:8000/api/cards";
 const REVIEW_API_BASE = "http://localhost:8000/api/review";
+const GARDEN_API_BASE = "http://localhost:8000/api/garden";
 
 export interface CardDraft {
   id: string;
@@ -144,5 +145,38 @@ export async function submitReview(
 export async function getSessionStats(since: string): Promise<SessionStats> {
   return request<SessionStats>(
     `${REVIEW_API_BASE}/session-stats?since=${encodeURIComponent(since)}`,
+  );
+}
+
+// ── Garden API types & functions ──
+
+export interface GardenPlant {
+  card_id: string;
+  title: string;
+  category: string;
+  explanation: string;
+  plant_stage: "seed" | "sprout" | "tree" | "wilting";
+  fsrs_state: number | null;
+  due: string | null;
+  reps: number;
+}
+
+export interface GardenStatsData {
+  total_plants: number;
+  due_count: number;
+  flowering_rate: number;
+}
+
+export async function getGardenPlants(): Promise<GardenPlant[]> {
+  return request<GardenPlant[]>(`${GARDEN_API_BASE}/plants`);
+}
+
+export async function getGardenStats(): Promise<GardenStatsData> {
+  return request<GardenStatsData>(`${GARDEN_API_BASE}/stats`);
+}
+
+export async function searchCards(query: string): Promise<GardenPlant[]> {
+  return request<GardenPlant[]>(
+    `${API_BASE}/search?q=${encodeURIComponent(query)}`,
   );
 }

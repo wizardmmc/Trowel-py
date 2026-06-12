@@ -7,7 +7,10 @@ import {
   type SessionStats,
 } from "../api/client";
 
+export type ReviewPhase = "idle" | "reviewing" | "complete";
+
 interface ReviewState {
+  phase: ReviewPhase;
   dueCards: DueCard[];
   currentIndex: number;
   loading: boolean;
@@ -16,12 +19,14 @@ interface ReviewState {
   sessionStats: SessionStats | null;
   sessionStartTime: string | null;
 
+  startSession: () => Promise<void>;
   loadDueCards: () => Promise<void>;
   rateCard: (rating: number) => Promise<void>;
   resetSession: () => void;
 }
 
 export const useReviewStore = create<ReviewState>((set, get) => ({
+  phase: "idle",
   dueCards: [],
   currentIndex: 0,
   loading: false,
@@ -29,6 +34,34 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   sessionComplete: false,
   sessionStats: null,
   sessionStartTime: null,
+
+  startSession: async () => {
+    set({ loading: true, error: null });
+    try {
+      const cards = await getDueCards();
+      if (cards.length === 0) {
+        set({
+          phase: "idle",
+          dueCards: [],
+          loading: false,
+          sessionComplete: false,
+          sessionStats: null,
+        });
+        return;
+      }
+      set({
+        phase: "reviewing",
+        dueCards: cards,
+        currentIndex: 0,
+        loading: false,
+        sessionComplete: false,
+        sessionStats: null,
+        sessionStartTime: new Date().toISOString(),
+      });
+    } catch (err) {
+      set({ error: (err as Error).message, loading: false, phase: "idle" });
+    }
+  },
 
   loadDueCards: async () => {
     set({ loading: true, error: null });
@@ -69,10 +102,10 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       );
 
       if (remaining.length === 0) {
-        // Session complete — fetch stats
         const since = sessionStartTime ?? new Date().toISOString();
         const stats = await getSessionStats(since);
         set({
+          phase: "complete",
           dueCards: [],
           currentIndex: 0,
           loading: false,
@@ -97,6 +130,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
 
   resetSession: () =>
     set({
+      phase: "idle",
       dueCards: [],
       currentIndex: 0,
       loading: false,

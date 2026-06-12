@@ -1,0 +1,116 @@
+.app-layout {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  height: 100%;
+}
+
+.app-sidebar {
+  background-color: var(--bg-sidebar);
+  color: var(--text-inverse);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-md) 0;
+  gap: var(--space-xs);
+}
+
+.sidebar-logo {
+  font-size: 1.5rem;
+  margin-bottom: var(--space-lg);
+  user-select: none;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.sidebar-nav__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-sm) 0;
+  border: none;
+  background: none;
+  color: var(--text-inverse);
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s;
+  width: 100%;
+  font-family: var(--font-sans);
+  gap: 2px;
+}
+
+.sidebar-nav__item:hover {
+  opacity: 0.8;
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-nav__item--active {
+  opacity: 1;
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.sidebar-nav__icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.sidebar-nav__label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.3px;
+}
+
+.app-main {
+  background-color: var(--bg-garden);
+  padding: var(--space-lg);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.app-main__hamburger {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    display: none;
+  }
+
+  .app-sidebar--open {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 200;
+    width: 60px;
+  }
+
+  .app-main__hamburger {
+    display: block;
+    position: fixed;
+    top: var(--space-sm);
+    left: var(--space-sm);
+    z-index: 150;
+    background-color: var(--bg-sidebar);
+    color: var(--text-inverse);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: var(--space-xs) var(--space-sm);
+    font-size: 1.25rem;
+    cursor: pointer;
+    opacity: 0.8;
+  }
+
+  .app-main__hamburger:hover {
+    opacity: 1;
+  }
+}

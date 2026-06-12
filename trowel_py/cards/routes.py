@@ -112,8 +112,21 @@ def de_duplicate(card_id: str,
         "error": None,
     }
 
+@router.get("/search")
+def search_cards(q: str,
+                 card_repo: CardRepository = Depends(_get_card_repo)) -> dict:
+    """FTS5 full-text search for cards."""
+    logger.info("Search cards, query: %s", q)
+    cards = card_repo.search_by_fts5(q)
+    return {
+        "success": True,
+        "data": [c.model_dump() for c in cards],
+        "error": None,
+    }
+
+
 @router.get("/")
-def get_all_cards(page: int = 1, 
+def get_all_cards(page: int = 1,
             limit: int = 20,
             card_repo: CardRepository = Depends(_get_card_repo),) -> dict:
     cards = card_repo.find_all()

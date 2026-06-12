@@ -1,10 +1,13 @@
+import { useState, useEffect } from "react";
+import { AppLayout, type Tool } from "./components/layout/AppLayout";
 import { ExtractionInput } from "./components/cards/ExtractionInput";
 import { ReviewModal } from "./components/cards/ReviewModal";
 import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
+import { GardenView } from "./components/garden/GardenView";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
-import { useState } from "react";
+import { useReviewStore } from "./stores/reviewStore";
 
 function App() {
   const {
@@ -18,15 +21,32 @@ function App() {
     clearDrafts,
   } = useCardStore();
   const { addNotification } = useNotificationStore();
-  const [showModal, setShowModal] = useState(false);
-  const [showReview, setShowReview] = useState(false);
+  const { startSession, phase } = useReviewStore();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<Tool>("garden");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
+  const reviewActive = phase !== "idle";
+
+  useEffect(() => {
+    if (drafts.length > 0 && !reviewOpen) {
+      setReviewOpen(true);
+    }
+  }, [drafts.length]);
+
+  const handleToolChange = (tool: Tool) => {
+    if (tool === "review") {
+      startSession();
+    } else {
+      setActiveTool(tool);
+    }
+    setSidebarOpen(false);
+  };
 
   const handleExtract = async (content: string) => {
     await extract(content);
     if (drafts.length > 0) {
-      setShowModal(true);
       addNotification("Cards extracted successfully", "success");
     }
   };
@@ -36,7 +56,7 @@ function App() {
     await review(currentDraft.id, "accept");
     addNotification(`Accepted: ${currentDraft.title}`, "success");
     if (drafts.length <= 1) {
-      setShowModal(false);
+      setReviewOpen(false);
     }
   };
 
@@ -45,43 +65,32 @@ function App() {
     await review(currentDraft.id, "reject");
     addNotification(`Rejected: ${currentDraft.title}`, "warning");
     if (drafts.length <= 1) {
-      setShowModal(false);
+      setReviewOpen(false);
     }
   };
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <h1 className="app__title">Trowel</h1>
-        <span className="app__subtitle">Knowledge Garden</span>
-      </header>
-
+    <AppLayout
+      activeTool={activeTool}
+      onToolChange={handleToolChange}
+      sidebarOpen={sidebarOpen}
+      onToggleSidebar={() => setSidebarOpen((o) => !o)}
+    >
       <NotificationBanner
         count={drafts.length}
-        onClick={() => setShowModal(true)}
+        onClick={() => setReviewOpen(true)}
       />
 
-      <main className="app__main">
-        {showReview ? (
-          <ReviewSession onClose={() => setShowReview(false)} />
-        ) : (
-          <>
-            <ExtractionInput
-              onExtract={handleExtract}
-              loading={loading}
-            />
-            <button
-              className="app__review-btn"
-              onClick={() => setShowReview(true)}
-              data-testid="start-review-btn"
-            >
-              🔄 Start Review
-            </button>
-          </>
-        )}
-      </main>
+      {!reviewActive && activeTool === "garden" && (
+        <GardenView onStartReview={() => startSession()} />
+      )}
+      {!reviewActive && activeTool === "extract" && (
+        <ExtractionInput onExtract={handleExtract} loading={loading} />
+      )}
 
-      {showModal && (
+      <ReviewSession />
+
+      {reviewOpen && (
         <ReviewModal
           draft={currentDraft}
           currentIndex={currentDraftIndex}
@@ -94,13 +103,13 @@ function App() {
           onNext={nextDraft}
           onPrev={prevDraft}
           onClose={() => {
-            setShowModal(false);
+            setReviewOpen(false);
             clearDrafts();
           }}
           loading={loading}
         />
       )}
-    </div>
+    </AppLayout>
   );
 }
 

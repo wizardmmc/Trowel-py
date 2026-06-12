@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from trowel_py.cards.routes import router as card_router
 from trowel_py.review.routes import router as review_router
+from trowel_py.garden.routes import router as garden_router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ def create_app() -> FastAPI:
     from fastapi.middleware.cors import CORSMiddleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],    # vite dev server
+        allow_origins=["http://localhost:5173", "http://localhost:5174"],    # vite dev server
         allow_methods=["*"],
         allow_headers=["*"]
     )
@@ -51,5 +52,6 @@ def create_app() -> FastAPI:
     
     app.include_router(card_router, prefix="/api/cards")
     app.include_router(review_router, prefix="/api/review")
+    app.include_router(garden_router, prefix="/api/garden")
 
     return app

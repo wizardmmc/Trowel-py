@@ -6,63 +6,103 @@
   box-sizing: border-box;
 }
 
+html, body, #root {
+  height: 100%;
+}
+
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   background-color: var(--bg-garden);
   color: var(--text-primary);
 }
 
-/* App layout */
-.app {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 24px 16px;
-}
+/* ── Buttons ── */
 
-.app__header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.app__title {
-  font-size: 1.5rem;
-  color: var(--garden-green);
-}
-
-.app__subtitle {
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-sm) var(--space-md);
+  border: none;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: opacity 0.15s, background-color 0.15s;
+  min-height: 44px;
 }
 
-/* ExtractionInput */
+.btn--primary {
+  background: var(--garden-green);
+  color: var(--text-inverse);
+}
+
+.btn--primary:hover {
+  opacity: 0.9;
+}
+
+.btn--secondary {
+  background: transparent;
+  border: 1px solid var(--soil-brown);
+  color: var(--text-primary);
+}
+
+.btn--secondary:hover {
+  background: var(--bg-card);
+}
+
+/* ── NotificationBanner ── */
+
+.notification-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--sunshine);
+  color: var(--text-primary);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  margin-bottom: var(--space-md);
+}
+
+.notification-banner__text {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.notification-banner__action {
+  font-size: 0.8125rem;
+}
+
+/* ── ExtractionInput ── */
+
 .extraction-input__header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-sm);
 }
 
 .extraction-input__format {
   font-size: 0.75rem;
   color: var(--soil-brown);
   background: var(--bg-card);
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-sm);
 }
 
 .extraction-input__textarea {
   width: 100%;
-  padding: 12px;
+  padding: var(--space-md);
   border: 1px solid var(--soil-brown);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--text-primary);
   font-size: 0.875rem;
-  font-family: monospace;
+  font-family: var(--font-mono);
   resize: vertical;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-sm);
 }
 
 .extraction-input__textarea:focus {
@@ -71,11 +111,11 @@ body {
 }
 
 .extraction-input__button {
-  padding: 8px 24px;
+  padding: var(--space-sm) var(--space-lg);
   background: var(--garden-green);
   color: var(--text-inverse);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   cursor: pointer;
 }
@@ -85,7 +125,8 @@ body {
   cursor: not-allowed;
 }
 
-/* ReviewModal */
+/* ── ReviewModal ── */
+
 .review-modal__overlay {
   position: fixed;
   inset: 0;
@@ -98,8 +139,8 @@ body {
 
 .review-modal__content {
   background: var(--bg-card);
-  border-radius: 12px;
-  padding: 24px;
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
   max-width: 560px;
   width: 90%;
   max-height: 80vh;
@@ -110,7 +151,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-md);
 }
 
 .review-modal__close {
@@ -123,15 +164,15 @@ body {
 
 .review-modal__actions {
   display: flex;
-  gap: 8px;
-  margin-top: 16px;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
 }
 
 .review-modal__btn {
   flex: 1;
   padding: 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   cursor: pointer;
 }
@@ -154,14 +195,14 @@ body {
 .review-modal__nav {
   display: flex;
   justify-content: space-between;
-  margin-top: 12px;
+  margin-top: var(--space-sm);
 }
 
 .review-modal__nav button {
   background: none;
   border: 1px solid var(--soil-brown);
-  border-radius: 4px;
-  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  padding: 6px var(--space-md);
   cursor: pointer;
   color: var(--text-primary);
 }
@@ -171,10 +212,11 @@ body {
   cursor: not-allowed;
 }
 
-/* CardDetail */
+/* ── CardDetail ── */
+
 .card-detail__title {
   font-size: 1.125rem;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-xs);
 }
 
 .card-detail__category {
@@ -182,31 +224,31 @@ body {
   font-size: 0.75rem;
   background: var(--sunshine);
   color: var(--text-primary);
-  padding: 2px 8px;
-  border-radius: 4px;
-  margin-bottom: 12px;
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-md);
 }
 
 .card-detail__explanation {
   font-size: 0.875rem;
   line-height: 1.6;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-sm);
 }
 
 .card-detail__example {
   font-size: 0.8125rem;
   color: var(--text-secondary);
   background: var(--bg-garden);
-  padding: 8px;
-  border-radius: 4px;
-  margin-bottom: 8px;
+  padding: var(--space-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-sm);
 }
 
 .card-detail__tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 8px;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
 }
 
 .card-detail__tag {
@@ -222,51 +264,30 @@ body {
   color: var(--text-secondary);
 }
 
-/* NotificationBanner */
-.notification-banner {
+/* ── Review Session Overlay ── */
+
+.review-session__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  background: var(--sunshine);
-  color: var(--text-primary);
-  padding: 10px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  margin-bottom: 16px;
+  justify-content: center;
+  z-index: 100;
 }
 
-.notification-banner__text {
-  font-size: 0.875rem;
-  font-weight: 500;
+.review-session {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  max-width: 560px;
+  width: 90%;
+  box-shadow: var(--shadow-lg);
 }
 
-.notification-banner__action {
-  font-size: 0.8125rem;
-}
-
-/* App review button */
-.app__review-btn {
-  width: 100%;
-  margin-top: 16px;
-  padding: 14px 24px;
-  background: var(--sunshine);
-  color: var(--text-primary);
-  border: none;
-  border-radius: 8px;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.app__review-btn:hover {
-  background: #d4a33e;
-}
-
-/* Review Session */
 .review-session__header {
   text-align: center;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-sm);
 }
 
 .review-session__progress {
@@ -274,46 +295,45 @@ body {
   color: var(--text-secondary);
 }
 
-.review-session__loading {
-  text-align: center;
-  padding: 48px 16px;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-}
-
 .review-session__empty,
 .review-session__error {
   text-align: center;
-  padding: 48px 16px;
+  padding: var(--space-xl) var(--space-md);
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 400px;
 }
 
 .review-session__empty p,
 .review-session__error p {
   font-size: 1.125rem;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-md);
 }
 
 .review-session__close-btn {
-  padding: 10px 24px;
+  padding: var(--space-sm) var(--space-lg);
   background: var(--garden-green);
   color: var(--text-inverse);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   cursor: pointer;
+  min-height: 44px;
 }
 
-/* ReviewCard */
+/* ── ReviewCard ── */
+
 .review-card {
   background: var(--bg-card);
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .review-card__counter {
   text-align: center;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-sm);
 }
 
 .review-card__plant {
@@ -323,7 +343,7 @@ body {
   color: var(--garden-green);
   background: var(--bg-garden);
   padding: 2px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .review-card__flip-container {
@@ -342,7 +362,7 @@ body {
 
 .review-card__title {
   font-size: 1.25rem;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-sm);
   color: var(--text-primary);
 }
 
@@ -351,16 +371,16 @@ body {
   font-size: 0.75rem;
   background: var(--sunshine);
   color: var(--text-primary);
-  padding: 2px 8px;
-  border-radius: 4px;
-  margin-bottom: 12px;
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-sm);
 }
 
 .review-card__tags {
   display: flex;
   justify-content: center;
-  gap: 4px;
-  margin-bottom: 16px;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
 }
 
 .review-card__tag {
@@ -372,11 +392,11 @@ body {
 }
 
 .review-card__flip-btn {
-  padding: 10px 24px;
+  padding: var(--space-sm) var(--space-lg);
   background: var(--garden-green);
   color: var(--text-inverse);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   cursor: pointer;
   min-height: 44px;
@@ -386,7 +406,7 @@ body {
 .review-card__explanation {
   font-size: 0.9375rem;
   line-height: 1.7;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-sm);
   color: var(--text-primary);
 }
 
@@ -394,14 +414,14 @@ body {
   font-size: 0.8125rem;
   color: var(--text-secondary);
   background: var(--bg-garden);
-  padding: 10px 12px;
-  border-radius: 6px;
+  padding: 10px var(--space-sm);
+  border-radius: var(--radius-md);
   text-align: left;
 }
 
 .review-card__actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-sm);
   margin-top: 20px;
 }
 
@@ -411,9 +431,9 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 12px 8px;
+  padding: 12px var(--space-sm);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
@@ -427,51 +447,38 @@ body {
   cursor: not-allowed;
 }
 
-.review-card__btn--again {
-  background: #ef4444;
-  color: #fff;
-}
-
-.review-card__btn--hard {
-  background: #f59e0b;
-  color: #fff;
-}
-
-.review-card__btn--good {
-  background: var(--garden-green);
-  color: var(--text-inverse);
-}
-
-.review-card__btn--easy {
-  background: #3b82f6;
-  color: #fff;
-}
+.review-card__btn--again { background: #ef4444; color: #fff; }
+.review-card__btn--hard { background: #f59e0b; color: #fff; }
+.review-card__btn--good { background: var(--garden-green); color: var(--text-inverse); }
+.review-card__btn--easy { background: #3b82f6; color: #fff; }
 
 .review-card__btn-key {
   font-size: 0.6875rem;
   opacity: 0.7;
 }
 
-/* ReviewCompletion */
+/* ── ReviewCompletion ── */
+
 .review-completion {
   text-align: center;
-  padding: 32px 16px;
+  padding: var(--space-xl) var(--space-md);
   background: var(--bg-card);
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 480px;
 }
 
 .review-completion__title {
   font-size: 1.5rem;
-  margin-bottom: 24px;
+  margin-bottom: var(--space-lg);
   color: var(--garden-green);
 }
 
 .review-completion__stats {
   display: flex;
   justify-content: center;
-  gap: 32px;
-  margin-bottom: 32px;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-lg);
 }
 
 .review-completion__stat {
@@ -489,15 +496,15 @@ body {
 .review-completion__stat-label {
   font-size: 0.75rem;
   color: var(--text-secondary);
-  margin-top: 4px;
+  margin-top: var(--space-xs);
 }
 
 .review-completion__back-btn {
-  padding: 12px 32px;
+  padding: 12px var(--space-lg);
   background: var(--garden-green);
   color: var(--text-inverse);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 1rem;
   font-weight: 500;
   cursor: pointer;
@@ -506,4 +513,425 @@ body {
 
 .review-completion__back-btn:hover {
   opacity: 0.9;
+}
+
+/* ── Garden View ── */
+
+.garden-view {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.garden-view__error {
+  padding: var(--space-md);
+  background-color: var(--color-error);
+  color: white;
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+}
+
+.garden-view__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-xl);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.garden-view__empty-search {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-xl);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.garden-view__clear-search {
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--garden-green);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+/* ── Garden Header ── */
+
+.garden-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.garden-header__search {
+  flex: 1;
+  min-width: 200px;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--soil-brown);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.garden-header__search:focus {
+  border-color: var(--garden-green);
+}
+
+.garden-header__search::placeholder {
+  color: var(--text-secondary);
+}
+
+.garden-header__sort-btn {
+  padding: var(--space-sm);
+  border: 1px solid var(--soil-brown);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+  transition: background-color 0.15s;
+}
+
+.garden-header__sort-btn:hover {
+  background-color: var(--bg-garden);
+}
+
+.garden-header__sort-btn--active {
+  border-color: var(--garden-green);
+  background-color: var(--bg-garden);
+}
+
+/* ── Garden Stats ── */
+
+.garden-stats {
+  display: flex;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  background-color: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.garden-stats__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.garden-stats__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.garden-stats__value--accent {
+  color: var(--garden-green);
+}
+
+.garden-stats__value--stage {
+  font-size: 1.125rem;
+}
+
+.garden-stats__label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.garden-stats__divider {
+  width: 1px;
+  background-color: var(--soil-brown);
+  align-self: stretch;
+  margin: var(--space-xs) 0;
+}
+
+/* ── Empty Garden ── */
+
+.empty-garden {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: var(--space-md);
+  color: var(--text-secondary);
+}
+
+.empty-garden__icon {
+  font-size: 4rem;
+  opacity: 0.5;
+}
+
+.empty-garden__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-garden__text {
+  font-size: 0.875rem;
+  max-width: 300px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── Garden Grid ── */
+
+.garden-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.garden-grid--flat {
+  display: grid;
+  grid-template-columns: repeat(6, 80px);
+  gap: var(--space-md);
+  justify-content: start;
+}
+
+.garden-grid__category {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.garden-grid__category-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) 0;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  width: 100%;
+  text-align: left;
+}
+
+.garden-grid__category-header:hover {
+  color: var(--garden-green);
+}
+
+.garden-grid__category-expand {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  transition: transform 0.15s;
+}
+
+.garden-grid__category-expand--open {
+  transform: rotate(90deg);
+}
+
+.garden-grid__category-count {
+  font-weight: 400;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.garden-grid__plants {
+  display: grid;
+  grid-template-columns: repeat(6, 80px);
+  gap: var(--space-md);
+  justify-content: start;
+}
+
+@media (max-width: 1439px) {
+  .garden-grid--flat,
+  .garden-grid__plants {
+    grid-template-columns: repeat(5, 80px);
+  }
+}
+
+@media (max-width: 1199px) {
+  .garden-grid--flat,
+  .garden-grid__plants {
+    grid-template-columns: repeat(4, 80px);
+  }
+}
+
+@media (max-width: 1023px) {
+  .garden-grid--flat,
+  .garden-grid__plants {
+    grid-template-columns: repeat(3, 80px);
+  }
+}
+
+/* ── Plant Card (80×80) ── */
+
+.plant-card {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  padding: var(--space-xs);
+  gap: 2px;
+  border: none;
+  font-family: var(--font-sans);
+  position: relative;
+}
+
+.plant-card:hover {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-md);
+}
+
+.plant-card:focus-visible {
+  outline: 2px solid var(--garden-green);
+  outline-offset: 2px;
+}
+
+.plant-card--due {
+  border: 2px solid var(--sunshine);
+}
+
+.plant-card__svg {
+  flex-shrink: 0;
+}
+
+.plant-card__title {
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72px;
+  line-height: 1.2;
+}
+
+.plant-card__due-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 0.625rem;
+}
+
+/* ── Plant Detail Modal ── */
+
+.plant-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.plant-modal__content {
+  background-color: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-lg);
+  max-width: 480px;
+  width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+.plant-modal__close {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--space-xs);
+  line-height: 1;
+}
+
+.plant-modal__close:hover {
+  color: var(--text-primary);
+}
+
+.plant-modal__plant {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-sm);
+}
+
+.plant-modal__title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.plant-modal__category {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-right: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.plant-modal__stage {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-garden);
+  color: var(--garden-green);
+}
+
+.plant-modal__due {
+  font-size: 0.875rem;
+  color: #3b82f6;
+  margin: var(--space-sm) 0;
+}
+
+.plant-modal__explanation {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+  margin-top: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background-color: var(--bg-garden);
+  border-radius: var(--radius-md);
+}
+
+.plant-modal__meta {
+  display: flex;
+  gap: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--soil-brown);
+  margin-top: var(--space-md);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.plant-modal__meta span {
+  font-weight: 600;
+  color: var(--text-primary);
 }
