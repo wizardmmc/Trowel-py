@@ -10,7 +10,7 @@ create table if not exists players(
 );
 
 create table if not exists pets(
-    player_id text primary key references player(id) on delete cascade,
+    player_id text primary key references players(id) on delete cascade,
     mood text default 'normal' check(mood in ('happy', 'excited', 'curious', 'normal')),
     hunger integer default 80 check(hunger between 0 and 100),
     equipped_hat text,
@@ -19,7 +19,7 @@ create table if not exists pets(
 
 create table if not exists inventory(
     id text primary key,
-    player_id text not null references player(id) on delete cascade,
+    player_id text not null references players(id) on delete cascade,
     item_id text not null, --e.g. apple, orange
     item_type text not null check(item_type in ('hat', 'food')),
     equipped integer default 0,
@@ -28,7 +28,7 @@ create table if not exists inventory(
 
 create table if not exists event_log(
     id text primary key,
-    player_id text not null references player(id) on delete cascade,
+    player_id text not null references players(id) on delete cascade,
     event_type text not null,
     reward_xp integer default 0,
     reward_coin integer default 0,
