@@ -1,0 +1,1 @@
+uv run python -c "from trowel_py.events.repository import EventRepository, create_event_repository; print('ok')"

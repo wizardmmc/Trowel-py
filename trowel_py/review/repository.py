@@ -93,6 +93,15 @@ class ReviewRepository:
             return None
         return self._row_to_fsrs_state(row)
     
+    def find_all_states(self) -> list[FSRSState]:
+        """
+        return every card's fsrs state for challenge card selection
+        """
+        rows = self.conn.execute(
+            "select * from fsrs_state"
+        ).fetchall()
+        return [self._row_to_fsrs_state(row) for row in rows]
+    
     def get_session_stats(self, since: str) -> dict:
         """
         aggregate review statistics since a given timestamp

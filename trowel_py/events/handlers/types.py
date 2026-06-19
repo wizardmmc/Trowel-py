@@ -1,0 +1,49 @@
+"""
+event handler contracts: the interface every handler implements
+and the value objects that flow through the pipeline
+"""
+from __future__ import annotations
+import random
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+
+from trowel_py.events.types import EventType, GameState
+from trowel_py.player.repository import PlayerRepository
+from trowel_py.events.repository import EventRepository
+from trowel_py.review.repository import ReviewRepository
+from trowel_py.cards.repository import CardRepository
+from trowel_py.garden.repository import GardenRepository
+
+@dataclass(frozen=True)
+class EventResult:
+    """
+    a handler's verdict: what happend, and what rewards it wants granted
+    the handler computes this but does not write it to the db - RewardService does
+    """
+    event_type: EventType
+    description: str
+    xp: int = 0
+    coins: int = 0
+    item_id: str | None = None
+    card_id: str | None = None
+
+@dataclass(frozen=True)
+class EventDependencies:
+    """
+    the bag of collaborators every handler is allowed to touch
+    """
+    player_repo: PlayerRepository
+    review_repo: ReviewRepository
+    card_repo: CardRepository
+    garden_repo: GardenRepository
+    event_repo: EventRepository
+    now: datetime
+    rng: random.Random
+
+class EventHandler(Protocol):
+    """
+    every event type implements this - strategy pattern
+    """
+    def can_trigger(self, state: GameState) -> bool: ...
+    def execute(self, state: GameState, deps: EventDependencies) -> EventResult: ...

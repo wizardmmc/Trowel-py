@@ -1,0 +1,1 @@
+uv run python -c "from trowel_py.db.connection import create_db; from trowel_py.db.migrate import run_migrations; c=create_db(); run_migrations(c); c.commit(); c.close(); print('migrated')"
