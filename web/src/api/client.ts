@@ -180,3 +180,61 @@ export async function searchCards(query: string): Promise<GardenPlant[]> {
     `${API_BASE}/search?q=${encodeURIComponent(query)}`,
   );
 }
+
+// ── Pet API types & functions ──
+
+const PET_API_BASE = "http://localhost:8000/api/pet";
+
+export type PetMood = "happy" | "excited" | "curious" | "normal";
+
+export interface Pet {
+  /** always 'default' in the single-user system */
+  readonly player_id: string;
+  readonly mood: PetMood;
+  /** satiety 0-100 */
+  readonly hunger: number;
+  /** inventory row id of the worn hat, or null when bare-headed */
+  readonly equipped_hat: string | null;
+  readonly updated_at: string;
+}
+
+export interface PetResponse {
+  readonly text: string;
+  readonly mood: PetMood;
+}
+
+export interface InteractResult {
+  readonly response: PetResponse;
+  readonly pet: Pet;
+}
+
+/** GET /api/pet — the pet's current state */
+export async function fetchPet(): Promise<Pet> {
+  return request<Pet>(PET_API_BASE);
+}
+
+/** POST /api/pet/feed — eat one food item, returns the updated pet */
+export async function feedPet(itemId: string): Promise<Pet> {
+  return request<Pet>(`${PET_API_BASE}/feed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_id: itemId }),
+  });
+}
+
+/** POST /api/pet/interact — pet the pet, returns a line + the updated pet */
+export async function interactPet(): Promise<InteractResult> {
+  return request<InteractResult>(`${PET_API_BASE}/interact`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** PUT /api/pet/equip — wear a hat, returns the updated pet */
+export async function equipHat(itemId: string): Promise<Pet> {
+  return request<Pet>(`${PET_API_BASE}/equip`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_id: itemId }),
+  });
+}

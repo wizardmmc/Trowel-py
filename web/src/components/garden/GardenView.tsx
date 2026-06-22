@@ -4,6 +4,7 @@ import { GardenGrid } from "./GardenGrid";
 import { GardenStats } from "./GardenStats";
 import { EmptyGarden } from "./EmptyGarden";
 import { PlantDetailModal } from "./PlantDetailModal";
+import { PetOverlay } from "../pet/PetOverlay";
 
 interface GardenViewProps {
   readonly onStartReview: () => void;
@@ -64,6 +65,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
     return (
       <div className="garden-view">
         <EmptyGarden />
+        <PetOverlay />
       </div>
     );
   }
@@ -122,6 +124,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
       )}
 
       <PlantDetailModal plant={selectedPlant} onClose={() => selectPlant(null)} />
+      <PetOverlay />
     </div>
   );
 }

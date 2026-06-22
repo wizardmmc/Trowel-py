@@ -1,0 +1,60 @@
+/* PetOverlay — the floating pet in the garden's bottom-right corner.
+   Pinned inside .garden-view (position: relative), 120x120 hit area with an
+   80x80 SVG centered in it. will-change: transform smooths the Framer Motion
+   float/wander animations. */
+
+.pet-overlay {
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+  z-index: 10;
+  width: 120px;
+  height: 120px;
+  will-change: transform;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pet-overlay:focus-visible {
+  outline: 2px solid var(--garden-green);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+.pet-overlay__svg {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+/* Speech bubble — sits above the SVG, points down at it via ::after. */
+.pet-overlay__speech-bubble {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pet-overlay__speech-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--bg-card);
+}
