@@ -5,6 +5,7 @@ from trowel_py.review.routes import router as review_router
 from trowel_py.garden.routes import router as garden_router
 from trowel_py.player.routes import router as player_router
 from trowel_py.events.routes import router as events_router
+from trowel_py.pet.routes import router as pet_router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -57,5 +58,6 @@ def create_app() -> FastAPI:
     app.include_router(garden_router, prefix="/api/garden")
     app.include_router(player_router, prefix="/api/player")
     app.include_router(events_router, prefix="/api/events")
+    app.include_router(pet_router, prefix="/api/pet")
 
     return app

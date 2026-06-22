@@ -111,3 +111,48 @@ class PlayerRepository:
         self.conn.execute(
             "delete from inventory where id = ?", (id, )
         )
+
+    def find_item_by_id(self, id: str) -> InventoryItem | None:
+        """
+        find one inventory row by its id.
+
+        Args:
+            id: the inventory row id to look up.
+
+        Returns:
+            the InventoryItem, or None if the default player doesn't own it.
+        """
+        row = self.conn.execute(
+            "select * from inventory where id = ? and player_id = 'default'", (id,)
+        ).fetchone()
+        if row is None:
+            return None
+        row_dict = dict(row)
+        row_dict["obtained_at"] = datetime.fromisoformat(row_dict["obtained_at"])
+        return InventoryItem(**row_dict)
+
+    def set_equipped(self, id: str, equipped: int) -> None:
+        """
+        flip the equipped flag on one inventory row.
+
+        Args:
+            id: the inventory row id to update.
+            equipped: 1 to wear, 0 to take off.
+        """
+        self.conn.execute(
+            "update inventory set equipped = ? where id = ?", (equipped, id)
+        )
+
+    def unequip_all_hats(self) -> None:
+        """
+        clear the equipped flag on EVERY hat row in the inventory.
+
+        called before equipping a new hat so the "one hat at a time" rule can't
+        be violated by stale rows (e.g. two hats both marked equipped from a past
+        bug). idempotent — safe to call even when nothing is equipped.
+        """
+        self.conn.execute(
+            "update inventory set equipped = 0 "
+            "where player_id = 'default' and item_type = 'hat'"
+        )
+        
