@@ -1,4 +1,7 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 import json
 
 from trowel_py.llm.filter import filter_secrets
@@ -94,7 +97,9 @@ def test_structured_call_retries_on_failure():
 
     service = LLMService(fake_provider)
     user_prompt = "some diff content"
-    result = service.structured_call(user_prompt, ExtractOutput)
+    # mock time.sleep 避免真实等待 1+2=3 秒拖慢测试（前两次失败触发 backoff）
+    with patch("trowel_py.llm.client.time.sleep"):
+        result = service.structured_call(user_prompt, ExtractOutput)
 
     assert isinstance(result, ExtractOutput)
     assert fake_provider.complete.call_count == 3
@@ -114,3 +119,32 @@ def test_cost_tracking():
     report = service.get_cost_report()
     assert report.by_type["extract"]["calls"] == 1
     assert report.by_type["feynman-eval"]["calls"] == 1
+
+
+# --- retry exhausts & backoff tests (slice 017 补的 TEST-001 缺口) ---
+
+def test_structured_call_raises_after_all_retries():
+    """3 次都失败应该抛出异常（最后一次的实际错误），且确实调用了 3 次"""
+    fake_provider = MagicMock()
+    fake_provider.complete.side_effect = RuntimeError("API down")
+
+    service = LLMService(fake_provider)
+    with patch("trowel_py.llm.client.time.sleep"):
+        with pytest.raises(RuntimeError):
+            service.structured_call("diff", ExtractOutput)
+
+    assert fake_provider.complete.call_count == 3
+
+
+def test_retry_uses_exponential_backoff():
+    """失败重试间隔应是指数退避：2^0=1, 2^1=2, 2^2=4 秒（共 3 次 sleep）"""
+    fake_provider = MagicMock()
+    fake_provider.complete.side_effect = RuntimeError("API down")
+
+    service = LLMService(fake_provider)
+    with patch("trowel_py.llm.client.time.sleep") as mock_sleep:
+        with pytest.raises(RuntimeError):
+            service.structured_call("diff", ExtractOutput)
+
+    sleep_args = [call.args[0] for call in mock_sleep.call_args_list]
+    assert sleep_args == [1, 2, 4]
