@@ -1,0 +1,285 @@
+/* Overlay */
+.pet-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Panel */
+.pet-panel {
+  width: 320px;
+  height: 100vh;
+  background-color: var(--bg-card, #fffdf7);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.16));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Header */
+.pet-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md, 16px) var(--space-lg, 24px);
+  border-bottom: 1px solid var(--soil-brown, #8b7355);
+  flex-shrink: 0;
+}
+
+.pet-panel__title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary, #2c2c2c);
+  margin: 0;
+}
+
+.pet-panel__close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #6b6b6b);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: var(--space-xs, 4px);
+  border-radius: var(--radius-sm, 4px);
+}
+
+.pet-panel__close:hover {
+  color: var(--text-primary, #2c2c2c);
+}
+
+.pet-panel__close:focus-visible {
+  outline: 2px solid var(--garden-green, #4a7c59);
+  outline-offset: 2px;
+}
+
+/* Pet display area */
+.pet-panel__pet-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-lg, 24px) var(--space-lg, 24px) var(--space-md, 16px);
+  gap: var(--space-md, 16px);
+}
+
+.pet-panel__pet-svg {
+  width: 120px;
+  height: 120px;
+}
+
+.pet-panel__speech-bubble {
+  background-color: var(--bg-garden, #f5f0e8);
+  border-radius: var(--radius-md, 8px);
+  padding: var(--space-sm, 8px) var(--space-md, 16px);
+  font-size: 0.85rem;
+  color: var(--text-primary, #2c2c2c);
+  max-width: 260px;
+  text-align: center;
+  position: relative;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
+}
+
+/* Sections */
+.pet-panel__section {
+  padding: var(--space-md, 16px) var(--space-lg, 24px);
+  border-top: 1px solid var(--soil-brown, #8b7355);
+}
+
+.pet-panel__section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #6b6b6b);
+  margin: 0 0 var(--space-sm, 8px) 0;
+}
+
+/* Status items */
+.pet-panel__status-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
+}
+
+.pet-panel__status-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  font-size: 0.9rem;
+  color: var(--text-primary, #2c2c2c);
+}
+
+.pet-panel__status-label {
+  color: var(--text-secondary, #6b6b6b);
+  min-width: 48px;
+}
+
+/* Hunger bar */
+.pet-panel__hunger-bar {
+  flex: 1;
+  height: 8px;
+  background-color: var(--bg-garden, #f5f0e8);
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+}
+
+.pet-panel__hunger-fill {
+  height: 100%;
+  background-color: var(--garden-green, #4a7c59);
+  border-radius: var(--radius-sm, 4px);
+  transition: width 0.3s ease-out;
+}
+
+.pet-panel__hunger-value {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #6b6b6b);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Food buttons */
+.pet-panel__food-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
+}
+
+.pet-panel__food-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-sm, 8px) var(--space-md, 16px);
+  background-color: var(--bg-garden, #f5f0e8);
+  border: 1px solid var(--soil-brown, #8b7355);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--text-primary, #2c2c2c);
+  transition: background-color 0.15s;
+}
+
+.pet-panel__food-btn:hover:not(:disabled) {
+  background-color: var(--soil-brown, #8b7355);
+  color: var(--bg-card, #fffdf7);
+}
+
+.pet-panel__food-btn:focus-visible {
+  outline: 2px solid var(--garden-green, #4a7c59);
+  outline-offset: 2px;
+}
+
+.pet-panel__food-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pet-panel__food-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+}
+
+.pet-panel__food-price {
+  font-size: 0.8rem;
+  color: var(--sunshine, #e8b84b);
+  font-weight: 600;
+}
+
+.pet-panel__food-owned {
+  font-size: 0.7rem;
+  color: var(--color-success, #4a7c4e);
+  font-weight: 600;
+}
+
+.pet-panel__food-btn:hover:not(:disabled) .pet-panel__food-price {
+  color: var(--sunshine, #e8b84b);
+}
+
+/* Hat list */
+.pet-panel__hat-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+}
+
+.pet-panel__hat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-sm, 8px) var(--space-md, 16px);
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  background: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--text-primary, #2c2c2c);
+  text-align: left;
+  transition: background-color 0.15s;
+}
+
+.pet-panel__hat-item:hover {
+  background-color: var(--bg-garden, #f5f0e8);
+}
+
+.pet-panel__hat-item--equipped {
+  background-color: var(--bg-garden, #f5f0e8);
+  font-weight: 600;
+}
+
+.pet-panel__hat-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+}
+
+.pet-panel__hat-check {
+  color: var(--garden-green, #4a7c59);
+  font-weight: 700;
+}
+
+.pet-panel__empty {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #6b6b6b);
+  padding: var(--space-sm, 8px) 0;
+}
+
+/* Event log */
+.pet-panel__event-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+}
+
+.pet-panel__event-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs, 4px) 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #6b6b6b);
+}
+
+.pet-panel__event-type {
+  color: var(--text-primary, #2c2c2c);
+  font-weight: 500;
+}
+
+.pet-panel__event-time {
+  margin-left: var(--space-xs, 4px);
+}
+
+.pet-panel__event-reward {
+  font-size: 0.75rem;
+}
+
+/* Error message */
+.pet-panel__error {
+  font-size: 0.8rem;
+  color: var(--color-error, #c45b4a);
+  padding: var(--space-xs, 4px) 0;
+}

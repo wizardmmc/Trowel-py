@@ -5,6 +5,7 @@ import { GardenStats } from "./GardenStats";
 import { EmptyGarden } from "./EmptyGarden";
 import { PlantDetailModal } from "./PlantDetailModal";
 import { PetOverlay } from "../pet/PetOverlay";
+import { PetPanel } from "../pet/PetPanel";
 
 interface GardenViewProps {
   readonly onStartReview: () => void;
@@ -29,6 +30,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
   } = useGardenStore();
 
   const [searchInput, setSearchInput] = useState(searchQuery);
+  const [panelOpen, setPanelOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -65,7 +67,8 @@ export function GardenView({ onStartReview }: GardenViewProps) {
     return (
       <div className="garden-view">
         <EmptyGarden />
-        <PetOverlay />
+        <PetOverlay onClick={() => setPanelOpen(true)} />
+        <PetPanel open={panelOpen} onClose={() => setPanelOpen(false)} />
       </div>
     );
   }
@@ -124,7 +127,8 @@ export function GardenView({ onStartReview }: GardenViewProps) {
       )}
 
       <PlantDetailModal plant={selectedPlant} onClose={() => selectPlant(null)} />
-      <PetOverlay />
+      <PetOverlay onClick={() => setPanelOpen(true)} />
+      <PetPanel open={panelOpen} onClose={() => setPanelOpen(false)} />
     </div>
   );
 }

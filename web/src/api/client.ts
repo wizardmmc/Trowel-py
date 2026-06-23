@@ -238,3 +238,81 @@ export async function equipHat(itemId: string): Promise<Pet> {
     body: JSON.stringify({ item_id: itemId }),
   });
 }
+
+// ── Player API types & functions ──
+
+const PLAYER_API_BASE = "http://localhost:8000/api/player";
+
+export interface PlayerProfile {
+  readonly id: string;
+  readonly xp: number;
+  /** spendable currency; buying food/hats deducts from this */
+  readonly coins: number;
+  readonly streak_days: number;
+  readonly last_active: string;
+  readonly created_at: string;
+  /** derived from xp by the backend (level n needs n*(n-1)*50 xp) */
+  readonly level: number;
+  readonly xp_to_next_level: number;
+}
+
+export interface InventoryItem {
+  /** inventory row id (uuid); this is what feed/equip expect, NOT item_id */
+  readonly id: string;
+  readonly player_id: string;
+  /** catalog id, e.g. food_basic / hat_straw */
+  readonly item_id: string;
+  readonly item_type: "food" | "hat";
+  /** 0 or 1 — whether a hat is currently worn */
+  readonly equipped: number;
+  readonly obtained_at: string;
+}
+
+export interface BuyResult {
+  readonly item_id: string;
+  readonly item_type: "food" | "hat";
+}
+
+/** GET /api/player — profile with computed level fields */
+export async function fetchPlayer(): Promise<PlayerProfile> {
+  return request<PlayerProfile>(PLAYER_API_BASE);
+}
+
+/** GET /api/player/inventory — every owned item (food + hats) */
+export async function fetchInventory(): Promise<InventoryItem[]> {
+  return request<InventoryItem[]>(`${PLAYER_API_BASE}/inventory`);
+}
+
+/**
+ * POST /api/player/buy — spend coins, grant one item.
+ * Returns only the catalog id + type (not the new row id), so callers must
+ * re-fetch the inventory to resolve the granted row.
+ */
+export async function buyItem(itemId: string): Promise<BuyResult> {
+  return request<BuyResult>(`${PLAYER_API_BASE}/buy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_id: itemId }),
+  });
+}
+
+// ── Events API types & functions ──
+
+const EVENTS_API_BASE = "http://localhost:8000/api/events";
+
+export interface EventLog {
+  readonly id: string;
+  readonly player_id: string;
+  readonly event_type: string;
+  readonly reward_xp: number;
+  readonly reward_coin: number;
+  readonly reward_item_id: string | null;
+  readonly description: string | null;
+  readonly card_id: string | null;
+  readonly triggered_at: string;
+}
+
+/** GET /api/events/history — most recent event logs, newest first */
+export async function fetchEventHistory(limit: number): Promise<EventLog[]> {
+  return request<EventLog[]>(`${EVENTS_API_BASE}/history?limit=${limit}`);
+}
