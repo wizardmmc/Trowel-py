@@ -316,3 +316,17 @@ export interface EventLog {
 export async function fetchEventHistory(limit: number): Promise<EventLog[]> {
   return request<EventLog[]>(`${EVENTS_API_BASE}/history?limit=${limit}`);
 }
+
+/**
+ * POST /api/events/trigger — run one event cycle synchronously.
+ * Returns the event log when something fired, or null when nothing was
+ * eligible (cooldown / no candidate). This is a plain request/response, not
+ * SSE — the py backend has no server-push source, so a synchronous fetch is
+ * the right shape here (see docs/training-log-m2.md slice 016 rationale).
+ */
+export async function triggerEvent(): Promise<EventLog | null> {
+  return request<EventLog | null>(`${EVENTS_API_BASE}/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}

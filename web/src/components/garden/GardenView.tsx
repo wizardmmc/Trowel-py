@@ -6,6 +6,8 @@ import { EmptyGarden } from "./EmptyGarden";
 import { PlantDetailModal } from "./PlantDetailModal";
 import { PetOverlay } from "../pet/PetOverlay";
 import { PetPanel } from "../pet/PetPanel";
+import { EventModal } from "../events/EventModal";
+import { useEventStore } from "../../stores/eventStore";
 
 interface GardenViewProps {
   readonly onStartReview: () => void;
@@ -33,9 +35,18 @@ export function GardenView({ onStartReview }: GardenViewProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  const { currentEvent, checkForEvent, claimReward } = useEventStore();
+
   useEffect(() => {
     fetchGarden();
   }, [fetchGarden]);
+
+  // On entering the garden, ask the backend to run one event cycle. The engine
+  // layer enforces cooldowns, so remounts won't spam-fire. Synchronous fetch —
+  // see docs/training-log-m2.md slice 016 (no SSE).
+  useEffect(() => {
+    void checkForEvent();
+  }, [checkForEvent]);
 
   useEffect(() => {
     return () => {
@@ -69,6 +80,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
         <EmptyGarden />
         <PetOverlay onClick={() => setPanelOpen(true)} />
         <PetPanel open={panelOpen} onClose={() => setPanelOpen(false)} />
+        <EventModal event={currentEvent} onClaim={claimReward} />
       </div>
     );
   }
@@ -129,6 +141,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
       <PlantDetailModal plant={selectedPlant} onClose={() => selectPlant(null)} />
       <PetOverlay onClick={() => setPanelOpen(true)} />
       <PetPanel open={panelOpen} onClose={() => setPanelOpen(false)} />
+      <EventModal event={currentEvent} onClaim={claimReward} />
     </div>
   );
 }

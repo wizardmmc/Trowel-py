@@ -39,3 +39,14 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   gift: "礼物",
   feynman: "费曼",
 };
+
+/** emoji icon per event type; keys match the backend EventType */
+export const EVENT_ICONS: Record<string, string> = {
+  sign_in: "🌅",
+  challenge: "🎯",
+  discovery: "✨",
+  story: "📖",
+  growth: "🌱",
+  gift: "🎁",
+  feynman: "💡",
+};

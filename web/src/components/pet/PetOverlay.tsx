@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePetStore } from "../../stores/petStore";
+import { useEventStore } from "../../stores/eventStore";
 import { PetSVG } from "./PetSVG";
 import {
   petVariants,
@@ -32,6 +33,9 @@ export function PetOverlay({ onClick }: PetOverlayProps) {
   const lastResponse = usePetStore((s) => s.lastResponse);
   const fetchPet = usePetStore((s) => s.fetchPet);
   const interact = usePetStore((s) => s.interact);
+  // When an event modal is open, the pet reacts with an excited face — a local
+  // UI cue only, no server push involved.
+  const currentEvent = useEventStore((s) => s.currentEvent);
 
   // Load the pet on mount
   useEffect(() => {
@@ -105,7 +109,10 @@ export function PetOverlay({ onClick }: PetOverlayProps) {
         )}
       </AnimatePresence>
       <div className="pet-overlay__svg">
-        <PetSVG mood={pet.mood} equippedHat={pet.equipped_hat ?? undefined} />
+        <PetSVG
+          mood={currentEvent ? "excited" : pet.mood}
+          equippedHat={pet.equipped_hat ?? undefined}
+        />
       </div>
     </motion.div>
   );

@@ -1,0 +1,82 @@
+.event-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.event-modal {
+  background-color: var(--bg-card, #fffdf7);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.16));
+  padding: var(--space-xl, 24px);
+  max-width: 360px;
+  width: 85vw;
+  text-align: center;
+}
+
+.event-modal__icon {
+  font-size: 3rem;
+  margin-bottom: var(--space-md, 16px);
+}
+
+.event-modal__description {
+  font-size: 1rem;
+  color: var(--text-primary, #2c2c2c);
+  line-height: 1.5;
+  margin-bottom: var(--space-lg, 20px);
+}
+
+.event-modal__rewards {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-lg, 20px);
+  margin-bottom: var(--space-lg, 20px);
+}
+
+.event-modal__reward-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.event-modal__reward-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--sunshine, #e8b84b);
+}
+
+.event-modal__reward-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #6b6b6b);
+}
+
+.event-modal__claim-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs, 4px);
+  padding: var(--space-sm, 8px) var(--space-xl, 24px);
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  background-color: var(--garden-green, #4a7c59);
+  color: var(--text-inverse, #fffdf7);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.event-modal__claim-btn:hover {
+  opacity: 0.9;
+}
+
+.event-modal__claim-btn:focus-visible {
+  outline: 2px solid var(--sunshine, #e8b84b);
+  outline-offset: 2px;
+}
