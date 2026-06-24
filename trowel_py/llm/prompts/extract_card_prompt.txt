@@ -25,3 +25,21 @@
 - tags: 可搜索的分类标记
 - confidence: 1-5 置信度
 - source_type: chat / git_diff / cli / general
+
+输出：只输出JSON
+顶层结构为：
+{
+  "cards": [
+    {
+      "title": "一句话概括概念",
+      "category": "领域标签",
+      "explanation": "用户能看懂的自然语言说明",
+      "example": "代码片段或公式，可为 null",
+      "difficulty": 3,
+      "tags": ["标签1", "标签2"],
+      "confidence": 4,
+      "source_type": "general"
+    }
+  ]
+}
+即使只有一张卡片，也必须包在"cards"数组里，如果没有值得提取的内容时，返回 {"cards": []}

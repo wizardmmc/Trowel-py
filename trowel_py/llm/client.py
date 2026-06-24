@@ -5,13 +5,17 @@ from trowel_py.llm.filter import filter_secrets
 from trowel_py.llm.prompts.extract import EXTRACT_SYSTEM_PROMPT
 import time
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class LLMConfig(BaseModel):
     provider: Literal["openai", "anthropic"]
     model: str = Field(min_length=2)
-    api_key: str = Field(min_length=16)
+    api_key: str = Field(min_length=1)
     max_retries: int = Field(default=3)
+    base_url: str = Field(default="http://localhost:1234/v1")
 
 class CostEntry(BaseModel):
     """
@@ -36,7 +40,9 @@ class LLMProvider(Protocol):
 class OpenAIProvider(LLMProvider):
     def __init__(self, config: LLMConfig):
         from openai import OpenAI   # lazy import
-        self._client = OpenAI(api_key=config.api_key)
+        self._client = OpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url)
         self._model = config.model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
@@ -80,8 +86,10 @@ def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str
     for attempt in range(max_retries):
         try:
             raw = provider.complete(system_prompt, user_prompt)
+            logger.info("LLM raw response (attempt %d): %s", attempt, raw)
             return json.loads(raw)
         except Exception as e:
+            logger.warning("LLM call failed (attempt %d): %s", attempt, e)
             last_error = e
             wait = 2 ** attempt
             time.sleep(wait)

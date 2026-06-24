@@ -36,8 +36,9 @@ def _get_llm_service() -> LLMService:
 
     config = LLMConfig(
         provider="openai",
-        model=os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
-        api_key=os.environ.get("LLM_API_KEY", "test-key"),
+        model=os.environ.get("LLM_MODEL", "qwen/qwen3.6-35b-a3b"),
+        api_key=os.environ.get("LLM_API_KEY", "lm-studio"),
+        base_url=os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1")
     )
     return create_llm_service(config)
 

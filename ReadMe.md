@@ -28,6 +28,7 @@ httpx -- 测视里用于发送http请求的
   ├── feynman/
   ├── llm/
   └── schemas/
+  web/  # 前端目录
   tests/
   ├── __init__.py
   ├── conftest.py         # pytest 共享 fixture
