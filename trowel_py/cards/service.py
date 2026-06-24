@@ -7,6 +7,8 @@ from trowel_py.schemas.review import FSRSState
 from trowel_py.cards.repository import CardRepository
 from trowel_py.review.repository import ReviewRepository
 from datetime import datetime
+from trowel_py.cards.jsonl_parser import ChatMessage
+
 
 def extract_cards(content: str, llm_service: LLMService) -> list[CardDraft]:
     """
@@ -32,6 +34,22 @@ def extract_cards(content: str, llm_service: LLMService) -> list[CardDraft]:
         drafts.append(draft)
     
     return drafts
+
+
+def extract_from_conversation(messages: list[ChatMessage], llm_service: LLMService) -> list[CardDraft]:
+    """
+    extract card draft from a parsed conversation
+
+    Args:
+        messages: parsed user/assistant turns from a JSONL log
+        llm_service: the LLM service used for extraction
+
+    Returns:
+        card drafts ready for the review flow
+    """
+    text = "\n".join(f"{m.role}: {m.content}" for m in messages)
+    return extract_cards(text, llm_service)
+
 
 def review_card(draft: CardDraft, request: ReviewRequest, card_repo: CardRepository, review_repo: ReviewRepository) -> Card | None:
     """
@@ -70,6 +88,7 @@ def review_card(draft: CardDraft, request: ReviewRequest, card_repo: CardReposit
     review_repo.save_fsrs_state(fsrs_state)
 
     return card
+
 
 def find_duplicates(title: str, card_repo: CardRepository) -> list[Card]:
     """

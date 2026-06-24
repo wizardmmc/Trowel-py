@@ -1,7 +1,8 @@
 # intermediate layer between service layer and HTTP request
 from fastapi import APIRouter, Depends
 from trowel_py.cards.repository import CardRepository, create_card_repository
-from trowel_py.cards.service import extract_cards, review_card, find_duplicates
+from trowel_py.cards.service import extract_cards, review_card, find_duplicates, extract_from_conversation
+from trowel_py.cards.jsonl_parser import parse_jsonl
 from trowel_py.llm.client import LLMService, create_llm_service
 from trowel_py.review.repository import ReviewRepository, create_review_repository
 from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
@@ -9,6 +10,7 @@ from trowel_py.schemas.card import Card
 from trowel_py.db.connection import create_db
 import sqlite3
 import logging
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -57,6 +59,28 @@ def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_
         },
         "error": None
     }
+
+
+@router.post("/extract-conversation")
+def extract_conversation(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)) -> dict:
+    """
+    extract card drafts from an uploaded CC JSONL conversation log
+    """
+    logger.info("extract-conversation request received, content length: %d", len(request.content))
+    messages = parse_jsonl(request.content)
+    logger.info("Parsed %d message from JSONL", len(messages))
+    drafts = extract_from_conversation(messages, llm_service)
+    logger.info("conversation extraction complete, %d drafts genrated", len(drafts))
+    for draft in drafts:
+        _draft_store[draft.id] = draft
+    return {
+        "success": True,
+        "data": {
+            "drafts": [d.model_dump() for d in drafts],
+        },
+        "error": None,
+    }
+
 
 @router.post("/{draft_id}/review")
 def review(draft_id: str,
