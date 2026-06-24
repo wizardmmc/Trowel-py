@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { CardDraft, Card } from "../api/client";
-import { extractCards, reviewCard, findDuplicates, getAllCards } from "../api/client";
+import {
+  extractCards,
+  extractConversation as extractConversationApi,
+  reviewCard,
+  findDuplicates,
+  getAllCards,
+} from "../api/client";
 
 interface CardState {
   drafts: CardDraft[];
@@ -12,6 +18,7 @@ interface CardState {
   error: string | null;
 
   extract: (content: string) => Promise<void>;
+  extractConversation: (content: string) => Promise<void>;
   review: (draftId: string, action: "accept" | "edit" | "reject", edits?: Record<string, unknown>) => Promise<void>;
   loadDuplicates: (draftId: string) => Promise<void>;
   loadCards: (page?: number, limit?: number) => Promise<void>;
@@ -20,7 +27,7 @@ interface CardState {
   clearDrafts: () => void;
 }
 
-export const useCardStore = create<CardState>((set, get) => ({
+export const useCardStore = create<CardState>((set) => ({
   drafts: [],
   cards: [],
   total: 0,
@@ -39,14 +46,25 @@ export const useCardStore = create<CardState>((set, get) => ({
     }
   },
 
+  extractConversation: async (content) => {
+    set({ loading: true, error: null });
+    try {
+      const { drafts } = await extractConversationApi(content);
+      set({ drafts, currentDraftIndex: 0, loading: false });
+    } catch (err) {
+      set({ error: (err as Error).message, loading: false });
+    }
+  },
+
   review: async (draftId, action, edits) => {
     set({ loading: true, error: null });
     try {
       await reviewCard(draftId, action, edits);
-      const { drafts } = get();
-      const remaining = drafts.filter((d) => d.id !== draftId);
-      const newIndex = Math.min(get().currentDraftIndex, Math.max(remaining.length - 1, 0));
-      set({ drafts: remaining, currentDraftIndex: newIndex, loading: false });
+      set((s) => {
+        const remaining = s.drafts.filter((d) => d.id !== draftId);
+        const newIndex = Math.min(s.currentDraftIndex, Math.max(remaining.length - 1, 0));
+        return { drafts: remaining, currentDraftIndex: newIndex, loading: false };
+      });
     } catch (err) {
       set({ error: (err as Error).message, loading: false });
     }

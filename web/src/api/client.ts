@@ -55,6 +55,18 @@ export async function extractCards(content: string): Promise<{ drafts: CardDraft
   });
 }
 
+/** POST /extract-conversation — extract cards from a CC JSONL conversation log.
+ *  Backend parses the raw text (handles real CC format). */
+export async function extractConversation(
+  content: string,
+): Promise<{ drafts: CardDraft[] }> {
+  return request<{ drafts: CardDraft[] }>(`${API_BASE}/extract-conversation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+
 export async function reviewCard(
   draftId: string,
   action: "accept" | "edit" | "reject",

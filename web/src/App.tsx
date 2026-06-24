@@ -15,6 +15,7 @@ function App() {
     currentDraftIndex,
     loading,
     extract,
+    extractConversation,
     review,
     nextDraft,
     prevDraft,
@@ -48,6 +49,13 @@ function App() {
     await extract(content);
     if (drafts.length > 0) {
       addNotification("Cards extracted successfully", "success");
+    }
+  };
+
+  const handleExtractConversation = async (content: string) => {
+    await extractConversation(content);
+    if (drafts.length > 0) {
+      addNotification("Cards extracted from conversation", "success");
     }
   };
 
@@ -85,7 +93,11 @@ function App() {
         <GardenView onStartReview={() => startSession()} />
       )}
       {!reviewActive && activeTool === "extract" && (
-        <ExtractionInput onExtract={handleExtract} loading={loading} />
+        <ExtractionInput
+          onExtract={handleExtract}
+          onExtractConversation={handleExtractConversation}
+          loading={loading}
+        />
       )}
 
       <ReviewSession />

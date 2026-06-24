@@ -77,19 +77,41 @@ body {
 
 /* ── ExtractionInput ── */
 
-.extraction-input__header {
+.extraction-input {
+  background-color: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-lg);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--space-sm);
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
-.extraction-input__format {
-  font-size: 0.75rem;
-  color: var(--soil-brown);
-  background: var(--bg-card);
+.extraction-input__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.extraction-input__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.extraction-input__format-badge {
+  background-color: var(--bg-garden);
+  color: var(--text-secondary);
   padding: 2px var(--space-sm);
   border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  border: 1px solid var(--soil-brown);
+}
+
+.extraction-input__drop-zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
 }
 
 .extraction-input__textarea {
@@ -97,17 +119,49 @@ body {
   padding: var(--space-md);
   border: 1px solid var(--soil-brown);
   border-radius: var(--radius-md);
-  background: var(--bg-card);
+  background-color: var(--bg-garden);
   color: var(--text-primary);
   font-size: 0.875rem;
   font-family: var(--font-mono);
+  line-height: 1.5;
   resize: vertical;
-  margin-bottom: var(--space-sm);
 }
 
 .extraction-input__textarea:focus {
   outline: 2px solid var(--garden-green);
   outline-offset: -1px;
+}
+
+.extraction-input__textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.extraction-input__file-upload {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.extraction-input__file-input {
+  font-size: 0.8rem;
+}
+
+.extraction-input__file-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.extraction-input__drop-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.extraction-input__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
 }
 
 .extraction-input__button {
@@ -123,6 +177,15 @@ body {
 .extraction-input__button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.extraction-input__error {
+  color: var(--color-error);
+  font-size: 0.875rem;
+  padding: var(--space-sm) var(--space-md);
+  background-color: var(--bg-garden);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-error);
 }
 
 /* ── ReviewModal ── */
