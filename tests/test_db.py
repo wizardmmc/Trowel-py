@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 import tempfile
+import pytest
 
 from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
@@ -98,4 +99,101 @@ def test_002_003_migration(db_connection: sqlite3.Connection):
     )
     result = db_connection.execute("select * from fsrs_state").fetchall()
     assert len(result) == 0
+
+
+def _insert_card(conn, card_id="test-card"):
+    """insert a parent card so FK-referencing rows can be created."""
+    conn.execute(
+        "insert into cards (id, title, category, explanation, tags) values (?, ?, ?, ?, ?)",
+        (card_id, "test card", "python", "for FK tests", '["python"]'),
+    )
+
+
+def test_005_migration(db_connection: sqlite3.Connection):
+    """
+    verify migration 005 creates feynman/follow-up tables with correct fields,
+    FK enforcement, cascading deletes, and CHECK constraints.
+    """
+    run_migrations(db_connection)
+
+    # --- 1. tables exist with the right columns ---
+    tables = {row["name"] for row in db_connection.execute(
+        "select name from sqlite_master where type='table'"
+    ).fetchall()}
+    for t in ("feynman_sessions", "follow_up_threads", "follow_up_messages"):
+        assert t in tables, f"missing table {t}"
+
+    feynman_cols = {row["name"] for row in db_connection.execute(
+        "pragma table_info('feynman_sessions')"
+    ).fetchall()}
+    assert {"id", "card_id", "question", "accuracy", "completeness",
+            "feedback", "missed_points"}.issubset(feynman_cols)
+
+    # --- 2a. FK cascade: deleting a card drops its feynman_session ---
+    _insert_card(db_connection)
+    db_connection.execute(
+        "insert into feynman_sessions (id, card_id, question, user_answer) "
+        "values (?, ?, ?, ?)",
+        ("sess-1", "test-card", "what is a closure?", "a nested function"),
+    )
+    db_connection.execute("delete from cards where id = 'test-card'")
+    remaining = db_connection.execute(
+        "select count(*) as c from feynman_sessions"
+    ).fetchone()["c"]
+    assert remaining == 0, "feynman_sessions should cascade-delete with its card"
+
+    # --- 2b. FK cascade (two-level): thread -> messages, card -> threads ---
+    _insert_card(db_connection)
+    db_connection.execute(
+        "insert into follow_up_threads (id, card_id) values (?, ?)",
+        ("thread-1", "test-card"),
+    )
+    db_connection.execute(
+        "insert into follow_up_messages (id, thread_id, role, content) "
+        "values (?, ?, ?, ?)",
+        ("msg-1", "thread-1", "user", "why does the closure survive?"),
+    )
+    db_connection.execute("delete from follow_up_threads where id = 'thread-1'")
+    remaining_msgs = db_connection.execute(
+        "select count(*) as c from follow_up_messages"
+    ).fetchone()["c"]
+    assert remaining_msgs == 0, "follow_up_messages should cascade-delete with its thread"
+
+    # --- 2c. FK enforcement: orphan card_id must be rejected ---
+    with pytest.raises(sqlite3.IntegrityError):
+        db_connection.execute(
+            "insert into follow_up_threads (id, card_id) values (?, ?)",
+            ("thread-orphan", "no-such-card"),
+        )
+
+    # --- 3. CHECK constraints reject out-of-range values ---
+    _insert_card(db_connection, card_id="card-check")
+    with pytest.raises(sqlite3.IntegrityError):
+        db_connection.execute(
+            "insert into feynman_sessions (id, card_id, question, accuracy) "
+            "values (?, ?, ?, ?)",
+            ("sess-acc", "card-check", "q", 150),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        db_connection.execute(
+            "insert into feynman_sessions (id, card_id, question, completeness) "
+            "values (?, ?, ?, ?)",
+            ("sess-comp", "card-check", "q", -1),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        db_connection.execute(
+            "insert into follow_up_messages (id, thread_id, role, content) "
+            "values (?, ?, ?, ?)",
+            ("msg-role", "thread-1", "system", "invalid role"),
+        )
+
+    # --- 4. nullable accuracy passes (NULL is allowed by the CHECK) ---
+    db_connection.execute(
+        "insert into feynman_sessions (id, card_id, question) values (?, ?, ?)",
+        ("sess-null", "card-check", "q"),
+    )
+    row = db_connection.execute(
+        "select accuracy from feynman_sessions where id = 'sess-null'"
+    ).fetchone()
+    assert row["accuracy"] is None, "accuracy must allow NULL (degradation case)"
 

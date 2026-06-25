@@ -26,7 +26,7 @@
 - confidence: 1-5 置信度
 - source_type: chat / git_diff / cli / general
 
-输出：只输出JSON
+输出：只输出JSON，不要输出markdown的代码块格式
 顶层结构为：
 {
   "cards": [

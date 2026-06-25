@@ -7,7 +7,7 @@ Learn.md
 *.db-shm
 *.db-wal
 docs/
-.env
+config.toml
 *.egg-info/
 dist/
 build/

@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Literal, Protocol
 from trowel_py.llm.filter import filter_secrets
 from trowel_py.llm.prompts.extract import EXTRACT_SYSTEM_PROMPT
+from trowel_py.llm.types import CallType
 import time
 import json
 import logging
@@ -21,7 +22,7 @@ class CostEntry(BaseModel):
     """
     a single record about the cost of one functional call
     """
-    call_type: str
+    call_type: CallType
     tokens_in: int
     tokens_out: int
     cost_used: float
@@ -78,6 +79,7 @@ class AnthropicProvider(LLMProvider):
                 return block.text
         raise RuntimeError("No text block in Anthropic response")
 
+
 def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str, max_retries: int) -> dict:
     """
     increase stability
@@ -87,7 +89,7 @@ def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str
         try:
             raw = provider.complete(system_prompt, user_prompt)
             logger.info("LLM raw response (attempt %d): %s", attempt, raw)
-            return json.loads(raw)
+            return json.loads(_extract_json(raw))
         except Exception as e:
             logger.warning("LLM call failed (attempt %d): %s", attempt, e)
             last_error = e
@@ -95,12 +97,33 @@ def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str
             time.sleep(wait)
     raise last_error
 
+
+def _extract_json(raw: str) -> str:
+    """
+    pull the JSON object out of an LLM raw response
+
+    Args:
+        raw: raw text from the LLM provider.
+
+    Returns:
+        the substring that should be valid JSON.
+
+    Raises:
+        ValueError: no '{' or '}' found (model returned no JSON at all).
+    """
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError(f"no JSON object in LLM response: {raw!r}")
+    return raw[start:end + 1]
+
+
 class LLMService:
     def __init__(self, provider: LLMProvider):
         self._provider = provider
         self._cost_log: list[CostEntry] = []
 
-    def structured_call(self, user_prompt: str, schema: type[BaseModel], call_type="extract") -> BaseModel:
+    def structured_call(self, user_prompt: str, schema: type[BaseModel], call_type: CallType = "extract") -> BaseModel:
         """
         call provider, like Interface encapsulation
         """

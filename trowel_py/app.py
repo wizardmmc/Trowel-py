@@ -7,7 +7,6 @@ from trowel_py.player.routes import router as player_router
 from trowel_py.events.routes import router as events_router
 from trowel_py.pet.routes import router as pet_router
 import logging
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +17,6 @@ def create_app() -> FastAPI:
     构建并返回 FastAPI 实例，工厂模式
     FastAPI 注册了相关函数，可以被外界调用
     """
-    load_dotenv()
     app = FastAPI()
 
     from fastapi.middleware.cors import CORSMiddleware

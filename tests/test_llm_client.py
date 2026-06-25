@@ -5,7 +5,7 @@ import pytest
 import json
 
 from trowel_py.llm.filter import filter_secrets
-from trowel_py.llm.client import LLMService
+from trowel_py.llm.client import LLMService, _extract_json
 from trowel_py.schemas.extracted_card import ExtractOutput
 
 
@@ -148,3 +148,38 @@ def test_retry_uses_exponential_backoff():
 
     sleep_args = [call.args[0] for call in mock_sleep.call_args_list]
     assert sleep_args == [1, 2, 4]
+
+
+# --- _extract_json tests (slice 018b: 智谱 markdown 代码块兜底) ---
+#
+# 智谱 glm-5.1 习惯把 JSON 包在 ```json ... ``` 里，裸 json.loads 会挂在
+# 第一个反引号。_extract_json 负责把 JSON 对象主体抠出来，不赌 prompt 听话。
+
+def test_extract_json_plain():
+    """bare JSON (LM Studio style) should pass through unchanged."""
+    raw = '{"cards": [{"title": "x"}]}'
+    assert _extract_json(raw) == raw
+
+
+def test_extract_json_markdown_fence():
+    """JSON wrapped in ```json ... ``` (Zhipu glm style) should be extracted."""
+    raw = '```json\n{"cards": [{"title": "x"}]}\n```'
+    assert _extract_json(raw) == '{"cards": [{"title": "x"}]}'
+
+
+def test_extract_json_with_surrounding_prose():
+    """JSON with prose before/after should yield just the JSON object."""
+    raw = '好的，提取结果如下：\n{"cards": []}\n希望帮到你'
+    assert _extract_json(raw) == '{"cards": []}'
+
+
+def test_extract_json_no_json_raises():
+    """response with no braces at all should raise ValueError (fail loud)."""
+    with pytest.raises(ValueError):
+        _extract_json("我不知道该提取什么")
+
+
+def test_extract_json_empty_raises():
+    """empty string should raise ValueError."""
+    with pytest.raises(ValueError):
+        _extract_json("")

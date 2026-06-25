@@ -1,0 +1,14 @@
+[llm]
+active = "online-glm"
+
+[llm.local] 
+provider = "openai"
+model = "qwen3.6-35b-a3b"
+api_key = "lm-studio" 
+base_url = "http://localhost:1234/v1"
+
+[llm.online-glm] 
+provider = "anthropic"
+model = "glm-5.1"
+api_key = "<your-bigmodel-key>" 
+base_url = "https://open.bigmodel.cn/api/anthropic"

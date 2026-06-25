@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 _draft_store: dict[str, CardDraft] = {} # {id: CardDraft}
 
+
 # inject function, convence test
 def _get_conn():
     """Yield a DB connection; commit and close after the request."""
@@ -26,23 +27,20 @@ def _get_conn():
         conn.commit()
         conn.close()
 
+
 def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
     return create_card_repository(conn)
+
 
 def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> ReviewRepository:
     return create_review_repository(conn)
 
-def _get_llm_service() -> LLMService:
-    from trowel_py.llm.client import LLMConfig
-    import os
 
-    config = LLMConfig(
-        provider="openai",
-        model=os.environ.get("LLM_MODEL", "qwen/qwen3.6-35b-a3b"),
-        api_key=os.environ.get("LLM_API_KEY", "lm-studio"),
-        base_url=os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1")
-    )
-    return create_llm_service(config)
+def _get_llm_service() -> LLMService:
+    from trowel_py.config import load_llm_config
+
+    return create_llm_service(load_llm_config())
+
 
 # route
 @router.post("/extract")
@@ -116,6 +114,7 @@ def review(draft_id: str,
             "error": None
         }
     
+
 @router.get("/{card_id}/dedup")
 def de_duplicate(card_id: str,
                  card_repo: CardRepository = Depends(_get_card_repo),):
@@ -136,6 +135,7 @@ def de_duplicate(card_id: str,
         "data": {"duplicates": [d.model_dump() for d in duplicates]},
         "error": None,
     }
+
 
 @router.get("/search")
 def search_cards(q: str,
