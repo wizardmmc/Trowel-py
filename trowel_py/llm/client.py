@@ -1,8 +1,9 @@
 from pydantic import BaseModel, Field
+
 # Protocol in python like interface in Java
 from typing import Literal, Protocol
 from trowel_py.llm.filter import filter_secrets
-from trowel_py.llm.prompts.extract import EXTRACT_SYSTEM_PROMPT
+from trowel_py.llm.prompts.registry import PROMPTS
 from trowel_py.llm.types import CallType
 import time
 import json
@@ -11,6 +12,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
 class LLMConfig(BaseModel):
     provider: Literal["openai", "anthropic"]
     model: str = Field(min_length=2)
@@ -18,32 +20,39 @@ class LLMConfig(BaseModel):
     max_retries: int = Field(default=3)
     base_url: str = Field(default="http://localhost:1234/v1")
 
+
 class CostEntry(BaseModel):
     """
     a single record about the cost of one functional call
     """
+
     call_type: CallType
     tokens_in: int
     tokens_out: int
     cost_used: float
     timestamp: str
 
+
 class CostReport(BaseModel):
     """
     summary all cost entry
     """
+
     total_cost: float
-    by_type: dict[str, dict[str, float | int]]  # {"extract": {"calls": 5, "cost": 0.03}}
+    by_type: dict[
+        str, dict[str, float | int]
+    ]  # {"extract": {"calls": 5, "cost": 0.03}}
+
 
 class LLMProvider(Protocol):
     def complete(self, system_prompt: str, user_prompt: str) -> str: ...
 
+
 class OpenAIProvider(LLMProvider):
     def __init__(self, config: LLMConfig):
-        from openai import OpenAI   # lazy import
-        self._client = OpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url)
+        from openai import OpenAI  # lazy import
+
+        self._client = OpenAI(api_key=config.api_key, base_url=config.base_url)
         self._model = config.model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
@@ -58,10 +67,12 @@ class OpenAIProvider(LLMProvider):
         if content is None:
             raise RuntimeError("OpenAI returned empty response")
         return content
-    
+
+
 class AnthropicProvider(LLMProvider):
     def __init__(self, config: LLMConfig):
         from anthropic import Anthropic
+
         self._client = Anthropic(api_key=config.api_key)
         self._model = config.model
 
@@ -70,9 +81,7 @@ class AnthropicProvider(LLMProvider):
             model=self._model,
             max_tokens=4096,
             system=system_prompt,
-            messages=[
-                {"role": "user", "content": user_prompt}
-            ],
+            messages=[{"role": "user", "content": user_prompt}],
         )
         for block in response.content:
             if block.type == "text":
@@ -80,7 +89,9 @@ class AnthropicProvider(LLMProvider):
         raise RuntimeError("No text block in Anthropic response")
 
 
-def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str, max_retries: int) -> dict:
+def _call_with_retry(
+    provider: LLMProvider, system_prompt: str, user_prompt: str, max_retries: int
+) -> dict:
     """
     increase stability
     """
@@ -93,7 +104,7 @@ def _call_with_retry(provider: LLMProvider, system_prompt: str, user_prompt: str
         except Exception as e:
             logger.warning("LLM call failed (attempt %d): %s", attempt, e)
             last_error = e
-            wait = 2 ** attempt
+            wait = 2**attempt
             time.sleep(wait)
     raise last_error
 
@@ -115,7 +126,7 @@ def _extract_json(raw: str) -> str:
     end = raw.rfind("}")
     if start == -1 or end < start:
         raise ValueError(f"no JSON object in LLM response: {raw!r}")
-    return raw[start:end + 1]
+    return raw[start : end + 1]
 
 
 class LLMService:
@@ -123,20 +134,26 @@ class LLMService:
         self._provider = provider
         self._cost_log: list[CostEntry] = []
 
-    def structured_call(self, user_prompt: str, schema: type[BaseModel], call_type: CallType = "extract") -> BaseModel:
+    def structured_call(
+        self, user_prompt: str, schema: type[BaseModel], call_type: CallType = "extract"
+    ) -> BaseModel:
         """
         call provider, like Interface encapsulation
         """
         filtered_user_prompt = filter_secrets(user_prompt)
-        response = _call_with_retry(self._provider, EXTRACT_SYSTEM_PROMPT, filtered_user_prompt, 3)
-        result = schema.model_validate(response)    # convert dict to basemodel
-        self._cost_log.append(CostEntry(
-            call_type=call_type,
-            tokens_in=0,
-            tokens_out=0,
-            cost_used=0.0,
-            timestamp=datetime.now().isoformat(),
-        ))
+        response = _call_with_retry(
+            self._provider, PROMPTS[call_type], filtered_user_prompt, 3
+        )
+        result = schema.model_validate(response)  # convert dict to basemodel
+        self._cost_log.append(
+            CostEntry(
+                call_type=call_type,
+                tokens_in=0,
+                tokens_out=0,
+                cost_used=0.0,
+                timestamp=datetime.now().isoformat(),
+            )
+        )
         MAX_COST_ENTRIES = 1000
         if len(self._cost_log) > MAX_COST_ENTRIES:
             self._cost_log.pop(0)
@@ -147,13 +164,16 @@ class LLMService:
         Iterate through cost_log, grouping by call_type to count the number of calls and calculate costs
         """
         total = sum(e.cost_used for e in self._cost_log)
-        by_type: dict[str, dict[str, float | int]] = {} # {"extract": {"calls": 5, "cost": 0.03}}
+        by_type: dict[
+            str, dict[str, float | int]
+        ] = {}  # {"extract": {"calls": 5, "cost": 0.03}}
         for entry in self._cost_log:
             if entry.call_type not in by_type:
                 by_type[entry.call_type] = {"calls": 0, "cost": 0.0}
             by_type[entry.call_type]["calls"] += 1
             by_type[entry.call_type]["cost"] += entry.cost_used
         return CostReport(total_cost=total, by_type=by_type)
+
 
 def create_llm_service(config: LLMConfig) -> LLMService:
     """

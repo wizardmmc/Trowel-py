@@ -1,0 +1,16 @@
+"""
+registry mapping each llm call type to its system prompt
+"""
+
+from trowel_py.llm.types import CallType
+from trowel_py.llm.prompts.extract import EXTRACT_SYSTEM_PROMPT
+from trowel_py.llm.prompts.feynman import (
+    FEYNMAN_EVAL_SYSTEM_PROMPT,
+    FEYNMAN_QUESTION_SYSTEM_PROMPT,
+)
+
+PROMPTS: dict[CallType, str] = {
+    "extract": EXTRACT_SYSTEM_PROMPT,
+    "feynman-question": FEYNMAN_QUESTION_SYSTEM_PROMPT,
+    "feynman-eval": FEYNMAN_EVAL_SYSTEM_PROMPT,
+}
