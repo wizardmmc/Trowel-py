@@ -1,0 +1,206 @@
+.feynman-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: var(--radius-lg);
+}
+
+.feynman-overlay__card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+  max-width: 420px;
+  width: 100%;
+  overflow-y: auto;
+  max-height: 90%;
+}
+
+.feynman-overlay__icon {
+  font-size: 2.5rem;
+  margin-bottom: var(--space-md);
+}
+
+.feynman-overlay__prompt {
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-lg) 0;
+  line-height: 1.5;
+}
+
+.feynman-overlay__actions {
+  display: flex;
+  gap: var(--space-md);
+  justify-content: center;
+  margin-top: var(--space-md);
+}
+
+.feynman-overlay__error {
+  color: var(--color-error);
+  font-size: 0.85rem;
+  margin: 0 0 var(--space-sm) 0;
+}
+
+/* ---------- Question phase ---------- */
+
+.feynman-overlay__question-text {
+  font-size: 1rem;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-md) 0;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.feynman-overlay__hint {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-md) 0;
+  text-align: left;
+}
+
+.feynman-overlay__hint-label {
+  font-weight: 600;
+}
+
+.feynman-overlay__textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  resize: vertical;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.feynman-overlay__textarea:focus {
+  outline: none;
+  border-color: var(--garden-green);
+  box-shadow: 0 0 0 2px rgba(74, 124, 89, 0.25);
+}
+
+.feynman-overlay__submit-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin: var(--space-xs) 0 0 0;
+}
+
+/* ---------- Evaluating phase ---------- */
+
+.feynman-overlay__spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--garden-green);
+  border-radius: 50%;
+  margin: 0 auto var(--space-md);
+  animation: feynman-spin 0.8s linear infinite;
+}
+
+@keyframes feynman-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.feynman-overlay__evaluating-text {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* ---------- Feedback phase ---------- */
+
+.feynman-overlay__scores {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.score-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.score-bar__label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  min-width: 90px;
+  text-align: right;
+}
+
+.score-bar__track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-garden);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.score-bar__fill {
+  height: 100%;
+  border-radius: 4px;
+}
+
+.score-bar__fill--high {
+  background: var(--color-success);
+}
+
+.score-bar__fill--mid {
+  background: var(--color-warning);
+}
+
+.score-bar__fill--low {
+  background: var(--color-error);
+}
+
+.score-bar__value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 28px;
+}
+
+.feynman-overlay__feedback-text {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-md) 0;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.feynman-overlay__missed {
+  text-align: left;
+  margin-bottom: var(--space-md);
+}
+
+.feynman-overlay__missed-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-xs) 0;
+}
+
+.feynman-overlay__missed-list {
+  list-style: disc;
+  padding-left: var(--space-lg);
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.feynman-overlay__missed-list li {
+  margin-bottom: var(--space-xs);
+}

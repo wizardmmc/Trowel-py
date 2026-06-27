@@ -1,5 +1,5 @@
 import type { GardenPlant } from "../../api/client";
-import { PlantSVG, getCategoryColor } from "./plants/PlantSVG";
+import { PlantSVG } from "./plants/PlantSVG";
 
 interface PlantDetailModalProps {
   readonly plant: GardenPlant | null;
@@ -17,7 +17,6 @@ export function PlantDetailModal({ plant, onClose }: PlantDetailModalProps) {
   if (!plant) return null;
 
   const isDue = plant.due !== null && new Date(plant.due) <= new Date();
-  const color = getCategoryColor(plant.category);
 
   return (
     <div className="plant-modal__overlay" onClick={onClose}>
@@ -29,7 +28,7 @@ export function PlantDetailModal({ plant, onClose }: PlantDetailModalProps) {
         <button className="plant-modal__close" onClick={onClose}>✕</button>
 
         <div className="plant-modal__plant">
-          <PlantSVG stage={plant.plant_stage} color={color} />
+          <PlantSVG stage={plant.plant_stage} category={plant.category} />
         </div>
 
         <h2 className="plant-modal__title">{plant.title}</h2>

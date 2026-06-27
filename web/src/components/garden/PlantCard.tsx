@@ -1,5 +1,5 @@
 import type { GardenPlant } from "../../api/client";
-import { PlantSVG, getCategoryColor } from "./plants/PlantSVG";
+import { PlantSVG } from "./plants/PlantSVG";
 
 interface PlantCardProps {
   readonly plant: GardenPlant;
@@ -8,7 +8,6 @@ interface PlantCardProps {
 
 export function PlantCard({ plant, onSelect }: PlantCardProps) {
   const isDue = plant.due !== null && new Date(plant.due) <= new Date();
-  const color = getCategoryColor(plant.category);
 
   return (
     <button
@@ -18,7 +17,7 @@ export function PlantCard({ plant, onSelect }: PlantCardProps) {
       data-testid={`plant-card-${plant.card_id}`}
     >
       <div className="plant-card__svg">
-        <PlantSVG stage={plant.plant_stage} color={color} />
+        <PlantSVG stage={plant.plant_stage} category={plant.category} />
       </div>
       <span className="plant-card__title">{plant.title}</span>
       {isDue && <span className="plant-card__due-badge">💧</span>}

@@ -342,3 +342,69 @@ export async function triggerEvent(): Promise<EventLog | null> {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+// ── Feynman API types & functions ──
+
+const FEYNMAN_API_BASE = "http://localhost:8000/api/feynman";
+
+/** Result from POST /generate — a fresh drill question + its session id */
+export interface FeynmanQuestion {
+  readonly session_id: string;
+  readonly question: string;
+  /** null when the LLM offers no hint */
+  readonly hint: string | null;
+}
+
+/** Result from POST /evaluate — the LLM's scores for a user's answer */
+export interface FeynmanEvaluation {
+  readonly session_id: string;
+  readonly accuracy: number;
+  readonly completeness: number;
+  readonly feedback: string;
+  readonly missed_points: readonly string[];
+}
+
+/** One row of GET /history — a past (possibly unevaluated) session */
+export interface FeynmanHistoryItem {
+  readonly id: string;
+  readonly card_id: string;
+  readonly question: string;
+  readonly user_answer: string | null;
+  readonly accuracy: number | null;
+  readonly completeness: number | null;
+  readonly feedback: string | null;
+  readonly missed_points: readonly string[] | null;
+  readonly created_at: string | null;
+}
+
+/** POST /api/feynman/generate — ask the LLM for a drill question on a card */
+export async function generateFeynmanQuestion(
+  cardId: string,
+): Promise<FeynmanQuestion> {
+  return request<FeynmanQuestion>(`${FEYNMAN_API_BASE}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_id: cardId }),
+  });
+}
+
+/** POST /api/feynman/evaluate — grade a user's answer against the card */
+export async function evaluateFeynmanAnswer(
+  sessionId: string,
+  answer: string,
+): Promise<FeynmanEvaluation> {
+  return request<FeynmanEvaluation>(`${FEYNMAN_API_BASE}/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, answer }),
+  });
+}
+
+/** GET /api/feynman/history/{cardId} — past sessions for a card, newest first */
+export async function getFeynmanHistory(
+  cardId: string,
+): Promise<FeynmanHistoryItem[]> {
+  return request<FeynmanHistoryItem[]>(
+    `${FEYNMAN_API_BASE}/history/${encodeURIComponent(cardId)}`,
+  );
+}

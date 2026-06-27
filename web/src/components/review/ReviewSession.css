@@ -1,0 +1,127 @@
+/* Full-screen immersive review — mirrors TS ReviewSession.css (fixed inset:0
+   over a solid bg-garden background, NOT a centered modal). */
+
+.review-session {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg-garden);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  overflow-y: auto;
+  padding: var(--space-lg);
+}
+
+.review-session__close {
+  position: absolute;
+  top: var(--space-md);
+  right: var(--space-md);
+  z-index: 20;
+  font-size: 1.5rem;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.review-session__close:hover {
+  color: var(--text-primary);
+}
+
+/* Loading */
+.review-session__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--text-secondary);
+}
+
+.review-session__spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--soil-brown);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: review-session-spin 0.8s linear infinite;
+}
+
+@keyframes review-session-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Completion / empty / error panels (centered, constrained width) */
+.review-session__panel {
+  width: 100%;
+  max-width: 600px;
+  text-align: center;
+}
+
+.review-session__empty,
+.review-session__error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--text-secondary);
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.review-session__empty-icon {
+  font-size: 3rem;
+}
+
+.review-session__empty p,
+.review-session__error p {
+  font-size: 1.1rem;
+}
+
+/* Card area */
+.review-session__card-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 600px;
+  gap: var(--space-md);
+}
+
+.review-session__progress {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.review-session__progress-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(139, 115, 85, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.review-session__progress-fill {
+  height: 100%;
+  background: var(--garden-green);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* The card sits in a relative wrapper so the absolute Feynman overlay
+   (inset: 0) covers exactly the card area when open. */
+.review-session__card-wrapper {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
