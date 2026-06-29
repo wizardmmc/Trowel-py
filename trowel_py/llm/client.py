@@ -73,7 +73,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, config: LLMConfig):
         from anthropic import Anthropic
 
-        self._client = Anthropic(api_key=config.api_key)
+        self._client = Anthropic(api_key=config.api_key, base_url=config.base_url)
         self._model = config.model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
