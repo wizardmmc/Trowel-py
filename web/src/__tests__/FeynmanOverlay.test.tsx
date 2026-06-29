@@ -64,9 +64,9 @@ describe("FeynmanOverlay", () => {
         />,
       );
       expect(screen.getByText(/想测试一下/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "跳过" })).toBeInTheDocument();
       expect(
-        screen.getByRole("button", { name: "Try It" }),
+        screen.getByRole("button", { name: "试一下" }),
       ).toBeInTheDocument();
     });
 
@@ -84,7 +84,7 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      const tryIt = screen.getByRole("button", { name: /Loading/i });
+      const tryIt = screen.getByRole("button", { name: /加载中/ });
       expect(tryIt).toBeDisabled();
     });
 
@@ -120,7 +120,7 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Try It" }));
+      fireEvent.click(screen.getByRole("button", { name: "试一下" }));
       expect(onTryIt).toHaveBeenCalledTimes(1);
     });
   });
@@ -141,7 +141,7 @@ describe("FeynmanOverlay", () => {
         />,
       );
       expect(screen.getByText(/闭包/)).toBeInTheDocument();
-      expect(screen.getByText(/Hint/i)).toBeInTheDocument();
+      expect(screen.getByText(/提示/)).toBeInTheDocument();
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
@@ -159,7 +159,7 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "提交" })).toBeDisabled();
     });
 
     it("enables Submit after typing and submits the trimmed answer", () => {
@@ -179,7 +179,7 @@ describe("FeynmanOverlay", () => {
       );
       const textarea = screen.getByRole("textbox");
       fireEvent.change(textarea, { target: { value: "  我的解释  " } });
-      const submit = screen.getByRole("button", { name: "Submit" });
+      const submit = screen.getByRole("button", { name: "提交" });
       expect(submit).not.toBeDisabled();
       fireEvent.click(submit);
       expect(onSubmitAnswer).toHaveBeenCalledWith("我的解释");
@@ -258,12 +258,12 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      expect(screen.getByText("Accuracy")).toBeInTheDocument();
-      expect(screen.getByText("Completeness")).toBeInTheDocument();
+      expect(screen.getByText("准确度")).toBeInTheDocument();
+      expect(screen.getByText("完整度")).toBeInTheDocument();
       expect(screen.getByText("80")).toBeInTheDocument();
       expect(screen.getByText("60")).toBeInTheDocument();
       expect(screen.getByText(/作用域链/)).toBeInTheDocument();
-      expect(screen.getByText("Continue")).toBeInTheDocument();
+      expect(screen.getByText("继续")).toBeInTheDocument();
     });
 
     it("omits the missed points block when empty", () => {
@@ -298,7 +298,7 @@ describe("FeynmanOverlay", () => {
           onContinue={onContinue}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      fireEvent.click(screen.getByRole("button", { name: "继续" }));
       expect(onContinue).toHaveBeenCalledTimes(1);
     });
   });
@@ -318,7 +318,7 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+      fireEvent.click(screen.getByRole("button", { name: "跳过" }));
       expect(onSkip).toHaveBeenCalledTimes(1);
 
       rerender(
@@ -334,7 +334,7 @@ describe("FeynmanOverlay", () => {
           onContinue={noop}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+      fireEvent.click(screen.getByRole("button", { name: "跳过" }));
       expect(onSkip).toHaveBeenCalledTimes(2);
   });
 });

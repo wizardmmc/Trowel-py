@@ -26,6 +26,34 @@
   margin-bottom: var(--space-md);
 }
 
+/* sunshine badge（slice021-web：替代 emoji 图标） */
+.feynman-overlay__badge-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-md);
+}
+
+.feynman-overlay__badge {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--sunshine-soft);
+  color: var(--sunshine-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.feynman-overlay__badge-svg {
+  width: 26px;
+  height: 26px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .feynman-overlay__prompt {
   font-size: 1.1rem;
   color: var(--text-primary);
@@ -84,8 +112,8 @@
 
 .feynman-overlay__textarea:focus {
   outline: none;
-  border-color: var(--garden-green);
-  box-shadow: 0 0 0 2px rgba(74, 124, 89, 0.25);
+  border-color: var(--sunshine);
+  box-shadow: 0 0 0 2px var(--sunshine-ring);
 }
 
 .feynman-overlay__submit-hint {
@@ -100,7 +128,7 @@
   width: 36px;
   height: 36px;
   border: 3px solid var(--color-border);
-  border-top-color: var(--garden-green);
+  border-top-color: var(--sunshine);
   border-radius: 50%;
   margin: 0 auto var(--space-md);
   animation: feynman-spin 0.8s linear infinite;

@@ -48,21 +48,21 @@ function App() {
   const handleExtract = async (content: string) => {
     await extract(content);
     if (drafts.length > 0) {
-      addNotification("Cards extracted successfully", "success");
+      addNotification("卡片提取成功", "success");
     }
   };
 
   const handleExtractConversation = async (content: string) => {
     await extractConversation(content);
     if (drafts.length > 0) {
-      addNotification("Cards extracted from conversation", "success");
+      addNotification("已从会话提取卡片", "success");
     }
   };
 
   const handleAccept = async () => {
     if (!currentDraft) return;
     await review(currentDraft.id, "accept");
-    addNotification(`Accepted: ${currentDraft.title}`, "success");
+    addNotification(`已采纳：${currentDraft.title}`, "success");
     if (drafts.length <= 1) {
       setReviewOpen(false);
     }
@@ -71,7 +71,7 @@ function App() {
   const handleReject = async () => {
     if (!currentDraft) return;
     await review(currentDraft.id, "reject");
-    addNotification(`Rejected: ${currentDraft.title}`, "warning");
+    addNotification(`已拒绝：${currentDraft.title}`, "warning");
     if (drafts.length <= 1) {
       setReviewOpen(false);
     }

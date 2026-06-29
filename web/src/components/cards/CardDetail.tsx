@@ -19,7 +19,7 @@ export function CardDetail({ draft }: CardDetailProps) {
         ))}
       </div>
       <div className="card-detail__meta">
-        Confidence: {draft.confidence}/5 · Difficulty: {draft.difficulty}/5
+        置信度: {draft.confidence}/5 · 难度: {draft.difficulty}/5
       </div>
     </div>
   );

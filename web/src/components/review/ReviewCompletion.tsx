@@ -15,7 +15,7 @@ export function ReviewCompletion({ stats, onBackToGarden }: ReviewCompletionProp
       transition={{ duration: 0.3 }}
     >
       <h2 className="review-completion__title" data-testid="completion-title">
-        Review Complete! 🎉
+        复习完成
       </h2>
 
       <div className="review-completion__stats">
@@ -23,21 +23,21 @@ export function ReviewCompletion({ stats, onBackToGarden }: ReviewCompletionProp
           <span className="review-completion__stat-value" data-testid="stat-total">
             {stats.total}
           </span>
-          <span className="review-completion__stat-label">Cards Reviewed</span>
+          <span className="review-completion__stat-label">已复习卡片</span>
         </div>
 
         <div className="review-completion__stat">
           <span className="review-completion__stat-value" data-testid="stat-accuracy">
             {stats.accuracy.toFixed(1)}%
           </span>
-          <span className="review-completion__stat-label">Accuracy</span>
+          <span className="review-completion__stat-label">准确率</span>
         </div>
 
         <div className="review-completion__stat">
           <span className="review-completion__stat-value" data-testid="stat-avg-rating">
             {stats.avg_rating.toFixed(1)}
           </span>
-          <span className="review-completion__stat-label">Avg Rating</span>
+          <span className="review-completion__stat-label">平均评分</span>
         </div>
       </div>
 
@@ -46,7 +46,7 @@ export function ReviewCompletion({ stats, onBackToGarden }: ReviewCompletionProp
         data-testid="back-to-garden"
         onClick={onBackToGarden}
       >
-        🌱 Back to Garden
+        返回花园
       </button>
     </motion.div>
   );

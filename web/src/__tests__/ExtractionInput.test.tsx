@@ -77,7 +77,7 @@ describe("ExtractionInput", () => {
         loading={true}
       />,
     );
-    expect(screen.getByText("Extracting...")).toBeInTheDocument();
+    expect(screen.getByText("提取中…")).toBeInTheDocument();
   });
 
   it("detects git diff format badge", async () => {
@@ -147,7 +147,7 @@ describe("ExtractionInput", () => {
       makeFile("big.jsonl", "{}", "application/json", 11 * 1024 * 1024),
     );
     await waitFor(() =>
-      expect(screen.getByText(/too large|10mb|maximum/i)).toBeInTheDocument(),
+      expect(screen.getByText(/文件过大|10mb|上限/)).toBeInTheDocument(),
     );
     expect(onExtractConversation).not.toHaveBeenCalled();
   });

@@ -71,7 +71,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
   }
 
   if (loading && plants.length === 0) {
-    return <div className="garden-view__loading">Loading garden...</div>;
+    return <div className="garden-view__loading">正在加载花园…</div>;
   }
 
   if (plants.length === 0 && !searchQuery.trim()) {
@@ -92,19 +92,28 @@ export function GardenView({ onStartReview }: GardenViewProps) {
         <input
           className="garden-header__search"
           type="text"
-          placeholder="Search plants..."
+          placeholder="搜索植物…"
           value={searchInput}
           onChange={(e) => handleSearchChange(e.target.value)}
-          aria-label="Search plants"
+          aria-label="搜索植物"
           data-testid="garden-search"
         />
         <button
           className={`garden-header__sort-btn ${sortBy === "time" ? "garden-header__sort-btn--active" : ""}`}
           onClick={() => setSortBy(sortBy === "category" ? "time" : "category")}
-          title={sortBy === "category" ? "Sort by time" : "Sort by category"}
-          aria-label={`Sort by ${sortBy === "category" ? "time" : "category"}`}
+          title={sortBy === "category" ? "按时间排序" : "按分类排序"}
+          aria-label={`排序方式：${sortBy === "category" ? "时间" : "分类"}`}
         >
-          {sortBy === "category" ? "\u{1F4C1}" : "\u{1F552}"}
+          {sortBy === "category" ? (
+            <svg className="garden-header__sort-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+            </svg>
+          ) : (
+            <svg className="garden-header__sort-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" />
+            </svg>
+          )}
         </button>
         {(stats?.due_count ?? 0) > 0 && (
           <button
@@ -112,7 +121,7 @@ export function GardenView({ onStartReview }: GardenViewProps) {
             onClick={onStartReview}
             data-testid="garden-review-cta"
           >
-            Start Review ({stats?.due_count ?? 0})
+            开始复习（{stats?.due_count ?? 0}）
           </button>
         )}
       </div>
@@ -121,9 +130,9 @@ export function GardenView({ onStartReview }: GardenViewProps) {
 
       {plants.length === 0 && searchQuery.trim() && (
         <div className="garden-view__empty-search">
-          <p>No plants matching &ldquo;{searchQuery}&rdquo;</p>
+          <p>没有匹配「{searchQuery}」的植物</p>
           <button className="garden-view__clear-search" onClick={clearSearch}>
-            Clear search
+            清除搜索
           </button>
         </div>
       )}

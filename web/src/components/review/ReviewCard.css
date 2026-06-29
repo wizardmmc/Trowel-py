@@ -45,7 +45,8 @@
 }
 
 .review-card__title {
-  font-size: 1.75rem;
+  font-size: 1.8rem;
+  font-family: var(--font-display);
   font-weight: 600;
   color: var(--text-primary);
   text-align: center;
@@ -127,6 +128,19 @@
 .review-card__feynman-btn {
   align-self: center;
   margin-top: var(--space-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-card__feynman-icon {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* Rate buttons */
@@ -186,6 +200,6 @@
 }
 
 .rate-btn--easy {
-  background: #5b8fb9;
-  color: white;
+  background: var(--soil-brown);
+  color: var(--text-inverse);
 }

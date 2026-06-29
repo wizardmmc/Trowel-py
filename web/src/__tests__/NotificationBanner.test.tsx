@@ -15,13 +15,13 @@ describe("NotificationBanner", () => {
   it("shows singular message for 1 card", () => {
     render(<NotificationBanner count={1} onClick={vi.fn()} />);
 
-    expect(screen.getByText("1 new card pending review")).toBeInTheDocument();
+    expect(screen.getByText("有 1 张卡片待审核")).toBeInTheDocument();
   });
 
   it("shows plural message for multiple cards", () => {
     render(<NotificationBanner count={3} onClick={vi.fn()} />);
 
-    expect(screen.getByText("3 new cards pending review")).toBeInTheDocument();
+    expect(screen.getByText("有 3 张卡片待审核")).toBeInTheDocument();
   });
 
   it("calls onClick when clicked", async () => {

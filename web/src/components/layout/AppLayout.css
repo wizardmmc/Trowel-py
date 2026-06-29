@@ -15,9 +15,22 @@
 }
 
 .sidebar-logo {
-  font-size: 1.5rem;
+  color: var(--sunshine);
   margin-bottom: var(--space-lg);
   user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-logo__svg {
+  width: 26px;
+  height: 26px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .sidebar-nav {
@@ -38,30 +51,56 @@
   color: var(--text-inverse);
   opacity: 0.5;
   cursor: pointer;
-  transition: opacity 0.15s, background-color 0.15s;
+  transition: opacity 0.15s, background-color 0.15s, color 0.15s;
   width: 100%;
   font-family: var(--font-sans);
-  gap: 2px;
+  gap: 3px;
+  position: relative;
 }
 
 .sidebar-nav__item:hover {
-  opacity: 0.8;
-  background-color: rgba(255, 255, 255, 0.1);
+  opacity: 0.85;
+  background-color: rgba(255, 255, 255, 0.06);
 }
 
 .sidebar-nav__item--active {
   opacity: 1;
-  background-color: rgba(255, 255, 255, 0.15);
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--sunshine);
+}
+
+/* active 指示条（slice021-web） */
+.sidebar-nav__item--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--sunshine);
 }
 
 .sidebar-nav__icon {
-  font-size: 1.25rem;
-  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-nav__svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .sidebar-nav__label {
-  font-size: 0.5625rem;
-  letter-spacing: 0.3px;
+  font-size: 0.66rem;
+  letter-spacing: 0.2px;
+  font-family: var(--font-display);
 }
 
 .app-main {
@@ -95,7 +134,9 @@
   }
 
   .app-main__hamburger {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     position: fixed;
     top: var(--space-sm);
     left: var(--space-sm);
@@ -104,10 +145,18 @@
     color: var(--text-inverse);
     border: none;
     border-radius: var(--radius-sm);
-    padding: var(--space-xs) var(--space-sm);
-    font-size: 1.25rem;
+    padding: var(--space-xs);
     cursor: pointer;
     opacity: 0.8;
+  }
+
+  .app-main__hamburger-svg {
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    fill: none;
+    stroke-linecap: round;
   }
 
   .app-main__hamburger:hover {

@@ -14,9 +14,9 @@ export function NotificationBanner({ count, onClick }: NotificationBannerProps) 
       role="button"
     >
       <span className="notification-banner__text">
-        {count} new card{count > 1 ? "s" : ""} pending review
+        有 {count} 张卡片待审核
       </span>
-      <span className="notification-banner__action">Review now &rarr;</span>
+      <span className="notification-banner__action">去审核 &rarr;</span>
     </div>
   );
 }

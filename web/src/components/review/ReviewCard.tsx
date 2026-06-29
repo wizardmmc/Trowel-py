@@ -99,7 +99,10 @@ export function ReviewCard({ dueCard, onRate, disabled, onOpenFeynman }: ReviewC
               onClick={onOpenFeynman}
               disabled={disabled}
             >
-              🧠 费曼讲解
+              <svg className="review-card__feynman-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V15a3 3 0 0 0 3 3 3 3 0 0 0 1 2 3 3 0 0 0 3-3V6a3 3 0 0 0-3-2zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V15a3 3 0 0 1-3 3 3 3 0 0 1-1 2 3 3 0 0 1-3-3" />
+              </svg>
+              费曼讲解
             </button>
           )}
 

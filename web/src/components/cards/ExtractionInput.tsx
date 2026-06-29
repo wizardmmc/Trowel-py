@@ -38,7 +38,7 @@ export function ExtractionInput({
 
     if (file.size > MAX_FILE_SIZE) {
       setFileError(
-        `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`,
+        `文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB），上限 10MB。`,
       );
       return;
     }
@@ -52,13 +52,13 @@ export function ExtractionInput({
         // conversation log -> backend parses the raw text
         await onExtractConversation(text);
       } else if (format === "empty") {
-        setFileError("The uploaded file is empty.");
+        setFileError("上传的文件是空的。");
       } else {
         // git-diff or plain-text: populate textarea for manual extraction
         setContent(text);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to parse file";
+      const message = err instanceof Error ? err.message : "文件解析失败";
       setFileError(message);
     }
   };
@@ -79,7 +79,7 @@ export function ExtractionInput({
     const ext = "." + (file.name.split(".").pop() ?? "").toLowerCase();
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
       setFileError(
-        "Unsupported file type. Please upload .jsonl, .json, or .txt files.",
+        "不支持的文件类型，请上传 .jsonl / .json / .txt。",
       );
       return;
     }
@@ -94,10 +94,10 @@ export function ExtractionInput({
   return (
     <div className="extraction-input">
       <div className="extraction-input__header">
-        <h2 className="extraction-input__title">Extract Cards</h2>
+        <h2 className="extraction-input__title">提取卡片</h2>
         {(content || fileFormat !== "empty") && (
           <span className="extraction-input__format-badge">
-            Detected: {formatLabel}
+            识别为：{formatLabel}
           </span>
         )}
       </div>
@@ -112,7 +112,7 @@ export function ExtractionInput({
           className="extraction-input__textarea"
           value={content}
           onChange={(e) => setContent(e.target.value)}
-          placeholder="Paste a git diff or text to extract knowledge cards..."
+          placeholder="粘贴一段 git diff 或文本，提取成知识卡片…"
           rows={8}
           disabled={loading}
           data-testid="extraction-textarea"
@@ -128,7 +128,7 @@ export function ExtractionInput({
             data-testid="file-input"
           />
           <span className="extraction-input__drop-hint">
-            Drop a file here or click to upload (.jsonl, .json, .txt)
+            把文件拖到这里，或点击上传（.jsonl / .json / .txt）
           </span>
         </div>
       </div>
@@ -140,7 +140,7 @@ export function ExtractionInput({
           disabled={isDisabled}
           data-testid="extract-button"
         >
-          {loading ? "Extracting..." : "Extract"}
+          {loading ? "提取中…" : "提取"}
         </button>
       </div>
 
@@ -181,9 +181,9 @@ function isJsonObject(line: string): boolean {
 }
 
 function detectFormatLabel(text: string, fileFormat: FileFormat): string {
-  if (fileFormat === "jsonl") return "CC JSONL (Conversation)";
+  if (fileFormat === "jsonl") return "CC JSONL（会话）";
   if (fileFormat === "git-diff") return "Git Diff";
-  if (!text.trim()) return "Empty";
+  if (!text.trim()) return "空";
   if (text.includes("diff --git")) return "Git Diff";
-  return "Plain Text";
+  return "纯文本";
 }

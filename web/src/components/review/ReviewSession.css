@@ -75,7 +75,17 @@
 }
 
 .review-session__empty-icon {
-  font-size: 3rem;
+  color: var(--sunshine);
+}
+
+.review-session__empty-svg {
+  width: 48px;
+  height: 48px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .review-session__empty p,

@@ -48,7 +48,7 @@ describe("ReviewModal", () => {
   it("shows card counter", () => {
     render(<ReviewModal {...defaultProps} totalCount={3} currentIndex={1} />);
 
-    expect(screen.getByText("Review Card (2/3)")).toBeInTheDocument();
+    expect(screen.getByText("审核卡片（2/3）")).toBeInTheDocument();
   });
 
   it("calls onAccept when accept clicked", async () => {

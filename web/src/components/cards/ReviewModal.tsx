@@ -46,7 +46,7 @@ export function ReviewModal({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="review-modal__header">
-            <h2>Review Card ({currentIndex + 1}/{totalCount})</h2>
+            <h2>审核卡片（{currentIndex + 1}/{totalCount}）</h2>
             <button
               className="review-modal__close"
               onClick={onClose}
@@ -65,7 +65,7 @@ export function ReviewModal({
               disabled={loading}
               data-testid="accept-button"
             >
-              Accept
+              采纳
             </button>
             <button
               className="review-modal__btn review-modal__btn--reject"
@@ -73,7 +73,7 @@ export function ReviewModal({
               disabled={loading}
               data-testid="reject-button"
             >
-              Reject
+              拒绝
             </button>
           </div>
 
@@ -84,14 +84,14 @@ export function ReviewModal({
                 disabled={currentIndex === 0}
                 data-testid="prev-button"
               >
-                &larr; Prev
+                &larr; 上一张
               </button>
               <button
                 onClick={onNext}
                 disabled={currentIndex === totalCount - 1}
                 data-testid="next-button"
               >
-                Next &rarr;
+                下一张 &rarr;
               </button>
             </div>
           )}

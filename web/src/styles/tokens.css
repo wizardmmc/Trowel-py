@@ -14,6 +14,10 @@
   --color-error: #C45B4A;
   /* Python-only: card/input border. TS uses --soil-brown directly. */
   --color-border: #d4c9b8;
+  /* sunshine 强调色衍生（slice021-web）：聚焦/活跃/选定 */
+  --sunshine-soft: rgba(232, 184, 75, 0.18);
+  --sunshine-ring: rgba(232, 184, 75, 0.45);
+  --sunshine-ink: #7a5a12; /* sunshine 浅底上的深色文字 */
 
   /* Radii */
   --radius-sm: 4px;
@@ -29,6 +33,8 @@
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+  /* 标题/卡片标题用 LXGW WenKai（霞鹜文楷，本地打包，slice021-web） */
+  --font-display: 'LXGW WenKai', 'Songti SC', 'STSong', serif;
 
   /* Spacing */
   --space-xs: 4px;

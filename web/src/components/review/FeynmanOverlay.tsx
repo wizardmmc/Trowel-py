@@ -28,6 +28,31 @@ interface FeynmanOverlayProps {
   readonly onContinue: () => void;
 }
 
+// 圆形 sunshine badge 容纳阶段图标（slice021-web：替代 🧠❓📊 emoji）
+function FeynmanBadge({ name }: { readonly name: "brain" | "question" | "chart" }) {
+  return (
+    <div className="feynman-overlay__badge" data-testid="feynman-badge">
+      <svg className="feynman-overlay__badge-svg" viewBox="0 0 24 24" aria-hidden="true">
+        {name === "brain" && (
+          <path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V15a3 3 0 0 0 3 3 3 3 0 0 0 1 2 3 3 0 0 0 3-3V6a3 3 0 0 0-3-2zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V15a3 3 0 0 1-3 3 3 3 0 0 1-1 2 3 3 0 0 1-3-3" />
+        )}
+        {name === "question" && (
+          <>
+            <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" />
+            <circle cx="12" cy="16.5" r="0.6" fill="currentColor" stroke="none" />
+          </>
+        )}
+        {name === "chart" && (
+          <>
+            <path d="M4 20h16" />
+            <path d="M7 20v-6M12 20V8M17 20v-9" />
+          </>
+        )}
+      </svg>
+    </div>
+  );
+}
+
 export function FeynmanOverlay({
   phase,
   question,
@@ -158,19 +183,21 @@ function PromptPhase({
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.15 }}
     >
-      <div className="feynman-overlay__icon">🧠</div>
+      <div className="feynman-overlay__badge-wrap">
+        <FeynmanBadge name="brain" />
+      </div>
       <p className="feynman-overlay__prompt">想测试一下你的理解吗？</p>
       {error && <p className="feynman-overlay__error">{error}</p>}
       <div className="feynman-overlay__actions">
         <button ref={skipRef} className="btn btn--secondary" onClick={onSkip}>
-          Skip
+          跳过
         </button>
         <button
           className="btn btn--primary"
           onClick={onTryIt}
           disabled={loading}
         >
-          {loading ? "Loading..." : "Try It"}
+          {loading ? "加载中..." : "试一下"}
         </button>
       </div>
     </motion.div>
@@ -206,11 +233,13 @@ function QuestionPhase({
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.15 }}
     >
-      <div className="feynman-overlay__icon">❓</div>
+      <div className="feynman-overlay__badge-wrap">
+        <FeynmanBadge name="question" />
+      </div>
       <p className="feynman-overlay__question-text">{question.question}</p>
       {question.hint && (
         <p className="feynman-overlay__hint">
-          <span className="feynman-overlay__hint-label">Hint:</span>{" "}
+          <span className="feynman-overlay__hint-label">提示：</span>{" "}
           {question.hint}
         </p>
       )}
@@ -223,17 +252,17 @@ function QuestionPhase({
         onKeyDown={onKeyDown}
         rows={4}
       />
-      <p className="feynman-overlay__submit-hint">Ctrl+Enter 提交</p>
+      <p className="feynman-overlay__submit-hint">⌘ / Ctrl + Enter 提交</p>
       <div className="feynman-overlay__actions">
         <button className="btn btn--secondary" onClick={onSkip}>
-          Skip
+          跳过
         </button>
         <button
           className="btn btn--primary"
           onClick={onSubmit}
           disabled={answer.trim().length === 0}
         >
-          Submit
+          提交
         </button>
       </div>
     </motion.div>
@@ -278,11 +307,13 @@ function FeedbackPhase({
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.15 }}
     >
-      <div className="feynman-overlay__icon">📊</div>
+      <div className="feynman-overlay__badge-wrap">
+        <FeynmanBadge name="chart" />
+      </div>
 
       <div className="feynman-overlay__scores">
-        <ScoreBar label="Accuracy" value={result.accuracy} />
-        <ScoreBar label="Completeness" value={result.completeness} />
+        <ScoreBar label="准确度" value={result.accuracy} />
+        <ScoreBar label="完整度" value={result.completeness} />
       </div>
 
       <p className="feynman-overlay__feedback-text">{result.feedback}</p>
@@ -304,7 +335,7 @@ function FeedbackPhase({
           className="btn btn--primary"
           onClick={onContinue}
         >
-          Continue
+          继续
         </button>
       </div>
     </motion.div>

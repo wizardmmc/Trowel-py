@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "framer-motion": "^12.40.0",
+    "lxgw-wenkai-webfont": "^1.7.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "zustand": "^5.0.14"

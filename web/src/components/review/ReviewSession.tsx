@@ -65,10 +65,15 @@ export function ReviewSession() {
               <ReviewCompletion stats={sessionStats} onBackToGarden={resetSession} />
             ) : (
               <div className="review-session__empty">
-                <div className="review-session__empty-icon">🌸</div>
-                <p>No cards due today!</p>
+                <div className="review-session__empty-icon" aria-hidden="true">
+                  <svg className="review-session__empty-svg" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M12 2a10 10 0 1 0 10 10" />
+                  </svg>
+                </div>
+                <p>今天没有需要复习的卡片</p>
                 <button className="btn btn--primary" onClick={resetSession}>
-                  Back to Garden
+                  返回花园
                 </button>
               </div>
             )}
@@ -77,9 +82,9 @@ export function ReviewSession() {
 
         {error && !isComplete && (
           <div className="review-session__panel review-session__error">
-            <p>Something went wrong: {error}</p>
+            <p>出错了：{error}</p>
             <button className="btn btn--primary" onClick={resetSession}>
-              Back to Garden
+              返回花园
             </button>
           </div>
         )}
@@ -87,7 +92,7 @@ export function ReviewSession() {
         {!isComplete && !error && loading && currentCard === null && (
           <div className="review-session__loading">
             <div className="review-session__spinner" />
-            <p>Loading review cards...</p>
+            <p>正在加载复习卡片…</p>
           </div>
         )}
 

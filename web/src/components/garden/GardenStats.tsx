@@ -7,10 +7,10 @@ interface GardenStatsProps {
 }
 
 const STAGE_LABELS: Record<string, string> = {
-  seed: "Seeds",
-  sprout: "Sprouts",
-  tree: "Trees",
-  wilting: "Wilting",
+  seed: "种子",
+  sprout: "发芽",
+  tree: "成熟",
+  wilting: "枯萎",
 };
 
 const STAGE_ORDER = ["seed", "sprout", "tree", "wilting"];
@@ -31,19 +31,19 @@ export function GardenStats({ stats, plants }: GardenStatsProps) {
     <div className="garden-stats" data-testid="garden-stats">
       <div className="garden-stats__item">
         <span className="garden-stats__value">{stats.total_plants}</span>
-        <span className="garden-stats__label">Plants</span>
+        <span className="garden-stats__label">植物</span>
       </div>
       <div className="garden-stats__item">
         <span className="garden-stats__value garden-stats__value--accent">
           {stats.due_count}
         </span>
-        <span className="garden-stats__label">Due</span>
+        <span className="garden-stats__label">待复习</span>
       </div>
       <div className="garden-stats__item">
         <span className="garden-stats__value">
           {stats.flowering_rate.toFixed(0)}%
         </span>
-        <span className="garden-stats__label">Bloom Rate</span>
+        <span className="garden-stats__label">绽放率</span>
       </div>
       <div className="garden-stats__divider" />
       {STAGE_ORDER.map((stage) => (

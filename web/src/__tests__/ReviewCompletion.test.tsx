@@ -19,7 +19,7 @@ describe("ReviewCompletion", () => {
     );
 
     expect(screen.getByTestId("completion-title")).toHaveTextContent(
-      "Review Complete!",
+      "复习完成",
     );
     expect(screen.getByTestId("stat-total")).toHaveTextContent("5");
     expect(screen.getByTestId("stat-accuracy")).toHaveTextContent("80.0%");
