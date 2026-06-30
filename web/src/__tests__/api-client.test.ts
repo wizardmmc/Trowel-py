@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractCards, reviewCard, getAllCards } from "../api/client";
+import { extractCards, reviewCard, getAllCards, reExplain } from "../api/client";
 
 describe("api/client", () => {
   beforeEach(() => {
@@ -47,6 +47,37 @@ describe("api/client", () => {
       "http://localhost:8000/api/cards?page=2&limit=10",
       undefined
     );
+  });
+
+  it("reExplain sends POST with explanation/title/category/hint", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { explanation: "new text long enough" }, error: null }))
+    );
+
+    const result = await reExplain("old explanation long enough", "闭包", "JS", "更通俗");
+    expect(result.explanation).toBe("new text long enough");
+
+    const call = vi.spyOn(globalThis, "fetch").mock.calls[0];
+    expect(call[0]).toBe("http://localhost:8000/api/cards/re-explain");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toEqual({
+      explanation: "old explanation long enough",
+      title: "闭包",
+      category: "JS",
+      user_hint: "更通俗",
+    });
+  });
+
+  it("reExplain omits user_hint when not provided", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { explanation: "x" }, error: null }))
+    );
+
+    await reExplain("old explanation long enough", "t", "c");
+    const body = JSON.parse(
+      (vi.spyOn(globalThis, "fetch").mock.calls[0][1] as RequestInit).body as string
+    );
+    expect(body.user_hint).toBeUndefined();
   });
 
   it("throws on API error response", async () => {

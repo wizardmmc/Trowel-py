@@ -20,6 +20,13 @@ function App() {
     nextDraft,
     prevDraft,
     clearDrafts,
+    reExplainRegens,
+    reExplainSelectedId,
+    reExplainLoading,
+    reExplainError,
+    regenerateExplanation,
+    selectReExplain,
+    resetReExplain,
   } = useCardStore();
   const { addNotification } = useNotificationStore();
   const { startSession, phase } = useReviewStore();
@@ -119,6 +126,15 @@ function App() {
             clearDrafts();
           }}
           loading={loading}
+          reExplainRegens={reExplainRegens}
+          reExplainSelectedId={reExplainSelectedId}
+          reExplainLoading={reExplainLoading}
+          reExplainError={reExplainError}
+          onRegenerate={(hint) => {
+            if (currentDraft) regenerateExplanation(currentDraft, hint);
+          }}
+          onSelectCandidate={selectReExplain}
+          onResetReExplain={resetReExplain}
         />
       )}
     </AppLayout>

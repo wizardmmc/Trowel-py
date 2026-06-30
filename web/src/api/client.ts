@@ -88,6 +88,27 @@ export async function findDuplicates(
   return request<{ duplicates: Card[] }>(`${API_BASE}/${draftId}/dedup`);
 }
 
+/**
+ * POST /re-explain — regenerate a draft's explanation from a different angle
+ * (slice 021). Stateless generator: no DB writes. The caller keeps candidate
+ * versions in state and writes the chosen one back via reviewCard — accept for
+ * the original, edit+{explanation} for a regenerated version.
+ *
+ * user_hint is optional; omitted/null means "regenerate freely".
+ */
+export async function reExplain(
+  explanation: string,
+  title: string,
+  category: string,
+  userHint?: string,
+): Promise<{ explanation: string }> {
+  return request<{ explanation: string }>(`${API_BASE}/re-explain`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ explanation, title, category, user_hint: userHint }),
+  });
+}
+
 export async function getAllCards(
   page = 1,
   limit = 20

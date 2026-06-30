@@ -910,6 +910,12 @@ body {
   box-shadow: 0 0 0 3px var(--sunshine-ring);
 }
 
+.re-explain__error {
+  color: var(--color-error);
+  font-size: 0.78rem;
+  margin: 0 0 var(--space-sm);
+}
+
 .re-explain__candidates {
   display: flex;
   flex-direction: column;
@@ -979,6 +985,13 @@ body {
 .re-explain__cand--selected .re-explain__cand-tag {
   color: var(--sunshine-ink);
   font-weight: 600;
+}
+
+.re-explain__cand-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .re-explain__cand-text {
