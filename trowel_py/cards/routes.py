@@ -1,11 +1,18 @@
 # intermediate layer between service layer and HTTP request
 from fastapi import APIRouter, Depends
 from trowel_py.cards.repository import CardRepository, create_card_repository
-from trowel_py.cards.service import extract_cards, review_card, find_duplicates, extract_from_conversation
+from trowel_py.cards.service import (
+    extract_cards,
+    extract_from_conversation,
+    find_duplicates,
+    re_explain,
+    review_card,
+)
 from trowel_py.cards.jsonl_parser import parse_jsonl
 from trowel_py.llm.client import LLMService, create_llm_service
 from trowel_py.review.repository import ReviewRepository, create_review_repository
 from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
+from trowel_py.schemas.re_explain import ReExplainRequest
 from trowel_py.schemas.card import Card
 from trowel_py.db.connection import create_db
 import sqlite3
@@ -76,6 +83,36 @@ def extract_conversation(request: ExtractRequest, llm_service: LLMService = Depe
         "data": {
             "drafts": [d.model_dump() for d in drafts],
         },
+        "error": None,
+    }
+
+
+@router.post("/re-explain")
+def re_explain_card(
+    request: ReExplainRequest,
+    llm_service: LLMService = Depends(_get_llm_service),
+) -> dict:
+    """
+    regenerate a draft's explanation from a different angle (slice 021).
+
+    Stateless generator: no DB writes. The caller keeps candidate versions in
+    frontend state and writes the chosen one back via POST /{draft_id}/review.
+    """
+    logger.info(
+        "re-explain request, title: %s, has hint: %s",
+        request.title,
+        request.user_hint is not None,
+    )
+    new_explanation = re_explain(
+        explanation=request.explanation,
+        title=request.title,
+        category=request.category,
+        llm_service=llm_service,
+        user_hint=request.user_hint,
+    )
+    return {
+        "success": True,
+        "data": {"explanation": new_explanation},
         "error": None,
     }
 

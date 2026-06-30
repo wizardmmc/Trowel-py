@@ -8,6 +8,7 @@ from trowel_py.cards.repository import CardRepository
 from trowel_py.review.repository import ReviewRepository
 from datetime import datetime
 from trowel_py.cards.jsonl_parser import ChatMessage
+from trowel_py.schemas.re_explain import ReExplainResultSchema
 
 
 def extract_cards(content: str, llm_service: LLMService) -> list[CardDraft]:
@@ -29,14 +30,16 @@ def extract_cards(content: str, llm_service: LLMService) -> list[CardDraft]:
             tags=extracted.tags,
             confidence=extracted.confidence,
             source_type=extracted.source_type,
-            source=extracted.source_type
+            source=extracted.source_type,
         )
         drafts.append(draft)
-    
+
     return drafts
 
 
-def extract_from_conversation(messages: list[ChatMessage], llm_service: LLMService) -> list[CardDraft]:
+def extract_from_conversation(
+    messages: list[ChatMessage], llm_service: LLMService
+) -> list[CardDraft]:
     """
     extract card draft from a parsed conversation
 
@@ -51,26 +54,37 @@ def extract_from_conversation(messages: list[ChatMessage], llm_service: LLMServi
     return extract_cards(text, llm_service)
 
 
-def review_card(draft: CardDraft, request: ReviewRequest, card_repo: CardRepository, review_repo: ReviewRepository) -> Card | None:
+def review_card(
+    draft: CardDraft,
+    request: ReviewRequest,
+    card_repo: CardRepository,
+    review_repo: ReviewRepository,
+) -> Card | None:
     """
     process a draft with user's request and return a Card
     """
     if request.action == "reject":
         return None
-    
+
     # convert draft to dict, easily for revise
     card_data = draft.model_dump()  # model_dump is a pydantic method
     card_data["status"] = "active"
 
     if request.action == "edit" and request.edits:
-        card_data.update(request.edits) # update like auto revise, 'card_data["example"] = edits["example"]'
+        card_data.update(
+            request.edits
+        )  # update like auto revise, 'card_data["example"] = edits["example"]'
 
     card = Card(
-        id=uuid.uuid4().hex[:12],   # draft card's id is temp in bussiness logic, but Card's id is enduring
+        id=uuid.uuid4().hex[
+            :12
+        ],  # draft card's id is temp in bussiness logic, but Card's id is enduring
         title=card_data["title"],
         category=card_data["category"],
         explanation=card_data["explanation"],
-        example=card_data.get("example"),      # use get method, because example might be None
+        example=card_data.get(
+            "example"
+        ),  # use get method, because example might be None
         difficulty=card_data["difficulty"],
         source=card_data.get("source"),
         tags=card_data.get("tags", []),
@@ -83,7 +97,7 @@ def review_card(draft: CardDraft, request: ReviewRequest, card_repo: CardReposit
     fsrs_state = FSRSState(
         card_id=card.id,
         state=0,
-        due=datetime.now()  # this card can be reivew right now
+        due=datetime.now(),  # this card can be reivew right now
     )
     review_repo.save_fsrs_state(fsrs_state)
 
@@ -112,3 +126,38 @@ def find_duplicates(title: str, card_repo: CardRepository) -> list[Card]:
             seen_ids.add(card.id)
 
     return duplicates
+
+
+def re_explain(
+    explanation: str,
+    title: str,
+    category: str,
+    llm_service: LLMService,
+    user_hint: str | None = None,
+) -> str:
+    """
+    regenerate a card explanation from a different angle (slice 021).
+
+    Pure generator: builds the user_prompt, calls the LLM, returns the new
+    explanation. No DB writes, no state mutation — the caller (frontend)
+    keeps candidate versions in state and writes the chosen one back through
+    the existing POST /{draft_id}/review endpoint.
+
+    Args:
+        explanation: the current explanation to improve.
+        title: the card title, for LLM context.
+        category: the card category, for LLM context.
+        llm_service: the LLM service used for generation.
+        user_hint: optional direction/feeling from the user. None = free regen.
+
+    Returns:
+        the newly generated explanation.
+    """
+    user_prompt = f"标题：{title}\n分类：{category}\n当前解释：{explanation}\n"
+    if user_hint:
+        user_prompt += f"用户希望的方向：{user_hint}\n"
+
+    result = llm_service.structured_call(
+        user_prompt, ReExplainResultSchema, call_type="re-explain"
+    )
+    return result.explanation
