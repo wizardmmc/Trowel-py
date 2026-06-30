@@ -16,3 +16,4 @@ logs/
 .vite/
 .claude/
 .DS_Store
+AGENTS.md
