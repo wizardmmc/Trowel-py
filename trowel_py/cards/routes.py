@@ -152,15 +152,16 @@ def review(draft_id: str,
         }
     
 
-@router.get("/{card_id}/dedup")
-def de_duplicate(card_id: str,
+@router.get("/{draft_id}/dedup")
+def de_duplicate(draft_id: str,
                  card_repo: CardRepository = Depends(_get_card_repo),):
     """
-    find duplicated card
+    find duplicate cards for a draft (the draft is not persisted yet, so the
+    path param is a draft id, not a card id)
     """
-    draft = _draft_store.get(card_id)
+    draft = _draft_store.get(draft_id)
     if draft is None:
-        logger.warning("Dedup request for unknown draft: %s", card_id)
+        logger.warning("Dedup request for unknown draft: %s", draft_id)
         return {
             "success": False, 
             "data": None, 
