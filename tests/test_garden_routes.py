@@ -1,41 +1,56 @@
+import sqlite3
+
+import pytest
 from fastapi.testclient import TestClient
+
 from trowel_py.app import create_app
-from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
+from trowel_py.garden.routes import _get_conn
+
+# module-level in-memory db shared by the client fixture AND the seed/clean
+# helpers, so the two never talk past each other. tests run serial, so one
+# shared connection is safe (same pattern as test_m2_e2e). this keeps the
+# tests from touching the real trowel.db — which previously got its cards
+# wiped on every pytest run.
+_db = sqlite3.connect(":memory:", check_same_thread=False)
+_db.row_factory = sqlite3.Row
+_db.execute("PRAGMA foreign_keys=ON")
+run_migrations(_db)
 
 
 def _seed_data() -> None:
-    """往真实数据库里插测试数据"""
-    conn = create_db()
-    run_migrations(conn)
-    # c1: 有 fsrs_state, state=2 (tree), due 在过去
-    conn.execute(
+    """insert test cards + fsrs_state into the shared in-memory db."""
+    _db.execute(
         "INSERT INTO cards (id, title, category, explanation, status, tags, created_at, updated_at) "
         "VALUES ('c1', 'Python Decorators', 'python', 'Decorators wrap functions', 'active', '[]', "
         "datetime('now'), datetime('now'))"
     )
-    conn.execute(
+    _db.execute(
         "INSERT INTO fsrs_state (card_id, state, stability, difficulty, reps, lapses, due) "
         "VALUES ('c1', 2, 5.0, 3.0, 10, 1, '2020-01-01T00:00:00')"
     )
-    # c2: 没有 fsrs_state
-    conn.execute(
+    _db.execute(
         "INSERT INTO cards (id, title, category, explanation, status, tags, created_at, updated_at) "
         "VALUES ('c2', 'React Hooks', 'react', 'Hooks manage state in function components', 'active', '[]', "
         "datetime('now'), datetime('now'))"
     )
-    conn.commit()
-    conn.close()
+    _db.commit()
 
 
 def _clean_db() -> None:
-    """清空真实数据库"""
-    conn = create_db()
-    run_migrations(conn)
-    conn.execute("DELETE FROM fsrs_state")
-    conn.execute("DELETE FROM cards")
-    conn.commit()
-    conn.close()
+    """wipe cards + fsrs_state in the shared in-memory db."""
+    _db.execute("DELETE FROM fsrs_state")
+    _db.execute("DELETE FROM cards")
+    _db.commit()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """TestClient wired to the shared in-memory db (does NOT touch trowel.db)."""
+    app = create_app()
+    app.dependency_overrides[_get_conn] = lambda: _db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 def test_get_plants(client: TestClient):

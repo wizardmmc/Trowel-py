@@ -1,28 +1,46 @@
+import sqlite3
+
+import pytest
 from fastapi.testclient import TestClient
 
-from trowel_py.db.connection import create_db
+from trowel_py.app import create_app
 from trowel_py.db.migrate import run_migrations
+from trowel_py.player.routes import _get_conn
+
+# module-level in-memory db shared by the client fixture AND the seed/clean
+# helpers, so seeds and HTTP requests never talk past each other. tests run
+# serial, so one shared connection is safe (same pattern as test_m2_e2e).
+# this keeps the tests from touching the real trowel.db — which previously
+# got its player/inventory state wiped on every pytest run.
+_db = sqlite3.connect(":memory:", check_same_thread=False)
+_db.row_factory = sqlite3.Row
+_db.execute("PRAGMA foreign_keys=ON")
+run_migrations(_db)
 
 
 def _clean_db() -> None:
-    """wipe player state from the real db so tests start clean."""
-    conn = create_db()
-    run_migrations(conn)
-    conn.execute("delete from inventory")
-    conn.execute("delete from players")
-    conn.commit()
-    conn.close()
+    """wipe player state so tests start clean."""
+    _db.execute("delete from inventory")
+    _db.execute("delete from players")
+    _db.commit()
 
 
 def _give_coins(coins: int) -> None:
     """insert the default player with a coin balance (for buy-success tests)."""
-    conn = create_db()
-    conn.execute(
+    _db.execute(
         "insert into players (id, last_active, coins) values ('default', ?, ?)",
         ("2026-06-15T10:00:00", coins),
     )
-    conn.commit()
-    conn.close()
+    _db.commit()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """TestClient wired to the shared in-memory db (does NOT touch trowel.db)."""
+    app = create_app()
+    app.dependency_overrides[_get_conn] = lambda: _db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 # ---- GET /api/player ----
