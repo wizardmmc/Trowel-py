@@ -1,0 +1,242 @@
+"""Tests for cc_host.service.CCHost using a fake CC subprocess.
+
+No real `claude` is spawned. A fake process feeds preset stdout lines so we
+can assert the translated event stream, the respawn-after-interrupt path, and
+the stalled auto-restart path.
+"""
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from trowel_py.cc_host.service import CCHost
+from trowel_py.schemas.cc_host import (
+    SessionStartedEvent,
+    TextEvent,
+    ToolCallEvent,
+    FinishedEvent,
+    ErrorEvent,
+    LocalCommandEvent,
+    StalledEvent,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fake subprocess + spawner (test-only infrastructure)
+# ---------------------------------------------------------------------------
+
+
+class FakeWriter:
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    def write_eof(self) -> None:
+        return None
+
+
+class FakeProc:
+    """Mimics the asyncio subprocess surface CCHost touches."""
+
+    def __init__(self, lines: list[str], feed_eof: bool = True, pid: int = 1) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+        self.stdin = FakeWriter()
+        self.stdout = asyncio.StreamReader()
+        for ln in lines:
+            self.stdout.feed_data(ln.encode() + b"\n")
+        if feed_eof:
+            self.stdout.feed_eof()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_eof()
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    async def wait(self) -> int | None:
+        return self.returncode
+
+
+class FakeSpawner:
+    """Hands out FakeProc instances in order, recording spawn args."""
+
+    def __init__(self, procs: list[FakeProc]) -> None:
+        self._procs = list(procs)
+        self.spawned: list[tuple[list[str], dict]] = []
+
+    async def __call__(self, args: list[str], kwargs: dict) -> FakeProc:
+        proc = self._procs.pop(0)
+        self.spawned.append((args, kwargs))
+        return proc
+
+
+# end fakes
+# ---------------------------------------------------------------------------
+
+
+def line(d: dict) -> str:
+    return json.dumps(d)
+
+
+def init_event(sid="s-1", model="glm-5.2"):
+    return {"type": "system", "subtype": "init", "model": model,
+            "cwd": "/wd", "session_id": sid, " tools": [], "tools": ["Read", "Skill"]}
+
+
+def text_delta(i, t):
+    return {"type": "stream_event", "event": {"type": "content_block_delta",
+            "index": i, "delta": {"type": "text_delta", "text": t}}}
+
+
+def result_ok():
+    return {"type": "result", "subtype": "success", "is_error": False,
+            "total_cost_usd": 0.03, "usage": {"input_tokens": 5}, "num_turns": 1}
+
+
+async def collect(gen):
+    return [x async for x in gen]
+
+
+class TestStartAndSend:
+    async def test_send_yields_session_started_text_finished(self, tmp_path: Path):
+        proc = FakeProc([
+            line(init_event()),
+            line(text_delta(0, "hel")),
+            line(text_delta(0, "lo")),
+            line(result_ok()),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        kinds = [type(e).__name__ for e in events]
+        assert kinds[0] == "SessionStartedEvent"
+        assert SessionStartedEvent in [type(e) for e in events]
+        text_ev = [e for e in events if isinstance(e, TextEvent)]
+        assert "".join(e.text for e in text_ev) == "hello"
+        assert isinstance(events[-1], FinishedEvent)
+        assert host.cc_session_id == "s-1"
+
+    async def test_send_writes_user_message_to_stdin(self, tmp_path: Path):
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await collect(host.send("ping"))
+        written = b"".join(proc.stdin.written).decode()
+        assert '"type": "user"' in written
+        assert "ping" in written
+
+    async def test_tool_call_streamed(self, tmp_path: Path):
+        proc = FakeProc([
+            line(init_event()),
+            line({"type": "stream_event", "event": {"type": "content_block_start",
+                "index": 0, "content_block": {"type": "tool_use", "id": "tu_1", "name": "Write"}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_delta",
+                "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"p":"/a"}'}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}),
+            line(result_ok()),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("write a file"))
+        calls = [e for e in events if isinstance(e, ToolCallEvent)]
+        assert len(calls) == 1
+        assert calls[0].tool_name == "Write"
+
+
+class TestLocalAndRestart:
+    async def test_cost_does_not_hit_cc(self, tmp_path: Path):
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await collect(host.send("hi"))  # accumulate cost
+        proc.stdin.written.clear()
+        events = await collect(host.send("/cost"))
+        assert any(isinstance(e, LocalCommandEvent) for e in events)
+        # nothing written to CC for a local command
+        assert proc.stdin.written == []
+
+    async def test_effort_triggers_restart_next_send(self, tmp_path: Path):
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        proc2 = FakeProc([line(init_event(sid="s-1")), line(result_ok())])
+        spawner = FakeSpawner([proc1, proc2])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        await collect(host.send("/effort high"))
+        assert host.effort == "high"
+        # next real send respawns because interrupt/restart killed the process
+        await collect(host.send("again"))
+        # second proc was launched resuming the same cc session id
+        assert len(spawner.spawned) >= 2
+        second_args = spawner.spawned[1][0]
+        assert "--resume" in second_args
+        assert "s-1" in second_args
+
+
+class TestInterrupt:
+    async def test_interrupt_marks_dead_and_next_send_resumes(self, tmp_path: Path):
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        proc2 = FakeProc([line(init_event(sid="s-1")), line(result_ok())])
+        spawner = FakeSpawner([proc1, proc2])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        # fake proc has no real process group; emulate SIGINT by marking dead
+        host._interrupt_proc = lambda p: setattr(p, "returncode", 0)
+        await collect(host.send("hi"))
+        await host.interrupt()
+        # process is dead now
+        assert host.is_dead is True
+        await collect(host.send("next"))
+        assert len(spawner.spawned) == 2
+        second_args = spawner.spawned[1][0]
+        assert "--resume" in second_args and "s-1" in second_args
+
+
+class TestStalled:
+    async def test_stalled_triggers_one_restart_then_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # First proc: init ok, then goes silent (no more lines, no EOF).
+        proc1 = FakeProc([line(init_event())], feed_eof=False)
+        proc2 = FakeProc([line(init_event(sid="s-1"))], feed_eof=False)
+        spawner = FakeSpawner([proc1, proc2])
+        # virtual clock so we don't actually sleep 100s
+        clock = {"t": 0.0}
+        def fake_now():
+            clock["t"] += 200.0  # jump past threshold every tick
+            return clock["t"]
+        host = CCHost(
+            "sid", tmp_path, spawner=spawner,
+            now=fake_now, stalled_threshold=100.0, stalled_tick=0.001,
+        )
+        events = await collect(host.send("long job"))
+        kinds = [type(e).__name__ for e in events]
+        # first stall -> respawn (proc2), second stall -> error
+        assert "ErrorEvent" in kinds
+        assert len(spawner.spawned) == 2
+
+
+class TestCancellation:
+    async def test_aborted_send_kills_subprocess_no_orphan(self, tmp_path: Path):
+        # proc that blocks forever on stdout (no data, no EOF)
+        proc = FakeProc([], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]),
+                      stalled_threshold=10000.0, stalled_tick=0.01)
+
+        async def _run():
+            async for _ in host.send("hi"):
+                pass
+
+        task = asyncio.create_task(_run())
+        await asyncio.sleep(0.05)  # let it enter the readline wait
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # the process was force-killed on cancellation (no orphan)
+        assert proc.returncode is not None

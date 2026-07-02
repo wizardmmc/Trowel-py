@@ -3,6 +3,8 @@ CLAUDE.md
 __pycache__/
 .pytest_cache/
 Learn.md
+progress.txt
+spikes/
 *.db
 *.db-shm
 *.db-wal

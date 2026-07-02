@@ -7,6 +7,7 @@ from trowel_py.player.routes import router as player_router
 from trowel_py.events.routes import router as events_router
 from trowel_py.pet.routes import router as pet_router
 from trowel_py.feynman.routes import router as feynman_router
+from trowel_py.cc_host.routes import router as cc_host_router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -66,5 +67,6 @@ def create_app() -> FastAPI:
     app.include_router(events_router, prefix="/api/events")
     app.include_router(pet_router, prefix="/api/pet")
     app.include_router(feynman_router, prefix="/api/feynman")
+    app.include_router(cc_host_router, prefix="/api/cc")
 
     return app

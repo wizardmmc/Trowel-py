@@ -20,3 +20,13 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# integration tests spawn a real `claude -p`; they deadlock inside an
+# interactive claude session (#46416). Deselect by default; run explicitly with
+# `CC_INTEGRATION=1 .venv/bin/python -m pytest -m integration tests/cc_host/test_integration.py`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that spawn a real `claude -p` subprocess (skip in nested interactive sessions; #46416)",
+]
