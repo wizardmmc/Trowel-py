@@ -18,6 +18,12 @@
   --sunshine-soft: rgba(232, 184, 75, 0.18);
   --sunshine-ring: rgba(232, 184, 75, 0.45);
   --sunshine-ink: #7a5a12; /* sunshine 浅底上的深色文字 */
+  /* 语义色浅底衍生（slice023-web）：状态徽标/软底块，复用既有 RGB，不引入新色 */
+  --garden-soft: rgba(74, 124, 89, 0.10);
+  --neutral-soft: rgba(107, 107, 107, 0.12);
+  --error-soft: rgba(196, 91, 74, 0.12);
+  --error-soft-strong: rgba(196, 91, 74, 0.25);
+  --sunshine-warn-soft: rgba(232, 184, 75, 0.25);
 
   /* Radii */
   --radius-sm: 4px;

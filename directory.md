@@ -33,14 +33,15 @@ trowel-py/
 │   ├── player/            玩家领域（level / xp / coins / streak）
 │   ├── feynman/           费曼模式
 │   ├── llm/               LLM 客户端 + prompts + filter
-│   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up）
+│   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）
+│   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up / cc_host）
 │
 ├── web/                   前端：React 19 + Vite + Zustand + framer-motion
 │   └── src/
 │       ├── App.tsx        容器组件，订阅 store
-│       ├── api/           API 客户端（fetch 封装）
-│       ├── components/    展示/容器组件，按领域分子目录（cards/ 等）
-│       ├── stores/        Zustand store（cardStore 等）
+│       ├── api/           API 客户端（fetch 封装）；cc.ts/ccStream.ts/ccTypes.ts = CC 会话（slice023-web）
+│       ├── components/    展示/容器组件，按领域分子目录（cards/ cc/ 等）
+│       ├── stores/        Zustand store（cardStore 等）；ccStore.ts = CC 事件 reducer（slice023-web）
 │       └── styles/        样式
 │
 ├── tests/                 pytest 测试：conftest.py + 按领域（events/ pet/）+ 跨领域 e2e

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import "./AppLayout.css";
 
-export type Tool = "garden" | "extract" | "review";
+export type Tool = "garden" | "extract" | "review" | "cc";
 
 interface AppLayoutProps {
   readonly children: ReactNode;
@@ -50,10 +50,22 @@ function IconSprout() {
   );
 }
 
+function IconCC() {
+  // terminal-style prompt — CC is the "shell out to Claude Code" tool
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3" />
+      <path d="M13 15h4" />
+    </svg>
+  );
+}
+
 const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
+  { id: "cc", icon: <IconCC />, label: "CC" },
 ];
 
 export function AppLayout({

@@ -5,9 +5,14 @@ import { ReviewModal } from "./components/cards/ReviewModal";
 import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
+import { SessionView } from "./components/cc/SessionView";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
+
+// CC workdir is a parameter (the workdir-picker is a separate slice). Default
+// to ClaudeDesktop so CC loads its .claude/ hooks/memory/skills.
+const CC_WORKDIR = "/Users/hamxf/VirtualVolumn/ClaudeDesktop";
 
 function App() {
   const {
@@ -105,6 +110,9 @@ function App() {
           onExtractConversation={handleExtractConversation}
           loading={loading}
         />
+      )}
+      {activeTool === "cc" && (
+        <SessionView workdir={CC_WORKDIR} />
       )}
 
       <ReviewSession />
