@@ -54,6 +54,7 @@ class SendMessageRequest(BaseModel):
 EVENT_TYPES = frozenset(
     {
         "session_started",
+        "user",
         "text",
         "thinking",
         "tool_call",
@@ -86,6 +87,21 @@ class SessionStartedEvent(_Event):
     cwd: str
     cc_session_id: str
     tools: list[str]
+
+
+class UserEvent(_Event):
+    """A user text message — history-replay only.
+
+    The live stream never carries user text as an event: the frontend appends
+    the user's own message optimistically when it sends. But when replaying a
+    past CC session (GET /sessions/{id}/history), the user's messages must
+    surface somehow, and reusing the same reducer is a hard spec constraint.
+    So the history translator emits this event for each historical user turn;
+    it never appears on the live SSE stream.
+    """
+
+    type: Literal["user"] = "user"
+    text: str
 
 
 class TextEvent(_Event):
@@ -200,6 +216,7 @@ class StalledEvent(_Event):
 # Union of all trowel events (for type hints; not used as a validator).
 TrowelEvent = (
     SessionStartedEvent
+    | UserEvent
     | TextEvent
     | ThinkingEvent
     | ToolCallEvent

@@ -5,6 +5,7 @@ Endpoints:
     POST   /api/cc/sessions/{id}/messages    send a message, stream trowel events (SSE)
     POST   /api/cc/sessions/{id}/interrupt   SIGINT the current turn
     GET    /api/cc/sessions?workdir=...      list resumable CC history sessions
+    GET    /api/cc/sessions/{id}/history     replay a resumed session's stored events
     DELETE /api/cc/sessions/{id}             kill and drop the session
 
 This is trowel's first async streaming route. Sessions live in an in-memory
@@ -21,6 +22,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from trowel_py.cc_host.history import parse_history
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import list_sessions
 from trowel_py.schemas.cc_host import (
@@ -138,6 +140,27 @@ def list_history(
     """List resumable CC history sessions for a workdir (any session, any age)."""
     items = [asdict(s) for s in list_sessions(workdir)]
     return {"success": True, "data": items, "error": None}
+
+
+@router.get("/sessions/{sid}/history")
+def get_history(
+    sid: str,
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """Replay a session's stored CC history as trowel events.
+
+    Reads the CC session jsonl for the session's cc_session_id + workdir and
+    returns normalized trowel events isomorphic to the live stream (plus a
+    UserEvent per historical user turn), so the frontend renders history and
+    live with one reducer. Empty list when the session has no cc_session_id
+    yet or the jsonl is absent.
+    """
+    host = _require(sid, registry)
+    cc_session_id = host.cc_session_id
+    if not cc_session_id:
+        return {"success": True, "data": [], "error": None}
+    events = [e.model_dump() for e in parse_history(host.workdir, cc_session_id)]
+    return {"success": True, "data": events, "error": None}
 
 
 @router.delete("/sessions/{sid}")

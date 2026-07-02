@@ -10,6 +10,7 @@ from trowel_py.schemas.cc_host import (
     CreateSessionRequest,
     SendMessageRequest,
     SessionStartedEvent,
+    UserEvent,
     TextEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -54,6 +55,7 @@ class TestEventDiscriminators:
         "model,etype",
         [
             (SessionStartedEvent, "session_started"),
+            (UserEvent, "user"),
             (TextEvent, "text"),
             (ThinkingEvent, "thinking"),
             (ToolCallEvent, "tool_call"),
@@ -73,9 +75,10 @@ class TestEventDiscriminators:
     def test_each_event_has_unique_type(self, model, etype):
         # the literal type field must match the expected wire discriminator
         assert set(EVENT_TYPES) == {
-            "session_started", "text", "thinking", "tool_call", "tool_progress",
-            "tool_result", "retrying", "hook", "status", "compact_boundary",
-            "local_command", "finished", "error", "interrupted", "stalled",
+            "session_started", "user", "text", "thinking", "tool_call",
+            "tool_progress", "tool_result", "retrying", "hook", "status",
+            "compact_boundary", "local_command", "finished", "error",
+            "interrupted", "stalled",
         }
         assert etype in EVENT_TYPES
 

@@ -28,6 +28,7 @@ class FakeHost:
         self.cc_session_id = cc_session_id
         self.model = "glm-5.2"
         self.effort = "medium"
+        self.workdir = "/wd"
         self.interrupted = False
         self.closed = False
         self.received: list[str] = []
@@ -154,3 +155,41 @@ class TestListHistory:
         assert len(data) == 1
         assert data[0]["cc_session_id"] == "sess-a"
         assert data[0]["title"] == "hi"
+
+
+class TestGetHistory:
+    def test_returns_normalized_events_for_session(self, tmp_path: Path, monkeypatch):
+        """GET /sessions/{sid}/history replays the session jsonl as trowel events."""
+        root = tmp_path / "projects"
+        d = root / "-wd"
+        d.mkdir(parents=True)
+        (d / "sess-a.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"role": "user",
+                "content": "hello"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "text", "text": "hi"}]}}) + "\n"
+        )
+        # parse_history imports cc_projects_root into its own namespace
+        monkeypatch.setattr("trowel_py.cc_host.history.cc_projects_root", lambda: root)
+        fake = FakeHost([], cc_session_id="sess-a")
+        reg = {"s-1": fake}
+        client = _mini_app(reg)
+        resp = client.get("/api/cc/sessions/s-1/history")
+        assert resp.status_code == 200
+        events = resp.json()["data"]
+        kinds = [e["type"] for e in events]
+        assert "user" in kinds
+        assert "text" in kinds
+
+    def test_history_unknown_session_404(self):
+        client = _mini_app({})
+        resp = client.get("/api/cc/sessions/nope/history")
+        assert resp.status_code == 404
+
+    def test_history_no_cc_session_id_returns_empty(self):
+        """A session with no cc_session_id yet returns an empty event list."""
+        fake = FakeHost([], cc_session_id=None)
+        client = _mini_app({"s-1": fake})
+        resp = client.get("/api/cc/sessions/s-1/history")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
