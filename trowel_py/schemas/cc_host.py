@@ -69,6 +69,8 @@ EVENT_TYPES = frozenset(
         "error",
         "interrupted",
         "stalled",
+        "thinking_progress",
+        "subagent_progress",
     }
 )
 
@@ -119,12 +121,19 @@ class ThinkingEvent(_Event):
 
 
 class ToolCallEvent(_Event):
-    """A complete tool_use call (name + full input), emitted when the block closes."""
+    """A complete tool_use call (name + full input), emitted when the block closes.
+
+    parent_tool_use_id is set when this tool_use came from a sub-agent (the cc
+    envelope carries it, pointing at the spawning Agent tool_call). Null for
+    top-level tool_use. The frontend uses it to nest sub-agent tools under their
+    Agent (slice-025-a problem 2).
+    """
 
     type: Literal["tool_call"] = "tool_call"
     tool_use_id: str
     tool_name: str
     input: dict[str, Any]
+    parent_tool_use_id: str | None = None
 
 
 class ToolProgressEvent(_Event):
@@ -213,6 +222,43 @@ class StalledEvent(_Event):
     type: Literal["stalled"] = "stalled"
 
 
+class ThinkingProgressEvent(_Event):
+    """A thinking-tokens heartbeat: CC is still thinking, with a running token estimate.
+
+    On the GLM backend this is the ONLY signal during thinking — thinking content
+    arrives in a later assistant envelope (not via stream deltas), so without these
+    heartbeats the frontend would see no event during the whole think and the
+    'thinking…' spinner could never trigger. Carries only the cumulative token
+    estimate; seconds and verb are computed client-side (see slice-025-a decision #1).
+    """
+
+    type: Literal["thinking_progress"] = "thinking_progress"
+    estimated_tokens: int
+
+
+class SubagentProgressEvent(_Event):
+    """Progress of a sub-agent spawned via the Agent tool (task_* system events).
+
+    task_started / task_progress / task_notification each carry the tool_use_id of
+    the Agent tool_call, so the frontend can attach this to the matching Agent
+    ToolItem. task_updated is intentionally NOT mapped: it has no tool_use_id and
+    its patch.status duplicates task_notification.status (slice-025-a decision #5).
+
+    Optional fields vary per event: started carries description/subagent_type,
+    progress adds last_tool_name/usage, notification carries final usage. The
+    frontend merges successive events onto the ToolItem's subagent field.
+    """
+
+    type: Literal["subagent_progress"] = "subagent_progress"
+    tool_use_id: str
+    task_id: str
+    status: Literal["started", "progress", "completed"]
+    description: str | None = None
+    subagent_type: str | None = None
+    last_tool_name: str | None = None
+    usage: dict[str, Any] | None = None
+
+
 # Union of all trowel events (for type hints; not used as a validator).
 TrowelEvent = (
     SessionStartedEvent
@@ -231,4 +277,6 @@ TrowelEvent = (
     | ErrorEvent
     | InterruptedEvent
     | StalledEvent
+    | ThinkingProgressEvent
+    | SubagentProgressEvent
 )

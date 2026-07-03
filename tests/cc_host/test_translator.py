@@ -21,6 +21,8 @@ from trowel_py.schemas.cc_host import (
     LocalCommandEvent,
     FinishedEvent,
     ErrorEvent,
+    ThinkingProgressEvent,
+    SubagentProgressEvent,
 )
 
 
@@ -152,6 +154,27 @@ class TestAssistantEnvelopeTextThinking:
             "ThinkingEvent", "TextEvent", "ToolCallEvent"]
         assert out[2].tool_use_id == "tu_9"
 
+    def test_subagent_tool_use_carries_parent_tool_use_id(self):
+        # a sub-agent's internal tool_use envelope carries parent_tool_use_id
+        # pointing at the spawning Agent tool_call (slice-025-a problem 2 data).
+        envelope = {"type": "assistant", "parent_tool_use_id": "call_AGENT_X",
+                    "subagent_type": "general-purpose",
+                    "message": {"content": [
+                        {"type": "tool_use", "id": "call_BASH_Y", "name": "Bash",
+                         "input": {"command": "ls"}}]}}
+        out = Translator().translate(envelope)
+        assert len(out) == 1
+        assert isinstance(out[0], ToolCallEvent)
+        assert out[0].parent_tool_use_id == "call_AGENT_X"
+
+    def test_top_level_tool_use_has_no_parent(self):
+        # a top-level (main cc) tool_use envelope has no parent_tool_use_id
+        envelope = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "tu_main", "name": "Bash",
+             "input": {"command": "pwd"}}]}}
+        out = Translator().translate(envelope)
+        assert out[0].parent_tool_use_id is None
+
 
 class TestToolProgressAndResult:
     def test_tool_progress_top_level_type(self):
@@ -261,19 +284,130 @@ class TestResult:
         assert out[0].api_error_status == 529
 
 
+class TestThinkingProgress:
+    """thinking_tokens heartbeats -> ThinkingProgressEvent (slice-025-a A1).
+
+    On the GLM backend these are the ONLY signal during thinking (thinking content
+    arrives in a later assistant envelope). The translator used to drop them with a
+    'Revisit if a use appears' comment — A1 is that use.
+    """
+
+    def test_thinking_tokens_translates_to_thinking_progress(self):
+        ev = cc(type="system", subtype="thinking_tokens",
+                estimated_tokens=26, estimated_tokens_delta=2)
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        assert isinstance(out[0], ThinkingProgressEvent)
+        assert out[0].estimated_tokens == 26
+
+    def test_each_heartbeat_maps_independently(self):
+        # no per-task state needed; each heartbeat maps 1:1 with its cumulative count
+        t = Translator()
+        t.translate(cc(type="system", subtype="thinking_tokens",
+                  estimated_tokens=1, estimated_tokens_delta=1))
+        out = t.translate(cc(type="system", subtype="thinking_tokens",
+                       estimated_tokens=3, estimated_tokens_delta=2))
+        assert isinstance(out[0], ThinkingProgressEvent)
+        assert out[0].estimated_tokens == 3
+
+
+class TestSubagentProgress:
+    """task_started/progress/notification -> SubagentProgressEvent (slice-025-a A3).
+
+    Ground truth: reverse_cc samples/raw/030_task_agenttool.jsonl. task_updated is
+    dropped (no tool_use_id, duplicates notification — decision #5).
+    """
+
+    def test_task_started_translates(self):
+        ev = cc(type="system", subtype="task_started", task_id="t1",
+                tool_use_id="call_x", description="Count files",
+                subagent_type="general-purpose", task_type="local_agent",
+                prompt="count")
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        e = out[0]
+        assert isinstance(e, SubagentProgressEvent)
+        assert e.tool_use_id == "call_x"
+        assert e.task_id == "t1"
+        assert e.status == "started"
+        assert e.description == "Count files"
+        assert e.subagent_type == "general-purpose"
+        assert e.last_tool_name is None
+        assert e.usage is None
+
+    def test_task_progress_translates(self):
+        ev = cc(type="system", subtype="task_progress", task_id="t1",
+                tool_use_id="call_x", description="Running Count",
+                subagent_type="general-purpose", last_tool_name="Bash",
+                usage={"total_tokens": 10, "tool_uses": 1, "duration_ms": 4865})
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        e = out[0]
+        assert isinstance(e, SubagentProgressEvent)
+        assert e.status == "progress"
+        assert e.last_tool_name == "Bash"
+        assert e.usage == {"total_tokens": 10, "tool_uses": 1, "duration_ms": 4865}
+
+    def test_task_notification_translates_to_completed(self):
+        ev = cc(type="system", subtype="task_notification", task_id="t1",
+                tool_use_id="call_x", status="completed",
+                output_file="", summary="Count files",
+                usage={"total_tokens": 0, "tool_uses": 2, "duration_ms": 13878})
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        e = out[0]
+        assert isinstance(e, SubagentProgressEvent)
+        assert e.status == "completed"
+        assert e.usage == {"total_tokens": 0, "tool_uses": 2, "duration_ms": 13878}
+
+    def test_task_updated_yields_nothing(self):
+        # decision #5: no tool_use_id + duplicates task_notification; stay ignored
+        ev = cc(type="system", subtype="task_updated", task_id="t1",
+                patch={"status": "completed", "end_time": 1783036070663})
+        assert Translator().translate(ev) == []
+
+    def test_sample030_subagent_tail(self):
+        # replay real sample 030 tail: assistant thinking + Agent tool_use, then
+        # task_started/progress/updated/notification. Assert order + task_updated drop.
+        t = Translator()
+        t.translate({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "need to count"}]}})
+        t.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "call_1ac8", "name": "Agent",
+             "input": {"description": "Count files", "prompt": "...",
+                       "subagent_type": "general-purpose"}}]}})
+        started = t.translate(cc(type="system", subtype="task_started",
+            task_id="a53f", tool_use_id="call_1ac8",
+            description="Count files in directory",
+            subagent_type="general-purpose", task_type="local_agent", prompt="..."))
+        progress = t.translate(cc(type="system", subtype="task_progress",
+            task_id="a53f", tool_use_id="call_1ac8", description="Running",
+            subagent_type="general-purpose", last_tool_name="Bash",
+            usage={"total_tokens": 0, "tool_uses": 1, "duration_ms": 4865}))
+        updated = t.translate(cc(type="system", subtype="task_updated",
+            task_id="a53f", patch={"status": "completed", "end_time": 1783036070663}))
+        notification = t.translate(cc(type="system", subtype="task_notification",
+            task_id="a53f", tool_use_id="call_1ac8", status="completed",
+            output_file="", summary="Count files in directory",
+            usage={"total_tokens": 0, "tool_uses": 2, "duration_ms": 13878}))
+        assert isinstance(started[0], SubagentProgressEvent)
+        assert started[0].status == "started"
+        assert progress[0].status == "progress"
+        assert progress[0].last_tool_name == "Bash"
+        assert updated == []
+        assert notification[0].status == "completed"
+
+
 class TestIgnoreList:
     @pytest.mark.parametrize("ev", [
         {"type": "system", "subtype": "post_turn_summary"},
-        {"type": "system", "subtype": "task_started"},
-        {"type": "system", "subtype": "task_progress"},
-        {"type": "system", "subtype": "task_notification"},
+        {"type": "system", "subtype": "task_updated"},
         {"type": "system", "subtype": "session_state_changed"},
         {"type": "system", "subtype": "files_persisted"},
         {"type": "system", "subtype": "elicitation_complete"},
         {"type": "system", "subtype": "prompt_suggestion"},
         {"type": "system", "subtype": "mcp_message"},
         {"type": "system", "subtype": "streamlined_stuff"},
-        {"type": "system", "subtype": "thinking_tokens"},  # TODO verify shape
         {"type": "unknown_thing"},
     ])
     def test_ignored_event_yields_nothing(self, ev):

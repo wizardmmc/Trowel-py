@@ -26,8 +26,10 @@ from trowel_py.schemas.cc_host import (
     RetryingEvent,
     SessionStartedEvent,
     StatusEvent,
+    SubagentProgressEvent,
     TextEvent,
     ThinkingEvent,
+    ThinkingProgressEvent,
     ToolCallEvent,
     ToolProgressEvent,
     ToolResultEvent,
@@ -39,18 +41,14 @@ from trowel_py.schemas.cc_host import (
 _IGNORE_SYSTEM_SUBTYPES = frozenset(
     {
         "post_turn_summary",
-        "task_started",
-        "task_progress",
-        "task_notification",
+        # task_updated has no tool_use_id and its patch.status duplicates
+        # task_notification.status — slice-025-a decision #5 keeps it ignored.
+        "task_updated",
         "session_state_changed",
         "files_persisted",
         "elicitation_complete",
         "prompt_suggestion",
         "mcp_message",
-        # TODO(verify): thinking_tokens appears during thinking (4.1-leak
-        # schema update). It is a token count, not content, so we drop it
-        # here rather than map it to a thinking delta. Revisit if a use appears.
-        "thinking_tokens",
     }
 )
 _IGNORE_SYSTEM_PREFIXES = ("streamlined_",)
@@ -163,6 +161,45 @@ class Translator:
             return [CompactBoundaryEvent()]
         if sub == "local_command_output":
             return [LocalCommandEvent(content=_as_text(ev.get("content")))]
+        if sub == "thinking_tokens":
+            # GLM backend: the ONLY signal during thinking (content arrives in a
+            # later assistant envelope). Slice-025-a A1 uses this as the heartbeat.
+            return [
+                ThinkingProgressEvent(
+                    estimated_tokens=int(ev.get("estimated_tokens", 0)),
+                )
+            ]
+        if sub == "task_started":
+            return [
+                SubagentProgressEvent(
+                    tool_use_id=ev.get("tool_use_id", ""),
+                    task_id=ev.get("task_id", ""),
+                    status="started",
+                    description=ev.get("description"),
+                    subagent_type=ev.get("subagent_type"),
+                )
+            ]
+        if sub == "task_progress":
+            return [
+                SubagentProgressEvent(
+                    tool_use_id=ev.get("tool_use_id", ""),
+                    task_id=ev.get("task_id", ""),
+                    status="progress",
+                    description=ev.get("description"),
+                    subagent_type=ev.get("subagent_type"),
+                    last_tool_name=ev.get("last_tool_name"),
+                    usage=ev.get("usage"),
+                )
+            ]
+        if sub == "task_notification":
+            return [
+                SubagentProgressEvent(
+                    tool_use_id=ev.get("tool_use_id", ""),
+                    task_id=ev.get("task_id", ""),
+                    status="completed",
+                    usage=ev.get("usage"),
+                )
+            ]
         logger.debug("unmapped CC system subtype dropped: %r", sub)
         return []
 
@@ -289,6 +326,7 @@ class Translator:
                         tool_use_id=tid,
                         tool_name=block.get("name", ""),
                         input=block.get("input") or {},
+                        parent_tool_use_id=ev.get("parent_tool_use_id"),
                     )
                 )
         return out
