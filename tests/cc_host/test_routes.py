@@ -151,10 +151,38 @@ class TestListHistory:
         client = _mini_app({})
         resp = client.get("/api/cc/sessions", params={"workdir": "/wd"})
         assert resp.status_code == 200
-        data = resp.json()["data"]
+        body = resp.json()
+        data = body["data"]
         assert len(data) == 1
         assert data[0]["cc_session_id"] == "sess-a"
         assert data[0]["title"] == "hi"
+        # meta.total reports the true on-disk count (for "共 N · 最近 M" display)
+        assert body["meta"] == {"total": 1, "limit": 10}
+
+    def test_list_caps_to_ten_most_recent(self, tmp_path: Path, monkeypatch):
+        # the dropdown must not surface hundreds of sessions — verify the route
+        # cap is wired (12 sessions → 10 newest, most-recent-first)
+        import os
+        root = tmp_path / "projects"
+        d = root / "-wd"
+        d.mkdir(parents=True)
+        for i in range(12):
+            f = d / f"s{i:02d}.jsonl"
+            f.write_text(json.dumps({"type": "user", "message": {"role": "user",
+                "content": [{"type": "text", "text": f"s{i:02d}"}]}}) + "\n")
+            os.utime(f, (i, i))  # later index = newer
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        client = _mini_app({})
+        resp = client.get("/api/cc/sessions", params={"workdir": "/wd"})
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 10
+        # newest 10 are s02..s11 (mtime 2..11); s00 (mtime 0) and s01 dropped
+        ids = [item["cc_session_id"] for item in data]
+        assert ids[0] == "s11"  # most recent first
+        assert "s00" not in ids and "s01" not in ids
+        # meta.total is the true count (12 on disk) even though only 10 returned
+        assert resp.json()["meta"] == {"total": 12, "limit": 10}
 
 
 class TestGetHistory:

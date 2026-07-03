@@ -121,27 +121,38 @@ def _translate_line(ev: dict[str, Any]) -> list[TrowelEvent]:
 
 
 def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
-    """Map a CC `user` entry: tool_result echo -> ToolResultEvent, else UserEvent.
+    """Map a CC `user` entry: real user turn -> UserEvent, tool_result echo ->
+    ToolResultEvent.
 
-    A user entry whose content is a plain string is a real user turn; one
-    whose content is a list of tool_result blocks is a tool-result echo and
-    must not become a UserEvent.
+    A real user turn arrives as either a plain string OR (the common CC jsonl
+    shape) a list of `text` blocks. A tool_result echo arrives as a list of
+    `tool_result` blocks and must NOT become a UserEvent.
     """
     content = ev.get("message", {}).get("content")
     if isinstance(content, str):
         return [UserEvent(text=content)]
-    if isinstance(content, list):
-        out: list[TrowelEvent] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_result":
-                out.append(
-                    ToolResultEvent(
-                        tool_use_id=str(block.get("tool_use_id", "")),
-                        content=str(block.get("content", "")),
-                    )
+    if not isinstance(content, list):
+        return []
+    text_parts: list[str] = []
+    out: list[TrowelEvent] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "tool_result":
+            out.append(
+                ToolResultEvent(
+                    tool_use_id=str(block.get("tool_use_id", "")),
+                    content=str(block.get("content", "")),
                 )
-        return out
-    return []
+            )
+        elif kind == "text":
+            text_parts.append(str(block.get("text", "")))
+    # Real user turns arrive as text blocks; tool_result echoes as tool_result
+    # blocks — the two don't mix in one message.
+    if text_parts:
+        return [UserEvent(text="\n".join(text_parts))]
+    return out
 
 
 def _translate_assistant(ev: dict[str, Any]) -> list[TrowelEvent]:

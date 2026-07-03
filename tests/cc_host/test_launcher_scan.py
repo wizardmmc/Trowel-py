@@ -11,6 +11,7 @@ import pytest
 from trowel_py.cc_host.launcher import build_args, build_subprocess_kwargs
 from trowel_py.cc_host.session_scan import (
     SessionSummary,
+    count_sessions,
     list_sessions,
     workdir_to_slug,
 )
@@ -146,3 +147,80 @@ class TestListSessions:
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         s = list_sessions("/wd")[0]
         assert s.title == ""  # graceful fallback, not a crash
+
+    def _write_timed_sessions(
+        self, root: Path, slug: str, ids_with_mtime: list[tuple[str, int]]
+    ) -> None:
+        """Write one minimal session per id, each pinned to the given mtime."""
+        import os
+        for sid, mtime in ids_with_mtime:
+            f = self._write_session(root, slug, sid, [
+                {"type": "user", "message": {"role": "user",
+                    "content": [{"type": "text", "text": sid}]}},
+            ])
+            os.utime(f, (mtime, mtime))
+
+    def test_limit_caps_to_n_most_recent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # 5 sessions, mtimes 1..5 — limit=3 must keep the 3 newest (5,4,3)
+        root = tmp_path / "projects"
+        self._write_timed_sessions(root, "-wd", [
+            ("s1", 1), ("s2", 2), ("s3", 3), ("s4", 4), ("s5", 5),
+        ])
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        sessions = list_sessions("/wd", limit=3)
+        assert [s.cc_session_id for s in sessions] == ["s5", "s4", "s3"]
+
+    def test_limit_none_returns_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # default behavior unchanged: no cap when limit is None
+        root = tmp_path / "projects"
+        self._write_timed_sessions(root, "-wd", [
+            ("s1", 1), ("s2", 2), ("s3", 3), ("s4", 4), ("s5", 5),
+        ])
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        sessions = list_sessions("/wd")
+        assert len(sessions) == 5
+
+    def test_limit_larger_than_count_returns_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        root = tmp_path / "projects"
+        self._write_timed_sessions(root, "-wd", [("s1", 1), ("s2", 2)])
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        sessions = list_sessions("/wd", limit=10)
+        assert len(sessions) == 2
+
+
+class TestCountSessions:
+    def _write_session(self, root: Path, slug: str, sid: str) -> Path:
+        d = root / slug
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{sid}.jsonl"
+        f.write_text(json.dumps({"type": "user", "message": {"role": "user",
+            "content": [{"type": "text", "text": sid}]}}) + "\n")
+        return f
+
+    def test_counts_all_session_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        root = tmp_path / "projects"
+        for sid in ("a", "b", "c"):
+            self._write_session(root, "-wd", sid)
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        assert count_sessions("/wd") == 3
+
+    def test_count_zero_when_no_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root",
+                            lambda: tmp_path / "nope")
+        assert count_sessions("/wd") == 0
+
+    def test_count_ignores_non_jsonl(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        root = tmp_path / "projects"
+        d = root / "-wd"
+        d.mkdir(parents=True)
+        (d / "s1.jsonl").write_text("{}\n")
+        (d / "notes.md").write_text("not a session\n")
+        (d / "s2.jsonl").write_text("{}\n")
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        assert count_sessions("/wd") == 2

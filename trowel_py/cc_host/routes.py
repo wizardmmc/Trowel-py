@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 from trowel_py.cc_host.history import parse_history
 from trowel_py.cc_host.service import CCHost
-from trowel_py.cc_host.session_scan import list_sessions
+from trowel_py.cc_host.session_scan import count_sessions, list_sessions
 from trowel_py.schemas.cc_host import (
     CreateSessionRequest,
     ErrorEvent,
@@ -32,6 +32,11 @@ from trowel_py.schemas.cc_host import (
 )
 
 router = APIRouter()
+
+# The history dropdown only surfaces the most recent sessions — returning all
+# (often 200+) makes the UI dropdown unwieldy and blew up the playwright MCP
+# accessibility snapshot during e2e. Cap the list; full history stays on disk.
+_HISTORY_DROPDOWN_LIMIT = 10
 
 # In-memory session store. Module-level on purpose: the host layer is stateless
 # (no DB) — a server restart drops every session. Override via get_registry().
@@ -137,9 +142,20 @@ async def interrupt(
 def list_history(
     workdir: str = Query(..., min_length=1),
 ) -> dict:
-    """List resumable CC history sessions for a workdir (any session, any age)."""
-    items = [asdict(s) for s in list_sessions(workdir)]
-    return {"success": True, "data": items, "error": None}
+    """List the most recent resumable CC history sessions for a workdir.
+
+    Returns the N most recent sessions (any age, not just trowel-created) for
+    the history dropdown — capped to keep the dropdown usable. ``meta.total``
+    is the true on-disk count so the UI can show "共 N · 最近 M" instead of
+    misleadingly implying only N sessions exist.
+    """
+    items = [asdict(s) for s in list_sessions(workdir, limit=_HISTORY_DROPDOWN_LIMIT)]
+    return {
+        "success": True,
+        "data": items,
+        "error": None,
+        "meta": {"total": count_sessions(workdir), "limit": _HISTORY_DROPDOWN_LIMIT},
+    }
 
 
 @router.get("/sessions/{sid}/history")

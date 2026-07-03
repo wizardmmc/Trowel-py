@@ -8,6 +8,8 @@ import type { CcSessionSummary } from "../../api/cc";
  */
 interface SessionSwitcherProps {
   readonly history: readonly CcSessionSummary[];
+  /** total sessions on disk (meta.total); history.length is the capped list shown. */
+  readonly total: number;
   readonly loading: boolean;
   readonly onPick: (ccSessionId: string) => void;
   readonly onNew: () => void;
@@ -19,10 +21,17 @@ function formatTime(epoch: number): string {
 
 export function SessionSwitcher({
   history,
+  total,
   loading,
   onPick,
   onNew,
 }: SessionSwitcherProps) {
+  // When the list is capped (more on disk than shown), surface both numbers so
+  // the count isn't misleading; otherwise just show the total.
+  const capped = total > history.length;
+  const countLabel = capped
+    ? `共 ${total} · 最近 ${history.length}`
+    : `共 ${total}`;
   return (
     <div className="cc-switcher">
       <button
@@ -34,7 +43,7 @@ export function SessionSwitcher({
         + 新会话
       </button>
       <details className="cc-switcher__dropdown">
-        <summary className="cc-switcher__summary">历史会话（{history.length}）</summary>
+        <summary className="cc-switcher__summary">历史会话（{countLabel}）</summary>
         <div className="cc-switcher__list">
           {loading && <div className="cc-switcher__loading">载入中…</div>}
           {!loading && history.length === 0 && (

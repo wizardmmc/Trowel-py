@@ -397,6 +397,67 @@ function retryingItemFrom(event: RetryingEvent): RetryingItem {
   };
 }
 
+/**
+ * End an still-active turn when the live SSE stream closes with no terminal
+ * event (finished/error/...).
+ *
+ * The host's slash-command paths — /model, /effort (RestartSession → one
+ * StatusEvent), /cost, /status (LocalCommand), and unsupported slashes — each
+ * emit a single status/local_command event then close the stream; CC is never
+ * spawned, so no `finished` ever arrives. The reducer only ends a turn on a
+ * terminal event, so without this the composer would stay stuck in "生成中"
+ * forever after any slash command.
+ *
+ * Only a CLEAN close ends the turn: a transport failure is left for the error
+ * UI, and a user abort is handled by the interrupt path. `meta` (incl.
+ * costUsd) is never touched — no synthetic finished — so /cost's real value
+ * survives.
+ */
+export function endActiveTurnOnStreamClose(
+  state: ReducerState,
+  opts: { aborted: boolean; transportOk: boolean },
+): ReducerState {
+  if (!opts.transportOk || opts.aborted) {
+    return state;
+  }
+  const last = state.turns[state.turns.length - 1];
+  if (!last || last.status !== "active") {
+    return state;
+  }
+  const lastIdx = state.turns.length - 1;
+  const turns = state.turns.map((t, i) =>
+    i === lastIdx ? { ...t, status: "done" as const } : t,
+  );
+  return { ...state, turns, phase: "done" };
+}
+
+/** In-progress phases that flip to "done" when finalizing a history view. */
+const _ACTIVE_PHASES: ReadonlySet<Phase> = new Set([
+  "awaiting_first",
+  "thinking",
+  "generating",
+  "tool",
+  "retrying",
+  "compacting",
+]);
+
+/**
+ * Finalize replayed history into a restful "past session" state.
+ *
+ * CC's persisted jsonl has no `result` line, so history replay never produces
+ * a `finished` event — every past turn would stay "active" and the phase would
+ * stay "generating", which disables the composer (the user could not continue
+ * a loaded session). This flips active turns to done and an in-progress phase
+ * to done. Terminal statuses (error / interrupted) are preserved as-is.
+ */
+export function finalizeHistoryForView(state: ReducerState): ReducerState {
+  const turns = state.turns.map((t) =>
+    t.status === "active" ? { ...t, status: "done" as const } : t,
+  );
+  const phase: Phase = _ACTIVE_PHASES.has(state.phase) ? "done" : state.phase;
+  return { ...state, turns, phase };
+}
+
 // ---------------------------------------------------------------------------
 // zustand shell
 // ---------------------------------------------------------------------------
@@ -411,6 +472,8 @@ interface CcState extends ReducerState {
   readonly transportError: string | null;
   /** History list for the switcher. */
   readonly history: readonly CcSessionSummary[];
+  /** Total sessions on disk (meta.total) — true count for "共 N · 最近 M" display. */
+  readonly historyTotal: number;
   readonly loadingHistory: boolean;
 
   _abort: AbortController | null;
@@ -437,6 +500,7 @@ export const useCcStore = create<CcState>((set, get) => {
     workdir: null,
     transportError: null,
     history: [],
+    historyTotal: 0,
     loadingHistory: false,
     _abort: null,
 
@@ -462,8 +526,8 @@ export const useCcStore = create<CcState>((set, get) => {
     refreshHistory: async (workdir) => {
       set({ loadingHistory: true });
       try {
-        const items = await listSessions(workdir);
-        set({ history: items, loadingHistory: false });
+        const { sessions, total } = await listSessions(workdir);
+        set({ history: sessions, historyTotal: total, loadingHistory: false });
       } catch (err) {
         set({
           loadingHistory: false,
@@ -485,7 +549,7 @@ export const useCcStore = create<CcState>((set, get) => {
           for (const ev of events) {
             next = reduceEvent(next, ev);
           }
-          return next;
+          return finalizeHistoryForView(next);
         });
       } catch (err) {
         set({ transportError: (err as Error).message });
@@ -520,6 +584,7 @@ export const useCcStore = create<CcState>((set, get) => {
         _abort: abort,
       }));
 
+      let transportOk = false;
       try {
         await postMessageStream(
           messagesUrl(sid),
@@ -527,10 +592,21 @@ export const useCcStore = create<CcState>((set, get) => {
           apply,
           { signal: abort.signal },
         );
+        transportOk = true;
       } catch (err) {
         set({ transportError: (err as Error).message });
       } finally {
-        set({ _abort: null });
+        // Slash commands end the stream without a finished (see
+        // endActiveTurnOnStreamClose); a clean close on an active turn must
+        // still re-enable the composer. Aborts and transport failures are
+        // owned by their own paths and left untouched here.
+        set((state) => ({
+          ...endActiveTurnOnStreamClose(state, {
+            aborted: abort.signal.aborted,
+            transportOk,
+          }),
+          _abort: null,
+        }));
       }
     },
 
@@ -554,6 +630,7 @@ export const useCcStore = create<CcState>((set, get) => {
         workdir: null,
         transportError: null,
         history: [],
+        historyTotal: 0,
         loadingHistory: false,
         _abort: null,
       });

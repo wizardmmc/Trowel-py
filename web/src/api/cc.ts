@@ -62,11 +62,29 @@ export async function createSession(
   });
 }
 
-/** GET /api/cc/sessions?workdir=... — list resumable history sessions. */
-export async function listSessions(workdir: string): Promise<CcSessionSummary[]> {
-  return request<CcSessionSummary[]>(
+/** Result of GET /api/cc/sessions — the capped list + the true on-disk total. */
+export interface CcSessionListResult {
+  readonly sessions: readonly CcSessionSummary[];
+  /** total sessions on disk (meta.total) — for "共 N · 最近 M" display. */
+  readonly total: number;
+}
+
+/** GET /api/cc/sessions?workdir=... — list most-recent history sessions + total. */
+export async function listSessions(workdir: string): Promise<CcSessionListResult> {
+  const response = await fetch(
     `${CC_API_BASE}/sessions?workdir=${encodeURIComponent(workdir)}`,
   );
+  if (!response.ok) {
+    throw new Error(`CC API error: ${response.status}`);
+  }
+  const result: ApiEnvelope<CcSessionSummary[]> & {
+    meta?: { total?: number; limit?: number };
+  } = await response.json();
+  if (!result.success || result.error) {
+    throw new Error(result.error ?? "CC API call failed");
+  }
+  const sessions = result.data ?? [];
+  return { sessions, total: result.meta?.total ?? sessions.length };
 }
 
 /** GET /api/cc/sessions/{id}/history — replay a session's stored events. */

@@ -224,3 +224,27 @@ def test_parse_history_ignores_tool_result_only_user_as_user_event(
     user_evs = [e for e in events if isinstance(e, UserEvent)]
     assert len(user_evs) == 1
     assert user_evs[0].text == "do it"
+
+
+def test_parse_history_user_message_as_list_text_blocks(fake_projects: Path) -> None:
+    """Real CC jsonl persists user turns as content=list[text] (NOT a plain
+    string); such a message must still surface as a UserEvent. Ground truth:
+    slice024 E2 — the E1 session's user bubble was missing from history because
+    _translate_user only handled string content and silently dropped list-text.
+    """
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "你好，请问今天几号"}],
+                },
+            },
+        ],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    user_evs = [e for e in events if isinstance(e, UserEvent)]
+    assert len(user_evs) == 1
+    assert user_evs[0].text == "你好，请问今天几号"

@@ -37,8 +37,30 @@ def workdir_to_slug(workdir: str | os.PathLike) -> str:
     return str(workdir).replace("/", "-")
 
 
-def list_sessions(workdir: str | os.PathLike) -> list[SessionSummary]:
-    """Return resumable CC sessions for workdir, most-recent-first."""
+def count_sessions(workdir: str | os.PathLike) -> int:
+    """Count CC session files for workdir without scanning titles.
+
+    Cheap (glob only, no per-file read) — used to show the true total in the
+    history dropdown while ``list_sessions`` returns only the most recent N.
+    """
+    slug = workdir_to_slug(workdir)
+    proj_dir = cc_projects_root() / slug
+    if not proj_dir.is_dir():
+        return 0
+    return sum(1 for _ in proj_dir.glob("*.jsonl"))
+
+
+def list_sessions(
+    workdir: str | os.PathLike, *, limit: int | None = None
+) -> list[SessionSummary]:
+    """Return resumable CC sessions for workdir, most-recent-first.
+
+    Args:
+        workdir: the workdir whose CC project slug is scanned.
+        limit: if set, cap the result to the N most recent sessions. None
+            (default) returns all. The history dropdown uses this so it
+            doesn't surface hundreds of months-old sessions at once.
+    """
     slug = workdir_to_slug(workdir)
     proj_dir = cc_projects_root() / slug
     if not proj_dir.is_dir():
@@ -57,6 +79,8 @@ def list_sessions(workdir: str | os.PathLike) -> list[SessionSummary]:
             updated_at=mtime,
         ))
     out.sort(key=lambda s: s.updated_at, reverse=True)
+    if limit is not None:
+        return out[:limit]
     return out
 
 

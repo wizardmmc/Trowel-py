@@ -40,6 +40,7 @@ export function SessionView({ workdir }: SessionViewProps) {
     turns,
     sessionId,
     history,
+    historyTotal,
     loadingHistory,
     startSession,
     refreshHistory,
@@ -88,6 +89,7 @@ export function SessionView({ workdir }: SessionViewProps) {
         />
         <SessionSwitcher
           history={history}
+          total={historyTotal}
           loading={loadingHistory}
           onPick={(id) => void handlePick(id)}
           onNew={handleNew}

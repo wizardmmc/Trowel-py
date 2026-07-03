@@ -253,33 +253,44 @@ class Translator:
     def _on_assistant(self, ev: dict[str, Any]) -> list[TrowelEvent]:
         """Handle a CC `assistant` envelope (a complete assistant message).
 
-        The envelope carries fully-assembled content blocks, so it is used as a
-        backfill path: any tool_use block whose id was NOT already emitted from
-        the streaming deltas is emitted here (de-duplicated by id). The
-        accumulator is reset on the terminal `result` event, not here.
+        The envelope carries fully-assembled content blocks. On the glm backend
+        CC emits content ONLY via these envelopes (no stream_event deltas — see
+        spikes/e1-stream-capture.py ground truth), so this is where text,
+        thinking, and tool_use are all surfaced. tool_use is de-duplicated by
+        id against anything already emitted from stream deltas (a future/other
+        backend may still stream them); text/thinking have no id and emit 1:1.
 
         Args:
             ev: the raw CC `assistant` event dict (message.content blocks).
 
         Returns:
-            ToolCallEvents for tool_use blocks the stream deltas missed; empty
-            when everything was already streamed.
+            one event per content block: TextEvent / ThinkingEvent / ToolCallEvent.
         """
         out: list[TrowelEvent] = []
         for block in ev.get("message", {}).get("content", []) or []:
-            if block.get("type") != "tool_use":
+            if not isinstance(block, dict):
                 continue
-            tid = block.get("id", "")
-            if not tid or tid in self._emitted_tool_ids:
-                continue
-            self._emitted_tool_ids.add(tid)
-            out.append(
-                ToolCallEvent(
-                    tool_use_id=tid,
-                    tool_name=block.get("name", ""),
-                    input=block.get("input") or {},
+            kind = block.get("type")
+            if kind == "text":
+                out.append(TextEvent(text=str(block.get("text", ""))))
+            elif kind == "thinking":
+                out.append(
+                    ThinkingEvent(
+                        text=str(block.get("thinking", block.get("text", "")))
+                    )
                 )
-            )
+            elif kind == "tool_use":
+                tid = block.get("id", "")
+                if not tid or tid in self._emitted_tool_ids:
+                    continue
+                self._emitted_tool_ids.add(tid)
+                out.append(
+                    ToolCallEvent(
+                        tool_use_id=tid,
+                        tool_name=block.get("name", ""),
+                        input=block.get("input") or {},
+                    )
+                )
         return out
 
     def _on_user(self, ev: dict[str, Any]) -> list[TrowelEvent]:

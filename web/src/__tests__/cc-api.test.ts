@@ -42,12 +42,34 @@ describe("cc REST client", () => {
     expect(call?.[1]?.method).toBe("POST");
   });
 
-  it("listSessions encodes the workdir query", async () => {
-    vi.stubGlobal("fetch", mockFetchEnvelope([{ cc_session_id: "a", title: "t", updated_at: 1 }]));
-    const items = await listSessions("/some dir/path");
-    expect(items).toHaveLength(1);
+  it("listSessions returns capped sessions + total from meta", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: [{ cc_session_id: "a", title: "t", updated_at: 1 }],
+          error: null,
+          meta: { total: 42, limit: 10 },
+        }),
+      }),
+    );
+    const result = await listSessions("/some dir/path");
+    expect(result.sessions).toHaveLength(1);
+    expect(result.total).toBe(42);
     const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
     expect(url).toContain("workdir=%2Fsome%20dir%2Fpath");
+  });
+
+  it("listSessions falls back to data length when meta is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchEnvelope([{ cc_session_id: "a", title: "t", updated_at: 1 }]),
+    );
+    const result = await listSessions("/wd");
+    expect(result.sessions).toHaveLength(1);
+    expect(result.total).toBe(1);
   });
 
   it("getHistory returns the event list", async () => {

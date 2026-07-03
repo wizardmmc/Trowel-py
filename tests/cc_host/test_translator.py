@@ -113,6 +113,46 @@ class TestToolCallStitching:
         assert out == []  # already emitted, no duplicate
 
 
+class TestAssistantEnvelopeTextThinking:
+    """CC (glm backend) emits ALL content via assistant envelopes, not stream
+    deltas — so text/thinking blocks in the envelope must be surfaced too.
+    Ground truth: spikes/e1-stream-capture.py captured a real E1 turn and saw
+    zero stream_event deltas; everything (thinking, tool_use, text) arrived as
+    assistant envelopes. Without emitting text/thinking from the envelope, the
+    model's final answer is silently dropped (slice024 E1 regression)."""
+
+    def test_assistant_envelope_text_is_emitted(self):
+        t = Translator()
+        envelope = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "今天是 2026年7月2日，星期四"}]}}
+        out = t.translate(envelope)
+        assert len(out) == 1
+        assert isinstance(out[0], TextEvent)
+        assert out[0].text == "今天是 2026年7月2日，星期四"
+
+    def test_assistant_envelope_thinking_is_emitted(self):
+        t = Translator()
+        envelope = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "需要先查日期"}]}}
+        out = t.translate(envelope)
+        assert len(out) == 1
+        assert isinstance(out[0], ThinkingEvent)
+        assert out[0].text == "需要先查日期"
+
+    def test_assistant_envelope_emits_thinking_text_tool_use_in_order(self):
+        t = Translator()
+        envelope = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "reason here"},
+            {"type": "text", "text": "the answer"},
+            {"type": "tool_use", "id": "tu_9", "name": "Bash",
+             "input": {"command": "date"}},
+        ]}}
+        out = t.translate(envelope)
+        assert [type(x).__name__ for x in out] == [
+            "ThinkingEvent", "TextEvent", "ToolCallEvent"]
+        assert out[2].tool_use_id == "tu_9"
+
+
 class TestToolProgressAndResult:
     def test_tool_progress_top_level_type(self):
         ev = {"type": "tool_progress", "tool_use_id": "tu_1",
