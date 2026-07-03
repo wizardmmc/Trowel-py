@@ -202,7 +202,12 @@ function Row({
         // (e.g. stalled mid-Agent) — treat as completed in that case.
         const fallback =
           item.status === "done" || isReplay ? "completed" : "progress";
-        return <SubagentBlock subagent={item.subagent ?? { status: fallback }} />;
+        return (
+          <SubagentBlock
+            subagent={item.subagent ?? { status: fallback }}
+            childTools={item.childTools}
+          />
+        );
       }
       return <ToolBlock item={item} />;
     case "subagent":

@@ -25,6 +25,8 @@ from trowel_py.schemas.cc_host import (
     ErrorEvent,
     InterruptedEvent,
     StalledEvent,
+    ThinkingProgressEvent,
+    SubagentProgressEvent,
     EVENT_TYPES,
 )
 
@@ -70,6 +72,8 @@ class TestEventDiscriminators:
             (ErrorEvent, "error"),
             (InterruptedEvent, "interrupted"),
             (StalledEvent, "stalled"),
+            (ThinkingProgressEvent, "thinking_progress"),
+            (SubagentProgressEvent, "subagent_progress"),
         ],
     )
     def test_each_event_has_unique_type(self, model, etype):
@@ -79,6 +83,7 @@ class TestEventDiscriminators:
             "tool_progress", "tool_result", "retrying", "hook", "status",
             "compact_boundary", "local_command", "finished", "error",
             "interrupted", "stalled",
+            "thinking_progress", "subagent_progress",
         }
         assert etype in EVENT_TYPES
 

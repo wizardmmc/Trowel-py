@@ -75,4 +75,33 @@ describe("EventTimeline", () => {
     const { container } = render(<EventTimeline items={items} />);
     expect(container.querySelector(".cc-timeline")).toBeNull();
   });
+
+  it("Agent tool renders SubagentBlock with the childTools region (阶段B)", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "agent-1",
+        toolName: "Agent",
+        input: {},
+        status: "running",
+        elapsedSeconds: null,
+        result: null,
+        childTools: [
+          {
+            kind: "tool",
+            toolUseId: "child-bash",
+            toolName: "Bash",
+            input: {},
+            status: "done",
+            elapsedSeconds: 3,
+            result: "ok",
+            childTools: [],
+          },
+        ],
+      },
+    ];
+    render(<EventTimeline items={items} />);
+    expect(screen.getByText(/Agent/)).toBeInTheDocument();
+    expect(screen.getByText(/Bash/)).toBeInTheDocument();
+  });
 });

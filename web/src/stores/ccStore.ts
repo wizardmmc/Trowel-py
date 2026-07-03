@@ -74,6 +74,10 @@ export interface ToolItem {
   /** Present when this is an Agent tool call with sub-agent progress attached
    * (slice-025-a A3). */
   readonly subagent?: SubagentState;
+  /** Child tool_uses spawned inside a sub-agent (their envelope
+   * parent_tool_use_id points at this tool's id). Recursive — a child may
+   * carry its own children for nested sub-agents (slice-025-a 阶段B). */
+  readonly childTools: readonly ToolItem[];
 }
 
 /** Merged sub-agent progress (fields refreshed by each task_* event, newest
@@ -217,24 +221,68 @@ function appendToCurrentTurn(
   return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
 }
 
-/** Update the last item if it matches a predicate, immutably. */
-function updateLastItem(
+/** Recursively transform the ToolItem whose toolUseId matches, anywhere in the
+ * items tree (top-level or nested inside childTools). Returns a new items array
+ * if found, else null. tool_use_id is globally unique so no parent field is
+ * needed on progress/result events (slice-025-a 阶段B). */
+function updateToolInTree(
+  items: readonly TurnItem[],
+  toolUseId: string,
+  update: (tool: ToolItem) => ToolItem,
+): readonly TurnItem[] | null {
+  let found = false;
+  const walk = (list: readonly TurnItem[]): readonly TurnItem[] =>
+    list.map((it) => {
+      if (it.kind !== "tool") return it;
+      if (it.toolUseId === toolUseId) {
+        found = true;
+        return update(it);
+      }
+      if (it.childTools.length > 0) {
+        return { ...it, childTools: walk(it.childTools) };
+      }
+      return it;
+    });
+  const result = walk(items);
+  return found ? result : null;
+}
+
+/** Attach a child tool_use to the parent Agent ToolItem (matched by
+ * parent_tool_use_id). Returns null when no parent matches so the caller can
+ * fall back to a top-level append (never lose the event). slice-025-a 阶段B. */
+function attachChildToParent(
   prev: ReducerState,
-  predicate: (item: TurnItem) => boolean,
-  update: (item: TurnItem) => TurnItem,
+  parentToolUseId: string,
+  child: ToolItem,
+): ReducerState | null {
+  const turns = prev.turns;
+  if (turns.length === 0) return null;
+  const last = turns[turns.length - 1];
+  const newItems = updateToolInTree(last.items, parentToolUseId, (parent) => ({
+    ...parent,
+    childTools: [...parent.childTools, child],
+  }));
+  if (newItems === null) return null;
+  const updatedLast: Turn = { ...last, items: newItems };
+  return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+}
+
+/** Update the ToolItem matching toolUseId anywhere in the current turn's items
+ * tree (top-level or nested inside childTools). No match → no-op (return prev).
+ * Used by tool_progress/tool_result — tool_use_id is globally unique so no
+ * parent field is needed on those events (slice-025-a 阶段B). */
+function updateToolInCurrentTurn(
+  prev: ReducerState,
+  toolUseId: string,
+  update: (tool: ToolItem) => ToolItem,
 ): ReducerState {
   const turns = prev.turns;
   if (turns.length === 0) return prev;
   const last = turns[turns.length - 1];
-  const items = [...last.items];
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (predicate(items[i])) {
-      items[i] = update(items[i]);
-      const updatedLast: Turn = { ...last, items };
-      return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
-    }
-  }
-  return prev;
+  const newItems = updateToolInTree(last.items, toolUseId, update);
+  if (newItems === null) return prev;
+  const updatedLast: Turn = { ...last, items: newItems };
+  return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
 }
 
 /** Reduce one trowel event into a new ReducerState. Pure. */
@@ -344,39 +392,43 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       );
     }
 
-    case "tool_call":
-      return appendToCurrentTurn(
-        { ...prev, phase: "tool" },
-        {
-          kind: "tool",
-          toolUseId: event.tool_use_id,
-          toolName: event.tool_name,
-          input: event.input,
-          status: "running",
-          elapsedSeconds: null,
-          result: null,
-        },
-      );
+    case "tool_call": {
+      const newItem: ToolItem = {
+        kind: "tool",
+        toolUseId: event.tool_use_id,
+        toolName: event.tool_name,
+        input: event.input,
+        status: "running",
+        elapsedSeconds: null,
+        result: null,
+        childTools: [],
+      };
+      const parentId = event.parent_tool_use_id;
+      if (parentId) {
+        const attached = attachChildToParent(prev, parentId, newItem);
+        if (attached !== null) return { ...attached, phase: "tool" };
+      }
+      return appendToCurrentTurn({ ...prev, phase: "tool" }, newItem);
+    }
 
     case "tool_progress":
-      return updateLastItem(
-        { ...prev, phase: "tool" },
-        (it) => it.kind === "tool" && it.toolUseId === event.tool_use_id,
-        (it) =>
-          it.kind === "tool"
-            ? { ...it, elapsedSeconds: event.elapsed_time_seconds }
-            : it,
-      );
+      return {
+        ...updateToolInCurrentTurn(prev, event.tool_use_id, (t) => ({
+          ...t,
+          elapsedSeconds: event.elapsed_time_seconds,
+        })),
+        phase: "tool",
+      };
 
     case "tool_result":
-      return updateLastItem(
-        { ...prev, phase: "tool" },
-        (it) => it.kind === "tool" && it.toolUseId === event.tool_use_id,
-        (it) =>
-          it.kind === "tool"
-            ? { ...it, status: "done", result: event.content }
-            : it,
-      );
+      return {
+        ...updateToolInCurrentTurn(prev, event.tool_use_id, (t) => ({
+          ...t,
+          status: "done",
+          result: event.content,
+        })),
+        phase: "tool",
+      };
 
     case "subagent_progress": {
       // Attach to the Agent ToolItem whose tool_use_id matches (merge fields;

@@ -654,17 +654,29 @@
   animation: cc-shimmer 2s ease-in-out infinite;
 }
 
-/* SubagentBlock — Agent tool inline row (soil-brown edge). */
+/* SubagentBlock — Agent tool inline block (soil-brown edge). Container holds
+   the header row + an indented, collapsible list of internal tool_uses. */
 .cc-subagent {
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--soil-brown);
+  background: rgba(139, 115, 85, 0.06);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-secondary);
+}
+.cc-subagent__header {
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 4px 10px;
-  border-left: 2px solid var(--soil-brown);
-  background: rgba(139, 115, 85, 0.06);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-size: 0.72rem;
-  color: var(--text-secondary);
+}
+.cc-subagent__header[role="button"] {
+  cursor: pointer;
+}
+.cc-subagent__header[role="button"]:hover {
+  background: rgba(139, 115, 85, 0.1);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .cc-subagent__icon {
   width: 13px;
@@ -694,4 +706,30 @@
   font-size: 0.7rem;
   color: var(--garden-green);
   margin-left: auto;
+}
+
+/* Children region — the sub-agent's internal tool_uses, each rendered as a
+   ToolBlock (same summary line a top-level tool gets), indented under the
+   header by the soil-brown edge. Latest N visible (4 running / 1 done);
+   older scroll off until expanded. slice-025-a 阶段B. */
+.cc-subagent__children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 6px 16px;
+  border-top: 1px dashed rgba(139, 115, 85, 0.25);
+}
+.cc-subagent__more {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  font-size: 0.66rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.cc-subagent__more:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
 }

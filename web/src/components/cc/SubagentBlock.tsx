@@ -1,7 +1,17 @@
-import type { SubagentState } from "../../stores/ccStore";
+import { useState } from "react";
+import type { SubagentState, ToolItem } from "../../stores/ccStore";
+import { ToolBlock } from "./ToolBlock";
+
+/** Max child rows shown while a sub-agent is still running (slice-025-a 阶段B). */
+const CC_VISIBLE_RUNNING_TOOLS = 4;
+/** Child rows shown once the sub-agent completes (latest one; older collapse). */
+const CC_VISIBLE_DONE_TOOLS = 1;
 
 interface SubagentBlockProps {
   readonly subagent: SubagentState;
+  /** Internal tool_uses the sub-agent spawned (envelope parent_tool_use_id
+   * pointed at this Agent). Absent for the standalone degradation row. */
+  readonly childTools?: readonly ToolItem[];
 }
 
 /** Read total_tokens off the usage dict (number | undefined). */
@@ -46,38 +56,95 @@ function brief(text: string, max = 40): string {
 
 /**
  * Sub-agent (Agent tool) inline block — soil-brown edge, shows description /
- * type / last tool / token spend / progress (slice-025-a A3).
+ * type / last tool / token spend / progress (slice-025-a A3), plus a collapsible
+ * list of the sub-agent's internal tool_uses indented underneath (阶段B).
  *
- * Used both for an Agent ToolItem with sub-agent progress attached AND for the
- * standalone degradation row (when no Agent tool matched the tool_use_id). The
- * 'in progress' state uses a rotating ring (cc-style; design.md §1).
+ * Each child renders via `<ToolBlock>` — the same summary line a top-level tool
+ * gets (gear + name + input brief, e.g. "Bash printf … > /path") — so a child
+ * call reads exactly like a normal tool call, just nested under the brown edge.
+ *
+ * Children region: shows the latest N ToolBlocks (N=4 running / 1 completed);
+ * older scroll off the top. Click '+N more' or the header to expand all.
+ *
+ * Note: history replay cannot populate childTools — cc's persisted jsonl drops
+ * the parent_tool_use_id envelope field (live stream only).
  */
-export function SubagentBlock({ subagent }: SubagentBlockProps) {
+export function SubagentBlock({ subagent, childTools }: SubagentBlockProps) {
+  const [expanded, setExpanded] = useState(false);
   const inProgress = subagent.status !== "completed";
   const tokens = tokenCount(subagent.usage);
 
+  const kids = childTools ?? [];
+  const hasKids = kids.length > 0;
+  const autoCount =
+    subagent.status === "completed"
+      ? CC_VISIBLE_DONE_TOOLS
+      : CC_VISIBLE_RUNNING_TOOLS;
+  const visibleCount = expanded ? kids.length : Math.min(autoCount, kids.length);
+  const hiddenCount = kids.length - visibleCount;
+  // Latest N: slice from the tail (new tools append at the end; the oldest
+  // scroll off the top — "bottom-up scroll" per spec).
+  const visibleChildren = kids.slice(-visibleCount);
+  const toggle = (): void => setExpanded((e) => !e);
+
   return (
     <div className="cc-subagent" data-status={subagent.status}>
-      <svg className="cc-subagent__icon" viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="4" y="4" width="16" height="16" rx="2" />
-        <path d="M9 9h6M9 13h6M9 17h4" />
-      </svg>
-      <span className="cc-subagent__name">
-        Agent{subagent.subagent_type ? ` · ${subagent.subagent_type}` : ""}
-      </span>
-      {subagent.description && (
-        <span className="cc-subagent__desc">{brief(subagent.description)}</span>
-      )}
-      {subagent.last_tool_name && (
-        <span className="cc-subagent__last">last: {subagent.last_tool_name}</span>
-      )}
-      {tokens !== null && (
-        <span className="cc-subagent__tokens">{formatTokens(tokens)} tok</span>
-      )}
-      {inProgress ? (
-        <span className="cc-subagent__spin cc-spin-ring" aria-label="进行中" />
-      ) : (
-        <span className="cc-subagent__done">Done{formatUsage(subagent.usage)}</span>
+      <div
+        className="cc-subagent__header"
+        role={hasKids ? "button" : undefined}
+        tabIndex={hasKids ? 0 : undefined}
+        aria-expanded={hasKids ? expanded : undefined}
+        onClick={hasKids ? toggle : undefined}
+        onKeyDown={
+          hasKids
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle();
+                }
+              }
+            : undefined
+        }
+      >
+        <svg className="cc-subagent__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M9 9h6M9 13h6M9 17h4" />
+        </svg>
+        <span className="cc-subagent__name">
+          Agent{subagent.subagent_type ? ` · ${subagent.subagent_type}` : ""}
+        </span>
+        {subagent.description && (
+          <span className="cc-subagent__desc">{brief(subagent.description)}</span>
+        )}
+        {subagent.last_tool_name && (
+          <span className="cc-subagent__last">last: {subagent.last_tool_name}</span>
+        )}
+        {tokens !== null && (
+          <span className="cc-subagent__tokens">{formatTokens(tokens)} tok</span>
+        )}
+        {inProgress ? (
+          <span className="cc-subagent__spin cc-spin-ring" aria-label="进行中" />
+        ) : (
+          <span className="cc-subagent__done">
+            Done{formatUsage(subagent.usage)}
+          </span>
+        )}
+      </div>
+      {hasKids && (
+        <div className="cc-subagent__children">
+          {visibleChildren.map((c) => (
+            <ToolBlock key={c.toolUseId} item={c} />
+          ))}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              className="cc-subagent__more"
+              onClick={() => setExpanded(true)}
+            >
+              +{hiddenCount} more
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import { SubagentBlock } from "../components/cc/SubagentBlock";
-import type { SubagentState } from "../stores/ccStore";
+import type { SubagentState, ToolItem } from "../stores/ccStore";
 
 describe("SubagentBlock (slice-025-a A3)", () => {
   it("renders type + description + last tool + tokens while in progress", () => {
@@ -72,5 +72,102 @@ describe("SubagentBlock (slice-025-a A3)", () => {
   it("renders no token span when usage is missing total_tokens", () => {
     render(<SubagentBlock subagent={{ status: "started", usage: {} }} />);
     expect(screen.queryByText(/tok/)).toBeNull();
+  });
+});
+
+function makeTool(overrides: Partial<ToolItem> = {}): ToolItem {
+  return {
+    kind: "tool",
+    toolUseId: "x",
+    toolName: "Bash",
+    input: {},
+    status: "running",
+    elapsedSeconds: null,
+    result: null,
+    childTools: [],
+    ...overrides,
+  };
+}
+
+describe("SubagentBlock — childTools children region (slice-025-a 阶段B)", () => {
+  it("running with 5 childTools shows latest 4 + '+1 more', hides the oldest", () => {
+    const children = [1, 2, 3, 4, 5].map((n) =>
+      makeTool({ toolUseId: `c${n}`, input: { command: `echo cmd${n}` }, elapsedSeconds: n }),
+    );
+    render(
+      <SubagentBlock subagent={{ status: "progress" }} childTools={children} />,
+    );
+    expect(screen.queryAllByText(/cmd5/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/cmd2/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/cmd1/)).toHaveLength(0);
+    expect(screen.getByText(/\+1 more/)).toBeInTheDocument();
+  });
+
+  it("completed collapses to latest 1 + '+4 more'", () => {
+    const children = [1, 2, 3, 4, 5].map((n) =>
+      makeTool({
+        toolUseId: `c${n}`,
+        input: { command: `echo cmd${n}` },
+        status: "done",
+        elapsedSeconds: n,
+      }),
+    );
+    render(
+      <SubagentBlock subagent={{ status: "completed" }} childTools={children} />,
+    );
+    expect(screen.queryAllByText(/cmd5/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/cmd4/)).toHaveLength(0);
+    expect(screen.getByText(/\+4 more/)).toBeInTheDocument();
+  });
+
+  it("clicking '+N more' expands to show all children", () => {
+    const children = [1, 2, 3, 4, 5].map((n) =>
+      makeTool({ toolUseId: `c${n}`, input: { command: `echo cmd${n}` } }),
+    );
+    render(
+      <SubagentBlock subagent={{ status: "progress" }} childTools={children} />,
+    );
+    fireEvent.click(screen.getByText(/\+1 more/));
+    expect(screen.queryAllByText(/cmd1/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/\+.*more/)).toBeNull();
+  });
+
+  it("clicking the header toggles auto-height <-> full expand", () => {
+    const children = [1, 2, 3, 4, 5].map((n) =>
+      makeTool({ toolUseId: `c${n}`, input: { command: `echo cmd${n}` } }),
+    );
+    render(
+      <SubagentBlock subagent={{ status: "progress" }} childTools={children} />,
+    );
+    expect(screen.queryAllByText(/cmd1/)).toHaveLength(0);
+    fireEvent.click(screen.getByText(/^Agent$/));
+    expect(screen.queryAllByText(/cmd1/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText(/^Agent$/));
+    expect(screen.queryAllByText(/cmd1/)).toHaveLength(0);
+  });
+
+  it("renders no children region when childTools is absent", () => {
+    render(<SubagentBlock subagent={{ status: "progress" }} />);
+    expect(screen.queryByText(/more/)).toBeNull();
+  });
+
+  it("child renders via ToolBlock — shows tool name + input brief (e.g. Bash command)", () => {
+    render(
+      <SubagentBlock
+        subagent={{ status: "progress" }}
+        childTools={[
+          makeTool({
+            toolUseId: "c1",
+            toolName: "Bash",
+            input: { command: "printf placeholder > /tmp/x" },
+            status: "done",
+            elapsedSeconds: 7,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/^Bash$/)).toBeInTheDocument();
+    // ToolBlock's BashSummary renders the command brief — not just the tool name
+    expect(screen.queryAllByText(/printf.*placeholder/).length).toBeGreaterThan(0);
   });
 });
