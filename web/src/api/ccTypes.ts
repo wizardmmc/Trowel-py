@@ -38,6 +38,9 @@ export interface ToolCallEvent {
   readonly tool_use_id: string;
   readonly tool_name: string;
   readonly input: Record<string, unknown>;
+  /** Set when this tool_use came from a sub-agent's envelope — points at the
+   * spawning Agent tool_call's id. Null/absent for top-level tool_use. */
+  readonly parent_tool_use_id?: string | null;
 }
 
 export interface ToolProgressEvent {
@@ -104,6 +107,27 @@ export interface StalledEvent {
   readonly type: "stalled";
 }
 
+/** A thinking-tokens heartbeat (slice-025-a A1). On the GLM backend this is the
+ * only signal during thinking. Seconds/verb are client-side; only the cumulative
+ * token estimate rides the event. */
+export interface ThinkingProgressEvent {
+  readonly type: "thinking_progress";
+  readonly estimated_tokens: number;
+}
+
+/** Sub-agent (Agent tool) progress, translated from task_started/progress/
+ * notification (slice-025-a A3). task_updated is intentionally not mapped. */
+export interface SubagentProgressEvent {
+  readonly type: "subagent_progress";
+  readonly tool_use_id: string;
+  readonly task_id: string;
+  readonly status: "started" | "progress" | "completed";
+  readonly description?: string | null;
+  readonly subagent_type?: string | null;
+  readonly last_tool_name?: string | null;
+  readonly usage?: Record<string, unknown> | null;
+}
+
 export type TrowelEvent =
   | SessionStartedEvent
   | UserEvent
@@ -120,7 +144,9 @@ export type TrowelEvent =
   | FinishedEvent
   | ErrorEvent
   | InterruptedEvent
-  | StalledEvent;
+  | StalledEvent
+  | ThinkingProgressEvent
+  | SubagentProgressEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

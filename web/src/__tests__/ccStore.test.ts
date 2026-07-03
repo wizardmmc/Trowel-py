@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   reduceEvent,
   INITIAL_REDUCER_STATE,
@@ -327,5 +327,157 @@ describe("finalizeHistoryForView — history is a completed past session", () =>
     const after = finalizeHistoryForView(state);
     expect(after.turns[0].status).toBe("error");
     expect(after.phase).toBe("error");
+  });
+});
+
+describe("reduceEvent — thinking_progress heartbeats (slice-025-a A1)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("first heartbeat records thinkingStartedAt + tokens + sets phase thinking", () => {
+    vi.setSystemTime(10000);
+    const state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "thinking_progress",
+      estimated_tokens: 5,
+    });
+    expect(state.phase).toBe("thinking");
+    expect(state.meta.thinkingStartedAt).toBe(10000);
+    expect(state.meta.thinkingTokens).toBe(5);
+  });
+
+  it("later heartbeats refresh tokens but keep the first startedAt", () => {
+    vi.setSystemTime(10000);
+    let state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "thinking_progress",
+      estimated_tokens: 5,
+    });
+    vi.setSystemTime(15000);
+    state = reduceEvent(state, { type: "thinking_progress", estimated_tokens: 26 });
+    expect(state.meta.thinkingStartedAt).toBe(10000);
+    expect(state.meta.thinkingTokens).toBe(26);
+  });
+
+  it("does not append any item (preserves item order for B1)", () => {
+    const state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "thinking_progress",
+      estimated_tokens: 5,
+    });
+    expect(state.turns).toHaveLength(0);
+  });
+});
+
+describe("reduceEvent — thinking duration stamps thought-for-Ns (slice-025-a A2)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("stamps duration on the thinking item and clears startedAt", () => {
+    vi.setSystemTime(10000);
+    let state = withOpenTurn();
+    state = reduceEvent(state, { type: "thinking_progress", estimated_tokens: 5 });
+    vi.setSystemTime(22000); // 12s later
+    state = reduceEvent(state, { type: "thinking", text: "reasoning..." });
+    const item = state.turns[0].items[0];
+    expect(item.kind).toBe("thinking");
+    if (item.kind === "thinking") {
+      expect(item.thinkingDurationSeconds).toBe(12);
+    }
+    expect(state.meta.thinkingStartedAt).toBeNull();
+    expect(state.meta.thinkingTokens).toBeNull();
+  });
+
+  it("without a prior heartbeat, leaves duration undefined", () => {
+    const state = reduceEvent(withOpenTurn(), { type: "thinking", text: "x" });
+    const item = state.turns[0].items[0];
+    if (item.kind === "thinking") {
+      expect(item.thinkingDurationSeconds).toBeUndefined();
+    }
+  });
+});
+
+describe("reduceEvent — subagent_progress (slice-025-a A3)", () => {
+  it("attaches to the matching Agent ToolItem and merges fields across events", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "call_1",
+      tool_name: "Agent",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "call_1",
+      task_id: "t1",
+      status: "started",
+      description: "Count files",
+      subagent_type: "general-purpose",
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "call_1",
+      task_id: "t1",
+      status: "progress",
+      last_tool_name: "Bash",
+      usage: { total_tokens: 10 },
+    });
+    const item = state.turns[0].items[0];
+    expect(item.kind).toBe("tool");
+    if (item.kind === "tool") {
+      expect(item.subagent?.status).toBe("progress");
+      expect(item.subagent?.description).toBe("Count files");
+      expect(item.subagent?.subagent_type).toBe("general-purpose");
+      expect(item.subagent?.last_tool_name).toBe("Bash");
+      expect(item.subagent?.usage).toEqual({ total_tokens: 10 });
+    }
+  });
+
+  it("marks the Agent tool completed on task_notification", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "call_1",
+      tool_name: "Agent",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "call_1",
+      task_id: "t1",
+      status: "completed",
+      usage: { total_tokens: 0, tool_uses: 2 },
+    });
+    const item = state.turns[0].items[0];
+    if (item.kind === "tool") {
+      expect(item.subagent?.status).toBe("completed");
+      expect(item.subagent?.usage).toEqual({ total_tokens: 0, tool_uses: 2 });
+    }
+  });
+
+  it("falls back to a standalone subagent item when no Agent tool matches", () => {
+    const state = reduceEvent(withOpenTurn(), {
+      type: "subagent_progress",
+      tool_use_id: "orphan",
+      task_id: "t1",
+      status: "started",
+      description: "lonely",
+    });
+    expect(state.turns[0].items[0].kind).toBe("subagent");
+  });
+
+  it("does not attach to a non-Agent tool with the same id", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "x",
+      tool_name: "Bash",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "x",
+      task_id: "t1",
+      status: "started",
+      description: "d",
+    });
+    expect(state.turns[0].items.map((i) => i.kind)).toEqual(["tool", "subagent"]);
   });
 });

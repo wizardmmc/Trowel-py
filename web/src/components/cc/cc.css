@@ -588,3 +588,110 @@
   color: var(--color-error);
   border: 1px solid var(--color-error);
 }
+
+/* ============================================================
+   slice-025-a: SpinnerLine (A1) + SubagentBlock (A3)
+   ============================================================ */
+
+/* Rotating ring — cc-style 'in progress' indicator (design.md §1: rotating
+   ring and pulse-ring are both fine; a picks the ring). Used by the SpinnerLine
+   glyph, the subagent spin, and (later) todo/left-sidebar rows. */
+@keyframes cc-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Thinking text shimmer — a slow opacity pulse, calm not flashy. */
+@keyframes cc-shimmer {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.cc-spin-ring {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.4px solid var(--sunshine);
+  border-top-color: transparent;
+  animation: cc-spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+/* SpinnerLine — the ✻ thinking… row at the message stream tail. */
+.cc-spinner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 680px;
+  margin: 6px auto 0;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.cc-spinner__glyph {
+  color: var(--sunshine);
+  font-size: 0.95rem;
+  display: inline-block;
+  animation: cc-spin 2s linear infinite;
+}
+.cc-spinner__verb {
+  color: var(--text-primary);
+  font-weight: 500;
+  animation: cc-shimmer 2s ease-in-out infinite;
+}
+.cc-spinner__stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.cc-spinner__time,
+.cc-spinner__tokens,
+.cc-spinner__think {
+  font-size: 0.7rem;
+}
+.cc-spinner__think {
+  animation: cc-shimmer 2s ease-in-out infinite;
+}
+
+/* SubagentBlock — Agent tool inline row (soil-brown edge). */
+.cc-subagent {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-left: 2px solid var(--soil-brown);
+  background: rgba(139, 115, 85, 0.06);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+.cc-subagent__icon {
+  width: 13px;
+  height: 13px;
+  stroke: var(--soil-brown);
+  stroke-width: 1.6;
+  fill: none;
+  flex-shrink: 0;
+}
+.cc-subagent__name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.cc-subagent__desc {
+  color: var(--text-secondary);
+}
+.cc-subagent__last,
+.cc-subagent__tokens {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.cc-subagent__tokens {
+  margin-left: auto;
+}
+.cc-subagent__done {
+  font-size: 0.7rem;
+  color: var(--garden-green);
+  margin-left: auto;
+}

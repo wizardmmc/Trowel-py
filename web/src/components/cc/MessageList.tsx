@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import { EventTimeline } from "./EventTimeline";
+import { SpinnerLine } from "./SpinnerLine";
 
 /**
  * The dialogue stream: one card per turn (user bubble + CC's response).
@@ -52,7 +53,11 @@ function TurnCard({
           <span className="cc-msg__tag">CC</span>
           <div className="cc-msg__body">
             {assistantText && <AssistantText text={assistantText} />}
-            <EventTimeline items={turn.items} onRetryLast={onRetryLast} />
+            <EventTimeline
+              items={turn.items}
+              onRetryLast={onRetryLast}
+              isReplay={turn.status !== "active"}
+            />
           </div>
         </div>
       )}
@@ -72,7 +77,7 @@ export function MessageList({ turns, streaming, onRetryLast }: MessageListProps)
   if (turns.length === 0) {
     return (
       <div className="cc-empty" data-testid="cc-empty">
-        <p>输入一条消息开始与 CC 对话。过程会在这里透明展开。</p>
+        <p>输入一条消息开始与 CC 对话。</p>
       </div>
     );
   }
@@ -82,6 +87,9 @@ export function MessageList({ turns, streaming, onRetryLast }: MessageListProps)
       {turns.map((turn) => (
         <TurnCard key={turn.id} turn={turn} onRetryLast={onRetryLast} />
       ))}
+      {/* slice-025-a A1: the ✻ thinking… row rides the tail of the stream.
+        Renders null outside the thinking phase (see SpinnerLine). */}
+      <SpinnerLine />
       <div ref={endRef} />
     </div>
   );

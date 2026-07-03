@@ -9,6 +9,7 @@ import type {
   TurnItem,
 } from "../../stores/ccStore";
 import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
+import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 
 /**
@@ -24,6 +25,10 @@ import { ToolBlock } from "./ToolBlock";
 interface EventTimelineProps {
   readonly items: readonly TurnItem[];
   readonly onRetryLast?: () => void;
+  /** True when rendering a finalized (non-active) turn from history. Used so an
+   * Agent that never got a tool_result (e.g. stalled mid-Agent) doesn't spin
+   * forever in the replay view. */
+  readonly isReplay?: boolean;
 }
 
 function ChevronToggle({
@@ -42,9 +47,13 @@ function ChevronToggle({
 
 function ThinkingRow({ item }: { readonly item: ThinkingItem }) {
   const [open, setOpen] = useState(false);
-  // TODO(slice022): spec wants `● Thought for Ns` with cumulative duration,
-  // but ThinkingEvent carries only `text` today (duration is a slice022 TODO
-  // per spec §边界). Label says "思考" until the schema carries elapsed time.
+  // slice-025-a A2: show "Thought for Ns" when a heartbeat-measured duration is
+  // stamped on the item; fall back to a bare "思考" when no heartbeat preceded
+  // (e.g. non-GLM backend or history replay).
+  const label =
+    item.thinkingDurationSeconds !== undefined
+      ? `Thought for ${item.thinkingDurationSeconds}s`
+      : "思考";
   return (
     <div className="cc-timeline__row cc-timeline__row--thinking">
       <button
@@ -54,7 +63,7 @@ function ThinkingRow({ item }: { readonly item: ThinkingItem }) {
         aria-expanded={open}
       >
         <span className="cc-timeline__dot" aria-hidden="true">●</span>
-        <span className="cc-timeline__label">思考</span>
+        <span className="cc-timeline__label">{label}</span>
         <ChevronToggle open={open} label={open ? "收起" : "展开"} />
       </button>
       {open && <pre className="cc-timeline__detail">{item.text}</pre>}
@@ -171,15 +180,34 @@ function ErrorRow({
 function Row({
   item,
   onRetryLast,
+  isReplay,
 }: {
   readonly item: TurnItem;
   readonly onRetryLast?: () => void;
+  readonly isReplay?: boolean;
 }) {
   switch (item.kind) {
     case "thinking":
       return <ThinkingRow item={item} />;
     case "tool":
+      // Agent tool gets the dedicated sub-agent block. When no task_* progress
+      // has arrived (e.g. history replay — the cc interactive jsonl carries no
+      // task_* events), infer status from the ToolItem itself: a done tool_result
+      // means the Agent call finished -> completed; otherwise in-progress.
+      // The Agent's input (prompt) / result are NOT expanded here (mockup
+      // single-row design; a future slice can add a collapsible detail).
+      if (item.toolName === "Agent") {
+        // history replay: a turn that already ended (done/error/interrupted)
+        // shouldn't show a spinning Agent even if tool_result never arrived
+        // (e.g. stalled mid-Agent) — treat as completed in that case.
+        const fallback =
+          item.status === "done" || isReplay ? "completed" : "progress";
+        return <SubagentBlock subagent={item.subagent ?? { status: fallback }} />;
+      }
       return <ToolBlock item={item} />;
+    case "subagent":
+      // Standalone degradation row (no matching Agent ToolItem — decision #10).
+      return <SubagentBlock subagent={item.subagent} />;
     case "retrying":
       return <RetryingRow item={item} />;
     case "stalled":
@@ -203,7 +231,7 @@ function Row({
   }
 }
 
-export function EventTimeline({ items, onRetryLast }: EventTimelineProps) {
+export function EventTimeline({ items, onRetryLast, isReplay }: EventTimelineProps) {
   // Render only process items (skip text — that's the dialogue card's job).
   const processItems = items.filter((i) => i.kind !== "text");
   if (processItems.length === 0) return null;
@@ -211,7 +239,7 @@ export function EventTimeline({ items, onRetryLast }: EventTimelineProps) {
     <div className="cc-timeline" role="list">
       {processItems.map((item, idx) => (
         <div className="cc-timeline__entry" role="listitem" key={idx}>
-          <Row item={item} onRetryLast={onRetryLast} />
+          <Row item={item} onRetryLast={onRetryLast} isReplay={isReplay} />
         </div>
       ))}
     </div>

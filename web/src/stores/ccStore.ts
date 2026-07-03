@@ -27,6 +27,7 @@ import { postMessageStream } from "../api/ccStream";
 import type {
   ErrorEvent,
   RetryingEvent,
+  SubagentProgressEvent,
   TrowelEvent,
 } from "../api/ccTypes";
 
@@ -52,6 +53,9 @@ export type TurnStatus = "active" | "done" | "error" | "interrupted";
 export interface ThinkingItem {
   readonly kind: "thinking";
   readonly text: string;
+  /** Seconds the think took (first heartbeat -> thinking content envelope).
+   * Undefined when no heartbeat preceded (e.g. non-GLM backend or history replay). */
+  readonly thinkingDurationSeconds?: number;
 }
 
 export interface TextItem {
@@ -67,6 +71,29 @@ export interface ToolItem {
   readonly status: "running" | "done";
   readonly elapsedSeconds: number | null;
   readonly result: string | null;
+  /** Present when this is an Agent tool call with sub-agent progress attached
+   * (slice-025-a A3). */
+  readonly subagent?: SubagentState;
+}
+
+/** Merged sub-agent progress (fields refreshed by each task_* event, newest
+ * wins; undefined fields fall back to the previous value so started's
+ * description/subagent_type survive into the progress/completed updates). */
+export interface SubagentState {
+  readonly status: "started" | "progress" | "completed";
+  readonly description?: string | null;
+  readonly subagent_type?: string | null;
+  readonly last_tool_name?: string | null;
+  readonly usage?: Record<string, unknown> | null;
+}
+
+/** Standalone sub-agent row — the degradation path when a subagent_progress
+ * event arrives with no matching Agent ToolItem (slice-025-a decision #10:
+ * never lose the event). */
+export interface SubagentItem {
+  readonly kind: "subagent";
+  readonly toolUseId: string;
+  readonly subagent: SubagentState;
 }
 
 export interface RetryingItem {
@@ -106,6 +133,7 @@ export type TurnItem =
   | ThinkingItem
   | TextItem
   | ToolItem
+  | SubagentItem
   | RetryingItem
   | StalledItem
   | CompactBoundaryItem
@@ -126,6 +154,12 @@ export interface SessionMeta {
   readonly costUsd: number | null;
   readonly numTurns: number | null;
   readonly hookFired: string | null;
+  /** Wall-clock ms of the first thinking_tokens heartbeat (slice-025-a A1).
+   * Set on first heartbeat, cleared when the thinking content envelope arrives
+   * (the duration is stamped onto the ThinkingItem). Null outside a think. */
+  readonly thinkingStartedAt: number | null;
+  /** Cumulative thinking-token estimate from the latest heartbeat. */
+  readonly thinkingTokens: number | null;
 }
 
 export interface ReducerState {
@@ -143,6 +177,8 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
     costUsd: null,
     numTurns: null,
     hookFired: null,
+    thinkingStartedAt: null,
+    thinkingTokens: null,
   },
 };
 
@@ -252,6 +288,22 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       );
     }
 
+    case "thinking_progress": {
+      // First heartbeat records the start moment; later heartbeats only refresh
+      // the token count. NOTE: Date.now() makes this case non-pure; tests use
+      // vi.setSystemTime. See slice-025-a decision #6.
+      const startedAt = prev.meta.thinkingStartedAt ?? Date.now();
+      return {
+        ...prev,
+        phase: "thinking",
+        meta: {
+          ...prev.meta,
+          thinkingStartedAt: startedAt,
+          thinkingTokens: event.estimated_tokens,
+        },
+      };
+    }
+
     case "thinking": {
       const turns = prev.turns;
       if (turns.length === 0) return { ...prev, phase: "thinking" };
@@ -271,9 +323,24 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
           turns: [...turns.slice(0, -1), updated],
         };
       }
+      // Stamp the thinking duration (first heartbeat -> now) onto the new item
+      // and clear the heartbeat state. NOTE: Date.now() — non-pure; tests mock.
+      const startedAt = prev.meta.thinkingStartedAt;
+      const duration =
+        startedAt !== null
+          ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
+          : undefined;
       return appendToCurrentTurn(
-        { ...prev, phase: "thinking" },
-        { kind: "thinking", text: event.text },
+        {
+          ...prev,
+          phase: "thinking",
+          meta: { ...prev.meta, thinkingStartedAt: null, thinkingTokens: null },
+        },
+        {
+          kind: "thinking",
+          text: event.text,
+          thinkingDurationSeconds: duration,
+        },
       );
     }
 
@@ -310,6 +377,36 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
             ? { ...it, status: "done", result: event.content }
             : it,
       );
+
+    case "subagent_progress": {
+      // Attach to the Agent ToolItem whose tool_use_id matches (merge fields;
+      // started's description/subagent_type survive into progress/completed).
+      // If no Agent tool matches, append a standalone subagent item (decision #10).
+      // Drop events with no tool_use_id (malformed — task_started always has
+      // one) so they don't mis-attach to an empty-id tool.
+      if (!event.tool_use_id) return prev;
+      const turns = prev.turns;
+      if (turns.length === 0) return prev;
+      const last = turns[turns.length - 1];
+      const items = [...last.items];
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (
+          it.kind === "tool" &&
+          it.toolName === "Agent" &&
+          it.toolUseId === event.tool_use_id
+        ) {
+          items[i] = { ...it, subagent: mergeSubagent(it.subagent, event) };
+          const updatedLast: Turn = { ...last, items };
+          return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+        }
+      }
+      return appendToCurrentTurn(prev, {
+        kind: "subagent",
+        toolUseId: event.tool_use_id,
+        subagent: mergeSubagent(undefined, event),
+      });
+    }
 
     case "retrying":
       return appendToCurrentTurn(
@@ -384,6 +481,22 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     default:
       return prev;
   }
+}
+
+/** Merge a subagent_progress event onto the prior SubagentState; fields absent
+ * on the event (undefined) fall back to the previous value, so the started
+ * event's description/subagent_type survive into progress/completed updates. */
+function mergeSubagent(
+  prev: SubagentState | undefined,
+  event: SubagentProgressEvent,
+): SubagentState {
+  return {
+    status: event.status,
+    description: event.description ?? prev?.description ?? null,
+    subagent_type: event.subagent_type ?? prev?.subagent_type ?? null,
+    last_tool_name: event.last_tool_name ?? prev?.last_tool_name ?? null,
+    usage: event.usage ?? prev?.usage ?? null,
+  };
 }
 
 function retryingItemFrom(event: RetryingEvent): RetryingItem {
