@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 
 import type {
   InterruptedItem,
@@ -9,18 +9,25 @@ import type {
   TurnItem,
 } from "../../stores/ccStore";
 import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
+import { AssistantText } from "./AssistantText";
 import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 
 /**
- * The "bare-row" process timeline: thinking / tool / retrying / stalled /
- * compact_boundary items render as inline summary lines between the dialogue
- * cards. Each shows one line at a glance, with the raw detail folded away —
- * the "see what happened without being shouted at" affordance.
+ * The turn body renderer. Walks `turn.items` in true order and interleaves:
+ * consecutive text items merge into one AssistantText markdown block (a DOM
+ * optimization — order is preserved), and process items (thinking / tool /
+ * retrying / stalled / compact_boundary / error / interrupted / …) render as
+ * bare rows at the position they actually occurred.
  *
- * error + interrupted render here too as the turn-tail block (red block /
- * sunshine soft-transition badge), with a conditional retry button on
- * recoverable errors.
+ * slice-025-b B1: previously this component filtered text out and rendered only
+ * a process-item sequence inside a `.cc-timeline` gutter; MessageList bucketed
+ * all text in front. That hid the real order. Now text + process share one
+ * in-order pass and the gutter is gone (terminal cc style: process rows sit
+ * between text blocks, no global timeline rail).
+ *
+ * error + interrupted render here as the turn-tail block (red block / sunshine
+ * soft-transition badge), with a conditional retry button on recoverable errors.
  */
 interface EventTimelineProps {
   readonly items: readonly TurnItem[];
@@ -173,9 +180,9 @@ function ErrorRow({
 }
 
 /**
- * Render one process item. Text items are NOT rendered here — MessageList
- * renders assistant text as dialogue cards; this component is only the
- * "bare-row" process events + turn-tail error/interrupted.
+ * Render one process item. Text items are NOT rendered here — EventTimeline's
+ * main loop merges consecutive text into AssistantText blocks before reaching
+ * Row. The text case stays as a defensive null.
  */
 function Row({
   item,
@@ -197,9 +204,6 @@ function Row({
       // The Agent's input (prompt) / result are NOT expanded here (mockup
       // single-row design; a future slice can add a collapsible detail).
       if (item.toolName === "Agent") {
-        // history replay: a turn that already ended (done/error/interrupted)
-        // shouldn't show a spinning Agent even if tool_result never arrived
-        // (e.g. stalled mid-Agent) — treat as completed in that case.
         const fallback =
           item.status === "done" || isReplay ? "completed" : "progress";
         return (
@@ -230,23 +234,53 @@ function Row({
     case "interrupted":
       return <InterruptedRow item={item} />;
     case "text":
-      return null; // handled by MessageList
+      // Handled by EventTimeline's main loop (merged into AssistantText).
+      return null;
     default:
       return null;
   }
 }
 
 export function EventTimeline({ items, onRetryLast, isReplay }: EventTimelineProps) {
-  // Render only process items (skip text — that's the dialogue card's job).
-  const processItems = items.filter((i) => i.kind !== "text");
-  if (processItems.length === 0) return null;
-  return (
-    <div className="cc-timeline" role="list">
-      {processItems.map((item, idx) => (
-        <div className="cc-timeline__entry" role="listitem" key={idx}>
-          <Row item={item} onRetryLast={onRetryLast} isReplay={isReplay} />
-        </div>
-      ))}
-    </div>
-  );
+  // One in-order pass: consecutive text items merge into a single AssistantText
+  // markdown block; every other item renders via Row at its real position.
+  //
+  // Returns a Fragment (not a wrapper <div>): AssistantText and each Row become
+  // DIRECT children of .cc-msg__body, which is what lets the
+  // `.cc-msg--assistant .cc-msg__body > * + *` selector space them. Wrapping
+  // these blocks in a container div would break that rhythm — keep this透明.
+  const blocks: ReactNode[] = [];
+  let textBuf = "";
+  let key = 0;
+  const flushText = () => {
+    if (textBuf !== "") {
+      blocks.push(<AssistantText key={`t${key++}`} text={textBuf} />);
+      textBuf = "";
+    }
+  };
+  for (const item of items) {
+    if (item.kind === "text") {
+      // Join consecutive text items with a blank line. ccStore's text case
+      // already folds a same-run delta into one TextItem, so this branch
+      // normally runs once per text run. But if items ever carry two adjacent
+      // TextItems (two assistant envelopes with no tool between, or a future
+      // reducer change), a bare concat would collapse them into one paragraph.
+      // The blank-line join keeps the paragraph boundary → markdown renders two
+      // <p>. Zero effect on the normal single-item path.
+      textBuf = textBuf ? `${textBuf}\n\n${item.text}` : item.text;
+    } else {
+      flushText();
+      blocks.push(
+        <Row
+          key={`p${key++}`}
+          item={item}
+          onRetryLast={onRetryLast}
+          isReplay={isReplay}
+        />,
+      );
+    }
+  }
+  flushText();
+  if (blocks.length === 0) return null;
+  return <Fragment>{blocks}</Fragment>;
 }

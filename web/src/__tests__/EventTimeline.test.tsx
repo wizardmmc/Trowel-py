@@ -70,10 +70,30 @@ describe("EventTimeline", () => {
     expect(screen.getByText(/自动压缩完成/)).toBeTruthy();
   });
 
-  it("text items are not rendered here (handled by MessageList)", () => {
-    const items: TurnItem[] = [{ kind: "text", text: "hello" }];
+  it("renders text items as an AssistantText markdown block (B2)", () => {
+    const items: TurnItem[] = [{ kind: "text", text: "# hello\n\n`code`" }];
     const { container } = render(<EventTimeline items={items} />);
-    expect(container.querySelector(".cc-timeline")).toBeNull();
+    // slice-025-b: EventTimeline now owns turn-body rendering — text items
+    // land here, rendered as markdown (not filtered out).
+    expect(container.querySelector(".cc-md")).toBeTruthy();
+    expect(container.querySelector("h1")?.textContent).toContain("hello");
+    expect(container.querySelector("code")).toBeTruthy();
+  });
+
+  it("keeps a paragraph break between adjacent text items (no collapse)", () => {
+    // ccStore's text case normally folds same-run deltas into one TextItem,
+    // so two adjacent TextItems is a defensive path (two envelopes with no
+    // tool between, or a future reducer change). A bare concat would merge
+    // them into one paragraph; the join must preserve the boundary.
+    const items: TurnItem[] = [
+      { kind: "text", text: "para1" },
+      { kind: "text", text: "para2" },
+    ];
+    const { container } = render(<EventTimeline items={items} />);
+    const ps = container.querySelectorAll(".cc-md p");
+    expect(ps).toHaveLength(2);
+    expect(ps[0].textContent).toBe("para1");
+    expect(ps[1].textContent).toBe("para2");
   });
 
   it("Agent tool renders SubagentBlock with the childTools region (阶段B)", () => {

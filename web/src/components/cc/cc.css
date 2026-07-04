@@ -250,25 +250,111 @@
   line-height: 1.6;
   color: var(--text-primary);
 }
-.cc-msg__assistant-text p {
-  margin: 0 0 var(--space-sm) 0;
-}
-.cc-msg__assistant-text p:last-child {
-  margin-bottom: 0;
-}
-
-/* ── EventTimeline (bare rows) ── */
-
-.cc-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+/* slice-025-b: assistant body interleaves markdown blocks and process rows in
+   true item order. Adjacent top-level blocks get vertical rhythm. User body is
+   a single text node so this only adds rhythm inside the assistant card. */
+.cc-msg--assistant .cc-msg__body > * + * {
   margin-top: var(--space-sm);
-  padding-left: var(--space-sm);
-  border-left: 1px solid var(--color-border);
 }
 
-.cc-timeline__entry {
+/* ── AssistantText markdown (slice-025-b B2) ── */
+.cc-md p { margin: 0 0 var(--space-sm) 0; }
+.cc-md p:last-child { margin-bottom: 0; }
+.cc-md strong { font-weight: 600; color: var(--text-primary); }
+.cc-md em { font-style: italic; }
+.cc-md a {
+  color: var(--garden-green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cc-md a:hover { color: var(--soil-brown); }
+.cc-md ul,
+.cc-md ol { margin: 0 0 var(--space-sm) 0; padding-left: 1.4em; }
+.cc-md li { margin: 2px 0; }
+.cc-md li::marker { color: var(--soil-brown); }
+/* inline code (the <code> that is NOT inside a fenced block) */
+.cc-md code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--neutral-soft);
+  color: var(--text-primary);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+.cc-md h1,
+.cc-md h2,
+.cc-md h3 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  margin: var(--space-sm) 0 var(--space-xs);
+  line-height: 1.3;
+}
+.cc-md h1 { font-size: 1.15rem; }
+.cc-md h2 { font-size: 1.05rem; }
+.cc-md h3 { font-size: 0.98rem; }
+.cc-md h1:first-child,
+.cc-md h2:first-child,
+.cc-md h3:first-child { margin-top: 0; }
+
+/* Fenced code block: AssistantText.CodeBlock wraps <pre> in a container that
+   carries the language as a corner badge. Reset inline-code styling for the
+   <code> nested inside <pre> (it must look like plain mono text, not a chip). */
+.cc-md-codeblock {
+  position: relative;
+  margin: 0 0 var(--space-sm) 0;
+  background: var(--bg-garden);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.cc-md-codeblock pre {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-x: auto;
+}
+.cc-md-codeblock pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.cc-md-codeblock__lang {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--neutral-soft);
+  padding: 1px 6px;
+  border-bottom-left-radius: var(--radius-sm);
+}
+.cc-md blockquote {
+  margin: 0 0 var(--space-sm) 0;
+  padding: var(--space-xs) var(--space-md);
+  border-left: 2px solid var(--soil-brown);
+  background: var(--garden-soft);
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.cc-md blockquote code { background: var(--bg-card); }
+
+/* ── EventTimeline rows (slice-025-b: no global gutter) ──
+   Process rows (thinking / retrying / stalled / error / …) interleave inside
+   the assistant card body between markdown blocks, in true item order. There
+   is no .cc-timeline container or left rail anymore — each row carries its own
+   affordance (ToolBlock keeps its status border-left; thinking/retrying rows
+   keep their summary styling). Vertical rhythm between blocks comes from
+   .cc-msg--assistant .cc-msg__body > * + *. */
+
+.cc-timeline__row {
   font-size: 0.8rem;
   color: var(--text-secondary);
 }

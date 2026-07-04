@@ -52,6 +52,60 @@ describe("MessageList", () => {
     expect(screen.getByText("思考")).toBeTruthy();
   });
 
+  it("interleaves text / thinking / tool in item order (B1)", () => {
+    const { container } = render(
+      <MessageList
+        turns={[
+          turn({
+            items: [
+              { kind: "text", text: "开头" },
+              { kind: "thinking", text: "想一下" },
+              {
+                kind: "tool",
+                toolUseId: "a",
+                toolName: "Bash",
+                input: { command: "ls" },
+                status: "done",
+                elapsedSeconds: 1,
+                result: null,
+                childTools: [],
+              },
+              { kind: "text", text: "中间" },
+              { kind: "text", text: "段" },
+              {
+                kind: "tool",
+                toolUseId: "b",
+                toolName: "Read",
+                input: { file_path: "x" },
+                status: "done",
+                elapsedSeconds: 2,
+                result: null,
+                childTools: [],
+              },
+              { kind: "text", text: "结尾" },
+            ],
+            status: "done",
+          }),
+        ]}
+        streaming={false}
+      />,
+    );
+    const body = container.querySelector(
+      ".cc-msg--assistant .cc-msg__body",
+    ) as HTMLElement;
+    expect(body).toBeTruthy();
+    // squash body's top-level children into a kind sequence. Two consecutive
+    // text items ("中间"+"段") must merge into one .cc-md block.
+    const seq = Array.from(body.children).map((el) => {
+      const cls = (el as HTMLElement).className || "";
+      if (cls.includes("cc-md")) return "text";
+      if (cls.includes("cc-timeline__row--thinking")) return "thinking";
+      if (cls.includes("cc-tool")) return "tool";
+      return "other";
+    });
+    expect(seq).toEqual(["text", "thinking", "tool", "text", "tool", "text"]);
+  });
+
   it("error item shows a retry button wired to onRetryLast", () => {
     const onRetry = vi.fn();
     render(

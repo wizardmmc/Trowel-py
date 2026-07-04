@@ -7,30 +7,21 @@ import { SpinnerLine } from "./SpinnerLine";
 /**
  * The dialogue stream: one card per turn (user bubble + CC's response).
  *
- * Layout follows the spec's "A 混合": user + assistant *text* render as
- * shallow rounded cards (garden/bg-card, "你/CC" tag top-left, same skin as
- * ReviewModal); process events (thinking/tool/retrying/…) are bare rows
- * sandwiched between cards via EventTimeline. No left/right chat bubbles.
+ * Layout = spec's "A 混合": user + assistant text are shallow rounded cards
+ * (garden / bg-card, "你/CC" tag top-left); process events (thinking / tool /
+ * retrying / …) and assistant text interleave *inside* the assistant card body
+ * in true item order (slice-025-b B1). EventTimeline owns that interleaving:
+ * consecutive text items merge into one AssistantText markdown block, process
+ * items render as bare rows where they actually occurred. No more
+ * text-bucketed-first / process-bucketed-after.
  *
- * Assistant text items inside a turn render as one card; the process timeline
- * sits beside/within it. aria-live is polite and we only announce completed
- * text, so screen readers don't get chatter per delta.
+ * aria-live is polite and we only announce completed text, so screen readers
+ * don't get chatter per delta.
  */
 interface MessageListProps {
   readonly turns: readonly Turn[];
   readonly streaming: boolean;
   readonly onRetryLast?: () => void;
-}
-
-/** A single piece of assistant text, rendered as markdown-ish paragraphs. */
-function AssistantText({ text }: { readonly text: string }) {
-  return (
-    <div className="cc-msg__assistant-text">
-      {text.split(/\n{2,}/).map((para, i) => (
-        <p key={i}>{para}</p>
-      ))}
-    </div>
-  );
 }
 
 function TurnCard({
@@ -40,19 +31,17 @@ function TurnCard({
   readonly turn: Turn;
   readonly onRetryLast?: () => void;
 }) {
-  const textItems = turn.items.filter((i) => i.kind === "text");
-  const assistantText = textItems.map((i) => (i.kind === "text" ? i.text : "")).join("");
+  const hasContent = turn.items.length > 0;
   return (
     <div className="cc-turn" data-turn-status={turn.status}>
       <div className="cc-msg cc-msg--user">
         <span className="cc-msg__tag">你</span>
         <div className="cc-msg__body">{turn.userText}</div>
       </div>
-      {(assistantText || turn.items.some((i) => i.kind !== "text")) && (
+      {hasContent && (
         <div className="cc-msg cc-msg--assistant">
           <span className="cc-msg__tag">CC</span>
           <div className="cc-msg__body">
-            {assistantText && <AssistantText text={assistantText} />}
             <EventTimeline
               items={turn.items}
               onRetryLast={onRetryLast}
