@@ -16,7 +16,8 @@ trowel-py/
 ├── docs/                  设计与开发文档，整体 gitignored、本地私有
 │   ├── foundation/        产品根基：prd.md（并非一成不变，核心作用是锚定大致方向）/ development.md / adr/
 │   ├── slices/            SDD 的 slice spec（如 021.md）
-│   ├── design/            前端 review（/plan-design-review 产出，front-end/）
+│   ├── design/            前端设计稿（/plan-design-review 产出 + slice mockup）
+│   │   └── front-end/     slice 前端 mockup（{feature}-{date}.html，如 ask-user-question-20260704.html）+ review md
 │   ├── training-log-m1.md / m2.md / m3.md    各阶段训练日志（进度 + 知识点）
 │   └── training-log-status.md                进度状态
 │

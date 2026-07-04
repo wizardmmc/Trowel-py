@@ -32,6 +32,8 @@ class FakeHost:
         self.interrupted = False
         self.closed = False
         self.received: list[str] = []
+        self.answered: dict[str, str] | None = None
+        self.cancelled = False
 
     async def send(self, text: str) -> AsyncIterator:
         self.received.append(text)
@@ -40,6 +42,14 @@ class FakeHost:
 
     async def interrupt(self) -> None:
         self.interrupted = True
+
+    async def answer_elicit(self, answers: dict[str, str]) -> bool:
+        self.answered = dict(answers)
+        return True
+
+    async def cancel_elicit(self) -> bool:
+        self.cancelled = True
+        return True
 
     async def close(self) -> None:
         self.closed = True
@@ -125,6 +135,32 @@ class TestInterrupt:
     def test_interrupt_unknown_404(self):
         client = _mini_app({})
         assert client.post("/api/cc/sessions/nope/interrupt").status_code == 404
+
+
+class TestAnswer:
+    def test_answer_calls_host_with_answers(self):
+        fake = FakeHost([])
+        client = _mini_app({"s1": fake})
+        resp = client.post("/api/cc/sessions/s1/answer",
+                           json={"answers": {"A or B?": "A"}, "cancel": False})
+        body = resp.json()
+        assert body["success"] is True
+        assert body["data"]["answered"] is True
+        assert fake.answered == {"A or B?": "A"}
+
+    def test_answer_cancel_calls_host(self):
+        fake = FakeHost([])
+        client = _mini_app({"s1": fake})
+        resp = client.post("/api/cc/sessions/s1/answer",
+                           json={"answers": {}, "cancel": True})
+        assert resp.json()["success"] is True
+        assert fake.cancelled is True
+        assert fake.answered is None
+
+    def test_answer_unknown_404(self):
+        client = _mini_app({})
+        assert client.post("/api/cc/sessions/nope/answer",
+                           json={"answers": {}, "cancel": False}).status_code == 404
 
 
 class TestDelete:

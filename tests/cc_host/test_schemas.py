@@ -27,6 +27,7 @@ from trowel_py.schemas.cc_host import (
     StalledEvent,
     ThinkingProgressEvent,
     SubagentProgressEvent,
+    ElicitationRequestEvent,
     EVENT_TYPES,
 )
 
@@ -74,6 +75,7 @@ class TestEventDiscriminators:
             (StalledEvent, "stalled"),
             (ThinkingProgressEvent, "thinking_progress"),
             (SubagentProgressEvent, "subagent_progress"),
+            (ElicitationRequestEvent, "elicit_request"),
         ],
     )
     def test_each_event_has_unique_type(self, model, etype):
@@ -84,6 +86,7 @@ class TestEventDiscriminators:
             "compact_boundary", "local_command", "finished", "error",
             "interrupted", "stalled",
             "thinking_progress", "subagent_progress",
+            "elicit_request",
         }
         assert etype in EVENT_TYPES
 
@@ -120,3 +123,18 @@ class TestEventDiscriminators:
         dumped = ev.model_dump()
         assert dumped["total_cost_usd"] == 0.01
         assert dumped["num_turns"] == 2
+
+
+class TestElicitationRequestSchema:
+    def test_elicit_request_carries_questions_and_ids(self):
+        e = ElicitationRequestEvent(
+            tool_use_id="call_abc",
+            request_id="req-1",
+            questions=[{"question": "A or B?", "header": "Pref",
+                        "options": [{"label": "A"}], "multiSelect": False}],
+        )
+        dumped = e.model_dump()
+        assert dumped["type"] == "elicit_request"
+        assert dumped["tool_use_id"] == "call_abc"
+        assert dumped["request_id"] == "req-1"
+        assert dumped["questions"][0]["header"] == "Pref"

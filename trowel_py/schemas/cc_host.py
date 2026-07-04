@@ -46,6 +46,17 @@ class SendMessageRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class AnswerElicitRequest(BaseModel):
+    """Body for POST /api/cc/sessions/{id}/answer (slice-025-c).
+
+    The frontend posts the user's AskUserQuestion selections here. `cancel`
+    declines the question (writes control_response behavior=deny).
+    """
+
+    answers: dict[str, str] = Field(default_factory=dict)
+    cancel: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Trowel event models (frontend wire contract)
 # ---------------------------------------------------------------------------
@@ -71,6 +82,7 @@ EVENT_TYPES = frozenset(
         "stalled",
         "thinking_progress",
         "subagent_progress",
+        "elicit_request",
     }
 )
 
@@ -259,6 +271,29 @@ class SubagentProgressEvent(_Event):
     usage: dict[str, Any] | None = None
 
 
+class ElicitationRequestEvent(_Event):
+    """cc asked the user a multiple-choice question via AskUserQuestion (slice-025-c).
+
+    Emitted when translator sees a control_request(can_use_tool) whose
+    tool_name is AskUserQuestion. The frontend renders an inline selection
+    box (see docs/design/front-end/ask-user-question-20260704.html); the
+    user's answers are posted back to the service, which writes a
+    control_response(behavior=allow, updatedInput={questions, answers,
+    annotations}) to cc stdin. Ground truth: reverse_cc
+    samples/raw/052_askuser_bypass_stdio.jsonl (bypass + --permission-prompt-tool
+    stdio route — ordinary tools stay silent, only interactive tools trigger this).
+    """
+
+    type: Literal["elicit_request"] = "elicit_request"
+    tool_use_id: str
+    request_id: str
+    # questions carried verbatim from control_request.input.questions; the
+    # frontend reads {question, header, options:[{label, description?, preview?}],
+    # multiSelect} per the mockup field map. Loose dict keeps coupling with cc's
+    # evolving schema minimal.
+    questions: list[dict[str, Any]]
+
+
 # Union of all trowel events (for type hints; not used as a validator).
 TrowelEvent = (
     SessionStartedEvent
@@ -279,4 +314,5 @@ TrowelEvent = (
     | StalledEvent
     | ThinkingProgressEvent
     | SubagentProgressEvent
+    | ElicitationRequestEvent
 )

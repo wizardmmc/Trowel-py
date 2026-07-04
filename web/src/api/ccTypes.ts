@@ -128,6 +128,46 @@ export interface SubagentProgressEvent {
   readonly usage?: Record<string, unknown> | null;
 }
 
+/** AskUserQuestion interactive prompt (slice-025-c). Translated from cc's
+ * control_request(can_use_tool, tool_name=AskUserQuestion) — bypass +
+ * --permission-prompt-tool stdio route. The frontend renders an inline
+ * selection box (see docs/design/front-end/ask-user-question-20260704.html);
+ * the user's answers are posted to POST /api/cc/sessions/:id/answer. */
+export interface ElicitationRequestEvent {
+  readonly type: "elicit_request";
+  readonly tool_use_id: string;
+  readonly request_id: string;
+  /** questions carried verbatim from cc — each has {question, header,
+   * options:[{label, description?, preview?}], multiSelect}. Loose typing
+   * keeps coupling with cc's evolving schema minimal (mirror of the python
+   * ElicitationRequestEvent). */
+  readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
+}
+
+/** One question in an AskUserQuestion elicitation (spec/04 A.1). */
+export interface QuestionInput {
+  readonly question: string;
+  readonly header: string;
+  readonly multiSelect: boolean;
+  readonly options: ReadonlyArray<QuestionOption>;
+  readonly annotations?: { preview?: string; notes?: string };
+}
+
+/** One option within a question. */
+export interface QuestionOption {
+  readonly label: string;
+  readonly description?: string;
+  readonly preview?: string;
+}
+
+/** Answer payload for POST /api/cc/sessions/:id/answer. */
+export interface AnswerElicitBody {
+  /** {questionText: answerStr}; multi-select answers are comma-separated. */
+  readonly answers: Readonly<Record<string, string>>;
+  /** true = decline (writes control_response behavior=deny). */
+  readonly cancel: boolean;
+}
+
 export type TrowelEvent =
   | SessionStartedEvent
   | UserEvent
@@ -146,7 +186,8 @@ export type TrowelEvent =
   | InterruptedEvent
   | StalledEvent
   | ThinkingProgressEvent
-  | SubagentProgressEvent;
+  | SubagentProgressEvent
+  | ElicitationRequestEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

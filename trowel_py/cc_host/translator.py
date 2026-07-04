@@ -19,6 +19,7 @@ from typing import Any
 from trowel_py.cc_host.delta import DeltaAccumulator
 from trowel_py.schemas.cc_host import (
     CompactBoundaryEvent,
+    ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
     HookEvent,
@@ -62,6 +63,18 @@ _RESULT_ERROR_SUBCLASSES = frozenset(
     }
 )
 
+# Tools whose tool_use is rendered inline as a selection box via the
+# control_request path (ElicitationRequestEvent) rather than as a tool block.
+# Mirrors cc terminal's renderToolUseMessage=null for these tools (slice-025-c).
+# Future: EnterPlanMode / ExitPlanMode will join this set.
+_ELICIT_TOOL_NAMES = frozenset({"AskUserQuestion"})
+
+
+def _is_elicit_tool(name: str) -> bool:
+    """True for interactive tools rendered via the elicitation path."""
+    return name in _ELICIT_TOOL_NAMES
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,6 +93,7 @@ class Translator:
             "user": self._on_user,
             "tool_progress": self._on_tool_progress,
             "result": self._on_result,
+            "control_request": self._on_control_request,
         }
 
     def translate(self, cc_event: dict[str, Any]) -> list[TrowelEvent]:
@@ -278,6 +292,12 @@ class Translator:
             return []
         if result.tool_use_id in self._emitted_tool_ids:
             return []
+        if _is_elicit_tool(result.tool_name):
+            # Rendered inline as a selection box via the control_request path
+            # (ElicitationRequestEvent); skip the ToolCallEvent so it doesn't
+            # double-render as a tool block. Mirrors cc terminal
+            # renderToolUseMessage=null (slice-025-c).
+            return []
         self._emitted_tool_ids.add(result.tool_use_id)
         return [
             ToolCallEvent(
@@ -319,6 +339,10 @@ class Translator:
             elif kind == "tool_use":
                 tid = block.get("id", "")
                 if not tid or tid in self._emitted_tool_ids:
+                    continue
+                if _is_elicit_tool(block.get("name", "")):
+                    # Rendered via control_request → ElicitationRequestEvent;
+                    # skip the tool block (slice-025-c).
                     continue
                 self._emitted_tool_ids.add(tid)
                 out.append(
@@ -413,6 +437,51 @@ class Translator:
         return [
             ErrorEvent(
                 subclass=sub or "error", api_error_status=ev.get("api_error_status")
+            )
+        ]
+
+    def _on_control_request(self, ev: dict[str, Any]) -> list[TrowelEvent]:
+        """Handle a CC `control_request` (slice-025-c interactive tool path).
+
+        Under bypassPermissions + `--permission-prompt-tool stdio`, cc emits
+        control_request(can_use_tool) only for requiresUserInteraction tools
+        (AskUserQuestion/EnterPlanMode/ExitPlanMode) — ordinary tools stay
+        silent because permissions.ts 1e sits before the 2a bypass short-circuit
+        (see reverse_cc spec/04 D2-实证段). We translate AskUserQuestion into
+        ElicitationRequestEvent so the frontend renders an inline selection box;
+        every other control_request is left for a future slice (permission
+        confirmation UI) and yields nothing for now.
+
+        Args:
+            ev: the raw CC `control_request` dict (request_id + request{subtype,
+                tool_name, input, tool_use_id}).
+
+        Returns:
+            one ElicitationRequestEvent for AskUserQuestion; empty otherwise.
+        """
+        req = ev.get("request") or {}
+        if req.get("subtype") != "can_use_tool":
+            return []
+        if req.get("tool_name") != "AskUserQuestion":
+            return []
+        tool_use_id = req.get("tool_use_id")
+        request_id = ev.get("request_id")
+        if not tool_use_id or not request_id:
+            # Without these the host cannot match the control_response back to
+            # cc's request — drop and warn rather than emit a half-formed event
+            # (CR WARNING: silent "" coercion masked protocol errors).
+            logger.warning(
+                "AskUserQuestion control_request missing tool_use_id or "
+                "request_id; dropping. raw=%s",
+                ev,
+            )
+            return []
+        questions = (req.get("input") or {}).get("questions") or []
+        return [
+            ElicitationRequestEvent(
+                tool_use_id=tool_use_id,
+                request_id=request_id,
+                questions=list(questions),
             )
         ]
 

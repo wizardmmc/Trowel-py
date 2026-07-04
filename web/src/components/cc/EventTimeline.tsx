@@ -12,6 +12,7 @@ import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
 import { AssistantText } from "./AssistantText";
 import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
+import { ElicitationBlock } from "./ElicitationBlock";
 
 /**
  * The turn body renderer. Walks `turn.items` in true order and interleaves:
@@ -36,6 +37,10 @@ interface EventTimelineProps {
    * Agent that never got a tool_result (e.g. stalled mid-Agent) doesn't spin
    * forever in the replay view. */
   readonly isReplay?: boolean;
+  /** Submit answers for a pending AskUserQuestion (slice-025-c). */
+  readonly onAnswer?: (answers: Record<string, string>) => void;
+  /** Decline a pending AskUserQuestion. */
+  readonly onCancel?: () => void;
 }
 
 function ChevronToggle({
@@ -188,10 +193,14 @@ function Row({
   item,
   onRetryLast,
   isReplay,
+  onAnswer,
+  onCancel,
 }: {
   readonly item: TurnItem;
   readonly onRetryLast?: () => void;
   readonly isReplay?: boolean;
+  readonly onAnswer?: (answers: Record<string, string>) => void;
+  readonly onCancel?: () => void;
 }) {
   switch (item.kind) {
     case "thinking":
@@ -233,6 +242,15 @@ function Row({
       return <ErrorRow item={item} onRetryLast={onRetryLast} />;
     case "interrupted":
       return <InterruptedRow item={item} />;
+    case "elicit":
+      return (
+        <ElicitationBlock
+          item={item}
+          onAnswer={onAnswer}
+          onCancel={onCancel}
+          disabled={isReplay}
+        />
+      );
     case "text":
       // Handled by EventTimeline's main loop (merged into AssistantText).
       return null;
@@ -241,7 +259,13 @@ function Row({
   }
 }
 
-export function EventTimeline({ items, onRetryLast, isReplay }: EventTimelineProps) {
+export function EventTimeline({
+  items,
+  onRetryLast,
+  isReplay,
+  onAnswer,
+  onCancel,
+}: EventTimelineProps) {
   // One in-order pass: consecutive text items merge into a single AssistantText
   // markdown block; every other item renders via Row at its real position.
   //
@@ -276,6 +300,8 @@ export function EventTimeline({ items, onRetryLast, isReplay }: EventTimelinePro
           item={item}
           onRetryLast={onRetryLast}
           isReplay={isReplay}
+          onAnswer={onAnswer}
+          onCancel={onCancel}
         />,
       );
     }

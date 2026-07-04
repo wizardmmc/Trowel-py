@@ -5,7 +5,7 @@
  * the /api/cc base. Streaming (POST /messages) lives in ccStream.ts because it
  * needs a ReadableStream body, not a JSON response.
  */
-import type { TrowelEvent } from "./ccTypes";
+import type { AnswerElicitBody, TrowelEvent } from "./ccTypes";
 
 const CC_API_BASE = "http://localhost:8000/api/cc";
 
@@ -98,6 +98,29 @@ export async function interruptSession(sessionId: string): Promise<void> {
     `${CC_API_BASE}/sessions/${sessionId}/interrupt`,
     { method: "POST" },
   );
+}
+
+/** POST /api/cc/sessions/{id}/answer — answer (or cancel) a pending
+ * AskUserQuestion elicitation (slice-025-c). Returns ok=false when no
+ * elicitation was pending (stale-UI race) instead of throwing, so the caller
+ * can silently reconcile. Network errors still throw. */
+export async function answerElicit(
+  sessionId: string,
+  body: AnswerElicitBody,
+): Promise<{ ok: boolean }> {
+  const resp = await fetch(
+    `${CC_API_BASE}/sessions/${sessionId}/answer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!resp.ok) {
+    throw new Error(`CC API error: ${resp.status}`);
+  }
+  const result: ApiEnvelope<{ answered: boolean }> = await resp.json();
+  return { ok: Boolean(result.success) };
 }
 
 /** DELETE /api/cc/sessions/{id} — kill the subprocess and drop the session. */

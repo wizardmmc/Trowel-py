@@ -25,6 +25,7 @@ const PHASE_LABEL: Record<Phase, string> = {
   retrying: "重试中",
   compacting: "压缩上下文中",
   stalled: "静默恢复中",
+  awaiting_input: "等你回答",
   done: "完成",
   error: "出错",
   interrupted: "已中断",

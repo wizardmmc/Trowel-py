@@ -14,11 +14,20 @@ import { useEffect, useRef, useState } from "react";
 interface ComposerProps {
   readonly streaming: boolean;
   readonly disabled: boolean;
+  /** True while an AskUserQuestion awaits the user's answer (slice-025-c).
+   * Ordinary send is blocked; the user must Submit or Cancel the elicit. */
+  readonly awaitingInput?: boolean;
   readonly onSend: (text: string) => void;
   readonly onInterrupt: () => void;
 }
 
-export function Composer({ streaming, disabled, onSend, onInterrupt }: ComposerProps) {
+export function Composer({
+  streaming,
+  disabled,
+  awaitingInput,
+  onSend,
+  onInterrupt,
+}: ComposerProps) {
   const [text, setText] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -73,7 +82,11 @@ export function Composer({ streaming, disabled, onSend, onInterrupt }: ComposerP
       />
       <div className="cc-composer__bar">
         <span className="cc-composer__hint">
-          {streaming ? "生成中… Esc 中断" : "就绪"}
+          {streaming
+            ? "生成中… Esc 中断"
+            : awaitingInput
+              ? "等你回答上方问题"
+              : "就绪"}
         </span>
         {streaming ? (
           <button

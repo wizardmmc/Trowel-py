@@ -26,6 +26,7 @@ from trowel_py.cc_host.history import parse_history
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
 from trowel_py.schemas.cc_host import (
+    AnswerElicitRequest,
     CreateSessionRequest,
     ErrorEvent,
     SendMessageRequest,
@@ -136,6 +137,25 @@ async def interrupt(
     host = _require(sid, registry)
     await host.interrupt()
     return {"success": True, "data": {"interrupted": True}, "error": None}
+
+
+@router.post("/sessions/{sid}/answer")
+async def answer_elicit(
+    sid: str,
+    body: AnswerElicitRequest,
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """Answer (or cancel) the pending AskUserQuestion elicitation (slice-025-c).
+
+    Writes control_response(allow + updatedInput.answers) or control_response
+    (deny) to cc stdin so cc unblocks and continues the turn.
+    """
+    host = _require(sid, registry)
+    if body.cancel:
+        ok = await host.cancel_elicit()
+    else:
+        ok = await host.answer_elicit(body.answers)
+    return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
 
 
 @router.get("/sessions")

@@ -30,12 +30,14 @@ from trowel_py.cc_host.launcher import (
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
     DEFAULT_PERMISSION_MODE,
+    DEFAULT_PERMISSION_PROMPT_TOOL,
     build_args,
     build_subprocess_kwargs,
 )
 from trowel_py.cc_host.stalled import StalledDetector
 from trowel_py.cc_host.translator import Translator
 from trowel_py.schemas.cc_host import (
+    ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
     LocalCommandEvent,
@@ -50,6 +52,45 @@ def _user_msg(text: str) -> bytes:
     payload = {
         "type": "user",
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }
+    return (json.dumps(payload) + "\n").encode()
+
+
+def _control_response_msg(
+    *,
+    request_id: str,
+    behavior: str,
+    updated_input: dict[str, Any] | None = None,
+    message: str | None = None,
+) -> bytes:
+    """Encode a control_response for CC's stream-json input (slice-025-c).
+
+    Used to answer AskUserQuestion's control_request(can_use_tool):
+    behavior=allow + updatedInput.{questions, answers, annotations} carries the
+    user's selections back to cc (answers is a required record — 052 ZodError
+    when absent). behavior=deny + message declines the question.
+
+    Args:
+        request_id: must match the control_request's request_id (cc blocks on it).
+        behavior: "allow" or "deny".
+        updated_input: the updatedInput record (required for allow, omitted for deny).
+        message: deny reason (required for deny, omitted for allow).
+
+    Returns:
+        newline-terminated JSON bytes ready for cc stdin.
+    """
+    response: dict[str, Any] = {"behavior": behavior}
+    if updated_input is not None:
+        response["updatedInput"] = updated_input
+    if message is not None:
+        response["message"] = message
+    payload = {
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        },
     }
     return (json.dumps(payload) + "\n").encode()
 
@@ -74,6 +115,7 @@ class CCHost:
         model: str | None = None,
         effort: str | None = None,
         permission_mode: str = DEFAULT_PERMISSION_MODE,
+        permission_prompt_tool: str | None = DEFAULT_PERMISSION_PROMPT_TOOL,
         resume_from: str | None = None,
         spawner: Callable[
             [list[str], dict[str, Any]], Awaitable[Any]
@@ -102,6 +144,7 @@ class CCHost:
         self._model = model or DEFAULT_MODEL
         self.effort = effort or DEFAULT_EFFORT
         self.permission_mode = permission_mode
+        self._permission_prompt_tool = permission_prompt_tool
         self._resume_from = resume_from
         self._spawner = spawner
         self._now = now
@@ -112,6 +155,13 @@ class CCHost:
         self._started = False
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
+        # slice-025-c: pending AskUserQuestion elicitation (set when translator
+        # emits ElicitationRequestEvent, cleared on answer/cancel). None when
+        # no interactive tool is awaiting the user. One at a time — cc does not
+        # ask concurrently. The lock serializes answer/cancel so a double-submit
+        # can't write two control_response rows for the same request_id.
+        self._pending_elicit: dict[str, Any] | None = None
+        self._elicit_lock = asyncio.Lock()
 
     # -- introspection -----------------------------------------------------
 
@@ -146,6 +196,7 @@ class CCHost:
             model=self._model,
             effort=self.effort,
             permission_mode=self.permission_mode,
+            permission_prompt_tool=self._permission_prompt_tool,
             resume_from=resume_from,
         )
         kwargs = build_subprocess_kwargs(self.workdir)
@@ -265,6 +316,12 @@ class CCHost:
                 except asyncio.TimeoutError:
                     if proc.returncode is not None:
                         break
+                    # slice-025-c: while cc awaits the user's control_response
+                    # (AskUserQuestion), the stream is silent by design — don't
+                    # let the stall watchdog kill the process and force a retry
+                    # (which would make cc re-emit the AskUserQuestion).
+                    if self._pending_elicit is not None:
+                        continue
                     if detector.is_stalled(self._now()):
                         if detector.can_restart():
                             detector.note_restart()
@@ -306,6 +363,14 @@ class CCHost:
                     if sid:
                         self._cc_session_id = sid
                 for tev in translator.translate(ev):
+                    if isinstance(tev, ElicitationRequestEvent):
+                        # Remember the pending elicitation so answer_elicit /
+                        # cancel_elicit can write the matching control_response.
+                        self._pending_elicit = {
+                            "request_id": tev.request_id,
+                            "tool_use_id": tev.tool_use_id,
+                            "questions": tev.questions,
+                        }
                     yield tev
                     if isinstance(tev, FinishedEvent):
                         self._last_finished = tev
@@ -321,6 +386,65 @@ class CCHost:
             # result: don't leave a live subprocess behind.
             if not normal_end:
                 self._sync_kill()
+
+    async def answer_elicit(self, answers: dict[str, str]) -> bool:
+        """Reply to the pending AskUserQuestion with the user's selections.
+
+        Writes control_response(behavior=allow, updatedInput={questions, answers,
+        annotations}) to cc stdin, then clears the pending state. cc unblocks and
+        continues the turn (the next readline in send() resumes).
+
+        Args:
+            answers: {questionText: answerStr}. Multi-select answers are
+                comma-separated strings (spec/04 A.2).
+
+        Returns:
+            True if a control_response was written; False if no elicitation is
+            pending (caller surfaces an error).
+        """
+        async with self._elicit_lock:
+            pending = self._pending_elicit
+            if pending is None:
+                return False
+            payload = _control_response_msg(
+                request_id=pending["request_id"],
+                behavior="allow",
+                updated_input={
+                    "questions": pending["questions"],
+                    "answers": answers,
+                    "annotations": {},
+                },
+            )
+            # Write first; clear pending only on success so a failed write
+            # (dead subprocess) leaves the state intact for retry / diagnosis.
+            ok = await self._safe_write(payload)
+            if ok:
+                self._pending_elicit = None
+            return ok
+
+    async def cancel_elicit(self) -> bool:
+        """Decline the pending AskUserQuestion (behavior=deny).
+
+        Used when the user presses Esc / Cancel, or (future) when they send a
+        new message instead of answering (boundary in slice-025-c).
+
+        Returns:
+            True if a deny control_response was written; False if nothing pending
+            or the write failed (pending left intact for retry).
+        """
+        async with self._elicit_lock:
+            pending = self._pending_elicit
+            if pending is None:
+                return False
+            payload = _control_response_msg(
+                request_id=pending["request_id"],
+                behavior="deny",
+                message="User declined to answer questions",
+            )
+            ok = await self._safe_write(payload)
+            if ok:
+                self._pending_elicit = None
+            return ok
 
     async def _safe_write(self, payload: bytes) -> bool:
         """Write payload; return False if the process is dead (broken pipe)."""

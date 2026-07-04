@@ -18,6 +18,7 @@ from typing import Any
 
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.schemas.cc_host import (
+    ElicitationRequestEvent,
     FinishedEvent,
     SessionStartedEvent,
     TextEvent,
@@ -170,11 +171,29 @@ def _translate_assistant(ev: dict[str, Any]) -> list[TrowelEvent]:
         elif kind == "thinking":
             out.append(ThinkingEvent(text=str(block.get("thinking", ""))))
         elif kind == "tool_use":
-            out.append(
-                ToolCallEvent(
-                    tool_use_id=str(block.get("id", "")),
-                    tool_name=str(block.get("name", "")),
-                    input=dict(block.get("input", {}) or {}),
+            tool_name = str(block.get("name", ""))
+            if tool_name == "AskUserQuestion":
+                # slice-025-c: replay an AskUserQuestion turn the same way the
+                # live stream would — emit elicit_request, then the matching
+                # tool_result (translated by _translate_user) flips it to
+                # "answered" via the reducer. request_id is not in the jsonl
+                # (control_request never persists); the reducer only matches on
+                # tool_use_id, so an empty request_id is harmless here.
+                out.append(
+                    ElicitationRequestEvent(
+                        tool_use_id=str(block.get("id", "")),
+                        request_id="",
+                        questions=list(
+                            (block.get("input") or {}).get("questions") or []
+                        ),
+                    )
                 )
-            )
+            else:
+                out.append(
+                    ToolCallEvent(
+                        tool_use_id=str(block.get("id", "")),
+                        tool_name=tool_name,
+                        input=dict(block.get("input", {}) or {}),
+                    )
+                )
     return out

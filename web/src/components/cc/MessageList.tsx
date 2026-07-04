@@ -22,14 +22,20 @@ interface MessageListProps {
   readonly turns: readonly Turn[];
   readonly streaming: boolean;
   readonly onRetryLast?: () => void;
+  readonly onAnswer?: (answers: Record<string, string>) => void;
+  readonly onCancel?: () => void;
 }
 
 function TurnCard({
   turn,
   onRetryLast,
+  onAnswer,
+  onCancel,
 }: {
   readonly turn: Turn;
   readonly onRetryLast?: () => void;
+  readonly onAnswer?: (answers: Record<string, string>) => void;
+  readonly onCancel?: () => void;
 }) {
   const hasContent = turn.items.length > 0;
   return (
@@ -46,6 +52,8 @@ function TurnCard({
               items={turn.items}
               onRetryLast={onRetryLast}
               isReplay={turn.status !== "active"}
+              onAnswer={onAnswer}
+              onCancel={onCancel}
             />
           </div>
         </div>
@@ -54,7 +62,13 @@ function TurnCard({
   );
 }
 
-export function MessageList({ turns, streaming, onRetryLast }: MessageListProps) {
+export function MessageList({
+  turns,
+  streaming,
+  onRetryLast,
+  onAnswer,
+  onCancel,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // jsdom has no scrollIntoView; guard so tests don't blow up.
@@ -74,7 +88,13 @@ export function MessageList({ turns, streaming, onRetryLast }: MessageListProps)
   return (
     <div className="cc-msglist" role="log" aria-live="polite" aria-busy={streaming}>
       {turns.map((turn) => (
-        <TurnCard key={turn.id} turn={turn} onRetryLast={onRetryLast} />
+        <TurnCard
+          key={turn.id}
+          turn={turn}
+          onRetryLast={onRetryLast}
+          onAnswer={onAnswer}
+          onCancel={onCancel}
+        />
       ))}
       {/* slice-025-a A1: the ✻ thinking… row rides the tail of the stream.
         Renders null outside the thinking phase (see SpinnerLine). */}

@@ -47,6 +47,8 @@ export function SessionView({ workdir }: SessionViewProps) {
     loadHistoryIntoView,
     send,
     interrupt,
+    answerElicit,
+    cancelElicit,
   } = useCcStore();
 
   // Open a fresh session + prime history list on mount / when workdir changes.
@@ -100,11 +102,14 @@ export function SessionView({ workdir }: SessionViewProps) {
           turns={turns}
           streaming={streaming}
           onRetryLast={handleRetryLast}
+          onAnswer={(answers) => void answerElicit(answers)}
+          onCancel={() => void cancelElicit()}
         />
       </div>
       <Composer
         streaming={streaming}
-        disabled={!sessionId}
+        disabled={!sessionId || phase === "awaiting_input"}
+        awaitingInput={phase === "awaiting_input"}
         onSend={(text) => void send(text)}
         onInterrupt={() => void interrupt()}
       />

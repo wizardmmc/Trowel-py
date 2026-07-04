@@ -23,6 +23,7 @@ from trowel_py.schemas.cc_host import (
     ErrorEvent,
     ThinkingProgressEvent,
     SubagentProgressEvent,
+    ElicitationRequestEvent,
 )
 
 
@@ -412,3 +413,77 @@ class TestIgnoreList:
     ])
     def test_ignored_event_yields_nothing(self, ev):
         assert Translator().translate(ev) == []
+
+
+class TestElicitationRequest:
+    """control_request(can_use_tool, AskUserQuestion) -> ElicitationRequestEvent (slice-025-c).
+
+    Ground truth: reverse_cc samples/raw/052_askuser_bypass_stdio.jsonl. Route:
+    bypassPermissions + --permission-prompt-tool stdio — ordinary tools stay
+    silent (bypass auto-allow via permissions.ts 2a), only requiresUserInteraction
+    tools (AskUserQuestion/EnterPlanMode/ExitPlanMode) emit control_request.
+    """
+
+    def test_askuser_control_request_translates(self):
+        ev = cc(
+            type="control_request",
+            request_id="req-1",
+            request={
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "display_name": "AskUserQuestion",
+                "input": {"questions": [
+                    {"question": "A or B?", "header": "Pref",
+                     "options": [{"label": "A", "description": "a"},
+                                 {"label": "B"}],
+                     "multiSelect": False}]},
+                "tool_use_id": "call_abc",
+            },
+        )
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        e = out[0]
+        assert isinstance(e, ElicitationRequestEvent)
+        assert e.tool_use_id == "call_abc"
+        assert e.request_id == "req-1"
+        assert e.questions[0]["question"] == "A or B?"
+        assert e.questions[0]["header"] == "Pref"
+        assert e.questions[0]["multiSelect"] is False
+
+    def test_non_askuser_control_request_yields_nothing(self):
+        # Ordinary tools under bypass+stdio do not emit control_request (1e in
+        # 2a). If one ever slips through, we do NOT render a selection box —
+        # the permission-confirmation path is a separate slice (slice-025-c
+        # only owns AskUserQuestion).
+        ev = cc(
+            type="control_request",
+            request_id="req-2",
+            request={"subtype": "can_use_tool", "tool_name": "Bash",
+                     "input": {"command": "ls"}, "tool_use_id": "call_xyz"},
+        )
+        assert Translator().translate(ev) == []
+
+    def test_non_can_use_tool_subtype_yields_nothing(self):
+        ev = cc(
+            type="control_request",
+            request_id="req-3",
+            request={"subtype": "set_max_thinking_tokens",
+                     "max_thinking_tokens": 1024},
+        )
+        assert Translator().translate(ev) == []
+
+    def test_askuserquestion_tool_use_skipped_no_tool_call(self):
+        """AskUserQuestion tool_use does not produce ToolCallEvent — it is
+        rendered inline as a selection box via the control_request path
+        (ElicitationRequestEvent). Mirrors cc renderToolUseMessage=null."""
+        ev = cc(
+            type="assistant",
+            message={"content": [
+                {"type": "tool_use", "id": "call_aq", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": "A?", "header": "P",
+                                          "options": [{"label": "A"}],
+                                          "multiSelect": False}]}},
+            ]},
+        )
+        out = Translator().translate(ev)
+        assert out == []

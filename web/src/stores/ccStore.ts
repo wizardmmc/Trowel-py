@@ -14,6 +14,7 @@
 import { create } from "zustand";
 
 import {
+  answerElicit as apiAnswerElicit,
   createSession as apiCreateSession,
   getHistory,
   interruptSession,
@@ -26,6 +27,7 @@ import {
 import { postMessageStream } from "../api/ccStream";
 import type {
   ErrorEvent,
+  QuestionInput,
   RetryingEvent,
   SubagentProgressEvent,
   TrowelEvent,
@@ -44,6 +46,7 @@ export type Phase =
   | "retrying"
   | "compacting"
   | "stalled"
+  | "awaiting_input"
   | "done"
   | "error"
   | "interrupted";
@@ -133,6 +136,20 @@ export interface InterruptedItem {
   readonly kind: "interrupted";
 }
 
+/** AskUserQuestion inline selection box (slice-025-c). Pending while the user
+ * is choosing; flips to "answered"/"declined" when the matching tool_result
+ * arrives (same tool_use_id). resultText carries cc's "User has answered..."
+ * text for the completed-state echo. */
+export interface ElicitationItem {
+  readonly kind: "elicit";
+  readonly toolUseId: string;
+  readonly requestId: string;
+  readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
+  readonly status: "pending" | "answered" | "declined";
+  readonly resultText: string | null;
+  readonly answers: Readonly<Record<string, string>> | null;
+}
+
 export type TurnItem =
   | ThinkingItem
   | TextItem
@@ -143,7 +160,8 @@ export type TurnItem =
   | CompactBoundaryItem
   | LocalCommandItem
   | ErrorItem
-  | InterruptedItem;
+  | InterruptedItem
+  | ElicitationItem;
 
 export interface Turn {
   readonly id: string;
@@ -288,6 +306,35 @@ function updateToolInCurrentTurn(
   return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
 }
 
+/** Update the pending ElicitationItem matching toolUseId in the current turn
+ * (top-level only — sub-agents don't ask AskUserQuestion). Returns null if no
+ * pending elicit matches, so the caller can fall through to the tool path
+ * (slice-025-c). */
+function updateElicitInCurrentTurn(
+  prev: ReducerState,
+  toolUseId: string,
+  update: (elicit: ElicitationItem) => ElicitationItem,
+): ReducerState | null {
+  const turns = prev.turns;
+  if (turns.length === 0) return null;
+  const last = turns[turns.length - 1];
+  let found = false;
+  const newItems = last.items.map((it) => {
+    if (
+      it.kind === "elicit" &&
+      it.toolUseId === toolUseId &&
+      it.status === "pending"
+    ) {
+      found = true;
+      return update(it);
+    }
+    return it;
+  });
+  if (!found) return null;
+  const updatedLast: Turn = { ...last, items: newItems };
+  return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+}
+
 /** Reduce one trowel event into a new ReducerState. Pure. */
 export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerState {
   switch (event.type) {
@@ -423,7 +470,22 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         phase: "tool",
       };
 
-    case "tool_result":
+    case "tool_result": {
+      // slice-025-c: elicit completion path — if a pending ElicitationItem
+      // matches this tool_use_id, flip it to answered (cc's tool_result text
+      // is "User has answered..." which we echo in the completed state).
+      const withElicit = updateElicitInCurrentTurn(
+        prev,
+        event.tool_use_id,
+        (e) => ({
+          ...e,
+          status: "answered" as const,
+          resultText: event.content,
+        }),
+      );
+      if (withElicit !== null) {
+        return { ...withElicit, phase: "tool" };
+      }
       return {
         ...updateToolInCurrentTurn(prev, event.tool_use_id, (t) => ({
           ...t,
@@ -432,6 +494,23 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         })),
         phase: "tool",
       };
+    }
+
+    case "elicit_request": {
+      const item: ElicitationItem = {
+        kind: "elicit",
+        toolUseId: event.tool_use_id,
+        requestId: event.request_id,
+        questions: event.questions,
+        status: "pending",
+        resultText: null,
+        answers: null,
+      };
+      return {
+        ...appendToCurrentTurn(prev, item),
+        phase: "awaiting_input",
+      };
+    }
 
     case "subagent_progress": {
       // Attach to the Agent ToolItem whose tool_use_id matches (merge fields;
@@ -652,6 +731,10 @@ interface CcState extends ReducerState {
   loadHistoryIntoView: () => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
+  /** Submit the user's selections for the pending AskUserQuestion (slice-025-c). */
+  answerElicit: (answers: Record<string, string>) => Promise<void>;
+  /** Decline the pending AskUserQuestion (writes control_response deny). */
+  cancelElicit: () => Promise<void>;
   reset: () => void;
 }
 
@@ -784,6 +867,26 @@ export const useCcStore = create<CcState>((set, get) => {
       if (!sid) return;
       try {
         await interruptSession(sid);
+      } catch (err) {
+        set({ transportError: (err as Error).message });
+      }
+    },
+
+    answerElicit: async (answers) => {
+      const sid = get().sessionId;
+      if (!sid) return;
+      try {
+        await apiAnswerElicit(sid, { answers, cancel: false });
+      } catch (err) {
+        set({ transportError: (err as Error).message });
+      }
+    },
+
+    cancelElicit: async () => {
+      const sid = get().sessionId;
+      if (!sid) return;
+      try {
+        await apiAnswerElicit(sid, { answers: {}, cancel: true });
       } catch (err) {
         set({ transportError: (err as Error).message });
       }

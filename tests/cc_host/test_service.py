@@ -240,3 +240,54 @@ class TestCancellation:
             await task
         # the process was force-killed on cancellation (no orphan)
         assert proc.returncode is not None
+
+
+class TestElicitAnswer:
+    """answer_elicit / cancel_elicit write control_response to stdin (slice-025-c).
+
+    Ground truth: reverse_cc samples/raw/052_askuser_bypass_stdio.jsonl —
+    AskUserQuestion triggers control_request(can_use_tool); the host must reply
+    with control_response(behavior=allow, updatedInput={questions, answers,
+    annotations}). answers is a required record (052 ZodError when absent).
+    """
+
+    async def test_answer_elicit_writes_allow_with_answers(self, tmp_path: Path):
+        proc = FakeProc([])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        host._proc = proc
+        host._pending_elicit = {
+            "request_id": "req-1",
+            "tool_use_id": "call_abc",
+            "questions": [{"question": "A or B?", "header": "Pref",
+                           "options": [{"label": "A"}], "multiSelect": False}],
+        }
+        ok = await host.answer_elicit({"A or B?": "A"})
+        assert ok is True
+        assert host._pending_elicit is None
+        payload = json.loads(proc.stdin.written[-1].decode())
+        assert payload["type"] == "control_response"
+        assert payload["response"]["subtype"] == "success"
+        assert payload["response"]["request_id"] == "req-1"
+        assert payload["response"]["response"]["behavior"] == "allow"
+        updated = payload["response"]["response"]["updatedInput"]
+        assert updated["answers"] == {"A or B?": "A"}
+        assert updated["questions"][0]["header"] == "Pref"
+        assert updated["annotations"] == {}
+
+    async def test_cancel_elicit_writes_deny(self, tmp_path: Path):
+        proc = FakeProc([])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        host._proc = proc
+        host._pending_elicit = {"request_id": "req-2", "tool_use_id": "c",
+                                "questions": []}
+        ok = await host.cancel_elicit()
+        assert ok is True
+        assert host._pending_elicit is None
+        payload = json.loads(proc.stdin.written[-1].decode())
+        assert payload["response"]["response"]["behavior"] == "deny"
+        assert "declined" in payload["response"]["response"]["message"]
+
+    async def test_answer_without_pending_returns_false(self, tmp_path: Path):
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([FakeProc([])]))
+        ok = await host.answer_elicit({"q": "a"})
+        assert ok is False

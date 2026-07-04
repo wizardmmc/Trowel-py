@@ -56,6 +56,18 @@ class TestBuildArgs:
         assert "--add-dir" not in args
         assert str(tmp_path) not in args
 
+    def test_default_includes_permission_prompt_tool_stdio(self, tmp_path: Path):
+        # slice-025-c: bypass + --permission-prompt-tool stdio is the default
+        # route — ordinary tools stay silent, only interactive tools
+        # (AskUserQuestion et al.) trigger control_request. Ground truth: 052.
+        args = build_args(workdir=tmp_path)
+        i = args.index("--permission-prompt-tool")
+        assert args[i + 1] == "stdio"
+
+    def test_permission_prompt_tool_can_be_disabled(self, tmp_path: Path):
+        args = build_args(workdir=tmp_path, permission_prompt_tool=None)
+        assert "--permission-prompt-tool" not in args
+
 
 class TestSubprocessKwargs:
     def test_cwd_is_workdir_and_new_session(self, tmp_path: Path):

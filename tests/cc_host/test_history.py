@@ -14,6 +14,7 @@ import pytest
 
 from trowel_py.cc_host import history
 from trowel_py.schemas.cc_host import (
+    ElicitationRequestEvent,
     FinishedEvent,
     SessionStartedEvent,
     TextEvent,
@@ -151,6 +152,54 @@ def test_parse_history_maps_tool_use_and_result(fake_projects: Path) -> None:
     result = next(e for e in events if isinstance(e, ToolResultEvent))
     assert result.tool_use_id == "call_1"
     assert "wrote 1 file" in result.content
+
+
+def test_parse_history_maps_askuserquestion_to_elicit_request(
+    fake_projects: Path,
+) -> None:
+    """slice-025-c: an AskUserQuestion tool_use replays as elicit_request, and
+    the matching tool_result flips it to answered via the reducer (the history
+    translator only emits the events; the reducer does the flip)."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_text("ask me A or B"),
+            _assistant(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "call_aq",
+                        "name": "AskUserQuestion",
+                        "input": {
+                            "questions": [
+                                {
+                                    "question": "A or B?",
+                                    "header": "Pref",
+                                    "options": [{"label": "A"}, {"label": "B"}],
+                                    "multiSelect": False,
+                                }
+                            ]
+                        },
+                    }
+                ]
+            ),
+            _tool_result("call_aq", 'User has answered: "A or B?"="A"'),
+            _assistant([{"type": "text", "text": "got it"}]),
+        ],
+    )
+
+    events = history.parse_history("/workdir", "abc-123")
+    elicit = next(e for e in events if isinstance(e, ElicitationRequestEvent))
+    assert elicit.tool_use_id == "call_aq"
+    assert elicit.questions[0]["header"] == "Pref"
+    # request_id is not in the jsonl (control_request never persists); empty
+    # is fine — the reducer matches on tool_use_id only.
+    assert elicit.request_id == ""
+    # No ToolCallEvent should be emitted for AskUserQuestion (it is not a
+    # normal tool row in the replay view).
+    assert not any(isinstance(e, ToolCallEvent) for e in events)
+    result = next(e for e in events if isinstance(e, ToolResultEvent))
+    assert result.tool_use_id == "call_aq"
 
 
 def test_parse_history_maps_thinking_block(fake_projects: Path) -> None:
