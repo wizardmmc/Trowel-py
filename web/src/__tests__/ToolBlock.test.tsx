@@ -12,6 +12,7 @@ function tool(over: Partial<ToolItem> = {}): ToolItem {
     status: "running",
     elapsedSeconds: null,
     result: null,
+    childTools: [],
     ...over,
   };
 }

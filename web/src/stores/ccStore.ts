@@ -231,19 +231,22 @@ function updateToolInTree(
   update: (tool: ToolItem) => ToolItem,
 ): readonly TurnItem[] | null {
   let found = false;
-  const walk = (list: readonly TurnItem[]): readonly TurnItem[] =>
-    list.map((it) => {
-      if (it.kind !== "tool") return it;
-      if (it.toolUseId === toolUseId) {
-        found = true;
-        return update(it);
-      }
-      if (it.childTools.length > 0) {
-        return { ...it, childTools: walk(it.childTools) };
-      }
-      return it;
-    });
-  const result = walk(items);
+  // childTools is always ToolItem[] (a sub-agent only spawns tool calls), so
+  // recurse with a ToolItem→ToolItem helper. Splitting this from the top-level
+  // walk keeps the types straight: childTools is narrower than the items array
+  // (which carries every TurnItem kind), and routing it through the same
+  // TurnItem[] walk would widen it and fail to assign back onto a ToolItem.
+  const updateTool = (it: ToolItem): ToolItem => {
+    if (it.toolUseId === toolUseId) {
+      found = true;
+      return update(it);
+    }
+    if (it.childTools.length > 0) {
+      return { ...it, childTools: it.childTools.map(updateTool) };
+    }
+    return it;
+  };
+  const result = items.map((it) => (it.kind === "tool" ? updateTool(it) : it));
   return found ? result : null;
 }
 
