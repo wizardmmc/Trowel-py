@@ -23,6 +23,9 @@ export interface CcSession {
   /** null until the CC process actually starts and reports its session id */
   readonly cc_session_id: string | null;
   readonly model: string;
+  /** slice-026: whether reverting turns is supported for this workdir (non-git
+   * workdirs get the banner + no revert buttons). */
+  readonly revert_enabled: boolean;
 }
 
 export interface CreateSessionParams {
@@ -97,6 +100,24 @@ export async function interruptSession(sessionId: string): Promise<void> {
   await request<{ interrupted: boolean }>(
     `${CC_API_BASE}/sessions/${sessionId}/interrupt`,
     { method: "POST" },
+  );
+}
+
+/** POST /api/cc/sessions/{id}/revert — revert a turn (slice-026 E1).
+ * Drops the given turn and every later one: git-restores the worktree to the
+ * checkpoint and truncates the CC jsonl; the host then re-resumes CC from the
+ * shorter history. */
+export async function revertSession(
+  sessionId: string,
+  turnId: string,
+): Promise<{ reverted_turn_id: string }> {
+  return request<{ reverted_turn_id: string }>(
+    `${CC_API_BASE}/sessions/${sessionId}/revert`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ turn_id: turnId }),
+    },
   );
 }
 

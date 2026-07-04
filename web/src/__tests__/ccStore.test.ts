@@ -721,3 +721,31 @@ describe("reduceEvent — elicitation (slice-025-c)", () => {
     expect(tool.result).toBe("file.txt");
   });
 });
+
+describe("reduceEvent — turn_start (slice-026)", () => {
+  it("attaches turnId + revertible to the current turn", () => {
+    const state = reduceEvent(withOpenTurn("hi"), {
+      type: "turn_start",
+      turn_id: "tid-1",
+      revertible: true,
+    });
+    const last = state.turns[state.turns.length - 1];
+    expect(last.turnId).toBe("tid-1");
+    expect(last.revertible).toBe(true);
+  });
+
+  it("no-op when there is no current turn", () => {
+    const state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "turn_start",
+      turn_id: "x",
+      revertible: true,
+    });
+    expect(state.turns).toHaveLength(0);
+  });
+
+  it("an optimistic user turn defaults to non-revertible until turn_start arrives", () => {
+    const t = withOpenTurn("hi").turns[0];
+    expect(t.turnId).toBeNull();
+    expect(t.revertible).toBe(false);
+  });
+});

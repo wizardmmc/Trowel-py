@@ -4,6 +4,7 @@ A mini FastAPI app mounts only the cc router. The registry is overridden so
 messages/interrupt/delete run against a FakeHost — never a real CC subprocess.
 """
 import json
+import subprocess
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -23,14 +24,15 @@ from trowel_py.schemas.cc_host import (
 class FakeHost:
     """Duck-typed CCHost stand-in for route tests."""
 
-    def __init__(self, events: list, cc_session_id: str = "s-1") -> None:
+    def __init__(self, events: list, cc_session_id: str = "s-1", workdir: str = "/wd") -> None:
         self._events = events
         self.cc_session_id = cc_session_id
         self.model = "glm-5.2"
         self.effort = "medium"
-        self.workdir = "/wd"
+        self.workdir = workdir
         self.interrupted = False
         self.closed = False
+        self.reloaded = False
         self.received: list[str] = []
         self.answered: dict[str, str] | None = None
         self.cancelled = False
@@ -50,6 +52,9 @@ class FakeHost:
     async def cancel_elicit(self) -> bool:
         self.cancelled = True
         return True
+
+    async def reload(self) -> None:
+        self.reloaded = True
 
     async def close(self) -> None:
         self.closed = True
@@ -177,11 +182,16 @@ class TestDelete:
 
 class TestListHistory:
     def test_list_returns_envelope_with_summaries(self, tmp_path: Path, monkeypatch):
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
         d = root / "-wd"
         d.mkdir(parents=True)
-        (d / "sess-a.jsonl").write_text(
-            json.dumps({"type": "user", "message": {"role": "user",
+        # cc writes sessions as <uuid>.jsonl with a real first user message;
+        # the filter (slice-026 C3) requires a UUID stem + a real prompt.
+        sid = str(uuidlib.uuid4())
+        (d / f"{sid}.jsonl").write_text(
+            json.dumps({"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": "hi"}]}}) + "\n")
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         client = _mini_app({})
@@ -190,21 +200,27 @@ class TestListHistory:
         body = resp.json()
         data = body["data"]
         assert len(data) == 1
-        assert data[0]["cc_session_id"] == "sess-a"
+        assert data[0]["cc_session_id"] == sid
         assert data[0]["title"] == "hi"
-        # meta.total reports the true on-disk count (for "共 N · 最近 M" display)
+        # meta.total reports the filtered count (cc --resume's view)
         assert body["meta"] == {"total": 1, "limit": 10}
 
     def test_list_caps_to_ten_most_recent(self, tmp_path: Path, monkeypatch):
         # the dropdown must not surface hundreds of sessions — verify the route
-        # cap is wired (12 sessions → 10 newest, most-recent-first)
+        # cap is wired (12 sessions → 10 newest, most-recent-first). Filenames
+        # are UUID stems (the filter rejects non-UUID names).
         import os
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
         d = root / "-wd"
         d.mkdir(parents=True)
+        stems = []
         for i in range(12):
-            f = d / f"s{i:02d}.jsonl"
-            f.write_text(json.dumps({"type": "user", "message": {"role": "user",
+            stem = str(uuidlib.uuid4())
+            stems.append(stem)
+            f = d / f"{stem}.jsonl"
+            f.write_text(json.dumps({"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": f"s{i:02d}"}]}}) + "\n")
             os.utime(f, (i, i))  # later index = newer
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
@@ -213,11 +229,12 @@ class TestListHistory:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert len(data) == 10
-        # newest 10 are s02..s11 (mtime 2..11); s00 (mtime 0) and s01 dropped
+        # newest 10 by mtime (indices 2..11); two oldest dropped. UUID stems,
+        # most-recent-first.
         ids = [item["cc_session_id"] for item in data]
-        assert ids[0] == "s11"  # most recent first
-        assert "s00" not in ids and "s01" not in ids
-        # meta.total is the true count (12 on disk) even though only 10 returned
+        assert ids[0] == stems[11]
+        assert stems[0] not in ids and stems[1] not in ids
+        # meta.total is the filtered count (12 valid here) even though 10 returned
         assert resp.json()["meta"] == {"total": 12, "limit": 10}
 
 
@@ -257,3 +274,78 @@ class TestGetHistory:
         resp = client.get("/api/cc/sessions/s-1/history")
         assert resp.status_code == 200
         assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# slice-026 E1: revert endpoint + revert_enabled
+# ---------------------------------------------------------------------------
+
+
+def _git_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "seed").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+    return path
+
+
+class TestRevert:
+    def test_create_session_revert_enabled_true_for_git(self, tmp_path: Path):
+        _git_repo(tmp_path / "repo")
+        client = _mini_app({})
+        resp = client.post("/api/cc/sessions", json={"workdir": str(tmp_path / "repo")})
+        assert resp.status_code == 200
+        assert resp.json()["data"]["revert_enabled"] is True
+
+    def test_create_session_revert_enabled_false_for_non_git(self, tmp_path: Path):
+        norepo = tmp_path / "norepo"
+        norepo.mkdir()
+        client = _mini_app({})
+        resp = client.post("/api/cc/sessions", json={"workdir": str(norepo)})
+        assert resp.json()["data"]["revert_enabled"] is False
+
+    def test_revert_unknown_turn_404(self, tmp_path: Path):
+        repo = _git_repo(tmp_path / "repo")
+        sid = "s1"
+        host = FakeHost(events=[], workdir=str(repo))
+        client = _mini_app({sid: host})
+        resp = client.post(f"/api/cc/sessions/{sid}/revert", json={"turn_id": "nope"})
+        assert resp.status_code == 404
+        assert host.reloaded is False  # not called on the failure path
+
+    def test_revert_non_git_400(self, tmp_path: Path):
+        norepo = tmp_path / "norepo"
+        norepo.mkdir()
+        sid = "s1"
+        host = FakeHost(events=[], workdir=str(norepo))
+        client = _mini_app({sid: host})
+        resp = client.post(f"/api/cc/sessions/{sid}/revert", json={"turn_id": "x"})
+        assert resp.status_code == 400
+
+    def test_revert_restores_files_and_reloads_process(self, tmp_path: Path):
+        import uuid as uuidlib
+
+        repo = _git_repo(tmp_path / "repo")
+        # pre-save a checkpoint via the module, then mutate a tracked file
+        turn_id = uuidlib.uuid4().hex
+        ckpt_dir = tmp_path / "ckpt_src"
+        ckpt_dir.mkdir()
+        from trowel_py.cc_host import checkpoint as ckpt
+
+        ckpt.save(str(repo), turn_id)
+        (repo / "seed").write_text("changed during the turn\n")
+        assert repo.joinpath("seed").read_text() != "x\n"
+
+        sid = "s1"
+        host = FakeHost(events=[], workdir=str(repo))
+        client = _mini_app({sid: host})
+        resp = client.post(f"/api/cc/sessions/{sid}/revert", json={"turn_id": turn_id})
+        assert resp.status_code == 200
+        # file restored to the snapshot
+        assert (repo / "seed").read_text() == "x\n"
+        # process was invalidated so the next send re-resumes
+        assert host.reloaded is True
+        assert resp.json()["data"]["reverted_turn_id"] == turn_id

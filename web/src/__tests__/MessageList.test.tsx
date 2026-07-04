@@ -9,6 +9,8 @@ function turn(over: Partial<Turn> = {}): Turn {
     userText: "请回数字 1",
     items: [],
     status: "active",
+    turnId: null,
+    revertible: false,
     ...over,
   };
 }
@@ -139,5 +141,33 @@ describe("MessageList", () => {
     expect(log).toBeTruthy();
     expect(log.getAttribute("aria-live")).toBe("polite");
     expect(log.getAttribute("aria-busy")).toBe("true");
+  });
+});
+
+describe("MessageList — revert button (slice-026)", () => {
+  it("shows a revert button for a revertible turn when idle", () => {
+    const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true, status: "done" });
+    render(<MessageList turns={[t]} streaming={false} />);
+    expect(screen.getByTitle("回滚到这轮之前")).toBeTruthy();
+  });
+
+  it("hides the revert button when streaming", () => {
+    const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true });
+    const { container } = render(<MessageList turns={[t]} streaming={true} />);
+    expect(container.querySelector(".cc-turn__revert")).toBeNull();
+  });
+
+  it("hides the revert button for non-revertible turns (history)", () => {
+    const t = turn({ id: "t1", turnId: null, revertible: false });
+    const { container } = render(<MessageList turns={[t]} streaming={false} />);
+    expect(container.querySelector(".cc-turn__revert")).toBeNull();
+  });
+
+  it("clicking the button calls onRevert with the turn", () => {
+    const onRevert = vi.fn();
+    const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true, status: "done" });
+    render(<MessageList turns={[t]} streaming={false} onRevert={onRevert} />);
+    fireEvent.click(screen.getByTitle("回滚到这轮之前"));
+    expect(onRevert).toHaveBeenCalledWith(t);
   });
 });

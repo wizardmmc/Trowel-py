@@ -20,6 +20,7 @@ import {
   interruptSession,
   listSessions,
   messagesUrl,
+  revertSession as apiRevertSession,
   type CcSession,
   type CcSessionSummary,
   type CreateSessionParams,
@@ -168,6 +169,14 @@ export interface Turn {
   readonly userText: string;
   readonly items: readonly TurnItem[];
   readonly status: TurnStatus;
+  /** slice-026: backend checkpoint turn_id (the ref name). Set by the live
+   * TurnStartEvent; null for history-replayed turns (no checkpoint) and until
+   * the TurnStartEvent arrives. */
+  readonly turnId: string | null;
+  /** slice-026: whether the user may revert to this turn. True only when the
+   * workdir is a git repo AND the turn saved a checkpoint (TurnStartEvent said
+   * revertible=true). History turns are never revertible. */
+  readonly revertible: boolean;
 }
 
 export interface SessionMeta {
@@ -349,6 +358,22 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         },
       };
 
+    case "turn_start": {
+      // slice-026: attach the backend turn_id + revertible flag to the
+      // optimistic turn the store already created (live path). No-op when
+      // there is no current turn (defensive — shouldn't happen on the live
+      // path since send() creates the turn before streaming).
+      const turns = prev.turns;
+      if (turns.length === 0) return prev;
+      const last = turns[turns.length - 1];
+      const updatedLast: Turn = {
+        ...last,
+        turnId: event.turn_id,
+        revertible: event.revertible,
+      };
+      return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+    }
+
     case "user": {
       // history-only: start a fresh turn carrying the user's text
       const turn: Turn = {
@@ -356,6 +381,8 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         userText: event.text,
         items: [],
         status: "active",
+        turnId: null,
+        revertible: false,
       };
       return { ...prev, turns: [...prev.turns, turn] };
     }
@@ -722,6 +749,9 @@ interface CcState extends ReducerState {
   /** Total sessions on disk (meta.total) — true count for "共 N · 最近 M" display. */
   readonly historyTotal: number;
   readonly loadingHistory: boolean;
+  /** slice-026: whether reverting turns is supported for the current workdir
+   * (from createSession's revert_enabled). False for non-git workdirs. */
+  readonly revertEnabled: boolean;
 
   _abort: AbortController | null;
 
@@ -735,6 +765,9 @@ interface CcState extends ReducerState {
   answerElicit: (answers: Record<string, string>) => Promise<void>;
   /** Decline the pending AskUserQuestion (writes control_response deny). */
   cancelElicit: () => Promise<void>;
+  /** slice-026: revert a turn — drop it and every later turn from the view and
+   * ask the backend to git-restore + truncate the jsonl. */
+  revertTurn: (turnId: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -753,6 +786,7 @@ export const useCcStore = create<CcState>((set, get) => {
     history: [],
     historyTotal: 0,
     loadingHistory: false,
+    revertEnabled: false,
     _abort: null,
 
     startSession: async (params) => {
@@ -763,10 +797,14 @@ export const useCcStore = create<CcState>((set, get) => {
         workdir: params.workdir,
         sessionId: null,
         transportError: null,
+        revertEnabled: false,
       });
       try {
         const session = await apiCreateSession(params);
-        set({ sessionId: session.session_id });
+        set({
+          sessionId: session.session_id,
+          revertEnabled: session.revert_enabled,
+        });
         return session;
       } catch (err) {
         set({ transportError: (err as Error).message });
@@ -826,6 +864,8 @@ export const useCcStore = create<CcState>((set, get) => {
         userText: text,
         items: [],
         status: "active",
+        turnId: null,
+        revertible: false,
       };
       const abort = new AbortController();
       set((state) => ({
@@ -892,6 +932,32 @@ export const useCcStore = create<CcState>((set, get) => {
       }
     },
 
+    revertTurn: async (turnId) => {
+      const sid = get().sessionId;
+      if (!sid) return;
+      // Refuse while a turn is mid-stream — reverting under a live CC process
+      // would race its writes. The UI also disables the button while streaming.
+      if (get()._abort) return;
+      try {
+        await apiRevertSession(sid, turnId);
+        // Drop the reverted turn and every later turn from the view. The
+        // backend already truncated the jsonl + git-restored the worktree and
+        // will re-resume CC from the shorter history on the next send.
+        set((state) => {
+          const idx = state.turns.findIndex((t) => t.turnId === turnId);
+          if (idx === -1) return state;
+          const turns = state.turns.slice(0, idx);
+          return {
+            ...state,
+            turns,
+            phase: turns.length === 0 ? "idle" : "done",
+          };
+        });
+      } catch (err) {
+        set({ transportError: (err as Error).message });
+      }
+    },
+
     reset: () => {
       get()._abort?.abort();
       set({
@@ -903,6 +969,7 @@ export const useCcStore = create<CcState>((set, get) => {
         history: [],
         historyTotal: 0,
         loadingHistory: false,
+        revertEnabled: false,
         _abort: null,
       });
     },

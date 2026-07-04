@@ -57,6 +57,17 @@ class AnswerElicitRequest(BaseModel):
     cancel: bool = False
 
 
+class RevertRequest(BaseModel):
+    """Body for POST /api/cc/sessions/{id}/revert (slice-026 E1).
+
+    turn_id identifies the checkpoint to revert to (drops that turn and every
+    later one). It comes from the TurnStartEvent emitted at the start of the
+    turn the user is reverting to.
+    """
+
+    turn_id: str = Field(min_length=1)
+
+
 # ---------------------------------------------------------------------------
 # Trowel event models (frontend wire contract)
 # ---------------------------------------------------------------------------
@@ -83,6 +94,7 @@ EVENT_TYPES = frozenset(
         "thinking_progress",
         "subagent_progress",
         "elicit_request",
+        "turn_start",
     }
 )
 
@@ -101,6 +113,28 @@ class SessionStartedEvent(_Event):
     cwd: str
     cc_session_id: str
     tools: list[str]
+
+
+class TurnStartEvent(_Event):
+    """Emitted at the start of each turn (slice-026 E1).
+
+    Carries the trowel turn_id (the checkpoint ref name) and whether this turn
+    is revertible. The frontend attaches turn_id to the optimistic turn it
+    already appended, and renders the 'revert to here' button iff revertible.
+
+    Live-only: the history-replay path (parse_history) never emits this —
+    replayed turns predate this trowel session and have no checkpoint, so they
+    are not revertible (and the frontend shows no button for them).
+
+    revertible is False when the workdir is not a git repo or when the turn
+    has no resumable jsonl yet (a fresh session's first turn — cc_session_id
+    is only learned from init mid-turn, and there is nothing prior to revert
+    to anyway).
+    """
+
+    type: Literal["turn_start"] = "turn_start"
+    turn_id: str
+    revertible: bool
 
 
 class UserEvent(_Event):
@@ -297,6 +331,7 @@ class ElicitationRequestEvent(_Event):
 # Union of all trowel events (for type hints; not used as a validator).
 TrowelEvent = (
     SessionStartedEvent
+    | TurnStartEvent
     | UserEvent
     | TextEvent
     | ThinkingEvent

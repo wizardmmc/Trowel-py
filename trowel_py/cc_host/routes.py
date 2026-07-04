@@ -22,6 +22,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.history import parse_history
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
@@ -29,6 +30,7 @@ from trowel_py.schemas.cc_host import (
     AnswerElicitRequest,
     CreateSessionRequest,
     ErrorEvent,
+    RevertRequest,
     SendMessageRequest,
 )
 
@@ -97,6 +99,9 @@ def create_session(
             "session_id": sid,
             "cc_session_id": req.resume_from,
             "model": host.model,
+            # slice-026: whether reverting turns is supported for this workdir
+            # (non-git workdirs get the banner + no revert buttons in the UI).
+            "revert_enabled": checkpoint.is_git_repo(req.workdir),
         },
         "error": None,
     }
@@ -156,6 +161,43 @@ async def answer_elicit(
     else:
         ok = await host.answer_elicit(body.answers)
     return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
+
+
+@router.post("/sessions/{sid}/revert")
+async def revert_turn(
+    sid: str,
+    body: RevertRequest,
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """Revert a turn: git-restore the worktree + truncate the CC jsonl (slice-026 E1).
+
+    Looks up the checkpoint for ``turn_id`` (dropping that turn and every later
+    one), restores the worktree from the snapshot, truncates the CC session
+    jsonl back to the recorded offset, then kills the live CC process so the
+    next send() re-resumes from the truncated history.
+
+    Raises:
+        404: session or checkpoint not found.
+        400: workdir is not a git repo (revert unsupported).
+    """
+    host = _require(sid, registry)
+    try:
+        meta = checkpoint.revert(host.workdir, body.turn_id)
+    except checkpoint.NotAGitRepoError:
+        raise HTTPException(status_code=400, detail="workdir is not a git repo")
+    except checkpoint.UnknownCheckpointError:
+        raise HTTPException(status_code=404, detail=f"checkpoint {body.turn_id} not found")
+    # Drop the in-memory CC process so --resume reloads the truncated jsonl.
+    await host.reload()
+    return {
+        "success": True,
+        "data": {
+            "reverted_turn_id": body.turn_id,
+            "jsonl_path": meta.jsonl_path,
+            "jsonl_offset": meta.jsonl_offset,
+        },
+        "error": None,
+    }
 
 
 @router.get("/sessions")

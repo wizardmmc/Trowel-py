@@ -1,8 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
+import type { Turn } from "../../stores/ccStore";
 import { useCcStore } from "../../stores/ccStore";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
+import { RevertConfirmModal } from "./RevertConfirmModal";
 import { StatusBar } from "./StatusBar";
 import { SessionSwitcher } from "./SessionSwitcher";
 import "./cc.css";
@@ -42,6 +44,7 @@ export function SessionView({ workdir }: SessionViewProps) {
     history,
     historyTotal,
     loadingHistory,
+    revertEnabled,
     startSession,
     refreshHistory,
     loadHistoryIntoView,
@@ -49,7 +52,17 @@ export function SessionView({ workdir }: SessionViewProps) {
     interrupt,
     answerElicit,
     cancelElicit,
+    revertTurn,
   } = useCcStore();
+
+  // slice-026: the turn pending a revert confirmation (null = modal closed).
+  const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
+
+  // Drop a stale revert target if the session changes (reset / new / pick) so
+  // we never POST a turn_id from one session to another.
+  useEffect(() => {
+    setRevertTarget(null);
+  }, [sessionId]);
 
   // Open a fresh session + prime history list on mount / when workdir changes.
   useEffect(() => {
@@ -79,6 +92,28 @@ export function SessionView({ workdir }: SessionViewProps) {
     }
   }
 
+  // slice-026: turns lost if we revert to revertTarget (it + every later turn).
+  // Match by id (stable) — reference equality would miss if the reducer
+  // rebuilt the target object, and slice(-1) on a -1 indexOf would wrongly
+  // list every turn as lost.
+  const lostTurns = (() => {
+    if (!revertTarget) return [];
+    const idx = turns.findIndex((t) => t.id === revertTarget.id);
+    return idx === -1 ? [] : turns.slice(idx);
+  })();
+
+  async function handleRevertConfirm() {
+    if (!revertTarget?.turnId) return;
+    if (lostTurns.length === 0) {
+      // target vanished (session changed) — just close
+      setRevertTarget(null);
+      return;
+    }
+    const turnId = revertTarget.turnId;
+    setRevertTarget(null);
+    await revertTurn(turnId);
+  }
+
   return (
     <div className="cc-view">
       <div className="cc-view__top">
@@ -97,6 +132,12 @@ export function SessionView({ workdir }: SessionViewProps) {
           onNew={handleNew}
         />
       </div>
+      {!revertEnabled && sessionId && (
+        <div className="cc-nogit-banner">
+          <span aria-hidden>⚠</span>
+          此目录不是 git 仓库，不支持回滚（聊天、历史等其他功能正常）。
+        </div>
+      )}
       <div className="cc-view__scroll">
         <MessageList
           turns={turns}
@@ -104,6 +145,7 @@ export function SessionView({ workdir }: SessionViewProps) {
           onRetryLast={handleRetryLast}
           onAnswer={(answers) => void answerElicit(answers)}
           onCancel={() => void cancelElicit()}
+          onRevert={(t) => setRevertTarget(t)}
         />
       </div>
       <Composer
@@ -113,6 +155,13 @@ export function SessionView({ workdir }: SessionViewProps) {
         onSend={(text) => void send(text)}
         onInterrupt={() => void interrupt()}
       />
+      {revertTarget && (
+        <RevertConfirmModal
+          lostTurns={lostTurns}
+          onConfirm={() => void handleRevertConfirm()}
+          onCancel={() => setRevertTarget(null)}
+        />
+      )}
     </div>
   );
 }

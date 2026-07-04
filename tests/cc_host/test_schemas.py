@@ -8,8 +8,10 @@ from pydantic import ValidationError
 
 from trowel_py.schemas.cc_host import (
     CreateSessionRequest,
+    RevertRequest,
     SendMessageRequest,
     SessionStartedEvent,
+    TurnStartEvent,
     UserEvent,
     TextEvent,
     ThinkingEvent,
@@ -52,12 +54,34 @@ class TestRequestModels:
         with pytest.raises(ValidationError):
             SendMessageRequest(text="")
 
+    def test_revert_request_requires_turn_id(self):
+        with pytest.raises(ValidationError):
+            RevertRequest(turn_id="")
+
+    def test_revert_request_accepts_id(self):
+        req = RevertRequest(turn_id="abc123")
+        assert req.turn_id == "abc123"
+
+
+class TestTurnStartEvent:
+    def test_carries_turn_id_and_revertible(self):
+        ev = TurnStartEvent(turn_id="t-1", revertible=True)
+        dumped = ev.model_dump()
+        assert dumped["type"] == "turn_start"
+        assert dumped["turn_id"] == "t-1"
+        assert dumped["revertible"] is True
+
+    def test_defaults_revertible_false_when_set(self):
+        ev = TurnStartEvent(turn_id="t-2", revertible=False)
+        assert ev.model_dump()["revertible"] is False
+
 
 class TestEventDiscriminators:
     @pytest.mark.parametrize(
         "model,etype",
         [
             (SessionStartedEvent, "session_started"),
+            (TurnStartEvent, "turn_start"),
             (UserEvent, "user"),
             (TextEvent, "text"),
             (ThinkingEvent, "thinking"),
@@ -81,9 +105,9 @@ class TestEventDiscriminators:
     def test_each_event_has_unique_type(self, model, etype):
         # the literal type field must match the expected wire discriminator
         assert set(EVENT_TYPES) == {
-            "session_started", "user", "text", "thinking", "tool_call",
-            "tool_progress", "tool_result", "retrying", "hook", "status",
-            "compact_boundary", "local_command", "finished", "error",
+            "session_started", "turn_start", "user", "text", "thinking",
+            "tool_call", "tool_progress", "tool_result", "retrying", "hook",
+            "status", "compact_boundary", "local_command", "finished", "error",
             "interrupted", "stalled",
             "thinking_progress", "subagent_progress",
             "elicit_request",

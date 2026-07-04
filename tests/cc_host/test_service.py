@@ -6,12 +6,15 @@ the stalled auto-restart path.
 """
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.service import CCHost
+from trowel_py.cc_host.session_scan import workdir_to_slug
 from trowel_py.schemas.cc_host import (
     SessionStartedEvent,
     TextEvent,
@@ -20,6 +23,7 @@ from trowel_py.schemas.cc_host import (
     ErrorEvent,
     LocalCommandEvent,
     StalledEvent,
+    TurnStartEvent,
 )
 
 
@@ -122,7 +126,8 @@ class TestStartAndSend:
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
         events = await collect(host.send("hi"))
         kinds = [type(e).__name__ for e in events]
-        assert kinds[0] == "SessionStartedEvent"
+        # slice-026: a TurnStartEvent is yielded first (before SessionStarted)
+        assert kinds[0] == "TurnStartEvent"
         assert SessionStartedEvent in [type(e) for e in events]
         text_ev = [e for e in events if isinstance(e, TextEvent)]
         assert "".join(e.text for e in text_ev) == "hello"
@@ -291,3 +296,85 @@ class TestElicitAnswer:
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([FakeProc([])]))
         ok = await host.answer_elicit({"q": "a"})
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# slice-026 E1: checkpoint integration on send()
+# ---------------------------------------------------------------------------
+
+
+def _git_repo(path: Path) -> Path:
+    """Init a tmp git repo with one commit; return its root."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "seed").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+    return path
+
+
+class TestCheckpointOnSend:
+    async def test_non_git_workdir_yields_non_revertible_turn_start(self, tmp_path):
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        assert isinstance(events[0], TurnStartEvent)
+        assert events[0].revertible is False
+        assert events[0].turn_id
+
+    async def test_fresh_turn_1_revertible_via_session_start_checkpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # slice-026: fresh session turn 1 IS revertible — the session-start
+        # checkpoint is saved in the init handler once cc_session_id is known
+        # (worktree is still pristine at init).
+        repo = _git_repo(tmp_path / "repo")
+        proj = tmp_path / "projects"
+        slug_dir = proj / workdir_to_slug(str(repo))
+        slug_dir.mkdir(parents=True)
+        (slug_dir / "new-sid.jsonl").write_text("")  # empty jsonl → offset 0
+        monkeypatch.setattr("trowel_py.cc_host.service.cc_projects_root", lambda: proj)
+
+        proc = FakeProc([line(init_event(sid="new-sid")), line(result_ok())])
+        host = CCHost("sid", str(repo), spawner=FakeSpawner([proc]))
+        events = await collect(host.send("first turn"))
+        ts = next(e for e in events if isinstance(e, TurnStartEvent))
+        assert ts.revertible is True
+        assert host._session_start_saved is True
+        saved = [
+            m for m in checkpoint.list_checkpoints(str(repo)) if m.turn_id == ts.turn_id
+        ]
+        assert len(saved) == 1
+
+    async def test_resumed_git_session_turn_is_revertible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        repo = _git_repo(tmp_path / "repo")
+        # fake the resumed jsonl under a tmp cc_projects_root
+        proj = tmp_path / "projects"
+        slug_dir = proj / workdir_to_slug(str(repo))
+        slug_dir.mkdir(parents=True)
+        (slug_dir / "cc-sid-1.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"role": "user", "content": "prior"}}) + "\n"
+        )
+        monkeypatch.setattr("trowel_py.cc_host.service.cc_projects_root", lambda: proj)
+
+        proc = FakeProc([line(init_event(sid="cc-sid-1")), line(result_ok())])
+        host = CCHost("sid", str(repo), resume_from="cc-sid-1", spawner=FakeSpawner([proc]))
+        events = await collect(host.send("next turn"))
+        ts = next(e for e in events if isinstance(e, TurnStartEvent))
+        assert ts.revertible is True
+        # the checkpoint was actually written to the repo's git
+        saved = [m for m in checkpoint.list_checkpoints(str(repo)) if m.turn_id == ts.turn_id]
+        assert len(saved) == 1
+        assert saved[0].jsonl_offset is not None
+
+    async def test_reload_kills_process_for_resume(self, tmp_path: Path):
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await collect(host.send("hi"))
+        assert host.is_dead is False  # process still alive after a clean turn
+        await host.reload()
+        assert host.is_dead is True

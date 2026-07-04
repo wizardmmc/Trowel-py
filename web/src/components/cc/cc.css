@@ -155,6 +155,11 @@
   position: absolute;
   right: 0;
   top: 100%;
+  /* slice-026 C3: cap the width so a long title can't shrink-to-fit the panel
+     wide open — without this the absolute container grows to max-content and
+     the per-item nowrap+ellipsis never triggers. */
+  width: 340px;
+  max-width: 340px;
   min-width: 280px;
   max-height: 320px;
   overflow-y: auto;
@@ -169,6 +174,8 @@
   display: flex;
   flex-direction: column;
   width: 100%;
+  /* min-width:0 lets the title's nowrap+ellipsis clip inside a flex column. */
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: none;
@@ -185,6 +192,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .cc-switcher__item-time {
   font-size: 0.7rem;
@@ -216,6 +224,7 @@
 }
 
 .cc-turn {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
@@ -1024,4 +1033,144 @@
 .cc-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ── slice-026 E1: per-turn revert button (hover-reveal) ── */
+
+.cc-turn__revert {
+  position: absolute;
+  top: -10px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 2px 9px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  /* slice-026: always visible (not hover-only) — discoverability fix; the
+     button only renders for revertible turns anyway. */
+  opacity: 0.7;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  z-index: 2;
+}
+.cc-turn:hover .cc-turn__revert,
+.cc-turn:focus-within .cc-turn__revert {
+  opacity: 1;
+}
+.cc-turn__revert:hover {
+  opacity: 1;
+  color: var(--color-error);
+  border-color: var(--color-error);
+  background: var(--error-soft);
+}
+
+/* ── slice-026 E1: revert confirm modal ── */
+
+.cc-revert-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(45, 59, 45, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.cc-revert-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  max-width: 420px;
+  width: calc(100% - 32px);
+  padding: 22px 24px;
+}
+.cc-revert-modal__title {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--color-error);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-revert-modal__icon {
+  font-size: 1.1rem;
+}
+.cc-revert-modal__lead {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+.cc-revert-modal__lose {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: var(--error-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px 8px 24px;
+  margin: 12px 0;
+  list-style: disc;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.cc-revert-modal__lose code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+.cc-revert-modal__note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.cc-revert-modal__note code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.cc-revert-modal__irreversible {
+  margin: 8px 0 0;
+  color: var(--color-error);
+  font-size: 0.82rem;
+}
+.cc-revert-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.cc-revert-modal__cancel {
+  border-radius: var(--radius-sm);
+  padding: 7px 16px;
+  font-size: 0.86rem;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--color-border);
+  font-family: inherit;
+}
+.cc-revert-modal__confirm {
+  border-radius: var(--radius-sm);
+  padding: 7px 16px;
+  font-size: 0.86rem;
+  cursor: pointer;
+  background: var(--color-error);
+  color: var(--text-inverse);
+  border: 1px solid transparent;
+  font-family: inherit;
+}
+
+/* ── slice-026 E1: non-git workdir banner ── */
+
+.cc-nogit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--sunshine-ink);
+  background: var(--sunshine-soft);
+  border-bottom: 1px solid var(--sunshine);
+  padding: 6px 12px;
 }

@@ -24,22 +24,40 @@ interface MessageListProps {
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  /** slice-026: request to revert a turn — opens the confirm modal. Called
+   * only for revertible turns while CC is idle. */
+  readonly onRevert?: (turn: Turn) => void;
 }
 
 function TurnCard({
   turn,
+  streaming,
   onRetryLast,
   onAnswer,
   onCancel,
+  onRevert,
 }: {
   readonly turn: Turn;
+  readonly streaming: boolean;
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  readonly onRevert?: (turn: Turn) => void;
 }) {
   const hasContent = turn.items.length > 0;
+  const canRevert = turn.revertible && turn.turnId !== null && !streaming;
   return (
     <div className="cc-turn" data-turn-status={turn.status}>
+      {canRevert && (
+        <button
+          type="button"
+          className="cc-turn__revert"
+          title="回滚到这轮之前"
+          onClick={() => onRevert?.(turn)}
+        >
+          <span aria-hidden>↶</span> 回滚到这里
+        </button>
+      )}
       <div className="cc-msg cc-msg--user">
         <span className="cc-msg__tag">你</span>
         <div className="cc-msg__body">{turn.userText}</div>
@@ -68,6 +86,7 @@ export function MessageList({
   onRetryLast,
   onAnswer,
   onCancel,
+  onRevert,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -91,9 +110,11 @@ export function MessageList({
         <TurnCard
           key={turn.id}
           turn={turn}
+          streaming={streaming}
           onRetryLast={onRetryLast}
           onAnswer={onAnswer}
           onCancel={onCancel}
+          onRevert={onRevert}
         />
       ))}
       {/* slice-025-a A1: the ✻ thinking… row rides the tail of the stream.

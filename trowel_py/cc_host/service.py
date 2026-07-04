@@ -17,8 +17,11 @@ import json
 import os
 import signal
 import time
+import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.input import (
     LocalCommand,
     RestartSession,
@@ -34,6 +37,7 @@ from trowel_py.cc_host.launcher import (
     build_args,
     build_subprocess_kwargs,
 )
+from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
 from trowel_py.cc_host.translator import Translator
 from trowel_py.schemas.cc_host import (
@@ -44,6 +48,7 @@ from trowel_py.schemas.cc_host import (
     SessionStartedEvent,
     StatusEvent,
     TrowelEvent,
+    TurnStartEvent,
 )
 
 
@@ -163,6 +168,21 @@ class CCHost:
         self._pending_elicit: dict[str, Any] | None = None
         self._elicit_lock = asyncio.Lock()
 
+        # slice-026 E1: a session-start checkpoint captures the worktree (and,
+        # for resumed sessions, the jsonl cut) BEFORE turn 1 runs, so the first
+        # turn is revertible too. _session_start_turn_id is the turn_id reused
+        # by turn 1; _session_start_saved tracks whether the ref was written.
+        self._session_start_turn_id = uuid.uuid4().hex
+        self._session_start_saved = False
+        self._turn_count = 0
+        # Resumed session knows cc_session_id now → save session-start at once.
+        # Fresh session defers to the init handler (cc_session_id unknown here).
+        if checkpoint.is_git_repo(self.workdir) and resume_from:
+            jsonl_path = self._jsonl_path(resume_from)
+            offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
+            if self._save_session_start_blocking(str(jsonl_path), offset):
+                self._session_start_saved = True
+
     # -- introspection -----------------------------------------------------
 
     @property
@@ -266,6 +286,111 @@ class CCHost:
         """End the session: kill the subprocess if still alive."""
         await self._kill()
 
+    async def reload(self) -> None:
+        """Kill the live CC process so the next send() re-resumes from disk.
+
+        Used by the revert endpoint: after truncating the CC jsonl, the live
+        subprocess still holds the pre-revert context in memory, so it must be
+        respawned (``--resume`` then reloads the truncated jsonl) before the
+        next turn. Idempotent — no-op when the process is already dead.
+        """
+        await self._kill()
+
+    # -- checkpoint (slice-026 E1) -----------------------------------------
+
+    async def _prepare_checkpoint(self) -> tuple[str, bool]:
+        """Generate a turn_id and save a git checkpoint if possible.
+
+        Returns:
+            (turn_id, revertible). revertible is True only when a checkpoint
+            is (or will be) written: the workdir is a git repo. Turn 1 reuses
+            the session-start checkpoint (saved at construction for resumed
+            sessions, or saved in the init handler for fresh ones); turns 2+
+            get a fresh checkpoint saved here.
+
+        The blocking git subprocess work runs in the default executor so the
+        SSE event loop (and the stalled-detector heartbeat) keeps draining
+        while the snapshot is taken (~100-300ms for a typical repo).
+        """
+        self._turn_count += 1
+        if not checkpoint.is_git_repo(self.workdir):
+            return uuid.uuid4().hex, False
+        # turn 1: reuse the session-start checkpoint (no new save here).
+        if self._turn_count == 1:
+            return self._session_start_turn_id, True
+        # turn 2+: fresh checkpoint at entry
+        turn_id = uuid.uuid4().hex
+        cc_sid = self._cc_session_id
+        if not cc_sid:
+            return turn_id, False
+        jsonl_path = self._jsonl_path(cc_sid)
+        offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
+        loop = asyncio.get_running_loop()
+        revertible = await loop.run_in_executor(
+            None,
+            self._save_checkpoint_blocking,
+            turn_id,
+            str(jsonl_path),
+            offset,
+        )
+        return turn_id, revertible
+
+    async def _maybe_save_session_start_checkpoint(self, cc_sid: str) -> None:
+        """Save the deferred session-start checkpoint for a fresh session.
+
+        Called from the init handler once cc_session_id is learned. Idempotent
+        (guarded by _session_start_saved). Runs git in the executor so the
+        stream loop keeps draining.
+        """
+        if self._session_start_saved or not checkpoint.is_git_repo(self.workdir):
+            return
+        jsonl_path = self._jsonl_path(cc_sid)
+        offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(
+            None, self._save_session_start_blocking, str(jsonl_path), offset
+        )
+        if ok:
+            self._session_start_saved = True
+
+    def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
+        """Blocking session-start save+gc; runs in an executor / sync __init__."""
+        try:
+            checkpoint.save(
+                self.workdir,
+                self._session_start_turn_id,
+                cc_session_jsonl_path=jsonl_path,
+                jsonl_offset=offset,
+            )
+            checkpoint.gc(self.workdir, keep=50)
+        except (checkpoint.NotAGitRepoError, RuntimeError, OSError):
+            return False
+        return True
+
+    def _save_checkpoint_blocking(
+        self, turn_id: str, jsonl_path: str, offset: int
+    ) -> bool:
+        """Blocking save+gc for turns 2+; runs in an executor."""
+        try:
+            checkpoint.save(
+                self.workdir,
+                turn_id,
+                cc_session_jsonl_path=jsonl_path,
+                jsonl_offset=offset,
+            )
+            checkpoint.gc(self.workdir, keep=50)
+        except (checkpoint.NotAGitRepoError, RuntimeError, OSError):
+            return False
+        return True
+
+    def _jsonl_path(self, cc_session_id: str) -> Path:
+        """Resolve the on-disk CC session jsonl for this workdir + cc sid."""
+        return (
+            cc_projects_root()
+            / workdir_to_slug(self.workdir)
+            / f"{cc_session_id}.jsonl"
+        )
+
     # -- send --------------------------------------------------------------
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
@@ -290,6 +415,16 @@ class CCHost:
 
         # SendText main path
         payload = _user_msg(action.text)
+        # slice-026 E1: snapshot the worktree before the turn runs so the user
+        # can revert it. turn_id names the checkpoint ref; revertible is False
+        # for non-git workdirs and for a fresh session's first turn (no
+        # resumable jsonl yet — cc_session_id is learned from init mid-turn).
+        # Run in an executor — git subprocess calls would otherwise block the
+        # SSE event loop (and the stalled-detector heartbeat) for ~100-300ms.
+        turn_id, revertible = await self._prepare_checkpoint()
+        yield TurnStartEvent(
+            type="turn_start", turn_id=turn_id, revertible=revertible
+        )
         translator = Translator()
         detector = StalledDetector(threshold_s=self.stalled_threshold)
         detector.start_turn(self._now())
@@ -362,6 +497,11 @@ class CCHost:
                     sid = ev.get("session_id")
                     if sid:
                         self._cc_session_id = sid
+                        # slice-026: fresh session — now that we know
+                        # cc_session_id, save the deferred session-start
+                        # checkpoint (worktree is still pristine at init).
+                        if not self._session_start_saved:
+                            await self._maybe_save_session_start_checkpoint(sid)
                 for tev in translator.translate(ev):
                     if isinstance(tev, ElicitationRequestEvent):
                         # Remember the pending elicitation so answer_elicit /

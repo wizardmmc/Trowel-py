@@ -18,6 +18,17 @@ export interface SessionStartedEvent {
   readonly tools: readonly string[];
 }
 
+/** Emitted at the start of each live turn (slice-026 E1). Carries the backend
+ * turn_id (the checkpoint ref name) and whether this turn is revertible. The
+ * reducer attaches both to the optimistic turn the store already created.
+ * History-replay never emits this — replayed turns predate this trowel session
+ * and have no checkpoint, so they are not revertible. */
+export interface TurnStartEvent {
+  readonly type: "turn_start";
+  readonly turn_id: string;
+  readonly revertible: boolean;
+}
+
 export interface UserEvent {
   readonly type: "user";
   readonly text: string;
@@ -170,6 +181,7 @@ export interface AnswerElicitBody {
 
 export type TrowelEvent =
   | SessionStartedEvent
+  | TurnStartEvent
   | UserEvent
   | TextEvent
   | ThinkingEvent

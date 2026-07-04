@@ -96,10 +96,13 @@ class TestListSessions:
     def test_lists_sessions_with_title_from_first_user_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_session(root, "-wd", "sess-a", [
+        sid = str(uuidlib.uuid4())
+        self._write_session(root, "-wd", sid, [
             {"type": "system", "subtype": "init"},
-            {"type": "user", "message": {"role": "user",
+            {"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": "hello there"}]}},
             {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
         ])
@@ -108,39 +111,45 @@ class TestListSessions:
         assert len(sessions) == 1
         s = sessions[0]
         assert isinstance(s, SessionSummary)
-        assert s.cc_session_id == "sess-a"
+        assert s.cc_session_id == sid
         assert s.title == "hello there"
 
     def test_includes_legacy_sessions_not_created_this_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # the whole point of GET /sessions: open june's session too
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_session(root, "-wd", "june-session", [
-            {"type": "user", "message": {"role": "user",
+        sid = str(uuidlib.uuid4())
+        self._write_session(root, "-wd", sid, [
+            {"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": "old msg"}]}},
         ])
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         sessions = list_sessions("/wd")
-        assert sessions[0].cc_session_id == "june-session"
+        assert sessions[0].cc_session_id == sid
 
     def test_multiple_sessions_sorted_recent_first(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        import os
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        older = self._write_session(root, "-wd", "old", [
-            {"type": "user", "message": {"role": "user",
+        old_sid = str(uuidlib.uuid4())
+        new_sid = str(uuidlib.uuid4())
+        older = self._write_session(root, "-wd", old_sid, [
+            {"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": "o"}]}}])
-        newer = self._write_session(root, "-wd", "new", [
-            {"type": "user", "message": {"role": "user",
+        newer = self._write_session(root, "-wd", new_sid, [
+            {"type": "user", "isSidechain": False, "message": {"role": "user",
                 "content": [{"type": "text", "text": "n"}]}}])
-        # new mtime > old mtime
-        import os, time
         os.utime(older, (1, 1))
         os.utime(newer, (2, 2))
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         sessions = list_sessions("/wd")
-        assert [s.cc_session_id for s in sessions] == ["new", "old"]
+        assert [s.cc_session_id for s in sessions] == [new_sid, old_sid]
 
     def test_missing_projects_dir_returns_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -149,16 +158,19 @@ class TestListSessions:
                             lambda: tmp_path / "nope")
         assert list_sessions("/wd") == []
 
-    def test_title_falls_back_when_no_user_message(
+    def test_metadata_only_session_is_excluded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        # slice-026 C3: a session with no extractable summary (no user text,
+        # no ai/custom title) is hidden by cc --resume, and by us too.
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_session(root, "-wd", "s", [
+        self._write_session(root, "-wd", str(uuidlib.uuid4()), [
             {"type": "system", "subtype": "init"},
         ])
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
-        s = list_sessions("/wd")[0]
-        assert s.title == ""  # graceful fallback, not a crash
+        assert list_sessions("/wd") == []
 
     def _write_timed_sessions(
         self, root: Path, slug: str, ids_with_mtime: list[tuple[str, int]]
@@ -167,7 +179,7 @@ class TestListSessions:
         import os
         for sid, mtime in ids_with_mtime:
             f = self._write_session(root, slug, sid, [
-                {"type": "user", "message": {"role": "user",
+                {"type": "user", "isSidechain": False, "message": {"role": "user",
                     "content": [{"type": "text", "text": sid}]}},
             ])
             os.utime(f, (mtime, mtime))
@@ -176,22 +188,24 @@ class TestListSessions:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # 5 sessions, mtimes 1..5 — limit=3 must keep the 3 newest (5,4,3)
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_timed_sessions(root, "-wd", [
-            ("s1", 1), ("s2", 2), ("s3", 3), ("s4", 4), ("s5", 5),
-        ])
+        ids = [str(uuidlib.uuid4()) for _ in range(5)]
+        self._write_timed_sessions(root, "-wd", list(zip(ids, [1, 2, 3, 4, 5])))
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         sessions = list_sessions("/wd", limit=3)
-        assert [s.cc_session_id for s in sessions] == ["s5", "s4", "s3"]
+        assert [s.cc_session_id for s in sessions] == [ids[4], ids[3], ids[2]]
 
     def test_limit_none_returns_all(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # default behavior unchanged: no cap when limit is None
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_timed_sessions(root, "-wd", [
-            ("s1", 1), ("s2", 2), ("s3", 3), ("s4", 4), ("s5", 5),
-        ])
+        ids = [str(uuidlib.uuid4()) for _ in range(5)]
+        self._write_timed_sessions(root, "-wd", list(zip(ids, [1, 2, 3, 4, 5])))
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         sessions = list_sessions("/wd")
         assert len(sessions) == 5
@@ -199,8 +213,11 @@ class TestListSessions:
     def test_limit_larger_than_count_returns_all(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        self._write_timed_sessions(root, "-wd", [("s1", 1), ("s2", 2)])
+        ids = [str(uuidlib.uuid4()), str(uuidlib.uuid4())]
+        self._write_timed_sessions(root, "-wd", list(zip(ids, [1, 2])))
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         sessions = list_sessions("/wd", limit=10)
         assert len(sessions) == 2
@@ -211,14 +228,16 @@ class TestCountSessions:
         d = root / slug
         d.mkdir(parents=True, exist_ok=True)
         f = d / f"{sid}.jsonl"
-        f.write_text(json.dumps({"type": "user", "message": {"role": "user",
+        f.write_text(json.dumps({"type": "user", "isSidechain": False, "message": {"role": "user",
             "content": [{"type": "text", "text": sid}]}}) + "\n")
         return f
 
     def test_counts_all_session_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
-        for sid in ("a", "b", "c"):
-            self._write_session(root, "-wd", sid)
+        for _ in range(3):
+            self._write_session(root, "-wd", str(uuidlib.uuid4()))
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         assert count_sessions("/wd") == 3
 
@@ -227,12 +246,23 @@ class TestCountSessions:
                             lambda: tmp_path / "nope")
         assert count_sessions("/wd") == 0
 
-    def test_count_ignores_non_jsonl(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_count_ignores_non_jsonl_and_metadata_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # slice-026 C3: count is the FILTERED total. A .md file, a non-UUID
+        # .jsonl name, and a metadata-only `{}` jsonl are all excluded.
+        import uuid as uuidlib
+
         root = tmp_path / "projects"
         d = root / "-wd"
         d.mkdir(parents=True)
-        (d / "s1.jsonl").write_text("{}\n")
+        (d / f"{uuidlib.uuid4()}.jsonl").write_text(
+            json.dumps({"type": "user", "isSidechain": False, "message": {"role": "user",
+                "content": [{"type": "text", "text": "one"}]}}) + "\n")
         (d / "notes.md").write_text("not a session\n")
-        (d / "s2.jsonl").write_text("{}\n")
+        (d / "not-a-uuid.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"role": "user",
+                "content": [{"type": "text", "text": "two"}]}}) + "\n")
+        (d / f"{uuidlib.uuid4()}.jsonl").write_text("{}\n")  # metadata-only
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
-        assert count_sessions("/wd") == 2
+        assert count_sessions("/wd") == 1
