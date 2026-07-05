@@ -177,10 +177,26 @@ describe("reduceEvent — retrying / stalled / compact_boundary / hook / status"
     });
   });
 
-  it("stalled sets phase stalled and adds a stalled item", () => {
-    const state = reduceEvent(withOpenTurn(), { type: "stalled" });
-    expect(state.phase).toBe("stalled");
-    expect(state.turns[0].items[0]).toMatchObject({ kind: "stalled" });
+  it("stalled_warning stores a heads-up on meta without changing phase", () => {
+    const state = reduceEvent(withOpenTurn(), {
+      type: "stalled_warning",
+      severity: "mild",
+      elapsed_s: 120,
+    });
+    expect(state.meta.stallWarning).toEqual({ severity: "mild", elapsed_s: 120 });
+    // phase is untouched (cc still running, just silent) + no item added
+    expect(state.phase).not.toBe("stalled");
+    expect(state.turns[0].items).toHaveLength(0);
+  });
+
+  it("stalled_warning is cleared by any subsequent event", () => {
+    const warned = reduceEvent(withOpenTurn(), {
+      type: "stalled_warning",
+      severity: "severe",
+      elapsed_s: 300,
+    });
+    const cleared = reduceEvent(warned, { type: "text", text: "cc is back" });
+    expect(cleared.meta.stallWarning).toBeNull();
   });
 
   it("status compacting sets phase compacting", () => {

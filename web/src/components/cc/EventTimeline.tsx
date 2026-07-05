@@ -113,17 +113,6 @@ function RetryingRow({ item }: { readonly item: RetryingItem }) {
   );
 }
 
-function StalledRow() {
-  return (
-    <div className="cc-timeline__row cc-timeline__row--stalled">
-      <svg className="cc-timeline__icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M6 2h12M6 22h12M9 2v4l-3 6a4 4 0 0 0 4 6h4a4 4 0 0 0 4-6l-3-6V2" />
-      </svg>
-      <span className="cc-timeline__label">CC 静默，正在自动恢复…</span>
-    </div>
-  );
-}
-
 function CompactRow({ item }: { readonly item: CompactBoundaryItem }) {
   void item;
   return (
@@ -228,8 +217,6 @@ function Row({
       return <SubagentBlock subagent={item.subagent} />;
     case "retrying":
       return <RetryingRow item={item} />;
-    case "stalled":
-      return <StalledRow />;
     case "compact_boundary":
       return <CompactRow item={item} />;
     case "local_command":

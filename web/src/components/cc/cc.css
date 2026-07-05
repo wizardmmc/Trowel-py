@@ -754,6 +754,35 @@
   animation: cc-shimmer 2s ease-in-out infinite;
 }
 
+/* StallWarning — phased heads-up under the spinner when cc has been silent
+   past threshold_mild (120s, 黄) / threshold_severe (300s, 红). The process is
+   NOT killed; the user interrupts manually. Mirrors the mockup in
+   docs/design/front-end/stall-warning-2026-07-05.html. */
+.cc-stall-warning {
+  max-width: 680px;
+  margin: 4px auto 0;
+  padding: 4px 10px 4px 28px; /* left pad aligns with spinner text (glyph + gap) */
+  font-size: 0.78rem;
+  line-height: 1.5;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cc-stall-warning__icon {
+  font-size: 0.75rem;
+  margin-left: -18px; /* pull icon into the left pad */
+}
+.cc-stall-warning--mild {
+  color: var(--sunshine-ink);
+}
+.cc-stall-warning--severe {
+  color: var(--color-error);
+}
+.cc-stall-warning__hint {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+
 /* SubagentBlock — Agent tool inline block (soil-brown edge). Container holds
    the header row + an indented, collapsible list of internal tool_uses. */
 .cc-subagent {

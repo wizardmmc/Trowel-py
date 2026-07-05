@@ -32,7 +32,6 @@ export type Phase =
   | "tool"
   | "retrying"
   | "compacting"
-  | "stalled"
   | "awaiting_input"
   | "done"
   | "error"
@@ -99,10 +98,6 @@ export interface RetryingItem {
   readonly retryDelayMs: number | null;
 }
 
-export interface StalledItem {
-  readonly kind: "stalled";
-}
-
 export interface CompactBoundaryItem {
   readonly kind: "compact_boundary";
 }
@@ -143,7 +138,6 @@ export type TurnItem =
   | ToolItem
   | SubagentItem
   | RetryingItem
-  | StalledItem
   | CompactBoundaryItem
   | LocalCommandItem
   | ErrorItem
@@ -177,6 +171,11 @@ export interface SessionMeta {
   readonly thinkingStartedAt: number | null;
   /** Cumulative thinking-token estimate from the latest heartbeat. */
   readonly thinkingTokens: number | null;
+  /** Stall phased heads-up (slice-029). Set when cc has been silent past
+   * threshold_mild/severe; cleared by any subsequent event (cc is alive again).
+   * Null when no heads-up is active. The process is NOT killed on mild/severe —
+   * only the 30-min hard cap (ErrorEvent subclass="stalled") ends the turn. */
+  readonly stallWarning: { severity: "mild" | "severe"; elapsed_s: number } | null;
   /** slice-028 bug3: the CC subprocess exited (user /exit or died after a turn).
    * Set by the session_exited event. The MultiSessionBar greys the row out and,
    * if it was the active session, the shell unsets activeSid so the view returns
@@ -224,6 +223,7 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
     hookFired: null,
     thinkingStartedAt: null,
     thinkingTokens: null,
+    stallWarning: null,
     exited: false,
     exitReturncode: null,
   },
@@ -435,6 +435,12 @@ function assignTaskIdFromResult(
 
 /** Reduce one trowel event into a new ReducerState. Pure. */
 export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerState {
+  // Any non-stall-warning event means cc is alive again — clear the heads-up
+  // before running the event's own case. Immutably: we never mutate the
+  // incoming prev, this rebinds the local only.
+  if (event.type !== "stalled_warning" && prev.meta.stallWarning !== null) {
+    prev = { ...prev, meta: { ...prev.meta, stallWarning: null } };
+  }
   switch (event.type) {
     case "session_started":
       return {
@@ -736,8 +742,20 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         "interrupted",
       );
 
-    case "stalled":
-      return appendToCurrentTurn({ ...prev, phase: "stalled" }, { kind: "stalled" });
+    case "stalled_warning":
+      // Phased heads-up — does NOT change phase (cc is still running, just
+      // silent). Stored on meta so the spinner overlay can render the warning;
+      // any subsequent non-stall-warning event clears it (see reduceEvent entry).
+      return {
+        ...prev,
+        meta: {
+          ...prev.meta,
+          stallWarning: {
+            severity: event.severity,
+            elapsed_s: event.elapsed_s,
+          },
+        },
+      };
 
     case "model_changed": {
       // slice-027 C2: immediate StatusBar sync. CC is lazy-restarted by the

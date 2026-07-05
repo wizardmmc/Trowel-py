@@ -50,6 +50,7 @@ from trowel_py.schemas.cc_host import (
     LocalCommandEvent,
     ModelChangedEvent,
     SessionExitedEvent,
+    StalledWarningEvent,
     StatusEvent,
     TrowelEvent,
     TurnStartEvent,
@@ -63,40 +64,6 @@ def _user_msg(text: str) -> bytes:
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
     }
     return (json.dumps(payload) + "\n").encode()
-
-
-# Stall-restart heartbeat. Sent in place of the original user payload when a
-# stalled turn is resumed. cc keeps its --resume history, so re-sending the
-# original user message makes it re-evaluate from scratch (e.g. re-run the
-# grill-me decision tree, discarding prior decisions — see dc804194). A
-# heartbeat tells cc "you went silent past the threshold; either continue the
-# in-flight work, or finish the turn if you're wedged" — which preserves the
-# progress cc had already made.
-_STALL_HEARTBEAT_TEMPLATE = (
-    "[tcc 心跳信号] tcc 已 {elapsed:.0f}s 未收到你的事件流。"
-    "若非 issue #53584 stream-json deadlock（即你仍在正常工作），"
-    "请继续未完成的任务，不要重新开始；若确实卡死，请立即结束本 turn。"
-)
-
-
-def _heartbeat_msg(elapsed_s: float) -> bytes:
-    """Encode the stall-restart heartbeat as a stream-json user message.
-
-    Args:
-        elapsed_s: seconds cc was silent before the stall (surfaced to cc + logs).
-
-    Returns:
-        newline-terminated JSON bytes; a user-text message asking cc to either
-        continue its in-flight work or finish the turn.
-
-    Side effect: this heartbeat enters cc's conversation history as a regular
-    user message (cc appends it to the transcript on --resume). That's
-    intentional — it's how we tell cc "continue, don't restart from scratch" —
-    and ``max_restarts_per_turn=1`` bounds how many a single turn can accrue.
-    If stream-json later supports a non-user control message, switching to it
-    would avoid the transcript pollution.
-    """
-    return _user_msg(_STALL_HEARTBEAT_TEMPLATE.format(elapsed=elapsed_s))
 
 
 def _control_response_msg(
@@ -164,8 +131,9 @@ class CCHost:
             [list[str], dict[str, Any]], Awaitable[Any]
         ] = _default_spawner,
         now: Callable[[], float] = time.monotonic,
-        stalled_threshold_normal: float = 120.0,
-        stalled_threshold_generating: float = 720.0,
+        stalled_threshold_mild: float = 120.0,
+        stalled_threshold_severe: float = 300.0,
+        stalled_threshold_kill: float = 1800.0,
         stalled_tick: float = 1.0,
     ) -> None:
         """Store session config and the injection hooks for tests.
@@ -181,12 +149,12 @@ class CCHost:
             spawner: async factory (args, kwargs) -> subprocess; defaults to a
                 real asyncio subprocess, tests inject a fake.
             now: monotonic clock callable, injected so stalled tests are deterministic.
-            stalled_threshold_normal: quiet seconds before a turn is considered
-                stalled in the default phase (after tool_result / assistant
-                envelope / etc.). See StalledDetector for the phase logic.
-            stalled_threshold_generating: quiet seconds when the last event was
-                a thinking_tokens heartbeat (GLM silently generating a large
-                tool_use). Larger — covers measured generation up to ~670s.
+            stalled_threshold_mild: quiet seconds before the mild heads-up
+                (StalledWarningEvent severity=mild). See StalledDetector.
+            stalled_threshold_severe: quiet seconds before the severe heads-up.
+            stalled_threshold_kill: quiet seconds before the hard cap (service
+                kills cc + emits ErrorEvent). 30min default — genuine deadlock
+                (issue #53584) backstop; normal GLM waits stay well under it.
             stalled_tick: how long to wait between stalled checks on readline.
         """
         self.session_id = session_id
@@ -203,8 +171,9 @@ class CCHost:
         self._resume_from = resume_from
         self._spawner = spawner
         self._now = now
-        self.stalled_threshold_normal = stalled_threshold_normal
-        self.stalled_threshold_generating = stalled_threshold_generating
+        self.stalled_threshold_mild = stalled_threshold_mild
+        self.stalled_threshold_severe = stalled_threshold_severe
+        self.stalled_threshold_kill = stalled_threshold_kill
         self.stalled_tick = stalled_tick
 
         self._proc: Any = None
@@ -529,10 +498,15 @@ class CCHost:
         )
         translator = Translator()
         detector = StalledDetector(
-            threshold_normal=self.stalled_threshold_normal,
-            threshold_generating=self.stalled_threshold_generating,
+            threshold_mild=self.stalled_threshold_mild,
+            threshold_severe=self.stalled_threshold_severe,
+            threshold_kill=self.stalled_threshold_kill,
         )
         detector.start_turn(self._now())
+        # Phased heads-up flags (per-turn): each severity fires once, then the
+        # process is left alone until the next phase or the 30-min hard cap.
+        mild_warned = False
+        severe_warned = False
 
         normal_end = False
         cancelled = False  # slice-028 v2: CancelledError 时让后台 drain，finally 不杀
@@ -573,46 +547,49 @@ class CCHost:
                     # (which would make cc re-emit the AskUserQuestion).
                     if self._pending_elicit is not None:
                         continue
-                    if detector.is_stalled(self._now()):
+                    phase = detector.phase(self._now())
+                    if phase == "kill":
                         elapsed = detector.quiet_seconds(self._now())
-                        phase = (
-                            "generating" if detector.in_generating_phase() else "normal"
-                        )
-                        if detector.can_restart():
-                            logger.warning(
-                                "cc stalled after %.0fs with no event (phase=%s); "
-                                "killing + resuming with heartbeat",
-                                elapsed,
-                                phase,
-                            )
-                            detector.note_restart()
-                            await self._kill()
-                            await self._ensure_process()
-                            translator = Translator()
-                            detector.record_event(self._now())
-                            if not await self._safe_write(_heartbeat_msg(elapsed)):
-                                yield ErrorEvent(
-                                    type="error",
-                                    subclass="process_died",
-                                    errors=["CC process died on retry resend"],
-                                )
-                                normal_end = True
-                                return
-                            continue
                         logger.warning(
-                            "cc stalled after %.0fs with no event (phase=%s); "
-                            "no restart budget left, surfacing stalled error",
+                            "cc silent %.0fs, hard cap reached; killing + "
+                            "surfacing stalled error",
                             elapsed,
-                            phase,
                         )
                         yield ErrorEvent(
                             type="error",
                             subclass="stalled",
                             errors=[
-                                "CC stalled past threshold with no retry budget left"
+                                f"CC silent {int(elapsed)}s — hard cap reached "
+                                f"(possible stream-json deadlock; see issue #53584)"
                             ],
                         )
                         break
+                    if phase == "severe":
+                        if not severe_warned:
+                            severe_warned = True
+                            elapsed = detector.quiet_seconds(self._now())
+                            logger.warning(
+                                "cc silent %.0fs, severe heads-up", elapsed
+                            )
+                            yield StalledWarningEvent(
+                                type="stalled_warning",
+                                severity="severe",
+                                elapsed_s=elapsed,
+                            )
+                        continue
+                    if phase == "mild":
+                        if not mild_warned:
+                            mild_warned = True
+                            elapsed = detector.quiet_seconds(self._now())
+                            logger.warning(
+                                "cc silent %.0fs, mild heads-up", elapsed
+                            )
+                            yield StalledWarningEvent(
+                                type="stalled_warning",
+                                severity="mild",
+                                elapsed_s=elapsed,
+                            )
+                        continue
                     continue
                 except ValueError as exc:
                     # slice-028 bug1: cc 单行 stream-json 超 StreamReader limit
@@ -641,14 +618,7 @@ class CCHost:
                     ev = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                # thinking_tokens 是生成期信号（见 StalledDetector 模块注释）：
-                # 最后一个事件是 thinking_tokens → cc 思考完、正在静默生成 →
-                # 用大 threshold_generating，避免误杀正常慢生成（mockup / 大 Write）。
-                is_generating = (
-                    ev.get("type") == "system"
-                    and ev.get("subtype") == "thinking_tokens"
-                )
-                detector.record_event(self._now(), is_generating=is_generating)
+                detector.record_event(self._now())
                 if ev.get("type") == "system" and ev.get("subtype") == "api_retry":
                     delay = ev.get("retry_delay_ms")
                     if delay is not None:

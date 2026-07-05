@@ -22,7 +22,7 @@ from trowel_py.schemas.cc_host import (
     FinishedEvent,
     ErrorEvent,
     LocalCommandEvent,
-    StalledEvent,
+    StalledWarningEvent,
     TurnStartEvent,
     SessionExitedEvent,
 )
@@ -377,107 +377,37 @@ class TestInterrupt:
 
 
 class TestStalled:
-    async def test_stalled_triggers_one_restart_then_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # First proc: init ok, then goes silent (no more lines, no EOF).
+    async def test_stalled_emits_phased_warnings_then_kill(self, tmp_path: Path):
+        """stall 检测分阶段，不杀进程：mild (120s) + severe (300s) 各发一次
+        StalledWarningEvent，cc 不 restart；30min hard cap (1800s) 才 kill +
+        ErrorEvent 结束 turn。验证 dc804194 类的"等 GLM 响应慢"不再被误杀。"""
         proc1 = FakeProc([line(init_event())], feed_eof=False)
-        proc2 = FakeProc([line(init_event(sid="s-1"))], feed_eof=False)
-        spawner = FakeSpawner([proc1, proc2])
-        # virtual clock so we don't actually sleep 100s
-        clock = {"t": 0.0}
-        def fake_now():
-            clock["t"] += 200.0  # jump past threshold every tick
-            return clock["t"]
-        host = CCHost(
-            "sid", tmp_path, spawner=spawner,
-            now=fake_now, stalled_threshold_normal=100.0, stalled_tick=0.001,
-        )
-        events = await collect(host.send("long job"))
-        kinds = [type(e).__name__ for e in events]
-        # first stall -> respawn (proc2), second stall -> error
-        assert "ErrorEvent" in kinds
-        assert len(spawner.spawned) == 2
-
-    async def test_stalled_restart_sends_heartbeat_not_original_payload(
-        self, tmp_path: Path
-    ):
-        """dc804194 regression: re-sending the original payload on restart made
-        cc re-run grill-me from scratch (losing the decisions it had already
-        collected). The restart must send a heartbeat so cc continues its
-        --resume in-flight work instead of re-evaluating."""
-        proc1 = FakeProc([line(init_event())], feed_eof=False)
-        proc2 = FakeProc([line(init_event(sid="s-1"))], feed_eof=False)
-        spawner = FakeSpawner([proc1, proc2])
+        spawner = FakeSpawner([proc1])
         clock = {"t": 0.0}
 
         def fake_now() -> float:
-            clock["t"] += 200.0  # jump past threshold every tick
-            return clock["t"]
-
-        host = CCHost(
-            "sid", tmp_path, spawner=spawner,
-            now=fake_now, stalled_threshold_normal=100.0, stalled_tick=0.001,
-        )
-        await collect(host.send("优化 tcc edit 渲染"))
-
-        # proc1 (first spawn) received the original user payload.
-        assert proc1.stdin.written
-        p1_text = json.loads(proc1.stdin.written[0])["message"]["content"][0]["text"]
-        assert "优化 tcc edit 渲染" in p1_text
-        # proc2 (post-stall restart) received the heartbeat, NOT the payload —
-        # so cc won't re-evaluate from scratch and drop its prior progress.
-        # (Parse the JSON so the assertion is independent of ensure_ascii escaping.)
-        assert proc2.stdin.written
-        hb_text = json.loads(proc2.stdin.written[0])["message"]["content"][0]["text"]
-        assert "心跳" in hb_text
-        assert "优化 tcc edit 渲染" not in hb_text
-
-    async def test_thinking_tokens_event_uses_generating_threshold(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
-        """service-layer end-to-end: a system/thinking_tokens event in the
-        stream switches the detector to the generating phase, so the stall
-        fires at threshold_generating (not threshold_normal). Locks the
-        service→detector is_generating wiring that detector unit tests don't
-        cover (dc804194 relied on exactly this path)."""
-        proc1 = FakeProc(
-            [
-                line(init_event()),
-                line(
-                    {
-                        "type": "system",
-                        "subtype": "thinking_tokens",
-                        "estimated_tokens": 100,
-                    }
-                ),
-            ],
-            feed_eof=False,
-        )
-        proc2 = FakeProc([line(init_event(sid="s-1"))], feed_eof=False)
-        spawner = FakeSpawner([proc1, proc2])
-        clock = {"t": 0.0}
-
-        def fake_now() -> float:
-            clock["t"] += 50.0
+            clock["t"] += 150.0  # 跨过 mild(120) → severe(300) → kill(1800)
             return clock["t"]
 
         host = CCHost(
             "sid", tmp_path, spawner=spawner,
             now=fake_now,
-            stalled_threshold_normal=100.0,
-            stalled_threshold_generating=400.0,
+            stalled_threshold_mild=120.0,
+            stalled_threshold_severe=300.0,
+            stalled_threshold_kill=1800.0,
             stalled_tick=0.001,
         )
-        with caplog.at_level("WARNING", logger="trowel_py.cc_host.service"):
-            await collect(host.send("做 mockup"))
-
-        stall_warnings = [r for r in caplog.records if "stalled" in r.message]
-        assert stall_warnings, "stall should eventually fire (generating timeout)"
-        # logger.warning format args are (elapsed, phase) after pending_kind was
-        # removed — phase is args[1].
-        phase = stall_warnings[0].args[1]
-        assert phase == "generating", (
-            f"thinking_tokens should switch to generating phase, got {phase!r}"
-        )
+        events = await collect(host.send("long job"))
+        warnings = [e for e in events if isinstance(e, StalledWarningEvent)]
+        severities = [w.severity for w in warnings]
+        # mild + severe 各只发一次（per-turn 去重）
+        assert severities.count("mild") == 1
+        assert severities.count("severe") == 1
+        # 30min hard cap 触发 ErrorEvent(stalled) 结束 turn
+        errors = [e for e in events if isinstance(e, ErrorEvent)]
+        assert any(e.subclass == "stalled" for e in errors)
+        # 不 restart —— cc 被 kill 但没 respawn（spawned 只有 proc1）
+        assert len(spawner.spawned) == 1
 
 
 class TestCancellation:
@@ -489,7 +419,7 @@ class TestCancellation:
         # proc that blocks forever on stdout (no data, no EOF) — cc "还在思考"
         proc = FakeProc([], feed_eof=False)
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]),
-                      stalled_threshold_normal=10000.0, stalled_tick=0.01)
+                      stalled_threshold_mild=10000.0, stalled_tick=0.01)
 
         async def _run():
             async for _ in host.send("hi"):
@@ -511,7 +441,7 @@ class TestCancellation:
         # 只喂 init，之后阻塞（cc "还在思考"，drain 不会自行结束）
         proc = FakeProc([line(init_event())], feed_eof=False)
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]),
-                      stalled_threshold_normal=10000.0, stalled_tick=0.01)
+                      stalled_threshold_mild=10000.0, stalled_tick=0.01)
 
         async def _run():
             async for _ in host.send("hi"):

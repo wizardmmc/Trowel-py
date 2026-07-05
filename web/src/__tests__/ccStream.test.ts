@@ -27,9 +27,9 @@ describe("parseSseFrames", () => {
   });
 
   it("ignores non-data lines (comments / event tags)", () => {
-    const events = parseSseFrames(": ping\nevent: x\ndata: {\"type\":\"stalled\"}\n\n");
+    const events = parseSseFrames(": ping\nevent: x\ndata: {\"type\":\"stalled_warning\",\"severity\":\"mild\",\"elapsed_s\":120}\n\n");
     expect(events).toHaveLength(1);
-    expect(events[0].type).toBe("stalled");
+    expect(events[0].type).toBe("stalled_warning");
   });
 
   it("skips malformed data lines without throwing", () => {

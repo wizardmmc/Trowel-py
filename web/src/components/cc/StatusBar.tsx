@@ -24,7 +24,6 @@ const PHASE_LABEL: Record<Phase, string> = {
   tool: "执行工具",
   retrying: "重试中",
   compacting: "压缩上下文中",
-  stalled: "静默恢复中",
   awaiting_input: "等你回答",
   done: "完成",
   error: "出错",
@@ -33,7 +32,6 @@ const PHASE_LABEL: Record<Phase, string> = {
 
 function phaseClass(phase: Phase): string {
   if (phase === "error") return "cc-status__phase--error";
-  if (phase === "stalled") return "cc-status__phase--warning";
   if (phase === "done" || phase === "idle" || phase === "interrupted")
     return "cc-status__phase--neutral";
   return "cc-status__phase--sunshine"; // in-flight

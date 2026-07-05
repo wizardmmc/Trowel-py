@@ -90,7 +90,7 @@ EVENT_TYPES = frozenset(
         "finished",
         "error",
         "interrupted",
-        "stalled",
+        "stalled_warning",
         "thinking_progress",
         "subagent_progress",
         "elicit_request",
@@ -296,10 +296,21 @@ class InterruptedEvent(_Event):
     type: Literal["interrupted"] = "interrupted"
 
 
-class StalledEvent(_Event):
-    """CC went silent past the threshold (informational; service emits ErrorEvent on the second one)."""
+class StalledWarningEvent(_Event):
+    """CC has been silent long enough to surface a non-fatal heads-up.
 
-    type: Literal["stalled"] = "stalled"
+    severity=mild at threshold_mild (120s), severe at threshold_severe (300s).
+    The process is NOT killed — on GLM's non-streaming backend, long silence is
+    usually legitimate waiting for the first event, not a deadlock. The
+    frontend shows a "be patient" / "may be stuck" line under the spinner; the
+    user interrupts manually if needed. The 30-min hard cap
+    (StalledDetector.threshold_kill) eventually emits ErrorEvent if cc is truly
+    wedged.
+    """
+
+    type: Literal["stalled_warning"] = "stalled_warning"
+    severity: Literal["mild", "severe"]
+    elapsed_s: float
 
 
 class ThinkingProgressEvent(_Event):
@@ -381,7 +392,7 @@ TrowelEvent = (
     | SessionExitedEvent
     | ErrorEvent
     | InterruptedEvent
-    | StalledEvent
+    | StalledWarningEvent
     | ThinkingProgressEvent
     | SubagentProgressEvent
     | ElicitationRequestEvent

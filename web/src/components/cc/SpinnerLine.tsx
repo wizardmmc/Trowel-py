@@ -42,6 +42,7 @@ export function SpinnerLine() {
   const phase = active?.phase ?? "idle";
   const thinkingStartedAt = active?.meta.thinkingStartedAt ?? null;
   const thinkingTokens = active?.meta.thinkingTokens ?? null;
+  const stallWarning = active?.meta.stallWarning ?? null;
   const effort = active?.effort ?? null;
 
   // Pick one verb per think (stable within the think); cleared when not thinking.
@@ -74,24 +75,47 @@ export function SpinnerLine() {
   const effortSuffix = effort ? `thinking with ${effort} effort` : "thinking";
   const displayVerb = verb ?? FALLBACK_VERB;
 
+  const stallMinutes = stallWarning !== null ? Math.round(stallWarning.elapsed_s / 60) : 0;
   return (
-    <div
-      className="cc-spinner"
-      role="status"
-      aria-live="polite"
-      data-testid="cc-spinner"
-    >
-      <span className="cc-spinner__glyph" aria-hidden="true">✻</span>
-      <span className="cc-spinner__verb">{displayVerb}…</span>
-      {showStats && (
-        <span className="cc-spinner__stats">
-          <span className="cc-spinner__time">{seconds}s</span>
-          {thinkingTokens !== null && thinkingTokens > 0 && (
-            <span className="cc-spinner__tokens"> · ↓ {thinkingTokens} tokens</span>
+    <>
+      <div
+        className="cc-spinner"
+        role="status"
+        aria-live="polite"
+        data-testid="cc-spinner"
+      >
+        <span className="cc-spinner__glyph" aria-hidden="true">✻</span>
+        <span className="cc-spinner__verb">{displayVerb}…</span>
+        {showStats && (
+          <span className="cc-spinner__stats">
+            <span className="cc-spinner__time">{seconds}s</span>
+            {thinkingTokens !== null && thinkingTokens > 0 && (
+              <span className="cc-spinner__tokens"> · ↓ {thinkingTokens} tokens</span>
+            )}
+            <span className="cc-spinner__think"> · {effortSuffix}</span>
+          </span>
+        )}
+      </div>
+      {stallWarning !== null && (
+        <div
+          className={`cc-stall-warning cc-stall-warning--${stallWarning.severity}`}
+          role="status"
+        >
+          <span className="cc-stall-warning__icon" aria-hidden="true">
+            {stallWarning.severity === "severe" ? "⚠" : "⏳"}
+          </span>
+          <span>
+            {stallWarning.severity === "severe"
+              ? `已 ${stallMinutes} 分钟无响应，可能真的卡死了`
+              : `已静默 ${stallMinutes} 分钟，可能在等 GLM 响应——耐心等待`}
+          </span>
+          {stallWarning.severity === "severe" && (
+            <span className="cc-stall-warning__hint">
+              {" "}— 30 分钟后会自动兜底结束本 turn
+            </span>
           )}
-          <span className="cc-spinner__think"> · {effortSuffix}</span>
-        </span>
+        </div>
       )}
-    </div>
+    </>
   );
 }

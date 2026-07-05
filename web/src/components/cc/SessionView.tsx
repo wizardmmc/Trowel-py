@@ -46,7 +46,6 @@ const ACTIVE_PHASES = new Set([
   "tool",
   "retrying",
   "compacting",
-  "stalled",
 ]);
 
 export function SessionView({
@@ -209,6 +208,7 @@ export function SessionView({
                     hookFired: null,
                     thinkingStartedAt: null,
                     thinkingTokens: null,
+                    stallWarning: null,
                     exited: false,
                     exitReturncode: null,
                   }

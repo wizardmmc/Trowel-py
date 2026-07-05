@@ -130,8 +130,17 @@ export interface InterruptedEvent {
   readonly type: "interrupted";
 }
 
-export interface StalledEvent {
-  readonly type: "stalled";
+/** CC has been silent long enough for a non-fatal heads-up (the process is NOT
+ * killed — on GLM's non-streaming backend long silence is usually legitimate
+ * waiting, so stall detection now phases a heads-up rather than auto-killing).
+ * severity=mild at 120s, severe at 300s. The frontend shows a "be patient" /
+ * "may be stuck" line under the spinner; the user interrupts manually. The
+ * 30-min hard cap surfaces as ErrorEvent(subclass="stalled"), not this event.
+ * Mirrors `StalledWarningEvent` in cc_host.py. */
+export interface StalledWarningEvent {
+  readonly type: "stalled_warning";
+  readonly severity: "mild" | "severe";
+  readonly elapsed_s: number;
 }
 
 /** A thinking-tokens heartbeat (slice-025-a A1). On the GLM backend this is the
@@ -223,7 +232,7 @@ export type TrowelEvent =
   | SessionExitedEvent
   | ErrorEvent
   | InterruptedEvent
-  | StalledEvent
+  | StalledWarningEvent
   | ThinkingProgressEvent
   | SubagentProgressEvent
   | ElicitationRequestEvent
