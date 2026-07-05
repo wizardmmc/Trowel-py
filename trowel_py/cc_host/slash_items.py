@@ -92,6 +92,10 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
         # quotes (so "don't stop" stays, not "dont stop").
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
             v = v[1:-1]
+        # Block-scalar markers (|, >) mean a multi-line description we don't
+        # parse — skip rather than store the literal "|" as the description.
+        if v in ("|", ">", "|-", "|+", ">-", ">+"):
+            continue
         out[k.strip()] = v
     return out
 
