@@ -6,6 +6,8 @@ Endpoints:
     POST   /api/cc/sessions/{id}/interrupt   SIGINT the current turn
     GET    /api/cc/sessions?workdir=...      list resumable CC history sessions
     GET    /api/cc/sessions/{id}/history     replay a resumed session's stored events
+    GET    /api/cc/models                    list cc model aliases (slice-027 C2)
+    GET    /api/cc/slash-items?workdir=...   list slash commands+skills (slice-027 C1)
     DELETE /api/cc/sessions/{id}             kill and drop the session
 
 This is trowel's first async streaming route. Sessions live in an in-memory
@@ -24,8 +26,10 @@ from fastapi.responses import StreamingResponse
 
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.history import parse_history
+from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
+from trowel_py.cc_host.slash_items import list_slash_items
 from trowel_py.schemas.cc_host import (
     AnswerElicitRequest,
     CreateSessionRequest,
@@ -239,6 +243,56 @@ def get_history(
         return {"success": True, "data": [], "error": None}
     events = [e.model_dump() for e in parse_history(host.workdir, cc_session_id)]
     return {"success": True, "data": events, "error": None}
+
+
+@router.get("/models")
+def list_models_endpoint() -> dict:
+    """List available model aliases from cc's settings.json env (slice-027 C2).
+
+    Returns the alias -> real-model mapping for the /model picker. trowel does
+    not hardcode model ids; it surfaces cc's own aliases (opus/sonnet/haiku)
+    which map to the configured backend via ANTHROPIC_DEFAULT_*_MODEL env.
+    Switching backends only requires editing settings.json, not trowel code.
+    """
+    items = [asdict(m) for m in list_models()]
+    return {"success": True, "data": items, "error": None}
+
+
+@router.get("/slash-items")
+def list_slash_items_endpoint(
+    workdir: str = Query(..., min_length=1),
+) -> dict:
+    """List slash commands + skills for the '/' autocomplete (slice-027 C1).
+
+    Scans <workdir>/.claude/{skills,commands} + ~/.claude/{skills,commands}
+    (frontmatter) plus a hardcoded bundled-skill map. Priority project > user
+    > bundled. cc init's bare-name rosters (SessionStartedEvent) are the floor;
+    this endpoint adds the descriptions cc init doesn't carry.
+    """
+    items = [asdict(i) for i in list_slash_items(workdir)]
+    return {"success": True, "data": items, "error": None}
+
+
+@router.get("/list-dir")
+def list_dir(
+    path: str = Query(..., min_length=1),
+) -> dict:
+    """List immediate subdirectories of a path (slice-027 workdir tree browser).
+
+    The browser sandbox forbids enumerating local directories, so WorkdirPicker's
+    tree fetches children here. Returns subdirectories only (files omitted — a
+    workdir must be a directory); dotted names (`.git`, `.venv`, ...) hidden to
+    cut noise. `~` is expanded server-side. Non-directory / missing path → 400.
+    """
+    p = Path(path).expanduser()
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail="not a directory")
+    children = [
+        {"name": sub.name, "path": str(sub)}
+        for sub in sorted(p.iterdir(), key=lambda s: s.name)
+        if sub.is_dir() and not sub.name.startswith(".")
+    ]
+    return {"success": True, "data": children, "error": None}
 
 
 @router.delete("/sessions/{sid}")

@@ -87,7 +87,7 @@ class TestCreateSession:
         assert body["success"] is True
         sid = body["data"]["session_id"]
         assert sid in reg
-        assert body["data"]["model"] == "glm-5.2"
+        assert body["data"]["model"] is None  # slice-027: default follows cc settings.json
 
     def test_create_with_resume(self, tmp_path: Path):
         reg: dict = {}
@@ -349,3 +349,105 @@ class TestRevert:
         # process was invalidated so the next send re-resumes
         assert host.reloaded is True
         assert resp.json()["data"]["reverted_turn_id"] == turn_id
+
+
+class TestModelsEndpoint:
+    """slice-027 C2: GET /api/cc/models — list cc aliases from settings.json env."""
+
+    def test_returns_alias_envelope(self, monkeypatch):
+        from trowel_py.cc_host.models import ModelOption
+
+        monkeypatch.setattr(
+            "trowel_py.cc_host.routes.list_models",
+            lambda: [ModelOption(value="opus", label="Opus",
+                                 real_model="glm-5.2[1M]",
+                                 description="最强推理")],
+        )
+        client = _mini_app({})
+        resp = client.get("/api/cc/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["error"] is None
+        assert body["data"][0]["value"] == "opus"
+        assert body["data"][0]["label"] == "Opus"
+        assert body["data"][0]["real_model"] == "glm-5.2[1M]"
+
+    def test_empty_envelope_when_no_settings(self, monkeypatch):
+        monkeypatch.setattr("trowel_py.cc_host.routes.list_models", lambda: [])
+        client = _mini_app({})
+        resp = client.get("/api/cc/models")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+
+class TestSlashItemsEndpoint:
+    """slice-027 C1: GET /api/cc/slash-items — '/' autocomplete data source."""
+
+    def test_returns_items_envelope(self, monkeypatch):
+        from trowel_py.cc_host.slash_items import SlashItem
+
+        monkeypatch.setattr(
+            "trowel_py.cc_host.routes.list_slash_items",
+            lambda workdir: [SlashItem(name="monthly-etf", description="月度ETF",
+                                       source="user", type="skill")],
+        )
+        client = _mini_app({})
+        resp = client.get("/api/cc/slash-items?workdir=/wd")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["error"] is None
+        assert body["data"][0]["name"] == "monthly-etf"
+        assert body["data"][0]["type"] == "skill"
+
+    def test_requires_workdir_query(self, monkeypatch):
+        client = _mini_app({})
+        resp = client.get("/api/cc/slash-items")
+        assert resp.status_code == 422  # missing required query param
+
+
+class TestListDirEndpoint:
+    """slice-027 C4: GET /api/cc/list-dir?path=... — feeds WorkdirPicker's tree
+    (browser sandbox can't enumerate local dirs)."""
+
+    def test_lists_immediate_subdirectories_sorted(self, tmp_path: Path):
+        (tmp_path / "b").mkdir()
+        (tmp_path / "a").mkdir()
+        (tmp_path / "file.txt").write_text("x")  # files omitted
+        (tmp_path / ".hidden").mkdir()  # dotted omitted
+        client = _mini_app({})
+        resp = client.get(f"/api/cc/list-dir?path={tmp_path}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert [c["name"] for c in body["data"]] == ["a", "b"]
+
+    def test_child_carries_absolute_path(self, tmp_path: Path):
+        (tmp_path / "sub").mkdir()
+        client = _mini_app({})
+        resp = client.get(f"/api/cc/list-dir?path={tmp_path}")
+        child = resp.json()["data"][0]
+        assert child["name"] == "sub"
+        assert child["path"] == str(tmp_path / "sub")
+
+    def test_nonexistent_path_returns_400(self, tmp_path: Path):
+        client = _mini_app({})
+        resp = client.get(f"/api/cc/list-dir?path={tmp_path / 'nope'}")
+        assert resp.status_code == 400
+
+    def test_file_path_returns_400(self, tmp_path: Path):
+        f = tmp_path / "f.txt"
+        f.write_text("x")
+        client = _mini_app({})
+        resp = client.get(f"/api/cc/list-dir?path={f}")
+        assert resp.status_code == 400
+
+    def test_expands_tilde_to_home(self, tmp_path: Path, monkeypatch):
+        """`~` should resolve to the user's home so the user can type it."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "realdir").mkdir()
+        client = _mini_app({})
+        resp = client.get("/api/cc/list-dir?path=~")
+        assert resp.status_code == 200
+        assert [c["name"] for c in resp.json()["data"]] == ["realdir"]

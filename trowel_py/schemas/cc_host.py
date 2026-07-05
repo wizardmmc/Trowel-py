@@ -95,6 +95,7 @@ EVENT_TYPES = frozenset(
         "subagent_progress",
         "elicit_request",
         "turn_start",
+        "model_changed",
     }
 )
 
@@ -106,13 +107,23 @@ class _Event(BaseModel):
 
 
 class SessionStartedEvent(_Event):
-    """Emitted once per CC process after system/init (model, cwd, tools)."""
+    """Emitted once per CC process after system/init.
+
+    Carries model/cwd/tools plus the bare-name rosters from cc init
+    (slash_commands/skills/agents). cc init's lists are z.array(z.string()) —
+    names only, no description; the frontend's '/' autocomplete fetches
+    descriptions separately from GET /cc/slash-items. Defaults to empty so the
+    reducer can treat absent fields (older CC / minimal fixtures) uniformly.
+    """
 
     type: Literal["session_started"] = "session_started"
     model: str
     cwd: str
     cc_session_id: str
     tools: list[str]
+    slash_commands: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
 
 
 class TurnStartEvent(_Event):
@@ -223,6 +234,19 @@ class StatusEvent(_Event):
 
     type: Literal["status"] = "status"
     stage: str
+
+
+class ModelChangedEvent(_Event):
+    """slice-027 C2: emitted right after /model (or /effort) RestartSession so
+    the StatusBar syncs immediately. CC is lazy-restarted by the next send's
+    _ensure_process, so without this event the model/effort display would lag a
+    full turn behind. None fields mean trowel is deferring to cc settings.json
+    (no --model / --effort flag passed that turn).
+    """
+
+    type: Literal["model_changed"] = "model_changed"
+    model: str | None = None
+    effort: str | None = None
 
 
 class CompactBoundaryEvent(_Event):
@@ -350,4 +374,5 @@ TrowelEvent = (
     | ThinkingProgressEvent
     | SubagentProgressEvent
     | ElicitationRequestEvent
+    | ModelChangedEvent
 )

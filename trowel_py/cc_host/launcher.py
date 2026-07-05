@@ -2,9 +2,14 @@
 
 Spec-fixed startup args (see slice022 + slice-025-c design constraints):
     claude -p --input-format stream-json --output-format stream-json --verbose
-           --model <m> --fallback-model <m> --effort <level>
            --permission-mode <mode> --permission-prompt-tool stdio
+           [--model <m>] [--fallback-model <m>] [--effort <level>]
            [--resume <cc_session_id>]
+
+slice-027: --model / --fallback-model / --effort are OPTIONAL. They are omitted
+unless the user runs /model or /effort (RestartSession), so by default CC reads
+~/.claude/settings.json (ANTHROPIC_MODEL env > settings.model). The old hardcoded
+glm-5.2 / glm-5.1 / medium were placeholders.
 
 The workdir is NOT an arg — it is the subprocess cwd (so CC loads that
 project's .claude/). `--add-dir` is deliberately unused.
@@ -24,9 +29,14 @@ import shutil
 from asyncio import subprocess as asubprocess
 from typing import Any
 
-DEFAULT_MODEL = "glm-5.2"
-DEFAULT_FALLBACK_MODEL = "glm-5.1"
-DEFAULT_EFFORT = "medium"
+# slice-027: all None — when not overridden by /model or /effort (RestartSession),
+# launcher OMITS the flag and CC reads ~/.claude/settings.json itself
+# (ANTHROPIC_MODEL env > settings.model). The old glm-5.2 / glm-5.1 / medium
+# were only placeholders; trowel now defers to the user's cc config so changing
+# backends only requires editing settings.json, not trowel code.
+DEFAULT_MODEL = None
+DEFAULT_FALLBACK_MODEL = None
+DEFAULT_EFFORT = None
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 DEFAULT_PERMISSION_PROMPT_TOOL = "stdio"
 
@@ -36,14 +46,21 @@ CLAUDE_BIN = shutil.which("claude") or "claude"
 def build_args(
     workdir: str | os.PathLike,
     *,
-    model: str = DEFAULT_MODEL,
-    fallback_model: str = DEFAULT_FALLBACK_MODEL,
-    effort: str = DEFAULT_EFFORT,
+    model: str | None = DEFAULT_MODEL,
+    fallback_model: str | None = DEFAULT_FALLBACK_MODEL,
+    effort: str | None = DEFAULT_EFFORT,
     permission_mode: str = DEFAULT_PERMISSION_MODE,
     permission_prompt_tool: str | None = DEFAULT_PERMISSION_PROMPT_TOOL,
     resume_from: str | None = None,
 ) -> list[str]:
-    """Return the argv list for a CC subprocess. workdir is in the kwargs, not here."""
+    """Return the argv list for a CC subprocess. workdir is in the kwargs, not here.
+
+    slice-027: model / fallback_model / effort default to None — when not
+    overridden (i.e. the user has not run /model or /effort this session), the
+    flag is omitted entirely so CC resolves the value from ~/.claude/settings.json
+    (ANTHROPIC_MODEL env > settings.model). Passing a value (e.g. /model opus →
+    RestartSession) adds the flag back and overrides CC's config for this session.
+    """
     args = [
         CLAUDE_BIN,
         "-p",
@@ -52,15 +69,15 @@ def build_args(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--model",
-        model,
-        "--fallback-model",
-        fallback_model,
-        "--effort",
-        effort,
         "--permission-mode",
         permission_mode,
     ]
+    if model is not None:
+        args += ["--model", model]
+    if fallback_model is not None:
+        args += ["--fallback-model", fallback_model]
+    if effort is not None:
+        args += ["--effort", effort]
     if permission_prompt_tool:
         args += ["--permission-prompt-tool", permission_prompt_tool]
     if resume_from:

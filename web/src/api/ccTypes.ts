@@ -16,6 +16,12 @@ export interface SessionStartedEvent {
   readonly cwd: string;
   readonly cc_session_id: string;
   readonly tools: readonly string[];
+  /** slice-027 C1: bare-name rosters from cc init (z.array(z.string())) —
+   * the '/' autocomplete floor. Optional: older CC / minimal fixtures may omit.
+   * Descriptions are NOT here; they come from GET /cc/slash-items. */
+  readonly slash_commands?: readonly string[];
+  readonly skills?: readonly string[];
+  readonly agents?: readonly string[];
 }
 
 /** Emitted at the start of each live turn (slice-026 E1). Carries the backend
@@ -155,6 +161,16 @@ export interface ElicitationRequestEvent {
   readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
 }
 
+/** slice-027 C2: emitted right after /model or /effort RestartSession so the
+ * StatusBar syncs immediately. CC is lazy-restarted by the next send, so
+ * without this the model/effort display would lag a full turn behind. null
+ * fields mean trowel is deferring to cc settings.json (no flag passed). */
+export interface ModelChangedEvent {
+  readonly type: "model_changed";
+  readonly model: string | null;
+  readonly effort: string | null;
+}
+
 /** One question in an AskUserQuestion elicitation (spec/04 A.1). */
 export interface QuestionInput {
   readonly question: string;
@@ -199,7 +215,8 @@ export type TrowelEvent =
   | StalledEvent
   | ThinkingProgressEvent
   | SubagentProgressEvent
-  | ElicitationRequestEvent;
+  | ElicitationRequestEvent
+  | ModelChangedEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

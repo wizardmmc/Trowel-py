@@ -1,0 +1,263 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+
+// Mock listDir so the tree fetches don't hit the network. Each test can
+// override the resolved value via vi.mocked(listDir).mockResolvedValue(...).
+vi.mock("../api/cc", () => ({
+  listDir: vi.fn(async () => []),
+}));
+import { listDir } from "../api/cc";
+import { WorkdirPicker } from "../components/cc/WorkdirPicker";
+
+describe("WorkdirPicker (slice-027 C4, 方案 A)", () => {
+  it("renders recents as chips", () => {
+    render(
+      <WorkdirPicker
+        recents={["/works/trowel-py", "/works/reverse_cc"]}
+        favorites={["/Users/hamxf/studiolo"]}
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText("/works/trowel-py")).toBeInTheDocument();
+    expect(screen.getByText("/works/reverse_cc")).toBeInTheDocument();
+    expect(screen.getByText("/Users/hamxf/studiolo")).toBeInTheDocument();
+  });
+
+  it("clicking a recent fills the input", () => {
+    render(
+      <WorkdirPicker
+        recents={["/works/reverse_cc"]}
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.click(screen.getByText("/works/reverse_cc"));
+    expect(input.value).toBe("/works/reverse_cc");
+  });
+
+  it("manual path input + 确定 calls onSelect with the path", () => {
+    const onSelect = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.change(input, { target: { value: "/Users/hamxf/studiolo" } });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(onSelect).toHaveBeenCalledWith("/Users/hamxf/studiolo");
+  });
+
+  it("Enter submits the input", () => {
+    const onSelect = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.change(input, { target: { value: "/wd" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("/wd");
+  });
+
+  it("确定 button is disabled when input is empty", () => {
+    render(
+      <WorkdirPicker recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.change(input, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "确定" })).toBeDisabled();
+  });
+
+  it("trims whitespace before submitting", () => {
+    const onSelect = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.change(input, { target: { value: "  /wd  " } });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(onSelect).toHaveBeenCalledWith("/wd");
+  });
+
+  it("cancel button calls onCancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={() => {}} onCancel={onCancel} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("Escape in the input calls onCancel (a11y)", () => {
+    const onCancel = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={() => {}} onCancel={onCancel} />,
+    );
+    fireEvent.keyDown(screen.getByLabelText("工作目录"), { key: "Escape" });
+    expect(onCancel).toHaveBeenCalled();
+  });
+});
+
+describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
+  beforeEach(() => {
+    vi.mocked(listDir).mockReset();
+  });
+
+  it("lists subdirectories of the initial path", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "works", path: "/x/works" },
+      { name: "studiolo", path: "/x/studiolo" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("📁 works")).toBeInTheDocument();
+      expect(screen.getByText("📁 studiolo")).toBeInTheDocument();
+    });
+  });
+
+  it("clicking a subdir descends into it (input updates)", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "works", path: "/x/works" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => screen.getByText("📁 works"));
+    fireEvent.click(screen.getByText("📁 works"));
+    expect((screen.getByLabelText("工作目录") as HTMLInputElement).value).toBe(
+      "/x/works/",
+    );
+  });
+
+  it("Tab completes a unique sibling prefix", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "works", path: "/x/works" },
+      { name: "other", path: "/x/other" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x/wo" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    // wait for the siblings fetch to resolve before Tab'ing
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Tab" });
+    await waitFor(() => expect(input.value).toBe("/x/works/"));
+  });
+
+  it("Tab completes to common prefix when multiple siblings match", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "work-a", path: "/x/work-a" },
+      { name: "work-b", path: "/x/work-b" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x/work" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Tab" });
+    // common prefix of work-a / work-b is "work-" → input extends to /x/work-
+    await waitFor(() => expect(input.value).toBe("/x/work-"));
+  });
+
+  it("double-click a subdir selects it immediately", async () => {
+    const onSelect = vi.fn();
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "works", path: "/x/works" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x" recents={[]} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    await waitFor(() => screen.getByText("📁 works"));
+    fireEvent.dblClick(screen.getByText("📁 works"));
+    expect(onSelect).toHaveBeenCalledWith("/x/works");
+  });
+
+  it('".." ascends to the parent', async () => {
+    vi.mocked(listDir).mockResolvedValue([]);
+    render(
+      <WorkdirPicker initialPath="/x/y" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    fireEvent.click(screen.getByText("📁 .."));
+    expect((screen.getByLabelText("工作目录") as HTMLInputElement).value).toBe("/x");
+  });
+
+  it("Tab on ambiguous completes common prefix and opens dropdown", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "work-a", path: "/x/work-a" },
+      { name: "work-b", path: "/x/work-b" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x/work" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Tab" });
+    // common prefix "work-" completed
+    await waitFor(() => expect(input.value).toBe("/x/work-"));
+    // dropdown opened with both candidates
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+  });
+
+  it("ArrowDown + Enter in dropdown selects the highlighted candidate", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "work-a", path: "/x/work-a" },
+      { name: "work-b", path: "/x/work-b" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x/work" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Tab" }); // open dropdown (highlight work-a)
+    fireEvent.keyDown(input, { key: "ArrowDown" }); // → work-b
+    fireEvent.keyDown(input, { key: "Enter" }); // select (not submit)
+    expect(input.value).toBe("/x/work-b/");
+  });
+
+  it("ArrowRight accepts the ghost suggestion (fish-style)", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "works", path: "/x/works" },
+      { name: "other", path: "/x/other" },
+    ]);
+    render(
+      <WorkdirPicker initialPath="/x/wo" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
+    );
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(input.value).toBe("/x/works/");
+  });
+
+  it("Escape closes the dropdown without cancelling", async () => {
+    vi.mocked(listDir).mockResolvedValue([
+      { name: "work-a", path: "/x/work-a" },
+      { name: "work-b", path: "/x/work-b" },
+    ]);
+    const onCancel = vi.fn();
+    render(
+      <WorkdirPicker initialPath="/x/work" recents={[]} onSelect={() => {}} onCancel={onCancel} />,
+    );
+    await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.keyDown(input, { key: "Tab" }); // open dropdown
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    fireEvent.keyDown(input, { key: "Escape" }); // close dropdown
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(onCancel).not.toHaveBeenCalled(); // picker still open
+  });
+
+  it("expand ~ to home is NOT done client-side (passed through as-is)", () => {
+    // ~ expansion is the backend's job (or a later slice); the picker just
+    // hands the raw string over. Pinning this so the contract is explicit.
+    const onSelect = vi.fn();
+    render(
+      <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    const input = screen.getByLabelText("工作目录");
+    fireEvent.change(input, { target: { value: "~/studiolo" } });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(onSelect).toHaveBeenCalledWith("~/studiolo");
+  });
+});

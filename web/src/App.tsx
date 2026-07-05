@@ -6,13 +6,40 @@ import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
 import { SessionView } from "./components/cc/SessionView";
+import { WorkdirPicker } from "./components/cc/WorkdirPicker";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
 
-// CC workdir is a parameter (the workdir-picker is a separate slice). Default
-// to ClaudeDesktop so CC loads its .claude/ hooks/memory/skills.
-const CC_WORKDIR = "/Users/hamxf/VirtualVolumn/ClaudeDesktop";
+// slice-027: default workdir is ClaudeDesktop (loads its .claude/ hooks/memory/
+// skills), but the user can switch to any directory via WorkdirPicker. Recent
+// workdirs persist to localStorage so the chips reappear across reloads.
+const CC_WORKDIR_DEFAULT = "/Users/hamxf/VirtualVolumn/ClaudeDesktop";
+const WORKDIR_STORAGE_KEY = "trowel.cc.workdirs.recent";
+
+function loadRecentWorkdirs(): string[] {
+  try {
+    const raw = localStorage.getItem(WORKDIR_STORAGE_KEY);
+    const arr = raw ? (JSON.parse(raw) as unknown) : null;
+    if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) {
+      return arr as string[];
+    }
+  } catch {
+    // fall through to default
+  }
+  return [CC_WORKDIR_DEFAULT];
+}
+
+function saveRecentWorkdir(p: string): string[] {
+  const cur = loadRecentWorkdirs().filter((x) => x !== p);
+  const next = [p, ...cur].slice(0, 10);
+  try {
+    localStorage.setItem(WORKDIR_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // storage unavailable — in-memory only this session
+  }
+  return next;
+}
 
 function App() {
   const {
@@ -38,6 +65,12 @@ function App() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<Tool>("garden");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // slice-027: CC workdir is user-selectable; recent workdirs persist locally.
+  const [ccWorkdir, setCcWorkdir] = useState<string>(CC_WORKDIR_DEFAULT);
+  const [showWorkdirPicker, setShowWorkdirPicker] = useState(false);
+  const [recentWorkdirs, setRecentWorkdirs] = useState<string[]>(() =>
+    loadRecentWorkdirs(),
+  );
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
   const reviewActive = phase !== "idle";
@@ -112,7 +145,22 @@ function App() {
         />
       )}
       {activeTool === "cc" && (
-        <SessionView workdir={CC_WORKDIR} />
+        <SessionView
+          workdir={ccWorkdir}
+          onRequestChangeWorkdir={() => setShowWorkdirPicker(true)}
+        />
+      )}
+      {showWorkdirPicker && (
+        <WorkdirPicker
+          initialPath={ccWorkdir.endsWith("/") ? ccWorkdir : `${ccWorkdir}/`}
+          recents={recentWorkdirs}
+          onSelect={(p) => {
+            setCcWorkdir(p);
+            setRecentWorkdirs(saveRecentWorkdir(p));
+            setShowWorkdirPicker(false);
+          }}
+          onCancel={() => setShowWorkdirPicker(false)}
+        />
       )}
 
       <ReviewSession />

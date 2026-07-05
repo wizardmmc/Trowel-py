@@ -42,6 +42,41 @@ describe("reduceEvent — session_started", () => {
   });
 });
 
+describe("reduceEvent — model_changed (slice-027)", () => {
+  it("updates meta.model from event.model", () => {
+    const started = run([
+      { type: "session_started", model: "sonnet", cwd: "/wd",
+        cc_session_id: "s1", tools: [] },
+    ]);
+    const next = reduceEvent(started, {
+      type: "model_changed", model: "opus", effort: null,
+    });
+    expect(next.meta.model).toBe("opus");
+  });
+
+  it("keeps previous model when event.model is null (follow settings)", () => {
+    const started = run([
+      { type: "session_started", model: "sonnet", cwd: "/wd",
+        cc_session_id: "s1", tools: [] },
+    ]);
+    const next = reduceEvent(started, {
+      type: "model_changed", model: null, effort: "high",
+    });
+    expect(next.meta.model).toBe("sonnet"); // unchanged
+  });
+
+  it("is a no-op (same ref) when model unchanged", () => {
+    const started = run([
+      { type: "session_started", model: "opus", cwd: "/wd",
+        cc_session_id: "s1", tools: [] },
+    ]);
+    const next = reduceEvent(started, {
+      type: "model_changed", model: "opus", effort: null,
+    });
+    expect(next).toBe(started); // same reference → no rerender
+  });
+});
+
 describe("reduceEvent — text delta accumulation", () => {
   it("concatenates consecutive text deltas into one text item", () => {
     const state = reduceEvent(

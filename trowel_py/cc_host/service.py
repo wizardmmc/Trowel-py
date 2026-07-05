@@ -25,7 +25,6 @@ from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.input import (
     LocalCommand,
     RestartSession,
-    SendText,
     UnsupportedSlash,
     classify_input,
 )
@@ -45,7 +44,7 @@ from trowel_py.schemas.cc_host import (
     ErrorEvent,
     FinishedEvent,
     LocalCommandEvent,
-    SessionStartedEvent,
+    ModelChangedEvent,
     StatusEvent,
     TrowelEvent,
     TurnStartEvent,
@@ -134,8 +133,9 @@ class CCHost:
         Args:
             session_id: trowel's id for this session (registry key).
             workdir: subprocess cwd for CC (loads that project's .claude/).
-            model: override --model (defaults to glm-5.2 via launcher).
-            effort: override --effort (defaults to medium).
+            model: override --model; None (default) omits the flag and CC reads
+                ~/.claude/settings.json (slice-027: the old glm-5.2 was a placeholder).
+            effort: override --effort; None (default) omits the flag (was medium).
             permission_mode: CC --permission-mode (default bypassPermissions).
             resume_from: optional CC session id to resume on first spawn.
             spawner: async factory (args, kwargs) -> subprocess; defaults to a
@@ -191,9 +191,20 @@ class CCHost:
         return self._cc_session_id
 
     @property
-    def model(self) -> str:
-        """The --model currently in effect."""
+    def model(self) -> str | None:
+        """The --model currently in effect, or None when trowel is deferring to
+        cc's ~/.claude/settings.json (slice-027 default)."""
         return self._model
+
+    @property
+    def _model_for_display(self) -> str:
+        """Model name for /cost /status local text; None → '(cc default)'."""
+        return self._model or "(cc default)"
+
+    @property
+    def _effort_for_display(self) -> str:
+        """Effort for /cost /status local text; None → '(cc default)'."""
+        return self.effort or "(cc default)"
 
     @property
     def is_dead(self) -> bool:
@@ -401,6 +412,20 @@ class CCHost:
             yield self._local_answer(action)
             return
         if isinstance(action, RestartSession):
+            # /model or /effort with no arg → classify_input returns
+            # RestartSession(model=None, effort=None). The frontend picker is
+            # supposed to intercept bare /model; if one still reaches here, do
+            # NOT kill the live CC process for a no-op (would drop in-flight
+            # context and confuse the user).
+            if not (action.model or action.effort):
+                yield LocalCommandEvent(
+                    type="local_command",
+                    content=(
+                        "用法：/model <别名> 或 /effort <级别>"
+                        "（无参请在输入框的 picker 里选择）"
+                    ),
+                )
+                return
             if action.effort:
                 self.effort = action.effort
             if action.model:
@@ -408,6 +433,14 @@ class CCHost:
             await self._kill()
             stage = self._restart_stage(action)
             yield StatusEvent(type="status", stage=stage)
+            # slice-027 C2: immediate sync so the StatusBar updates now. CC is
+            # lazy-restarted by the next send's _ensure_process, so without
+            # this the model/effort display would lag a full turn behind.
+            yield ModelChangedEvent(
+                type="model_changed",
+                model=self._model,
+                effort=self.effort,
+            )
             return
         if isinstance(action, UnsupportedSlash):
             yield LocalCommandEvent(type="local_command", content=action.message)
@@ -613,11 +646,14 @@ class CCHost:
             else:
                 content = (
                     f"cost: ${f.total_cost_usd:.4f}  "
-                    f"turns: {f.num_turns}  usage: {f.usage}  model: {self._model}"
+                    f"turns: {f.num_turns}  usage: {f.usage}  model: {self._model_for_display}"
                 )
         else:  # status
             state = "dead" if self.is_dead else "alive"
-            content = f"model: {self._model}  effort: {self.effort}  process: {state}"
+            content = (
+                f"model: {self._model_for_display}  "
+                f"effort: {self._effort_for_display}  process: {state}"
+            )
         return LocalCommandEvent(type="local_command", content=content)
 
     def _restart_stage(self, action: RestartSession) -> str:

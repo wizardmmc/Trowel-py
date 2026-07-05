@@ -146,6 +146,9 @@ class Translator:
                     cwd=ev.get("cwd", ""),
                     cc_session_id=ev.get("session_id", ""),
                     tools=list(ev.get("tools", [])),
+                    slash_commands=list(ev.get("slash_commands", [])),
+                    skills=list(ev.get("skills", [])),
+                    agents=list(ev.get("agents", [])),
                 )
             ]
         if sub == "api_retry":

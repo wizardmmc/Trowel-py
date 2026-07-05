@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   createSession,
   listSessions,
+  listModels,
+  listSlashItems,
+  listDir,
   getHistory,
   interruptSession,
   deleteSession,
@@ -104,5 +107,49 @@ describe("cc REST client", () => {
   it("throws on envelope-level error", async () => {
     vi.stubGlobal("fetch", mockFetchEnvelope(null, false));
     await expect(createSession({ workdir: "/wd" })).rejects.toThrow("boom");
+  });
+
+  it("listModels GETs /models and returns the alias rows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchEnvelope([
+        { value: "opus", label: "Opus", real_model: "glm-5.2[1M]",
+          description: "最强推理" },
+      ]),
+    );
+    const out = await listModels();
+    expect(out[0].value).toBe("opus");
+    expect(out[0].real_model).toBe("glm-5.2[1M]");
+    const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(url).toBe("http://localhost:8000/api/cc/models");
+  });
+
+  it("listSlashItems sends workdir query and returns items", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchEnvelope([
+        { name: "monthly-etf", description: "月度ETF", source: "user",
+          type: "skill" },
+      ]),
+    );
+    const out = await listSlashItems("/wd");
+    expect(out[0].name).toBe("monthly-etf");
+    expect(out[0].type).toBe("skill");
+    const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(url).toContain("/slash-items");
+    expect(url).toContain("workdir=%2Fwd");
+  });
+
+  it("listDir sends path query and returns subdirs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchEnvelope([{ name: "sub", path: "/x/sub" }]),
+    );
+    const out = await listDir("/x");
+    expect(out[0].name).toBe("sub");
+    expect(out[0].path).toBe("/x/sub");
+    const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(url).toContain("/list-dir");
+    expect(url).toContain("path=%2Fx");
   });
 });

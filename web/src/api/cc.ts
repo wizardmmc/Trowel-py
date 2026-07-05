@@ -151,6 +151,55 @@ export async function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+/** One row of GET /api/cc/models — a cc alias and the real model it maps to
+ * (slice-027 C2). trowel surfaces cc's own aliases (opus/sonnet/haiku) instead
+ * of hardcoding GLM ids, so switching backend only edits settings.json. */
+export interface ModelOption {
+  readonly value: string;
+  readonly label: string;
+  readonly real_model: string;
+  readonly description: string;
+}
+
+/** GET /api/cc/models — alias → real-model mapping for the /model picker. */
+export async function listModels(): Promise<readonly ModelOption[]> {
+  return request<readonly ModelOption[]>(`${CC_API_BASE}/models`);
+}
+
+/** One row of GET /api/cc/slash-items — a '/' autocomplete entry (slice-027 C1).
+ * cc init's slash_commands are bare names; descriptions come from reading the
+ * skill/command frontmatter locally on the backend. */
+export interface SlashItem {
+  readonly name: string;
+  readonly description: string;
+  readonly source: "project" | "user" | "bundled" | "builtin";
+  readonly type: "skill" | "command";
+}
+
+/** GET /api/cc/slash-items?workdir=... — slash commands + skills for the '/'
+ * autocomplete. workdir is required because project .claude/ depends on it. */
+export async function listSlashItems(
+  workdir: string,
+): Promise<readonly SlashItem[]> {
+  return request<readonly SlashItem[]>(
+    `${CC_API_BASE}/slash-items?workdir=${encodeURIComponent(workdir)}`,
+  );
+}
+
+/** One row of GET /api/cc/list-dir — an immediate subdirectory (slice-027 C4). */
+export interface DirEntry {
+  readonly name: string;
+  readonly path: string;
+}
+
+/** GET /api/cc/list-dir?path=... — immediate subdirs of a path (browser sandbox
+ * can't enumerate local dirs). `~` is expanded server-side; files/dotted hidden. */
+export async function listDir(path: string): Promise<readonly DirEntry[]> {
+  return request<readonly DirEntry[]>(
+    `${CC_API_BASE}/list-dir?path=${encodeURIComponent(path)}`,
+  );
+}
+
 /** URL for POST /messages — passed to ccStream.postMessageStream. */
 export function messagesUrl(sessionId: string): string {
   return `${CC_API_BASE}/sessions/${sessionId}/messages`;

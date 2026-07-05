@@ -19,16 +19,24 @@ from trowel_py.cc_host.session_scan import (
 
 class TestBuildArgs:
     def test_default_args_shape(self, tmp_path: Path):
+        """slice-027: defaults follow cc settings.json — launcher does NOT pass
+        --model/--fallback-model/--effort unless explicitly given. The old
+        glm-5.2 / glm-5.1 / medium were placeholders; trowel now defers to cc's
+        own config resolution (ANTHROPIC_MODEL env > settings.model)."""
         args = build_args(workdir=tmp_path)
-        # program + flags present (no real claude binary path check here)
         assert "-p" in args
         assert "--input-format" in args and "stream-json" in args
         assert "--output-format" in args and "stream-json" in args
         assert "--verbose" in args
-        assert "--model" in args and "glm-5.2" in args
-        assert "--fallback-model" in args and "glm-5.1" in args
-        assert "--effort" in args and "medium" in args
+        assert "--model" not in args
+        assert "--fallback-model" not in args
+        assert "--effort" not in args
         assert "--permission-mode" in args and "bypassPermissions" in args
+
+    def test_fallback_model_override(self, tmp_path: Path):
+        args = build_args(workdir=tmp_path, fallback_model="sonnet")
+        i = args.index("--fallback-model")
+        assert args[i + 1] == "sonnet"
 
     def test_effort_override(self, tmp_path: Path):
         args = build_args(workdir=tmp_path, effort="high")

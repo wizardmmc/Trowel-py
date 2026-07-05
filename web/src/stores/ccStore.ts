@@ -639,6 +639,16 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     case "stalled":
       return appendToCurrentTurn({ ...prev, phase: "stalled" }, { kind: "stalled" });
 
+    case "model_changed": {
+      // slice-027 C2: immediate StatusBar sync. CC is lazy-restarted by the
+      // next send, so the actual --model flag change comes later; this event
+      // updates meta.model now so the display doesn't lag a turn behind.
+      // event.effort lives in zustand (set in apply), not ReducerState.
+      const nextModel = event.model ?? prev.meta.model;
+      if (nextModel === prev.meta.model) return prev; // no-op → no rerender
+      return { ...prev, meta: { ...prev.meta, model: nextModel } };
+    }
+
     default:
       return prev;
   }
@@ -774,7 +784,17 @@ interface CcState extends ReducerState {
 export const useCcStore = create<CcState>((set, get) => {
   /** Apply one event through the reducer. */
   function apply(event: TrowelEvent): void {
-    set((state) => reduceEvent(state, event));
+    set((state) => {
+      const next = reduceEvent(state, event);
+      // slice-027 C2: effort lives in zustand (createSession params set it),
+      // not ReducerState — fold the effort update into the same set so
+      // subscribers see a single update (not two) and CC's lazy-restart
+      // /effort change reaches the StatusBar the same turn.
+      if (event.type === "model_changed" && event.effort != null) {
+        return { ...next, effort: event.effort };
+      }
+      return next;
+    });
   }
 
   return {

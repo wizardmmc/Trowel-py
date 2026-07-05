@@ -1174,3 +1174,483 @@
   border-bottom: 1px solid var(--sunshine);
   padding: 6px 12px;
 }
+
+/* ═══ slice-027: slash autocomplete + pickers + workdir selector ═══ */
+
+/* Composer needs to anchor the autocomplete popup above itself. */
+.cc-composer { position: relative; }
+
+/* ── SlashAutocomplete (pops above the composer textarea) ── */
+.cc-ac {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  z-index: 20;
+}
+.cc-ac__group {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.cc-ac__group:last-child {
+  border-bottom: none;
+}
+.cc-ac__group-label {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 4px 14px 2px;
+}
+.cc-ac__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.cc-ac__item:hover {
+  background: var(--neutral-soft);
+}
+.cc-ac__item--sel {
+  background: var(--garden-soft);
+  position: relative;
+}
+.cc-ac__item--sel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: var(--garden-green);
+  border-radius: 2px;
+}
+.cc-ac__name {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.cc-ac__badge {
+  font-size: 0.66rem;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--neutral-soft);
+  color: var(--text-secondary);
+}
+.cc-ac__badge--bundled {
+  background: var(--sunshine-soft);
+  color: var(--sunshine-ink);
+}
+.cc-ac__desc {
+  flex: 1;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ── Modal backdrop + shell (shared by all pickers) ── */
+.cc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(45, 59, 45, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.cc-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.cc-modal--wide {
+  width: 560px;
+}
+.cc-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+.cc-modal__title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+.cc-modal__close {
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+.cc-modal__list {
+  padding: 6px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.cc-modal__body {
+  padding: 14px 18px;
+  overflow-y: auto;
+}
+.cc-modal__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-border);
+  background: var(--bg-garden);
+}
+.cc-modal__hint {
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+  margin-right: auto;
+}
+
+/* ── Option row (ModelPicker / EffortPicker radios) ── */
+.cc-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 18px;
+  cursor: pointer;
+}
+.cc-opt:hover {
+  background: var(--neutral-soft);
+}
+.cc-opt--sel {
+  background: var(--garden-soft);
+}
+.cc-opt__radio-input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--garden-green);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cc-opt__body {
+  flex: 1;
+  min-width: 0;
+}
+.cc-opt__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-opt__name {
+  font-size: 0.92rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.cc-opt__cur {
+  font-size: 0.66rem;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--garden-green);
+  color: var(--bg-card);
+}
+.cc-opt__meta {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.cc-opt__desc {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.cc-opt__tag {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.68rem;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--error-soft);
+  color: var(--color-error);
+}
+
+/* ── Buttons ── */
+.cc-btn {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cc-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cc-btn--primary {
+  background: var(--garden-green);
+  color: var(--bg-card);
+  border-color: var(--garden-green);
+  font-weight: 500;
+}
+
+/* ── WorkdirPicker ── */
+.cc-wd__input-wrap {
+  position: relative;
+}
+.cc-wd__input {
+  width: 100%;
+  position: relative;
+  z-index: 0;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+.cc-wd__input:focus {
+  outline: none;
+  border-color: var(--garden-green);
+  box-shadow: 0 0 0 3px var(--garden-soft);
+}
+/* fish-style ghost suggestion overlaid in the input */
+.cc-wd__ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  pointer-events: none;
+  white-space: pre;
+  z-index: 1;
+  color: var(--text-tertiary);
+}
+.cc-wd__ghost-typed {
+  visibility: hidden;
+}
+.cc-wd__ghost-rest {
+  color: var(--text-tertiary);
+}
+/* zsh MENU_SELECT-style dropdown */
+.cc-wd__dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 30;
+  list-style: none;
+  padding: 4px 0;
+  margin: 4px 0 0;
+}
+.cc-wd__dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cc-wd__dropdown-item:hover {
+  background: var(--neutral-soft);
+}
+.cc-wd__dropdown-item--sel {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+  font-weight: 500;
+}
+.cc-wd__dropdown-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-wd__section {
+  margin-top: 14px;
+}
+.cc-wd__label {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+}
+.cc-wd__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cc-wd__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--garden-soft);
+  color: var(--garden-green);
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.cc-wd__chip--star {
+  background: var(--sunshine-soft);
+  color: var(--sunshine-ink);
+}
+.cc-wd__chip--star::before {
+  content: "★ ";
+}
+
+/* ── WorkdirPicker tree (方案 A: 纵向列表) ── */
+.cc-wd__tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  background: var(--bg-card);
+}
+.cc-wd__tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.cc-wd__tree-row:hover {
+  background: var(--neutral-soft);
+}
+.cc-wd__tree-row--sel {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+  font-weight: 500;
+  position: relative;
+  padding-left: 14px;
+}
+.cc-wd__tree-row--sel::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--garden-green);
+  border-radius: 2px;
+}
+.cc-wd__tree-row--up {
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  margin-bottom: 2px;
+}
+.cc-wd__tree-row--up:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.cc-wd__tree-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-wd__tree-hint {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+}
+.cc-wd__tree-empty {
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ── Tab completion hint ── */
+.cc-wd__hint {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  padding: 0 2px;
+}
+.cc-wd__hint kbd {
+  background: var(--neutral-soft);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+.cc-wd__hint code {
+  font-family: var(--font-mono);
+  color: var(--garden-green);
+}
+.cc-wd__hint-candidates {
+  color: var(--text-tertiary);
+}
+
+/* ── Workdir button in the SessionView top bar ── */
+.cc-workdir-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-workdir-btn:hover {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+  border-color: var(--garden-green);
+}
+.cc-workdir-btn svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}

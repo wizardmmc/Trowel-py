@@ -2,8 +2,12 @@ import { useEffect, useState } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import { useCcStore } from "../../stores/ccStore";
+import { listModels, listSlashItems } from "../../api/cc";
+import type { ModelOption, SlashItem } from "../../api/cc";
 import { Composer } from "./Composer";
+import { EffortPicker } from "./EffortPicker";
 import { MessageList } from "./MessageList";
+import { ModelPicker } from "./ModelPicker";
 import { RevertConfirmModal } from "./RevertConfirmModal";
 import { StatusBar } from "./StatusBar";
 import { SessionSwitcher } from "./SessionSwitcher";
@@ -22,6 +26,9 @@ import "./cc.css";
  */
 interface SessionViewProps {
   readonly workdir: string;
+  /** slice-027: fired when the user clicks the workdir button to open the
+   * WorkdirPicker. Omit = hide the button (workdir is fixed). */
+  readonly onRequestChangeWorkdir?: () => void;
 }
 
 const ACTIVE_PHASES = new Set([
@@ -34,7 +41,10 @@ const ACTIVE_PHASES = new Set([
   "stalled",
 ]);
 
-export function SessionView({ workdir }: SessionViewProps) {
+export function SessionView({
+  workdir,
+  onRequestChangeWorkdir,
+}: SessionViewProps) {
   const {
     phase,
     meta,
@@ -57,6 +67,11 @@ export function SessionView({ workdir }: SessionViewProps) {
 
   // slice-026: the turn pending a revert confirmation (null = modal closed).
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
+  // slice-027: slash items for `/` autocomplete + models for /model picker.
+  const [slashItems, setSlashItems] = useState<readonly SlashItem[]>([]);
+  const [models, setModels] = useState<readonly ModelOption[]>([]);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showEffortPicker, setShowEffortPicker] = useState(false);
 
   // Drop a stale revert target if the session changes (reset / new / pick) so
   // we never POST a turn_id from one session to another.
@@ -68,6 +83,28 @@ export function SessionView({ workdir }: SessionViewProps) {
   useEffect(() => {
     void startSession({ workdir });
     void refreshHistory(workdir);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workdir]);
+
+  // slice-027: load slash items (project .claude/ depends on workdir) + models
+  // (settings.json env). Fail-soft to empty — autocomplete falls back to cc
+  // init's bare names; model picker just shows nothing.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listSlashItems(workdir), listModels()])
+      .then(([items, m]) => {
+        if (cancelled) return;
+        setSlashItems(items);
+        setModels(m);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSlashItems([]);
+        setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workdir]);
 
@@ -119,7 +156,14 @@ export function SessionView({ workdir }: SessionViewProps) {
       <div className="cc-view__top">
         <StatusBar
           phase={phase}
-          meta={meta}
+          meta={{
+            ...meta,
+            // normalize alias (opus/sonnet/haiku from /model) → real model id
+            // (glm-5.2[1M] / glm-5.1) for consistent display with session_started
+            model: models.find(
+              (m) => m.value === meta.model || m.real_model === meta.model,
+            )?.real_model ?? meta.model,
+          }}
           effort={effort}
           streaming={streaming}
           onInterrupt={() => void interrupt()}
@@ -131,6 +175,19 @@ export function SessionView({ workdir }: SessionViewProps) {
           onPick={(id) => void handlePick(id)}
           onNew={handleNew}
         />
+        {onRequestChangeWorkdir && (
+          <button
+            type="button"
+            className="cc-workdir-btn"
+            onClick={onRequestChangeWorkdir}
+            title={`工作目录：${workdir}（点击切换）`}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            {workdir.split("/").pop() || workdir}
+          </button>
+        )}
       </div>
       {!revertEnabled && sessionId && (
         <div className="cc-nogit-banner">
@@ -154,12 +211,43 @@ export function SessionView({ workdir }: SessionViewProps) {
         awaitingInput={phase === "awaiting_input"}
         onSend={(text) => void send(text)}
         onInterrupt={() => void interrupt()}
+        slashItems={slashItems}
+        onRequestModelPicker={() => setShowModelPicker(true)}
+        onRequestEffortPicker={() => setShowEffortPicker(true)}
       />
       {revertTarget && (
         <RevertConfirmModal
           lostTurns={lostTurns}
           onConfirm={() => void handleRevertConfirm()}
           onCancel={() => setRevertTarget(null)}
+        />
+      )}
+      {showModelPicker && (
+        <ModelPicker
+          models={models}
+          currentModel={
+            // meta.model may be the real id (from session_started: e.g.
+            // 'glm-5.2') or an alias (from model_changed: e.g. 'opus'). Match
+            // against either so the picker highlights the right row either way.
+            models.find(
+              (m) => m.real_model === meta.model || m.value === meta.model,
+            )?.value ?? meta.model
+          }
+          onSelect={(v) => {
+            void send(`/model ${v}`);
+            setShowModelPicker(false);
+          }}
+          onCancel={() => setShowModelPicker(false)}
+        />
+      )}
+      {showEffortPicker && (
+        <EffortPicker
+          currentEffort={effort}
+          onSelect={(v) => {
+            void send(`/effort ${v}`);
+            setShowEffortPicker(false);
+          }}
+          onCancel={() => setShowEffortPicker(false)}
         />
       )}
     </div>

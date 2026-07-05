@@ -30,6 +30,7 @@ from trowel_py.schemas.cc_host import (
     ThinkingProgressEvent,
     SubagentProgressEvent,
     ElicitationRequestEvent,
+    ModelChangedEvent,
     EVENT_TYPES,
 )
 
@@ -61,6 +62,46 @@ class TestRequestModels:
     def test_revert_request_accepts_id(self):
         req = RevertRequest(turn_id="abc123")
         assert req.turn_id == "abc123"
+
+
+class TestSessionStartedRosters:
+    """slice-027 C1: SessionStartedEvent carries the bare-name rosters from
+    cc system.init (description is fetched separately via /cc/slash-items)."""
+
+    def test_carries_slash_rosters(self):
+        ev = SessionStartedEvent(
+            model="glm-5.2", cwd="/tmp", cc_session_id="s", tools=[],
+            slash_commands=["monthly-etf"], skills=["monthly-etf"],
+            agents=["claude"],
+        )
+        assert ev.slash_commands == ["monthly-etf"]
+        assert ev.skills == ["monthly-etf"]
+        assert ev.agents == ["claude"]
+
+    def test_rosters_default_empty(self):
+        ev = SessionStartedEvent(model="m", cwd="/", cc_session_id="s", tools=[])
+        assert ev.slash_commands == []
+        assert ev.skills == []
+        assert ev.agents == []
+
+
+class TestModelChangedSchema:
+    """slice-027 C2: emitted right after /model (or /effort) RestartSession so
+    the StatusBar syncs immediately — without waiting for the next message's
+    system.init (CC is lazy-restarted by the next send's _ensure_process)."""
+
+    def test_carries_model_and_effort(self):
+        ev = ModelChangedEvent(model="opus", effort="high")
+        d = ev.model_dump()
+        assert d["type"] == "model_changed"
+        assert d["model"] == "opus"
+        assert d["effort"] == "high"
+
+    def test_defaults_none_means_follow_settings(self):
+        """None = trowel is deferring to cc settings.json (no --model / --effort)."""
+        ev = ModelChangedEvent()
+        assert ev.model is None
+        assert ev.effort is None
 
 
 class TestTurnStartEvent:
@@ -100,6 +141,7 @@ class TestEventDiscriminators:
             (ThinkingProgressEvent, "thinking_progress"),
             (SubagentProgressEvent, "subagent_progress"),
             (ElicitationRequestEvent, "elicit_request"),
+            (ModelChangedEvent, "model_changed"),
         ],
     )
     def test_each_event_has_unique_type(self, model, etype):
@@ -110,7 +152,7 @@ class TestEventDiscriminators:
             "status", "compact_boundary", "local_command", "finished", "error",
             "interrupted", "stalled",
             "thinking_progress", "subagent_progress",
-            "elicit_request",
+            "elicit_request", "model_changed",
         }
         assert etype in EVENT_TYPES
 

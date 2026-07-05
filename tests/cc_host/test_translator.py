@@ -44,6 +44,32 @@ class TestSystemInit:
         assert s.model == "glm-5.2"
         assert s.tools == ["Read", "Skill"]
 
+    def test_init_passes_through_slash_rosters(self):
+        """slice-027 C1: cc init's slash_commands/skills/agents are bare name
+        lists (coreSchemas.ts z.array(z.string())). Translator passes them
+        through so the frontend '/' autocomplete knows the roster. Description
+        is NOT here — it comes from GET /cc/slash-items (frontmatter loader)."""
+        ev = cc(type="system", subtype="init", model="glm-5.2", cwd="/tmp/x",
+                session_id="s-1", tools=["Read"],
+                slash_commands=["monthly-etf", "review"],
+                skills=["monthly-etf"],
+                agents=["claude", "general-purpose"])
+        out = Translator().translate(ev)
+        s = out[0]
+        assert s.slash_commands == ["monthly-etf", "review"]
+        assert s.skills == ["monthly-etf"]
+        assert s.agents == ["claude", "general-purpose"]
+
+    def test_init_without_rosters_defaults_empty(self):
+        """Minimal init fixtures (or older CC versions) without these fields
+        default to empty lists, not None — keeps the frontend's reducer simple."""
+        ev = cc(type="system", subtype="init", model="glm-5.2", cwd="/tmp/x",
+                session_id="s-1", tools=["Read"])
+        s = Translator().translate(ev)[0]
+        assert s.slash_commands == []
+        assert s.skills == []
+        assert s.agents == []
+
 
 class TestTextAndThinking:
     def test_text_delta_translates_to_text_event(self):

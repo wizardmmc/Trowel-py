@@ -54,7 +54,11 @@ export function StatusBar({
       <div className="cc-status__left">
         <span className="cc-status__model">
           {meta.model ?? "未连接"}
-          {effort && <span className="cc-status__effort">· {effort}</span>}
+          {meta.model && (
+            <span className="cc-status__effort">
+              · effort: {effort ?? "跟随设置"}
+            </span>
+          )}
         </span>
         {meta.hookFired && (
           <span className="cc-status__hook" title={`hook: ${meta.hookFired}`}>

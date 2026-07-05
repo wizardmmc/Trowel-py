@@ -186,6 +186,64 @@ class TestLocalAndRestart:
         assert "--resume" in second_args
         assert "s-1" in second_args
 
+    async def test_model_emits_model_changed_for_immediate_sync(
+        self, tmp_path: Path
+    ):
+        """slice-027 C2: /model emits ModelChangedEvent so the StatusBar syncs
+        immediately, not on the next message (CC is lazy-restarted by the next
+        send's _ensure_process)."""
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc1])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        events = await collect(host.send("/model opus"))
+        assert host.model == "opus"
+        types = [e.type for e in events]
+        assert "model_changed" in types
+        mc = next(e for e in events if e.type == "model_changed")
+        assert mc.model == "opus"
+
+    async def test_effort_emits_model_changed_with_effort(
+        self, tmp_path: Path
+    ):
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc1])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        events = await collect(host.send("/effort high"))
+        mc = next(e for e in events if e.type == "model_changed")
+        assert mc.effort == "high"
+
+    async def test_bare_model_does_not_kill_process(self, tmp_path: Path):
+        """slice-027: bare /model (no arg) must NOT kill the live CC process —
+        the frontend picker intercepts it; if it reaches the backend anyway,
+        we emit a usage hint and leave the process alone (no kill+respawn)."""
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc1])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        events = await collect(host.send("/model"))
+        # only the first send spawned — /model no-arg did not kill+respawn
+        assert len(spawner.spawned) == 1
+        # emits a usage local_command, NOT a model_changed
+        assert "model_changed" not in [e.type for e in events]
+        assert any(e.type == "local_command" for e in events)
+
+    async def test_model_picked_args_reach_next_spawn(self, tmp_path: Path):
+        """slice-027: after /model opus, the NEXT send's _ensure_process
+        spawns CC with --model opus (lazy restart applies the new model)."""
+        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        proc2 = FakeProc([line(init_event(sid="s-1")), line(result_ok())])
+        spawner = FakeSpawner([proc1, proc2])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        await collect(host.send("/model opus"))
+        await collect(host.send("again"))
+        assert len(spawner.spawned) >= 2
+        second_args = spawner.spawned[1][0]
+        i = second_args.index("--model")
+        assert second_args[i + 1] == "opus"
+
 
 class TestInterrupt:
     async def test_interrupt_marks_dead_and_next_send_resumes(self, tmp_path: Path):
