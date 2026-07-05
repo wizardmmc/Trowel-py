@@ -3,21 +3,45 @@ import { render, screen } from "@testing-library/react";
 import { act } from "react";
 
 import { SpinnerLine } from "../components/cc/SpinnerLine";
-import { useCcStore, INITIAL_REDUCER_STATE } from "../stores/ccStore";
+import {
+  useCcStore,
+  INITIAL_REDUCER_STATE,
+  type PerSessionState,
+} from "../stores/ccStore";
+
+const SID = "s1";
+
+/** Build a minimal active session record (slice-028 multi-session shape). */
+function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
+  return {
+    ...INITIAL_REDUCER_STATE,
+    workdir: "/wd",
+    effort: null,
+    name: "wd",
+    revertEnabled: false,
+    transportError: null,
+    abort: null,
+    connected: true,
+    ...over,
+  };
+}
+
+function setActive(session: PerSessionState): void {
+  useCcStore.setState({
+    sessions: { [SID]: session },
+    activeSid: SID,
+  });
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(10000);
   useCcStore.setState({
-    ...INITIAL_REDUCER_STATE,
-    effort: null,
-    sessionId: null,
-    workdir: null,
-    transportError: null,
+    sessions: {},
+    activeSid: null,
     history: [],
     historyTotal: 0,
     loadingHistory: false,
-    _abort: null,
   });
 });
 
@@ -25,22 +49,32 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function setThinking(over: { startedAt?: number; tokens?: number | null; effort?: string | null }) {
-  const prev = useCcStore.getState();
-  useCcStore.setState({
+function setThinking(over: {
+  startedAt?: number;
+  tokens?: number | null;
+  effort?: string | null;
+}) {
+  const session = makeSession({
     phase: "thinking",
-    effort: over.effort ?? prev.effort,
+    effort: over.effort ?? null,
     meta: {
-      ...prev.meta,
+      ...INITIAL_REDUCER_STATE.meta,
       thinkingStartedAt: over.startedAt ?? 10000,
       thinkingTokens: over.tokens === undefined ? 5 : over.tokens,
     },
   });
+  setActive(session);
 }
 
 describe("SpinnerLine (slice-025-a A1)", () => {
   it("renders nothing when phase is not thinking", () => {
-    useCcStore.setState({ phase: "idle" });
+    setActive(makeSession({ phase: "idle" }));
+    render(<SpinnerLine />);
+    expect(screen.queryByTestId("cc-spinner")).toBeNull();
+  });
+
+  it("renders nothing when there is no active session", () => {
+    useCcStore.setState({ activeSid: null, sessions: {} });
     render(<SpinnerLine />);
     expect(screen.queryByTestId("cc-spinner")).toBeNull();
   });

@@ -23,6 +23,9 @@ export interface CcSession {
   /** null until the CC process actually starts and reports its session id */
   readonly cc_session_id: string | null;
   readonly model: string;
+  /** slice-028 D2: multi-session display name (workdir basename + #N for
+   * duplicates) — drives the MultiSessionBar row label. */
+  readonly name?: string;
   /** slice-026: whether reverting turns is supported for this workdir (non-git
    * workdirs get the banner + no revert buttons). */
   readonly revert_enabled: boolean;
@@ -93,6 +96,49 @@ export async function listSessions(workdir: string): Promise<CcSessionListResult
 /** GET /api/cc/sessions/{id}/history — replay a session's stored events. */
 export async function getHistory(sessionId: string): Promise<TrowelEvent[]> {
   return request<TrowelEvent[]>(`${CC_API_BASE}/sessions/${sessionId}/history`);
+}
+
+/** slice-028 D2: one row of GET /api/cc/sessions/active — a currently-live
+ * trowel session (in-memory registry, distinct from the on-disk history list).
+ * The MultiSessionBar renders these and lets the user switch between them. */
+export interface ActiveSession {
+  /** trowel session id (the registry key, NOT cc's session id). */
+  readonly id: string;
+  readonly workdir: string;
+  readonly model: string;
+  /** Display name (basename + #N); falls back to basename if backend omits. */
+  readonly name: string;
+  /** Whether a turn is mid-stream on this session (send() in flight). */
+  readonly running: boolean;
+}
+
+/** Result of GET /api/cc/sessions/active — the live sessions + which is active. */
+export interface ActiveSessionListResult {
+  readonly sessions: readonly ActiveSession[];
+  /** The currently-active session id (switch target tracks this). */
+  readonly activeId: string | null;
+}
+
+/** GET /api/cc/sessions/active — list live trowel sessions + the active id
+ * (slice-028 D2). The MultiSessionBar re-fetches after create/close/switch. */
+export async function listActiveSessions(): Promise<ActiveSessionListResult> {
+  const data = await request<{
+    sessions: readonly ActiveSession[];
+    active_id: string | null;
+  }>(`${CC_API_BASE}/sessions/active`);
+  return { sessions: data.sessions, activeId: data.active_id };
+}
+
+/** POST /api/cc/sessions/:id/activate — switch the active session without
+ * destroying the others (slice-028 D2 multi-session switching). */
+export async function activateSession(
+  sessionId: string,
+): Promise<{ activeId: string }> {
+  const data = await request<{ active_id: string }>(
+    `${CC_API_BASE}/sessions/${sessionId}/activate`,
+    { method: "POST" },
+  );
+  return { activeId: data.active_id };
 }
 
 /** POST /api/cc/sessions/{id}/interrupt — SIGINT the current turn. */

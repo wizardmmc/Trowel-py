@@ -17,6 +17,7 @@ from trowel_py.cc_host.input import (
     LocalCommand,
     RestartSession,
     UnsupportedSlash,
+    ExitSession,
 )
 
 
@@ -107,6 +108,16 @@ class TestBuiltinCommands:
         assert isinstance(action, RestartSession)
         assert action.model == "glm-5.1"
         assert action.effort is None
+
+    def test_exit_classifies_as_exit_session(self, tmp_path: Path):
+        """slice-028 bug3: /exit 必须分类成 ExitSession，不能落到 skill_trigger
+        （否则会把 'Use the Skill tool with skill=exit.' 发给 cc，cc 当文本喂模型）。"""
+        action = classify_input("/exit", workdir=tmp_path)
+        assert isinstance(action, ExitSession)
+
+    def test_quit_alias_classifies_as_exit_session(self, tmp_path: Path):
+        action = classify_input("/quit", workdir=tmp_path)
+        assert isinstance(action, ExitSession)
 
     def test_compress_is_unsupported(self, tmp_path: Path):
         action = classify_input("/compress", workdir=tmp_path)

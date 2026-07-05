@@ -271,6 +271,16 @@ class FinishedEvent(_Event):
     num_turns: int
 
 
+class SessionExitedEvent(_Event):
+    """slice-028 bug3: the CC subprocess exited (user typed /exit, or it died
+    after the turn). Emitted after FinishedEvent when proc.returncode is set, so
+    the frontend can mark the session as exited in the multi-session bar (grey
+    out, resumable) and reset the view if it was the active session."""
+
+    type: Literal["session_exited"] = "session_exited"
+    returncode: int
+
+
 class ErrorEvent(_Event):
     """The turn ended in error; subclass distinguishes cause (max_turns, stalled, ...)."""
 
@@ -368,6 +378,7 @@ TrowelEvent = (
     | CompactBoundaryEvent
     | LocalCommandEvent
     | FinishedEvent
+    | SessionExitedEvent
     | ErrorEvent
     | InterruptedEvent
     | StalledEvent

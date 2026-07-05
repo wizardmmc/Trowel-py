@@ -17,6 +17,13 @@ from pathlib import Path
 _LOCAL_COMMANDS = frozenset({"cost", "status"})
 _RESTART_COMMANDS = frozenset({"effort", "model"})
 _UNSUPPORTED = frozenset({"compress"})
+# slice-028 bug3: /exit (alias /quit) — CC's stream-json mode does NOT intercept
+# the literal "/exit" string (it's a `local-jsx` command in the interactive TUI
+# only, never dispatched in print/stream-json mode). The host shuts CC down via
+# the stream-json control_request(subtype=end_session) channel instead (the
+# canonical non-interactive shutdown path in cc's cli/print.ts). See
+# service.CCHost._exit_session.
+_EXIT_COMMANDS = frozenset({"exit", "quit"})
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +61,21 @@ class UnsupportedSlash:
     message: str = "this command is not supported in stream-json mode"
 
 
-InputAction = SendText | LocalCommand | RestartSession | UnsupportedSlash
+@dataclass(frozen=True)
+class ExitSession:
+    """User requested session exit (/exit, /quit).
+
+    CC's stream-json mode does NOT intercept the literal "/exit" string (a
+    `local-jsx` command in the interactive TUI only — never dispatched in
+    print/stream-json mode; sending it as text just confuses the model). The
+    host handles it directly: shut CC down via the stream-json
+    control_request(subtype=end_session) channel, which is the canonical
+    non-interactive shutdown path (cc emits its final `result` event and
+    exits 0). See service.CCHost._exit_session.
+    """
+
+
+InputAction = SendText | LocalCommand | RestartSession | UnsupportedSlash | ExitSession
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +159,8 @@ def classify_input(text: str, workdir: str | os.PathLike) -> InputAction:
         return RestartSession(model=args or None)
     if name in _UNSUPPORTED:
         return UnsupportedSlash(name=name)
+    if name in _EXIT_COMMANDS:
+        return ExitSession()
 
     cmd_file = _find_command_file(name, workdir)
     if cmd_file is not None:

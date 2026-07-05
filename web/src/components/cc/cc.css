@@ -1654,3 +1654,340 @@
   stroke: currentColor;
   stroke-width: 1.6;
 }
+
+/* ============================================================
+   slice-028: three-column layout + MultiSessionBar + TodoBar
+   ============================================================ */
+
+:root {
+  --col-multi-w: 200px;
+  --col-todo-w: 240px;
+}
+
+/* The CC tool root is now a 3-column grid: multi-bar | center | todo-bar.
+   height:100% fills the AppLayout content area. Falls back to a single column
+   (center only) on narrow viewports so the message area never gets squeezed
+   past readable. */
+.cc-3col {
+  display: grid;
+  grid-template-columns: var(--col-multi-w) 1fr var(--col-todo-w);
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-garden);
+}
+@media (max-width: 880px) {
+  .cc-3col {
+    grid-template-columns: var(--col-multi-w) 1fr;
+  }
+  .cc-todobar {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .cc-3col {
+    grid-template-columns: 1fr;
+  }
+  .cc-multibar {
+    display: none;
+  }
+}
+
+/* ── MultiSessionBar (left column) ── */
+
+.cc-multibar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-card);
+  border-right: 1px solid var(--color-border);
+}
+.cc-multibar__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+.cc-multibar__title {
+  flex: 1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding-left: var(--space-xs);
+}
+.cc-multibar__btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.cc-multibar__btn:hover:not(:disabled) {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+}
+.cc-multibar__btn--primary {
+  background: var(--garden-green);
+  color: var(--bg-card);
+  border-color: var(--garden-green);
+}
+.cc-multibar__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+  color: var(--bg-card);
+}
+.cc-multibar__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.cc-multibar__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cc-multibar__empty {
+  padding: var(--space-md) var(--space-sm);
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+  line-height: 1.6;
+}
+.cc-multibar__empty-hint {
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+.cc-multibar__item {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+}
+.cc-multibar__item--active {
+  background: var(--garden-soft);
+  border-color: var(--garden-green);
+}
+.cc-multibar__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.cc-multibar__main:hover {
+  background: var(--garden-soft);
+}
+.cc-multibar__close {
+  flex-shrink: 0;
+  width: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.cc-multibar__item:hover .cc-multibar__close,
+.cc-multibar__item--active .cc-multibar__close,
+.cc-multibar__close:focus-visible {
+  opacity: 0.7;
+}
+.cc-multibar__close:hover {
+  opacity: 1;
+  color: var(--color-error);
+  background: var(--error-soft);
+}
+.cc-multibar__row1 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 500;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}
+.cc-multibar__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cc-multibar__row2 {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  padding-left: 15px; /* align with the name (dot width + gap) */
+}
+.cc-multibar__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.cc-multibar__dot--idle {
+  background: var(--garden-green);
+}
+.cc-multibar__dot--running {
+  background: var(--sunshine);
+  box-shadow: 0 0 0 3px var(--sunshine-soft);
+  animation: cc-multibar-pulse 1.4s ease-in-out infinite;
+}
+.cc-multibar__dot--exited {
+  background: var(--text-tertiary);
+}
+@keyframes cc-multibar-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--sunshine-soft); }
+  50% { box-shadow: 0 0 0 5px var(--sunshine-soft); }
+}
+.cc-multibar__foot {
+  padding: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+.cc-multibar__foot--warn {
+  color: var(--sunshine-ink);
+  font-weight: 600;
+}
+
+/* ── TodoBar (right column) ── */
+
+.cc-todobar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-card);
+  border-left: 1px solid var(--color-border);
+}
+.cc-todobar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.cc-todobar__progress {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--garden-green);
+  background: var(--garden-soft);
+  padding: 1px var(--space-sm);
+  border-radius: var(--radius-pill);
+}
+.cc-todobar__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.cc-todobar__empty {
+  padding: var(--space-md) var(--space-sm);
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.cc-todobar__item {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--bg-card);
+  align-items: flex-start;
+}
+.cc-todobar__item--doing {
+  border-color: var(--sunshine-ring);
+  background: var(--sunshine-soft);
+}
+.cc-todobar__item--done {
+  opacity: 0.55;
+  background: var(--neutral-soft);
+}
+.cc-todobar__icon {
+  font-size: 0.95rem;
+  line-height: 1.4;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+.cc-todobar__icon--doing {
+  color: var(--sunshine);
+}
+.cc-todobar__icon--done {
+  color: var(--garden-green);
+}
+.cc-todobar__body {
+  min-width: 0;
+  flex: 1;
+}
+.cc-todobar__subject {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.cc-todobar__item--done .cc-todobar__subject {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+.cc-todobar__active {
+  font-size: 0.72rem;
+  color: var(--sunshine-ink);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+.cc-todobar__collapsed {
+  border: none;
+  border-top: 1px dashed var(--color-border);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.74rem;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-align: center;
+  background: transparent;
+  font-family: inherit;
+}
+.cc-todobar__collapsed:hover {
+  background: var(--neutral-soft);
+}
+
+/* ── "no active session" center prompt ── */
+.cc-empty--noactive {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-secondary);
+}
+.cc-empty--noactive .cc-empty__hint {
+  font-size: 0.82rem;
+  color: var(--text-tertiary);
+}

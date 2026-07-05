@@ -86,6 +86,14 @@ class TestSubprocessKwargs:
         assert kw["stdout"] is not None
         assert kw["stderr"] is not None
 
+    def test_kwargs_include_large_readline_limit(self, tmp_path: Path):
+        """slice-028 bug1: asyncio subprocess readline 默认 64KB limit 撑爆 turn
+        (cc 单行 stream-json > 64KB → ValueError → host_error)。kwargs 必须传
+        limit (>= 1MB) 给 create_subprocess_exec，给 tcc 一个大接水桶。"""
+        kw = build_subprocess_kwargs(workdir=tmp_path)
+        assert "limit" in kw
+        assert kw["limit"] >= 1024 * 1024  # 至少 1MB（实测 slice-027 单行 1.08MB）
+
 
 class TestSlug:
     def test_slug_replaces_slashes_with_dashes(self):
@@ -179,6 +187,33 @@ class TestListSessions:
         ])
         monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
         assert list_sessions("/wd") == []
+
+    def test_stream_json_session_visible_with_large_metadata_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """slice-028 bug2: stream-json 模式（tcc 跑的会话）前几行是 queue-operation/
+        attachment metadata，单行大。旧 _HEAD_BYTES=8192 到不了第一条 user message
+        → title 提取失败 → 漏出历史列表（实测 128a31b0：user 在第 5 行，8KB 只覆盖
+        前 4 行）。增大 head 后这种会话要可见。"""
+        import uuid as uuidlib
+
+        root = tmp_path / "projects"
+        sid = str(uuidlib.uuid4())
+        big_meta = '{"type":"attachment","isSidechain":false,"data":"' + "x" * 5000 + '"}'
+        d = root / "-wd"
+        d.mkdir(parents=True)
+        # 前 4 行 metadata ~12KB > 8KB head（旧值）；第 5 行才是 user message
+        (d / f"{sid}.jsonl").write_text(
+            json.dumps({"type": "queue-operation", "data": "x" * 500}) + "\n"
+            + json.dumps({"type": "queue-operation", "data": "x" * 500}) + "\n"
+            + big_meta + "\n" + big_meta + "\n"
+            + json.dumps({"type": "user", "isSidechain": False, "message": {"role": "user",
+                "content": [{"type": "text", "text": "slice-028 grill 准备实现"}]}}) + "\n"
+        )
+        monkeypatch.setattr("trowel_py.cc_host.session_scan.cc_projects_root", lambda: root)
+        sessions = list_sessions("/wd")
+        assert any(s.cc_session_id == sid for s in sessions)
+        assert sessions[0].title == "slice-028 grill 准备实现"
 
     def _write_timed_sessions(
         self, root: Path, slug: str, ids_with_mtime: list[tuple[str, int]]

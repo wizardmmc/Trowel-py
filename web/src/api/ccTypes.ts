@@ -109,6 +109,16 @@ export interface FinishedEvent {
   readonly num_turns: number;
 }
 
+/** slice-028 bug3: the CC subprocess exited (user typed /exit, or it died after
+ * a turn). Emitted after FinishedEvent when `proc.returncode` is set. The
+ * frontend marks the session as exited in the multi-session bar (greyed out,
+ * resumable) and, if it was the active session, returns the view to the
+ * "no active session" state. Mirrors `SessionExitedEvent` in cc_host.py. */
+export interface SessionExitedEvent {
+  readonly type: "session_exited";
+  readonly returncode: number;
+}
+
 export interface ErrorEvent {
   readonly type: "error";
   readonly subclass: string;
@@ -210,6 +220,7 @@ export type TrowelEvent =
   | CompactBoundaryEvent
   | LocalCommandEvent
   | FinishedEvent
+  | SessionExitedEvent
   | ErrorEvent
   | InterruptedEvent
   | StalledEvent

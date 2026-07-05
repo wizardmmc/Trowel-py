@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import time
@@ -23,6 +24,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.input import (
+    ExitSession,
     LocalCommand,
     RestartSession,
     UnsupportedSlash,
@@ -39,12 +41,15 @@ from trowel_py.cc_host.launcher import (
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
 from trowel_py.cc_host.translator import Translator
+
+logger = logging.getLogger(__name__)
 from trowel_py.schemas.cc_host import (
     ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
     LocalCommandEvent,
     ModelChangedEvent,
+    SessionExitedEvent,
     StatusEvent,
     TrowelEvent,
     TurnStartEvent,
@@ -146,6 +151,11 @@ class CCHost:
         """
         self.session_id = session_id
         self.workdir = workdir
+        self.running = False  # slice-028 D2: send() 期间 True（GET /sessions/active 用）
+        # slice-028 v2: hold a strong ref to the background drain task so the
+        # event loop doesn't GC it mid-run (Python's loop keeps only a weak ref
+        # to tasks created via create_task). Cleared in the drain's finally.
+        self._drain_task: asyncio.Task | None = None
         self._model = model or DEFAULT_MODEL
         self.effort = effort or DEFAULT_EFFORT
         self.permission_mode = permission_mode
@@ -294,7 +304,16 @@ class CCHost:
             pass
 
     async def close(self) -> None:
-        """End the session: kill the subprocess if still alive."""
+        """End the session: cancel any background drain, then kill the subprocess."""
+        # slice-028 v2: 取消后台 drain（前端 × 关闭 / DELETE），否则它持着 proc
+        # 的 stdout reader，_kill 后还可能跑一阵。
+        if self._drain_task is not None and not self._drain_task.done():
+            self._drain_task.cancel()
+            try:
+                await self._drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._drain_task = None
         await self._kill()
 
     async def reload(self) -> None:
@@ -406,6 +425,7 @@ class CCHost:
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
         """Feed one user message and yield trowel events until the turn ends."""
+        self.running = True  # slice-028 D2: 标记在跑（GET /sessions/active 用）
         action = classify_input(text, self.workdir)
 
         if isinstance(action, LocalCommand):
@@ -445,6 +465,14 @@ class CCHost:
         if isinstance(action, UnsupportedSlash):
             yield LocalCommandEvent(type="local_command", content=action.message)
             return
+        if isinstance(action, ExitSession):
+            # slice-028 bug3: /exit (alias /quit). CC's stream-json mode doesn't
+            # intercept the literal string — shut down via the end_session
+            # control_request channel, then surface SessionExitedEvent so the
+            # frontend drops the multi-session row.
+            async for tev in self._exit_session():
+                yield tev
+            return
 
         # SendText main path
         payload = _user_msg(action.text)
@@ -463,7 +491,18 @@ class CCHost:
         detector.start_turn(self._now())
 
         normal_end = False
+        cancelled = False  # slice-028 v2: CancelledError 时让后台 drain，finally 不杀
         try:
+            # slice-028 v2: 如果上一轮 send 因前端断开走到了后台 drain，这里必须
+            # 等它读完 stdout 到 result——否则这一轮 send 的 readline 会跟 drain 抢
+            # 同一根管道，把上一轮 turn 的尾巴事件误算进这一轮（reducer 混乱）。
+            # drain 跑完 = cc 已结束上一轮、写满 jsonl，本轮 send 干净开始。
+            if self._drain_task is not None and not self._drain_task.done():
+                try:
+                    await self._drain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._drain_task = None
             await self._ensure_process()
             if not await self._safe_write(payload):
                 yield ErrorEvent(
@@ -515,6 +554,27 @@ class CCHost:
                         )
                         break
                     continue
+                except ValueError as exc:
+                    # slice-028 bug1: cc 单行 stream-json 超 StreamReader limit
+                    # (即使 limit 提到 16MB，理论上更大的行仍会超)。drain 超长行
+                    # 复杂且易死循环，改为明确报错 + 结束 turn，不让 ValueError 冒
+                    # 泡到 routes.py 变 host_error。超 16MB 的单行极罕见（实测最大
+                    # 1.08MB），break + 明确报错是可接受的兜底。
+                    logger.warning(
+                        "cc stream-json line exceeded StreamReader limit; "
+                        "ending turn as overlong_line. error=%s",
+                        exc,
+                    )
+                    yield ErrorEvent(
+                        type="error",
+                        subclass="overlong_line",
+                        errors=[
+                            "CC 输出的一行 stream-json 超过读取上限（16MB），"
+                            "turn 已中止"
+                        ],
+                    )
+                    normal_end = True
+                    break
                 if not raw:
                     break
                 try:
@@ -550,14 +610,42 @@ class CCHost:
                 if ev.get("type") == "result":
                     normal_end = True
                     break
+            # slice-028 bug3: result 后检测 cc 是否退出（用户 /exit）。普通 turn
+            # proc 不退（returncode None）；/exit 后 proc 退（returncode 0）。短
+            # wait 确认（真实 cc 普通 turn 会 timeout；FakeProc.wait 立即返回）。
+            if normal_end and self._proc is not None:
+                if self._proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(self._proc.wait(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        pass
+                if self._proc.returncode is not None:
+                    yield SessionExitedEvent(
+                        type="session_exited",
+                        returncode=self._proc.returncode,
+                    )
         except asyncio.CancelledError:
-            # client disconnected: kill CC so it isn't orphaned mid-turn
-            self._sync_kill()
+            # slice-028 v2 多 session: 客户端断开（前端刷新 / 切换会话）= 暂时不
+            # 消费 events，**绝不杀 cc**。单 session 时代这里 _sync_kill 是为了
+            # 不留孤儿，但多 session 下 cc 必须继续跑完 turn——否则刷新会中断 AI
+            # 思考、最后那个 turn 的回复永远丢失（实测 jsonl 末尾只写了 user）。
+            # 把"读到 result 为止"的活移交到后台 task，让 cc 跑完写满 jsonl；前端
+            # reconcile 后 resume 即可看到完整对话。GeneratorExit（gen.close，真
+            # 不用了）仍走 finally 的 _sync_kill 兜底。
+            cancelled = True
+            # 存强引用防 GC（Python event loop 只对 task 持弱引用）；drain 自己
+            # 在 finally 里清 self._drain_task = None。下一次 send 入口会 await 它。
+            self._drain_task = asyncio.create_task(
+                self._drain_to_result_after_disconnect()
+            )
             raise
         finally:
+            # slice-028 D2: send 结束，不再在跑（后台 drain 自己管 running 标志）
+            self.running = False
             # GeneratorExit (gen.close) or any non-local exit without a clean
-            # result: don't leave a live subprocess behind.
-            if not normal_end:
+            # result: don't leave a live subprocess behind. CancelledError 走后台
+            # drain，不杀。
+            if not normal_end and not cancelled:
                 self._sync_kill()
 
     async def answer_elicit(self, answers: dict[str, str]) -> bool:
@@ -636,6 +724,122 @@ class CCHost:
         proc = self._proc
         proc.stdin.write(payload)
         await proc.stdin.drain()
+
+    async def _drain_to_result_after_disconnect(self) -> None:
+        """slice-028 v2 多 session: 客户端断开后，后台把 cc stdout 读到 result/
+        EOF，让 cc 自己跑完这个 turn（写满 jsonl），**绝不杀进程**。
+
+        为什么需要这个：单 session 时代前端断开 = 不用了，直接杀 cc 没问题。但多
+        session 下刷新前端是"暂时断开、待会 reconcile 回来"——如果杀 cc，AI 正在
+        思考的 turn 会被中断，那一句的回复永久丢失（实测 jsonl 末尾只剩 user）。
+        后台 drain 让 cc 跑完，前端 reconcile + resume 即可看到完整对话。
+
+        生命周期：CancelledError 的 except 用 ``self._drain_task = create_task(...)``
+        存强引用（防 GC），这里 finally 清空。下一次 send() 入口会 await 这个 task
+        到完成（避免两条 readline 抢同一根 stdout），close()/DELETE 会 cancel 它。
+        ``_DRAIN_MAX_TICKS`` 只作 1 小时兜底（真 stalled 的 cc 交给下一次 send 的
+        stalled 检测或 close 杀掉）。
+        """
+        self.running = True  # drain 期间 cc 还在跑（GET /sessions/active 准确）
+        try:
+            for _ in range(self._DRAIN_MAX_TICKS):
+                proc = self._proc
+                if proc is None or proc.returncode is not None:
+                    return
+                try:
+                    raw = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=self.stalled_tick
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                if not raw:
+                    return  # EOF — cc 退出
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("type") == "result":
+                    return  # turn 跑完
+        finally:
+            self.running = False
+            self._drain_task = None  # 释放强引用
+
+    # slice-028 bug3: how long to wait for CC to flush + exit after we send the
+    # end_session control_request before SIGKILL-ing it. CC is supposed to exit
+    # promptly (gracefulShutdown has its own ~1.5s budget); 3s is a generous cap.
+    _END_SESSION_TIMEOUT_S = 3.0
+    # slice-028 v2: background-drain backstop. Primary lifecycle is explicit
+    # (next send() awaits the drain; close()/DELETE cancels it). This cap only
+    # catches a truly hung cc so the drain task can't run forever — 1 hour is
+    # well past any real turn, so hitting it means cc is stalled.
+    _DRAIN_MAX_TICKS = 3600
+
+    async def _exit_session(self) -> AsyncIterator[TrowelEvent]:
+        """slice-028 bug3: gracefully shut CC down via stream-json's
+        control_request(subtype=end_session) channel.
+
+        CC's stream-json mode does NOT intercept the literal "/exit" string (a
+        `local-jsx` command in the interactive TUI only). The canonical
+        non-interactive shutdown (cc's cli/print.ts) is to send a control_request
+        with subtype=end_session: CC emits its final `result` event and exits 0.
+        We write that request, drain stdout until the process dies, then yield
+        SessionExitedEvent so the frontend drops the multi-session row.
+
+        Fallback: if CC doesn't die within _END_SESSION_TIMEOUT_S (rare), we
+        SIGKILL it and still yield exited so the UI is never stuck.
+        """
+        payload = (
+            json.dumps(
+                {
+                    "type": "control_request",
+                    "request": {"subtype": "end_session"},
+                    "request_id": uuid.uuid4().hex,
+                }
+            )
+            + "\n"
+        ).encode()
+        try:
+            await self._ensure_process()
+            wrote = await self._safe_write(payload)
+            if not wrote:
+                # process already dead — nothing to drain
+                yield SessionExitedEvent(type="session_exited", returncode=0)
+                return
+        except Exception as exc:
+            # process never started or died writing — surface exited regardless
+            # (UI 不该卡死)，但留日志便于排查（cc 命令不存在 / 权限 / 等）
+            logger.warning("end_session control_request failed: %s", exc)
+            yield SessionExitedEvent(type="session_exited", returncode=0)
+            return
+
+        deadline = time.monotonic() + self._END_SESSION_TIMEOUT_S
+        while time.monotonic() < deadline:
+            proc = self._proc
+            if proc is None or proc.returncode is not None:
+                break
+            try:
+                raw = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=min(self._END_SESSION_TIMEOUT_S, self.stalled_tick),
+                )
+            except asyncio.TimeoutError:
+                continue
+            if not raw:
+                # EOF on stdout — process is exiting (or has exited). Confirm.
+                if proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
+                break
+
+        # if still alive after the drain window, force-kill
+        if self._proc is not None and self._proc.returncode is None:
+            await self._kill()
+        rc = self._proc.returncode if self._proc is not None else 0
+        yield SessionExitedEvent(type="session_exited", returncode=rc or 0)
 
     def _local_answer(self, action: LocalCommand) -> TrowelEvent:
         """Answer /cost or /status from accumulated result data (no CC call)."""

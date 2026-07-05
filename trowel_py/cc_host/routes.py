@@ -49,6 +49,25 @@ _HISTORY_DROPDOWN_LIMIT = 10
 # (no DB) — a server restart drops every session. Override via get_registry().
 _REGISTRY: dict[str, CCHost] = {}
 
+# slice-028 D2: 多 session 并存状态（模块级，跟 _REGISTRY 同寿命；测试 reset 见
+# test_routes._mini_app）。Q5' 资源限制：MAX_RUNNING 活跃 SSE / MAX_CONNECTIONS 总连接。
+_WORKDIR_INDEX: dict[str, set[str]] = {}   # workdir → {sid}（命名序号 + 按 workdir 查询）
+_SESSION_NAMES: dict[str, str] = {}         # sid → 显示名（basename + #N）
+_ACTIVE_SID: str | None = None              # 当前活跃 session（多开切换）
+MAX_RUNNING = 5                             # slice-028 Q5': 同时在跑 turn 的 session 上限
+MAX_CONNECTIONS = 20                        # slice-028 Q5': 已创建 session 总数上限
+
+
+def _session_display_name(workdir: str) -> str:
+    """slice-028 D2 Q6: workdir basename + 同 workdir 多开加序号。
+
+    第一个无序号（basename），后续 #2 #3 ...。在 sid 注册进 _WORKDIR_INDEX
+    *之前* 调用——序号 = 已存在数量 + 1。
+    """
+    basename = Path(workdir).name or str(workdir)
+    existing = len(_WORKDIR_INDEX.get(workdir, ()))
+    return basename if existing == 0 else f"{basename} #{existing + 1}"
+
 
 def get_registry() -> dict[str, CCHost]:
     """Return the session registry (overridable in tests)."""
@@ -87,6 +106,12 @@ def create_session(
     """Open a new session (optionally resuming a CC session id)."""
     if not Path(req.workdir).is_dir():
         raise HTTPException(status_code=400, detail="workdir does not exist")
+    # 连接数限制（已创建 session 总数）
+    if len(registry) >= MAX_CONNECTIONS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"连接数已达上限（{MAX_CONNECTIONS}），请先关闭一些 session",
+        )
     sid = uuid.uuid4().hex
     host = CCHost(
         sid,
@@ -97,18 +122,62 @@ def create_session(
         resume_from=req.resume_from,
     )
     registry[sid] = host
+    # 注册多开状态（命名序号 + workdir 索引 + 设为活跃）
+    name = _session_display_name(req.workdir)
+    _WORKDIR_INDEX.setdefault(req.workdir, set()).add(sid)
+    _SESSION_NAMES[sid] = name
+    global _ACTIVE_SID
+    _ACTIVE_SID = sid
     return {
         "success": True,
         "data": {
             "session_id": sid,
             "cc_session_id": req.resume_from,
             "model": host.model,
-            # slice-026: whether reverting turns is supported for this workdir
+            "name": name,
+            # whether reverting turns is supported for this workdir
             # (non-git workdirs get the banner + no revert buttons in the UI).
             "revert_enabled": checkpoint.is_git_repo(req.workdir),
         },
         "error": None,
     }
+
+
+@router.get("/sessions/active")
+def list_active_sessions(
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """列出当前 trowel 进程的活跃 session（_REGISTRY）。
+
+    区别于 GET /sessions（磁盘历史）。前端多开栏用这个 + active_id 渲染统一列表。
+    """
+    sessions = [
+        {
+            "id": sid,
+            "workdir": host.workdir,
+            "model": host.model,
+            "name": _SESSION_NAMES.get(sid, Path(host.workdir).name),
+            "running": getattr(host, "running", False),
+        }
+        for sid, host in registry.items()
+    ]
+    return {
+        "success": True,
+        "data": {"sessions": sessions, "active_id": _ACTIVE_SID},
+        "error": None,
+    }
+
+
+@router.post("/sessions/{sid}/activate")
+def activate_session(
+    sid: str,
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """切换当前活跃 session（多开切换，不销毁非活跃）。"""
+    _require(sid, registry)
+    global _ACTIVE_SID
+    _ACTIVE_SID = sid
+    return {"success": True, "data": {"active_id": sid}, "error": None}
 
 
 @router.post("/sessions/{sid}/messages")
@@ -304,4 +373,14 @@ async def delete_session(
     host = _require(sid, registry)
     await host.close()
     registry.pop(sid, None)
+    # slice-028 D2: 清理多开状态
+    wd = host.workdir
+    if sid in _WORKDIR_INDEX.get(wd, set()):
+        _WORKDIR_INDEX[wd].discard(sid)
+        if not _WORKDIR_INDEX[wd]:
+            _WORKDIR_INDEX.pop(wd, None)
+    _SESSION_NAMES.pop(sid, None)
+    global _ACTIVE_SID
+    if _ACTIVE_SID == sid:
+        _ACTIVE_SID = None
     return {"success": True, "data": {"closed": True}, "error": None}

@@ -24,6 +24,7 @@ from trowel_py.schemas.cc_host import (
     LocalCommandEvent,
     StalledEvent,
     TurnStartEvent,
+    SessionExitedEvent,
 )
 
 
@@ -116,6 +117,28 @@ async def collect(gen):
 
 
 class TestStartAndSend:
+    async def test_send_cancel_does_not_kill_cc(self, tmp_path: Path):
+        """slice-028 v2 多 session: 前端断开（刷新/切换会话）绝不能杀 cc——
+        否则刷新会中断 AI 思考，最后那个 turn 的回复永久丢失（实测 jsonl 末尾
+        只剩 user message）。后台 drain 接管读 stdout 到 result，cc 继续跑完。"""
+        proc = FakeProc([line(init_event())], feed_eof=False)  # cc 还在跑
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        gen = host.send("hi")
+
+        async def consume() -> None:
+            async for _ in gen:
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.1)  # 让 task 启动 + 读 init + 挂在 readline
+        task.cancel()  # 模拟前端断开（前端 SSE 断 → StreamingResponse cancel）
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0)  # 让后台 drain task 调度
+        assert proc.returncode is None, "前端断开不该杀 cc（多 session 模型）"
+
     async def test_send_yields_session_started_text_finished(self, tmp_path: Path):
         proc = FakeProc([
             line(init_event()),
@@ -133,6 +156,47 @@ class TestStartAndSend:
         assert "".join(e.text for e in text_ev) == "hello"
         assert isinstance(events[-1], FinishedEvent)
         assert host.cc_session_id == "s-1"
+
+    async def test_send_survives_overlong_readline_chunk(self, tmp_path: Path):
+        """slice-028 bug1: readline 抛 'Separator is found, but chunk is longer
+        than limit' 时，service 必须兜底——yield ErrorEvent(subclass=overlong_line)
+        + 结束 turn，不让 ValueError 冒泡到 routes.py 变 host_error。drain 超长
+        行复杂且易死循环，故选明确报错 + break（防御性，超 16MB 行极罕见）。
+        FakeProc.stdout 用默认 StreamReader (64KB limit)，feed 80KB 行触发。"""
+        overlong = '{"type":"stream_event","big":"' + ("x" * 80000) + '"}'
+        proc = FakeProc([
+            line(init_event()),
+            overlong,  # 80KB > 64KB default StreamReader limit → ValueError
+            line(result_ok()),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))  # 不抛 = 兜底成功
+        error_events = [e for e in events if isinstance(e, ErrorEvent)]
+        assert any(
+            getattr(e, "subclass", None) == "overlong_line" for e in error_events
+        )
+
+    async def test_send_yields_session_exited_when_cc_exits(self, tmp_path: Path):
+        """slice-028 bug3: cc /exit 后（result 事件后 proc 退出），service 要检测
+        proc.returncode 并 yield SessionExitedEvent，让前端知道 session 已结束。
+        FakeProc.returncode=0 模拟 cc 已退出。"""
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        proc.returncode = 0  # cc 已退出（/exit）
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        exited = [e for e in events if isinstance(e, SessionExitedEvent)]
+        assert len(exited) == 1
+        assert exited[0].returncode == 0
+
+    async def test_send_no_session_exited_for_normal_turn(self, tmp_path: Path):
+        """slice-028 bug3 反例：普通 turn（cc 不退出，returncode None）不 yield
+        SessionExitedEvent。"""
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        # returncode 保持 None（cc 还活，等下一个输入）
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        exited = [e for e in events if isinstance(e, SessionExitedEvent)]
+        assert len(exited) == 0
 
     async def test_send_writes_user_message_to_stdin(self, tmp_path: Path):
         proc = FakeProc([line(init_event()), line(result_ok())])
@@ -157,6 +221,55 @@ class TestStartAndSend:
         calls = [e for e in events if isinstance(e, ToolCallEvent)]
         assert len(calls) == 1
         assert calls[0].tool_name == "Write"
+
+
+class TestExitSession:
+    """slice-028 bug3: /exit (alias /quit) — CC's stream-json mode does NOT
+    intercept the literal "/exit" string, so the host shuts CC down via the
+    control_request(subtype=end_session) channel and yields SessionExitedEvent."""
+
+    async def test_exit_writes_end_session_control_request(self, tmp_path: Path):
+        """/exit → 写 control_request(subtype=end_session) + yield SessionExitedEvent。"""
+        proc = FakeProc([])  # cc 立刻 EOF（优雅退出）
+        proc.returncode = 0
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("/exit"))
+        written = b"".join(proc.stdin.written).decode()
+        assert '"type": "control_request"' in written
+        assert '"subtype": "end_session"' in written
+        exited = [e for e in events if isinstance(e, SessionExitedEvent)]
+        assert len(exited) == 1
+        assert exited[0].returncode == 0
+
+    async def test_quit_alias_also_exits(self, tmp_path: Path):
+        """/quit 是 /exit 的别名，同样触发 ExitSession。"""
+        proc = FakeProc([])
+        proc.returncode = 0
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("/quit"))
+        written = b"".join(proc.stdin.written).decode()
+        assert '"subtype": "end_session"' in written
+        assert any(isinstance(e, SessionExitedEvent) for e in events)
+
+    async def test_exit_does_not_send_user_message(self, tmp_path: Path):
+        """/exit 走的是 control_request 通道，绝不能把 '/exit' 当 user 消息发给 cc。"""
+        proc = FakeProc([])
+        proc.returncode = 0
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await collect(host.send("/exit"))
+        written = b"".join(proc.stdin.written).decode()
+        assert '"type": "user"' not in written
+        assert "/exit" not in written
+
+    async def test_exit_fallback_sigkill_when_cc_does_not_die(self, tmp_path: Path):
+        """cc 没在 timeout 内退出 → 兜底 SIGKILL + 仍 yield SessionExitedEvent。"""
+        proc = FakeProc([])
+        # returncode 保持 None（cc 不退）；FakeProc.kill() 会设 -9
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("/exit"))
+        exited = [e for e in events if isinstance(e, SessionExitedEvent)]
+        assert len(exited) == 1
+        assert exited[0].returncode == -9  # SIGKILL 兜底
 
 
 class TestLocalAndRestart:
@@ -286,8 +399,12 @@ class TestStalled:
 
 
 class TestCancellation:
-    async def test_aborted_send_kills_subprocess_no_orphan(self, tmp_path: Path):
-        # proc that blocks forever on stdout (no data, no EOF)
+    async def test_cancelled_send_keeps_cc_alive(self, tmp_path: Path):
+        """slice-028 v2 多 session: 前端断开（刷新/切换）= 暂时不消费 events，
+        绝不杀 cc。cc 必须继续跑完 turn，刷新后 reconcile + resume 才能看到
+        完整对话（单 session 时代这里 _sync_kill 会中断 AI 思考，丢回复）。
+        后台 drain 接管读 stdout 到 result，cc 留活。"""
+        # proc that blocks forever on stdout (no data, no EOF) — cc "还在思考"
         proc = FakeProc([], feed_eof=False)
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]),
                       stalled_threshold=10000.0, stalled_tick=0.01)
@@ -298,11 +415,39 @@ class TestCancellation:
 
         task = asyncio.create_task(_run())
         await asyncio.sleep(0.05)  # let it enter the readline wait
-        task.cancel()
+        task.cancel()  # 模拟前端 SSE 断开（刷新）
         with pytest.raises(asyncio.CancelledError):
             await task
-        # the process was force-killed on cancellation (no orphan)
-        assert proc.returncode is not None
+        await asyncio.sleep(0)  # 让后台 drain task 调度
+        # cc 没被杀——多 session 模型：刷新/切换保留 cc 活，reconcile 能找回
+        assert proc.returncode is None
+
+    async def test_drain_task_holds_strong_ref_and_clears(self, tmp_path: Path):
+        """slice-028 v2 CR(F1): 后台 drain task 必须持强引用（防 Python event
+        loop 弱引用 GC），close() 取消后清空。否则大 turn + 刷新时 drain 被 GC，
+        cc stdout 缓冲满 → cc hang。"""
+        # 只喂 init，之后阻塞（cc "还在思考"，drain 不会自行结束）
+        proc = FakeProc([line(init_event())], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]),
+                      stalled_threshold=10000.0, stalled_tick=0.01)
+
+        async def _run():
+            async for _ in host.send("hi"):
+                pass
+
+        task = asyncio.create_task(_run())
+        await asyncio.sleep(0.05)
+        task.cancel()  # 触发后台 drain
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.02)  # 让 drain task 启动
+        # drain 仍在跑（proc 阻塞）→ 强引用在（不会被 GC）
+        assert host._drain_task is not None
+        # close 取消 drain + 清引用 + 杀 cc
+        await host.close()
+        assert host._drain_task is None
 
 
 class TestElicitAnswer:

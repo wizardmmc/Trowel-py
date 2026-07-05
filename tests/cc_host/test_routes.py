@@ -61,6 +61,10 @@ class FakeHost:
 
 
 def _mini_app(registry: dict) -> TestClient:
+    # slice-028 D2: reset 多开模块级状态（避免测试间污染）
+    cc_routes._WORKDIR_INDEX.clear()
+    cc_routes._SESSION_NAMES.clear()
+    cc_routes._ACTIVE_SID = None
     app = FastAPI()
     app.include_router(cc_router, prefix="/api/cc")
     app.dependency_overrides[get_registry] = lambda: registry
@@ -100,6 +104,64 @@ class TestCreateSession:
         client = _mini_app({})
         resp = client.post("/api/cc/sessions", json={"workdir": "/no/such/dir/here"})
         assert resp.status_code == 400
+
+
+class TestMultiSession:
+    """slice-028 D2: 多 session 并存 + 命名序号 + active/activate + 资源限制。"""
+
+    def test_same_workdir_sessions_get_suffix(self, tmp_path: Path):
+        """Q6: 同 workdir 多开，第一个 basename，第二个 basename #2。"""
+        client = _mini_app({})
+        client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        data = client.get("/api/cc/sessions/active").json()["data"]
+        names = sorted(s["name"] for s in data["sessions"])
+        assert tmp_path.name in names
+        assert f"{tmp_path.name} #2" in names
+
+    def test_active_returns_sessions_and_active_id(self, tmp_path: Path):
+        """GET /sessions/active 返回活跃列表 + active_id；新建自动设为活跃。"""
+        client = _mini_app({})
+        sid = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)}).json()["data"]["session_id"]
+        data = client.get("/api/cc/sessions/active").json()["data"]
+        assert len(data["sessions"]) == 1
+        assert data["sessions"][0]["id"] == sid
+        assert data["sessions"][0]["workdir"] == str(tmp_path)
+        assert data["active_id"] == sid  # 新建自动活跃
+
+    def test_activate_switches_active(self, tmp_path: Path):
+        """POST /sessions/:id/activate 切当前活跃。"""
+        client = _mini_app({})
+        sid1 = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)}).json()["data"]["session_id"]
+        sid2 = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)}).json()["data"]["session_id"]
+        resp = client.post(f"/api/cc/sessions/{sid1}/activate")
+        assert resp.json()["data"]["active_id"] == sid1
+        assert client.get("/api/cc/sessions/active").json()["data"]["active_id"] == sid1
+
+    def test_activate_unknown_session_404(self, tmp_path: Path):
+        client = _mini_app({})
+        resp = client.post("/api/cc/sessions/nope/activate")
+        assert resp.status_code == 404
+
+    def test_create_rejects_over_connection_limit(self, tmp_path: Path, monkeypatch):
+        """Q5': 连接数 > MAX_CONNECTIONS 拒绝（409）。"""
+        monkeypatch.setattr(cc_routes, "MAX_CONNECTIONS", 2)
+        client = _mini_app({})
+        client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        resp = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        assert resp.status_code == 409
+
+    def test_delete_clears_multi_state(self, tmp_path: Path):
+        """DELETE session 清理 _WORKDIR_INDEX / _SESSION_NAMES / _ACTIVE_SID。"""
+        client = _mini_app({})
+        sid = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)}).json()["data"]["session_id"]
+        resp = client.delete(f"/api/cc/sessions/{sid}")
+        assert resp.json()["success"]
+        data = client.get("/api/cc/sessions/active").json()["data"]
+        assert data["sessions"] == []
+        assert data["active_id"] is None
+        assert cc_routes._WORKDIR_INDEX.get(str(tmp_path)) is None
 
 
 class TestMessagesSSE:

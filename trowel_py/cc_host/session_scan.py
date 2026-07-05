@@ -36,7 +36,11 @@ logger = logging.getLogger(__name__)
 # writes the first user message near the top and titles (aiTitle/customTitle)
 # near the end, so a head+tail slice is enough without loading a multi-MB
 # transcript. Mirrors readSessionLite's approach in the leaked source.
-_HEAD_BYTES = 8192
+# slice-028 bug2: raised from 8192 — stream-json mode (tcc-spawned sessions)
+# has large queue-operation/attachment metadata on the first lines, so the
+# first user message sat beyond 8KB and title extraction failed, hiding the
+# session from history (real case 128a31b0: user on line 5, 8KB covered 4).
+_HEAD_BYTES = 65536
 _TAIL_BYTES = 8192
 
 # Match ``"isSidechain": true`` (with optional whitespace) on a session's first

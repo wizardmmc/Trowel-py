@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { useCcStore } from "../../stores/ccStore";
+import { useActiveSession } from "../../stores/ccStore";
 
 /**
  * The "✻ thinking…" line shown at the tail of the message stream while CC is
@@ -36,10 +36,13 @@ function pickVerb(): string {
 }
 
 export function SpinnerLine() {
-  const phase = useCcStore((s) => s.phase);
-  const thinkingStartedAt = useCcStore((s) => s.meta.thinkingStartedAt);
-  const thinkingTokens = useCcStore((s) => s.meta.thinkingTokens);
-  const effort = useCcStore((s) => s.effort);
+  // slice-028: thinking state lives on the active session (multi-session store).
+  // Renders null when no session is active or the active one isn't thinking.
+  const active = useActiveSession();
+  const phase = active?.phase ?? "idle";
+  const thinkingStartedAt = active?.meta.thinkingStartedAt ?? null;
+  const thinkingTokens = active?.meta.thinkingTokens ?? null;
+  const effort = active?.effort ?? null;
 
   // Pick one verb per think (stable within the think); cleared when not thinking.
   const [verb, setVerb] = useState<string | null>(null);

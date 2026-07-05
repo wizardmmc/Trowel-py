@@ -90,6 +90,14 @@ def build_subprocess_kwargs(workdir: str | os.PathLike) -> dict[str, Any]:
 
     start_new_session=True gives each CC its own process group so the shutdown
     handler can SIGTERM/SIGKILL the whole group (no orphans).
+
+    slice-028 bug1: limit=16MB raises asyncio's StreamReader readline cap from
+    the default 64KB. CC can emit a single stream-json line > 64KB (large
+    tool_result / big file read); the default cap made readline raise
+    ``ValueError: Separator is found, but chunk is longer than limit`` which
+    bubbled up as host_error and killed the turn. 16MB covers the largest line
+    seen in practice (slice-027 spiked at 1.08MB). service.send() still has a
+    defensive try/except for anything beyond this.
     """
     return {
         "cwd": str(workdir),
@@ -97,4 +105,6 @@ def build_subprocess_kwargs(workdir: str | os.PathLike) -> dict[str, Any]:
         "stdout": asubprocess.PIPE,
         "stderr": asubprocess.PIPE,
         "start_new_session": True,
+        # slice-028 bug1: 16MB readline cap (asyncio StreamReader `limit`)
+        "limit": 16 * 1024 * 1024,
     }
