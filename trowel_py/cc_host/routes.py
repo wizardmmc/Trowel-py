@@ -310,8 +310,11 @@ def get_history(
     cc_session_id = host.cc_session_id
     if not cc_session_id:
         return {"success": True, "data": [], "error": None}
-    events = [e.model_dump() for e in parse_history(host.workdir, cc_session_id)]
-    return {"success": True, "data": events, "error": None}
+    # slice-029: re-join BE-snapshotted Write diffs so reload renders identically
+    # to the live stream (live attaches write_diff on the ToolCallEvent; replay
+    # reads cc's jsonl which has no diff, so we inject from CCHost._write_diffs).
+    events = host.inject_write_diffs(parse_history(host.workdir, cc_session_id))
+    return {"success": True, "data": [e.model_dump() for e in events], "error": None}
 
 
 @router.get("/models")

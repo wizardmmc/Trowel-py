@@ -37,6 +37,11 @@ class FakeHost:
         self.answered: dict[str, str] | None = None
         self.cancelled = False
 
+    def inject_write_diffs(self, events: list) -> list:
+        """slice-029: real CCHost re-joins BE snapshots on replay; the fake
+        host has none, so this is a passthrough."""
+        return events
+
     async def send(self, text: str) -> AsyncIterator:
         self.received.append(text)
         for e in self._events:

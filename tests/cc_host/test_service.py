@@ -14,6 +14,7 @@ import pytest
 
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host.service import CCHost
+from trowel_py.cc_host.diff_snapshot import compute_write_diff
 from trowel_py.cc_host.session_scan import workdir_to_slug
 from trowel_py.schemas.cc_host import (
     SessionStartedEvent,
@@ -25,6 +26,7 @@ from trowel_py.schemas.cc_host import (
     StalledWarningEvent,
     TurnStartEvent,
     SessionExitedEvent,
+    WriteDiff,
 )
 
 
@@ -221,6 +223,164 @@ class TestStartAndSend:
         calls = [e for e in events if isinstance(e, ToolCallEvent)]
         assert len(calls) == 1
         assert calls[0].tool_name == "Write"
+
+
+class TestWriteDiffSnapshot:
+    """slice-029: the host snapshots a Write tool_use's target file BEFORE cc
+    writes it and attaches a `write_diff` to the ToolCallEvent. Edit/MultiEdit
+    are left alone (FE computes those from input)."""
+
+    @staticmethod
+    def _write_use_lines(tool_use_id: str, file_path: str, content: str) -> list[str]:
+        """Feed a complete Write tool_use block + a finished result."""
+        payload = json.dumps({"file_path": file_path, "content": content})
+        return [
+            line(init_event()),
+            line({"type": "stream_event", "event": {"type": "content_block_start",
+                "index": 0, "content_block": {"type": "tool_use", "id": tool_use_id, "name": "Write"}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_delta",
+                "index": 0, "delta": {"type": "input_json_delta", "partial_json": payload}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}),
+            line(result_ok()),
+        ]
+
+    async def test_write_to_new_file_yields_create_write_diff(self, tmp_path: Path):
+        proc = FakeProc(self._write_use_lines("tu_1", str(tmp_path / "new.ts"), "a\nb\n"))
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("write a file"))
+        call = next(e for e in events if isinstance(e, ToolCallEvent))
+        assert call.write_diff is not None
+        assert call.write_diff.type == "create"
+        assert call.write_diff.hunks == ()
+
+    async def test_write_to_existing_file_yields_update_with_hunks(self, tmp_path: Path):
+        target = tmp_path / "existing.ts"
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        proc = FakeProc(self._write_use_lines("tu_2", str(target), "alpha\nBETA\ngamma\n"))
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("overwrite a file"))
+        call = next(e for e in events if isinstance(e, ToolCallEvent))
+        assert call.write_diff is not None
+        assert call.write_diff.type == "update"
+        assert len(call.write_diff.hunks) >= 1
+        all_lines = [ln for h in call.write_diff.hunks for ln in h.lines]
+        assert any(ln.startswith("+") for ln in all_lines)
+        assert any(ln.startswith("-") for ln in all_lines)
+
+    async def test_edit_tool_use_carries_no_write_diff(self, tmp_path: Path):
+        """Edit/MultiEdit diffs are FE-computed; the host must not snapshot."""
+        payload = json.dumps({"file_path": str(tmp_path / "x.ts"), "old_string": "a", "new_string": "b"})
+        proc = FakeProc([
+            line(init_event()),
+            line({"type": "stream_event", "event": {"type": "content_block_start",
+                "index": 0, "content_block": {"type": "tool_use", "id": "tu_e", "name": "Edit"}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_delta",
+                "index": 0, "delta": {"type": "input_json_delta", "partial_json": payload}}}),
+            line({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}),
+            line(result_ok()),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("edit a file"))
+        call = next(e for e in events if isinstance(e, ToolCallEvent))
+        assert call.write_diff is None
+
+    async def test_snapshot_stored_in_write_diffs_dict(self, tmp_path: Path):
+        """Live stores; replay reads — both must key off tool_use_id."""
+        target = tmp_path / "f.ts"
+        target.write_text("old\n", encoding="utf-8")
+        proc = FakeProc(self._write_use_lines("tu_3", str(target), "new\n"))
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await collect(host.send("overwrite"))
+        assert "tu_3" in host._write_diffs
+        assert host._write_diffs["tu_3"].type == "update"
+
+    def test_write_diffs_cap_evicts_oldest(self, tmp_path: Path):
+        """slice-029 /auto-cr fix: bound memory by evicting the oldest entry
+        once the cap is reached. Evicted Writes degrade to create-mode on
+        reload (the documented restart-reload edge)."""
+        from trowel_py.cc_host.service import _WRITE_DIFFS_CAP
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([]))
+        # Populate directly via the snapshot path with a synthetic file.
+        target = tmp_path / "f.txt"
+        target.write_text("seed\n", encoding="utf-8")
+        for i in range(_WRITE_DIFFS_CAP + 5):
+            host._snapshot_write_diff(f"tu_{i}", str(target), f"v{i}\n")
+        assert len(host._write_diffs) == _WRITE_DIFFS_CAP
+        # Oldest evicted; newest retained.
+        assert "tu_0" not in host._write_diffs
+        assert f"tu_{_WRITE_DIFFS_CAP + 4}" in host._write_diffs
+
+
+class TestInjectWriteDiffs:
+    """slice-029 reload path: history replay re-joins BE-snapshotted Write diffs
+    so render is identical to the live stream."""
+
+    @staticmethod
+    def _host(tmp_path: Path) -> CCHost:
+        # No spawner needed — inject_write_diffs is sync, no send() called.
+        return CCHost("sid", tmp_path, spawner=FakeSpawner([]))
+
+    def test_empty_write_diffs_returns_events_unchanged(self, tmp_path: Path):
+        from trowel_py.schemas.cc_host import TextEvent
+        host = self._host(tmp_path)
+        evts: list = [TextEvent(type="text", text="hi")]
+        assert host.inject_write_diffs(evts) is evts
+
+    def test_write_event_with_matching_id_gets_diff_attached(self, tmp_path: Path):
+        host = self._host(tmp_path)
+        # Populate the dict as if a live Write-overwrite had been snapshotted.
+        host._write_diffs["tu_x"] = compute_write_diff("old\n", "new\n")
+        evt = ToolCallEvent(
+            type="tool_call",
+            tool_use_id="tu_x",
+            tool_name="Write",
+            input={"file_path": "/a", "content": "new\n"},
+        )
+        out = host.inject_write_diffs([evt])
+        assert out[0].write_diff is not None
+        assert out[0].write_diff.type == "update"
+
+    def test_write_event_with_unknown_id_left_unchanged(self, tmp_path: Path):
+        """BE restart scenario: snapshots lost → replay falls back to create."""
+        host = self._host(tmp_path)
+        host._write_diffs["tu_other"] = compute_write_diff("x\n", "y\n")
+        evt = ToolCallEvent(
+            type="tool_call",
+            tool_use_id="tu_unknown",
+            tool_name="Write",
+            input={"file_path": "/a", "content": "y\n"},
+        )
+        out = host.inject_write_diffs([evt])
+        assert out[0].write_diff is None
+
+    def test_existing_write_diff_not_clobbered(self, tmp_path: Path):
+        host = self._host(tmp_path)
+        host._write_diffs["tu_x"] = compute_write_diff("old\n", "new\n")
+        pre = ToolCallEvent(
+            type="tool_call",
+            tool_use_id="tu_x",
+            tool_name="Write",
+            input={"file_path": "/a", "content": "new\n"},
+            write_diff=WriteDiff(type="create", hunks=()),
+        )
+        out = host.inject_write_diffs([pre])
+        # The pre-existing create-mode diff wins (we don't overwrite).
+        assert out[0].write_diff.type == "create"
+
+    def test_non_write_events_passed_through(self, tmp_path: Path):
+        from trowel_py.schemas.cc_host import TextEvent
+        host = self._host(tmp_path)
+        host._write_diffs["tu_x"] = compute_write_diff("old\n", "new\n")
+        evts = [
+            TextEvent(type="text", text="hi"),
+            ToolCallEvent(
+                type="tool_call", tool_use_id="tu_x", tool_name="Edit",
+                input={"file_path": "/a", "old_string": "x", "new_string": "y"},
+            ),
+        ]
+        out = host.inject_write_diffs(evts)
+        # Edit must not get a write_diff (FE computes Edit diffs client-side).
+        assert out[1].write_diff is None
 
 
 class TestExitSession:

@@ -177,6 +177,33 @@ class ThinkingEvent(_Event):
     text: str
 
 
+class DiffHunk(BaseModel):
+    """One diff hunk — jsdiff StructuredPatchHunk shape (slice-029).
+
+    ``lines`` carry the leading marker char: ``' ctx'``, ``'+add'``, ``'-rm'``.
+    Mirrors ``trowel_py/cc_host/diff_snapshot.DiffHunk`` (dataclass) and the FE
+    ``DiffHunk`` interface so all three stacks share one wire shape.
+    """
+
+    oldStart: int
+    oldLines: int
+    newStart: int
+    newLines: int
+    lines: tuple[str, ...]
+
+
+class WriteDiff(BaseModel):
+    """BE-computed diff for a Write tool_use (slice-029 Phase 2).
+
+    ``type='create'`` (new file) → empty hunks; ``type='update'`` → real diff.
+    The FE picks render mode off ``type``. Only present on Write tool_call
+    events (Edit/MultiEdit diffs are FE-computed from input).
+    """
+
+    type: Literal["create", "update"]
+    hunks: tuple[DiffHunk, ...]
+
+
 class ToolCallEvent(_Event):
     """A complete tool_use call (name + full input), emitted when the block closes.
 
@@ -184,6 +211,12 @@ class ToolCallEvent(_Event):
     envelope carries it, pointing at the spawning Agent tool_call). Null for
     top-level tool_use. The frontend uses it to nest sub-agent tools under their
     Agent (slice-025-a problem 2).
+
+    write_diff (slice-029): present on Write tool_use only — BE snapshots the
+    file at tool_use time (before cc writes) and computes the diff. Absent for
+    Edit/MultiEdit (FE computes those from input). Stored in
+    ``CCHost._write_diffs`` so live SSE and replay both carry it (reload
+    consistency).
     """
 
     type: Literal["tool_call"] = "tool_call"
@@ -191,6 +224,7 @@ class ToolCallEvent(_Event):
     tool_name: str
     input: dict[str, Any]
     parent_tool_use_id: str | None = None
+    write_diff: WriteDiff | None = None
 
 
 class ToolProgressEvent(_Event):
