@@ -1,7 +1,9 @@
 [project]
 name = "trowel-py"
+# 0.1.0 = first pip-installable build (slice-027-publish). Bump per semver:
+# the next user-visible behavior change → 0.2.0; a stable public API → 1.0.0.
 version = "0.1.0"
-description = "Add your description here"
+description = "Trowel-py — desktop toolkit (chat + cc host + review cards) with a FastAPI backend and React frontend."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -12,6 +14,28 @@ dependencies = [
     "pydantic>=2.13.4",
     # "python-dotenv>=1.2.2",
     "uvicorn>=0.48.0",
+]
+
+[project.scripts]
+# `pip install .` registers this console script: `trowel-py` starts the server.
+trowel-py = "trowel_py.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["trowel_py*"]
+
+[tool.setuptools.package-data]
+# Bundled frontend build (copied to trowel_py/static/ by the build step before
+# `pip install .` — see slice-027-publish). Served same-origin by app.py.
+# Also ship non-.py resources the runtime reads via __file__ (LLM prompts,
+# DB migrations) — pip would otherwise drop them and import would fail.
+trowel_py = [
+  "static/**/*",
+  "llm/prompts/*.txt",
+  "db/migrations/*.sql",
 ]
 
 [dependency-groups]

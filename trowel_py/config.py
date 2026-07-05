@@ -6,7 +6,32 @@ import tomllib
 from pathlib import Path
 from trowel_py.llm.client import LLMConfig
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
+def _find_config_path() -> Path:
+    """Locate config.toml across dev and installed layouts.
+
+    Order: ``cwd/config.toml`` (wherever the user runs ``trowel-py``),
+    ``~/.trowel/config.toml`` (home-level, XDG-style), then the project root
+    next to the package (dev mode — works because the editable/checkout tree
+    has config.toml at the repo root). The first existing one wins; the last
+    is the default so the error message points somewhere sensible.
+
+    config.toml carries API keys and is gitignored, so it is never bundled
+    with the wheel — the user places it in one of these locations.
+    """
+    here = Path(__file__).resolve().parent.parent
+    candidates = [
+        Path.cwd() / "config.toml",
+        Path.home() / ".trowel" / "config.toml",
+        here / "config.toml",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[-1]
+
+
+_CONFIG_PATH = _find_config_path()
+
 
 def load_llm_config(path: Path = _CONFIG_PATH) -> LLMConfig:
     """

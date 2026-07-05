@@ -31,7 +31,7 @@ describe("Garden API client", () => {
     const result = await getGardenPlants();
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/garden/plants",
+      "/api/garden/plants",
       undefined,
     );
     expect(result).toHaveLength(1);
@@ -48,7 +48,7 @@ describe("Garden API client", () => {
     const result = await getGardenStats();
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/garden/stats",
+      "/api/garden/stats",
       undefined,
     );
     expect(result.total_plants).toBe(5);
@@ -63,7 +63,7 @@ describe("Garden API client", () => {
     await searchCards("decorators");
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/cards/search?q=decorators",
+      "/api/cards/search?q=decorators",
       undefined,
     );
   });
@@ -76,7 +76,7 @@ describe("Garden API client", () => {
     await searchCards("c++ templates");
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/cards/search?q=c%2B%2B%20templates",
+      "/api/cards/search?q=c%2B%2B%20templates",
       undefined,
     );
   });

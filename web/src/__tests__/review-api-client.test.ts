@@ -66,7 +66,7 @@ describe("getDueCards", () => {
     expect(result[0].card.id).toBe("card1");
     expect(result[0].plant_stage).toBe("seed");
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/review/due",
+      "/api/review/due",
       undefined,
     );
   });
@@ -94,7 +94,7 @@ describe("submitReview", () => {
     expect(result.plant_stage).toBe("sprout");
     expect(result.plant_changed).toBe(true);
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/review/submit",
+      "/api/review/submit",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -110,7 +110,7 @@ describe("getSessionStats", () => {
     expect(result.total).toBe(5);
     expect(result.accuracy).toBe(80.0);
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/review/session-stats?since=2026-01-01T00%3A00%3A00",
+      "/api/review/session-stats?since=2026-01-01T00%3A00%3A00",
       undefined,
     );
   });

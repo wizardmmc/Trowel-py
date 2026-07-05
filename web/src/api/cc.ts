@@ -7,7 +7,7 @@
  */
 import type { AnswerElicitBody, TrowelEvent } from "./ccTypes";
 
-const CC_API_BASE = "http://localhost:8000/api/cc";
+const CC_API_BASE = "/api/cc";
 
 /** One row of GET /api/cc/sessions?workdir=... — a resumable history entry. */
 export interface CcSessionSummary {

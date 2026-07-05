@@ -13,6 +13,7 @@ config.toml
 *.egg-info/
 dist/
 build/
+trowel_py/static/
 logs/
 .playwright-mcp/
 .vite/

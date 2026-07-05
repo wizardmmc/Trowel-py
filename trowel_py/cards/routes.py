@@ -188,6 +188,7 @@ def search_cards(q: str,
     }
 
 
+@router.get("")
 @router.get("/")
 def get_all_cards(page: int = 1,
             limit: int = 20,

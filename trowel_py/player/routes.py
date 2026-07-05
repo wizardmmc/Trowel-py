@@ -25,6 +25,7 @@ def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRep
     return create_player_repository(conn)
 
 
+@router.get("")
 @router.get("/")
 def get_player(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
     """

@@ -48,7 +48,7 @@ describe("generateFeynmanQuestion", () => {
     expect(result.question).toContain("闭包");
     expect(result.hint).toContain("函数");
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/feynman/generate",
+      "/api/feynman/generate",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ card_id: "card1" }),
@@ -100,7 +100,7 @@ describe("evaluateFeynmanAnswer", () => {
     expect(result.completeness).toBe(60);
     expect(result.missed_points).toHaveLength(2);
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/feynman/evaluate",
+      "/api/feynman/evaluate",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ session_id: "sess1", answer: "闭包就是..." }),
@@ -155,7 +155,7 @@ describe("getFeynmanHistory", () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("sess1");
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/feynman/history/card1",
+      "/api/feynman/history/card1",
       undefined,
     );
   });

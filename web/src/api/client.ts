@@ -1,6 +1,6 @@
-const API_BASE = "http://localhost:8000/api/cards";
-const REVIEW_API_BASE = "http://localhost:8000/api/review";
-const GARDEN_API_BASE = "http://localhost:8000/api/garden";
+const API_BASE = "/api/cards";
+const REVIEW_API_BASE = "/api/review";
+const GARDEN_API_BASE = "/api/garden";
 
 export interface CardDraft {
   id: string;
@@ -216,7 +216,7 @@ export async function searchCards(query: string): Promise<GardenPlant[]> {
 
 // ── Pet API types & functions ──
 
-const PET_API_BASE = "http://localhost:8000/api/pet";
+const PET_API_BASE = "/api/pet";
 
 export type PetMood = "happy" | "excited" | "curious" | "normal";
 
@@ -274,7 +274,7 @@ export async function equipHat(itemId: string): Promise<Pet> {
 
 // ── Player API types & functions ──
 
-const PLAYER_API_BASE = "http://localhost:8000/api/player";
+const PLAYER_API_BASE = "/api/player";
 
 export interface PlayerProfile {
   readonly id: string;
@@ -331,7 +331,7 @@ export async function buyItem(itemId: string): Promise<BuyResult> {
 
 // ── Events API types & functions ──
 
-const EVENTS_API_BASE = "http://localhost:8000/api/events";
+const EVENTS_API_BASE = "/api/events";
 
 export interface EventLog {
   readonly id: string;
@@ -366,7 +366,7 @@ export async function triggerEvent(): Promise<EventLog | null> {
 
 // ── Feynman API types & functions ──
 
-const FEYNMAN_API_BASE = "http://localhost:8000/api/feynman";
+const FEYNMAN_API_BASE = "/api/feynman";
 
 /** Result from POST /generate — a fresh drill question + its session id */
 export interface FeynmanQuestion {

@@ -38,6 +38,7 @@ def _get_brain() -> PetBrain:
     return TemplateBrain()
 
 
+@router.get("")
 @router.get("/")
 def get_pet_route(pet_repo: PetRepository = Depends(_get_pet_repo)) -> dict:
     """

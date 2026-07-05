@@ -1,5 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from trowel_py.cards.routes import router as card_router
 from trowel_py.review.routes import router as review_router
 from trowel_py.garden.routes import router as garden_router
@@ -69,4 +71,47 @@ def create_app() -> FastAPI:
     app.include_router(feynman_router, prefix="/api/feynman")
     app.include_router(cc_host_router, prefix="/api/cc")
 
+    # Serve the built frontend when present (release / `pip install` mode).
+    # Skipped in dev — vite serves the frontend on :5173 and proxies /api here.
+    web_dist = _find_web_dist()
+    if web_dist is not None:
+        index_html = web_dist / "index.html"
+
+        # SPA fallback: any non-/api/* GET returns index.html so frontend
+        # routes (e.g. /cc) survive a browser refresh. API misses still 404.
+        # Registered after all /api routers so it never shadows a real route.
+        @app.get("/{full_path:path}")
+        def _spa_fallback(full_path: str) -> object:
+            if full_path.startswith("api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "data": None, "error": "not found"},
+                )
+            # Confine to web_dist to block path traversal (GET /../secret.txt
+            # would otherwise read any file the backend user can). Escape →
+            # index.html so the SPA still renders.
+            root = web_dist.resolve()
+            candidate = (web_dist / full_path).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return FileResponse(index_html)
+            if candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(index_html)
+
     return app
+
+
+def _find_web_dist() -> Path | None:
+    """Locate the built frontend.
+
+    Prefer packaged ``trowel_py/static/`` (``pip install .`` copies web/dist
+    there via the build step), fall back to ``web/dist/`` (editable / dev
+    worktree). Returns None when no build exists (dev mode).
+    """
+    here = Path(__file__).resolve().parent
+    for candidate in (here / "static", here.parent / "web" / "dist"):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None

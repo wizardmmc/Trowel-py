@@ -20,7 +20,7 @@ describe("api/client", () => {
     expect(result.drafts[0].title).toBe("Test");
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/cards/extract",
+      "/api/cards/extract",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -44,7 +44,7 @@ describe("api/client", () => {
 
     await getAllCards(2, 10);
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:8000/api/cards?page=2&limit=10",
+      "/api/cards?page=2&limit=10",
       undefined
     );
   });
@@ -58,7 +58,7 @@ describe("api/client", () => {
     expect(result.explanation).toBe("new text long enough");
 
     const call = vi.spyOn(globalThis, "fetch").mock.calls[0];
-    expect(call[0]).toBe("http://localhost:8000/api/cards/re-explain");
+    expect(call[0]).toBe("/api/cards/re-explain");
     const body = JSON.parse((call[1] as RequestInit).body as string);
     expect(body).toEqual({
       explanation: "old explanation long enough",

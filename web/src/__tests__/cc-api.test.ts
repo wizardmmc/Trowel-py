@@ -100,7 +100,7 @@ describe("cc REST client", () => {
 
   it("messagesUrl builds the stream endpoint", () => {
     expect(messagesUrl("s1")).toBe(
-      "http://localhost:8000/api/cc/sessions/s1/messages",
+      "/api/cc/sessions/s1/messages",
     );
   });
 
@@ -121,7 +121,7 @@ describe("cc REST client", () => {
     expect(out[0].value).toBe("opus");
     expect(out[0].real_model).toBe("glm-5.2[1M]");
     const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
-    expect(url).toBe("http://localhost:8000/api/cc/models");
+    expect(url).toBe("/api/cc/models");
   });
 
   it("listSlashItems sends workdir query and returns items", async () => {
