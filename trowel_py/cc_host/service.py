@@ -65,6 +65,40 @@ def _user_msg(text: str) -> bytes:
     return (json.dumps(payload) + "\n").encode()
 
 
+# Stall-restart heartbeat. Sent in place of the original user payload when a
+# stalled turn is resumed. cc keeps its --resume history, so re-sending the
+# original user message makes it re-evaluate from scratch (e.g. re-run the
+# grill-me decision tree, discarding prior decisions — see dc804194). A
+# heartbeat tells cc "you went silent past the threshold; either continue the
+# in-flight work, or finish the turn if you're wedged" — which preserves the
+# progress cc had already made.
+_STALL_HEARTBEAT_TEMPLATE = (
+    "[tcc 心跳信号] tcc 已 {elapsed:.0f}s 未收到你的事件流。"
+    "若非 issue #53584 stream-json deadlock（即你仍在正常工作），"
+    "请继续未完成的任务，不要重新开始；若确实卡死，请立即结束本 turn。"
+)
+
+
+def _heartbeat_msg(elapsed_s: float) -> bytes:
+    """Encode the stall-restart heartbeat as a stream-json user message.
+
+    Args:
+        elapsed_s: seconds cc was silent before the stall (surfaced to cc + logs).
+
+    Returns:
+        newline-terminated JSON bytes; a user-text message asking cc to either
+        continue its in-flight work or finish the turn.
+
+    Side effect: this heartbeat enters cc's conversation history as a regular
+    user message (cc appends it to the transcript on --resume). That's
+    intentional — it's how we tell cc "continue, don't restart from scratch" —
+    and ``max_restarts_per_turn=1`` bounds how many a single turn can accrue.
+    If stream-json later supports a non-user control message, switching to it
+    would avoid the transcript pollution.
+    """
+    return _user_msg(_STALL_HEARTBEAT_TEMPLATE.format(elapsed=elapsed_s))
+
+
 def _control_response_msg(
     *,
     request_id: str,
@@ -130,7 +164,8 @@ class CCHost:
             [list[str], dict[str, Any]], Awaitable[Any]
         ] = _default_spawner,
         now: Callable[[], float] = time.monotonic,
-        stalled_threshold: float = 100.0,
+        stalled_threshold_normal: float = 120.0,
+        stalled_threshold_generating: float = 720.0,
         stalled_tick: float = 1.0,
     ) -> None:
         """Store session config and the injection hooks for tests.
@@ -146,7 +181,12 @@ class CCHost:
             spawner: async factory (args, kwargs) -> subprocess; defaults to a
                 real asyncio subprocess, tests inject a fake.
             now: monotonic clock callable, injected so stalled tests are deterministic.
-            stalled_threshold: quiet seconds before a turn is considered stalled.
+            stalled_threshold_normal: quiet seconds before a turn is considered
+                stalled in the default phase (after tool_result / assistant
+                envelope / etc.). See StalledDetector for the phase logic.
+            stalled_threshold_generating: quiet seconds when the last event was
+                a thinking_tokens heartbeat (GLM silently generating a large
+                tool_use). Larger — covers measured generation up to ~670s.
             stalled_tick: how long to wait between stalled checks on readline.
         """
         self.session_id = session_id
@@ -163,7 +203,8 @@ class CCHost:
         self._resume_from = resume_from
         self._spawner = spawner
         self._now = now
-        self.stalled_threshold = stalled_threshold
+        self.stalled_threshold_normal = stalled_threshold_normal
+        self.stalled_threshold_generating = stalled_threshold_generating
         self.stalled_tick = stalled_tick
 
         self._proc: Any = None
@@ -487,7 +528,10 @@ class CCHost:
             type="turn_start", turn_id=turn_id, revertible=revertible
         )
         translator = Translator()
-        detector = StalledDetector(threshold_s=self.stalled_threshold)
+        detector = StalledDetector(
+            threshold_normal=self.stalled_threshold_normal,
+            threshold_generating=self.stalled_threshold_generating,
+        )
         detector.start_turn(self._now())
 
         normal_end = False
@@ -530,13 +574,23 @@ class CCHost:
                     if self._pending_elicit is not None:
                         continue
                     if detector.is_stalled(self._now()):
+                        elapsed = detector.quiet_seconds(self._now())
+                        phase = (
+                            "generating" if detector.in_generating_phase() else "normal"
+                        )
                         if detector.can_restart():
+                            logger.warning(
+                                "cc stalled after %.0fs with no event (phase=%s); "
+                                "killing + resuming with heartbeat",
+                                elapsed,
+                                phase,
+                            )
                             detector.note_restart()
                             await self._kill()
                             await self._ensure_process()
                             translator = Translator()
                             detector.record_event(self._now())
-                            if not await self._safe_write(payload):
+                            if not await self._safe_write(_heartbeat_msg(elapsed)):
                                 yield ErrorEvent(
                                     type="error",
                                     subclass="process_died",
@@ -545,6 +599,12 @@ class CCHost:
                                 normal_end = True
                                 return
                             continue
+                        logger.warning(
+                            "cc stalled after %.0fs with no event (phase=%s); "
+                            "no restart budget left, surfacing stalled error",
+                            elapsed,
+                            phase,
+                        )
                         yield ErrorEvent(
                             type="error",
                             subclass="stalled",
@@ -581,7 +641,14 @@ class CCHost:
                     ev = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                detector.record_event(self._now())
+                # thinking_tokens 是生成期信号（见 StalledDetector 模块注释）：
+                # 最后一个事件是 thinking_tokens → cc 思考完、正在静默生成 →
+                # 用大 threshold_generating，避免误杀正常慢生成（mockup / 大 Write）。
+                is_generating = (
+                    ev.get("type") == "system"
+                    and ev.get("subtype") == "thinking_tokens"
+                )
+                detector.record_event(self._now(), is_generating=is_generating)
                 if ev.get("type") == "system" and ev.get("subtype") == "api_retry":
                     delay = ev.get("retry_delay_ms")
                     if delay is not None:
@@ -599,6 +666,10 @@ class CCHost:
                     if isinstance(tev, ElicitationRequestEvent):
                         # Remember the pending elicitation so answer_elicit /
                         # cancel_elicit can write the matching control_response.
+                        # NB: stall detection is short-circuited while this is
+                        # set (see the _pending_elicit guard above), so a stall
+                        # never fires during a pending elicit — no kind field
+                        # is needed for stall diagnosis.
                         self._pending_elicit = {
                             "request_id": tev.request_id,
                             "tool_use_id": tev.tool_use_id,
