@@ -60,6 +60,11 @@ export interface ToolItem {
   readonly status: "running" | "done";
   readonly elapsedSeconds: number | null;
   readonly result: string | null;
+  /** slice-029: BE-computed diff for a Write tool_use (overwriting an existing
+   * file). Absent for Edit/MultiEdit (FE computes those from input) and for
+   * Write-create. Copied from ToolCallEvent.write_diff so live + replay render
+   * identically. */
+  readonly writeDiff?: import("../api/ccTypes").WriteDiff;
   /** Present when this is an Agent tool call with sub-agent progress attached
    * (slice-025-a A3). */
   readonly subagent?: SubagentState;
@@ -574,6 +579,10 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         elapsedSeconds: null,
         result: null,
         childTools: [],
+        // slice-029: BE-computed Write-overwrite diff (absent for Edit/MultiEdit
+        // — FE computes those — and for Write-create). Live SSE and replay both
+        // populate this so reload renders identically.
+        writeDiff: event.write_diff,
       };
       // slice-028: TaskCreate/TaskUpdate also maintain the session task list
       // (the ToolItem above is still appended so the message stream keeps the

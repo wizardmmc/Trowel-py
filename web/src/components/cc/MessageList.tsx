@@ -27,6 +27,9 @@ interface MessageListProps {
   /** slice-026: request to revert a turn — opens the confirm modal. Called
    * only for revertible turns while CC is idle. */
   readonly onRevert?: (turn: Turn) => void;
+  /** slice-029: the session's cwd, so Edit/Write paths render project-relative
+   * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
+  readonly workdir?: string;
 }
 
 function TurnCard({
@@ -36,6 +39,7 @@ function TurnCard({
   onAnswer,
   onCancel,
   onRevert,
+  workdir,
 }: {
   readonly turn: Turn;
   readonly streaming: boolean;
@@ -43,6 +47,7 @@ function TurnCard({
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
   readonly onRevert?: (turn: Turn) => void;
+  readonly workdir?: string;
 }) {
   const hasContent = turn.items.length > 0;
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
@@ -72,6 +77,7 @@ function TurnCard({
               isReplay={turn.status !== "active"}
               onAnswer={onAnswer}
               onCancel={onCancel}
+              workdir={workdir}
             />
           </div>
         </div>
@@ -87,6 +93,7 @@ export function MessageList({
   onAnswer,
   onCancel,
   onRevert,
+  workdir,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -115,6 +122,7 @@ export function MessageList({
           onAnswer={onAnswer}
           onCancel={onCancel}
           onRevert={onRevert}
+          workdir={workdir}
         />
       ))}
       {/* slice-025-a A1: the ✻ thinking… row rides the tail of the stream.

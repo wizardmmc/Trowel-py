@@ -12,6 +12,8 @@ interface SubagentBlockProps {
   /** Internal tool_uses the sub-agent spawned (envelope parent_tool_use_id
    * pointed at this Agent). Absent for the standalone degradation row. */
   readonly childTools?: readonly ToolItem[];
+  /** slice-029: forwarded to child ToolBlocks for project-relative path display. */
+  readonly workdir?: string;
 }
 
 /** Read total_tokens off the usage dict (number | undefined). */
@@ -69,7 +71,7 @@ function brief(text: string, max = 40): string {
  * Note: history replay cannot populate childTools — cc's persisted jsonl drops
  * the parent_tool_use_id envelope field (live stream only).
  */
-export function SubagentBlock({ subagent, childTools }: SubagentBlockProps) {
+export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const inProgress = subagent.status !== "completed";
   const tokens = tokenCount(subagent.usage);
@@ -133,7 +135,10 @@ export function SubagentBlock({ subagent, childTools }: SubagentBlockProps) {
       {hasKids && (
         <div className="cc-subagent__children">
           {visibleChildren.map((c) => (
-            <ToolBlock key={c.toolUseId} item={c} />
+            // slice-029: sub-agent children render condensed (summary stat
+            // only, no expandable diff) — a chain of sub-agent Edit diffs
+            // would drown the timeline. Matches CC `style:'condensed'`.
+            <ToolBlock key={c.toolUseId} item={c} condensed workdir={workdir} />
           ))}
           {hiddenCount > 0 && (
             <button

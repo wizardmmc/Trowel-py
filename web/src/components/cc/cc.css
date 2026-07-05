@@ -542,6 +542,14 @@
 .cc-tool__summary:hover {
   color: var(--text-primary);
 }
+/* slice-029: condensed (subagent children) renders a <div>, not a <button> —
+   drop the pointer cursor and hover color shift since it's non-interactive. */
+.cc-tool__summary--condensed {
+  cursor: default;
+}
+.cc-tool__summary--condensed:hover {
+  color: var(--text-secondary);
+}
 .cc-tool__icon {
   width: 13px;
   height: 13px;
@@ -620,6 +628,139 @@
   letter-spacing: 0.05em;
   color: var(--text-secondary);
 }
+
+/* ── slice-029: Edit/Write diff rendering ──
+   New classes only — colors reuse existing tokens (--garden-green /
+   --color-error + their soft variants) so no new palette is introduced. */
+
+/* Summary stat pill: `· +N −M` between brief and check. */
+.cc-tool__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: 2px;
+}
+.cc-tool__stat::before {
+  content: "·";
+  color: var(--text-tertiary);
+  margin-right: 4px;
+}
+.cc-tool__stat-add { color: var(--garden-green); font-weight: 600; }
+.cc-tool__stat-rm  { color: var(--color-error);   font-weight: 600; }
+
+/* Running-state spinner ring (diff tools only — Edit/Write/MultiEdit). */
+.cc-tool__spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--sunshine);
+  border-top-color: transparent;
+  border-radius: 50%;
+  margin-left: 2px;
+  animation: cc-tool-spin 0.9s linear infinite;
+}
+@keyframes cc-tool-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .cc-tool__spinner { animation: none; }
+}
+
+/* "Added N lines, removed M lines" header above a diff. */
+.cc-tool__diff-stat {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+.cc-tool__diff-stat b {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Diff frame: mono, card bg, bordered. */
+.cc-tool__diff {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  line-height: 1.55;
+}
+.cc-tool__diff-hunk { display: flex; flex-direction: column; }
+
+/* Hunk separator — `···`, dim, non-selectable. */
+.cc-tool__diff-sep {
+  text-align: center;
+  color: var(--text-tertiary);
+  background: var(--bg-garden);
+  font-size: 0.72rem;
+  padding: 1px 0;
+  letter-spacing: 0.2em;
+  user-select: none;
+}
+
+/* One diff line: gutter | marker | content.
+   slice-029: `pre-wrap` + `overflow-wrap` so long lines (minified code, long
+   paths) wrap inside the column instead of forcing a horizontal scrollbar —
+   the gutter/marker columns stay aligned via the grid. */
+.cc-tool__diff-line {
+  display: grid;
+  grid-template-columns: 3.5ch 1.5ch 1fr;
+  align-items: baseline;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cc-tool__diff-line[data-type="add"]     { background: var(--garden-soft); }
+.cc-tool__diff-line[data-type="remove"]  { background: var(--error-soft); }
+.cc-tool__diff-line[data-type="context"] { background: transparent; }
+
+.cc-tool__diff-gutter {
+  color: var(--text-tertiary);
+  text-align: right;
+  user-select: none;
+  padding-right: 8px;
+  border-right: 1px solid var(--color-border);
+  margin-right: 6px;
+  min-width: 3.5ch;
+}
+.cc-tool__diff-marker {
+  user-select: none;
+  font-weight: 700;
+  text-align: center;
+}
+.cc-tool__diff-line[data-type="add"]     .cc-tool__diff-marker { color: var(--garden-green); }
+.cc-tool__diff-line[data-type="remove"]  .cc-tool__diff-marker { color: var(--color-error); }
+.cc-tool__diff-line[data-type="context"] .cc-tool__diff-marker { color: transparent; }
+.cc-tool__diff-content { color: var(--text-primary); }
+.cc-tool__diff-line[data-type="add"]     .cc-tool__diff-content { color: var(--garden-green); }
+.cc-tool__diff-line[data-type="remove"]  .cc-tool__diff-content { color: var(--color-error); }
+.cc-tool__diff-line[data-type="context"] .cc-tool__diff-content { color: var(--text-secondary); }
+
+/* Write-create preview header: "Wrote N lines to <name>". */
+.cc-tool__create-lines {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+.cc-tool__create-lines b {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cc-tool__create-more {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  padding: 2px 10px;
+  background: var(--bg-garden);
+  border-top: 1px solid var(--color-border);
+}
+.cc-tool__create-more,
+.cc-tool__create-more::before { user-select: none; }
 
 /* ── Composer ── */
 

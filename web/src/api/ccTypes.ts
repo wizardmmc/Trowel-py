@@ -58,6 +58,9 @@ export interface ToolCallEvent {
   /** Set when this tool_use came from a sub-agent's envelope — points at the
    * spawning Agent tool_call's id. Null/absent for top-level tool_use. */
   readonly parent_tool_use_id?: string | null;
+  /** slice-029: present on Write tool_use only — BE-computed diff from the
+   * pre-write file snapshot. Absent for Edit/MultiEdit (FE computes those). */
+  readonly write_diff?: WriteDiff;
 }
 
 export interface ToolProgressEvent {
@@ -249,3 +252,29 @@ export const TERMINAL_ERROR_SUBCLASSES = new Set([
   "error_max_budget_usd",
   "error_max_structured_output_retries",
 ]);
+
+/**
+ * Diff hunk — jsdiff StructuredPatchHunk shape (matches CC `utils/diff.ts`).
+ * `lines` carry the leading marker char: `' ctx'`, `'+add'`, `'-rm'`. Used by
+ * both Edit (FE-computed) and Write-overwrite (BE-computed) diffs so the same
+ * render component handles both (slice-029 reload-consistency contract).
+ */
+export interface DiffHunk {
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  readonly lines: readonly string[];
+}
+
+/**
+ * BE-computed diff for a Write tool_use (slice-029 Phase 2). cc-host snapshots
+ * the file at tool_use time (before cc writes), computes hunks, and attaches
+ * this. `type='create'` (new file) carries no hunks; `type='update'` carries
+ * the real diff. Stored in `CCHost._write_diffs` so live SSE and replay both
+ * carry identical data (reload consistency).
+ */
+export interface WriteDiff {
+  readonly type: "create" | "update";
+  readonly hunks: readonly DiffHunk[];
+}

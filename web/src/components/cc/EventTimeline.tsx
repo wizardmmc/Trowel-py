@@ -41,6 +41,9 @@ interface EventTimelineProps {
   readonly onAnswer?: (answers: Record<string, string>) => void;
   /** Decline a pending AskUserQuestion. */
   readonly onCancel?: () => void;
+  /** slice-029: the session's cwd, so Edit/Write paths render project-relative
+   * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
+  readonly workdir?: string;
 }
 
 function ChevronToggle({
@@ -184,12 +187,14 @@ function Row({
   isReplay,
   onAnswer,
   onCancel,
+  workdir,
 }: {
   readonly item: TurnItem;
   readonly onRetryLast?: () => void;
   readonly isReplay?: boolean;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  readonly workdir?: string;
 }) {
   switch (item.kind) {
     case "thinking":
@@ -208,13 +213,14 @@ function Row({
           <SubagentBlock
             subagent={item.subagent ?? { status: fallback }}
             childTools={item.childTools}
+            workdir={workdir}
           />
         );
       }
-      return <ToolBlock item={item} />;
+      return <ToolBlock item={item} workdir={workdir} />;
     case "subagent":
       // Standalone degradation row (no matching Agent ToolItem — decision #10).
-      return <SubagentBlock subagent={item.subagent} />;
+      return <SubagentBlock subagent={item.subagent} workdir={workdir} />;
     case "retrying":
       return <RetryingRow item={item} />;
     case "compact_boundary":
@@ -252,6 +258,7 @@ export function EventTimeline({
   isReplay,
   onAnswer,
   onCancel,
+  workdir,
 }: EventTimelineProps) {
   // One in-order pass: consecutive text items merge into a single AssistantText
   // markdown block; every other item renders via Row at its real position.
@@ -289,6 +296,7 @@ export function EventTimeline({
           isReplay={isReplay}
           onAnswer={onAnswer}
           onCancel={onCancel}
+          workdir={workdir}
         />,
       );
     }

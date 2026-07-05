@@ -259,6 +259,7 @@ export function SessionView({
               onAnswer={(answers) => void answerElicit(answers)}
               onCancel={() => void cancelElicit()}
               onRevert={(t) => setRevertTarget(t)}
+              workdir={active?.workdir ?? workdir}
             />
           ) : (
             <div className="cc-empty cc-empty--noactive">
