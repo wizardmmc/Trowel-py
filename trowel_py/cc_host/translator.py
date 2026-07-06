@@ -156,10 +156,10 @@ class Translator:
             return [
                 RetryingEvent(
                     attempt=self._retry_attempt,
-                    max_retries=ev.get("max_retries"),
-                    error_status=ev.get("error_status"),
+                    max_retries=_as_int(ev.get("max_retries")),
+                    error_status=_as_int(ev.get("error_status")),
                     error=ev.get("error"),
-                    retry_delay_ms=ev.get("retry_delay_ms"),
+                    retry_delay_ms=_as_int(ev.get("retry_delay_ms")),
                 )
             ]
         if sub in ("hook_started", "hook_response"):
@@ -511,3 +511,30 @@ def _as_text(content: Any) -> str:
         ]
         return "\n".join(parts)
     return str(content)
+
+
+def _as_int(value: Any) -> int | None:
+    """Coerce a raw CC field to int, or None if absent.
+
+    The GLM backend sometimes emits fractional floats for fields the CC
+    schema declares as int (e.g. ``retry_delay_ms=574.04``); Pydantic v2
+    rejects those with ``int_from_float``, so we truncate at this boundary.
+    Booleans are rejected — bool is an int subclass but never a meaningful
+    count here, so a stray bool is treated as "no value".
+
+    Args:
+        value: the raw CC field value (int, float, str, None, ...).
+
+    Returns:
+        the value as an int, or None when absent / unparsable.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

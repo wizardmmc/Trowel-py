@@ -250,6 +250,24 @@ class TestRetrying:
         out2 = t.translate(ev1)
         assert out2[0].attempt == 2
 
+    def test_api_retry_coerces_fractional_float_fields_to_int(self):
+        """GLM backend can emit fractional floats for int fields (issue: int_from_float).
+
+        retry_delay_ms=574.04... must be truncated to int at the translator
+        boundary, otherwise Pydantic rejects the RetryingEvent. Same defense
+        applies to max_retries / error_status.
+        """
+        ev = cc(type="system", subtype="api_retry",
+                error_status=529.0, error="overloaded",
+                retry_delay_ms=574.0467280609035, max_retries=10.0)
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        assert isinstance(out[0], RetryingEvent)
+        assert out[0].retry_delay_ms == 574
+        assert out[0].error_status == 529
+        assert out[0].max_retries == 10
+        assert isinstance(out[0].retry_delay_ms, int)
+
 
 class TestHookStatusCompactLocal:
     def test_hook_response_translates(self):
