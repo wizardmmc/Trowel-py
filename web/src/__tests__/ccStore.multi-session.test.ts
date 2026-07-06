@@ -295,8 +295,8 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       const store = createCcStore();
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
         sessions: [
-          { id: "s1", workdir: "/wd", model: "glm-5.2", name: "trowel-py", running: false },
-          { id: "s2", workdir: "/wd", model: "glm-5.2", name: "wiki", running: true },
+          { id: "s1", workdir: "/wd", model: "glm-5.2", name: "trowel-py", running: false, connected: true },
+          { id: "s2", workdir: "/wd", model: "glm-5.2", name: "wiki", running: true, connected: true },
         ],
         activeId: "s1",
       });
@@ -314,7 +314,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       await store.getState().startSession({ workdir: "/wd" });
       const before = store.getState().sessions["s1"];
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
-        sessions: [{ id: "s1", workdir: "/wd", model: "glm-5.2", name: "renamed", running: false }],
+        sessions: [{ id: "s1", workdir: "/wd", model: "glm-5.2", name: "renamed", running: false, connected: true }],
         activeId: "s1",
       });
       await store.getState().refreshActiveSessions();

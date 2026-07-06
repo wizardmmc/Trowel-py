@@ -66,6 +66,7 @@ export function SessionView({
   const history = useCcStore((s) => s.history);
   const historyTotal = useCcStore((s) => s.historyTotal);
   const loadingHistory = useCcStore((s) => s.loadingHistory);
+  const refreshHistory = useCcStore((s) => s.refreshHistory);
 
   // slice-026: the turn pending a revert confirmation (null = modal closed).
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
@@ -91,25 +92,34 @@ export function SessionView({
     setRevertTarget(null);
   }, [activeSid]);
 
-  // Open a fresh session + prime history list on mount / when workdir changes.
+  // workdir 变化时，若当前 active 的 workdir 与新 prop 不一致，用新 workdir 新建会话。
+  // temp 会被 dropTempActive 自动丢弃；进行中的对话（connected）保留为多开。
+  // 修复 bug1：切换路径后主视图立即切到新路径（不再因已有 temp 而跳过新建）。
   useEffect(() => {
     void (async () => {
       const store = useCcStore.getState();
       // slice-028 v2: reconcile with the backend _REGISTRY first so a page
-      // refresh doesn't orphan live cc processes — if the backend still has
-      // sessions, the dict re-absorbs them (× closable) instead of starting
-      // a duplicate.
+      // refresh doesn't orphan live cc processes.
       await store.refreshActiveSessions();
-      // only start a fresh temp session when nothing is active after reconcile
-      if (!useCcStore.getState().activeSid) {
+      const active0 =
+        useCcStore.getState().sessions[useCcStore.getState().activeSid ?? ""];
+      if (!active0 || active0.workdir !== workdir) {
         await store.startSession({ workdir });
       }
-      // history dropdown follows the active session's workdir (after refresh it
-      // may be a reconciled session whose workdir ≠ this prop), else this prop.
-      const active0 = useCcStore.getState().sessions[useCcStore.getState().activeSid ?? ""];
-      void store.refreshHistory(active0?.workdir ?? workdir);
+      // 兜底刷新历史到 prop workdir：覆盖 startSession 失败（active 仍为 null，
+      // [active?.workdir] effect 的守卫会跳过）的窄场景，保证 mount/换路径时
+      // 历史下拉框至少刷到当前 workdir，不停留在旧路径。
+      void store.refreshHistory(workdir);
     })();
   }, [workdir]);
+
+  // 历史列表跟随主视图当前会话的 workdir：切换路径 / 点+ / 多开栏切换，
+  // 只要 active 的 workdir 变了就刷新（修复"切换后历史还是旧的"）。
+  useEffect(() => {
+    if (active?.workdir) {
+      void refreshHistory(active.workdir);
+    }
+  }, [active?.workdir, refreshHistory]);
 
   // slice-028 v2: a connected session with empty turns needs its jsonl history
   // loaded — happens after refresh (reconcile sets activeSid to a session whose

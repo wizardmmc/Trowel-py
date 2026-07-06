@@ -302,7 +302,9 @@ export function createCcStore() {
               revertEnabled: false, // backend list omits this; re-gained on next send
               transportError: null,
               abort: null,
-              connected: true, // a backend _REGISTRY entry = a live cc process
+              // 后端 list 带 connected 字段：True = 有活 cc 进程；temp（从未发消息）→ false。
+              // 不再写死 true —— 否则 temp 会被误标 live 显示在多开栏（ClaudeDesktop 多开 bug）。
+              connected: b.connected,
             };
           }
           // keep an existing frontend activeSid; else fall back to the backend's

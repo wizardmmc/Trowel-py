@@ -36,6 +36,9 @@ class FakeHost:
         self.received: list[str] = []
         self.answered: dict[str, str] | None = None
         self.cancelled = False
+        # 模拟 CCHost.is_dead（True=无活进程/temp，False=live）。默认 False：
+        # FakeHost 通常代表已 send 过的 live session；temp 场景测试可显式置 True。
+        self.is_dead = False
 
     def inject_write_diffs(self, events: list) -> list:
         """slice-029: real CCHost re-joins BE snapshots on replay; the fake
@@ -133,6 +136,28 @@ class TestMultiSession:
         assert data["sessions"][0]["id"] == sid
         assert data["sessions"][0]["workdir"] == str(tmp_path)
         assert data["active_id"] == sid  # 新建自动活跃
+
+    def test_active_lists_connected_flag(self, tmp_path: Path):
+        """GET /sessions/active 每条带 connected 字段：temp（is_dead=True）→ False，
+        live（is_dead=False）→ True。前端 reconcile 据此判断是否进多开栏，避免
+        没发过消息的 temp 被误显示（bug：多出 ClaudeDesktop 多开）。"""
+        reg: dict = {}
+        client = _mini_app(reg)
+        # temp：真实 CCHost 创建后 _proc=None → is_dead=True
+        temp_sid = client.post(
+            "/api/cc/sessions", json={"workdir": str(tmp_path)}
+        ).json()["data"]["session_id"]
+        # live：直接塞一个 is_dead=False 的 FakeHost
+        live_host = FakeHost(events=[], workdir=str(tmp_path))
+        live_sid = "live-fake-1"
+        reg[live_sid] = live_host
+        cc_routes._WORKDIR_INDEX.setdefault(str(tmp_path), set()).add(live_sid)
+        cc_routes._SESSION_NAMES[live_sid] = tmp_path.name
+
+        data = client.get("/api/cc/sessions/active").json()["data"]
+        by_id = {s["id"]: s for s in data["sessions"]}
+        assert by_id[temp_sid]["connected"] is False  # temp
+        assert by_id[live_sid]["connected"] is True   # live
 
     def test_activate_switches_active(self, tmp_path: Path):
         """POST /sessions/:id/activate 切当前活跃。"""

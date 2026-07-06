@@ -110,6 +110,9 @@ export interface ActiveSession {
   readonly name: string;
   /** Whether a turn is mid-stream on this session (send() in flight). */
   readonly running: boolean;
+  /** True = 有活 cc 子进程（发过消息且未退出）；temp（从未 spawn）→ false.
+   * 前端 reconcile 据此判断是否进多开栏，避免 temp 被误显示成多开。 */
+  readonly connected: boolean;
 }
 
 /** Result of GET /api/cc/sessions/active — the live sessions + which is active. */

@@ -150,6 +150,8 @@ def list_active_sessions(
     """列出当前 trowel 进程的活跃 session（_REGISTRY）。
 
     区别于 GET /sessions（磁盘历史）。前端多开栏用这个 + active_id 渲染统一列表。
+    返回所有 _REGISTRY 条目（含从未发消息的 temp），每条带 connected 字段：
+    True = 有活 cc 子进程（temp 为 False）。前端据此过滤多开栏，避免 temp 被误显示。
     """
     sessions = [
         {
@@ -158,6 +160,11 @@ def list_active_sessions(
             "model": host.model,
             "name": _SESSION_NAMES.get(sid, Path(host.workdir).name),
             "running": getattr(host, "running", False),
+            # True = 有活 cc 子进程（发过消息且未退出）；temp（从未 spawn）→ False。
+            # 注：is_dead 也覆盖"曾连接但已退出"的会话 —— 它们同样 connected=False。
+            # 前端 exited 状态由 SSE 事件驱动，page refresh 后该标志丢失，这类会话
+            # 会成为不显示的幽灵行（已知清理项，非本次 bug 范围）。
+            "connected": not getattr(host, "is_dead", True),
         }
         for sid, host in registry.items()
     ]
