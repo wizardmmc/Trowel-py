@@ -53,3 +53,59 @@ def test_health_still_responds(web_dist):
     resp = client.get("/api/health")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+# === Cache-Control headers ===
+# Bug: _spa_fallback 用 FileResponse 但不设 Cache-Control，浏览器启发式缓存
+# 旧 index.html（引用旧 hash JS），build 新版后仍加载旧 bundle，要强制刷新
+# 才生效。修复：index.html → no-cache（每次验证），assets/*-<hash> → immutable
+# （永久缓存，内容变 hash 变文件名变）。
+
+def test_static_cache_headers_index_html_no_cache(tmp_path: Path):
+    """index.html → no-cache：入口文件 build 后会变，必须每次向后端验证。"""
+    from trowel_py.app import _static_cache_headers
+    root = tmp_path
+    idx = root / "index.html"
+    idx.write_text("<html>")
+    headers = _static_cache_headers(idx, root)
+    assert headers["cache-control"] == "no-cache"
+
+
+def test_static_cache_headers_hashed_asset_immutable(tmp_path: Path):
+    """assets/*-<hash>.js → immutable + 1 年：Vite 内容变即改 hash 改文件名，
+    旧 URL 不会被新内容覆盖，可安全永久缓存。"""
+    from trowel_py.app import _static_cache_headers
+    root = tmp_path
+    (root / "assets").mkdir()
+    js = root / "assets" / "index-O9voxxvV.js"
+    js.write_text("console.log(1)")
+    headers = _static_cache_headers(js, root)
+    assert headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_static_cache_headers_non_asset_file_no_cache(tmp_path: Path):
+    """根目录下不带 hash 的文件（如 vite.svg）保守走 no-cache。"""
+    from trowel_py.app import _static_cache_headers
+    root = tmp_path
+    svg = root / "vite.svg"
+    svg.write_text("<svg/>")
+    headers = _static_cache_headers(svg, root)
+    assert headers["cache-control"] == "no-cache"
+
+
+def test_spa_fallback_serves_index_with_no_cache(web_dist):
+    """GET / 的 index.html 必须带 no-cache（核心修复：build 后浏览器立即拿新入口）。"""
+    client = TestClient(create_app())
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_spa_fallback_serves_hashed_asset_with_immutable(web_dist):
+    """GET /assets/index-<hash>.js 必须带 immutable，让浏览器长缓存。"""
+    (web_dist / "assets").mkdir()
+    (web_dist / "assets" / "index-Abc123.js").write_text("console.log(1)")
+    client = TestClient(create_app())
+    resp = client.get("/assets/index-Abc123.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"

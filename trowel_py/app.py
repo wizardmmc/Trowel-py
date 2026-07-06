@@ -95,10 +95,16 @@ def create_app() -> FastAPI:
             try:
                 candidate.relative_to(root)
             except ValueError:
-                return FileResponse(index_html)
+                return FileResponse(
+                    index_html, headers=_static_cache_headers(index_html, root)
+                )
             if candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(index_html)
+                return FileResponse(
+                    candidate, headers=_static_cache_headers(candidate, root)
+                )
+            return FileResponse(
+                index_html, headers=_static_cache_headers(index_html, root)
+            )
 
     return app
 
@@ -115,3 +121,37 @@ def _find_web_dist() -> Path | None:
         if (candidate / "index.html").is_file():
             return candidate
     return None
+
+
+def _static_cache_headers(file_path: Path, root: Path) -> dict[str, str]:
+    """Cache-Control headers for a file served by the SPA fallback.
+
+    Without an explicit Cache-Control, FileResponse only sends Last-Modified /
+    ETag and the browser heuristic-caches the entry index.html — so after a
+    rebuild the browser keeps using the stale index.html (which still points
+    at the old hashed JS bundle) until the user force-refreshes. Setting
+    per-file Cache-Control fixes that.
+
+    - index.html and other non-hashed files -> ``no-cache``: revalidate every
+      request so a rebuild's new ``<script src="assets/index-NewHash.js">``
+      reaches the browser immediately.
+    - ``assets/*-<hash>.*`` -> ``public, max-age=31536000, immutable``: Vite
+      content-addresses these (content change => hash change => new filename),
+      so an old URL is never served new content — safe to cache for a year.
+
+    Args:
+        file_path: the file being served.
+        root: the web_dist root, used to compute the path relative to the
+            served directory.
+
+    Returns:
+        A single-entry ``{"cache-control": ...}`` dict for
+        ``FileResponse(headers=...)``.
+    """
+    try:
+        rel = file_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        rel = Path()
+    if rel.parts and rel.parts[0] == "assets":
+        return {"cache-control": "public, max-age=31536000, immutable"}
+    return {"cache-control": "no-cache"}
