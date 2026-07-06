@@ -80,6 +80,15 @@ function summaryStat(item: ToolItem): { add: number; remove: number } | null {
   return null;
 }
 
+/** Read-only line count for the summary pill. Read's result is CC `cat -n`
+ * text, so its line count equals the number of lines read. Returns null when
+ * not applicable (not Read, not done, or no result yet). */
+function summaryLines(item: ToolItem): number | null {
+  if (item.toolName !== "Read" || item.status !== "done") return null;
+  if (item.result === null) return null;
+  return countLines(item.result);
+}
+
 function brief(text: string, max = 48): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
@@ -109,6 +118,15 @@ function SummaryBrief({
     // slice-029: CC-style display — project-relative when inside the session
     // workdir, else absolute. No char-based ellipsis (the truncation hid the
     // useful tail). Long paths wrap via .cc-tool__summary{flex-wrap:wrap}.
+    return p !== null ? (
+      <span className="cc-tool__brief">{getDisplayPath(p, workdir)}</span>
+    ) : null;
+  }
+  if (item.toolName === "Read") {
+    const p = asString(item.input.file_path);
+    // Same display logic as Write/Edit (slice-029): project-relative when
+    // inside workdir, else absolute. No char-based ellipsis — long paths
+    // wrap via .cc-tool__summary{flex-wrap:wrap}.
     return p !== null ? (
       <span className="cc-tool__brief">{getDisplayPath(p, workdir)}</span>
     ) : null;
@@ -249,6 +267,51 @@ function JsonTree({
   );
 }
 
+/** Parse CC `cat -n` text into {num, content} rows. Returns null when any
+ * line is not cat -n shaped, so the caller falls back to a plain <pre>. CC
+ * format — leading spaces + digits + tab + content — was verified against a
+ * real Read tool_result in the project session JSONL; line numbers are the
+ * real file line numbers (an offset=200 read already carries 200/201/...). */
+function parseCatN(
+  text: string,
+): readonly { readonly num: string; readonly content: string }[] | null {
+  // Normalize CRLF → LF first: the line regex anchors on `$`, which does not
+  // match a trailing `\r`, so Windows-line-ending files would otherwise fail
+  // to parse every line and silently fall back to <pre>.
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  // Trailing newline is a terminator → drop the empty trailing element.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return null;
+  const rows: { num: string; content: string }[] = [];
+  for (const line of lines) {
+    const m = /^(\s*)(\d+)\t(.*)$/.exec(line);
+    if (m === null) return null;
+    rows.push({ num: m[2], content: m[3] });
+  }
+  return rows;
+}
+
+/** Read detail: gutter + content grid when the result is cat -n text, else a
+ * plain <pre> fallback (errors, non-file reads). No +/- markers — Read is
+ * pure content; line numbers come from CC verbatim, so offset reads keep
+ * their real file line numbers. */
+function ReadBody({ result }: { readonly result: string }) {
+  const rows = parseCatN(result);
+  if (rows === null) {
+    return <pre className="cc-tool__bash-out">{result}</pre>;
+  }
+  return (
+    <div className="cc-tool__read">
+      {rows.map((r) => (
+        <div className="cc-tool__read-line" key={r.num}>
+          <span className="cc-tool__read-gutter">{r.num}</span>
+          <span className="cc-tool__read-content">{r.content}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Decide what the expanded detail shows. Returns null if there's nothing. */
 function renderDetail(item: ToolItem): React.ReactNode {
   if (item.toolName === "Bash") {
@@ -260,6 +323,9 @@ function renderDetail(item: ToolItem): React.ReactNode {
         {item.result !== null && <pre className="cc-tool__bash-out">{item.result}</pre>}
       </>
     );
+  }
+  if (item.toolName === "Read") {
+    return item.result !== null ? <ReadBody result={item.result} /> : null;
   }
   if (isEditTool(item.toolName)) {
     const d = computeEditDiff(item.input);
@@ -293,6 +359,7 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
   const seconds =
     item.elapsedSeconds !== null ? `${item.elapsedSeconds.toFixed(1)}s` : null;
   const stat = summaryStat(item);
+  const lines = summaryLines(item);
   const verb = displayVerb(item);
   const expanded = open && !condensed;
 
@@ -305,7 +372,8 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
       <span className="cc-tool__name">{verb}</span>
       <SummaryBrief item={item} workdir={workdir} />
       {stat !== null && <StatPill stat={stat} />}
-      {!done && isDiffTool(item.toolName) && (
+      {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
+      {!done && (isDiffTool(item.toolName) || item.toolName === "Read") && (
         <span className="cc-tool__spinner" aria-label="进行中" />
       )}
       {done && (

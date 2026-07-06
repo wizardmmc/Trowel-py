@@ -26,6 +26,13 @@
   overflow-y: auto;
   padding: var(--space-md);
   min-height: 0;
+  /* slice-032: keep the tail of the stream (esp. the ✻ thinking row) visible
+     above the Composer. scrollIntoView({block:"end"}) aligns the sentinel to
+     the scroll container's bottom edge, which the Composer overlaps — so pad
+     the alignment by the Composer's live height (SessionView's ResizeObserver
+     writes it into --composer-h). Adapts automatically when the Composer
+     grows (more input rows, elicit box); falls back to 0 before first measure. */
+  scroll-padding-bottom: calc(var(--composer-h, 0px) + var(--space-md));
 }
 
 /* ── StatusBar ── */
@@ -761,6 +768,47 @@
 }
 .cc-tool__create-more,
 .cc-tool__create-more::before { user-select: none; }
+
+/* ── slice-032: Read tool rendering ──
+   Read's expanded detail is a gutter + content grid (no +/- markers — pure
+   content read). Visually mirrors the diff gutter (right-aligned line nums,
+   right border separator) but is a separate class so Read doesn't carry
+   diff's add/remove semantics. Line numbers come from CC's cat -n verbatim,
+   so offset reads keep their real file line numbers. */
+.cc-tool__read {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  line-height: 1.55;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.cc-tool__read-line {
+  /* auto gutter column: line numbers (1–5 digits) size themselves and the
+     whole column adopts the widest — fixed `3.5ch` split 3-digit numbers
+     mid-digit (100 → "10"+"0") once padding ate the room. */
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cc-tool__read-gutter {
+  color: var(--text-tertiary);
+  text-align: right;
+  user-select: none;
+  /* Numbers must never wrap mid-digit; the grid column auto-sizes to fit. */
+  white-space: nowrap;
+  padding-right: 8px;
+  border-right: 1px solid var(--color-border);
+  margin-right: 6px;
+}
+.cc-tool__read-content {
+  color: var(--text-primary);
+}
 
 /* ── Composer ── */
 

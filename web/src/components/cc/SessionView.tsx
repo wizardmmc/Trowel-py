@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import {
@@ -16,6 +16,7 @@ import { RevertConfirmModal } from "./RevertConfirmModal";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";
 import { TodoBar } from "./TodoBar";
+import { useElementHeight } from "./useElementHeight";
 import "./cc.css";
 
 /**
@@ -75,6 +76,11 @@ export function SessionView({
   const [models, setModels] = useState<readonly ModelOption[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
+  // slice-032: mirror the Composer's live height into --composer-h so
+  // .cc-view__scroll's scroll-padding-bottom tracks it — the ✻ thinking row
+  // stays visible above the Composer without a hardcoded constant that drifts
+  // if the Composer's size changes.
+  const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
 
   const phase = active?.phase ?? "idle";
   const turns = active?.turns ?? [];
@@ -260,11 +266,15 @@ export function SessionView({
             此目录不是 git 仓库，不支持回滚（聊天、历史等其他功能正常）。
           </div>
         )}
-        <div className="cc-view__scroll">
+        <div
+          className="cc-view__scroll"
+          style={{ "--composer-h": `${composerH}px` } as CSSProperties}
+        >
           {active ? (
             <MessageList
               turns={turns}
               streaming={streaming}
+              phase={phase}
               onRetryLast={handleRetryLast}
               onAnswer={(answers) => void answerElicit(answers)}
               onCancel={() => void cancelElicit()}
@@ -280,16 +290,18 @@ export function SessionView({
             </div>
           )}
         </div>
-        <Composer
-          streaming={streaming}
-          disabled={!activeSid || phase === "awaiting_input"}
-          awaitingInput={phase === "awaiting_input"}
-          onSend={(text) => void send(text)}
-          onInterrupt={() => void interrupt()}
-          slashItems={slashItems}
-          onRequestModelPicker={() => setShowModelPicker(true)}
-          onRequestEffortPicker={() => setShowEffortPicker(true)}
-        />
+        <div ref={composerRef}>
+          <Composer
+            streaming={streaming}
+            disabled={!activeSid || phase === "awaiting_input"}
+            awaitingInput={phase === "awaiting_input"}
+            onSend={(text) => void send(text)}
+            onInterrupt={() => void interrupt()}
+            slashItems={slashItems}
+            onRequestModelPicker={() => setShowModelPicker(true)}
+            onRequestEffortPicker={() => setShowEffortPicker(true)}
+          />
+        </div>
         {revertTarget && (
           <RevertConfirmModal
             lostTurns={lostTurns}

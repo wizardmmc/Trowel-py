@@ -21,6 +21,12 @@ import { SpinnerLine } from "./SpinnerLine";
 interface MessageListProps {
   readonly turns: readonly Turn[];
   readonly streaming: boolean;
+  /** slice-032: active session phase. The auto-scroll effect re-fires when the
+   * thinking row appears (phase flips to "thinking") — without this, the row
+   * renders but the effect (deps [turns, streaming]) never re-runs because
+   * `turns` is unchanged and `streaming` was already true, so it stays hidden
+   * behind the Composer. */
+  readonly phase?: string;
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
@@ -89,6 +95,7 @@ function TurnCard({
 export function MessageList({
   turns,
   streaming,
+  phase,
   onRetryLast,
   onAnswer,
   onCancel,
@@ -101,7 +108,7 @@ export function MessageList({
     if (typeof endRef.current?.scrollIntoView === "function") {
       endRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-  }, [turns, streaming]);
+  }, [turns, streaming, phase]);
 
   if (turns.length === 0) {
     return (

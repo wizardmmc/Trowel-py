@@ -291,3 +291,155 @@ describe("ToolBlock — slice-029 Edit/Write rendering", () => {
     expect(document.querySelector(".cc-tool__detail")).toBeNull();
   });
 });
+
+// CC `cat -n` format: leading spaces + line number + tab + content.
+// Verified against a real Read tool_result from the project session JSONL
+// (e.g. "     3\tfrom fastapi import FastAPI").
+const CATN_3 = "     1\t\n     2\t\n     3\tfrom fastapi import FastAPI\n";
+
+describe("ToolBlock — slice-032 Read rendering", () => {
+  it("Read done shows path + N lines + elapsed in summary", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/b.py" },
+          result: CATN_3,
+          status: "done",
+          elapsedSeconds: 0.8,
+        })}
+      />,
+    );
+    expect(screen.getByText("Read")).toBeTruthy();
+    expect(screen.getByText("/a/b.py")).toBeTruthy();
+    expect(screen.getByText(/3 lines/)).toBeTruthy();
+    expect(screen.getByText("0.8s")).toBeTruthy();
+  });
+
+  it("Read running shows spinner and no N lines", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/b.py" },
+          status: "running",
+          elapsedSeconds: 0.3,
+        })}
+      />,
+    );
+    expect(screen.getByLabelText("进行中")).toBeTruthy();
+    expect(screen.queryByText(/lines/)).toBeNull();
+    expect(screen.getByText("0.3s")).toBeTruthy();
+  });
+
+  it("Read with offset preserves real line numbers (not re-numbered from 1)", () => {
+    // CC cat -n emits the real file line numbers, so an offset=200 read
+    // already carries 200/201/202 in the result text — the renderer must
+    // reuse them verbatim, not renumber from 1 or compute from input.offset.
+    const offsetResult = "   200\tline A\n   201\tline B\n   202\tline C\n";
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/big.py", offset: 200 },
+          result: offsetResult,
+          status: "done",
+          elapsedSeconds: 0.5,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const gutters = document.querySelectorAll(".cc-tool__read-gutter");
+    expect(gutters.length).toBe(3);
+    expect(gutters[0]!.textContent).toBe("200");
+    expect(gutters[1]!.textContent).toBe("201");
+    expect(gutters[2]!.textContent).toBe("202");
+  });
+
+  it("Read detail parses cat -n into gutter | content (no +/- marker)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/b.py" },
+          result: CATN_3,
+          status: "done",
+          elapsedSeconds: 0.2,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const detail = document.querySelector(".cc-tool__detail")!;
+    expect(detail.querySelector(".cc-tool__read-line")).toBeTruthy();
+    expect(detail.querySelector(".cc-tool__read-gutter")).toBeTruthy();
+    // CATN_3's first two rows are blank lines; the "from fastapi" content
+    // lives in the 3rd row — assert some content cell carries it.
+    const contents = detail.querySelectorAll(".cc-tool__read-content");
+    expect(
+      Array.from(contents).some((c) => c.textContent?.includes("from fastapi")),
+    ).toBe(true);
+    // Read is plain content — no diff add/remove markers.
+    expect(detail.querySelector('[data-type="add"]')).toBeNull();
+    expect(detail.querySelector('[data-type="remove"]')).toBeNull();
+  });
+
+  it("Read detail falls back to <pre> when result is not cat -n format", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/missing.py" },
+          result: "Error: file not found",
+          status: "done",
+          elapsedSeconds: 0.1,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const detail = document.querySelector(".cc-tool__detail")!;
+    expect(detail.querySelector(".cc-tool__bash-out")).toBeTruthy();
+    expect(detail.querySelector(".cc-tool__read-line")).toBeNull();
+  });
+
+  it("Read detail handles CRLF (Windows) line endings without falling back", () => {
+    // CRLF must not force the <pre> fallback — the regex anchors on `$`,
+    // which doesn't match `\r`, so CRLF files would silently degrade unless
+    // parseCatN normalizes line endings first.
+    const crlfResult = "     1\timport os\r\n     2\timport sys\r\n";
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/a/win.py" },
+          result: crlfResult,
+          status: "done",
+          elapsedSeconds: 0.2,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const detail = document.querySelector(".cc-tool__detail")!;
+    expect(detail.querySelector(".cc-tool__read-line")).toBeTruthy();
+    expect(detail.querySelector(".cc-tool__bash-out")).toBeNull();
+    // content row carries the code without a trailing CR
+    const contents = detail.querySelectorAll(".cc-tool__read-content");
+    expect(contents[0]!.textContent).toBe("import os");
+  });
+
+  it("Read shows project-relative path with workdir", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Read",
+          input: { file_path: "/Users/me/proj/web/x.py" },
+          result: CATN_3,
+          status: "done",
+          elapsedSeconds: 0.2,
+        })}
+        workdir="/Users/me/proj"
+      />,
+    );
+    expect(screen.getByText("web/x.py")).toBeTruthy();
+    expect(screen.queryByText("/Users/me/proj/web/x.py")).toBeNull();
+  });
+});

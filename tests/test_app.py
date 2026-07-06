@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from trowel_py.app import create_app
+from trowel_py.app import create_app, _resolve_web_dist
 
 
 @pytest.fixture
@@ -109,3 +109,36 @@ def test_spa_fallback_serves_hashed_asset_with_immutable(web_dist):
     resp = client.get("/assets/index-Abc123.js")
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_resolve_web_dist_prefers_source_tree_over_packaged_static(tmp_path: Path):
+    """Editable install: both web/dist (fresh build) and trowel_py/static
+    (stale pip-install snapshot) exist → web/dist wins. Fixes the dev loop
+    where frontend edits appeared to "not take effect" because the stale
+    static copy was served first."""
+    here = tmp_path / "trowel_py"
+    web_dist = tmp_path / "web" / "dist"
+    static = here / "static"
+    web_dist.mkdir(parents=True)
+    static.mkdir(parents=True)
+    (web_dist / "index.html").write_text("fresh build")
+    (static / "index.html").write_text("stale snapshot")
+    assert _resolve_web_dist(here) == web_dist
+
+
+def test_resolve_web_dist_falls_back_to_packaged_static(tmp_path: Path):
+    """Packaged install (pip install .): web/ isn't shipped to site-packages,
+    so fall back to the bundled trowel_py/static copy."""
+    here = tmp_path / "trowel_py"
+    static = here / "static"
+    static.mkdir(parents=True)
+    (static / "index.html").write_text("packaged")
+    assert _resolve_web_dist(here) == static
+
+
+def test_resolve_web_dist_returns_none_when_no_build(tmp_path: Path):
+    """Dev mode before any `bun run build`: neither exists → None (SPA route
+    is not registered)."""
+    here = tmp_path / "trowel_py"
+    here.mkdir(parents=True)
+    assert _resolve_web_dist(here) is None

@@ -143,18 +143,29 @@ def create_app() -> FastAPI:
     return app
 
 
-def _find_web_dist() -> Path | None:
-    """Locate the built frontend.
+def _resolve_web_dist(here: Path) -> Path | None:
+    """Pick the built-frontend dir relative to ``here`` (the ``trowel_py/``
+    package dir). Source-tree ``web/dist`` wins over the packaged
+    ``trowel_py/static`` copy: ``web/dist`` is Vite's freshest output (what a
+    dev just rebuilt), while ``static`` is a ``pip install .`` snapshot that
+    goes stale in editable installs. When only one exists (a packaged
+    install ships no ``web/``; a source tree may lack ``static``), that one
+    is used; when neither exists, returns None (dev mode, no build yet).
 
-    Prefer packaged ``trowel_py/static/`` (``pip install .`` copies web/dist
-    there via the build step), fall back to ``web/dist/`` (editable / dev
-    worktree). Returns None when no build exists (dev mode).
+    The prior static-first order silently served a stale copy whenever an
+    editable install left an old ``trowel_py/static`` around — dev changes
+    appeared to "not take effect" until the static copy was manually resynced.
     """
-    here = Path(__file__).resolve().parent
-    for candidate in (here / "static", here.parent / "web" / "dist"):
+    for candidate in (here.parent / "web" / "dist", here / "static"):
         if (candidate / "index.html").is_file():
             return candidate
     return None
+
+
+def _find_web_dist() -> Path | None:
+    """Locate the built frontend for the running install (see
+    ``_resolve_web_dist`` for the priority order)."""
+    return _resolve_web_dist(Path(__file__).resolve().parent)
 
 
 def _static_cache_headers(file_path: Path, root: Path) -> dict[str, str]:
