@@ -48,6 +48,10 @@ export interface TextEvent {
 export interface ThinkingEvent {
   readonly type: "thinking";
   readonly text: string;
+  /** slice-031: reconstructed think duration in seconds, present on history
+   * replay (history.py back-fills it from entry-timestamp deltas). Absent on
+   * the live path, where the reducer derives duration from heartbeats. */
+  readonly thinking_duration_seconds?: number;
 }
 
 export interface ToolCallEvent {

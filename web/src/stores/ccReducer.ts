@@ -548,13 +548,19 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
           turns: [...turns.slice(0, -1), updated],
         };
       }
-      // Stamp the thinking duration (first heartbeat -> now) onto the new item
-      // and clear the heartbeat state. NOTE: Date.now() — non-pure; tests mock.
+      // Stamp the thinking duration onto the new item and clear the heartbeat
+      // state. NOTE: Date.now() — non-pure; tests mock.
+      // Two sources, in priority order:
+      //   1. heartbeat-derived (live): first heartbeat -> now
+      //   2. event.thinking_duration_seconds (history replay): history.py
+      //      back-filled it from entry-timestamp deltas
+      // Both fall through to `undefined` when unavailable, which makes
+      // EventTimeline fall back to a bare "思考" label.
       const startedAt = prev.meta.thinkingStartedAt;
       const duration =
         startedAt !== null
           ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
-          : undefined;
+          : event.thinking_duration_seconds;
       return appendToCurrentTurn(
         {
           ...prev,

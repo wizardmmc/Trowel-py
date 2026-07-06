@@ -443,6 +443,50 @@ describe("reduceEvent — thinking duration stamps thought-for-Ns (slice-025-a A
       expect(item.thinkingDurationSeconds).toBeUndefined();
     }
   });
+
+  it("heartbeat-derived duration wins over a replay duration field (slice-031)", () => {
+    vi.setSystemTime(10000);
+    let state = withOpenTurn();
+    state = reduceEvent(state, { type: "thinking_progress", estimated_tokens: 5 });
+    vi.setSystemTime(22000); // 12s later
+    // A live event would not carry thinking_duration_seconds, but if it did,
+    // the heartbeat measurement must still take priority.
+    state = reduceEvent(state, {
+      type: "thinking",
+      text: "x",
+      thinking_duration_seconds: 99,
+    });
+    const item = state.turns[0].items[0];
+    if (item.kind === "thinking") {
+      expect(item.thinkingDurationSeconds).toBe(12);
+    }
+  });
+});
+
+describe("reduceEvent — thinking duration from history replay (slice-031)", () => {
+  // No fake timers needed: the replay path has no heartbeat, so Date.now() is
+  // never read. Duration comes straight from event.thinking_duration_seconds.
+
+  it("stamps duration from the replay event when no heartbeat preceded", () => {
+    const state = reduceEvent(withOpenTurn(), {
+      type: "thinking",
+      text: "reasoning...",
+      thinking_duration_seconds: 23,
+    });
+    const item = state.turns[0].items[0];
+    expect(item.kind).toBe("thinking");
+    if (item.kind === "thinking") {
+      expect(item.thinkingDurationSeconds).toBe(23);
+    }
+  });
+
+  it("a replay event without the duration field leaves it undefined", () => {
+    const state = reduceEvent(withOpenTurn(), { type: "thinking", text: "x" });
+    const item = state.turns[0].items[0];
+    if (item.kind === "thinking") {
+      expect(item.thinkingDurationSeconds).toBeUndefined();
+    }
+  });
 });
 
 describe("reduceEvent — subagent_progress (slice-025-a A3)", () => {

@@ -175,6 +175,11 @@ class ThinkingEvent(_Event):
 
     type: Literal["thinking"] = "thinking"
     text: str
+    # slice-031: reconstructed think duration in seconds for history replay.
+    # The live stream derives this from thinking_tokens heartbeats; the jsonl
+    # has none, so history.py back-fills it from entry-timestamp deltas. None
+    # when no prev timestamp is available (frontend falls back to bare "思考").
+    thinking_duration_seconds: int | None = None
 
 
 class DiffHunk(BaseModel):

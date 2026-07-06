@@ -297,3 +297,193 @@ def test_parse_history_user_message_as_list_text_blocks(fake_projects: Path) -> 
     user_evs = [e for e in events if isinstance(e, UserEvent)]
     assert len(user_evs) == 1
     assert user_evs[0].text == "你好，请问今天几号"
+
+
+# --- slice-031: replay thinking duration (timestamp-delta) ---------------------
+#
+# Live stream measures "Thought for Ns" via thinking_tokens heartbeat start time
+# -> thinking envelope. JSONL has no heartbeat, but every entry carries an ISO
+# timestamp; CC persists a thinking block as its own assistant entry, so the
+# delta vs the previous entry's timestamp reconstructs the think duration. This
+# is an approximation (matches CC TUI's behaviour on reload) — see slice-031.
+
+
+def _ts_entry(type_: str, timestamp: str, content) -> dict:
+    """Build a jsonl entry with an explicit timestamp + message.content."""
+    return {
+        "type": type_,
+        "timestamp": timestamp,
+        "message": {"role": type_, "content": content},
+    }
+
+
+def test_compute_thinking_duration_normal() -> None:
+    """23-second gap between prev_ts and thinking ts yields 23."""
+    assert (
+        history._compute_thinking_duration(
+            "2026-07-06T12:38:00.000Z", "2026-07-06T12:38:23.000Z"
+        )
+        == 23
+    )
+
+
+def test_compute_thinking_duration_no_prev() -> None:
+    """First entry (no prev) -> None (frontend falls back to bare '思考')."""
+    assert (
+        history._compute_thinking_duration(None, "2026-07-06T12:38:23.000Z")
+        is None
+    )
+
+
+def test_compute_thinking_duration_no_cur() -> None:
+    """Missing current timestamp -> None, never crash."""
+    assert (
+        history._compute_thinking_duration("2026-07-06T12:38:00.000Z", None)
+        is None
+    )
+
+
+def test_compute_thinking_duration_zero_is_none() -> None:
+    """Same timestamp (0s delta) -> None, not 0 (avoid 'Thought for 0s')."""
+    assert (
+        history._compute_thinking_duration(
+            "2026-07-06T12:38:00.000Z", "2026-07-06T12:38:00.000Z"
+        )
+        is None
+    )
+
+
+def test_compute_thinking_duration_negative_is_none() -> None:
+    """Clock skew (negative delta) -> None."""
+    assert (
+        history._compute_thinking_duration(
+            "2026-07-06T12:38:30.000Z", "2026-07-06T12:38:00.000Z"
+        )
+        is None
+    )
+
+
+def test_compute_thinking_duration_clamps_to_one() -> None:
+    """Sub-second positive delta rounds up to 1 (matches live reducer clamp)."""
+    assert (
+        history._compute_thinking_duration(
+            "2026-07-06T12:38:00.000Z", "2026-07-06T12:38:00.600Z"
+        )
+        == 1
+    )
+
+
+def test_compute_thinking_duration_unparseable_is_none() -> None:
+    """Garbage timestamps -> None, never raise."""
+    assert history._compute_thinking_duration("garbage", "2026-07-06T12:38:00Z") is None
+    assert history._compute_thinking_duration(None, None) is None
+
+
+def test_parse_history_thinking_duration_from_prev_entry(fake_projects: Path) -> None:
+    """A thinking entry 23s after the previous entry stamps duration=23."""
+    _write_jsonl(
+        fake_projects / "abc.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:38:00.000Z", "hi"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:38:23.000Z",
+                [{"type": "thinking", "thinking": "reasoning"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "abc")
+    thinking = next(e for e in events if isinstance(e, ThinkingEvent))
+    assert thinking.thinking_duration_seconds == 23
+
+
+def test_parse_history_thinking_first_entry_has_no_duration(
+    fake_projects: Path,
+) -> None:
+    """When thinking is the first timestamped entry, there is no prev -> None."""
+    _write_jsonl(
+        fake_projects / "abc.jsonl",
+        [
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:38:23.000Z",
+                [{"type": "thinking", "thinking": "reasoning"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "abc")
+    thinking = next(e for e in events if isinstance(e, ThinkingEvent))
+    assert thinking.thinking_duration_seconds is None
+
+
+def test_parse_history_consecutive_thinkings_each_stamped(
+    fake_projects: Path,
+) -> None:
+    """Two consecutive thinking entries: each duration is vs its own prev entry."""
+    _write_jsonl(
+        fake_projects / "abc.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "hi"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:10.000Z",
+                [{"type": "thinking", "thinking": "a"}],
+            ),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:15.000Z",
+                [{"type": "thinking", "thinking": "b"}],
+            ),
+        ],
+    )
+    thinkings = [
+        e for e in history.parse_history("/workdir", "abc") if isinstance(e, ThinkingEvent)
+    ]
+    assert thinkings[0].thinking_duration_seconds == 10
+    assert thinkings[1].thinking_duration_seconds == 5
+
+
+def test_parse_history_thinking_missing_timestamp_no_duration(
+    fake_projects: Path,
+) -> None:
+    """A jsonl entry missing its timestamp field -> duration None, no crash."""
+    _write_jsonl(
+        fake_projects / "abc.jsonl",
+        [
+            {"type": "user", "message": {"role": "user", "content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "thinking", "thinking": "x"}],
+                },
+            },
+        ],
+    )
+    events = history.parse_history("/workdir", "abc")
+    thinking = next(e for e in events if isinstance(e, ThinkingEvent))
+    assert thinking.thinking_duration_seconds is None
+
+
+def test_parse_history_thinking_prev_skips_unparseable_line(
+    fake_projects: Path,
+) -> None:
+    """A garbage line between user and thinking must not reset prev_ts: the
+    thinking's duration is still measured from the user entry."""
+    target = fake_projects / "abc.jsonl"
+    with target.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_ts_entry("user", "2026-07-06T12:00:00.000Z", "hi")) + "\n")
+        fh.write("not json at all\n")
+        fh.write(
+            json.dumps(
+                _ts_entry(
+                    "assistant",
+                    "2026-07-06T12:00:20.000Z",
+                    [{"type": "thinking", "thinking": "x"}],
+                )
+            )
+            + "\n"
+        )
+    events = history.parse_history("/workdir", "abc")
+    thinking = next(e for e in events if isinstance(e, ThinkingEvent))
+    assert thinking.thinking_duration_seconds == 20
