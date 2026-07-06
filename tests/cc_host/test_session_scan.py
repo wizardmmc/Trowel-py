@@ -22,6 +22,53 @@ from trowel_py.cc_host import session_scan
 VALID_UUID = "7dbd6da2-eff1-4af2-b2ab-d476aa48e3be"
 
 
+class TestWorkdirToSlug:
+    """slug rule = CC's sanitizePath: every non-alphanumeric char -> '-'.
+
+    Regression guard: an earlier impl only replaced '/', leaving '_' and '.'
+    intact, so workdirs like ``works/telecom_empirical_research`` (underscore)
+    produced a slug CC never writes on disk — the history dropdown then
+    scanned a non-existent dir and showed 0 sessions.
+    """
+
+    def test_slash_becomes_dash(self):
+        assert (
+            session_scan.workdir_to_slug("/Users/hamxf/workdir")
+            == "-Users-hamxf-workdir"
+        )
+
+    def test_underscore_becomes_dash(self):
+        # real bug: telecom_empirical_research was hidden from history
+        slug = session_scan.workdir_to_slug(
+            "/Users/hamxf/VirtualVolumn/ClaudeDesktop/works/telecom_empirical_research"
+        )
+        assert slug == (
+            "-Users-hamxf-VirtualVolumn-ClaudeDesktop-works-telecom-empirical-research"
+        )
+
+    def test_dot_becomes_dash(self):
+        # /Users/hamxf/.claude -> -Users-hamxf--claude
+        # (the '.' and the boundary '/' each turn into '-', giving two in a row)
+        assert (
+            session_scan.workdir_to_slug("/Users/hamxf/.claude")
+            == "-Users-hamxf--claude"
+        )
+
+    def test_uppercase_and_digits_preserved(self):
+        # CC does not lowercase; GraduatePaper and realTimeDect stay, STS2 keeps its digit
+        assert session_scan.workdir_to_slug(
+            "/Users/hamxf/GraduatePaper/realTimeDect/STS2-Agent"
+        ) == "-Users-hamxf-GraduatePaper-realTimeDect-STS2-Agent"
+
+    def test_pathlike_input_matches_str(self):
+        # workdir may arrive as os.PathLike (Path); must behave the same as str
+        from pathlib import Path
+
+        assert session_scan.workdir_to_slug(Path("/x/y_z")) == (
+            session_scan.workdir_to_slug("/x/y_z")
+        )
+
+
 @pytest.fixture()
 def fake_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point cc_projects_root at a tmp dir; return the slug dir to write into."""

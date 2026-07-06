@@ -63,8 +63,25 @@ def cc_projects_root() -> Path:
 
 
 def workdir_to_slug(workdir: str | os.PathLike) -> str:
-    """Workdir path → CC's projects-dir slug ('/' → '-')."""
-    return str(workdir).replace("/", "-")
+    """Workdir path → CC's projects-dir slug.
+
+    Mirrors CC's ``sanitizePath`` (leaked ``src/utils/sessionStoragePortable.ts``):
+    every non-alphanumeric character becomes ``-``. So ``telecom_empirical_research``
+    slugs to ``telecom-empirical-research``, ``reverse_cc`` to ``reverse-cc``,
+    and ``/Users/hamxf/.claude`` to ``-Users-hamxf--claude`` (the ``.`` also
+    becomes ``-``). Uppercase and digits are kept — CC does not lowercase.
+
+    The previous impl only replaced ``/``, leaving ``_`` and ``.`` intact. That
+    mismatched CC's on-disk slug, so any workdir whose path contains an
+    underscore or dot showed zero history sessions (real case:
+    ``works/telecom_empirical_research`` — tcc looked for ``..._research``
+    while CC wrote ``...-research``, so the dir scan found nothing).
+
+    Paths over 200 chars hit CC's hash-suffix truncation branch
+    (MAX_SANITIZED_LENGTH=200); not reproduced here — real project paths are
+    far shorter, and cross-language replay of CC's simpleHash is fragile.
+    """
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(workdir))
 
 
 def _is_valid_uuid_session_id(stem: str) -> bool:
