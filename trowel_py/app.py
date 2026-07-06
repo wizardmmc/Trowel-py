@@ -1,18 +1,51 @@
+import logging
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
+
 from trowel_py.cards.routes import router as card_router
-from trowel_py.review.routes import router as review_router
-from trowel_py.garden.routes import router as garden_router
-from trowel_py.player.routes import router as player_router
-from trowel_py.events.routes import router as events_router
-from trowel_py.pet.routes import router as pet_router
-from trowel_py.feynman.routes import router as feynman_router
+from trowel_py.cc_host.proxy import (
+    TUI_SYSTEM_IDENTITY,
+    load_settings_env,
+    router as proxy_router,
+)
 from trowel_py.cc_host.routes import router as cc_host_router
-import logging
+from trowel_py.events.routes import router as events_router
+from trowel_py.feynman.routes import router as feynman_router
+from trowel_py.garden.routes import router as garden_router
+from trowel_py.pet.routes import router as pet_router
+from trowel_py.player.routes import router as player_router
+from trowel_py.review.routes import router as review_router
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """slice-030: spin up the local reverse-proxy resources the CC subprocess
+    routes through. Built once on startup, torn down on shutdown.
+
+    - shared httpx.AsyncClient (timeout=None) for all /v1/* forwards
+    - real upstream base_url + settings_path read from ~/.claude/settings.json
+    - proxy_base_url = http://127.0.0.1:<TROWEL_SERVER_PORT> (CC targets this)
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_env = load_settings_env(settings_path)
+    real_base_url = settings_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    port = int(os.environ.get("TROWEL_SERVER_PORT", "8000"))
+    app.state.cc_settings_path = settings_path
+    app.state.cc_real_base_url = real_base_url
+    app.state.proxy_base_url = f"http://127.0.0.1:{port}"
+    app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+    logger.info("[cc-proxy] TUI system fingerprint: %s", TUI_SYSTEM_IDENTITY[:40])
+    logger.info("[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url)
+    yield
+    await app.state.cc_http_client.aclose()
+
 
 # fastapi 应用工厂
 
@@ -22,7 +55,7 @@ def create_app() -> FastAPI:
     构建并返回 FastAPI 实例，工厂模式
     FastAPI 注册了相关函数，可以被外界调用
     """
-    app = FastAPI()
+    app = FastAPI(lifespan=lifespan)
 
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -69,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(events_router, prefix="/api/events")
     app.include_router(pet_router, prefix="/api/pet")
     app.include_router(feynman_router, prefix="/api/feynman")
+    app.include_router(proxy_router)
     app.include_router(cc_host_router, prefix="/api/cc")
 
     # Serve the built frontend when present (release / `pip install` mode).

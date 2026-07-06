@@ -85,7 +85,11 @@ def build_args(
     return args
 
 
-def build_subprocess_kwargs(workdir: str | os.PathLike) -> dict[str, Any]:
+def build_subprocess_kwargs(
+    workdir: str | os.PathLike,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Return asyncio.create_subprocess_exec kwargs for a CC subprocess.
 
     start_new_session=True gives each CC its own process group so the shutdown
@@ -98,8 +102,22 @@ def build_subprocess_kwargs(workdir: str | os.PathLike) -> dict[str, Any]:
     bubbled up as host_error and killed the turn. 16MB covers the largest line
     seen in practice (slice-027 spiked at 1.08MB). service.send() still has a
     defensive try/except for anything beyond this.
+
+    slice-030: ``env`` (keyword-only) is the pre-built subprocess env — the
+    proxy delta (CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST + provider vars, with
+    ANTHROPIC_BASE_URL pointed at the local reverse proxy) merged into
+    os.environ by CCHost. None (default) means inherit the parent env, which
+    is the pre-030 behavior. Keyword-only so workdir stays the only positional.
+
+    Args:
+        workdir: the subprocess cwd (CC loads that project's .claude/).
+        env: full env dict for the subprocess, or None to inherit the parent
+            env (``create_subprocess_exec`` default).
+
+    Returns:
+        kwargs ready for ``asyncio.create_subprocess_exec(**kwargs)``.
     """
-    return {
+    kwargs: dict[str, Any] = {
         "cwd": str(workdir),
         "stdin": asubprocess.PIPE,
         "stdout": asubprocess.PIPE,
@@ -108,3 +126,6 @@ def build_subprocess_kwargs(workdir: str | os.PathLike) -> dict[str, Any]:
         # slice-028 bug1: 16MB readline cap (asyncio StreamReader `limit`)
         "limit": 16 * 1024 * 1024,
     }
+    if env is not None:
+        kwargs["env"] = env
+    return kwargs

@@ -94,6 +94,19 @@ class TestSubprocessKwargs:
         assert "limit" in kw
         assert kw["limit"] >= 1024 * 1024  # 至少 1MB（实测 slice-027 单行 1.08MB）
 
+    def test_env_arg_propagated_to_kwargs(self, tmp_path: Path):
+        """slice-030: launcher accepts a pre-built env dict (the proxy delta
+        merged into os.environ by CCHost) and passes it as the subprocess env
+        so CC routes through the local reverse proxy."""
+        kw = build_subprocess_kwargs(workdir=tmp_path, env={"FOO": "bar"})
+        assert kw["env"]["FOO"] == "bar"
+
+    def test_env_none_omits_env_key(self, tmp_path: Path):
+        """Back-compat: no env= means the subprocess inherits the parent env
+        (create_subprocess_exec default). Don't set an env key in that case."""
+        kw = build_subprocess_kwargs(workdir=tmp_path)
+        assert "env" not in kw
+
 
 class TestSlug:
     def test_slug_replaces_slashes_with_dashes(self):

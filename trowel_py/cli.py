@@ -69,6 +69,14 @@ def main() -> None:
         timer.start()
 
     # Imported here so `trowel-py --help` doesn't pay the uvicorn import cost.
+    import os
+
+    # slice-030: tell the FastAPI lifespan what port we'll listen on so it can
+    # build the reverse-proxy URL (http://127.0.0.1:<port>) the CC subprocess
+    # targets as ANTHROPIC_BASE_URL. factory=True means uvicorn creates the app
+    # itself, so we can't set app.state directly — env is the channel.
+    os.environ["TROWEL_SERVER_PORT"] = str(args.port)
+
     import uvicorn
 
     try:

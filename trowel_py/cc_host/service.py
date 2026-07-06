@@ -38,6 +38,7 @@ from trowel_py.cc_host.launcher import (
     build_args,
     build_subprocess_kwargs,
 )
+from trowel_py.cc_host.proxy import build_proxy_env, load_settings_env
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
 from trowel_py.cc_host.translator import Translator
@@ -163,6 +164,8 @@ class CCHost:
         permission_mode: str = DEFAULT_PERMISSION_MODE,
         permission_prompt_tool: str | None = DEFAULT_PERMISSION_PROMPT_TOOL,
         resume_from: str | None = None,
+        proxy_base_url: str | None = None,
+        settings_path: Path | str | None = None,
         spawner: Callable[
             [list[str], dict[str, Any]], Awaitable[Any]
         ] = _default_spawner,
@@ -182,6 +185,11 @@ class CCHost:
             effort: override --effort; None (default) omits the flag (was medium).
             permission_mode: CC --permission-mode (default bypassPermissions).
             resume_from: optional CC session id to resume on first spawn.
+            proxy_base_url: slice-030 local reverse proxy URL the CC subprocess
+                targets as its ANTHROPIC_BASE_URL. None disables the proxy
+                (pre-030 behavior / tests).
+            settings_path: path to ~/.claude/settings.json, read for provider-var
+                passthrough (token/model) when the proxy is on.
             spawner: async factory (args, kwargs) -> subprocess; defaults to a
                 real asyncio subprocess, tests inject a fake.
             now: monotonic clock callable, injected so stalled tests are deterministic.
@@ -205,6 +213,8 @@ class CCHost:
         self.permission_mode = permission_mode
         self._permission_prompt_tool = permission_prompt_tool
         self._resume_from = resume_from
+        self._proxy_base_url = proxy_base_url
+        self._settings_path = settings_path
         self._spawner = spawner
         self._now = now
         self.stalled_threshold_mild = stalled_threshold_mild
@@ -291,8 +301,26 @@ class CCHost:
             permission_prompt_tool=self._permission_prompt_tool,
             resume_from=resume_from,
         )
-        kwargs = build_subprocess_kwargs(self.workdir)
+        kwargs = build_subprocess_kwargs(
+            self.workdir, env=self._build_spawn_env()
+        )
         return await self._spawner(args, kwargs)
+
+    def _build_spawn_env(self) -> dict[str, str] | None:
+        """Build the CC subprocess env that routes through the local reverse
+        proxy (slice-030), or None to inherit the parent env (pre-030 behavior,
+        tests, or when the proxy is disabled).
+
+        Returns:
+            A full env dict (os.environ merged with the proxy delta) when the
+            proxy is on, else None so the subprocess inherits the parent env.
+        """
+        if not self._proxy_base_url:
+            return None
+        settings_env = (
+            load_settings_env(self._settings_path) if self._settings_path else {}
+        )
+        return dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
 
     async def _ensure_process(self) -> None:
         """Respawn if there is no live process. Resumes the known CC session."""

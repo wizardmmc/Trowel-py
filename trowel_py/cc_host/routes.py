@@ -21,7 +21,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from trowel_py.cc_host import checkpoint
@@ -101,6 +101,7 @@ def _sse(event: object) -> str:
 @router.post("/sessions")
 def create_session(
     req: CreateSessionRequest,
+    request: Request,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """Open a new session (optionally resuming a CC session id)."""
@@ -120,6 +121,8 @@ def create_session(
         effort=req.effort,
         permission_mode=req.permission_mode,
         resume_from=req.resume_from,
+        proxy_base_url=getattr(request.app.state, "proxy_base_url", None),
+        settings_path=getattr(request.app.state, "cc_settings_path", None),
     )
     registry[sid] = host
     # 注册多开状态（命名序号 + workdir 索引 + 设为活跃）
