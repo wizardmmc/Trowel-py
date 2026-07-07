@@ -154,6 +154,140 @@ def test_parse_history_maps_tool_use_and_result(fake_projects: Path) -> None:
     assert "wrote 1 file" in result.content
 
 
+def _tool_result_with_tur(tool_use_id: str, content: str, tur: dict) -> dict:
+    """A user-message row whose top level carries a cc ``toolUseResult``."""
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            ],
+        },
+        "toolUseResult": tur,
+    }
+
+
+def test_parse_history_attaches_edit_write_diff_with_real_lines(
+    fake_projects: Path,
+) -> None:
+    """slice-033 feat 2: cc's top-level toolUseResult.structuredPatch becomes a
+    WriteDiff on ToolResultEvent, carrying REAL file line numbers (360, not 1).
+    """
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_text("edit it"),
+            _assistant(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "call_e1",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "/a/x.py",
+                            "old_string": "a",
+                            "new_string": "b",
+                        },
+                    }
+                ]
+            ),
+            _tool_result_with_tur(
+                "call_e1",
+                "The file x.py has been updated successfully.",
+                {
+                    "filePath": "/a/x.py",
+                    "oldString": "a",
+                    "newString": "b",
+                    "originalFile": "a\n",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 360,
+                            "oldLines": 1,
+                            "newStart": 360,
+                            "newLines": 1,
+                            "lines": ["-a", "+b"],
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+
+    events = history.parse_history("/workdir", "abc-123")
+    result = next(e for e in events if isinstance(e, ToolResultEvent))
+    assert result.write_diff is not None
+    assert result.write_diff.type == "update"
+    assert result.write_diff.hunks[0].oldStart == 360
+    assert result.write_diff.hunks[0].newStart == 360
+    assert result.write_diff.hunks[0].lines == ("-a", "+b")
+
+
+def test_parse_history_write_create_yields_create_write_diff(
+    fake_projects: Path,
+) -> None:
+    """Write-create toolUseResult (type=create, empty patch) → create write_diff."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _assistant(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "call_w1",
+                        "name": "Write",
+                        "input": {"file_path": "/a/new.py", "content": "hi\n"},
+                    }
+                ]
+            ),
+            _tool_result_with_tur(
+                "call_w1",
+                "File created successfully at: /a/new.py",
+                {
+                    "type": "create",
+                    "filePath": "/a/new.py",
+                    "content": "hi\n",
+                    "originalFile": "",
+                    "structuredPatch": [],
+                },
+            ),
+        ],
+    )
+
+    events = history.parse_history("/workdir", "abc-123")
+    result = next(e for e in events if isinstance(e, ToolResultEvent))
+    assert result.write_diff is not None
+    assert result.write_diff.type == "create"
+    assert result.write_diff.hunks == ()
+
+
+def test_parse_history_no_tool_use_result_means_no_write_diff(
+    fake_projects: Path,
+) -> None:
+    """A tool_result whose row has no toolUseResult (old jsonl, Bash, …) →
+    write_diff stays None; the FE falls back to its existing rendering."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _assistant(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "call_b1",
+                        "name": "Bash",
+                        "input": {"command": "echo hi"},
+                    }
+                ]
+            ),
+            _tool_result("call_b1", "hi"),  # helper builds a row WITHOUT toolUseResult
+        ],
+    )
+
+    events = history.parse_history("/workdir", "abc-123")
+    result = next(e for e in events if isinstance(e, ToolResultEvent))
+    assert result.write_diff is None
+
+
 def test_parse_history_maps_askuserquestion_to_elicit_request(
     fake_projects: Path,
 ) -> None:

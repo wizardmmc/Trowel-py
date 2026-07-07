@@ -133,7 +133,7 @@ describe("ToolBlock — slice-029 Edit/Write rendering", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByRole("button"));
+    // slice-033 feat 3: Edit done auto-expands — no click needed.
     // CC phrasing: lowercase "removed" when add > 0 (FileEditToolUpdatedMessage).
     expect(screen.getByText(/Added 1 line, removed 1 line/)).toBeTruthy();
     // a removed and an added content line both render
@@ -171,7 +171,7 @@ describe("ToolBlock — slice-029 Edit/Write rendering", () => {
     );
     expect(screen.getByText("Write")).toBeTruthy();
     expect(screen.getByText("+3")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button"));
+    // slice-033 feat 3: Write done auto-expands — no click needed.
     // "Wrote <b>3</b> lines to <b>new.ts</b>" — <b> splits the text node.
     const create = document.querySelector(".cc-tool__create-lines");
     expect(create!.textContent).toMatch(/Wrote 3 lines/);
@@ -189,7 +189,7 @@ describe("ToolBlock — slice-029 Edit/Write rendering", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByRole("button"));
+    // slice-033 feat 3: Write done auto-expands — no click needed.
     expect(screen.getByText(/\+3 more lines/)).toBeTruthy();
   });
 
@@ -216,7 +216,7 @@ describe("ToolBlock — slice-029 Edit/Write rendering", () => {
     );
     expect(screen.getByText("+1")).toBeTruthy();
     expect(screen.getByText("−1")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button"));
+    // slice-033 feat 3: Write done auto-expands — no click needed.
     expect(screen.getByText(/Added 1 line, removed 1 line/)).toBeTruthy();
   });
 
@@ -441,5 +441,139 @@ describe("ToolBlock — slice-032 Read rendering", () => {
     );
     expect(screen.getByText("web/x.py")).toBeTruthy();
     expect(screen.queryByText("/Users/me/proj/web/x.py")).toBeNull();
+  });
+});
+
+describe("ToolBlock — slice-033", () => {
+  it("feat 2: Edit done with writeDiff renders cc's REAL file line numbers", () => {
+    const wd: WriteDiff = {
+      type: "update",
+      hunks: [
+        {
+          oldStart: 360,
+          oldLines: 2,
+          newStart: 360,
+          newLines: 3,
+          lines: [
+            " async def send(self, text):",
+            "-    if not sid: return",
+            "+    if not sid:",
+            "+        return",
+          ],
+        },
+      ],
+    };
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          input: { file_path: "/a/service.py", old_string: "x", new_string: "y" },
+          writeDiff: wd,
+          status: "done",
+          elapsedSeconds: 0.8,
+        })}
+      />,
+    );
+    // feat 2: gutter carries the real file line (360), not fragment-from-1.
+    const gutters = document.querySelectorAll(".cc-tool__diff-gutter");
+    expect([...gutters].some((g) => g.textContent === "360")).toBeTruthy();
+  });
+
+  it("feat 2: Edit done WITHOUT writeDiff falls back to fragment diff", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          input: { file_path: "/a/b.ts", old_string: "same\nold\n", new_string: "same\nnew\n" },
+          status: "done",
+          elapsedSeconds: 0.3,
+        })}
+      />,
+    );
+    // stat still computed from the fragment diff (+1 −1)
+    expect(screen.getByText("+1")).toBeTruthy();
+    expect(screen.getByText("−1")).toBeTruthy();
+  });
+
+  it("feat 3: Edit done auto-expands (detail present without a click)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          input: { file_path: "/a/b.ts", old_string: "a", new_string: "b" },
+          status: "done",
+          elapsedSeconds: 0.3,
+        })}
+      />,
+    );
+    expect(document.querySelector(".cc-tool__detail")).toBeTruthy();
+  });
+
+  it("feat 3: Edit running stays collapsed (no detail)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          input: { file_path: "/a/b.ts", old_string: "a", new_string: "b" },
+          status: "running",
+          elapsedSeconds: null,
+        })}
+      />,
+    );
+    expect(document.querySelector(".cc-tool__detail")).toBeNull();
+  });
+
+  it("feat 3: Bash done does NOT auto-expand (non-diff tool)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Bash",
+          input: { command: "echo hi" },
+          status: "done",
+          elapsedSeconds: 0.1,
+        })}
+      />,
+    );
+    expect(document.querySelector(".cc-tool__detail")).toBeNull();
+  });
+
+  it("feat 4: multi-statement bash command splits one line per statement", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Bash",
+          input: { command: 'cd /x; echo "===docs==="; ls' },
+          status: "done",
+          elapsedSeconds: 0.5,
+          result: "ok",
+        })}
+      />,
+    );
+    // Bash is non-diff → stays collapsed; click to expand.
+    fireEvent.click(screen.getByRole("button"));
+    const cmd = document.querySelector(".cc-tool__bash-cmd")!;
+    // 3 statements → 3 non-empty lines.
+    const lines = cmd.textContent!.split("\n").filter((l) => l.trim() !== "");
+    expect(lines.length).toBe(3);
+    // 2 separators dimmed (between the 3 statements).
+    expect(cmd.querySelectorAll(".cc-tool__bash-sep").length).toBe(2);
+  });
+
+  it("feat 4: single-statement bash command is NOT split (renders verbatim)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Bash",
+          input: { command: "echo hello world" },
+          status: "done",
+          elapsedSeconds: 0.1,
+          result: "hello world",
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const cmd = document.querySelector(".cc-tool__bash-cmd")!;
+    expect(cmd.querySelectorAll(".cc-tool__bash-sep").length).toBe(0);
+    expect(cmd.textContent).toBe("echo hello world");
   });
 });

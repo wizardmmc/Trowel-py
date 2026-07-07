@@ -43,12 +43,7 @@ from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
 from trowel_py.cc_host.translator import Translator
 
-from trowel_py.cc_host.diff_snapshot import (
-    WriteDiff as WriteDiffDC,
-    compute_write_diff,
-)
 from trowel_py.schemas.cc_host import (
-    DiffHunk,
     ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
@@ -60,38 +55,11 @@ from trowel_py.schemas.cc_host import (
     ToolCallEvent,
     TrowelEvent,
     TurnStartEvent,
-    WriteDiff,
 )
 
 logger = logging.getLogger(__name__)
 
 
-#: Cap on per-session Write-overwrite snapshots. Bounds memory on pathological
-#: sessions (thousands of Writes); a normal session stays well under this. When
-#: exceeded, the oldest entry is evicted — reload of a Write older than the cap
-#: degrades to create-mode (the documented reload-restart edge).
-_WRITE_DIFFS_CAP = 500
-
-
-def _write_diff_to_schema(wd: WriteDiffDC) -> WriteDiff:
-    """Convert the diff_snapshot dataclass to the pydantic wire model.
-
-    Same field shape — the conversion exists only to keep ``diff_snapshot``
-    free of a pydantic dependency (it stays pure-stdlib, easy to test).
-    """
-    return WriteDiff(
-        type=wd.type,
-        hunks=[
-            DiffHunk(
-                oldStart=h.oldStart,
-                oldLines=h.oldLines,
-                newStart=h.newStart,
-                newLines=h.newLines,
-                lines=h.lines,
-            )
-            for h in wd.hunks
-        ],
-    )
 
 
 def _user_msg(text: str) -> bytes:
@@ -241,11 +209,6 @@ class CCHost:
         self._session_start_turn_id = uuid.uuid4().hex
         self._session_start_saved = False
         self._turn_count = 0
-        # slice-029: per-tool_use Write-overwrite diffs, snapshotted at the
-        # moment cc emits the Write tool_use (before cc writes the file). Live
-        # SSE and replay both read from here so reload renders identically.
-        # Lost on BE process restart (acceptable — reload criterion is FE-only).
-        self._write_diffs: dict[str, WriteDiffDC] = {}
         # Resumed session knows cc_session_id now → save session-start at once.
         # Fresh session defers to the init handler (cc_session_id unknown here).
         if checkpoint.is_git_repo(self.workdir) and resume_from:
@@ -500,83 +463,6 @@ class CCHost:
             / f"{cc_session_id}.jsonl"
         )
 
-    # -- slice-029: Write-overwrite diff snapshot ---------------------------
-
-    def _snapshot_write_diff(
-        self, tool_use_id: str, file_path: str, content: str
-    ) -> WriteDiffDC | None:
-        """Read the pre-write file and compute a Write-overwrite diff.
-
-        Called the instant cc emits the Write tool_use (before cc executes the
-        write — Node is single-threaded, so the file is still the OLD content
-        in the common case). Best-effort: if we lose the race and read the
-        already-written file, the diff is empty and the FE degrades to
-        create-mode. FileNotFoundError → genuine create (no diff).
-
-        Sync read is intentional — going through ``asyncio.to_thread`` would
-        widen the race window. Typical source files are small; huge-file Write
-        is a follow-up if it shows up in profiling.
-        """
-        try:
-            old = Path(file_path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            old = None
-        except OSError:
-            # Permission / encoding errors — bail to create-mode rather than
-            # crash the turn. The FE handles a missing write_diff gracefully.
-            return None
-        wd = compute_write_diff(old, content)
-        # Bound the dict (slice-029 /auto-cr WARNING): evict oldest when over
-        # cap. Reload of a >cap-turns-ago Write degrades to create-mode.
-        if len(self._write_diffs) >= _WRITE_DIFFS_CAP:
-            self._write_diffs.pop(next(iter(self._write_diffs)), None)
-        self._write_diffs[tool_use_id] = wd
-        return wd
-
-    def _attach_write_diff(self, tev: ToolCallEvent) -> ToolCallEvent:
-        """Snapshot + attach ``write_diff`` to a Write ToolCallEvent.
-
-        Returns the event unchanged when the input is malformed (no file_path /
-        content) or the snapshot failed — the FE falls back to create-mode.
-        """
-        file_path = tev.input.get("file_path")
-        content = tev.input.get("content")
-        if not isinstance(file_path, str) or not isinstance(content, str):
-            return tev
-        wd = self._snapshot_write_diff(tev.tool_use_id, file_path, content)
-        if wd is None:
-            return tev
-        return tev.model_copy(update={"write_diff": _write_diff_to_schema(wd)})
-
-    def inject_write_diffs(self, events: list[TrowelEvent]) -> list[TrowelEvent]:
-        """Attach snapshotted Write diffs to replayed events (history path).
-
-        Reload consistency: live SSE carries ``write_diff`` on the Write
-        ToolCallEvent; replay reads cc's jsonl (no write_diff) so this re-joins
-        the in-memory ``_write_diffs`` to the matching events. No-op when the
-        BE process has no snapshots (e.g. after restart) — the FE then falls
-        back to create-mode, which is the documented edge.
-        """
-        if not self._write_diffs:
-            return events
-        out: list[TrowelEvent] = []
-        for e in events:
-            if (
-                isinstance(e, ToolCallEvent)
-                and e.tool_name == "Write"
-                and e.write_diff is None
-                and e.tool_use_id in self._write_diffs
-            ):
-                e = e.model_copy(
-                    update={
-                        "write_diff": _write_diff_to_schema(
-                            self._write_diffs[e.tool_use_id]
-                        )
-                    }
-                )
-            out.append(e)
-        return out
-
     # -- send --------------------------------------------------------------
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
@@ -791,16 +677,6 @@ class CCHost:
                             "tool_use_id": tev.tool_use_id,
                             "questions": tev.questions,
                         }
-                    # slice-029: snapshot Write tool_use pre-write so the
-                    # ToolCallEvent carries the overwrite diff. The guard
-                    # (`write_diff is None`) keeps replay from clobbering an
-                    # already-injected diff (history path sets it directly).
-                    if (
-                        isinstance(tev, ToolCallEvent)
-                        and tev.tool_name == "Write"
-                        and tev.write_diff is None
-                    ):
-                        tev = self._attach_write_diff(tev)
                     yield tev
                     if isinstance(tev, FinishedEvent):
                         self._last_finished = tev

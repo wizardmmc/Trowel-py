@@ -228,6 +228,38 @@ class TestToolProgressAndResult:
         out = Translator().translate(ev)
         assert out[0].content == "a\nb"
 
+    def test_tool_result_attaches_write_diff_from_tool_use_result(self):
+        """slice-033 feat 2 (方案 F): the stream-json `user` envelope carries
+        cc's pre-computed diff in its top-level `tool_use_result` field; it's
+        attached to the ToolResultEvent so live renders real file line numbers
+        (same as replay)."""
+        ev = {
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_e1",
+                 "content": "The file x.py has been updated successfully."}]},
+            "tool_use_result": {
+                "filePath": "/a/x.py",
+                "structuredPatch": [
+                    {"oldStart": 42, "oldLines": 1, "newStart": 42, "newLines": 1,
+                     "lines": ["-x", "+y"]}],
+            },
+        }
+        out = Translator().translate(ev)
+        assert isinstance(out[0], ToolResultEvent)
+        assert out[0].write_diff is not None
+        assert out[0].write_diff.type == "update"
+        assert out[0].write_diff.hunks[0].oldStart == 42
+        assert out[0].write_diff.hunks[0].lines == ("-x", "+y")
+
+    def test_tool_result_without_tool_use_result_has_no_write_diff(self):
+        """Live tool_result with no tool_use_result (Bash, …) → no write_diff."""
+        ev = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_b1", "content": "ok"}]}}
+        out = Translator().translate(ev)
+        assert isinstance(out[0], ToolResultEvent)
+        assert out[0].write_diff is None
+
     def test_user_message_without_tool_result_yields_nothing(self):
         # CC also echoes back the user's own message envelope; ignore it.
         ev = {"type": "user", "message": {"role": "user", "content": [

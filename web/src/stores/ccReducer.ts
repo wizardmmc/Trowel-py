@@ -585,10 +585,8 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         elapsedSeconds: null,
         result: null,
         childTools: [],
-        // slice-029: BE-computed Write-overwrite diff (absent for Edit/MultiEdit
-        // — FE computes those — and for Write-create). Live SSE and replay both
-        // populate this so reload renders identically.
-        writeDiff: event.write_diff,
+        // writeDiff arrives on the tool_result (slice-033 feat 2 方案 F), not
+        // here — cc computes the patch at execution time.
       };
       // slice-028: TaskCreate/TaskUpdate also maintain the session task list
       // (the ToolItem above is still appended so the message stream keeps the
@@ -639,6 +637,11 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
           ...t,
           status: "done",
           result: event.content,
+          // slice-033 feat 2 (方案 F): BE attaches cc's own structuredPatch
+          // (real file line numbers) to Edit/MultiEdit/Write tool_results.
+          // Keep any prior writeDiff as fallback (none in practice — tool_call
+          // doesn't set one anymore) when this result carries none.
+          writeDiff: event.write_diff ?? t.writeDiff,
         })),
         phase: "tool",
       };

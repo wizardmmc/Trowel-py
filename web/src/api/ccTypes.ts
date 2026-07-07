@@ -62,9 +62,6 @@ export interface ToolCallEvent {
   /** Set when this tool_use came from a sub-agent's envelope — points at the
    * spawning Agent tool_call's id. Null/absent for top-level tool_use. */
   readonly parent_tool_use_id?: string | null;
-  /** slice-029: present on Write tool_use only — BE-computed diff from the
-   * pre-write file snapshot. Absent for Edit/MultiEdit (FE computes those). */
-  readonly write_diff?: WriteDiff;
 }
 
 export interface ToolProgressEvent {
@@ -78,6 +75,12 @@ export interface ToolResultEvent {
   readonly type: "tool_result";
   readonly tool_use_id: string;
   readonly content: string;
+  /** slice-033 feat 2 (方案 F): present on Edit/MultiEdit/Write tool_results —
+   * converted by the BE from cc's own structuredPatch (carried in jsonl
+   * `toolUseResult` / stream-json `tool_use_result`). Real file line numbers,
+   * survives BE restart. Absent for other tools / failed edits → FE falls back
+   * to its fragment diff for Edit. */
+  readonly write_diff?: WriteDiff;
 }
 
 export interface RetryingEvent {

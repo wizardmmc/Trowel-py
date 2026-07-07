@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from trowel_py.cc_host.delta import DeltaAccumulator
+from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.schemas.cc_host import (
     CompactBoundaryEvent,
     ElicitationRequestEvent,
@@ -371,6 +372,11 @@ class Translator:
         Returns:
             one ToolResultEvent per tool_result block; empty otherwise.
         """
+        # slice-033 feat 2 (方案 F): the stream-json `user` envelope carries
+        # cc's pre-computed diff in its top-level `tool_use_result` field (same
+        # shape as jsonl's `toolUseResult`). Attach to the tool_result so the FE
+        # renders real file line numbers on the live path too.
+        write_diff = write_diff_from_cc_result(ev.get("tool_use_result"))
         out: list[TrowelEvent] = []
         for block in ev.get("message", {}).get("content", []) or []:
             if block.get("type") != "tool_result":
@@ -379,6 +385,7 @@ class Translator:
                 ToolResultEvent(
                     tool_use_id=block.get("tool_use_id", ""),
                     content=_as_text(block.get("content")),
+                    write_diff=write_diff,
                 )
             )
         return out

@@ -186,8 +186,9 @@ class DiffHunk(BaseModel):
     """One diff hunk — jsdiff StructuredPatchHunk shape (slice-029).
 
     ``lines`` carry the leading marker char: ``' ctx'``, ``'+add'``, ``'-rm'``.
-    Mirrors ``trowel_py/cc_host/diff_snapshot.DiffHunk`` (dataclass) and the FE
-    ``DiffHunk`` interface so all three stacks share one wire shape.
+    Mirrors the FE ``DiffHunk`` interface so both stacks share one wire shape.
+    (slice-033 removed the BE-side ``diff_snapshot`` dataclass — cc's own
+    structuredPatch is now converted directly in ``tool_use_result.py``.)
     """
 
     oldStart: int
@@ -216,12 +217,6 @@ class ToolCallEvent(_Event):
     envelope carries it, pointing at the spawning Agent tool_call). Null for
     top-level tool_use. The frontend uses it to nest sub-agent tools under their
     Agent (slice-025-a problem 2).
-
-    write_diff (slice-029): present on Write tool_use only — BE snapshots the
-    file at tool_use time (before cc writes) and computes the diff. Absent for
-    Edit/MultiEdit (FE computes those from input). Stored in
-    ``CCHost._write_diffs`` so live SSE and replay both carry it (reload
-    consistency).
     """
 
     type: Literal["tool_call"] = "tool_call"
@@ -229,7 +224,6 @@ class ToolCallEvent(_Event):
     tool_name: str
     input: dict[str, Any]
     parent_tool_use_id: str | None = None
-    write_diff: WriteDiff | None = None
 
 
 class ToolProgressEvent(_Event):
@@ -242,11 +236,23 @@ class ToolProgressEvent(_Event):
 
 
 class ToolResultEvent(_Event):
-    """The result of a tool_use, carried back by CC in a user message."""
+    """The result of a tool_use, carried back by CC in a user message.
+
+    write_diff (slice-033 feat 2, 方案 F): present on Edit/MultiEdit/Write
+    tool_results — converted from cc's own ``structuredPatch``, which cc
+    computes at execution time and carries in the jsonl ``toolUseResult`` /
+    stream-json ``tool_use_result`` field. Because cc computed it against the
+    real file, the hunk ``oldStart``/``newStart`` are real file line numbers,
+    and because it's persisted in jsonl, replay renders identically to live
+    even after a BE restart (the old in-memory ``_write_diffs`` cache could
+    not). Absent for other tools and for failed/no-op edits — the FE then
+    falls back to its fragment diff (line numbers from 1).
+    """
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
     content: str
+    write_diff: WriteDiff | None = None
 
 
 class RetryingEvent(_Event):

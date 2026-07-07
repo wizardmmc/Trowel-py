@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
 import type { ToolItem } from "../../stores/ccStore";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 import { getDisplayPath } from "./pathDisplay";
+import { splitBashCommand } from "./bashCommand";
 
 /**
  * One tool call rendered as a summary line + collapsible detail.
@@ -67,6 +68,10 @@ function countLines(s: string): number {
 function summaryStat(item: ToolItem): { add: number; remove: number } | null {
   if (item.status !== "done") return null;
   if (isEditTool(item.toolName)) {
+    // slice-033 feat 2: prefer cc's own patch (real file line numbers) over
+    // the FE fragment diff; fall back to fragment when BE attached no writeDiff.
+    const wd = item.writeDiff;
+    if (wd && wd.type === "update") return summarizeStat(wd.hunks);
     const d = computeEditDiff(item.input);
     return d === null ? null : { add: d.add, remove: d.remove };
   }
@@ -312,14 +317,36 @@ function ReadBody({ result }: { readonly result: string }) {
   );
 }
 
+/** Bash command detail (slice-033 feat 4, 方案 A): split a multi-statement
+ * command at top-level `;`/`&&`/`||`/`|` so each statement gets its own line
+ * instead of one long wrapped line; the separator is dimmed to set it off. A
+ * single-statement command renders unchanged (no point splitting one line). */
+function BashCommandView({ command }: { readonly command: string }) {
+  const segments = splitBashCommand(command);
+  if (segments.length <= 1) {
+    return <pre className="cc-tool__bash-cmd">{command}</pre>;
+  }
+  return (
+    <pre className="cc-tool__bash-cmd">
+      {segments.map((seg, i) => (
+        <span key={i}>
+          {seg.sep !== "" && (
+            <span className="cc-tool__bash-sep">{seg.sep} </span>
+          )}
+          {seg.body}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
 /** Decide what the expanded detail shows. Returns null if there's nothing. */
 function renderDetail(item: ToolItem): React.ReactNode {
   if (item.toolName === "Bash") {
     return (
       <>
-        <pre className="cc-tool__bash-cmd">
-          {asString(item.input.command) ?? ""}
-        </pre>
+        <BashCommandView command={asString(item.input.command) ?? ""} />
         {item.result !== null && <pre className="cc-tool__bash-out">{item.result}</pre>}
       </>
     );
@@ -328,6 +355,13 @@ function renderDetail(item: ToolItem): React.ReactNode {
     return item.result !== null ? <ReadBody result={item.result} /> : null;
   }
   if (isEditTool(item.toolName)) {
+    // slice-033 feat 2: prefer cc's patch (real file line numbers); fall back
+    // to the FE fragment diff when BE attached no writeDiff.
+    const wd = item.writeDiff;
+    if (wd && wd.type === "update") {
+      const stat = summarizeStat(wd.hunks);
+      return <DiffBody hunks={wd.hunks} add={stat.add} remove={stat.remove} />;
+    }
     const d = computeEditDiff(item.input);
     if (d !== null) return <DiffBody hunks={d.hunks} add={d.add} remove={d.remove} />;
     // diff not computable (missing input) → fall through to JSON
@@ -354,8 +388,14 @@ function renderDetail(item: ToolItem): React.ReactNode {
 }
 
 export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) {
-  const [open, setOpen] = useState(false);
   const done = item.status === "done";
+  // slice-033 feat 3: diff tools (Edit/MultiEdit/Write) auto-expand on done
+  // (running collapses — the cc patch arrives on tool_result). A manual collapse
+  // sticks: done is terminal, so this effect won't re-fire to override it.
+  const [open, setOpen] = useState(isDiffTool(item.toolName) && done);
+  useEffect(() => {
+    if (isDiffTool(item.toolName) && done) setOpen(true);
+  }, [item.toolName, done]);
   const seconds =
     item.elapsedSeconds !== null ? `${item.elapsedSeconds.toFixed(1)}s` : null;
   const stat = summaryStat(item);

@@ -266,6 +266,14 @@
   line-height: 1.6;
   color: var(--text-primary);
 }
+/* slice-033 feat 1: preserve the user's newlines/indentation. userText already
+   carries \n (Composer only trims ends); only CSS was missing. overflow-wrap
+   anywhere so a long URL/path can't force a horizontal scrollbar. Assistant
+   body is markdown (its own block layout) so is unaffected. */
+.cc-msg--user .cc-msg__body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 /* slice-025-b: assistant body interleaves markdown blocks and process rows in
    true item order. Adjacent top-level blocks get vertical rhythm. User body is
    a single text node so this only adds rhythm inside the assistant card. */
@@ -635,6 +643,13 @@
   letter-spacing: 0.05em;
   color: var(--text-secondary);
 }
+/* slice-033 feat 4: the separator (; && || |) at the front of each split bash
+   line — dimmed + bold so the eye separates statements at a glance. */
+.cc-tool__bash-sep {
+  color: var(--text-tertiary);
+  font-weight: 600;
+  user-select: none;
+}
 
 /* ── slice-029: Edit/Write diff rendering ──
    New classes only — colors reuse existing tokens (--garden-green /
@@ -715,7 +730,7 @@
    the gutter/marker columns stay aligned via the grid. */
 .cc-tool__diff-line {
   display: grid;
-  grid-template-columns: 3.5ch 1.5ch 1fr;
+  grid-template-columns: auto 1.5ch 1fr;
   align-items: baseline;
   padding: 0 8px;
   white-space: pre-wrap;
@@ -729,10 +744,13 @@
   color: var(--text-tertiary);
   text-align: right;
   user-select: none;
+  /* slice-033 补充: auto-size to the widest line number in the hunk (1–5 digits
+     all align), never wrap mid-number. Fixed 3.5ch split 4-digit numbers
+     (1000+) mid-digit once padding ate the room — same fix as Read (slice-032 A). */
+  white-space: nowrap;
   padding-right: 8px;
   border-right: 1px solid var(--color-border);
   margin-right: 6px;
-  min-width: 3.5ch;
 }
 .cc-tool__diff-marker {
   user-select: none;

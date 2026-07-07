@@ -144,6 +144,58 @@ describe("reduceEvent — tool lifecycle", () => {
     expect(state.phase).toBe("tool");
   });
 
+  it("slice-033 feat 2: tool_result carries write_diff -> merged onto ToolItem", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "t1",
+      tool_name: "Edit",
+      input: { file_path: "/a", old_string: "x", new_string: "y" },
+    });
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "t1",
+      content: "updated",
+      write_diff: {
+        type: "update",
+        hunks: [
+          {
+            oldStart: 360,
+            oldLines: 1,
+            newStart: 360,
+            newLines: 1,
+            lines: ["-x", "+y"],
+          },
+        ],
+      },
+    });
+    const tool = state.turns[0].items.find((i) => i.kind === "tool") as {
+      writeDiff?: { type: string; hunks: { oldStart: number }[] };
+    };
+    expect(tool?.writeDiff).toBeDefined();
+    expect(tool?.writeDiff?.type).toBe("update");
+    expect(tool?.writeDiff?.hunks[0]?.oldStart).toBe(360);
+  });
+
+  it("slice-033 feat 2: tool_result WITHOUT write_diff leaves writeDiff undefined", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "t1",
+      tool_name: "Bash",
+      input: { command: "echo hi" },
+    });
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "t1",
+      content: "hi",
+    });
+    const tool = state.turns[0].items.find((i) => i.kind === "tool") as {
+      writeDiff?: unknown;
+    };
+    expect(tool?.writeDiff).toBeUndefined();
+  });
+
   it("tool_progress for a different id does not touch the matched tool", () => {
     let state = withOpenTurn();
     state = reduceEvent(state, { type: "tool_call", tool_use_id: "t1", tool_name: "A", input: {} });

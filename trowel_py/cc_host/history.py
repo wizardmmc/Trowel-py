@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
+from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.schemas.cc_host import (
     ElicitationRequestEvent,
     FinishedEvent,
@@ -200,6 +201,17 @@ def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
         return [UserEvent(text=content)]
     if not isinstance(content, list):
         return []
+    # slice-033 feat 2 (方案 F): cc persists the diff it computed at execution
+    # time in this jsonl row's top-level `toolUseResult` field. One user row
+    # carries one tool_result + its toolUseResult — convert once and attach to
+    # the tool_result event so the FE renders real file line numbers on replay.
+    write_diff = write_diff_from_cc_result(ev.get("toolUseResult"))
+    # One user row = one tool_result + its toolUseResult (cc's current jsonl
+    # format). If a future cc ever packs multiple tool_result blocks into one
+    # user row, the single toolUseResult can't map to each block — drop it
+    # rather than mislabel all but the first.
+    if sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_result") > 1:
+        write_diff = None
     text_parts: list[str] = []
     out: list[TrowelEvent] = []
     for block in content:
@@ -211,6 +223,7 @@ def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
                 ToolResultEvent(
                     tool_use_id=str(block.get("tool_use_id", "")),
                     content=str(block.get("content", "")),
+                    write_diff=write_diff,
                 )
             )
         elif kind == "text":
