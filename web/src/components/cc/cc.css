@@ -10,6 +10,8 @@
   background: var(--bg-card);
   border-radius: var(--radius-md);
   overflow: hidden;
+  /* slice-035 bug2: anchor for the .cc-jump-latest button (absolute). */
+  position: relative;
 }
 
 .cc-view__top {
@@ -36,6 +38,50 @@
      writes it into --composer-h). Adapts automatically when the Composer
      grows (more input rows, elicit box); falls back to 0 before first measure. */
   scroll-padding-bottom: calc(var(--composer-h, 0px) + var(--space-md));
+}
+
+/* slice-035 bug2: "回最新" sticky-bottom button — style C centered. Floats
+   above the Composer while the user is scrolled up; clicking smooth-scrolls
+   back to the bottom and re-arms auto-follow. */
+.cc-jump-latest {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--composer-h, 0px) + var(--space-sm));
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--soil-brown);
+  color: var(--soil-brown);
+  font-size: 0.78rem;
+  font-family: var(--font-sans);
+  box-shadow: var(--shadow-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  z-index: 2;
+  transition: opacity 0.15s ease;
+}
+.cc-jump-latest:hover {
+  background: var(--garden-soft);
+}
+.cc-jump-latest__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sunshine);
+  flex-shrink: 0;
+}
+.cc-jump-latest__arrow {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
 }
 
 /* ── StatusBar ── */
@@ -1229,6 +1275,10 @@
   color: var(--text-secondary);
   padding-left: var(--space-md);
   white-space: pre-wrap;
+  /* slice-035 bug1: wrap long unbroken strings (Other custom input like a
+     long URL / token) instead of overflowing the elicit box. pre-wrap only
+     breaks on \n and spaces, not mid-word. */
+  overflow-wrap: anywhere;
   font-size: 0.86rem;
 }
 .cc-elicit__navbar {
@@ -1327,6 +1377,16 @@
   font-size: 0.85rem;
   color: var(--text-primary);
   outline: none;
+  /* slice-035 bug1: render as a multi-line textarea — wrap long custom
+     answers and auto-grow vertically (height driven by the auto-resize
+     effect in OptionRow, which sets height = scrollHeight on every change). */
+  display: block;
+  resize: none;
+  overflow: hidden;
+  min-height: 1.6em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .cc-elicit__opt-other:focus {
   border-color: var(--sunshine);
@@ -1364,6 +1424,10 @@
   color: var(--garden-green);
   padding-left: 22px;
   font-weight: 600;
+  /* slice-035 bug1: wrap long unbroken strings in the SubmitView preview
+     ("→ {formatAnswer}") — mirrors .cc-elicit__result. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .cc-elicit__hint {
   color: var(--text-secondary);

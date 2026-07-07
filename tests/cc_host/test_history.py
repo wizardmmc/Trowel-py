@@ -433,6 +433,113 @@ def test_parse_history_user_message_as_list_text_blocks(fake_projects: Path) -> 
     assert user_evs[0].text == "你好，请问今天几号"
 
 
+# --- slice-035 bug4: scrub CC-internal injections from reloaded user rows ------
+#
+# CC persists several "user" rows that are NOT real user input: skill
+# description injections (isMeta=True), raw slash-command tags
+# (<command-message>..</command-name>..</command-args>), the trowel-expanded
+# skill trigger ("Use the Skill tool with skill='X'. ..."), and local
+# command stdout (<local-command-stdout>). The live path never echoes them
+# (translator._on_user only extracts tool_result); history must match, or
+# reload shows a polluted user bubble. See slice-035 spec.
+
+
+def _user_list_text(text: str, is_meta: bool = False) -> dict:
+    """A user row whose content is one text block (the common CC jsonl
+    shape). Optionally marked isMeta=True (skill descriptions, caveats)."""
+    ev: dict = {
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        "timestamp": "2026-06-01T00:00:00Z",
+    }
+    if is_meta:
+        ev["isMeta"] = True
+    return ev
+
+
+def test_parse_history_skips_ismeta_user_row(fake_projects: Path) -> None:
+    """A skill-description injection (isMeta=True) must NOT surface as a
+    user bubble — the live path never shows it either."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_list_text(
+                "Base directory for this skill: /Users/x/.claude/skills/grill-me\n\n"
+                "Interview me relentlessly about every aspect of this plan.",
+                is_meta=True,
+            )
+        ],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    assert [e for e in events if isinstance(e, UserEvent)] == []
+
+
+def test_parse_history_command_tags_restore_slash_name_args(
+    fake_projects: Path,
+) -> None:
+    """Raw slash-command tags persisted by CC must restore to the original
+    `/name args` (what the user typed), not leak the raw tags."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_list_text(
+                "<command-message>grill-me</command-message>\n"
+                "<command-name>/grill-me</command-name>\n"
+                "<command-args>修复bug</command-args>"
+            )
+        ],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    user_evs = [e for e in events if isinstance(e, UserEvent)]
+    assert len(user_evs) == 1
+    assert user_evs[0].text == "/grill-me 修复bug"
+
+
+def test_parse_history_skill_trigger_prompt_restores_slash(
+    fake_projects: Path,
+) -> None:
+    """The trowel-expanded skill trigger ('Use the Skill tool with ...') must
+    also restore to `/name args` to match the live optimistic render."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [_user_list_text("Use the Skill tool with skill='grill-me'. 修复bug")],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    user_evs = [e for e in events if isinstance(e, UserEvent)]
+    assert len(user_evs) == 1
+    assert user_evs[0].text == "/grill-me 修复bug"
+
+
+def test_parse_history_local_command_stdout_not_rendered(
+    fake_projects: Path,
+) -> None:
+    """Local-command stdout (/model, /effort outputs) must not render — live
+    path handles these via RestartSession/LocalCommand, never in dialogue."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_list_text(
+                "<local-command-stdout>Set model to glm-5.1 and saved as "
+                "your default for new sessions</local-command-stdout>"
+            )
+        ],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    assert [e for e in events if isinstance(e, UserEvent)] == []
+
+
+def test_parse_history_real_user_text_unchanged(fake_projects: Path) -> None:
+    """Genuine user input must pass through scrubbing untouched."""
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [_user_list_text("修复重载渲染的几个 bug")],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    user_evs = [e for e in events if isinstance(e, UserEvent)]
+    assert len(user_evs) == 1
+    assert user_evs[0].text == "修复重载渲染的几个 bug"
+
+
 # --- slice-031: replay thinking duration (timestamp-delta) ---------------------
 #
 # Live stream measures "Thought for Ns" via thinking_tokens heartbeat start time

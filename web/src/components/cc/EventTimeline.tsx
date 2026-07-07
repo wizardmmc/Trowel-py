@@ -108,7 +108,7 @@ function RetryingRow({ item }: { readonly item: RetryingItem }) {
           <path d="M3 4v4h4" />
         </svg>
         <span className="cc-timeline__label">
-          重试 {item.attempt}{max}
+          {item.attempt > 0 ? `重试 ${item.attempt}${max}` : "重试中"}
           {item.errorStatus !== null && ` (GLM ${item.errorStatus}`}
           {delaySec && `，${delaySec}s 后)`}
           {item.errorStatus !== null && !delaySec && ")"}

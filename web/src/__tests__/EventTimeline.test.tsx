@@ -29,6 +29,22 @@ describe("EventTimeline", () => {
     expect(screen.getByText(/2s 后/)).toBeTruthy();
   });
 
+  it("retrying row with attempt=0 shows '重试中' without a number (slice-035 bug3)", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "retrying",
+        attempt: 0,
+        maxRetries: 5,
+        errorStatus: 529,
+        error: "overloaded",
+        retryDelayMs: 2000,
+      },
+    ];
+    render(<EventTimeline items={items} />);
+    expect(screen.getByText(/重试中/)).toBeTruthy();
+    expect(screen.queryByText(/重试 0/)).toBeNull();
+  });
+
   it("error row shows a retry button only for recoverable subclass", () => {
     const recoverable: TurnItem[] = [
       {

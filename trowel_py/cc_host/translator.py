@@ -83,9 +83,8 @@ class Translator:
     """Stateful per-turn translator: CC event dict -> list[TrowelEvent]."""
 
     def __init__(self) -> None:
-        """Initialize per-turn state: a fresh accumulator, retry counter, and dispatch table."""
+        """Initialize per-turn state: a fresh accumulator and dispatch table."""
         self._acc = DeltaAccumulator()
-        self._retry_attempt = 0
         self._emitted_tool_ids: set[str] = set()
         self._dispatch = {
             "system": self._on_system,
@@ -153,10 +152,16 @@ class Translator:
                 )
             ]
         if sub == "api_retry":
-            self._retry_attempt += 1
+            # slice-035 bug3: pass through CC's own `attempt` field
+            # (QueryEngine.ts `attempt: message.retryAttempt`; withRetry.ts
+            # `for attempt=1..` — each API request starts a fresh count).
+            # Do NOT accumulate a local counter: the old one never reset
+            # within a turn, so a second failure after a recovered retry
+            # round showed attempt=4 instead of 1. Fallback to 0 when a
+            # backend omits the field (FE renders "重试中" without a number).
             return [
                 RetryingEvent(
-                    attempt=self._retry_attempt,
+                    attempt=_as_int(ev.get("attempt")) or 0,
                     max_retries=_as_int(ev.get("max_retries")),
                     error_status=_as_int(ev.get("error_status")),
                     error=ev.get("error"),

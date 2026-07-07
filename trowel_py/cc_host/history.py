@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -188,17 +189,80 @@ def _translate_line(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent
     return []
 
 
+# --- slice-035 bug4: scrub CC-internal injections from reloaded user rows ------
+#
+# CC persists several "user" rows that are NOT real user input. The live path
+# never echoes them (translator._on_user only extracts tool_result), so history
+# must scrub them too — otherwise reload shows a polluted user bubble. Patterns:
+_COMMAND_NAME_RE = re.compile(r"<command-name>\s*/?\s*(\S+?)\s*</command-name>")
+_COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+# Trowel's own skill-trigger expansion (input.py:skill_trigger_prompt).
+_SKILL_TRIGGER_RE = re.compile(
+    r"^Use the Skill tool with skill='([^']+)'\.\s*(.*)$", re.DOTALL
+)
+
+
+def _clean_user_text(text: str) -> str:
+    """Scrub one reloaded user-row text block; return "" to drop it.
+
+    Real user input passes through unchanged. CC-internal payloads are
+    normalized so reloaded history matches the live view:
+
+    - raw slash-command tags ``<command-name>..</command-name>`` +
+      ``<command-args>..</command-args>`` -> restore ``/name args`` (what the
+      user typed);
+    - the trowel-expanded skill trigger ``Use the Skill tool with skill='X'.`` ->
+      restore ``/X args`` (matches the FE optimistic render at send time);
+    - ``<local-command-stdout>`` (e.g. /model output) -> dropped (live path
+      routes these via RestartSession/LocalCommand, never into the dialogue);
+    - residual ``<system-reminder>`` / ``<cparam>`` -> dropped (defensive; the
+      isMeta guard on the row normally already removed these).
+
+    Args:
+        text: one user-row text block from the jsonl.
+
+    Returns:
+        the cleaned text. Empty means "this block is an injection, drop it"
+        (caller skips emitting a UserEvent for it).
+    """
+    # 1. Raw slash-command tags -> /name args
+    name_m = _COMMAND_NAME_RE.search(text)
+    if name_m:
+        name = name_m.group(1).strip()
+        args_m = _COMMAND_ARGS_RE.search(text)
+        args = args_m.group(1).strip() if args_m else ""
+        return f"/{name} {args}" if args else f"/{name}"
+    # 2. Local-command stdout -> drop
+    if "<local-command-stdout>" in text:
+        return ""
+    # 3. Trowel skill-trigger expansion -> /name args
+    trigger_m = _SKILL_TRIGGER_RE.match(text)
+    if trigger_m:
+        name, args = trigger_m.group(1).strip(), trigger_m.group(2).strip()
+        return f"/{name} {args}" if args else f"/{name}"
+    # 4. Residual injection wrappers -> drop (defensive)
+    if text.lstrip().startswith(("<system-reminder>", "<cparam>")):
+        return ""
+    return text
+
+
 def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
     """Map a CC `user` entry: real user turn -> UserEvent, tool_result echo ->
     ToolResultEvent.
 
-    A real user turn arrives as either a plain string OR (the common CC jsonl
-    shape) a list of `text` blocks. A tool_result echo arrives as a list of
-    `tool_result` blocks and must NOT become a UserEvent.
+    slice-035 bug4: rows marked ``isMeta=True`` are CC-internal injections
+    (skill descriptions, local-command caveats) and are dropped entirely.
+    Surviving text blocks are run through :func:`_clean_user_text` so raw
+    command tags / skill-trigger expansions / local-command stdout don't
+    leak into the reloaded user bubble.
     """
+    # slice-035 bug4: isMeta rows are never real user input — drop wholesale.
+    if ev.get("isMeta"):
+        return []
     content = ev.get("message", {}).get("content")
     if isinstance(content, str):
-        return [UserEvent(text=content)]
+        cleaned = _clean_user_text(content)
+        return [UserEvent(text=cleaned)] if cleaned else []
     if not isinstance(content, list):
         return []
     # slice-033 feat 2 (方案 F): cc persists the diff it computed at execution
@@ -227,9 +291,11 @@ def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
                 )
             )
         elif kind == "text":
-            text_parts.append(str(block.get("text", "")))
-    # Real user turns arrive as text blocks; tool_result echoes as tool_result
-    # blocks — the two don't mix in one message.
+            cleaned = _clean_user_text(str(block.get("text", "")))
+            if cleaned:
+                text_parts.append(cleaned)
+    # Real user turns arrive as (cleaned) text blocks; tool_result echoes as
+    # tool_result blocks — the two don't surface together in practice.
     if text_parts:
         return [UserEvent(text="\n".join(text_parts))]
     return out

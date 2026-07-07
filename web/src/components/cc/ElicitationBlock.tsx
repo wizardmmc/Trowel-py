@@ -16,7 +16,7 @@
  * advances on submit (we keep an explicit Submit button for clarity rather
  * than cc's auto-advance-on-Enter).
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ElicitationItem } from "../../stores/ccStore";
 import type { QuestionInput, QuestionOption } from "../../api/ccTypes";
 
@@ -357,6 +357,16 @@ function OptionRow({
   readonly onOtherChange?: (text: string) => void;
 }) {
   const mark = multi ? (selected ? "☑" : "☐") : selected ? "●" : "○";
+  // slice-035 bug1: auto-grow the Other textarea so long custom answers wrap
+  // and the box grows tall, instead of the old single-line <input> that let
+  // long text run off the side. height = scrollHeight on every value change.
+  const otherRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const ta = otherRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [otherText, otherMode, selected]);
   return (
     <div
       className={`cc-elicit__opt${selected ? " cc-elicit__opt--selected" : ""}`}
@@ -372,9 +382,10 @@ function OptionRow({
           <div className="cc-elicit__opt-desc">{option.description}</div>
         )}
         {otherMode && selected && (
-          <input
+          <textarea
+            ref={otherRef}
             className="cc-elicit__opt-other"
-            type="text"
+            rows={1}
             placeholder="Type a custom answer…"
             aria-label="Custom answer"
             value={otherText ?? ""}

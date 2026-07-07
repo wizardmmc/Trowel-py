@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ToolBlock } from "../components/cc/ToolBlock";
 import type { ToolItem } from "../stores/ccStore";
@@ -58,6 +58,65 @@ describe("ToolBlock — regression (non-diff tools unchanged)", () => {
     render(<ToolBlock item={tool({ status: "running", elapsedSeconds: 1.2 })} />);
     expect(screen.getByText("1.2s")).toBeTruthy();
     expect(screen.queryByLabelText("完成")).toBeNull();
+  });
+});
+
+describe("ToolBlock — slice-035 bug2 auto-scroll on expand", () => {
+  let scrollIntoView: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView as typeof Element.prototype.scrollIntoView;
+    // rAF: run the cb synchronously so the scroll fires inside the test.
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+
+  it("mount with a done diff tool does NOT scroll (initial open=true is not a flip)", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          status: "done",
+          input: { file_path: "/a", old_string: "x", new_string: "y" },
+        })}
+      />,
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("running → done flip scrolls the block into view (block:nearest)", () => {
+    const { rerender } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          status: "running",
+          input: { file_path: "/a", old_string: "x", new_string: "y" },
+        })}
+      />,
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    rerender(
+      <ToolBlock
+        item={tool({
+          toolName: "Edit",
+          status: "done",
+          input: { file_path: "/a", old_string: "x", new_string: "y" },
+        })}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "nearest",
+      behavior: "smooth",
+    });
   });
 });
 

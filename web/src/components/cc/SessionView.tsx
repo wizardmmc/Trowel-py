@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import {
@@ -17,6 +17,7 @@ import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";
 import { TodoBar } from "./TodoBar";
 import { useElementHeight } from "./useElementHeight";
+import { useStickyBottom } from "./useStickyBottom";
 import "./cc.css";
 
 /**
@@ -84,6 +85,14 @@ export function SessionView({
 
   const phase = active?.phase ?? "idle";
   const turns = active?.turns ?? [];
+  // slice-035 bug2: sticky-bottom auto-follow for the dialogue stream + the
+  // "回最新" button. stickyRef is read by MessageList's scroll effect so it
+  // doesn't yank the view back down when the user scrolled up to read history.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { sticky, unread, stickyRef, jumpToBottom } = useStickyBottom(
+    scrollRef,
+    turns.length,
+  );
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
   const revertEnabled = active?.revertEnabled ?? false;
@@ -274,6 +283,7 @@ export function SessionView({
           </div>
         )}
         <div
+          ref={scrollRef}
           className="cc-view__scroll"
           style={{ "--composer-h": `${composerH}px` } as CSSProperties}
         >
@@ -282,6 +292,7 @@ export function SessionView({
               turns={turns}
               streaming={streaming}
               phase={phase}
+              stickyRef={stickyRef}
               onRetryLast={handleRetryLast}
               onAnswer={(answers) => void answerElicit(answers)}
               onCancel={() => void cancelElicit()}
@@ -297,12 +308,37 @@ export function SessionView({
             </div>
           )}
         </div>
+        {active && !sticky && (
+          <button
+            type="button"
+            className="cc-jump-latest"
+            onClick={jumpToBottom}
+            aria-label="回到最新"
+          >
+            {unread > 0 && (
+              <span className="cc-jump-latest__dot" aria-hidden="true" />
+            )}
+            <svg
+              className="cc-jump-latest__arrow"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M6 13l6 6 6-6" />
+            </svg>
+            <span>{unread > 0 ? `${unread} 新` : "最新"}</span>
+          </button>
+        )}
         <div ref={composerRef}>
           <Composer
             streaming={streaming}
             disabled={!activeSid || phase === "awaiting_input"}
             awaitingInput={phase === "awaiting_input"}
-            onSend={(text) => void send(text)}
+            onSend={(text) => {
+              void send(text);
+              // slice-035 bug2: sending implies the user wants the reply —
+              // force the viewport back to the bottom even if they scrolled up.
+              requestAnimationFrame(() => jumpToBottom());
+            }}
             onInterrupt={() => void interrupt()}
             slashItems={slashItems}
             models={models}

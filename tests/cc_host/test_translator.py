@@ -268,19 +268,35 @@ class TestToolProgressAndResult:
 
 
 class TestRetrying:
-    def test_api_retry_translates_with_attempt_incrementing(self):
+    def test_api_retry_passes_through_cc_attempt(self):
+        """slice-035 bug3: CC's api_retry event carries its own `attempt`
+        (QueryEngine.ts `attempt: message.retryAttempt`; withRetry.ts
+        `for attempt=1..` — each API request starts a fresh count). Trowel
+        must pass it through, NOT accumulate its own counter: the old counter
+        never reset within a turn, so a second failure after a recovered
+        retry round showed 'attempt 4' instead of 'attempt 1'.
+        """
         t = Translator()
-        ev1 = cc(type="system", subtype="api_retry", error_status=529,
-                 error="overloaded", retry_delay_ms=3000)
+        ev1 = cc(type="system", subtype="api_retry", attempt=1,
+                 error_status=529, error="overloaded", retry_delay_ms=3000)
         out1 = t.translate(ev1)
         assert len(out1) == 1
         assert isinstance(out1[0], RetryingEvent)
         assert out1[0].attempt == 1
         assert out1[0].error_status == 529
         assert out1[0].retry_delay_ms == 3000
-        # second retry bumps attempt
-        out2 = t.translate(ev1)
-        assert out2[0].attempt == 2
+        # same turn, a second failure arrives — CC's new retry round starts
+        # at attempt=1 again. Pass-through must NOT accumulate to 2.
+        out2 = t.translate(cc(type="system", subtype="api_retry", attempt=1))
+        assert out2[0].attempt == 1
+
+    def test_api_retry_without_attempt_falls_back_to_zero(self):
+        """Defensive: if a backend omits `attempt`, fall back to 0 (the FE
+        shows '重试中' with no number) rather than inventing a counter."""
+        ev = cc(type="system", subtype="api_retry", error_status=529)
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        assert out[0].attempt == 0
 
     def test_api_retry_coerces_fractional_float_fields_to_int(self):
         """GLM backend can emit fractional floats for int fields (issue: int_from_float).

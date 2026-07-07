@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
 import type { ToolItem } from "../../stores/ccStore";
@@ -403,6 +403,37 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
   useEffect(() => {
     if (isDiffTool(item.toolName) && done) setOpen(true);
   }, [item.toolName, done]);
+  // slice-035 bug2: when a diff tool auto-expands (open flips false→true),
+  // scroll the block into view so the diff's top stays visible — otherwise
+  // MessageList's stick-to-bottom leaves the just-opened diff head clipped by
+  // the Composer. Only the flip triggers a scroll: initial mount with open=true
+  // (reloaded history, Write-create) is skipped to avoid a burst of competing
+  // scrolls. rAF defers past MessageList's own scroll this render.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const prevOpenRef = useRef(open);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    // Skip the very first run: open may start true (reloaded history with
+    // done tools, or Write-create) and we must NOT scroll on mount — only on
+    // a real false→true flip (an Edit tool transitioning to done live). The
+    // mount guard also defends any finalize active→done timing edge.
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      prevOpenRef.current = open;
+      return;
+    }
+    if (!prevOpenRef.current && open) {
+      const el = rootRef.current;
+      if (el) {
+        requestAnimationFrame(() => {
+          if (typeof el.scrollIntoView === "function") {
+            el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }
+        });
+      }
+    }
+    prevOpenRef.current = open;
+  }, [open]);
   const seconds =
     item.elapsedSeconds !== null ? `${item.elapsedSeconds.toFixed(1)}s` : null;
   const stat = summaryStat(item);
@@ -454,7 +485,7 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
   );
 
   return (
-    <div className="cc-tool" data-status={item.status}>
+    <div ref={rootRef} className="cc-tool" data-status={item.status}>
       {summary}
       {expanded && <div className="cc-tool__detail">{renderDetail(item)}</div>}
     </div>
