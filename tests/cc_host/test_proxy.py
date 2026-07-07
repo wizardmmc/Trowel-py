@@ -104,7 +104,7 @@ def _p_body() -> dict:
     return {
         "model": "glm-5.1",
         "system": [
-            {"type": "text", "text": "<billing header>"},
+            {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.197.123; cc_entrypoint=sdk-cli;"},
             {
                 "type": "text",
                 "text": "You are a Claude agent, built on Anthropic...",
@@ -120,25 +120,37 @@ def _p_body() -> dict:
 class TestReplaceSystemIdentity:
     def test_replaces_identity_block_text(self):
         out = replace_system_identity(_p_body())
-        assert out["system"][1]["text"] == TUI_SYSTEM_IDENTITY
+        # billing header dropped -> identity is now system[0]
+        assert out["system"][0]["text"] == TUI_SYSTEM_IDENTITY
 
     def test_preserves_cache_control(self):
         out = replace_system_identity(_p_body())
-        assert out["system"][1]["cache_control"] == {"type": "ephemeral"}
+        assert out["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_drops_billing_header_block(self):
+        """The -p billing-header block must be dropped (TUI has none; 智谱
+        caches by the whole system array). Pinned by slice-030 V5/V6."""
+        out = replace_system_identity(_p_body())
+        assert len(out["system"]) == 2  # was 3, billing header dropped
+        texts = [b["text"] for b in out["system"]]
+        assert not any(t.startswith("x-anthropic-billing-header") for t in texts)
 
     def test_preserves_tools_messages_and_other_system_blocks(self):
         body = _p_body()
         out = replace_system_identity(body)
         assert out["tools"] == body["tools"]
         assert out["messages"] == body["messages"]
-        assert out["system"][0]["text"] == "<billing header>"
-        assert out["system"][2]["text"] == "<详细 prompt>"
+        # billing header dropped -> identity now [0], detail prompt now [1]
+        assert out["system"][0]["text"] == TUI_SYSTEM_IDENTITY
+        assert out["system"][1]["text"] == "<详细 prompt>"
 
     def test_original_body_not_mutated(self):
         body = _p_body()
+        original_len = len(body["system"])
         original_text = body["system"][1]["text"]
         _ = replace_system_identity(body)
         assert body["system"][1]["text"] == original_text
+        assert len(body["system"]) == original_len  # billing drop is on the copy
 
     def test_matches_identity_block_at_any_index(self):
         """身份块不在固定索引（CC 不同请求 system 结构可能变）——按内容匹配，
@@ -152,6 +164,21 @@ class TestReplaceSystemIdentity:
         out = replace_system_identity(body)
         assert out["system"][0]["text"] == TUI_SYSTEM_IDENTITY
         assert out["system"][1]["text"] == "<other>"
+
+    def test_drops_billing_header_even_when_not_first(self):
+        """slice-030 V5 pinned: the billing header spoils the cache even when
+        moved off index 0, so it must be dropped regardless of position."""
+        body = {
+            "system": [
+                {"type": "text", "text": "You are a Claude agent, built on Anthropic..."},
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.197;"},
+                {"type": "text", "text": "<detail>"},
+            ]
+        }
+        out = replace_system_identity(body)
+        texts = [b["text"] for b in out["system"]]
+        assert not any(t.startswith("x-anthropic-billing-header") for t in texts)
+        assert out["system"][0]["text"] == TUI_SYSTEM_IDENTITY
 
     def test_idempotent_if_already_tui(self):
         body = {"system": [{"type": "text", "text": TUI_SYSTEM_IDENTITY}]}
