@@ -124,4 +124,25 @@ describe("EventTimeline", () => {
     expect(screen.getByText(/Agent/)).toBeInTheDocument();
     expect(screen.getByText(/Bash/)).toBeInTheDocument();
   });
+
+  it("hides TaskCreate/TaskUpdate/TodoWrite tools (slice-034 feat 5)", () => {
+    // 这些工具的语义已在右侧 TodoBar（task_* 事件）体现，对话流不再渲染
+    const items: TurnItem[] = [
+      { kind: "tool", toolUseId: "1", toolName: "TaskCreate", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
+      { kind: "tool", toolUseId: "2", toolName: "TaskUpdate", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
+      { kind: "tool", toolUseId: "3", toolName: "TodoWrite", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
+    ];
+    const { container } = render(<EventTimeline items={items} />);
+    expect(container.querySelectorAll(".cc-tool")).toHaveLength(0);
+  });
+
+  it("still renders non-task tools (Bash) alongside hidden task tools", () => {
+    const items: TurnItem[] = [
+      { kind: "tool", toolUseId: "1", toolName: "TaskCreate", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
+      { kind: "tool", toolUseId: "2", toolName: "Bash", input: { command: "ls" }, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
+    ];
+    const { container } = render(<EventTimeline items={items} />);
+    expect(container.querySelectorAll(".cc-tool")).toHaveLength(1);
+    expect(screen.getByText("Bash")).toBeInTheDocument();
+  });
 });

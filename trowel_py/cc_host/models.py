@@ -44,12 +44,15 @@ class ModelOption:
             'glm-5.2[1M]'); the picker shows it mono-spaced so the user sees
             what the alias resolves to on the current backend.
         description: trowel-side subtitle describing when to pick this alias.
+        is_default: True for the alias cc falls back to when the user doesn't
+            explicitly pick one (slice-034 feat 3). Driven by ANTHROPIC_MODEL.
     """
 
     value: str
     label: str
     real_model: str
     description: str
+    is_default: bool = False
 
 
 def _settings_path() -> Path:
@@ -83,6 +86,12 @@ def list_models(settings_path: Path | None = None) -> list[ModelOption]:
     the env block. Only aliases present are returned (a backend that maps only
     sonnet+haiku shows just those — no guessing).
 
+    slice-034 feat 3: exactly one row is marked ``is_default`` — the alias cc
+    falls back to when the user doesn't explicitly pick one. Determined by
+    ANTHROPIC_MODEL: if its value matches some alias's real_model, that alias
+    is the default; otherwise sonnet (cc's built-in default family), or the
+    first alias if sonnet isn't mapped.
+
     Args:
         settings_path: override (tests inject a fixture); defaults to
             ~/.claude/settings.json.
@@ -92,16 +101,34 @@ def list_models(settings_path: Path | None = None) -> list[ModelOption]:
     """
     path = settings_path or _settings_path()
     env = _load_env(path)
-    out: list[ModelOption] = []
+    reals: dict[str, str] = {}
     for alias in _ALIAS_ORDER:
         real = env.get(f"ANTHROPIC_DEFAULT_{alias.upper()}_MODEL")
         if real:
-            out.append(
-                ModelOption(
-                    value=alias,
-                    label=alias.capitalize(),
-                    real_model=real,
-                    description=_ALIAS_DESCRIPTION.get(alias, ""),
-                )
+            reals[alias] = real
+
+    # Determine the default alias (cc's fallback when no model is explicitly set).
+    anthropic_model = env.get("ANTHROPIC_MODEL")
+    default_alias: str | None = None
+    if anthropic_model:
+        default_alias = next(
+            (a for a, real in reals.items() if real == anthropic_model), None
+        )
+    if default_alias is None:
+        default_alias = "sonnet" if "sonnet" in reals else next(iter(reals), None)
+
+    out: list[ModelOption] = []
+    for alias in _ALIAS_ORDER:
+        real = reals.get(alias)
+        if not real:
+            continue
+        out.append(
+            ModelOption(
+                value=alias,
+                label=alias.capitalize(),
+                real_model=real,
+                description=_ALIAS_DESCRIPTION.get(alias, ""),
+                is_default=(alias == default_alias),
             )
+        )
     return out

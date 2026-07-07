@@ -4,8 +4,8 @@ import { ModelPicker } from "../components/cc/ModelPicker";
 import type { ModelOption } from "../api/cc";
 
 const models: readonly ModelOption[] = [
-  { value: "opus", label: "Opus", real_model: "glm-5.2[1M]", description: "最强推理" },
-  { value: "sonnet", label: "Sonnet", real_model: "glm-5.1", description: "日常主力" },
+  { value: "opus", label: "Opus", real_model: "glm-5.2[1M]", description: "最强推理", is_default: false },
+  { value: "sonnet", label: "Sonnet", real_model: "glm-5.1", description: "日常主力", is_default: true },
 ];
 
 describe("ModelPicker (slice-027 C2)", () => {

@@ -109,6 +109,11 @@
   overflow-y: auto;
   min-height: 0;
 }
+/* slice-034 feat 1: cc 模式去掉四周 padding，让三列铺满浏览器内容区。
+ * 其他 tool（garden/extract/review）是卡片流，保留 padding 留白。 */
+.app-main--flush {
+  padding: 0;
+}
 
 .app-main__hamburger {
   display: none;

@@ -22,7 +22,7 @@ interface EffortOption {
   readonly tag?: string;
 }
 
-const EFFORT_OPTIONS: readonly EffortOption[] = [
+export const EFFORT_OPTIONS: readonly EffortOption[] = [
   { value: "low", description: "快速直接，简单改动" },
   { value: "medium", description: "平衡，标准测试覆盖" },
   { value: "high", description: "深入实现，详尽测试" },

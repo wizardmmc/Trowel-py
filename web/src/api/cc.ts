@@ -208,6 +208,9 @@ export interface ModelOption {
   readonly label: string;
   readonly real_model: string;
   readonly description: string;
+  /** slice-034 feat 3: True for the alias cc falls back to when unset.
+   * Optional on the client as a defensive fallback (backend always sends it). */
+  readonly is_default?: boolean;
 }
 
 /** GET /api/cc/models — alias → real-model mapping for the /model picker. */

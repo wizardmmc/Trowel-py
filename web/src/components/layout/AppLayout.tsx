@@ -98,7 +98,7 @@ export function AppLayout({
           ))}
         </nav>
       </aside>
-      <main className="app-main">
+      <main className={`app-main${activeTool === "cc" ? " app-main--flush" : ""}`}>
         <button
           className="app-main__hamburger"
           onClick={onToggleSidebar}

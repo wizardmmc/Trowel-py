@@ -118,6 +118,13 @@ function SummaryBrief({
   readonly item: ToolItem;
   readonly workdir?: string;
 }) {
+  // slice-034 feat 4: Skill 工具显示加载了哪个 skill，用与 Bash/Read 同款 brief 样式。
+  if (item.toolName === "Skill") {
+    const skill = asString(item.input.skill);
+    return skill !== null ? (
+      <span className="cc-tool__brief">加载 skill: {skill}</span>
+    ) : null;
+  }
   if (item.toolName === "Write" || isEditTool(item.toolName)) {
     const p = asString(item.input.file_path);
     // slice-029: CC-style display — project-relative when inside the session

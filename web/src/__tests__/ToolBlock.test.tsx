@@ -577,3 +577,29 @@ describe("ToolBlock — slice-033", () => {
     expect(cmd.textContent).toBe("echo hello world");
   });
 });
+
+describe("ToolBlock — slice-034 feat 4 Skill rendering", () => {
+  it("Skill summary shows '✦ 加载 skill: <name>' from input.skill", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "Skill",
+          input: { skill: "grill-me" },
+          status: "done",
+          elapsedSeconds: 0.4,
+          result: "ok",
+        })}
+      />,
+    );
+    expect(screen.getByText(/加载 skill: grill-me/)).toBeInTheDocument();
+  });
+
+  it("Skill summary has no stat pill (not a diff/lines tool)", () => {
+    const { container } = render(
+      <ToolBlock
+        item={tool({ toolName: "Skill", input: { skill: "grill-me" }, status: "done", result: "ok" })}
+      />,
+    );
+    expect(container.querySelector(".cc-tool__stat")).toBeNull();
+  });
+});

@@ -88,6 +88,14 @@ export function SessionView({
   const effort = active?.effort ?? null;
   const revertEnabled = active?.revertEnabled ?? false;
   const streaming = ACTIVE_PHASES.has(phase);
+  // slice-034 feat 3: 当前 model 的 alias（从 meta.model 匹配 models），null → chip 显示默认回退。
+  const modelAlias = (() => {
+    if (!meta?.model) return null;
+    const found = models.find(
+      (m) => m.value === meta.model || m.real_model === meta.model,
+    );
+    return found?.value ?? null;
+  })();
 
   // Drop a stale revert target if the session changes (reset / new / pick) so
   // we never POST a turn_id from one session to another. This is the canonical
@@ -229,7 +237,6 @@ export function SessionView({
                     exitReturncode: null,
                   }
             }
-            effort={effort}
             streaming={streaming}
             onInterrupt={() => void interrupt()}
           />
@@ -298,6 +305,11 @@ export function SessionView({
             onSend={(text) => void send(text)}
             onInterrupt={() => void interrupt()}
             slashItems={slashItems}
+            models={models}
+            currentModelAlias={modelAlias}
+            currentEffort={effort}
+            onPickModel={(v) => void send(`/model ${v}`)}
+            onPickEffort={(v) => void send(`/effort ${v}`)}
             onRequestModelPicker={() => setShowModelPicker(true)}
             onRequestEffortPicker={() => setShowEffortPicker(true)}
           />
@@ -309,6 +321,8 @@ export function SessionView({
             onCancel={() => setRevertTarget(null)}
           />
         )}
+        {/* slice-034 feat 3: 双入口并存——bare `/model` `/effort` slash 走这个居中 modal；
+            Composer 底栏 chip 走 popover。两条路径都能选 model/effort（有意保留）。 */}
         {showModelPicker && (
           <ModelPicker
             models={models}

@@ -11,7 +11,6 @@ import type { Phase, SessionMeta } from "../../stores/ccStore";
 interface StatusBarProps {
   readonly phase: Phase;
   readonly meta: SessionMeta;
-  readonly effort: string | null;
   readonly streaming: boolean;
   readonly onInterrupt: () => void;
 }
@@ -40,7 +39,6 @@ function phaseClass(phase: Phase): string {
 export function StatusBar({
   phase,
   meta,
-  effort,
   streaming,
   onInterrupt,
 }: StatusBarProps) {
@@ -50,14 +48,17 @@ export function StatusBar({
   return (
     <div className="cc-status" role="status">
       <div className="cc-status__left">
-        <span className="cc-status__model">
-          {meta.model ?? "未连接"}
-          {meta.model && (
-            <span className="cc-status__effort">
-              · effort: {effort ?? "跟随设置"}
-            </span>
-          )}
+        {/* slice-034 feat 3: model/effort 移到 Composer 底栏 chip；顶栏只留 phase/cost/hook */}
+        <span className={`cc-status__phase ${phaseClass(phase)}`}>
+          {PHASE_LABEL[phase]}
         </span>
+        {(cost || turns) && (
+          <span className="cc-status__accounting">
+            {turns}
+            {turns && cost && " · "}
+            {cost}
+          </span>
+        )}
         {meta.hookFired && (
           <span className="cc-status__hook" title={`hook: ${meta.hookFired}`}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -69,16 +70,6 @@ export function StatusBar({
         )}
       </div>
       <div className="cc-status__right">
-        {(cost || turns) && (
-          <span className="cc-status__accounting">
-            {turns}
-            {turns && cost && " · "}
-            {cost}
-          </span>
-        )}
-        <span className={`cc-status__phase ${phaseClass(phase)}`}>
-          {PHASE_LABEL[phase]}
-        </span>
         {streaming && (
           <button
             type="button"

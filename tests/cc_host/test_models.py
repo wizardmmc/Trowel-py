@@ -78,3 +78,61 @@ class TestListModels:
         s = tmp_path / "settings.json"
         s.write_text(json.dumps({"env": "not-a-dict"}), encoding="utf-8")
         assert list_models(s) == []
+
+
+class TestIsDefault:
+    """slice-034 feat 3: is_default 标记 cc 不显式设 model 时的回退 alias，
+    供前端 chip 显示"默认回退"值。规则：ANTHROPIC_MODEL 匹配某 alias 的
+    real_model → 该 alias 默认；未设/匹配不上 → sonnet（不在列表则首个）。"""
+
+    def test_anthropic_model_matching_sonnet_real_marks_sonnet(self, tmp_path: Path):
+        s = tmp_path / "settings.json"
+        _write_settings(s, {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1M]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.1",
+            "ANTHROPIC_MODEL": "glm-5.1",  # == sonnet real
+        })
+        out = {m.value: m.is_default for m in list_models(s)}
+        assert out == {"opus": False, "sonnet": True, "haiku": False}
+
+    def test_no_anthropic_model_falls_back_to_sonnet(self, tmp_path: Path):
+        s = tmp_path / "settings.json"
+        _write_settings(s, {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1M]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.1",
+        })
+        out = {m.value: m.is_default for m in list_models(s)}
+        assert out["sonnet"] is True
+        assert out["opus"] is False
+
+    def test_anthropic_model_matching_opus_marks_opus(self, tmp_path: Path):
+        s = tmp_path / "settings.json"
+        _write_settings(s, {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1M]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+            "ANTHROPIC_MODEL": "glm-5.2[1M]",  # == opus real
+        })
+        out = {m.value: m.is_default for m in list_models(s)}
+        assert out["opus"] is True
+        assert out["sonnet"] is False
+
+    def test_no_sonnet_in_list_falls_back_to_first(self, tmp_path: Path):
+        s = tmp_path / "settings.json"
+        _write_settings(s, {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1M]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.1",
+        })
+        out = {m.value: m.is_default for m in list_models(s)}
+        assert out == {"opus": True, "haiku": False}
+
+    def test_anthropic_model_matching_no_alias_falls_back_to_sonnet(self, tmp_path: Path):
+        s = tmp_path / "settings.json"
+        _write_settings(s, {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1M]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+            "ANTHROPIC_MODEL": "some-unknown-model",  # matches nothing
+        })
+        out = {m.value: m.is_default for m in list_models(s)}
+        assert out["sonnet"] is True

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { ModelEffortChip } from "./ModelEffortChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
-import type { SlashItem } from "../../api/cc";
+import type { ModelOption, SlashItem } from "../../api/cc";
 
 /**
  * The message composer. Esc follows the CC-terminal convention with three
@@ -30,6 +31,12 @@ interface ComposerProps {
   readonly onRequestModelPicker?: () => void;
   /** slice-027 C2: fired on bare `/effort` + Enter. */
   readonly onRequestEffortPicker?: () => void;
+  /** slice-034 feat 3: model/effort chips on the bottom bar. Omit = no chips. */
+  readonly models?: readonly ModelOption[];
+  readonly currentModelAlias?: string | null;
+  readonly currentEffort?: string | null;
+  readonly onPickModel?: (alias: string) => void;
+  readonly onPickEffort?: (value: string) => void;
 }
 
 /** Filter + order items exactly like SlashAutocomplete (skills then commands)
@@ -55,6 +62,11 @@ export function Composer({
   slashItems,
   onRequestModelPicker,
   onRequestEffortPicker,
+  models,
+  currentModelAlias,
+  currentEffort,
+  onPickModel,
+  onPickEffort,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
@@ -185,46 +197,56 @@ export function Composer({
           onSelect={pickItem}
         />
       )}
-      <textarea
-        ref={taRef}
-        className="cc-composer__input"
-        placeholder="发消息给 CC（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          setDismissed(false);
-          setAcIndex(0);
-        }}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        aria-label="CC 消息输入"
-      />
-      <div className="cc-composer__bar">
-        <span className="cc-composer__hint">
-          {streaming
-            ? "生成中… Esc 中断"
-            : awaitingInput
-              ? "等你回答上方问题"
-              : "就绪"}
-        </span>
-        {streaming ? (
+      <div className="cc-composer__shell">
+        <textarea
+          ref={taRef}
+          className="cc-composer__input"
+          placeholder={
+            awaitingInput
+              ? "等你回答上方问题（Enter 发送）"
+              : "发消息给 CC（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
+          }
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setDismissed(false);
+            setAcIndex(0);
+          }}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          aria-label="CC 消息输入"
+        />
+        <div className="cc-composer__bar">
+          {models && models.length > 0 && onPickModel && onPickEffort && (
+            <ModelEffortChip
+              models={models}
+              currentModelAlias={currentModelAlias ?? null}
+              currentEffort={currentEffort ?? null}
+              onPickModel={onPickModel}
+              onPickEffort={onPickEffort}
+            />
+          )}
+          <span className="cc-composer__spacer" />
+          {/* slice-034 feat 2: 圆形箭头按钮（无文字）；streaming 变停止图标 */}
           <button
             type="button"
-            className="cc-composer__btn cc-composer__btn--interrupt"
-            onClick={onInterrupt}
+            className={`cc-composer__send${streaming ? " cc-composer__send--stop" : ""}`}
+            onClick={streaming ? onInterrupt : submit}
+            disabled={!streaming && (disabled || text.trim().length === 0)}
+            aria-label={streaming ? "中断" : "发送"}
+            title={streaming ? "中断（Esc）" : "发送（Enter）"}
           >
-            中断
+            {streaming ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+            )}
           </button>
-        ) : (
-          <button
-            type="button"
-            className="cc-composer__btn cc-composer__btn--send"
-            onClick={submit}
-            disabled={disabled || text.trim().length === 0}
-          >
-            发送
-          </button>
-        )}
+        </div>
       </div>
     </div>
   );

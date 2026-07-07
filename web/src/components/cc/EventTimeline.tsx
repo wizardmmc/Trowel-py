@@ -14,6 +14,10 @@ import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
 
+/** slice-034 feat 5: task 类工具的语义已在右侧 TodoBar（task_* 事件）体现，
+ * 对话流不再渲染成 ToolBlock（避免与代办栏重复显示）。 */
+const HIDDEN_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite"]);
+
 /**
  * The turn body renderer. Walks `turn.items` in true order and interleaves:
  * consecutive text items merge into one AssistantText markdown block (a DOM
@@ -200,6 +204,8 @@ function Row({
     case "thinking":
       return <ThinkingRow item={item} />;
     case "tool":
+      // slice-034 feat 5: task 类工具的语义在右侧 TodoBar 体现，对话流不渲染。
+      if (HIDDEN_TOOLS.has(item.toolName)) return null;
       // Agent tool gets the dedicated sub-agent block. When no task_* progress
       // has arrived (e.g. history replay — the cc interactive jsonl carries no
       // task_* events), infer status from the ToolItem itself: a done tool_result
