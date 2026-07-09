@@ -637,3 +637,45 @@ class TestWorkflowTurnBoundary:
         assert any(isinstance(e, FinishedEvent) for e in events), (
             "all_done+silent 不应提前 break;send 应读到 cc 推的 result"
         )
+
+
+class TestMemoryInjection:
+    """slice-039: cc spawns carry memory injection via --append-system-prompt.
+
+    Injection rides cc's native flag at spawn (spike 2026-07-09), NOT a
+    reverse-proxy system rewrite. A read failure must degrade to "" and never
+    block the spawn.
+    """
+
+    async def test_spawn_passes_memory_injection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import trowel_py.cc_host.service as svc
+
+        monkeypatch.setattr(
+            svc, "build_memory_injection", lambda now: "INJECTION_MARKER_XYZ"
+        )
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        args = spawner.spawned[0][0]
+        i = args.index("--append-system-prompt")
+        assert args[i + 1] == "INJECTION_MARKER_XYZ"
+
+    async def test_spawn_survives_injection_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom(now: str) -> str:
+            raise RuntimeError("memory dir gone")
+
+        import trowel_py.cc_host.service as svc
+
+        monkeypatch.setattr(svc, "build_memory_injection", boom)
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        events = await collect(host.send("hi"))  # does not raise
+        args = spawner.spawned[0][0]
+        assert "--append-system-prompt" not in args  # degraded, no flag
+        assert any(isinstance(e, FinishedEvent) for e in events)

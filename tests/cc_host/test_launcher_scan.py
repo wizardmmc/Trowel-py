@@ -76,6 +76,23 @@ class TestBuildArgs:
         args = build_args(workdir=tmp_path, permission_prompt_tool=None)
         assert "--permission-prompt-tool" not in args
 
+    def test_append_system_prompt_added(self, tmp_path: Path):
+        """slice-039: memory injection rides cc's native --append-system-prompt
+        (spawn-time), NOT a reverse-proxy system rewrite (spike 2026-07-09)."""
+        args = build_args(workdir=tmp_path, append_system_prompt="# 层一\n1. 查 memory")
+        i = args.index("--append-system-prompt")
+        assert args[i + 1] == "# 层一\n1. 查 memory"
+
+    def test_append_system_prompt_none_omitted(self, tmp_path: Path):
+        # default None → no flag (back-compat; no memory yet → no injection).
+        args = build_args(workdir=tmp_path)
+        assert "--append-system-prompt" not in args
+
+    def test_append_system_prompt_empty_omitted(self, tmp_path: Path):
+        # empty string (build_memory_injection returned "") → no flag.
+        args = build_args(workdir=tmp_path, append_system_prompt="")
+        assert "--append-system-prompt" not in args
+
 
 class TestSubprocessKwargs:
     def test_cwd_is_workdir_and_new_session(self, tmp_path: Path):

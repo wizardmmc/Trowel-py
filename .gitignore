@@ -21,3 +21,4 @@ logs/
 .DS_Store
 AGENTS.md
 CLAUDE-archived.md
+/memory

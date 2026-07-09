@@ -24,7 +24,7 @@ from typing import Any
 import yaml
 
 from trowel_py.memory.schema import validate_entry
-from trowel_py.memory.types import Diary, Note, NoteId
+from trowel_py.memory.types import CoreItem, Diary, Note, NoteId
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +146,8 @@ class MemoryStore:
             return []
         out: list[Diary] = []
         for p in sorted(diary_root.rglob("*.md")):
-            fm, _ = _split_frontmatter(p.read_text(encoding="utf-8"))
-            d = _diary_from_fm(fm)
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            d = _diary_from_fm(fm, body)
             if d is None:
                 continue
             if layer and d.layer != layer:
@@ -162,6 +162,29 @@ class MemoryStore:
         """Return the L0 root index text (empty string if skeleton absent)."""
         path = self.root / _DICT_L0
         return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # ---- layer-one items (structured, for slice-039 injection) ----
+    def load_core_items(self) -> tuple[CoreItem, ...]:
+        """Parse core.md frontmatter items into CoreItem (all, including retired).
+
+        The store stays neutral — retirement filtering is the injection layer's
+        job (slice-039 C-1/C-2). Returns () when core.md is absent, has no
+        frontmatter, or carries no ``items`` list.
+        """
+        path = self.root / _CORE_FILE
+        if not path.exists():
+            return ()
+        fm, _body = _split_frontmatter(path.read_text(encoding="utf-8"))
+        if not fm:
+            return ()
+        items = fm.get("items")
+        if not isinstance(items, list):
+            return ()
+        return tuple(
+            core_item
+            for it in items
+            if (core_item := _core_item_from_dict(it)) is not None
+        )
 
     # ---- internals ----
     def _unique_slug(self, title: str) -> str:
@@ -238,7 +261,7 @@ def _note_from_fm(fm: dict[str, Any] | None, _body: str = "") -> Note | None:
     )
 
 
-def _diary_from_fm(fm: dict[str, Any] | None) -> Diary | None:
+def _diary_from_fm(fm: dict[str, Any] | None, body: str = "") -> Diary | None:
     if not fm or fm.get("type") != "diary":
         return None
     return Diary(
@@ -247,6 +270,25 @@ def _diary_from_fm(fm: dict[str, Any] | None) -> Diary | None:
         layer=fm.get("layer", "day"),
         period=str(fm.get("period", "")),
         promoted_knowledge=tuple(fm.get("promoted_knowledge") or ()),
+        body=body,
+    )
+
+
+def _core_item_from_dict(d: object) -> CoreItem | None:
+    """Build a CoreItem from one core.md frontmatter item; None if not a mapping.
+
+    The store stays schema-neutral here — ``validate_entry`` is the write-side
+    guard; this reader is lenient so a hand-edited core.md never breaks the
+    read path (slice-039 injection degrades to fewer items instead of crashing).
+    """
+    if not isinstance(d, dict):
+        return None
+    return CoreItem(
+        id=str(d.get("id", "")),
+        imperative=str(d.get("imperative", "")),
+        scope=d.get("scope", "high-risk"),
+        status=d.get("status", "seed"),
+        source=str(d.get("source", "")),
     )
 
 

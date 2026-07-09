@@ -18,6 +18,15 @@ def web_dist(tmp_path: Path, monkeypatch) -> Path:
     return dist
 
 
+@pytest.fixture(autouse=True)
+def _isolate_memory_root(tmp_path: Path, monkeypatch) -> None:
+    """slice-039: lifespan bootstraps layer-one core.md — route
+    resolve_memory_root to tmp so app tests never write ~/.trowel/memory."""
+    import trowel_py.memory.paths as paths
+
+    monkeypatch.setattr(paths, "resolve_memory_root", lambda: tmp_path / "mem")
+
+
 def test_spa_fallback_serves_index_for_unknown_path(web_dist):
     """Non-/api/* GET → index.html so a frontend route refresh survives."""
     client = TestClient(create_app())
@@ -142,3 +151,31 @@ def test_resolve_web_dist_returns_none_when_no_build(tmp_path: Path):
     here = tmp_path / "trowel_py"
     here.mkdir(parents=True)
     assert _resolve_web_dist(here) is None
+
+
+# === slice-039: layer-one bootstrap on startup ===
+
+
+def test_bootstrap_layer_one_creates_core_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lifespan seeds layer-one core.md on startup (idempotent; C-5 no overwrite)."""
+    import trowel_py.memory.paths as paths
+    from trowel_py.app import bootstrap_layer_one
+
+    monkeypatch.setattr(paths, "resolve_memory_root", lambda: tmp_path)
+    assert bootstrap_layer_one() is True  # seeded
+    assert (tmp_path / "core.md").exists()
+    assert bootstrap_layer_one() is False  # already exists → no overwrite
+
+
+def test_bootstrap_layer_one_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bootstrap failure must not break app startup."""
+    import trowel_py.memory.paths as paths
+    from trowel_py.app import bootstrap_layer_one
+
+    def boom() -> Path:
+        raise RuntimeError("no home dir")
+
+    monkeypatch.setattr(paths, "resolve_memory_root", boom)
+    assert bootstrap_layer_one() is False  # swallowed, not raised

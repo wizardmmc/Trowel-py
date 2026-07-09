@@ -101,6 +101,7 @@ class Diary:
     layer: DiaryLayer = "day"
     period: str = ""
     promoted_knowledge: tuple[str, ...] = ()
+    body: str = ""
 
 
 @dataclass(frozen=True)

@@ -43,8 +43,29 @@ async def lifespan(app: FastAPI):
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
     logger.info("[cc-proxy] TUI system fingerprint: %s", TUI_SYSTEM_IDENTITY[:40])
     logger.info("[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url)
+    # slice-039: ensure layer-one core.md exists before any cc session injects it.
+    if bootstrap_layer_one():
+        logger.info("[memory] seeded layer-one core.md (试用期)")
     yield
     await app.state.cc_http_client.aclose()
+
+
+def bootstrap_layer_one() -> bool:
+    """Ensure layer-one ``core.md`` exists at the memory root (slice-039).
+
+    Idempotent — ``seeds.bootstrap_core`` refuses to overwrite a reviewed
+    core.md (C-5: layer-one pollution = whole-system pollution). Called from
+    ``lifespan`` on startup so the first cc session has a layer-one to inject.
+    Returns False on any failure (never breaks startup) or when the seed
+    already existed.
+    """
+    try:
+        from trowel_py.memory import paths, seeds
+
+        return seeds.bootstrap_core(paths.resolve_memory_root())
+    except Exception:
+        logger.warning("[memory] layer-one bootstrap failed", exc_info=True)
+        return False
 
 
 # fastapi 应用工厂

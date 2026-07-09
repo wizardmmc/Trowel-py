@@ -19,6 +19,7 @@ import os
 import signal
 import time
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -64,6 +65,7 @@ from trowel_py.schemas.cc_host import (
     TrowelEvent,
     TurnStartEvent,
 )
+from trowel_py.memory.injection import build_memory_injection
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +286,17 @@ class CCHost:
         Returns:
             the spawned subprocess object (real or fake).
         """
+        # slice-039: inject memory (layer-one + dictionary L0 + recent diary) via
+        # cc's native --append-system-prompt. Failure degrades to "" — a memory
+        # read error must NEVER block a cc spawn (spike 2026-07-09: append lands
+        # in the system tail, proxy identity-rewrite stays untouched).
+        try:
+            injection = build_memory_injection(date.today().isoformat())
+        except Exception:
+            logger.warning(
+                "memory injection failed; cc spawns without it", exc_info=True
+            )
+            injection = ""
         args = build_args(
             self.workdir,
             model=self._model,
@@ -291,6 +304,7 @@ class CCHost:
             permission_mode=self.permission_mode,
             permission_prompt_tool=self._permission_prompt_tool,
             resume_from=resume_from,
+            append_system_prompt=injection,
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()

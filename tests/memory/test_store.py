@@ -185,3 +185,35 @@ def _diary_text(date: str, layer: str) -> str:
         f"period: '{date}'\npromoted_knowledge: []\n"
         "---\nbody\n"
     )
+
+
+def test_load_core_items(tmp_path: Path) -> None:
+    # slice-039: parse core.md frontmatter items into CoreItem (all, incl retired).
+    from trowel_py.memory.seeds import bootstrap_core
+
+    bootstrap_core(tmp_path)
+    store = MemoryStore(tmp_path)
+    items = store.load_core_items()
+    assert len(items) == 8  # the 8 seed imperatives
+    assert items[0].id == "lookup-first"
+    assert all(it.status == "seed" for it in items)
+
+
+def test_load_core_items_absent(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    assert store.load_core_items() == ()
+
+
+def test_load_diary_carries_body(tmp_path: Path) -> None:
+    # slice-039: diary injection needs the event-stream body, not just frontmatter.
+    store = MemoryStore(tmp_path)
+    day_dir = tmp_path / "diary" / "daily"
+    day_dir.mkdir(parents=True)
+    (day_dir / "2026-07-08.md").write_text(
+        "---\ntype: diary\ndate: '2026-07-08'\nlayer: day\n"
+        "period: '2026-07-08'\npromoted_knowledge: []\n"
+        "---\nDIARY_BODY_MARKER 事件流正文。\n",
+        encoding="utf-8",
+    )
+    [d] = store.load_diary()
+    assert "DIARY_BODY_MARKER" in d.body

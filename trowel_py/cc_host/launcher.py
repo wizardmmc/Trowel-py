@@ -52,6 +52,7 @@ def build_args(
     permission_mode: str = DEFAULT_PERMISSION_MODE,
     permission_prompt_tool: str | None = DEFAULT_PERMISSION_PROMPT_TOOL,
     resume_from: str | None = None,
+    append_system_prompt: str | None = None,
 ) -> list[str]:
     """Return the argv list for a CC subprocess. workdir is in the kwargs, not here.
 
@@ -82,6 +83,12 @@ def build_args(
         args += ["--permission-prompt-tool", permission_prompt_tool]
     if resume_from:
         args += ["--resume", resume_from]
+    # slice-039: memory injection (layer-one + dictionary L0 + recent diary) goes
+    # through cc's native --append-system-prompt, added at spawn by service._spawn.
+    # Empty/None adds no flag (nothing to inject). NOT a reverse-proxy rewrite
+    # (spike 2026-07-09 verified append lands in the system tail, cache survives).
+    if append_system_prompt:
+        args += ["--append-system-prompt", append_system_prompt]
     return args
 
 
