@@ -68,6 +68,21 @@ class TestWorkdirToSlug:
             session_scan.workdir_to_slug("/x/y_z")
         )
 
+    def test_symlink_resolved_to_match_cc(self, tmp_path: Path):
+        """cc sanitizes the realpath (resolves symlinks); trowel must too or
+        the slug mismatches cc's on-disk session dir. Real bug: /tmp →
+        /private/tmp on macOS, cc wrote -private-tmp-... while trowel looked
+        for -tmp-..., so the workflow watcher found nothing. See
+        docs/design/front-end/cc-workflow-event-model.md §6."""
+        real = tmp_path / "real_dir"
+        real.mkdir()
+        link = tmp_path / "link_dir"
+        link.symlink_to(real)
+        # symlink 和其 target 算出同一个 slug(realpath 后一致)
+        assert session_scan.workdir_to_slug(str(link)) == (
+            session_scan.workdir_to_slug(str(real))
+        )
+
 
 @pytest.fixture()
 def fake_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

@@ -41,7 +41,13 @@ from trowel_py.cc_host.launcher import (
 from trowel_py.cc_host.proxy import build_proxy_env, load_settings_env
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
+from trowel_py.cc_host.subagent_usage import (
+    merge_usage,
+    subagent_transcript_path,
+    sum_transcript_usage,
+)
 from trowel_py.cc_host.translator import Translator
+from trowel_py.cc_host.workflow_watcher import WorkflowWatcher
 
 from trowel_py.schemas.cc_host import (
     ElicitationRequestEvent,
@@ -52,12 +58,26 @@ from trowel_py.schemas.cc_host import (
     SessionExitedEvent,
     StalledWarningEvent,
     StatusEvent,
+    SubagentProgressEvent,
+    TextEvent,
     ToolCallEvent,
     TrowelEvent,
     TurnStartEvent,
 )
 
 logger = logging.getLogger(__name__)
+
+# slice-036 TEMP DIAGNOSTIC: log the cc event timeline to /tmp to root-cause
+# the "reply lags one turn" bug (problem 3/4). Records send boundaries + the
+# `result` event's watcher state, so we can tell whether cc pushes `result`
+# before a workflow finishes (=> post-result events land on the next turn).
+# Remove once root-caused + fixed.
+def _wf_debug(msg: str) -> None:
+    """Diagnostic stub — slice-036 root-caused + fixed (see
+    docs/design/front-end/cc-workflow-event-model.md). Real writes removed;
+    calls remain as no-op trace points for future debugging.
+    """
+    pass
 
 
 
@@ -209,6 +229,14 @@ class CCHost:
         self._session_start_turn_id = uuid.uuid4().hex
         self._session_start_saved = False
         self._turn_count = 0
+        # slice-036: workflow progress watcher. cc runs Workflows in the
+        # background and pushes NOTHING about them to stdout, so trowel reads
+        # the on-disk wf_<runId>.json cc maintains. Lives across turns: a
+        # workflow routinely outlives the turn that launched it (cc returns
+        # once the Workflow is backgrounded), so its final state must surface
+        # on a later send's poll (see resync + the poll at the top of the
+        # readline loop in send()).
+        self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
         # Resumed session knows cc_session_id now → save session-start at once.
         # Fresh session defers to the init handler (cc_session_id unknown here).
         if checkpoint.is_git_repo(self.workdir) and resume_from:
@@ -356,6 +384,8 @@ class CCHost:
             except (asyncio.CancelledError, Exception):
                 pass
             self._drain_task = None
+        # slice-036: drop workflow watcher tracking state (bounds memory).
+        self._workflow_watcher.close()
         await self._kill()
 
     async def reload(self) -> None:
@@ -463,6 +493,22 @@ class CCHost:
             / f"{cc_session_id}.jsonl"
         )
 
+    def _workflow_transcript_dir(self) -> Path | None:
+        """The session transcript dir that holds workflows/ + subagents/ (slice-036).
+
+        cc 2.1.197 writes both ``<slug>/<cc_session_id>.jsonl`` (main dialogue)
+        AND a same-named directory ``<slug>/<cc_session_id>/`` holding
+        ``workflows/wf_<runId>.json`` + ``subagents/``. This returns the dir;
+        None when cc_session_id isn't known yet (fresh session, pre-init).
+        """
+        if not self._cc_session_id:
+            return None
+        return (
+            cc_projects_root()
+            / workdir_to_slug(self.workdir)
+            / self._cc_session_id
+        )
+
     # -- send --------------------------------------------------------------
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
@@ -528,6 +574,9 @@ class CCHost:
         yield TurnStartEvent(
             type="turn_start", turn_id=turn_id, revertible=revertible
         )
+        _wf_debug(
+            f"SEND_START cc_sid={self._cc_session_id} text={action.text[:40]!r}"
+        )
         translator = Translator()
         detector = StalledDetector(
             threshold_mild=self.stalled_threshold_mild,
@@ -535,6 +584,10 @@ class CCHost:
             threshold_kill=self.stalled_threshold_kill,
         )
         detector.start_turn(self._now())
+        # slice-036: a workflow often finishes between turns (cc backgrounds it
+        # and returns). Re-read every non-finished runId this turn so the final
+        # state surfaces even when its wf.json mtime hasn't moved since.
+        self._workflow_watcher.resync()
         # Phased heads-up flags (per-turn): each severity fires once, then the
         # process is left alone until the next phase or the 30-min hard cap.
         mild_warned = False
@@ -565,6 +618,20 @@ class CCHost:
             detector.record_event(self._now())
 
             while True:
+                # slice-036: drain workflow snapshots every readline tick. Cheap
+                # (stat only); a no-op until a Workflow tool_use enables the
+                # watcher. Placed at loop top so it runs on every iteration —
+                # after a readline timeout's `continue` rolls back here too.
+                for wfev in self._workflow_watcher.poll():
+                    yield wfev
+                    # workflow activity = cc is alive; don't let the stalled
+                    # detector count cc's background-workflow silence as a hang.
+                    detector.record_event(self._now())
+                # slice-036: turn boundary is cc's `result` event (see §5 of
+                # docs/design/front-end/cc-workflow-event-model.md). We keep
+                # draining past cc's early `result` when a workflow is in flight
+                # (result handler below); the turn ends only on the final
+                # `result`. The stalled detector (120s/300s/1800s) guards hangs.
                 proc = self._proc
                 try:
                     raw = await asyncio.wait_for(
@@ -573,6 +640,14 @@ class CCHost:
                 except asyncio.TimeoutError:
                     if proc.returncode is not None:
                         break
+                    # slice-036 fix: turn boundary is cc's `result` event, NOT
+                    # all_done+silence. cc finishes a workflow, then thinks
+                    # (silent ~4s) and emits the completion text + result. The
+                    # old `all_done + silent → break` ended the turn during that
+                    # think gap, dropping cc's completion text + result (verified
+                    # by recording real cc stdout — see
+                    # docs/design/front-end/cc-workflow-event-model.md §5). The
+                    # stalled detector (120s/300s/1800s) still guards true hangs.
                     # slice-025-c: while cc awaits the user's control_response
                     # (AskUserQuestion), the stream is silent by design — don't
                     # let the stall watchdog kill the process and force a retry
@@ -651,12 +726,26 @@ class CCHost:
                 except json.JSONDecodeError:
                     continue
                 detector.record_event(self._now())
+                # slice-036 DIAGNOSTIC: record key cc events to see turn
+                # boundaries vs workflow/subagent completion ordering.
+                _et = ev.get("type")
+                _es = str(ev.get("subtype", ""))
+                if (
+                    _et == "result"
+                    or _et == "assistant"
+                    or (_et == "system" and _es.startswith("task_"))
+                ):
+                    _wf_debug(
+                        f"  EV ts={ev.get('timestamp','')} type={_et} sub={_es} "
+                        f"tu={ev.get('tool_use_id','')}"
+                    )
                 if ev.get("type") == "system" and ev.get("subtype") == "api_retry":
                     delay = ev.get("retry_delay_ms")
                     if delay is not None:
                         detector.record_retry(self._now(), float(delay))
                 if ev.get("type") == "system" and ev.get("subtype") == "init":
                     sid = ev.get("session_id")
+                    _wf_debug(f"INIT sid={sid}")
                     if sid:
                         self._cc_session_id = sid
                         # slice-026: fresh session — now that we know
@@ -664,6 +753,21 @@ class CCHost:
                         # checkpoint (worktree is still pristine at init).
                         if not self._session_start_saved:
                             await self._maybe_save_session_start_checkpoint(sid)
+                        # slice-036: now that cc_session_id is known, point the
+                        # workflow watcher at this session's transcript dir.
+                        tdir = self._workflow_transcript_dir()
+                        _wf_debug(f"  watcher set_transcript_dir={tdir}")
+                        if tdir is not None:
+                            self._workflow_watcher.set_transcript_dir(tdir)
+                # slice-036: workflow completion. cc pushes a system
+                # task_notification when the workflow finishes, but实测 (see
+                # docs/design/front-end/cc-workflow-event-model.md §3) shows
+                # workflow scenarios emit 0 task_notification, and its summary
+                # field is the task description ("Count files in directory"),
+                # NOT cc's completion text. The completion text is a normal
+                # assistant TextEvent after TaskOutput returns. So route
+                # task_notification through translator's normal path (no
+                # special TextEvent routing — the old routing was wrong).
                 for tev in translator.translate(ev):
                     if isinstance(tev, ElicitationRequestEvent):
                         # Remember the pending elicitation so answer_elicit /
@@ -677,12 +781,47 @@ class CCHost:
                             "tool_use_id": tev.tool_use_id,
                             "questions": tev.questions,
                         }
+                    if (
+                        isinstance(tev, ToolCallEvent)
+                        and tev.tool_name == "Workflow"
+                    ):
+                        # slice-036: a Workflow was launched in the background.
+                        # cc will write workflows/wf_<runId>.json — start
+                        # stat-polling it (the poll at loop top does the rest).
+                        _wf_debug(
+                            f"  watcher enable (Workflow tu={tev.tool_use_id}) "
+                            f"dir={self._workflow_transcript_dir()}"
+                        )
+                        self._workflow_watcher.enable()
+                    if isinstance(tev, SubagentProgressEvent):
+                        # slice-036 D 层: cc under GLM reports total_tokens=0
+                        # in task_* events; sum the subagent transcript's
+                        # message usage instead (mirrors cc's own TUI).
+                        tev = self._backfill_subagent_usage(tev)
                     yield tev
                     if isinstance(tev, FinishedEvent):
                         self._last_finished = tev
                 if ev.get("type") == "result":
-                    normal_end = True
-                    break
+                    if (
+                        self._workflow_watcher.enabled
+                        and not self._workflow_watcher.all_done
+                    ):
+                        # slice-036: cc backgrounds the workflow and pushes
+                        # `result` before it finishes. Keep draining so the
+                        # workflow's progress + completion + cc's summary land
+                        # on THIS turn (not the next). The loop-top guard ends
+                        # the turn once the workflow reaches a terminal state.
+                        _wf_debug(
+                            "  RESULT but workflow in flight (watching="
+                            f"{self._workflow_watcher.is_watching}) — keep draining"
+                        )
+                    else:
+                        normal_end = True
+                        _wf_debug(
+                            f"  RESULT break watching={self._workflow_watcher.is_watching} "
+                            f"enabled={self._workflow_watcher.enabled}"
+                        )
+                        break
             # slice-028 bug3: result 后检测 cc 是否退出（用户 /exit）。普通 turn
             # proc 不退（returncode None）；/exit 后 proc 退（returncode 0）。短
             # wait 确认（真实 cc 普通 turn 会 timeout；FakeProc.wait 立即返回）。
@@ -945,3 +1084,42 @@ class CCHost:
         if action.effort:
             return f"restarting: effort={action.effort}"
         return f"restarting: model={action.model}"
+
+    def _backfill_subagent_usage(
+        self, tev: SubagentProgressEvent
+    ) -> SubagentProgressEvent:
+        """slice-036 D 层: replace cc's empty usage with a transcript sum.
+
+        Under GLM, cc's task_progress/task_notification events carry
+        ``total_tokens: 0`` (the field is empty there), so the SubagentBlock
+        rendered "0 tokens" and hid the spend line. cc's own TUI shows real
+        numbers because it sums each assistant message's usage from the
+        subagent transcript. This reads that transcript and does the same.
+
+        Reads at every SubagentProgressEvent (started/progress/completed): the
+        transcript is small and task_* events are infrequent, so the IO cost is
+        negligible, and reading on `completed` alone would miss the running
+        progress display. Returns the original event unchanged when there is no
+        transcript yet (subagent still booting / pre-init).
+
+        Args:
+            tev: the SubagentProgressEvent to backfill.
+
+        Returns:
+            A copy with ``usage`` replaced by :func:`merge_usage` output when a
+            transcript exists; the original ``tev`` when no transcript is found.
+        """
+        if not self._cc_session_id or not tev.task_id:
+            return tev
+        # `started` arrives the moment cc forks the subagent — its transcript
+        # doesn't exist yet, so the stat would always miss. Skip it (cc under
+        # GLM only carries tokens on progress/completed anyway).
+        if tev.status == "started":
+            return tev
+        path = subagent_transcript_path(
+            self.workdir, self._cc_session_id, tev.task_id
+        )
+        summed = sum_transcript_usage(path)
+        if summed is None:
+            return tev
+        return tev.model_copy(update={"usage": merge_usage(tev.usage, summed)})

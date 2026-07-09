@@ -96,6 +96,7 @@ EVENT_TYPES = frozenset(
         "elicit_request",
         "turn_start",
         "model_changed",
+        "workflow_tree",
     }
 )
 
@@ -418,6 +419,86 @@ class ElicitationRequestEvent(_Event):
     questions: list[dict[str, Any]]
 
 
+class WorkflowPhaseInfo(BaseModel):
+    """One phase group in a workflow tree (slice-036).
+
+    Sourced from wf_<runId>.json's top-level ``phases`` array (which carries
+    both title and detail). Order is the array order — there is no separate
+    ``order`` field, and the frontend does NOT render a numeric badge (mockup
+    decision: the gold rule + bold title already carry the hierarchy).
+    """
+
+    title: str
+    detail: str | None = None
+
+
+class WorkflowAgentInfo(BaseModel):
+    """One agent node in a workflow tree (slice-036).
+
+    Sourced from wf_<runId>.json's ``workflowProgress[type="workflow_agent"]``.
+    cc already aggregates per-agent tokens/toolCalls/lastToolName here, so trowel
+    reads them verbatim (no client-side reduction — slice-036 data-source rule).
+
+    ``state`` is the trowel wire enum (queued/running/done/failed), NOT cc's
+    internal one. cc writes ``start``/``progress``/``done``/``error``; the
+    watcher normalizes them at parse time (start|progress→running, error→failed)
+    so the frontend switches on a stable set regardless of cc renames.
+    """
+
+    agent_id: str
+    label: str
+    phase_index: int | None = None
+    phase_title: str | None = None
+    model: str | None = None
+    state: Literal["queued", "running", "done", "failed"]
+    tokens: int | None = None
+    tool_calls: int | None = None
+    last_tool_name: str | None = None
+    duration_ms: int | None = None
+    prompt_preview: str | None = None
+    result_preview: str | None = None
+
+
+class WorkflowTreeEvent(_Event):
+    """A complete snapshot of one workflow run (slice-036).
+
+    cc runs Workflows in the background and pushes nothing about them to the
+    ``--stream-json`` stdout (verified by binary reverse + transcript scan — see
+    wiki/raw/2026-07-07-tcc-workflow-render-bug.md). So trowel reads the
+    on-disk ``wf_<runId>.json`` cc maintains (the single source of truth cc's
+    own TUI also reads), and emits this event. Each push is a FULL snapshot
+    (replace, not patch): cc rewrites the whole file on every progress change,
+    so a snapshot is simplest and lets the frontend reducer just swap the
+    matching run_id.
+
+    Used for BOTH the live path (WorkflowWatcher stat-polls the file while the
+    workflow runs) and history replay (history.py scans workflows/wf_*.json) —
+    same event shape + same frontend ``WorkflowTree`` component is the C-1
+    invariant: reload renders identically to the live completed state.
+
+    Multi-workflow concurrency (C-6): one session may run several workflows;
+    each gets its own WorkflowTreeEvent stream keyed by run_id, and the frontend
+    renders one card per run_id.
+    """
+
+    type: Literal["workflow_tree"] = "workflow_tree"
+    run_id: str
+    task_id: str | None = None
+    name: str
+    args: str | None = None
+    status: Literal["running", "completed", "killed", "failed"]
+    agent_count: int
+    """done agents / total — the progress bar (done/total). Computed at parse
+    time from the agents list (count of state=='done')."""
+    done_count: int
+    total_tokens: int | None = None
+    total_tool_calls: int | None = None
+    duration_ms: int | None = None
+    phases: list[WorkflowPhaseInfo] = Field(default_factory=list)
+    agents: list[WorkflowAgentInfo] = Field(default_factory=list)
+    error: str | None = None
+
+
 # Union of all trowel events (for type hints; not used as a validator).
 TrowelEvent = (
     SessionStartedEvent
@@ -442,4 +523,5 @@ TrowelEvent = (
     | SubagentProgressEvent
     | ElicitationRequestEvent
     | ModelChangedEvent
+    | WorkflowTreeEvent
 )

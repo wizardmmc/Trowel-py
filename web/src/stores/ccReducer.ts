@@ -18,6 +18,9 @@ import type {
   SubagentProgressEvent,
   ToolCallEvent,
   TrowelEvent,
+  WorkflowAgentInfo,
+  WorkflowPhaseInfo,
+  WorkflowTreeEvent,
 } from "../api/ccTypes";
 
 // ---------------------------------------------------------------------------
@@ -137,6 +140,28 @@ export interface ElicitationItem {
   readonly answers: Readonly<Record<string, string>> | null;
 }
 
+/** One workflow run, rendered as a collapsible progress tree (slice-036).
+ * Mirrors WorkflowTreeEvent with wire snake_case → internal camelCase. The
+ * reducer matches by runId so a full snapshot replaces the prior one. Lives
+ * as a turn item (the turn that launched it); a workflow that finishes on a
+ * later turn still updates the item in its launch turn (scanned across turns). */
+export interface WorkflowItem {
+  readonly kind: "workflow";
+  readonly runId: string;
+  readonly taskId: string | null;
+  readonly name: string;
+  readonly args: string | null;
+  readonly status: "running" | "completed" | "killed" | "failed";
+  readonly agentCount: number;
+  readonly doneCount: number;
+  readonly totalTokens: number | null;
+  readonly totalToolCalls: number | null;
+  readonly durationMs: number | null;
+  readonly phases: ReadonlyArray<Readonly<WorkflowPhaseInfo>>;
+  readonly agents: ReadonlyArray<Readonly<WorkflowAgentInfo>>;
+  readonly error: string | null;
+}
+
 export type TurnItem =
   | ThinkingItem
   | TextItem
@@ -147,7 +172,8 @@ export type TurnItem =
   | LocalCommandItem
   | ErrorItem
   | InterruptedItem
-  | ElicitationItem;
+  | ElicitationItem
+  | WorkflowItem;
 
 export interface Turn {
   readonly id: string;
@@ -686,6 +712,14 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
           return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
         }
       }
+      // slice-036: workflow subagent 的 task_* 事件 tool_use_id 指向 workflow
+      // 内部（无顶层 Agent tool_use），走不到上面的合并分支。若 session 任意
+      // turn 已有 workflow item，说明它是 workflow subagent——已由 WorkflowTree
+      // 渲染，丢弃避免溢出 SubagentBlock（实测 141 个 standalone 的根因）。
+      // 无 workflow 时保留 standalone SubagentItem（slice-025-a decision #10）。
+      if (turns.some((t) => t.items.some((it) => it.kind === "workflow"))) {
+        return prev;
+      }
       return appendToCurrentTurn(prev, {
         kind: "subagent",
         toolUseId: event.tool_use_id,
@@ -804,9 +838,64 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         },
       };
 
+    case "workflow_tree": {
+      // slice-036: a full workflow snapshot. Replace the prior snapshot
+      // matched by runId (live watcher re-emits as cc rewrites wf.json), or
+      // append to the current turn if none exists yet. Scanned across ALL
+      // turns because a workflow routinely outlives its launch turn — cc
+      // backgrounds it and the final-state snapshot may land on a later turn.
+      return upsertWorkflowItem(prev, workflowItemFromEvent(event));
+    }
+
     default:
       return prev;
   }
+}
+
+/** Build a WorkflowItem from a wire WorkflowTreeEvent (snake→camel). */
+function workflowItemFromEvent(event: WorkflowTreeEvent): WorkflowItem {
+  return {
+    kind: "workflow",
+    runId: event.run_id,
+    taskId: event.task_id,
+    name: event.name,
+    args: event.args,
+    status: event.status,
+    agentCount: event.agent_count,
+    doneCount: event.done_count,
+    totalTokens: event.total_tokens,
+    totalToolCalls: event.total_tool_calls,
+    durationMs: event.duration_ms,
+    phases: event.phases,
+    agents: event.agents,
+    error: event.error,
+  };
+}
+
+/** Replace the workflow item whose runId matches (anywhere in the turn tree),
+ * else append it to the last turn. slice-036. */
+function upsertWorkflowItem(prev: ReducerState, item: WorkflowItem): ReducerState {
+  const turns = prev.turns;
+  if (turns.length === 0) return prev;
+  let found = false;
+  const newTurns = turns.map((t) => {
+    if (found) return t;
+    let hit = false;
+    const items = t.items.map((it) => {
+      if (it.kind === "workflow" && it.runId === item.runId) {
+        hit = true;
+        return item;
+      }
+      return it;
+    });
+    if (!hit) return t;
+    found = true;
+    return { ...t, items };
+  });
+  if (found) return { ...prev, turns: newTurns };
+  const last = turns[turns.length - 1];
+  const updatedLast: Turn = { ...last, items: [...last.items, item] };
+  return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
 }
 
 /** Merge a subagent_progress event onto the prior SubagentState; fields absent

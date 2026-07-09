@@ -31,6 +31,7 @@ from trowel_py.schemas.cc_host import (
     SubagentProgressEvent,
     ElicitationRequestEvent,
     ModelChangedEvent,
+    WorkflowTreeEvent,
     EVENT_TYPES,
 )
 
@@ -142,6 +143,7 @@ class TestEventDiscriminators:
             (SubagentProgressEvent, "subagent_progress"),
             (ElicitationRequestEvent, "elicit_request"),
             (ModelChangedEvent, "model_changed"),
+            (WorkflowTreeEvent, "workflow_tree"),
         ],
     )
     def test_each_event_has_unique_type(self, model, etype):
@@ -153,6 +155,7 @@ class TestEventDiscriminators:
             "interrupted", "stalled_warning",
             "thinking_progress", "subagent_progress",
             "elicit_request", "model_changed",
+            "workflow_tree",
         }
         assert etype in EVENT_TYPES
 

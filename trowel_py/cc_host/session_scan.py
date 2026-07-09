@@ -81,7 +81,12 @@ def workdir_to_slug(workdir: str | os.PathLike) -> str:
     (MAX_SANITIZED_LENGTH=200); not reproduced here — real project paths are
     far shorter, and cross-language replay of CC's simpleHash is fragile.
     """
-    return re.sub(r"[^a-zA-Z0-9]", "-", str(workdir))
+    # Resolve symlinks first: cc sanitizes the realpath (e.g. /tmp →
+    # /private/tmp on macOS), so trowel must too — otherwise the slug
+    # mismatches cc's on-disk session dir and the workflow watcher / history
+    # scan find nothing (verified: cc wrote -private-tmp-... while trowel
+    # looked for -tmp-...). See docs/design/front-end/cc-workflow-event-model.md §6.
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(os.path.realpath(workdir)))
 
 
 def _is_valid_uuid_session_id(stem: str) -> bool:

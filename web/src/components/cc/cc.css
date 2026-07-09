@@ -2427,3 +2427,87 @@
   font-size: 0.82rem;
   color: var(--text-tertiary);
 }
+
+/* ===== slice-036: workflow progress tree =====
+   三层嵌套，跟现有 cc 组件同一套色调（泥棕编排 / 金色阶段 / 花园绿完成 / 红错误）。
+   视觉层次：workflow（泥棕粗左 3px + 卡片底）> phase（金色细竖线）> agent（泥棕细 2px）。
+   折叠靠条件渲染（aria-expanded），不用 .collapsed class。 */
+.cc-workflow {
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--soil-brown);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.cc-workflow__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(139, 115, 85, 0.06);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--color-border);
+}
+.cc-workflow__header[aria-expanded="false"] { border-bottom-color: transparent; }
+.cc-workflow__icon {
+  width: 15px; height: 15px;
+  stroke: var(--soil-brown); stroke-width: 1.6; fill: none;
+  flex-shrink: 0;
+}
+.cc-workflow__name { font-weight: 600; color: var(--text-primary); font-size: 0.86rem; }
+.cc-workflow__args {
+  color: var(--text-secondary); font-size: 0.8rem;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-wf-status {
+  font-size: 0.7rem; padding: 1px 8px; border-radius: var(--radius-pill);
+  font-weight: 600; border: 1px solid currentColor; background: transparent;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.cc-wf-status--running { color: var(--sunshine-ink); background: var(--sunshine-soft); border-color: var(--sunshine); }
+.cc-wf-status--completed { color: var(--garden-green); background: var(--garden-soft); border-color: var(--garden-green); }
+.cc-wf-status--killed, .cc-wf-status--failed { color: var(--color-error); background: var(--error-soft); border-color: var(--color-error); }
+.cc-wf-status .cc-spin-ring { width: 9px; height: 9px; border-width: 1.5px; }
+.cc-wf-progress {
+  display: flex; align-items: center; gap: 6px; margin-left: 8px;
+  font-size: 0.72rem; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.cc-wf-progress__bar { width: 80px; height: 5px; background: var(--neutral-soft); border-radius: var(--radius-pill); overflow: hidden; }
+.cc-wf-progress__fill { height: 100%; background: var(--garden-green); border-radius: var(--radius-pill); transition: width 0.3s; }
+.cc-wf-progress__fill--running { background: var(--sunshine); }
+.cc-wf-stats { margin-left: auto; display: flex; gap: 10px; font-size: 0.72rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cc-wf-stats b { color: var(--text-primary); font-weight: 600; }
+.cc-wf-caret { width: 10px; height: 10px; stroke: var(--text-tertiary); stroke-width: 2; fill: none; transition: transform 0.15s; flex-shrink: 0; }
+.cc-workflow__body { padding: 6px 0; }
+
+.cc-phase { margin: 2px 0; padding-left: 14px; border-left: 2px solid var(--sunshine); }
+.cc-phase__head { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px; cursor: pointer; user-select: none; }
+.cc-phase__title { font-weight: 600; color: var(--text-primary); font-size: 0.82rem; }
+.cc-phase__detail { color: var(--text-tertiary); font-size: 0.76rem; }
+.cc-phase__count { margin-left: auto; font-size: 0.7rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cc-phase__agents { padding: 4px 0 4px 8px; display: flex; flex-direction: column; gap: 3px; }
+
+.cc-agent { display: flex; flex-direction: column; border-left: 2px solid var(--soil-brown); background: rgba(139, 115, 85, 0.06); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.cc-agent[data-state="failed"] { border-left-color: var(--color-error); background: var(--error-soft); }
+.cc-agent__head { display: flex; align-items: center; gap: 7px; padding: 4px 10px; font-size: 0.72rem; }
+.cc-agent__head[role="button"] { cursor: pointer; }
+.cc-agent__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-tertiary); }
+.cc-agent[data-state="running"] .cc-agent__dot { background: var(--sunshine); box-shadow: 0 0 0 3px var(--sunshine-soft); animation: cc-pulse 1.2s ease-in-out infinite; }
+.cc-agent[data-state="done"] .cc-agent__dot { background: var(--garden-green); }
+.cc-agent[data-state="failed"] .cc-agent__dot { background: var(--color-error); }
+.cc-agent[data-state="queued"] .cc-agent__dot { background: transparent; border: 1.5px solid var(--text-tertiary); }
+.cc-agent__label { color: var(--text-primary); font-weight: 500; }
+.cc-agent__model { font-size: 0.66rem; color: var(--text-tertiary); font-family: var(--font-mono); }
+.cc-agent__last { color: var(--text-secondary); font-size: 0.68rem; }
+.cc-agent__tok { margin-left: auto; font-size: 0.68rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cc-agent__tools { font-size: 0.68rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.cc-agent__caret { width: 9px; height: 9px; stroke: var(--text-tertiary); stroke-width: 2; fill: none; transition: transform 0.15s; flex-shrink: 0; }
+.cc-agent__body { padding: 4px 10px 6px 18px; border-top: 1px dashed rgba(139, 115, 85, 0.25); display: flex; flex-direction: column; gap: 4px; }
+.cc-agent__preview { font-size: 0.72rem; color: var(--text-secondary); line-height: 1.5; }
+.cc-agent__preview b { color: var(--text-tertiary); font-weight: 500; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+
+.cc-wf-error { margin: 6px 12px 8px; padding: 8px 10px; background: var(--error-soft); border-left: 2px solid var(--color-error); border-radius: var(--radius-sm); font-size: 0.74rem; color: var(--color-error); font-family: var(--font-mono); }
+.cc-wf-error__label { font-family: var(--font-sans); font-weight: 600; margin-bottom: 2px; }
+
+@keyframes cc-pulse { 50% { box-shadow: 0 0 0 5px var(--sunshine-soft); } }

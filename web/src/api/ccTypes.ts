@@ -200,6 +200,55 @@ export interface ModelChangedEvent {
   readonly effort: string | null;
 }
 
+/** One agent node in a workflow tree (slice-036). Sourced verbatim from cc's
+ * wf_<runId>.json — cc already aggregates per-agent tokens/toolCalls here.
+ * `state` is the wire enum (queued/running/done/failed); cc's internal
+ * start/progress/error are normalized to running/running/failed on the BE. */
+export interface WorkflowAgentInfo {
+  readonly agent_id: string;
+  readonly label: string;
+  readonly phase_index: number | null;
+  readonly phase_title: string | null;
+  readonly model: string | null;
+  readonly state: "queued" | "running" | "done" | "failed";
+  readonly tokens: number | null;
+  readonly tool_calls: number | null;
+  readonly last_tool_name: string | null;
+  readonly duration_ms: number | null;
+  readonly prompt_preview: string | null;
+  readonly result_preview: string | null;
+}
+
+/** One phase group in a workflow tree (slice-036). From wf.json's top-level
+ * phases[] (the only place `detail` appears). Order is array order; the FE
+ * renders NO numeric badge (mockup decision). */
+export interface WorkflowPhaseInfo {
+  readonly title: string;
+  readonly detail: string | null;
+}
+
+/** A full snapshot of one workflow run (slice-036). cc runs Workflows in the
+ * background and pushes nothing about them to its stream-json stdout, so the
+ * BE reads the on-disk wf_<runId>.json and emits this. Each push is a FULL
+ * snapshot (replace by run_id) — the reducer swaps the matching workflow item.
+ * Same shape on the live path (WorkflowWatcher) and history replay (C-1). */
+export interface WorkflowTreeEvent {
+  readonly type: "workflow_tree";
+  readonly run_id: string;
+  readonly task_id: string | null;
+  readonly name: string;
+  readonly args: string | null;
+  readonly status: "running" | "completed" | "killed" | "failed";
+  readonly agent_count: number;
+  readonly done_count: number;
+  readonly total_tokens: number | null;
+  readonly total_tool_calls: number | null;
+  readonly duration_ms: number | null;
+  readonly phases: ReadonlyArray<Readonly<WorkflowPhaseInfo>>;
+  readonly agents: ReadonlyArray<Readonly<WorkflowAgentInfo>>;
+  readonly error: string | null;
+}
+
 /** One question in an AskUserQuestion elicitation (spec/04 A.1). */
 export interface QuestionInput {
   readonly question: string;
@@ -246,7 +295,8 @@ export type TrowelEvent =
   | ThinkingProgressEvent
   | SubagentProgressEvent
   | ElicitationRequestEvent
-  | ModelChangedEvent;
+  | ModelChangedEvent
+  | WorkflowTreeEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

@@ -22,6 +22,7 @@ from trowel_py.schemas.cc_host import (
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
+    WorkflowTreeEvent,
 )
 
 
@@ -728,3 +729,249 @@ def test_parse_history_thinking_prev_skips_unparseable_line(
     events = history.parse_history("/workdir", "abc")
     thinking = next(e for e in events if isinstance(e, ThinkingEvent))
     assert thinking.thinking_duration_seconds == 20
+
+
+# ── slice-036: workflow history replay (C 层) ──────────────────────────────
+#
+# parse_history scans the same-named transcript dir's workflows/wf_*.json and
+# injects a WorkflowTreeEvent (completed state) right after the Workflow
+# tool_use, so a reloaded session renders the workflow tree identically to the
+# live completed state (invariant C-1). Shapes verified against a real
+# deep-research run — see tests/cc_host/test_workflow_watcher.py.
+
+def _workflow_tool_use(
+    name: str = "baseline", args: str = "question", tool_use_id: str = "call_wf_1"
+) -> dict:
+    """An assistant entry that launches a Workflow tool_use."""
+    return _assistant(
+        [
+            {
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": "Workflow",
+                "input": {"name": name, "args": args},
+            }
+        ]
+    )
+
+
+def _write_workflow_json(
+    sid_dir: Path,
+    run_id: str = "wf_x",
+    status: str = "completed",
+    name: str = "baseline",
+) -> None:
+    """Write a minimal wf_<runId>.json under <sid_dir>/workflows/."""
+    wf_dir = sid_dir / "workflows"
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "runId": run_id,
+        "taskId": "task_x",
+        "workflowName": name,
+        "status": status,
+        "agentCount": 1,
+        "totalTokens": 100,
+        "totalToolCalls": 1,
+        "durationMs": 999,
+        "args": "question",
+        "phases": [{"title": "Scope", "detail": "decompose question"}],
+        "workflowProgress": [
+            {"type": "workflow_phase", "index": 1, "title": "Scope"},
+            {
+                "type": "workflow_agent",
+                "index": 1,
+                "label": "scope",
+                "phaseIndex": 1,
+                "phaseTitle": "Scope",
+                "agentId": "a1",
+                "model": "glm-5.1",
+                "state": "done",
+                "tokens": 100,
+                "toolCalls": 1,
+                "lastToolName": "Bash",
+            },
+        ],
+    }
+    (wf_dir / f"{run_id}.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+
+def test_parse_history_injects_workflow_after_tool_use(
+    fake_projects: Path,
+) -> None:
+    """A Workflow tool_use + an on-disk wf.json → a WorkflowTreeEvent injected
+    right after the tool_use (C 层), in the same turn that launched it."""
+    sid = "abc-wf"
+    sid_dir = fake_projects / sid
+    sid_dir.mkdir()
+    _write_workflow_json(sid_dir, run_id="wf_x", status="completed")
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [_init(), _user_text("go"), _workflow_tool_use(), _result_success()],
+    )
+
+    events = history.parse_history("/workdir", sid)
+
+    wf_events = [e for e in events if isinstance(e, WorkflowTreeEvent)]
+    assert len(wf_events) == 1
+    assert wf_events[0].run_id == "wf_x"
+    assert wf_events[0].status == "completed"
+    assert wf_events[0].agent_count == 1
+    assert len(wf_events[0].phases) == 1
+    # injected IMMEDIATELY after the Workflow tool_use ToolCallEvent
+    tool_idx = next(
+        i
+        for i, e in enumerate(events)
+        if isinstance(e, ToolCallEvent) and e.tool_name == "Workflow"
+    )
+    assert events[tool_idx + 1] is wf_events[0]
+
+
+def test_parse_history_no_workflow_dir_no_injection(
+    fake_projects: Path,
+) -> None:
+    """Workflow tool_use but no workflows/wf_*.json → no WorkflowTreeEvent.
+    A workflow that's still running has no complete snapshot on disk yet."""
+    sid = "abc-nodir"
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [_init(), _user_text("go"), _workflow_tool_use(), _result_success()],
+    )
+
+    events = history.parse_history("/workdir", sid)
+
+    assert not any(isinstance(e, WorkflowTreeEvent) for e in events)
+
+
+def test_parse_history_orphan_workflow_appended_at_end(
+    fake_projects: Path,
+) -> None:
+    """wf.json present but no Workflow tool_use in the jsonl → inject at end
+    (defensive: the tool_use lives in a sidechain jsonl tcc didn't parse, or
+    the main jsonl was trimmed). The snapshot still surfaces so the run isn't
+    invisible on reload."""
+    sid = "abc-orphan"
+    sid_dir = fake_projects / sid
+    sid_dir.mkdir()
+    _write_workflow_json(sid_dir, run_id="wf_orphan", status="killed")
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [
+            _init(),
+            _user_text("go"),
+            _assistant([{"type": "text", "text": "done"}]),
+            _result_success(),
+        ],
+    )
+
+    events = history.parse_history("/workdir", sid)
+
+    wf_events = [e for e in events if isinstance(e, WorkflowTreeEvent)]
+    assert len(wf_events) == 1
+    assert wf_events[0].status == "killed"
+    # appended after the FinishedEvent (no tool_use anchor to follow)
+    assert events[-1] is wf_events[0]
+
+
+def test_parse_history_multiple_workflows_all_injected(
+    fake_projects: Path,
+) -> None:
+    """C-6: multiple wf.json files → multiple WorkflowTreeEvents, all injected
+    after the (first) Workflow tool_use, ordered by startTime."""
+    sid = "abc-multi"
+    sid_dir = fake_projects / sid
+    sid_dir.mkdir()
+    # write two workflow snapshots (startTime orders them)
+    for rid, start in (("wf_b", 1000), ("wf_a", 2000)):
+        d = wf_minimal_payload(rid, start=start)
+        (sid_dir / "workflows" / f"{rid}.json").parent.mkdir(parents=True, exist_ok=True)
+        (sid_dir / "workflows" / f"{rid}.json").write_text(
+            json.dumps(d), encoding="utf-8"
+        )
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [_init(), _user_text("go"), _workflow_tool_use(), _result_success()],
+    )
+
+    events = history.parse_history("/workdir", sid)
+    wf_events = [e for e in events if isinstance(e, WorkflowTreeEvent)]
+    assert [e.run_id for e in wf_events] == ["wf_b", "wf_a"]  # by startTime
+
+
+def wf_minimal_payload(run_id: str, start: int = 0) -> dict:
+    """A bare wf.json payload (only fields parse_workflow_tree needs)."""
+    return {
+        "runId": run_id,
+        "workflowName": "baseline",
+        "status": "completed",
+        "agentCount": 0,
+        "startTime": start,
+    }
+
+
+def test_parse_history_drops_task_notification_user_row(
+    fake_projects: Path,
+) -> None:
+    """slice-036 bug5: <task-notification> is persisted as a user row with
+    isMeta ABSENT (not True). It must be dropped (not rendered as a user
+    bubble on reload) — the isMeta guard alone doesn't catch it."""
+    sid = "abc-tn"
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [
+            _init(),
+            _user_text("hi"),
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": "<task-notification>\n<task-id>w1e</task-id>\n</task-notification>",
+                },
+                "timestamp": "2026-07-08T00:00:00Z",
+            },
+            _result_success(),
+        ],
+    )
+    events = history.parse_history("/workdir", sid)
+    user_texts = [e.text for e in events if isinstance(e, UserEvent)]
+    assert "hi" in user_texts
+    assert not any("task-notification" in t for t in user_texts)
+
+
+def test_parse_history_each_tool_use_gets_own_workflow(fake_projects: Path) -> None:
+    """slice-036 bug C: multiple workflows must inject after their OWN
+    Workflow tool_use, not all stacked after the first one."""
+    sid = "abc-multi-turn"
+    sid_dir = fake_projects / sid
+    sid_dir.mkdir()
+    _write_workflow_json(sid_dir, run_id="wf_1", name="first")
+    _write_workflow_json(sid_dir, run_id="wf_2", name="second")
+    _write_jsonl(
+        fake_projects / f"{sid}.jsonl",
+        [
+            _init(),
+            _user_text("go1"),
+            _workflow_tool_use(name="first"),
+            _assistant([{"type": "text", "text": "done1"}]),
+            _result_success(),
+            _user_text("go2"),
+            _workflow_tool_use(name="second"),
+            _assistant([{"type": "text", "text": "done2"}]),
+            _result_success(),
+        ],
+    )
+    events = history.parse_history("/workdir", sid)
+    wf_events = [e for e in events if isinstance(e, WorkflowTreeEvent)]
+    assert len(wf_events) == 2
+    # each tool_use immediately followed by its workflow snapshot
+    def _tu_idx(name: str) -> int:
+        return next(
+            i for i, e in enumerate(events)
+            if isinstance(e, ToolCallEvent) and e.tool_name == "Workflow"
+            and e.input.get("name") == name
+        )
+    after1 = events[_tu_idx("first") + 1]
+    after2 = events[_tu_idx("second") + 1]
+    assert isinstance(after1, WorkflowTreeEvent) and after1.run_id == "wf_1"
+    assert isinstance(after2, WorkflowTreeEvent) and after2.run_id == "wf_2"

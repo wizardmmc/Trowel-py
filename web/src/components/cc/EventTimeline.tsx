@@ -13,10 +13,13 @@ import { AssistantText } from "./AssistantText";
 import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
+import { WorkflowTree } from "./WorkflowTree";
 
 /** slice-034 feat 5: task 类工具的语义已在右侧 TodoBar（task_* 事件）体现，
- * 对话流不再渲染成 ToolBlock（避免与代办栏重复显示）。 */
-const HIDDEN_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite"]);
+ * 对话流不再渲染成 ToolBlock（避免与代办栏重复显示）。
+ * slice-036: Workflow 工具的 tool_use 不渲染成 ToolBlock——它的进度树由
+ * 独立的 WorkflowTree 组件渲染（紧跟其后的 workflow item）。 */
+const HIDDEN_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "Workflow"]);
 
 /**
  * The turn body renderer. Walks `turn.items` in true order and interleaves:
@@ -250,6 +253,10 @@ function Row({
           disabled={isReplay}
         />
       );
+    case "workflow":
+      // slice-036: render the workflow progress tree (live + history share
+      // this component — invariant C-1).
+      return <WorkflowTree workflow={item} workdir={workdir} />;
     case "text":
       // Handled by EventTimeline's main loop (merged into AssistantText).
       return null;

@@ -34,7 +34,7 @@ trowel-py/
 │   ├── player/            玩家领域（level / xp / coins / streak）
 │   ├── feynman/           费曼模式
 │   ├── llm/               LLM 客户端 + prompts + filter
-│   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）
+│   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）；workflow_watcher.py 读 wf_<runId>.json 渲染 workflow 进度树（slice-036）；subagent_usage.py 从 subagent transcript 累加 token（slice-036 D 层）
 │   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up / cc_host）
 │
 ├── web/                   前端：React 19 + Vite + Zustand + framer-motion

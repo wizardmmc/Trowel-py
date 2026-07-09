@@ -16,10 +16,12 @@ import json
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
+from trowel_py.cc_host.workflow_watcher import parse_workflow_tree
 from trowel_py.schemas.cc_host import (
     ElicitationRequestEvent,
     FinishedEvent,
@@ -30,6 +32,7 @@ from trowel_py.schemas.cc_host import (
     ToolResultEvent,
     TrowelEvent,
     UserEvent,
+    WorkflowTreeEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +137,19 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     # without a timestamp do not update this, so a malformed line in between
     # can't reset the anchor.
     prev_ts: str | None = None
+    # slice-036 (C 层): preload completed-workflow snapshots from the
+    # same-named transcript dir's workflows/wf_*.json. cc persists the whole
+    # tree there (it pushes nothing to the dialogue jsonl), so replay reads it
+    # back to render the workflow tree identically to the live completed state
+    # (invariant C-1). Injected after the first Workflow tool_use so the tree
+    # lands in the turn that launched it; appended at end if the tool_use isn't
+    # in this jsonl (orphan — defensive).
+    workflow_snapshots = _load_workflow_snapshots(path.parent / cc_session_id)
+    # Inject each snapshot after its matching Workflow tool_use, in order
+    # (snapshots are sorted by startTime; tool_uses appear in launch order).
+    # Previously ALL snapshots were dumped after the first tool_use, which
+    # stacked every workflow onto one turn on reload (slice-036 bug C).
+    workflows_injected = 0
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw in fh:
             raw = raw.strip()
@@ -145,10 +161,69 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
                 logger.debug("skipping unparseable line in %s", path)
                 continue
             cur_ts = ev.get("timestamp") if isinstance(ev, dict) else None
-            events.extend(_translate_line(ev, prev_ts))
+            for tev in _translate_line(ev, prev_ts):
+                events.append(tev)
+                if (
+                    workflows_injected < len(workflow_snapshots)
+                    and isinstance(tev, ToolCallEvent)
+                    and tev.tool_name == "Workflow"
+                ):
+                    events.append(workflow_snapshots[workflows_injected])
+                    workflows_injected += 1
             if isinstance(cur_ts, str) and cur_ts:
                 prev_ts = cur_ts
+    # orphan snapshots (more wf.json than tool_uses — e.g. a workflow whose
+    # tool_use lives in a sidechain jsonl tcc didn't parse) still surface so a
+    # completed/killed run isn't invisible on reload.
+    for i in range(workflows_injected, len(workflow_snapshots)):
+        events.append(workflow_snapshots[i])
     return events
+
+
+def _load_workflow_snapshots(transcript_dir: Path) -> list[WorkflowTreeEvent]:
+    """Read workflows/wf_*.json under a session transcript dir (slice-036 C 层).
+
+    cc writes one wf_<runId>.json per workflow run into the same-named dir
+    beside the dialogue jsonl. Each carries the full tree cc aggregated
+    (phases + per-agent state/tokens/toolCalls), so this is a straight
+    parse_workflow_tree — no reduction.
+
+    Args:
+        transcript_dir: ``<projects-root>/<slug>/<cc_session_id>`` (the dir,
+            not the .jsonl file).
+
+    Returns:
+        Parsed snapshots ordered by ``startTime`` ascending (oldest workflow
+        first), so multiple workflows in one session render in launch order.
+        Empty when the dir or its workflows/ subdir is absent — a session that
+        never ran a workflow, or a workflow still booting (no snapshot yet).
+    """
+    wf_dir = transcript_dir / "workflows"
+    if not wf_dir.is_dir():
+        return []
+    snapshots: list[tuple[int, WorkflowTreeEvent]] = []
+    for f in wf_dir.glob("wf_*.json"):
+        try:
+            wf = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.debug("skipping unreadable workflow snapshot %s", f)
+            continue
+        if not isinstance(wf, dict):
+            continue
+        try:
+            ev = parse_workflow_tree(wf)
+        except Exception as exc:  # noqa: BLE001 — one bad file must not break replay
+            logger.warning("workflow snapshot parse failed (%s): %s", f, exc)
+            continue
+        start_raw = wf.get("startTime")
+        start = (
+            int(start_raw)
+            if isinstance(start_raw, (int, float)) and not isinstance(start_raw, bool)
+            else 0
+        )
+        snapshots.append((start, ev))
+    snapshots.sort(key=lambda t: t[0])
+    return [ev for _, ev in snapshots]
 
 
 def _translate_line(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent]:
@@ -234,6 +309,13 @@ def _clean_user_text(text: str) -> str:
         return f"/{name} {args}" if args else f"/{name}"
     # 2. Local-command stdout -> drop
     if "<local-command-stdout>" in text:
+        return ""
+    # 2.5. task-notification -> drop (slice-036 bug5). cc persists workflow/
+    # subagent completion notices as user rows with isMeta ABSENT (not True),
+    # so the isMeta guard above doesn't catch them; without this they render
+    # as a polluted user bubble on reload. Live path never echoes them
+    # (translator only extracts tool_result from user rows).
+    if text.lstrip().startswith("<task-notification>"):
         return ""
     # 3. Trowel skill-trigger expansion -> /name args
     trigger_m = _SKILL_TRIGGER_RE.match(text)

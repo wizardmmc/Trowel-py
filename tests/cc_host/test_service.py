@@ -593,3 +593,47 @@ class TestCheckpointOnSend:
         assert host.is_dead is False  # process still alive after a clean turn
         await host.reload()
         assert host.is_dead is True
+
+
+class TestWorkflowTurnBoundary:
+    """slice-036 fix: turn 边界回归 cc 的 `result` 事件,移除 all_done+silent→break。
+
+    实测时序(cc 2.1.197,TaskOutput 阻塞模式):workflow 完成(all_done True)
+    → cc think 静默 ~4s → 反馈 text → result。旧的 all_done+1s silent→break
+    在 think 静默期误判,提前结束 turn,丢反馈 text + result。建立 cc 的
+    turn 边界(result)后,send 应等到 result 才结束,不因 all_done+静默提前 break。
+    """
+
+    async def test_all_done_silent_does_not_break_waits_for_result(
+        self, tmp_path: Path
+    ) -> None:
+        """all_done=True + cc 静默期,send 不提前 break,继续读到 result。"""
+        # feed 不含 result;result 延迟 feed 模拟 cc 完成后的 think 静默期。
+        proc = FakeProc([line(init_event())], feed_eof=False)
+        host = CCHost(
+            "sid", tmp_path, spawner=FakeSpawner([proc]),
+            stalled_tick=0.001,
+            stalled_threshold_mild=120.0,
+            stalled_threshold_severe=300.0,
+            stalled_threshold_kill=1800.0,
+        )
+        # 模拟 workflow 已完成:watcher enabled + all_done=True。
+        w = host._workflow_watcher
+        w._enabled = True
+        w._tracked.add("wf_x")
+        w._finished.add("wf_x")
+        assert w.enabled and w.all_done
+
+        async def feed_result_after_silence() -> None:
+            # 让 send 先经历几次 readline timeout(all_done=True,cc 静默)。
+            await asyncio.sleep(0.02)
+            proc.stdout.feed_data(line(result_ok()).encode() + b"\n")
+
+        task = asyncio.create_task(feed_result_after_silence())
+        events = await collect(host.send("跑个 workflow"))
+        await task
+        # 旧逻辑:all_done+silent→break,send 在静默期结束,读不到 result。
+        # 新逻辑:不 break,等到 result。断言读到 FinishedEvent(result)。
+        assert any(isinstance(e, FinishedEvent) for e in events), (
+            "all_done+silent 不应提前 break;send 应读到 cc 推的 result"
+        )
