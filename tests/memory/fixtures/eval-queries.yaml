@@ -1,0 +1,222 @@
+# slice-038 多相关 ground-truth 检索评测基准 (C-8: 版本化稳定基准)
+#
+# 每条 query 的 relevant 是 wiki/pages 里真实存在的笔记文件名 (stem)，2-5 条，
+# 保证召回率能独立于准确率被测出来 (S1 单相关 query 让两者数学塌缩)。
+# `category` 标注该 query 设计来压测的失败模式，供 baseline 分析用 (load_queries 忽略)。
+# dictionary 每次重生成后都用同一套基准重跑，趋势才可比。
+
+# ---- 电信诈骗与反诈黑产 ----
+- query_id: tf-numbers
+  query: "骗子的手机号从哪来，怎么从源头拦截？"
+  category: in-domain
+  relevant: [号码供应链, 接码平台, 猫池, 断卡行动]
+
+- query_id: tf-android
+  query: "在 Android 上怎么采集用户行为信号做反诈检测？"
+  category: in-domain
+  relevant: [Android系统级行为采集优先, UsageStatsManager累积值非增量, dumpsys交叉验证采集器, Android行为采集API版本陷阱]
+
+- query_id: tf-cialdini
+  query: "骗子用哪些心理套路让人一步步上钩？"
+  category: in-domain
+  relevant: [Cialdini影响力磁带, Cialdini影响力磁带三连击]
+
+- query_id: tf-cross-forgery
+  query: "怎么伪造一个 app 的身份骗过系统校验？"
+  category: cross-domain
+  relevant: [确定性PRNG配置伪造, 身份证黑市]
+
+# ---- AI-Agent 与记忆系统 ----
+- query_id: mem-compress
+  query: "Agent 的上下文怎么压缩才不丢关键信息？"
+  category: in-domain
+  relevant: [上下文压缩设计, 摘要注入方式对比, 摘要质量vs注入机制, 记忆检索策略]
+
+- query_id: mem-hitl-hotl
+  query: "记忆系统怎么从人插手变成模型自己干？"
+  category: in-domain
+  relevant: [HITL与HOTL, 从HITL到HOTL的范式转变, AI自主性层级]
+
+- query_id: mem-industry
+  query: "业界有哪些 Agent 记忆方案可以参考？"
+  category: in-domain
+  relevant: [MemGPT-Letta, LangChain4j, 三项目记忆设计对比, ANOLISA]
+
+- query_id: mem-cross-sediment
+  query: "笔记明明记了，模型下次为啥还是不用？"
+  category: cross-domain
+  relevant: [沉淀不等于自动应用, 摘要质量vs注入机制]
+
+# ---- Claude-Code 与 MCP 套壳 ----
+- query_id: cc-buddy
+  query: "Claude Code 怎么搞 buddy 宠物重刷？"
+  category: in-domain
+  relevant: [buddy宠物系统, buddy宠物重刷实战, Buddy重刷工具对比, Claude-Code-Buddy宠物系统重刷-2026-04-10]
+
+- query_id: cc-hash
+  query: "Bun 里算哈希有哪些坑？"
+  category: in-domain
+  relevant: [Bun-hash与FNV-1a哈希坑点, Wyhash]
+
+- query_id: cc-mcp-debug
+  query: "MCP 服务器连不上或行为异常怎么调试？"
+  category: in-domain
+  relevant: [MCP服务器调试, MCP调试实录-2026-04-06, 多MCP服务器重复配置, 插件MCP服务器配置隔离]
+
+- query_id: cc-glm
+  query: "智谱 GLM 端点套壳时有哪些已知坑？"
+  category: in-domain
+  relevant: [智谱GLM按system-prompt前缀缓存, GLM-headless多轮工具调用不可靠, tcc-stall检测与GLM非流式静默]
+
+# ---- 工程实践与 shell-bash 防御 ----
+- query_id: sh-glob
+  query: "shell 里 glob 匹配不到文件为什么不报错？"
+  category: in-domain
+  relevant: [glob无匹配静默失败, fish未匹配glob中止, bash-vs-fish-glob行为对比, pipeline-glob残留污染]
+
+- query_id: sh-defensive
+  query: "写 bash 脚本怎么防御性编程少踩坑？"
+  category: in-domain
+  relevant: [bash防御性编程四件套, set-euo-pipefail, shell选项继承陷阱, bash变量边界陷阱]
+
+- query_id: sh-heredoc
+  query: "heredoc 写多行内容有什么坑？"
+  category: in-domain
+  relevant: [heredoc子进程孤儿化, heredoc长内容截断]
+
+- query_id: sh-batch
+  query: "凌晨跑批处理任务，应该处理昨天还是今天的数据？"
+  category: in-domain
+  relevant: [凌晨批次处理昨天而非今天, launchd, launchd定时任务PATH陷阱]
+
+- query_id: sh-oswalk
+  query: "os.walk 遍历大目录有什么陷阱？"
+  category: in-domain
+  relevant: [os-walk遍历范围陷阱, os-walk大目录爆内存与孤儿进程-2026-06-28]
+
+# ---- AI 编程与软件工程范式 ----
+- query_id: swe-contract
+  query: "AI 编程怎么用契约和规约保证质量下限？"
+  category: in-domain
+  relevant: [契约式设计DbC, 规约先行, AI时代规约先行被重新强调, DbC-vs-TDD对比]
+
+- query_id: swe-70pct
+  query: "为什么说 70% 的问题是 AI 编程的坎？"
+  category: in-domain
+  relevant: [70%问题, AI编程生产力悖论, AI编程学习债务应对路径]
+
+- query_id: swe-cross-constraint
+  query: "改 CLAUDE.md 的约束能根治模型的系统性偏差吗？"
+  category: cross-domain
+  relevant: [LLM系统性偏差根因在约束层, 规约先行]
+
+# ---- LLM 方法论与生产力辩论 ----
+- query_id: prod-metr
+  query: "AI 真的让程序员快了吗，独立证据是什么？"
+  category: in-domain
+  relevant: [METR-RCT, 厂商宣传vs独立证据, AI编程生产力悖论, 验证成本是质变瓶颈]
+
+- query_id: prod-agi
+  query: "AGI 经济学辩论，谁说得靠谱？"
+  category: in-domain
+  relevant: [AGI经济学, 感知与现实背离, 姚顺宇]
+
+# ---- 教育 AI 与教学法 ----
+- query_id: edu-eval
+  query: "LLM 真的会教人吗，怎么评估它的教学能力？"
+  category: in-domain
+  relevant: [学科知识vs教学能力, 教学能力评估基准, LLM教学能力研究-2026-04-21, SocraticLM]
+
+- query_id: edu-socratic
+  query: "怎么用 AI 做苏格拉底式教学？"
+  category: in-domain
+  relevant: [苏格拉底式教学, 教学法对齐, 教学链式思考, LearnLM]
+
+# ---- 二语习得与 AI 写作翻译腔 ----
+- query_id: sla-critical
+  query: "成年人学外语有天花板吗，关键期假说成立吗？"
+  category: in-domain
+  relevant: [二语习得天花板, Abrahamsson与Hyltenstam关键期研究, Hartshorne关键期研究]
+
+- query_id: sla-tone
+  query: "为什么 AI 写的中文一股翻译腔？"
+  category: in-domain
+  relevant: [中文AI味的双重病根, AI腔污染, 翻译腔, 风格污染的usage-based机制]
+
+# ---- 芒格思维与认知科学 ----
+- query_id: munger-model
+  query: "芒格的跨学科思维模型怎么用？"
+  category: in-domain
+  relevant: [芒格跨学科思维模型, 跨学科是结果而非建议, 双轨分析, 逆向思考-避免失误]
+
+- query_id: munger-degradation
+  query: "用 AI 干活久了，自己的技能会不会退化？"
+  category: in-domain
+  relevant: [技能退化低均衡, 注意残留-AI干活偷看疲劳]
+
+# ---- 指数基金与被动投资 ----
+- query_id: inv-fire
+  query: "普通人怎么靠指数基金实现财务自由？"
+  category: in-domain
+  relevant: [4%法则, 财务独立FIRE, 全市场指数基金, 定投DCA]
+
+- query_id: inv-collins
+  query: "VTSAX 和 Collins 的《简单致富》讲的核心是什么？"
+  category: in-domain
+  relevant: [VTSAX, The-Simple-Path-to-Wealth, J.L.-Collins, 简单致富阅读笔记-2026-05-01]
+
+- query_id: inv-china
+  query: "国内投资者买指数基金，走 QDII 还是海外券商？"
+  category: in-domain
+  relevant: [A股QDII-vs-海外券商, 中国投资者实操路径, 海外券商账户]
+
+# ---- 价值投资与平台经济个股 ----
+- query_id: val-meituan
+  query: "美团值得长期持有吗，护城河在哪？"
+  category: in-domain
+  relevant: [美团, 美团价值投资深度研究-2026-05-22, 平台护城河评估, 三边网络效应]
+
+# ---- ML 主题模型与评估方法论 ----
+- query_id: ml-topic
+  query: "做文本主题模型有哪些方法？"
+  category: in-domain
+  relevant: [LDA潜在狄利克雷分配, CTM主题模型, HMM隐马尔可夫模型, 评估口径污染三联症]
+
+- query_id: ml-ablation
+  query: "消融实验怎么做才算数，常见的坑？"
+  category: in-domain
+  relevant: [级联消融必须真正跳层, 评估口径污染三联症, 合成数据评测基准前置于方法选择]
+
+# ---- 数据库与索引 ----
+- query_id: db-bplus
+  query: "数据库索引为什么用 B+ 树不用 B 树或 LSM？"
+  category: in-domain
+  relevant: [B+树, B树与B+树对比, B+树与LSM树对比]
+
+# ---- 学术写作与调研方法论 ----
+- query_id: ac-verify
+  query: "写论文怎么核验数字不出错？"
+  category: in-domain
+  relevant: [论文数字核验工作流, 二手转述精确数字回溯一手, 交叉统计分母口径先对齐]
+
+- query_id: ac-research
+  query: "技术调研怎么做才扎实、可复现？"
+  category: in-domain
+  relevant: [agent调研回溯一手来源核验, 产物脚本必须落盘可复现]
+
+# ---- 前端与视觉设计 (小领域, 稀释测试) ----
+- query_id: fe-token
+  query: "React 组件移植时 CSS token 和异步 loading 有哪些坑？"
+  category: small-domain
+  relevant: [前端组件移植token缺口, 异步多阶段loading竞态]
+
+# ---- 跨领域概念 (冷门/概念测试) ----
+- query_id: concept-recurring-bug
+  query: "怎么避免在同一类 bug 上反复栽跟头？"
+  category: concept
+  relevant: [修bug前先grep同义实现, 随机性Bug与分支覆盖测试]
+
+- query_id: concept-doc-sync
+  query: "改了文件名或结构，怎么同步文档才不漏？"
+  category: concept
+  relevant: [重命名后同步文档验收, gitignore多副本内容漂移]

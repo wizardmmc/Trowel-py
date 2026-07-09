@@ -14,12 +14,27 @@ claude-code separately. This command only starts trowel's own server.
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 
 
 def main() -> None:
-    """Start the trowel-py server and open a browser at it."""
+    """Start the trowel-py server and open a browser at it.
+
+    Subcommands are intercepted before the serve parser is built, so the serve
+    path (and its flags) stays untouched::
+
+        trowel-py memory tidy   # run registered memory tidy jobs (slice-038)
+    """
+    # Intercept `memory` subcommands before the serve parser is built, so the
+    # serve path (and its --port/--host/--no-open flags) stays byte-for-byte
+    # unchanged. Assumption (W6): position-1 == "memory" means the memory
+    # subsystem — fine in 038 since serve takes no positional args; revisit if a
+    # future slice adds positional serve args.
+    if len(sys.argv) >= 2 and sys.argv[1] == "memory":
+        raise SystemExit(_run_memory_cli(sys.argv[2:]))
     parser = argparse.ArgumentParser(prog="trowel-py", description=__doc__)
     parser.add_argument(
         "--port", type=int, default=8000, help="port to listen on (default 8000)"
@@ -36,8 +51,6 @@ def main() -> None:
     # `trowel-py` starts but every DB endpoint 500s in a fresh environment
     # (no tables). server.py did this in bootstrap(); the CLI must too.
     import logging
-    import sys
-    from pathlib import Path
 
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -91,6 +104,45 @@ def main() -> None:
         if timer is not None:
             timer.cancel()
         raise
+
+
+def _run_memory_cli(argv: list[str]) -> int:
+    """Dispatch ``trowel-py memory <subcommand>``."""
+    parser = argparse.ArgumentParser(prog="trowel-py memory", description="memory subsystem")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    tidy = sub.add_parser("tidy", help="run registered memory tidy jobs (batch; 空跑 in 038)")
+    tidy.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    args = parser.parse_args(argv)
+
+    if args.cmd == "tidy":
+        from trowel_py.memory import hooks, paths
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        return _run_memory_tidy(hooks.default, root)
+    return 2  # unreachable: subparser is required
+
+
+def _run_memory_tidy(registry: object, root: Path) -> int:
+    """Dispatch the tidy jobs registered on ``registry`` over ``root``.
+
+    In slice-038 the registry is empty (空跑): this only confirms the trigger
+    fires without error. Business logic (compress / promote / regen dictionary)
+    registers via ``register_tidy_job`` in slice-041.
+
+    Args:
+        registry: a ``HookRegistry`` (injected so tests don't touch global state).
+        root: the memory root to dispatch over.
+
+    Returns:
+        Process exit code (0 on success).
+    """
+    registry.dispatch_tidy_job({"root": str(root)})
+    print(
+        f"[memory] tidy dispatched over {root} | "
+        f"registered jobs: {len(registry._tidy)} | "  # noqa: SLF001 — 空跑 trace
+        f"log: {registry.dispatch_log}"
+    )
+    return 0
 
 
 if __name__ == "__main__":

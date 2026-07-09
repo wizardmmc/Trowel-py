@@ -15,6 +15,10 @@ dependencies = [
     "pydantic>=2.13.4",
     # "python-dotenv>=1.2.2",
     "uvicorn>=0.48.0",
+    # slice-038: memory store reads/writes YAML frontmatter (.md notes) and the
+    # wiki/pages corpus (real YAML). Hand-rolling a parser is a liability on
+    # real multi-line frontmatter, so use the battle-tested lib.
+    "pyyaml>=6.0.2",
 ]
 
 [project.scripts]
