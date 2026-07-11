@@ -166,6 +166,7 @@ class CCHost:
         stalled_tick: float = 1.0,
         session_registrar: Any = None,
         session_kind: str = "user",
+        mcp_config: str | None = None,
     ) -> None:
         """Store session config and the injection hooks for tests.
 
@@ -225,6 +226,9 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        # slice-040-c: path to an mcp-config JSON attaching the memory MCP
+        # server (search/read/outcome). None → no --mcp-config flag (pre-040-c).
+        self._mcp_config = mcp_config
 
         self._proc: Any = None
         self._started = False
@@ -319,6 +323,7 @@ class CCHost:
             permission_prompt_tool=self._permission_prompt_tool,
             resume_from=resume_from,
             append_system_prompt=injection,
+            mcp_config=self._mcp_config,
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -335,11 +340,25 @@ class CCHost:
             proxy is on, else None so the subprocess inherits the parent env.
         """
         if not self._proxy_base_url:
-            return None
-        settings_env = (
-            load_settings_env(self._settings_path) if self._settings_path else {}
-        )
-        return dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
+            env: dict[str, str] | None = None
+        else:
+            settings_env = (
+                load_settings_env(self._settings_path) if self._settings_path else {}
+            )
+            env = dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
+        # slice-040-c: inject memory identity when the MCP server is attached.
+        # The stdio MCP subprocess inherits cc's env (subprocessEnv 透传, reverse-
+        # engineered), so TROWEL_SESSION_ID / MEMORY_ROOT / CC_SESSION_ID land in
+        # the server. CC_SESSION_ID is None for a fresh session until init —
+        # injected only when known (resume); per-call identity uses toolUseId.
+        if self._mcp_config:
+            env = dict(env) if env is not None else dict(os.environ)
+            from trowel_py.memory.paths import resolve_memory_root
+            env["TROWEL_SESSION_ID"] = self.session_id
+            env["MEMORY_ROOT"] = str(resolve_memory_root())
+            if self._cc_session_id:
+                env["CC_SESSION_ID"] = self._cc_session_id
+        return env
 
     async def _ensure_process(self) -> None:
         """Respawn if there is no live process. Resumes the known CC session."""

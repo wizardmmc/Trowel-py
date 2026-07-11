@@ -114,6 +114,11 @@ def create_session(
             detail=f"连接数已达上限（{MAX_CONNECTIONS}），请先关闭一些 session",
         )
     sid = uuid.uuid4().hex
+    # slice-040-c: attach the memory MCP server (search/read/outcome) so the
+    # model can query notes. write_mcp_config is idempotent.
+    from trowel_py.memory.mcp_server import write_mcp_config
+
+    mcp_config = write_mcp_config()
     host = CCHost(
         sid,
         req.workdir,
@@ -123,6 +128,7 @@ def create_session(
         resume_from=req.resume_from,
         proxy_base_url=getattr(request.app.state, "proxy_base_url", None),
         settings_path=getattr(request.app.state, "cc_settings_path", None),
+        mcp_config=str(mcp_config),
     )
     registry[sid] = host
     # 注册多开状态（命名序号 + workdir 索引 + 设为活跃）

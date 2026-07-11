@@ -107,10 +107,23 @@ def test_injects_this_year_monthly_even_if_old(tmp_path: Path) -> None:
     assert "JAN_MONTH_MARKER" in out
 
 
-def test_empty_memory_returns_empty_string(tmp_path: Path) -> None:
-    # nothing to inject → empty string → launcher adds no --append-system-prompt.
+def test_empty_memory_returns_memory_root_only(tmp_path: Path) -> None:
+    # slice-040-c C-2: even with nothing else, the memory root + tool usage is
+    # always injected so the model knows where to query (no longer empty).
     out = build_memory_injection("2026-07-09", root=tmp_path)
-    assert out == ""
+    assert "memory 根路径" in out
+    assert "memory.search" in out
+    assert "铁律" not in out  # no core content
+
+
+def test_injection_carries_memory_root_and_tool_usage(tmp_path: Path) -> None:
+    """slice-040-c C-2: injection carries the memory root + tool usage."""
+    _write_core(tmp_path, [_item("c1", "X", "active")])
+    out = build_memory_injection("2026-07-09", root=tmp_path)
+    assert "memory 根路径 + 检索" in out
+    assert "memory.search(query)" in out
+    assert "memory.read(uri)" in out
+    assert str(tmp_path.resolve()) in out
 
 
 def test_no_notes_body_injected(tmp_path: Path) -> None:

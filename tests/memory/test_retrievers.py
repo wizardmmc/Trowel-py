@@ -13,6 +13,13 @@ from trowel_py.memory.retrievers import (
 )
 
 
+def test_parse_l1_stems_accepts_notes_prefix() -> None:
+    """slice-040-c: generated L1 uses notes/<stem>.md; retriever must parse it
+    (codex P1-2), while still accepting pages/ (S1 wiki corpus)."""
+    assert "foo" in _parse_l1_stems("- **X** → `notes/foo.md`：s｜触发词：x")
+    assert "bar" in _parse_l1_stems("- **Y** → `pages/bar.md`：s")
+
+
 class FakeProvider:
     """Returns canned text for the domain-select vs note-select call."""
 

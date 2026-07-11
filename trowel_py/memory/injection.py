@@ -54,8 +54,9 @@ def build_memory_injection(now: str, root: Path | str | None = None) -> str:
     diary = _render_diary(store, now)
     if diary:
         sections.append(diary)
-    if not sections:
-        return ""
+    # slice-040-c C-2: always carry the memory root + retrieval tool usage so
+    # the model knows where memory lives and how to query it (search→read).
+    sections.append(_render_memory_root(store.root))
     body = "\n\n".join(sections)
     estimated = _estimate_tokens(body)
     if estimated > TOKEN_BUDGET:
@@ -84,6 +85,19 @@ def _render_l0(store: MemoryStore) -> str:
     if not text:
         return ""
     return f"# 领域索引（dictionary L0，按需下钻 L1/正文）\n{text}"
+
+
+def _render_memory_root(root: Path) -> str:
+    """Memory root absolute path + retrieval tool usage (slice-040-c C-2).
+
+    Always injected (even when core/L0/diary are empty) so the model knows
+    where memory lives and how to call the MCP tools.
+    """
+    return (
+        "# memory 根路径 + 检索\n"
+        f"根：{root.resolve()}\n"
+        "查笔记：memory.search(query) → memory.read(uri)"
+    )
 
 
 def _render_diary(store: MemoryStore, now: str) -> str:

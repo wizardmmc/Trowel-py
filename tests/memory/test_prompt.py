@@ -43,6 +43,12 @@ def test_prompt_lists_dualtrack_signal_words() -> None:
     assert DUALTRACK_SIGNAL_WORDS
 
 
+def test_prompt_no_false_auto_satisfied_claim() -> None:
+    """slice-040-c: the false 'step 1 already satisfied' claim is removed."""
+    assert "已自动满足" not in REFINE_PROMPT_TEMPLATE
+    assert "memory.search" in REFINE_PROMPT_TEMPLATE
+
+
 def test_build_refine_prompt_fills_placeholders() -> None:
     p = build_refine_prompt("/x/y.jsonl", "tokens=100 turns=3 errors=1")
     assert "/x/y.jsonl" in p

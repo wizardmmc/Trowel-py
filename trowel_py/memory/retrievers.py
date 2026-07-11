@@ -20,7 +20,9 @@ from trowel_py.llm.client import LLMProvider
 from trowel_py.memory.eval import Retriever
 
 _L0_DOMAIN_RE = re.compile(r"dictionary-L1/([^\s.)]+)\.md")
-_L1_STEM_RE = re.compile(r"pages/([^`]+?)\.md")
+# slice-040-c: accept both `pages/<stem>.md` (S1 wiki corpus) and
+# `notes/<stem>.md` (040-c memory notes) so the generated L1 is parseable.
+_L1_STEM_RE = re.compile(r"(?:pages|notes)/([^`]+?)\.md")
 _MAX_DOMAINS = 2
 
 _DOMAIN_SYS = (

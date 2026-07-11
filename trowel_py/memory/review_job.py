@@ -111,12 +111,18 @@ async def run_one_session(
         # does not need. memory injection is added by CCHost._spawn via
         # --append-system-prompt, independent of the proxy. Verify end-to-end
         # in a standalone terminal (#46416 — never nest in interactive claude).
+        from trowel_py.memory.mcp_server import write_mcp_config
+
         host = CCHost(
             session_id=uuid.uuid4().hex,
             workdir=str(workdir),
             # slice-040-b: stamp the distillation session so its own init does
             # not re-enter the daily-review queue (C-5: kind, not workdir guess).
             session_kind="review",
+            # slice-040-c: attach memory MCP so the refine agent can search
+            # existing notes (dedupe/lookup). The injection advertises
+            # memory.search — must back it with the actual tool (codex P2-1).
+            mcp_config=str(write_mcp_config()),
         )
 
     finished = False
@@ -240,6 +246,7 @@ async def _run_daily_review_locked(
         )
         store = MemoryStore(root)
         touched_dates: set[str] = set()
+        created_note_ids: list[str] = []  # slice-040-c: feed dictionary sync
         for seg in segments:
             session = seg.session
             # 040-a behavior: review_date = date_str (the CLI/run date), NOT
@@ -302,11 +309,29 @@ async def _run_daily_review_locked(
             repo.advance_extracted(
                 session.cc_session_id, seg.end, datetime.now().isoformat()
             )
+            created_note_ids.extend(report.notes_created)
         # Derive the daily aggregate for every touched date (P1 fix: the daily
         # is the union of all episodes for a date, not the last session's
         # overwrite). No-op when nothing landed for a date.
         for review_date in sorted(touched_dates):
             store.derive_daily_from_episodes(review_date)
+        # slice-040-c C-3: sync the dictionary with this run's new notes
+        # (incremental; falls back to full rebuild if no dictionary yet).
+        # Non-fatal — a failure leaves the old dictionary; search degrades to
+        # a hint only if the dictionary was empty.
+        if created_note_ids:
+            try:
+                from trowel_py.config import load_llm_config
+                from trowel_py.llm.client import AnthropicProvider
+                from trowel_py.memory.dictionary import sync_dictionary_incremental
+
+                sync_dictionary_incremental(
+                    root, created_note_ids, AnthropicProvider(load_llm_config())
+                )
+            except Exception:
+                logger.warning(
+                    "dictionary sync failed (non-fatal; old index kept)", exc_info=True
+                )
     finally:
         conn.close()
 

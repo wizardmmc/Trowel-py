@@ -63,7 +63,7 @@ DRAFT_SCHEMA = """\
 REFINE_PROMPT_TEMPLATE = """\
 你是 trowel 的「温故提炼」agent。任务：读今天的 cc 会话，提炼出可复用知识 + 经历事件，双轨分流，并对每条结论做自行验证（第 7 步是命门）。
 
-你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记）——这模拟"我还记得点"，第 1 步"查已有"已自动满足。先想清楚现有笔记里有没有相关的。
+你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记 + memory 根路径）——这模拟"我还记得点"。查已有笔记主动用 memory.search 工具（注入段里给了根路径和用法），别只靠注入的日记就当查过了。
 
 【输入】
 - 今天要提炼的会话 jsonl 路径：{jsonl_path}

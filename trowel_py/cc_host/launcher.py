@@ -53,6 +53,7 @@ def build_args(
     permission_prompt_tool: str | None = DEFAULT_PERMISSION_PROMPT_TOOL,
     resume_from: str | None = None,
     append_system_prompt: str | None = None,
+    mcp_config: str | None = None,
 ) -> list[str]:
     """Return the argv list for a CC subprocess. workdir is in the kwargs, not here.
 
@@ -89,6 +90,13 @@ def build_args(
     # (spike 2026-07-09 verified append lands in the system tail, cache survives).
     if append_system_prompt:
         args += ["--append-system-prompt", append_system_prompt]
+    # slice-040-c: memory MCP server (search/read/outcome) via cc's native
+    # --mcp-config. --strict-mcp-config makes cc ignore .mcp.json / user
+    # settings / plugins so ONLY the memory server is attached (no surprise
+    # tools polluting the session). The JSON file is written by the launcher
+    # caller (service._spawn) pointing at a stdio Python MCP server.
+    if mcp_config:
+        args += ["--mcp-config", mcp_config, "--strict-mcp-config"]
     return args
 
 

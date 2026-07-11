@@ -679,3 +679,47 @@ class TestMemoryInjection:
         args = spawner.spawned[0][0]
         assert "--append-system-prompt" not in args  # degraded, no flag
         assert any(isinstance(e, FinishedEvent) for e in events)
+
+
+class TestMcpConfig:
+    """slice-040-c: CCHost passes --mcp-config + injects memory identity env.
+
+    The stdio MCP subprocess inherits cc's process.env, so identity
+    (TROWEL_SESSION_ID / MEMORY_ROOT / CC_SESSION_ID) is injected here — the
+    protocol layer carries no session id (reverse-engineered: only
+    ``_meta.claudecode/toolUseId`` is sent per call).
+    """
+
+    async def test_spawn_args_include_mcp_config(self, tmp_path: Path) -> None:
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc])
+        host = CCHost("sid", tmp_path, spawner=spawner, mcp_config="/tmp/mem.json")
+        await collect(host.send("hi"))
+        args = spawner.spawned[0][0]
+        assert "--mcp-config" in args
+        assert "--strict-mcp-config" in args
+        assert args[args.index("--mcp-config") + 1] == "/tmp/mem.json"
+
+    async def test_spawn_no_mcp_config_flag_when_absent(self, tmp_path: Path) -> None:
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc])
+        host = CCHost("sid", tmp_path, spawner=spawner)
+        await collect(host.send("hi"))
+        args = spawner.spawned[0][0]
+        assert "--mcp-config" not in args
+
+    def test_build_spawn_env_injects_identity_when_mcp_config(
+        self, tmp_path: Path
+    ) -> None:
+        host = CCHost("sid", tmp_path, mcp_config="/tmp/mem.json", proxy_base_url=None)
+        env = host._build_spawn_env()
+        assert env is not None
+        assert env["TROWEL_SESSION_ID"] == "sid"
+        assert "MEMORY_ROOT" in env
+
+    def test_build_spawn_env_no_identity_without_mcp_config(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-040-c behavior preserved: proxy off + no MCP → None (inherit)."""
+        host = CCHost("sid", tmp_path, proxy_base_url=None)
+        assert host._build_spawn_env() is None

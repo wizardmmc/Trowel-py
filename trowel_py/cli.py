@@ -14,6 +14,7 @@ claude-code separately. This command only starts trowel's own server.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import webbrowser
@@ -148,6 +149,11 @@ def _run_memory_cli(argv: list[str]) -> int:
     sched_sub.add_parser("status", help="show installed/loaded status")
     sched_sub.add_parser("uninstall", help="unload + remove the plist")
     sched_sub.add_parser("run-now", help="trigger one immediate run")
+    dr = sub.add_parser(
+        "dict-rebuild", help="regenerate dictionary L0/L1 from notes (040-c C-3)"
+    )
+    dr.add_argument("--apply", action="store_true", help="write; default is dry-run")
+    dr.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -173,6 +179,17 @@ def _run_memory_cli(argv: list[str]) -> int:
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
         return _run_backfill_completed(root, args.date, apply=args.apply)
+    if args.cmd == "dict-rebuild":
+        from trowel_py.config import load_llm_config
+        from trowel_py.llm.client import AnthropicProvider
+        from trowel_py.memory import paths
+        from trowel_py.memory.dictionary import rebuild_dictionary
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        provider = AnthropicProvider(load_llm_config())
+        out = rebuild_dictionary(root, apply=args.apply, provider=provider)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
     if args.cmd == "schedule":
         from trowel_py.memory import schedule as sched
 

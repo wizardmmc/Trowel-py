@@ -109,6 +109,43 @@ class MemoryStore:
             notes = [n for n in notes if _matches(n, filter)]
         return notes
 
+    def load_note(self, note_id: NoteId) -> Note | None:
+        """Return one note by filename-stem id, or None if absent/invalid.
+
+        slice-040-c: the read tool opens a note by id; this loads one file
+        instead of scanning the whole corpus.
+        """
+        path = self.root / _NOTES_DIR / f"{note_id}.md"
+        if not path.exists():
+            return None
+        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+        if fm is None:
+            return None
+        return _note_from_fm(fm, body)
+
+    def load_notes_with_id(
+        self, filter: dict[str, Any] | None = None
+    ) -> list[tuple[NoteId, Note]]:
+        """Return ``(note_id, Note)`` pairs (id = filename stem).
+
+        slice-040-c: dictionary clustering needs the stem alongside the note.
+        """
+        notes_dir = self.root / _NOTES_DIR
+        if not notes_dir.exists():
+            return []
+        out: list[tuple[NoteId, Note]] = []
+        for p in sorted(notes_dir.glob("*.md")):
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if fm is None:
+                continue
+            note = _note_from_fm(fm, body)
+            if note is None:
+                continue
+            out.append((p.stem, note))
+        if filter:
+            out = [(i, n) for i, n in out if _matches(n, filter)]
+        return out
+
     def write_note(self, entry: dict[str, Any]) -> NoteId:
         """Validate (C-2/C-3) and persist a note. Returns its filename-stem id.
 
@@ -163,18 +200,31 @@ class MemoryStore:
     def record_ref(self, note_id: NoteId, date: str) -> None:
         """Increment refs and stamp last_ref on an existing note (retirement input).
 
+        slice-040-c: per-note ``fcntl.flock`` so concurrent MCP servers don't
+        lose refs increments (read-modify-write race — access-log append is
+        atomic via O_APPEND, but the refs rewrite is not).
+
         Raises:
             FileNotFoundError: no note with that id.
         """
+        import fcntl
+
         path = self.root / _NOTES_DIR / f"{note_id}.md"
         if not path.exists():
             raise FileNotFoundError(note_id)
-        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
-        if fm is None:
-            raise ValueError(f"note {note_id!r} has no frontmatter")
-        fm["refs"] = int(fm.get("refs") or 0) + 1
-        fm["last_ref"] = date
-        path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
+        with path.open("r+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                fm, body = _split_frontmatter(f.read())
+                if fm is None:
+                    raise ValueError(f"note {note_id!r} has no frontmatter")
+                fm["refs"] = int(fm.get("refs") or 0) + 1
+                fm["last_ref"] = date
+                f.seek(0)
+                f.truncate()
+                f.write(_dump_frontmatter(fm, body))
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def find_note_by_source(self, cc_session_id: str, content_hash: str) -> NoteId | None:
         """Return the id of the note from ``cc_session_id`` with this content_hash.
