@@ -128,6 +128,26 @@ def _run_memory_cli(argv: list[str]) -> int:
         help="apply (back up + write); default is a dry-run listing",
     )
     repair.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    backfill = sub.add_parser(
+        "backfill-completed",
+        help="stamp last_completed_offset for legacy rows from jsonl size (040-b)",
+    )
+    backfill.add_argument("--date", required=True, help="target day YYYY-MM-DD")
+    backfill.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply (write); default is a dry-run listing",
+    )
+    backfill.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    sched = sub.add_parser(
+        "schedule", help="manage the daily-review launchd job (040-b C-3)"
+    )
+    sched_sub = sched.add_subparsers(dest="sched_cmd", required=True)
+    si = sched_sub.add_parser("install", help="install the launchd plist (default 02:30)")
+    si.add_argument("--time", default="02:30", help="HH:MM start time (default 02:30)")
+    sched_sub.add_parser("status", help="show installed/loaded status")
+    sched_sub.add_parser("uninstall", help="unload + remove the plist")
+    sched_sub.add_parser("run-now", help="trigger one immediate run")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -148,6 +168,34 @@ def _run_memory_cli(argv: list[str]) -> int:
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
         return _run_repair(root, args.date, apply=args.apply)
+    if args.cmd == "backfill-completed":
+        from trowel_py.memory import paths
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        return _run_backfill_completed(root, args.date, apply=args.apply)
+    if args.cmd == "schedule":
+        from trowel_py.memory import schedule as sched
+
+        if args.sched_cmd == "install":
+            try:
+                path = sched.install(args.time)
+            except ValueError as exc:
+                print(f"[memory] schedule install error: {exc}")
+                return 2
+            print(f"[memory] schedule installed ({args.time}) -> {path}")
+        elif args.sched_cmd == "status":
+            installed, loaded = sched.status()
+            print(f"[memory] schedule installed={installed} loaded={loaded}")
+        elif args.sched_cmd == "uninstall":
+            removed = sched.uninstall()
+            print(f"[memory] schedule uninstalled: {removed}")
+        elif args.sched_cmd == "run-now":
+            ok = sched.run_now()
+            print(
+                "[memory] schedule run-now: "
+                + ("ok" if ok else "failed (off-Darwin or not loaded)")
+            )
+        return 0
     return 2  # unreachable: subparser is required
 
 
@@ -234,6 +282,99 @@ def _run_repair(root: Path, date_str: str, *, apply: bool) -> int:
             print("  VERIFICATION FAILED: episodes_created != draft count")
             return 1
     return 0
+
+
+def _run_backfill_completed(root: Path, date_str: str, *, apply: bool) -> int:
+    """Stamp ``last_completed_offset`` for legacy rows from the jsonl size (040-b).
+
+    Pre-040-b rows have no completed water mark (the column was NULL until the
+    schema evolved). This reads each row's jsonl size and stamps it as the
+    completed offset so the incremental queue picks the session up. Dry-run by
+    default; ``apply`` writes. Rows whose jsonl no longer exists are skipped
+    (reported), never crashed on — the assumption is the whole session is a
+    completed turn boundary (conservative: never guess a partial offset).
+
+    Args:
+        root: the memory root.
+        date_str: target day ``YYYY-MM-DD``.
+        apply: True to write; False to print the plan only.
+
+    Returns:
+        Process exit code (0 on success).
+    """
+    from trowel_py.memory.review_job import _review_lock  # noqa: SLF001 — shared C-3 mutex
+    from trowel_py.memory.sessions_repo import (
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    try:
+        with _review_lock(root):
+            conn = open_sessions_db(root)
+            try:
+                repo = create_sessions_repository(conn)
+                plan: list[tuple[str, str, str | None]] = []
+                for rec in repo.find_by_date(date_str):
+                    if rec.last_completed_offset is not None:
+                        continue  # already has a water mark — leave it alone
+                    plan.append((rec.cc_session_id, rec.jsonl_path, rec.extracted_at))
+
+                mode = "APPLY" if apply else "DRY-RUN"
+                print(
+                    f"[memory] backfill-completed {mode} over {root} for {date_str}"
+                )
+                print(f"  legacy rows needing backfill: {len(plan)}")
+
+                def _size_of(jp: str) -> int | None:
+                    """Stat the jsonl now (CR M-5: not a stale plan snapshot)."""
+                    if not jp:
+                        return None
+                    p = Path(jp)
+                    return p.stat().st_size if p.is_file() else None
+
+                skipped = 0
+                if apply:
+                    backfilled = 0
+                    already_extracted = 0
+                    for sid, jp, extracted_at in plan:
+                        size = _size_of(jp)
+                        if size is None:
+                            skipped += 1
+                            continue
+                        repo.update_completed(sid, size)
+                        if extracted_at:
+                            # 040-a already extracted → push the extracted mark
+                            # to comp so find_incremental won't re-distill it
+                            # (avoids the 07-09 segment-duplication regression).
+                            repo.advance_extracted(sid, size, when=extracted_at)
+                            already_extracted += 1
+                        backfilled += 1
+                    print(f"  backfilled: {backfilled}")
+                    if already_extracted:
+                        print(
+                            f"    (of which already-extracted by 040-a: {already_extracted})"
+                        )
+                    print(f"  skipped (jsonl missing): {skipped}")
+                else:
+                    for sid, jp, extracted_at in plan:
+                        size = _size_of(jp)
+                        marker = str(size) if size is not None else "MISSING"
+                        tag = " [040-a extracted]" if extracted_at else ""
+                        print(f"  - {sid}: {marker}{tag}  ({jp})")
+                        if size is None:
+                            skipped += 1
+                    if skipped:
+                        print(
+                            f"  ({skipped} jsonl missing, would be skipped on apply)"
+                        )
+                return 0
+            finally:
+                conn.close()
+    except BlockingIOError:
+        print(
+            f"[memory] backfill-completed skipped (a review job is running) for {date_str}"
+        )
+        return 0
 
 
 if __name__ == "__main__":

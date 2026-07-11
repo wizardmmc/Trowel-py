@@ -14,22 +14,40 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 _META_DIR = "meta"
 _SESSIONS_DB = "sessions.db"
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
-    cc_session_id TEXT PRIMARY KEY,
-    workdir       TEXT NOT NULL,
-    date          TEXT NOT NULL,
-    jsonl_path    TEXT,
-    registered_at TEXT NOT NULL,
-    extracted_at  TEXT
+    cc_session_id         TEXT PRIMARY KEY,
+    workdir               TEXT NOT NULL,
+    date                  TEXT NOT NULL,
+    jsonl_path            TEXT,
+    registered_at         TEXT NOT NULL,
+    extracted_at          TEXT,
+    session_kind          TEXT DEFAULT 'user',
+    last_completed_offset INTEGER,
+    last_completed_at     TEXT,
+    last_extracted_offset INTEGER,
+    last_extracted_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
 """
+
+#: columns added by slice-040-b's first schema evolution. SQLite has no
+#: ``ADD COLUMN IF NOT EXISTS`` — ``_ensure_columns`` reflects via PRAGMA and
+#: adds only what's missing, so a pre-040-b db (6 columns) upgrades on connect.
+_ADD_COLUMN_SQL = {
+    "session_kind": "ALTER TABLE sessions ADD COLUMN session_kind TEXT DEFAULT 'user'",
+    "last_completed_offset": "ALTER TABLE sessions ADD COLUMN last_completed_offset INTEGER",
+    "last_completed_at": "ALTER TABLE sessions ADD COLUMN last_completed_at TEXT",
+    "last_extracted_offset": "ALTER TABLE sessions ADD COLUMN last_extracted_offset INTEGER",
+    "last_extracted_at": "ALTER TABLE sessions ADD COLUMN last_extracted_at TEXT",
+}
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,57 @@ class SessionRecord:
     jsonl_path: str = ""
     registered_at: str = ""
     extracted_at: str | None = None
+    session_kind: str = "user"
+    last_completed_offset: int | None = None
+    last_completed_at: str | None = None
+    last_extracted_offset: int | None = None
+    last_extracted_at: str | None = None
+
+
+@runtime_checkable
+class SessionRegistrar(Protocol):
+    """The narrow registrar surface ``CCHost`` needs (slice-040-b).
+
+    CCHost only registers a session at init and stamps the completed-offset
+    water mark at the ``result`` turn boundary. The find / advance-extracted
+    queries stay on the concrete ``SessionsRepository`` (a review_job concern,
+    not CCHost's) and are deliberately OUT of this Protocol. Production wires
+    the concrete ``SessionsRepository``; tests inject a no-op/capturing fake so
+    they never touch the real ``~/.trowel/memory/meta/sessions.db``.
+
+    ``when`` is optional on both methods — None means the implementation stamps
+    ``datetime.now()`` itself, so CCHost (which has only a monotonic clock) does
+    not have to fabricate a wall-clock timestamp.
+    """
+
+    def register(self, rec: SessionRecord) -> None: ...
+
+    def update_completed(
+        self, cc_session_id: str, completed_bytes: int, when: str | None = None
+    ) -> None: ...
+
+
+@dataclass(frozen=True)
+class IncrementalSegment:
+    """One not-yet-distilled slice of a session (slice-040-b C-6).
+
+    The daily review reads ``(last_extracted_offset, last_completed_offset]`` per
+    session; this is the repo's view of one such slice. ``end`` is the completed
+    water mark (a byte offset of a fully-flushed turn), ``start`` is where the
+    previous distillation left off (0 if never distilled). Resuming a session
+    and finishing new turns pushes ``end`` forward; the next review distils only
+    the new slice — so a session is never "sealed" by a one-shot ``extracted_at``
+    (C-7).
+
+    Attributes:
+        session: the owning SessionRecord (cc_session_id, jsonl_path, workdir).
+        start: byte offset the segment starts at (== last_extracted_offset or 0).
+        end: byte offset the segment ends at (== last_completed_offset).
+    """
+
+    session: SessionRecord
+    start: int
+    end: int
 
 
 class SessionsRepository:
@@ -62,18 +131,47 @@ class SessionsRepository:
         self._conn = conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_CREATE_SQL)
+        self._ensure_columns()
         self._conn.commit()
+
+    def _ensure_columns(self) -> None:
+        """Idempotent column additions (slice-040-b's first schema evolution).
+
+        ``CREATE TABLE IF NOT EXISTS`` won't add columns to an existing table,
+        so a pre-040-b db (6 columns) would otherwise crash the first register.
+        Reflect via ``PRAGMA table_info`` and ``ALTER TABLE ADD COLUMN`` only
+        what's missing. Safe to call on every connection.
+        """
+        existing = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")
+        }
+        for col, sql in _ADD_COLUMN_SQL.items():
+            if col not in existing:
+                self._conn.execute(sql)
+        # the incremental index references the (possibly just-added) offset
+        # columns, so it is created here — AFTER the columns exist — not in
+        # _CREATE_SQL (which would crash on a pre-040-b db whose old table is
+        # missing those columns: CREATE TABLE IF NOT EXISTS skips the existing
+        # table but a referencing CREATE INDEX still fails on the missing cols).
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_incremental"
+            " ON sessions(last_completed_offset, last_extracted_offset)"
+        )
 
     def register(self, rec: SessionRecord) -> None:
         """Idempotent insert (PK). Re-registering a session_id is a no-op.
 
         cc's session-start hook (``service.py``) may fire more than once for a
-        session; the PK keeps this harmless.
+        session; the PK keeps this harmless. ``session_kind`` is stamped on the
+        first registration (slice-040-b): review sessions pass ``"review"`` so
+        ``find_pending(exclude_kinds=["review"])`` can keep them out of the
+        distillation queue without guessing from the workdir path.
         """
         self._conn.execute(
             "INSERT OR IGNORE INTO sessions"
-            " (cc_session_id, workdir, date, jsonl_path, registered_at, extracted_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " (cc_session_id, workdir, date, jsonl_path, registered_at,"
+            " extracted_at, session_kind)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 rec.cc_session_id,
                 rec.workdir,
@@ -81,41 +179,52 @@ class SessionsRepository:
                 rec.jsonl_path,
                 rec.registered_at,
                 rec.extracted_at,
+                rec.session_kind,
             ),
         )
         self._conn.commit()
 
     def find_pending(
-        self, date: str, exclude_workdir_substr: str = ""
+        self,
+        date: str,
+        exclude_workdir_substr: str = "",
+        exclude_kinds: list[str] | None = None,
     ) -> list[SessionRecord]:
         """Return sessions of ``date`` not yet extracted.
 
         Args:
             date: ISO ``YYYY-MM-DD``.
-            exclude_workdir_substr: if set, skip sessions whose workdir contains
-                this substring (e.g. ``"review-daily-work"`` to skip the
-                distillation sessions themselves — D2, prevents self-recursion).
+            exclude_workdir_substr: legacy escape hatch — if set, skip sessions
+                whose workdir contains this substring (e.g.
+                ``"review-daily-work"``). Kept for old rows registered before
+                ``session_kind`` existed; new code prefers ``exclude_kinds``.
                 Must NOT contain LIKE wildcards (``%`` / ``_``) — it is matched
                 via SQL ``LIKE``; the sole caller passes a literal path segment.
+            exclude_kinds: session kinds to exclude (slice-040-b C-5 — filter by
+                kind, NOT by workdir path). ``"review"`` keeps the distillation
+                sessions themselves out of the queue. NULL kinds (pre-040-b
+                legacy rows) are treated as ``"user"`` and never excluded here.
 
         Returns:
             pending sessions, oldest first (stable extraction order).
         """
+        clauses = ["date = ?", "extracted_at IS NULL"]
+        params: list = [date]
         if exclude_workdir_substr:
-            rows = self._conn.execute(
-                "SELECT * FROM sessions"
-                " WHERE date = ? AND extracted_at IS NULL"
-                " AND workdir NOT LIKE ?"
-                " ORDER BY registered_at",
-                (date, f"%{exclude_workdir_substr}%"),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM sessions"
-                " WHERE date = ? AND extracted_at IS NULL"
-                " ORDER BY registered_at",
-                (date,),
-            ).fetchall()
+            clauses.append("workdir NOT LIKE ?")
+            params.append(f"%{exclude_workdir_substr}%")
+        if exclude_kinds:
+            ph = ",".join("?" * len(exclude_kinds))
+            # COALESCE so a legacy NULL kind reads as 'user' and is kept when
+            # only 'review' is excluded (C-5: never guess from the path).
+            clauses.append(f"COALESCE(session_kind, 'user') NOT IN ({ph})")
+            params.extend(exclude_kinds)
+        sql = (
+            "SELECT * FROM sessions WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY registered_at"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_record(r) for r in rows]
 
     def find_by_date(self, date: str) -> list[SessionRecord]:
@@ -136,6 +245,72 @@ class SessionsRepository:
         self._conn.execute(
             "UPDATE sessions SET extracted_at = ? WHERE cc_session_id = ?",
             (when, cc_session_id),
+        )
+        self._conn.commit()
+
+    def update_completed(
+        self, cc_session_id: str, completed_bytes: int, when: str | None = None
+    ) -> None:
+        """Stamp the completed water mark (slice-040-b C-6).
+
+        Called by CCHost at the ``result`` turn boundary with the jsonl byte size
+        — every turn up to ``completed_bytes`` is fully flushed and safe to
+        distill. Half-turns (no result yet) never call this, so they stay out of
+        ``find_incremental``.
+        """
+        stamp = when or datetime.now().isoformat()
+        self._conn.execute(
+            "UPDATE sessions SET last_completed_offset = ?, last_completed_at = ?"
+            " WHERE cc_session_id = ?",
+            (completed_bytes, stamp, cc_session_id),
+        )
+        self._conn.commit()
+
+    def find_incremental(self) -> list[IncrementalSegment]:
+        """Return every session with a not-yet-distilled completed slice (C-6/C-7).
+
+        A session is included iff it has a completed water mark strictly greater
+        than its extracted water mark (NULL extracted → 0). Review sessions are
+        always excluded (C-5: by kind, not workdir). Legacy NULL kinds read as
+        ``'user'`` via COALESCE so pre-040-b rows are still picked up.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM sessions"
+            " WHERE COALESCE(session_kind, 'user') != 'review'"
+            " AND last_completed_offset IS NOT NULL"
+            " AND last_completed_offset > COALESCE(last_extracted_offset, 0)"
+            " ORDER BY registered_at"
+        ).fetchall()
+        segments: list[IncrementalSegment] = []
+        for row in rows:
+            rec = _row_to_record(row)
+            # SQL already guarantees end IS NOT NULL and end > COALESCE(start, 0).
+            # Mirror that here with explicit None checks (the `or 0` form would
+            # conflate an explicit 0 with NULL — harmless, but less clear).
+            start = (
+                rec.last_extracted_offset
+                if rec.last_extracted_offset is not None
+                else 0
+            )
+            end = rec.last_completed_offset or 0
+            if end > start:
+                segments.append(IncrementalSegment(session=rec, start=start, end=end))
+        return segments
+
+    def advance_extracted(
+        self, cc_session_id: str, end_offset: int, when: str | None = None
+    ) -> None:
+        """Push the extracted water mark forward after a slice is persisted (C-7).
+
+        ``end_offset`` is the completed offset of the slice just distilled; the
+        next ``find_incremental`` will only surface work beyond it. Idempotent in
+        the sense that re-advancing to the same offset is a harmless overwrite.
+        """
+        stamp = when or datetime.now().isoformat()
+        self._conn.execute(
+            "UPDATE sessions SET last_extracted_offset = ?, last_extracted_at = ?"
+            " WHERE cc_session_id = ?",
+            (end_offset, stamp, cc_session_id),
         )
         self._conn.commit()
 
@@ -162,4 +337,9 @@ def _row_to_record(row: sqlite3.Row) -> SessionRecord:
         jsonl_path=row["jsonl_path"] or "",
         registered_at=row["registered_at"],
         extracted_at=row["extracted_at"],
+        session_kind=row["session_kind"] or "user",
+        last_completed_offset=row["last_completed_offset"],
+        last_completed_at=row["last_completed_at"],
+        last_extracted_offset=row["last_extracted_offset"],
+        last_extracted_at=row["last_extracted_at"],
     )

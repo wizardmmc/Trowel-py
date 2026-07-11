@@ -120,3 +120,182 @@ def test_memory_cli_routes_repair_apply(tmp_path: Path, monkeypatch) -> None:
     )
     assert rc == 0
     assert seen == {"date": "2026-07-09", "root": str(tmp_path), "apply": True}
+
+
+# ---------- slice-040-b: `trowel-py memory backfill-completed` ----------
+
+
+def _seed_session(mem: Path, sid: str, jsonl_path: str) -> None:
+    """Register one legacy session (no completed water mark) into tmp sessions.db."""
+    from trowel_py.memory.sessions_repo import (
+        SessionRecord,
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    conn = open_sessions_db(mem)
+    try:
+        repo = create_sessions_repository(conn)
+        repo.register(
+            SessionRecord(
+                cc_session_id=sid,
+                workdir="/proj",
+                date="2026-07-09",
+                jsonl_path=jsonl_path,
+                registered_at="2026-07-09T10:00:00",
+            )
+        )
+    finally:
+        conn.close()
+
+
+def _completed_offset(mem: Path, sid: str) -> int | None:
+    from trowel_py.memory.sessions_repo import (
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    conn = open_sessions_db(mem)
+    try:
+        for rec in create_sessions_repository(conn).find_by_date("2026-07-09"):
+            if rec.cc_session_id == sid:
+                return rec.last_completed_offset
+    finally:
+        conn.close()
+    return None
+
+
+def test_backfill_completed_dry_run(tmp_path: Path, capsys) -> None:
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    jsonl = tmp_path / "s.jsonl"
+    jsonl.write_text("x" * 500)
+    _seed_session(mem, "s1", str(jsonl))
+
+    rc = cli._run_backfill_completed(mem, "2026-07-09", apply=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DRY-RUN" in out
+    assert "500" in out
+    # dry-run does not write
+    assert _completed_offset(mem, "s1") is None
+
+
+def test_backfill_completed_apply(tmp_path: Path, capsys) -> None:
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    jsonl = tmp_path / "s.jsonl"
+    jsonl.write_text("x" * 500)
+    _seed_session(mem, "s1", str(jsonl))
+
+    rc = cli._run_backfill_completed(mem, "2026-07-09", apply=True)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "APPLY" in out
+    assert _completed_offset(mem, "s1") == 500
+
+
+def test_backfill_completed_skips_missing_jsonl(tmp_path: Path, capsys) -> None:
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    _seed_session(mem, "gone", "/does/not/exist.jsonl")
+
+    rc = cli._run_backfill_completed(mem, "2026-07-09", apply=True)
+    assert rc == 0  # missing jsonl is skipped, not a crash
+    out = capsys.readouterr().out
+    assert "skipped" in out.lower()
+    assert _completed_offset(mem, "gone") is None
+
+
+def test_memory_cli_routes_backfill_completed(tmp_path: Path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(root: Path, date_str: str, *, apply: bool) -> int:
+        seen["date"] = date_str
+        seen["root"] = str(root)
+        seen["apply"] = apply
+        return 0
+
+    monkeypatch.setattr(cli, "_run_backfill_completed", fake)
+    rc = cli._run_memory_cli(
+        ["backfill-completed", "--date", "2026-07-09", "--root", str(tmp_path)]
+    )
+    assert rc == 0
+    assert seen == {"date": "2026-07-09", "root": str(tmp_path), "apply": False}
+
+
+def test_backfill_completed_sets_extracted_for_already_extracted(
+    tmp_path: Path, capsys
+) -> None:
+    """A session 040-a already extracted (extracted_at set) gets extr=comp.
+
+    Otherwise find_incremental sees comp>0>extr(NULL=0) and re-distills the
+    whole session, duplicating every episode segment (the 07-09 regression).
+    """
+    from trowel_py.memory.sessions_repo import (
+        SessionRecord,
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    jsonl = tmp_path / "s.jsonl"
+    jsonl.write_text("x" * 500)
+    conn = open_sessions_db(mem)
+    create_sessions_repository(conn).register(
+        SessionRecord(
+            cc_session_id="s1",
+            workdir="/proj",
+            date="2026-07-09",
+            jsonl_path=str(jsonl),
+            registered_at="t",
+            extracted_at="2026-07-10T08:00:00",  # 040-a already extracted
+        )
+    )
+    conn.close()
+
+    rc = cli._run_backfill_completed(mem, "2026-07-09", apply=True)
+    assert rc == 0
+
+    conn2 = open_sessions_db(mem)
+    rec = create_sessions_repository(conn2).find_by_date("2026-07-09")[0]
+    conn2.close()
+    assert rec.last_completed_offset == 500
+    assert rec.last_extracted_offset == 500  # extr = comp (already extracted)
+    assert rec.last_extracted_at == "2026-07-10T08:00:00"  # preserved
+
+
+# ---------- slice-040-b: `trowel-py memory schedule` ----------
+
+
+def test_memory_cli_routes_schedule_install(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_install(time: str = "02:30", home=None, *, load: bool = True):  # noqa: ANN001
+        seen["time"] = time
+        return Path("/fake/plist")
+
+    monkeypatch.setattr("trowel_py.memory.schedule.install", fake_install)
+    rc = cli._run_memory_cli(["schedule", "install", "--time", "03:05"])
+    assert rc == 0
+    assert seen["time"] == "03:05"
+
+
+def test_memory_cli_routes_schedule_status(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "trowel_py.memory.schedule.status", lambda home=None: (True, False)
+    )
+    rc = cli._run_memory_cli(["schedule", "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "installed=True" in out
+    assert "loaded=False" in out
+
+
+def test_memory_cli_routes_schedule_uninstall(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("trowel_py.memory.schedule.uninstall", lambda home=None: True)
+    rc = cli._run_memory_cli(["schedule", "uninstall"])
+    assert rc == 0
+    assert "uninstalled: True" in capsys.readouterr().out
+

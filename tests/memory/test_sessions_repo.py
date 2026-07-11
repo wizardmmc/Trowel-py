@@ -1,10 +1,11 @@
-"""tests for the sessions registry (slice-040 T3)."""
+"""tests for the sessions registry (slice-040 T3 + slice-040-b kind/Protocol)."""
 from __future__ import annotations
 
 import sqlite3
 
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
+    SessionRegistrar,
     create_sessions_repository,
 )
 
@@ -78,3 +79,161 @@ def test_find_pending_preserves_jsonl_path() -> None:
     repo.register(_rec(cc_session_id="a", jsonl_path="/projects/slug/a.jsonl"))
     [r] = repo.find_pending("2026-07-09")
     assert r.jsonl_path == "/projects/slug/a.jsonl"
+
+
+# --- slice-040-b: session_kind + Protocol + exclude_kinds -------------------
+
+
+def test_session_kind_defaults_user() -> None:
+    """SessionRecord defaults to the 'user' kind (no kwarg needed)."""
+    assert _rec().session_kind == "user"
+
+
+def test_register_writes_session_kind() -> None:
+    """register persists session_kind so review sessions can be excluded by kind."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="r1", session_kind="review"))
+    row = repo._conn.execute(  # noqa: SLF001 — read raw column for the assertion
+        "SELECT session_kind FROM sessions WHERE cc_session_id = ?", ("r1",)
+    ).fetchone()
+    assert row["session_kind"] == "review"
+
+
+def test_old_row_null_kind_backfills_user() -> None:
+    """A legacy row with NULL session_kind (pre-040-b) reads back as 'user'."""
+    repo = _repo()
+    repo._conn.execute(  # noqa: SLF001 — simulate a pre-040-b legacy row
+        "INSERT INTO sessions(cc_session_id, workdir, date, registered_at, session_kind)"
+        " VALUES ('legacy', '/w', '2026-07-09', 't', NULL)"
+    )
+    repo._conn.commit()  # noqa: SLF001
+    [rec] = repo.find_pending("2026-07-09")
+    assert rec.session_kind == "user"
+
+
+def test_find_pending_exclude_kinds() -> None:
+    """find_pending filters by session_kind, independent of workdir (C-5: no path guess)."""
+    repo = _repo()
+    # same workdir, distinguished only by kind — proves kind (not path) does the filtering
+    repo.register(_rec(cc_session_id="user1", session_kind="user", workdir="/proj"))
+    repo.register(_rec(cc_session_id="rev1", session_kind="review", workdir="/proj"))
+    pending = repo.find_pending("2026-07-09", exclude_kinds=["review"])
+    assert len(pending) == 1
+    assert pending[0].cc_session_id == "user1"
+
+
+def test_session_registrar_protocol_accepts_fake() -> None:
+    """A duck-typed registrar with register + update_completed satisfies the Protocol."""
+
+    class FakeRegistrar:
+        def register(self, rec: SessionRecord) -> None:
+            self.recorded = rec
+
+        def update_completed(
+            self, cc_session_id: str, completed_bytes: int, when: str | None = None
+        ) -> None:
+            self.completed = (cc_session_id, completed_bytes)
+
+    assert isinstance(FakeRegistrar(), SessionRegistrar)
+
+
+# --- slice-040-b T9/T10: schema migration + offset water marks --------------
+
+
+def test_old_schema_migrates_offset_columns(tmp_path) -> None:
+    """A pre-040-b db (6-column schema) is upgraded on connect, rows survive."""
+    db = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        "CREATE TABLE sessions (cc_session_id TEXT PRIMARY KEY, workdir TEXT NOT NULL,"
+        " date TEXT NOT NULL, jsonl_path TEXT, registered_at TEXT NOT NULL, extracted_at TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO sessions(cc_session_id, workdir, date, registered_at)"
+        " VALUES ('legacy', '/w', '2026-07-09', 't')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db))
+    repo = create_sessions_repository(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+    assert {
+        "session_kind",
+        "last_completed_offset",
+        "last_completed_at",
+        "last_extracted_offset",
+        "last_extracted_at",
+    } <= cols
+    assert len(repo.find_pending("2026-07-09")) == 1  # legacy row survives
+    conn.close()
+
+
+def test_ensure_columns_idempotent(tmp_path) -> None:
+    """Connecting twice must not raise (SQLite has no ADD COLUMN IF NOT EXISTS)."""
+    db = tmp_path / "sessions.db"
+    conn1 = sqlite3.connect(str(db))
+    create_sessions_repository(conn1)
+    conn1.close()
+    conn2 = sqlite3.connect(str(db))
+    create_sessions_repository(conn2)  # second connect: no duplicate-column error
+    conn2.close()
+
+
+def test_update_completed_stamps_offset() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.update_completed("a", 2048, when="2026-07-11T02:30:00")
+    row = repo._conn.execute(  # noqa: SLF001
+        "SELECT last_completed_offset, last_completed_at FROM sessions WHERE cc_session_id='a'"
+    ).fetchone()
+    assert row["last_completed_offset"] == 2048
+    assert row["last_completed_at"] == "2026-07-11T02:30:00"
+
+
+def test_find_incremental_returns_segment() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.update_completed("a", 2048, when="t")
+    segs = repo.find_incremental()
+    assert len(segs) == 1
+    assert segs[0].session.cc_session_id == "a"
+    assert segs[0].start == 0  # last_extracted_offset NULL → 0
+    assert segs[0].end == 2048
+
+
+def test_find_incremental_excludes_equal_offsets() -> None:
+    """completed == extracted → fully distilled, no new work."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.update_completed("a", 2048, when="t")
+    repo.advance_extracted("a", 2048, when="t2")
+    assert repo.find_incremental() == []
+
+
+def test_find_incremental_excludes_review() -> None:
+    """review sessions never re-enter the queue (C-5)."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="rev", session_kind="review"))
+    repo.update_completed("rev", 2048, when="t")
+    assert repo.find_incremental() == []
+
+
+def test_find_incremental_excludes_half_turn() -> None:
+    """No completed water mark (result not seen yet) → not pending (C-6 half-turn)."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    assert repo.find_incremental() == []
+
+
+def test_advance_extracted_stamps() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.advance_extracted("a", 4096, when="2026-07-11T02:35:00")
+    row = repo._conn.execute(  # noqa: SLF001
+        "SELECT last_extracted_offset, last_extracted_at FROM sessions WHERE cc_session_id='a'"
+    ).fetchone()
+    assert row["last_extracted_offset"] == 4096
+    assert row["last_extracted_at"] == "2026-07-11T02:35:00"
+
+

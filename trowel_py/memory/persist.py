@@ -100,6 +100,11 @@ def persist_draft(
     """
     root = store.root
     seg_meta_dir = root / _SEGMENTS_META_DIR
+    # CR H-3 TODO: segment_id carries ":" (e.g. "s1:0:4096") which is legal in a
+    # macOS filename but breaks tar/rsync backups and is illegal on Windows. If
+    # this project ever needs cross-platform manifest files, map the filename
+    # via segment_id.replace(":", "_") here (keep segment_id itself unchanged in
+    # the manifest body + episode markers).
     manifest_path = seg_meta_dir / f"{context.segment_id}.json"
 
     # 0. completion manifest already intact → no-op (don't rewrite products).

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from trowel_py.cc_host.service import CCHost
+from trowel_py.memory.sessions_repo import SessionRecord
 
 
 # --- light fakes (subset of tests/cc_host/test_service.py) ---
@@ -153,3 +154,78 @@ async def test_register_failure_does_not_break_session(
 
     events = [e async for e in host.send("hi")]
     assert len(events) > 0  # session completed despite register failure
+
+
+# --- slice-040-b: injectable session_registrar (C-2 isolation) --------------
+
+
+class _CapturingRegistrar:
+    """Duck-typed SessionRegistrar that records calls (no real db touched)."""
+
+    def __init__(self) -> None:
+        self.registered: list[SessionRecord] = []
+        self.completed: list[tuple[str, int]] = []
+
+    def register(self, rec: SessionRecord) -> None:
+        self.registered.append(rec)
+
+    def update_completed(
+        self, cc_session_id: str, completed_bytes: int, when: str | None = None
+    ) -> None:
+        self.completed.append((cc_session_id, completed_bytes))
+
+
+async def test_cchost_uses_injected_registrar(tmp_path: Path) -> None:
+    """An injected registrar receives the SessionRecord instead of the real db."""
+    cap = _CapturingRegistrar()
+    proc = FakeProc([_line(_init("cc-inj")), _line(_result())])
+    host = CCHost(
+        "trowel-sid",
+        tmp_path,
+        spawner=FakeSpawner([proc]),
+        session_registrar=cap,
+        session_kind="review",
+    )
+
+    async for _ in host.send("hi"):
+        pass
+
+    assert len(cap.registered) == 1
+    rec = cap.registered[0]
+    assert rec.cc_session_id == "cc-inj"
+    assert rec.session_kind == "review"  # kind flows through to the registrar
+    assert rec.workdir == str(tmp_path)
+
+
+async def test_cchost_default_registrar_is_none(tmp_path: Path) -> None:
+    """Default session_registrar is None (falls back to the real-db path)."""
+    host = CCHost("trowel-sid", tmp_path, spawner=FakeSpawner([]))
+    assert host._session_registrar is None  # noqa: SLF001 — assert the default
+    assert host._session_kind == "user"  # noqa: SLF001
+
+
+async def test_normal_end_updates_completed(tmp_path: Path) -> None:
+    """The result turn boundary stamps the completed water mark (slice-040-b C-6).
+
+    Half-turns (no result) never call update_completed, so they stay out of
+    find_incremental. The jsonl byte size is read off the path the registrar is
+    given; here we stub _jsonl_path to a known-size tmp file.
+    """
+    cap = _CapturingRegistrar()
+    jsonl = tmp_path / "fake.jsonl"
+    jsonl.write_text("x" * 100)
+    proc = FakeProc([_line(_init("cc-wm")), _line(_result())])
+    host = CCHost(
+        "trowel-sid",
+        tmp_path,
+        spawner=FakeSpawner([proc]),
+        session_registrar=cap,
+    )
+    host._jsonl_path = lambda sid: jsonl  # type: ignore[assignment] — stub for the test
+    async for _ in host.send("hi"):
+        pass
+
+    assert len(cap.completed) == 1
+    assert cap.completed[0] == ("cc-wm", 100)
+
+

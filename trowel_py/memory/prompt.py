@@ -125,12 +125,33 @@ REFINE_PROMPT_TEMPLATE = """\
 """
 
 
-def build_refine_prompt(jsonl_path: str, cost_text: str) -> str:
+def build_refine_prompt(
+    jsonl_path: str,
+    cost_text: str,
+    *,
+    start_offset: int | None = None,
+    end_offset: int | None = None,
+) -> str:
     """Fill the template placeholders with the session path + cost summary.
 
     Uses str.replace (not ``.format``) so the JSON ``{}`` braces in the embedded
     DRAFT_SCHEMA are not mistaken for format placeholders.
+
+    slice-040-b: when an incremental byte range is given (a resumed session's
+    new turns), a one-line ``【增量范围】`` header is prepended so the agent
+    reads the full session for context but ONLY produces new memory for that
+    slice — earlier turns were already distilled in a prior run. Omit both to
+    distill the whole session (040-a behavior).
     """
-    return REFINE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path).replace(
+    prompt = REFINE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path).replace(
         "{cost}", cost_text
     )
+    if start_offset is not None or end_offset is not None:
+        start = start_offset or 0
+        end = "EOF" if end_offset is None else end_offset
+        prompt = (
+            f"【增量范围】本次只为 jsonl 字节区间 [{start}, {end}] 产新记忆；"
+            "该区间之前的内容已提炼过，不要重复。续聊增量提炼（slice-040-b）。\n\n"
+            + prompt
+        )
+    return prompt

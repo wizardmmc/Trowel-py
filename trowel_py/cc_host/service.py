@@ -164,6 +164,8 @@ class CCHost:
         stalled_threshold_severe: float = 300.0,
         stalled_threshold_kill: float = 1800.0,
         stalled_tick: float = 1.0,
+        session_registrar: Any = None,
+        session_kind: str = "user",
     ) -> None:
         """Store session config and the injection hooks for tests.
 
@@ -190,6 +192,16 @@ class CCHost:
                 kills cc + emits ErrorEvent). 30min default — genuine deadlock
                 (issue #53584) backstop; normal GLM waits stay well under it.
             stalled_tick: how long to wait between stalled checks on readline.
+            session_registrar: slice-040-b injectable registrar (duck-typed
+                ``SessionRegistrar``). None (default) → the real
+                ``~/.trowel/memory/meta/sessions.db`` is written via the lazy
+                import path (unchanged for production + existing tests). Tests
+                inject a no-op/capturing fake so they never touch the real db.
+            session_kind: ``"user"`` (default) or ``"review"`` (the daily-review
+                distillation sessions themselves). Stamped on the SessionRecord
+                so ``find_pending(exclude_kinds=["review"])`` keeps the
+                distillation sessions out of their own queue (C-5: kind, not
+                workdir-path guessing).
         """
         self.session_id = session_id
         self.workdir = workdir
@@ -211,6 +223,8 @@ class CCHost:
         self.stalled_threshold_severe = stalled_threshold_severe
         self.stalled_threshold_kill = stalled_threshold_kill
         self.stalled_tick = stalled_tick
+        self._session_registrar = session_registrar
+        self._session_kind = session_kind
 
         self._proc: Any = None
         self._started = False
@@ -487,35 +501,103 @@ class CCHost:
         )
 
     def _register_session_blocking(self, jsonl_path: str) -> None:
-        """Blocking sqlite insert; runs in an executor. Swallows all errors."""
+        """Blocking sqlite insert; runs in an executor. Swallows all errors.
+
+        slice-040-b: when ``self._session_registrar`` is set (injected), the
+        record is routed there and the real sessions.db is never touched — the
+        basis of cc_host test isolation (C-2). The SessionRecord is built once
+        with ``self._session_kind``; kind flows to whichever path is taken.
+        """
         try:
+            if not self._cc_session_id:
+                # pre-init guard: nothing to register without a cc session id
+                # (mirrors _maybe_update_completed; defends against an empty PK).
+                return
             from datetime import datetime
 
+            from trowel_py.memory.sessions_repo import SessionRecord
+
+            now = datetime.now()  # one snapshot so date/registered_at can't drift
+            rec = SessionRecord(
+                cc_session_id=self._cc_session_id or "",
+                workdir=str(self.workdir),
+                date=now.date().isoformat(),
+                jsonl_path=jsonl_path,
+                registered_at=now.isoformat(),
+                session_kind=self._session_kind,
+            )
+            if self._session_registrar is not None:
+                self._session_registrar.register(rec)
+                return
             from trowel_py.memory.paths import resolve_memory_root
             from trowel_py.memory.sessions_repo import (
-                SessionRecord,
                 create_sessions_repository,
                 open_sessions_db,
             )
 
-            now = datetime.now()  # one snapshot so date/registered_at can't drift
             root = resolve_memory_root()
             conn = open_sessions_db(root)
             try:
-                repo = create_sessions_repository(conn)
-                repo.register(
-                    SessionRecord(
-                        cc_session_id=self._cc_session_id or "",
-                        workdir=str(self.workdir),
-                        date=now.date().isoformat(),
-                        jsonl_path=jsonl_path,
-                        registered_at=now.isoformat(),
-                    )
-                )
+                create_sessions_repository(conn).register(rec)
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001 — never break the cc session
             _wf_debug(f"memory session register failed (ignored): {exc}")
+
+    async def _maybe_update_completed(self) -> None:
+        """Stamp the completed water mark at the result turn boundary (040-b C-6).
+
+        Reads the jsonl byte size — every byte up to it is a fully-flushed turn,
+        safe to distill — and forwards it to the registrar. Mirrors
+        ``_maybe_register_session``: the blocking stat+update runs on the default
+        executor and swallows all errors (a memory-subsystem failure must never
+        break the cc turn). Called ONLY on the normal_end path; cancelled and
+        stall-killed turns skip it — the next normal turn pushes the mark forward.
+
+        Trade-off (CR H-2): the await runs on the result boundary every turn, so
+        the event loop blocks for the sqlite open+update+close (~few ms). We
+        accept this for a DETERMINISTICALLY landed water mark (the next
+        incremental review reads it); a fire-and-forget variant would need
+        task-lifecycle bookkeeping for marginal latency gain at this frequency.
+        """
+        if not self._cc_session_id:
+            return
+        jsonl_path = self._jsonl_path(self._cc_session_id)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._update_completed_blocking, str(jsonl_path)
+        )
+
+    def _update_completed_blocking(self, jsonl_path: str) -> None:
+        """Blocking stat + update_completed; runs in an executor. Swallows errors."""
+        try:
+            if not self._cc_session_id:
+                return  # pre-init guard: no water mark without a cc session id
+            try:
+                size = os.path.getsize(jsonl_path)
+            except OSError:
+                size = 0  # jsonl vanished (rotated) → treat as empty, not a crash
+            if self._session_registrar is not None:
+                self._session_registrar.update_completed(
+                    self._cc_session_id or "", size
+                )
+                return
+            from trowel_py.memory.paths import resolve_memory_root
+            from trowel_py.memory.sessions_repo import (
+                create_sessions_repository,
+                open_sessions_db,
+            )
+
+            root = resolve_memory_root()
+            conn = open_sessions_db(root)
+            try:
+                create_sessions_repository(conn).update_completed(
+                    self._cc_session_id or "", size
+                )
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 — never break the cc session
+            _wf_debug(f"memory completed-offset update failed (ignored): {exc}")
 
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
         """Blocking session-start save+gc; runs in an executor / sync __init__."""
@@ -887,6 +969,10 @@ class CCHost:
                             f"  RESULT break watching={self._workflow_watcher.is_watching} "
                             f"enabled={self._workflow_watcher.enabled}"
                         )
+                        # slice-040-b: stamp the completed water mark BEFORE
+                        # breaking (the result turn is fully done; the next
+                        # increment distils up to this byte offset).
+                        await self._maybe_update_completed()
                         break
             # slice-028 bug3: result 后检测 cc 是否退出（用户 /exit）。普通 turn
             # proc 不退（returncode None）；/exit 后 proc 退（returncode 0）。短

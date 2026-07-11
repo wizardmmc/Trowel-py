@@ -1,9 +1,10 @@
-"""daily-review distillation orchestration (slice-040 T11).
+"""daily-review distillation orchestration (slice-040 T11, evolved in 040-b).
 
 The only async module in slice-040. ``run_one_session`` drives one cc agent (a
 ``CCHost`` constructed directly, NOT over HTTP) through the refine prompt, then
-reads its ``draft.json``. ``run_daily_review`` batches over a day's pending
-sessions: find_pending → distill each → persist → audit → mark_extracted.
+reads its ``draft.json``. ``run_daily_review`` holds an flock (C-3) and batches
+every incremental slice: find_incremental → distil each → persist → audit →
+advance_extracted (slice-040-b: no longer find_pending + mark_extracted).
 
 The cc host is injectable (``host_factory``) so tests never spawn a real cc
 (#46416 — never nest ``claude -p`` inside an interactive session; benchmarks
@@ -11,12 +12,19 @@ that DO need a real agent run out-of-band, not in CI).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
+
+try:  # Unix-only; Windows has no flock → the lock becomes a no-op there.
+    import fcntl
+except ImportError:  # pragma: no cover — non-Unix
+    fcntl = None  # type: ignore[assignment]
 
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
 from trowel_py.memory.draft import Draft, parse_draft, procedure_warnings, validate_draft
@@ -58,6 +66,8 @@ async def run_one_session(
     memory_root: Path,
     *,
     host_factory: HostFactory | None = None,
+    start_offset: int | None = None,
+    end_offset: int | None = None,
 ) -> Draft:
     """Drive the refine agent on one session; return its parsed, validated draft.
 
@@ -68,13 +78,22 @@ async def run_one_session(
         host_factory: optional callable ``(session, workdir) -> cc host``. When
             None, a real ``CCHost`` is built in the session's review workdir
             (auto-injected with memory — step 1 "查已有" for free).
+        start_offset / end_offset: slice-040-b incremental byte range. The agent
+            reads the full session for context but the prompt tells it to only
+            produce NEW memory for ``[start_offset, end_offset]`` (earlier turns
+            were distilled in a prior run). None/None distils the whole session.
 
     Raises:
         DistillError: the agent did not finish cleanly, produced no draft.json,
             or the draft failed validation / was malformed.
     """
     cost = extract_cost_from_jsonl(session.jsonl_path)
-    prompt = build_refine_prompt(session.jsonl_path, _cost_text(cost))
+    prompt = build_refine_prompt(
+        session.jsonl_path,
+        _cost_text(cost),
+        start_offset=start_offset,
+        end_offset=end_offset,
+    )
 
     base_workdir = ensure_review_workdir(date_str, memory_root)
     workdir = base_workdir / session.cc_session_id
@@ -92,7 +111,13 @@ async def run_one_session(
         # does not need. memory injection is added by CCHost._spawn via
         # --append-system-prompt, independent of the proxy. Verify end-to-end
         # in a standalone terminal (#46416 — never nest in interactive claude).
-        host = CCHost(session_id=uuid.uuid4().hex, workdir=str(workdir))
+        host = CCHost(
+            session_id=uuid.uuid4().hex,
+            workdir=str(workdir),
+            # slice-040-b: stamp the distillation session so its own init does
+            # not re-enter the daily-review queue (C-5: kind, not workdir guess).
+            session_kind="review",
+        )
 
     finished = False
     try:
@@ -130,6 +155,33 @@ async def run_one_session(
     return draft
 
 
+@contextlib.contextmanager
+def _review_lock(root: Path):
+    """C-3 mutex: exclusive flock so concurrent review jobs skip (slice-040-b).
+
+    The timer and a manual ``trowel memory review`` could race; the second
+    caller takes ``BlockingIOError`` out of this contextmanager, the wrapper
+    logs + skips. Off-Unix (``fcntl`` is None) the lock is a no-op — mutual
+    exclusion then relies on the caller being single-instance in practice.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = root / "meta" / ".review.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise
+    try:
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 async def run_daily_review(
     event: Any = None,
     memory_root: Path | None = None,
@@ -137,13 +189,19 @@ async def run_daily_review(
     *,
     host_factory: HostFactory | None = None,
 ) -> None:
-    """Daily batch: distill a day's pending sessions, persist, mark extracted.
+    """Daily batch: distill every completed-not-yet-extracted slice (slice-040-b).
+
+    Holds an exclusive flock (C-3) so two reviews never run at once; a concurrent
+    caller logs + skips. C-4: the body processes every incremental segment
+    (``find_incremental``), not a fixed "yesterday", so missed / sleep-shifted
+    runs catch up.
 
     Args:
         event: the ``dispatch_write_job`` event dict ``{"date": ..., "root": ...}``,
             or None. ``date_str`` / ``memory_root`` overrides take precedence.
         memory_root: memory root override.
-        date_str: target day override (ISO); defaults to ``event["date"]`` or today.
+        date_str: kept for CLI/event compat; only used as a fallback review_date
+            label when a segment's session.date is missing.
         host_factory: optional ``(session, workdir) -> cc host`` for tests.
     """
     root = Path(memory_root) if memory_root is not None else resolve_memory_root()
@@ -152,27 +210,55 @@ async def run_daily_review(
             date_str = str(event["date"])
         else:
             date_str = date.today().isoformat()
+    try:
+        with _review_lock(root):
+            await _run_daily_review_locked(root, date_str, host_factory)
+    except BlockingIOError:
+        logger.warning("daily review already running; skipping this run")
 
-    # sqlite calls below are synchronous. Pending count per day is small (a few
-    # to a dozen sessions) and each query is sub-ms, so they run directly in the
-    # event loop rather than via run_in_executor (the register埋点 in service.py
-    # uses the executor because it fires on EVERY cc session init).
+
+async def _run_daily_review_locked(
+    root: Path, date_str: str, host_factory: HostFactory | None
+) -> None:
+    """The locked body: find_incremental → distil each slice → advance_extracted."""
+    # sqlite calls below are synchronous. The incremental segment count is small
+    # (a few to a dozen sessions) and each query is sub-ms, so they run directly
+    # in the event loop rather than via run_in_executor (the register埋点 in
+    # service.py uses the executor because it fires on EVERY cc session init).
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        pending = repo.find_pending(date_str, exclude_workdir_substr="review-daily-work")
+        # slice-040-b C-4: no longer fixed to "yesterday" — process every
+        # completed-but-not-yet-extracted slice so a missed / sleep-shifted run
+        # catches up. date_str now only labels the review workdir / derived daily
+        # when a segment's session.date is missing.
+        segments = repo.find_incremental()
         logger.info(
-            "daily review: %d pending session(s) for %s", len(pending), date_str
+            "daily review: %d incremental segment(s) (date_str=%s)",
+            len(segments),
+            date_str,
         )
         store = MemoryStore(root)
-        for session in pending:
+        touched_dates: set[str] = set()
+        for seg in segments:
+            session = seg.session
+            # 040-a behavior: review_date = date_str (the CLI/run date), NOT
+            # session.date — a cross-day session lands in the day the user asked
+            # to review, not a stray daily for its start date.
+            review_date = date_str
+            touched_dates.add(review_date)
             try:
                 draft = await run_one_session(
-                    session, date_str, root, host_factory=host_factory
+                    session,
+                    review_date,
+                    root,
+                    host_factory=host_factory,
+                    start_offset=seg.start,
+                    end_offset=seg.end,
                 )
             except DistillError as exc:
                 logger.warning(
-                    "distill failed for %s (skipped, not marked): %s",
+                    "distill failed for %s (skipped, not advanced): %s",
                     session.cc_session_id,
                     exc,
                 )
@@ -194,46 +280,56 @@ async def run_daily_review(
                     session.cc_session_id,
                     proc_warns,
                 )
-            context = _context_for(session, date_str)
+            context = _context_for(session, review_date, seg.start, seg.end)
             try:
                 report = persist_draft(store, draft, context)
             except OSError as exc:
-                # C-7: a mid-landing failure leaves no manifest → session stays
-                # pending (not marked) and is retried; the manifest + idempotence
-                # keep the re-run from duplicating anything that did land.
+                # C-7: a mid-landing failure leaves no manifest → the segment's
+                # extracted water mark is NOT advanced (it stays incremental) and
+                # is retried; the manifest + idempotence keep the re-run from
+                # duplicating anything that did land.
                 logger.warning(
-                    "persist failed for %s (skipped, not marked): %s",
+                    "persist failed for %s (skipped, not advanced): %s",
                     session.cc_session_id,
                     exc,
                 )
                 continue
             if not report.ok:
                 logger.warning(
-                    "persist incomplete for %s (not marked)", session.cc_session_id
+                    "persist incomplete for %s (not advanced)", session.cc_session_id
                 )
                 continue
-            repo.mark_extracted(session.cc_session_id, datetime.now().isoformat())
-        # Derive the daily aggregate ONCE after every session landed (P1 fix:
-        # the daily is the union of all episodes for this review_date, not the
-        # last session's overwrite). No-op when nothing landed.
-        store.derive_daily_from_episodes(date_str)
+            repo.advance_extracted(
+                session.cc_session_id, seg.end, datetime.now().isoformat()
+            )
+        # Derive the daily aggregate for every touched date (P1 fix: the daily
+        # is the union of all episodes for a date, not the last session's
+        # overwrite). No-op when nothing landed for a date.
+        for review_date in sorted(touched_dates):
+            store.derive_daily_from_episodes(review_date)
     finally:
         conn.close()
 
 
-def _context_for(session: SessionRecord, date_str: str) -> PersistContext:
-    """Build the PersistContext for one session (040-a uses a whole-file segment).
+def _context_for(
+    session: SessionRecord, date_str: str, start: int, end: int
+) -> PersistContext:
+    """Build the PersistContext for one incremental slice (slice-040-b).
 
-    040-b will pass real byte offsets; 040-a segments the whole session as
-    ``<cc_session_id>:0:end``.
+    ``segment_id = <cc_session_id>:<start>:<end>`` is the stable manifest key;
+    a resumed session's later slice gets a different segment_id (e.g. ``s:2048:
+    4096`` after ``s:0:2048``) so the two coexist in the same episode file via
+    ``write_episode``'s per-segment upsert.
     """
     return PersistContext(
-        segment_id=f"{session.cc_session_id}:0:end",
+        segment_id=f"{session.cc_session_id}:{start}:{end}",
         cc_session_id=session.cc_session_id,
         workdir=session.workdir,
         registered_at=session.registered_at,
         review_date=date_str,
         source_jsonl=session.jsonl_path,
+        source_start_offset=start,
+        source_end_offset=end,
     )
 
 
