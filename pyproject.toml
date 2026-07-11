@@ -55,7 +55,8 @@ asyncio_mode = "auto"
 # integration tests spawn a real `claude -p`; they deadlock inside an
 # interactive claude session (#46416). Deselect by default; run explicitly with
 # `CC_INTEGRATION=1 .venv/bin/python -m pytest -m integration tests/cc_host/test_integration.py`.
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not benchmark'"
 markers = [
     "integration: tests that spawn a real `claude -p` subprocess (skip in nested interactive sessions; #46416)",
+    "benchmark: slice-040 layer-2 quality checks that spawn a real cc distillation agent (run explicitly: pytest -m benchmark)",
 ]

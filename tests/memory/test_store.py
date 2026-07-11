@@ -217,3 +217,89 @@ def test_load_diary_carries_body(tmp_path: Path) -> None:
     )
     [d] = store.load_diary()
     assert "DIARY_BODY_MARKER" in d.body
+
+
+# ---------- slice-040 T1: note body support ----------
+
+def test_write_note_body_round_trip(tmp_path: Path) -> None:
+    """C-3 enabler: note 正文 (body) round-trips through write_note → load_notes.
+
+    The body is the evidence/conflict-check text; conflict inspection (step 6)
+    needs to read it back. ``__body`` is the internal pass-through channel
+    (dropped from frontmatter by ``_ordered_note_frontmatter``).
+    """
+    store = MemoryStore(tmp_path)
+    store.write_note({**_valid_note(), "__body": "根因实测：生成期=0s。"})
+    [n] = store.load_notes()
+    assert n.body == "根因实测：生成期=0s。"
+    # __body must NOT leak into frontmatter
+    text = next((tmp_path / "notes").glob("*.md")).read_text(encoding="utf-8")
+    assert "__body" not in text
+    assert "根因实测：生成期=0s。" in text
+
+
+def test_note_from_fm_preserves_body(tmp_path: Path) -> None:
+    """A hand-written note with a body is read back with body intact."""
+    store = MemoryStore(tmp_path)
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    (notes_dir / "hand.md").write_text(
+        "---\n"
+        "type: note\ntitle: x\nverification: verified\n"
+        "tags: []\nsummary: ''\nconfidence: draft\n"
+        "created: ''\nupdated: ''\nrefs: 0\nlast_ref: ''\nretired: false\npain: 0\n"
+        "---\nHAND_BODY_MARKER 正文。\n",
+        encoding="utf-8",
+    )
+    [n] = store.load_notes()
+    assert "HAND_BODY_MARKER" in n.body
+
+
+# ---------- slice-040 T2: write_diary ----------
+
+def test_write_diary_creates_file_under_diary_daily(tmp_path: Path) -> None:
+    """write_diary persists under diary/{daily|weekly|monthly}/{date}.md.
+
+    Directory name follows the 038 convention (daily/weekly/monthly); the
+    frontmatter ``layer`` value stays day/week/month (schema). write_diary maps
+    layer→dir internally.
+    """
+    store = MemoryStore(tmp_path)
+    did = store.write_diary({
+        "type": "diary", "date": "2026-07-09", "layer": "day",
+        "period": "2026-07-09", "promoted_knowledge": [],
+        "__body": "卡两小时在浏览器缓存。",
+    })
+    assert did == "2026-07-09"
+    assert (tmp_path / "diary" / "daily" / "2026-07-09.md").exists()
+    [d] = store.load_diary()
+    assert d.date == "2026-07-09"
+    assert d.layer == "day"
+    assert "卡两小时" in d.body
+
+
+def test_write_diary_invalid_rejected(tmp_path: Path) -> None:
+    """C-2 schema gate: missing required date → ValueError."""
+    store = MemoryStore(tmp_path)
+    with pytest.raises(ValueError):
+        store.write_diary({"type": "diary", "layer": "day"})  # missing date
+    with pytest.raises(ValueError):
+        store.write_diary({"type": "diary", "date": "2026-07-09", "layer": "bogus"})
+
+
+def test_write_diary_and_note_physically_separate(tmp_path: Path) -> None:
+    """C-1: knowledge notes and diary events live in separate trees, never mixed."""
+    store = MemoryStore(tmp_path)
+    store.write_note(_valid_note())
+    store.write_diary({
+        "type": "diary", "date": "2026-07-09", "layer": "day",
+        "__body": "事件流。",
+    })
+    note_files = list((tmp_path / "notes").glob("*.md"))
+    diary_files = list((tmp_path / "diary").rglob("*.md"))
+    assert len(note_files) == 1
+    assert len(diary_files) == 1
+    # C-1: note top-level dir is notes/, diary top-level dir is diary/
+    # (use relative_to, not str(), so the tmp_path stem doesn't pollute the check)
+    assert note_files[0].relative_to(tmp_path).parts[0] == "notes"
+    assert diary_files[0].relative_to(tmp_path).parts[0] == "diary"

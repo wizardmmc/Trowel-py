@@ -83,6 +83,7 @@ class Note:
     last_ref: str = ""
     retired: bool = False
     pain: int = 0
+    body: str = ""
 
 
 @dataclass(frozen=True)

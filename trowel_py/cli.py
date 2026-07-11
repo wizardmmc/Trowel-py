@@ -112,6 +112,11 @@ def _run_memory_cli(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     tidy = sub.add_parser("tidy", help="run registered memory tidy jobs (batch; 空跑 in 038)")
     tidy.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    review = sub.add_parser(
+        "review", help="run the daily write loop: distill a day's cc sessions"
+    )
+    review.add_argument("--date", help="target day YYYY-MM-DD (default: today)")
+    review.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -119,7 +124,41 @@ def _run_memory_cli(argv: list[str]) -> int:
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
         return _run_memory_tidy(hooks.default, root)
+    if args.cmd == "review":
+        from datetime import date as _date
+
+        from trowel_py.memory import hooks, paths
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        date_str = args.date or _date.today().isoformat()
+        return _run_memory_review(hooks.default, root, date_str)
     return 2  # unreachable: subparser is required
+
+
+def _run_memory_review(registry: object, root: Path, date_str: str) -> int:
+    """Dispatch the daily write loop (slice-040) over ``root`` for ``date_str``.
+
+    Registers the review write-job on the injected registry and dispatches it.
+    The job distills the day's pending cc sessions into notes/ + diary/ (see
+    ``trowel_py.memory.review_job``).
+
+    Args:
+        registry: a ``HookRegistry`` (injected so tests don't touch global state).
+        root: the memory root to dispatch over.
+        date_str: target day (ISO ``YYYY-MM-DD``).
+
+    Returns:
+        Process exit code (0 on success).
+    """
+    from trowel_py.memory.review_job import run_daily_review_sync
+
+    registry.register_write_job(run_daily_review_sync)
+    registry.dispatch_write_job({"date": date_str, "root": str(root)})
+    print(
+        f"[memory] review dispatched over {root} for {date_str} | "
+        f"log: {registry.dispatch_log}"  # noqa: SLF001 — 空跑 trace
+    )
+    return 0
 
 
 def _run_memory_tidy(registry: object, root: Path) -> int:

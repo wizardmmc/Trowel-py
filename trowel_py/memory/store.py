@@ -33,6 +33,11 @@ _DIARY_DIR = "diary"
 _CORE_FILE = "core.md"
 _DICT_L0 = "dictionary-L0.md"
 
+# schema layer value (day|week|month) → 038 storage-layout directory name.
+# load_diary reads by frontmatter ``layer`` (not dir name), so the two stay
+# decoupled; this map keeps write_diary consistent with the 038 convention.
+_LAYER_DIR = {"day": "daily", "week": "weekly", "month": "monthly"}
+
 # Stable, readable key order for serialized note frontmatter.
 _NOTE_KEY_ORDER = (
     "type", "title", "tags", "summary", "confidence",
@@ -81,11 +86,11 @@ class MemoryStore:
             return []
         notes: list[Note] = []
         for p in sorted(notes_dir.glob("*.md")):
-            fm, _body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
             if fm is None:
                 logger.warning("note %s has no/invalid frontmatter, skipped", p.name)
                 continue
-            note = _note_from_fm(fm)
+            note = _note_from_fm(fm, body)
             if note is None:
                 logger.warning("note %s frontmatter type is not 'note', skipped", p.name)
                 continue
@@ -113,8 +118,37 @@ class MemoryStore:
         fm = _ordered_note_frontmatter(entry)
         path = self.root / _NOTES_DIR / f"{slug}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_dump_frontmatter(fm, ""), encoding="utf-8")
+        path.write_text(_dump_frontmatter(fm, entry.get("__body", "")), encoding="utf-8")
         return slug
+
+    def write_diary(self, entry: dict[str, Any]) -> str:
+        """Validate (C-2) and persist a diary entry. Returns its date stem.
+
+        The file lands under ``diary/{daily|weekly|monthly}/{date}.md`` — the
+        directory name follows the 038 storage-layout convention, while the
+        frontmatter ``layer`` value stays the schema value (``day|week|month``).
+        ``write_diary`` maps layer→dir so callers always pass the schema layer.
+
+        The event-stream body is passed via the ``__body`` internal channel
+        (same convention as ``write_note``); it lands in the file body, not in
+        frontmatter. Same-date writes overwrite (a diary day is one file).
+
+        Raises:
+            ValueError: the entry fails schema validation (e.g. missing date,
+                illegal layer).
+        """
+        fm = {k: v for k, v in entry.items() if not k.startswith("__")}
+        fm["type"] = "diary"
+        result = validate_entry("diary", fm)
+        if not result.ok:
+            raise ValueError(f"invalid diary: {result.errors}")
+        layer = str(fm.get("layer", "day"))
+        date = str(fm.get("date", ""))
+        dir_name = _LAYER_DIR.get(layer, "daily")
+        path = self.root / _DIARY_DIR / dir_name / f"{date}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_dump_frontmatter(fm, entry.get("__body", "")), encoding="utf-8")
+        return date
 
     def record_ref(self, note_id: NoteId, date: str) -> None:
         """Increment refs and stamp last_ref on an existing note (retirement input).
@@ -242,7 +276,7 @@ def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:
     return fm
 
 
-def _note_from_fm(fm: dict[str, Any] | None, _body: str = "") -> Note | None:
+def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
     if not fm or fm.get("type") != "note":
         return None
     return Note(
@@ -258,6 +292,7 @@ def _note_from_fm(fm: dict[str, Any] | None, _body: str = "") -> Note | None:
         last_ref=str(fm.get("last_ref", "")),
         retired=bool(fm.get("retired", False)),
         pain=int(fm.get("pain") or 0),
+        body=body,
     )
 
 

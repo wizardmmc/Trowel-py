@@ -469,6 +469,54 @@ class CCHost:
         if ok:
             self._session_start_saved = True
 
+    async def _maybe_register_session(self, cc_sid: str) -> None:
+        """Register this cc session into the memory sessions db (slice-040).
+
+        Runs the blocking sqlite insert on the default executor and awaits it:
+        the executor keeps the event loop responsive to OTHER sessions, while
+        awaiting preserves init ordering. The insert is sub-50ms, so the init
+        handler is not meaningfully delayed. Never raises —
+        ``_register_session_blocking`` swallows all errors, so a memory
+        subsystem failure cannot break the cc session (same stance as memory
+        injection in ``_spawn``). Idempotent via the sessions PK.
+        """
+        jsonl_path = self._jsonl_path(cc_sid)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._register_session_blocking, str(jsonl_path)
+        )
+
+    def _register_session_blocking(self, jsonl_path: str) -> None:
+        """Blocking sqlite insert; runs in an executor. Swallows all errors."""
+        try:
+            from datetime import datetime
+
+            from trowel_py.memory.paths import resolve_memory_root
+            from trowel_py.memory.sessions_repo import (
+                SessionRecord,
+                create_sessions_repository,
+                open_sessions_db,
+            )
+
+            now = datetime.now()  # one snapshot so date/registered_at can't drift
+            root = resolve_memory_root()
+            conn = open_sessions_db(root)
+            try:
+                repo = create_sessions_repository(conn)
+                repo.register(
+                    SessionRecord(
+                        cc_session_id=self._cc_session_id or "",
+                        workdir=str(self.workdir),
+                        date=now.date().isoformat(),
+                        jsonl_path=jsonl_path,
+                        registered_at=now.isoformat(),
+                    )
+                )
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 — never break the cc session
+            _wf_debug(f"memory session register failed (ignored): {exc}")
+
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
         """Blocking session-start save+gc; runs in an executor / sync __init__."""
         try:
@@ -762,6 +810,10 @@ class CCHost:
                     _wf_debug(f"INIT sid={sid}")
                     if sid:
                         self._cc_session_id = sid
+                        # slice-040: register into the memory sessions db so the
+                        # daily review job can find this session by date.
+                        # Fire-and-forget; never breaks the cc session.
+                        await self._maybe_register_session(sid)
                         # slice-026: fresh session — now that we know
                         # cc_session_id, save the deferred session-start
                         # checkpoint (worktree is still pristine at init).
