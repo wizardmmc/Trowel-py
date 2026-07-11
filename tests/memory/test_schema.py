@@ -107,6 +107,34 @@ def test_unknown_type_rejected() -> None:
     assert not validate_entry("mystery", {"type": "mystery"}).ok
 
 
+# ---------- slice-040-a: kind field on notes (procedural memory) ----------
+
+
+def test_note_kind_fact_accepted() -> None:
+    # kind is optional but, when present, must be one of the allowed kinds.
+    fm = {"type": "note", "title": "x", "verification": "verified", "kind": "fact"}
+    assert validate_entry("note", fm).ok
+
+
+def test_note_kind_procedure_accepted() -> None:
+    fm = {"type": "note", "title": "x", "verification": "verified", "kind": "procedure"}
+    assert validate_entry("note", fm).ok
+
+
+def test_note_bad_kind_rejected() -> None:
+    fm = {"type": "note", "title": "x", "verification": "verified", "kind": "rule-of-thumb"}
+    res = validate_entry("note", fm)
+    assert not res.ok
+    assert any("kind" in e for e in res.errors)
+
+
+def test_note_kind_absent_accepted() -> None:
+    # backward compat: the existing 45 notes carry no `kind` field; the schema
+    # must still accept them (defaults to `fact` at the read/persist layer).
+    fm = {"type": "note", "title": "x", "verification": "verified"}
+    assert validate_entry("note", fm).ok
+
+
 @pytest.mark.skipif(not HAS_WIKI, reason="wiki/pages corpus not present on this machine")
 def test_note_schema_accepts_real_wiki_frontmatter() -> None:
     # C-2/compat: take real wiki frontmatter (the shared field subset) + add the

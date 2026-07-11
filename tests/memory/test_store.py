@@ -303,3 +303,56 @@ def test_write_diary_and_note_physically_separate(tmp_path: Path) -> None:
     # (use relative_to, not str(), so the tmp_path stem doesn't pollute the check)
     assert note_files[0].relative_to(tmp_path).parts[0] == "notes"
     assert diary_files[0].relative_to(tmp_path).parts[0] == "diary"
+
+
+# ---------- slice-040-a: kind + provenance fields on notes ----------
+
+
+def test_write_note_kind_round_trip(tmp_path: Path) -> None:
+    # procedural memory: kind=procedure must round-trip through write→load.
+    store = MemoryStore(tmp_path)
+    store.write_note(_valid_note(kind="procedure"))
+    [n] = store.load_notes()
+    assert n.kind == "procedure"
+
+
+def test_load_old_note_without_kind_defaults_fact(tmp_path: Path) -> None:
+    # backward compat: the existing 45 notes carry no `kind` field. A hand note
+    # without kind loads as `fact` (never crashes, never silently invents a
+    # non-default kind).
+    store = MemoryStore(tmp_path)
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    (notes_dir / "old.md").write_text(
+        "---\n"
+        "type: note\ntitle: 老笔记\nverification: verified\n"
+        "tags: []\nsummary: ''\nconfidence: evolving\n"
+        "refs: 0\nlast_ref: ''\nretired: false\npain: 0\n"
+        "---\n老正文。\n",
+        encoding="utf-8",
+    )
+    [n] = store.load_notes()
+    assert n.kind == "fact"
+
+
+def test_write_note_provenance_fields_round_trip(tmp_path: Path) -> None:
+    # slice-040-a P2 + 幂等: source_sessions / content_hash / *_reason /
+    # conflicts_with must survive write→load (the idempotence + 溯源 substrate).
+    store = MemoryStore(tmp_path)
+    store.write_note(
+        _valid_note(
+            kind="gotcha",
+            verification_reason="根因 spike 实测",
+            pain_reason="不可逆覆盖",
+            conflicts_with=["existing-note-id"],
+            source_sessions=["abc-123", "def-456"],
+            content_hash="deadbeef",
+        )
+    )
+    [n] = store.load_notes()
+    assert n.kind == "gotcha"
+    assert n.verification_reason == "根因 spike 实测"
+    assert n.pain_reason == "不可逆覆盖"
+    assert n.conflicts_with == ("existing-note-id",)
+    assert n.source_sessions == ("abc-123", "def-456")
+    assert n.content_hash == "deadbeef"

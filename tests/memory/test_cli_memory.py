@@ -88,3 +88,35 @@ def test_memory_review_default_date_today(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "_run_memory_review", fake)
     cli._run_memory_cli(["review", "--root", str(tmp_path)])
     assert seen["date"] == date.today().isoformat()
+
+
+# ---------- slice-040-a: `trowel-py memory repair` ----------
+
+
+def test_memory_cli_routes_repair_dry_run(tmp_path: Path, capsys) -> None:
+    # bare dry-run over an empty root prints the plan + exit 0 (no writes).
+    rc = cli._run_memory_cli(
+        ["repair", "--date", "2026-07-09", "--root", str(tmp_path)]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DRY-RUN" in out
+    assert "2026-07-09" in out
+    assert not (tmp_path / "episodes").exists()
+
+
+def test_memory_cli_routes_repair_apply(tmp_path: Path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(root: Path, date_str: str, *, apply: bool) -> int:
+        seen["date"] = date_str
+        seen["root"] = str(root)
+        seen["apply"] = apply
+        return 0
+
+    monkeypatch.setattr(cli, "_run_repair", fake)
+    rc = cli._run_memory_cli(
+        ["repair", "--date", "2026-07-09", "--apply", "--root", str(tmp_path)]
+    )
+    assert rc == 0
+    assert seen == {"date": "2026-07-09", "root": str(tmp_path), "apply": True}

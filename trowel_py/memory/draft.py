@@ -28,6 +28,7 @@ class DraftNote:
     summary: str = ""
     body: str = ""
     tags: tuple[str, ...] = ()
+    kind: str = "fact"
     verification: str = "inferred-untested"
     verification_reason: str = ""
     pain: int = 0
@@ -90,12 +91,54 @@ def validate_draft(draft: Draft) -> list[str]:
     return errors
 
 
+#: slice-040-a C-3 soft gate: the four elements a kind=procedure body should
+#: carry, each with CN/EN aliases. Matched case-insensitively against the body
+#: so the gate judges direction, not exact wording (D5: warn, don't reject).
+_PROCEDURE_ELEMENTS: dict[str, tuple[str, ...]] = {
+    "trigger": ("trigger", "触发", "场景是", "什么场景"),
+    "procedure": ("procedure", "做法", "步骤", "怎么做"),
+    "stop": ("stop", "何时停", "停止条件", "终止"),
+    "anti-pattern": ("anti-pattern", "anti pattern", "别做", "不要", "反面"),
+}
+
+
+def procedure_warnings(draft: Draft) -> list[str]:
+    """Soft-check procedural notes carry the four elements (slice-040-a C-3).
+
+    A ``kind=procedure`` note should describe trigger / procedure / stop /
+    anti-pattern so the user's standing ask ("don't make me remind you that
+    we've hit this before") is answered by an actionable procedure, not just a
+    declarative fact. Missing elements return a warning string; the gate never
+    rejects (D5 — help the model, don't constrain it).
+
+    Returns:
+        warning strings (empty list when every procedure note is complete or
+        no note is procedural).
+    """
+    warnings: list[str] = []
+    for i, n in enumerate(draft.notes):
+        if n.kind != "procedure":
+            continue
+        if not n.body.strip():
+            warnings.append(f"notes[{i}] {n.title!r}: kind=procedure but body empty")
+            continue
+        body_lower = n.body.lower()
+        for elem, aliases in _PROCEDURE_ELEMENTS.items():
+            if not any(a.lower() in body_lower for a in aliases):
+                warnings.append(
+                    f"notes[{i}] {n.title!r}: kind=procedure but body may miss "
+                    f"'{elem}'"
+                )
+    return warnings
+
+
 def _parse_note(n: dict[str, Any]) -> DraftNote:
     return DraftNote(
         title=str(n.get("title", "")),
         summary=str(n.get("summary", "")),
         body=str(n.get("body", "")),
         tags=tuple(n.get("tags") or ()),
+        kind=str(n.get("kind", "fact")),
         verification=str(n.get("verification", "inferred-untested")),
         verification_reason=str(n.get("verification_reason", "")),
         pain=int(n.get("pain") or 0),

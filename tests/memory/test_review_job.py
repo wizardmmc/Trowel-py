@@ -213,3 +213,139 @@ async def test_review_workdir_session_not_processed(tmp_path: Path) -> None:
     )
 
     assert calls == ["user"]  # review-self never distilled
+
+
+# ---------- slice-040-a: P1 daily aggregate + atomic + idempotent rerun ----------
+
+
+async def test_daily_review_daily_aggregates_all_sessions(tmp_path: Path) -> None:
+    # P1 回归：3 个 session 同日 review → 派生 daily 含全部 3 个锚点
+    # （覆盖 bug 只剩最后 1 个）。
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1", "/proj1"))
+    repo.register(_session("s2", "/proj2"))
+    repo.register(_session("s3", "/proj3"))
+    conn.close()
+
+    def factory(session: SessionRecord, workdir: Path) -> FakeHost:
+        draft = json.dumps(
+            {
+                "notes": [
+                    {"title": f"结论 {session.cc_session_id}", "verification": "verified"}
+                ],
+                "diary": [
+                    {"date": "2026-07-09", "events": f"锚点 {session.cc_session_id}"}
+                ],
+            }
+        )
+        (workdir / "draft.json").write_text(draft, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09", host_factory=factory
+    )
+
+    [d] = MemoryStore(mem).load_diary(layer="day")
+    assert "锚点 s1" in d.body
+    assert "锚点 s2" in d.body
+    assert "锚点 s3" in d.body
+
+
+async def test_daily_review_writes_per_session_episodes(tmp_path: Path) -> None:
+    # P1：3 个 session → 3 个独立 episode 文件（不是 1 个被覆盖的 daily）。
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1", "/proj1"))
+    repo.register(_session("s2", "/proj2"))
+    conn.close()
+
+    def factory(session: SessionRecord, workdir: Path) -> FakeHost:
+        (workdir / "draft.json").write_text(_VALID_DRAFT, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09", host_factory=factory
+    )
+
+    eps = sorted((mem / "episodes").glob("*.md"))
+    assert [p.stem for p in eps] == ["s1", "s2"]
+
+
+async def test_persist_failure_does_not_mark_extracted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # C-7 原子水位：persist 中途失败 → session 不 mark_extracted（可重试）。
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1", "/proj1"))
+    conn.close()
+
+    from trowel_py.memory.store import MemoryStore as _MS
+
+    def boom(self, context, diary_entries):  # noqa: ANN001
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_MS, "write_episode", boom)
+
+    def factory(session: SessionRecord, workdir: Path) -> FakeHost:
+        (workdir / "draft.json").write_text(_VALID_DRAFT, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09", host_factory=factory
+    )
+
+    # session stayed pending (not marked) → retryable
+    conn2 = open_sessions_db(mem)
+    pending = create_sessions_repository(conn2).find_pending("2026-07-09")
+    conn2.close()
+    assert [p.cc_session_id for p in pending] == ["s1"]
+    # and no manifest was written (the failure aborted before it)
+    assert not list((mem / "meta" / "persisted-segments").glob("*.json"))
+
+
+async def test_rerun_after_failure_lands_exactly_one(tmp_path: Path, monkeypatch) -> None:
+    # C-7 重跑：第一次 persist 失败（episode 没写、manifest 没写、note 写了），
+    # 第二次成功 → 每个产物恰好一份（note 不翻倍，靠幂等 + manifest）。
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1", "/proj1"))
+    conn.close()
+
+    from trowel_py.memory.store import MemoryStore as _MS
+
+    call_count = {"n": 0}
+    orig_write_episode = _MS.write_episode
+
+    def flaky(self, context, diary_entries):  # noqa: ANN001
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise OSError("transient")
+        return orig_write_episode(self, context, diary_entries)
+
+    monkeypatch.setattr(_MS, "write_episode", flaky)
+
+    def factory(session: SessionRecord, workdir: Path) -> FakeHost:
+        (workdir / "draft.json").write_text(_VALID_DRAFT, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    # first run: persist fails → not marked
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09", host_factory=factory
+    )
+    # second run: succeeds → exactly one note, one episode, marked
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09", host_factory=factory
+    )
+
+    assert len(MemoryStore(mem).load_notes()) == 1
+    assert (mem / "episodes" / "s1.md").exists()
+    conn2 = open_sessions_db(mem)
+    pending = create_sessions_repository(conn2).find_pending("2026-07-09")
+    conn2.close()
+    assert pending == []  # marked this time

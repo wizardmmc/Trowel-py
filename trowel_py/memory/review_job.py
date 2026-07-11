@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
-from trowel_py.memory.draft import Draft, parse_draft, validate_draft
+from trowel_py.memory.draft import Draft, parse_draft, procedure_warnings, validate_draft
 from trowel_py.memory.dualtrack import audit_draft
 from trowel_py.memory.paths import resolve_memory_root
 from trowel_py.memory.persist import persist_draft
@@ -31,6 +31,7 @@ from trowel_py.memory.sessions_repo import (
     open_sessions_db,
 )
 from trowel_py.memory.store import MemoryStore
+from trowel_py.memory.types import PersistContext
 
 logger = logging.getLogger(__name__)
 
@@ -183,10 +184,57 @@ async def run_daily_review(
                     session.cc_session_id,
                     [(leak.date, leak.signal, leak.snippet) for leak in audit.leaks],
                 )
-            persist_draft(store, draft, date_str)
+            proc_warns = procedure_warnings(draft)
+            if proc_warns:
+                # C-3 soft gate (D5): warn, never reject. A kind=procedure note
+                # missing trigger/procedure/stop/anti-pattern still lands — the
+                # warning is a TODO nudge for the next distillation pass.
+                logger.warning(
+                    "procedure gaps in %s: %s",
+                    session.cc_session_id,
+                    proc_warns,
+                )
+            context = _context_for(session, date_str)
+            try:
+                report = persist_draft(store, draft, context)
+            except OSError as exc:
+                # C-7: a mid-landing failure leaves no manifest → session stays
+                # pending (not marked) and is retried; the manifest + idempotence
+                # keep the re-run from duplicating anything that did land.
+                logger.warning(
+                    "persist failed for %s (skipped, not marked): %s",
+                    session.cc_session_id,
+                    exc,
+                )
+                continue
+            if not report.ok:
+                logger.warning(
+                    "persist incomplete for %s (not marked)", session.cc_session_id
+                )
+                continue
             repo.mark_extracted(session.cc_session_id, datetime.now().isoformat())
+        # Derive the daily aggregate ONCE after every session landed (P1 fix:
+        # the daily is the union of all episodes for this review_date, not the
+        # last session's overwrite). No-op when nothing landed.
+        store.derive_daily_from_episodes(date_str)
     finally:
         conn.close()
+
+
+def _context_for(session: SessionRecord, date_str: str) -> PersistContext:
+    """Build the PersistContext for one session (040-a uses a whole-file segment).
+
+    040-b will pass real byte offsets; 040-a segments the whole session as
+    ``<cc_session_id>:0:end``.
+    """
+    return PersistContext(
+        segment_id=f"{session.cc_session_id}:0:end",
+        cc_session_id=session.cc_session_id,
+        workdir=session.workdir,
+        registered_at=session.registered_at,
+        review_date=date_str,
+        source_jsonl=session.jsonl_path,
+    )
 
 
 def run_daily_review_sync(event: Any = None) -> None:

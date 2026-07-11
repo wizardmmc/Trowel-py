@@ -15,6 +15,11 @@ from __future__ import annotations
 #: The three verification tiers (S4). Must stay in sync with schema/types.
 VERIFICATION_TIERS = ("verified", "event-data-supported", "inferred-untested")
 
+#: The five note kinds (slice-040-a procedural memory). Must stay in sync with
+#: schema/types. Every distilled note gets a kind (default ``fact``); the
+#: procedural kind carries trigger/procedure/stop/anti-pattern in the body.
+NOTE_KINDS = ("fact", "gotcha", "procedure", "preference", "hypothesis")
+
 #: grill §8 dual-track signal words. Meta-discourse that, if it appears in a
 #: diary entry, suggests the agent mis-routed a knowledge conclusion into the
 #: experience track. Also mirrored in dualtrack.py (the Python backstop).
@@ -39,6 +44,7 @@ DRAFT_SCHEMA = """\
       "summary": "一句话（dictionary 复用）",
       "body": "详细正文（markdown）",
       "tags": ["..."],
+      "kind": "fact | gotcha | procedure | preference | hypothesis",
       "verification": "verified | event-data-supported | inferred-untested",
       "verification_reason": "为什么这档（根因是否实测）",
       "pain": 0,
@@ -103,6 +109,14 @@ REFINE_PROMPT_TEMPLATE = """\
 - 经历轨（diary）：事件流（时间 / 做了啥 / 卡哪 / 痛感）
 - 元话语（我想到 / 感悟 / 本质是 / 原理是 / 启示 / 教训 / 规律 / 方法论 / 告诉我们）→ 知识轨，不要漏进 diary。
 - 同一个坑两处都可能记：日记记"7/8 卡两小时在 X"，笔记记"遇到 X 先查 Y"。
+
+【程序性记忆（第 9 步）】
+对每条知识候选判 kind（默认 fact）：
+- fact：声明性事实（是什么）。
+- gotcha：易踩的坑（什么不对 / 什么会失败）。
+- procedure：可复用的操作经验（遇到 X 怎么办）。问自己「这次哪里卡了 / 返工了？下次遇到同场景该怎么做？」——如果是可复用的操作经验，产 kind=procedure 的 note，body 写清四要素：trigger（什么场景触发）/ procedure（怎么做）/ stop（何时停）/ anti-pattern（什么别做）。
+- preference：偏好选择（倾向怎么做，非对错）。
+- hypothesis：待验假设（尚未实测的推断）。
 
 【输出】
 把结果写到当前工作目录的 draft.json，严格按此 schema：

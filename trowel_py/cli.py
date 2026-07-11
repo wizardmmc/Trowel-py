@@ -117,6 +117,17 @@ def _run_memory_cli(argv: list[str]) -> int:
     )
     review.add_argument("--date", help="target day YYYY-MM-DD (default: today)")
     review.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    repair = sub.add_parser(
+        "repair",
+        help="backfill per-session episodes from surviving drafts (P1 overwrite fix)",
+    )
+    repair.add_argument("--date", required=True, help="target day YYYY-MM-DD")
+    repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply (back up + write); default is a dry-run listing",
+    )
+    repair.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -132,6 +143,11 @@ def _run_memory_cli(argv: list[str]) -> int:
         root = Path(args.root) if args.root else paths.resolve_memory_root()
         date_str = args.date or _date.today().isoformat()
         return _run_memory_review(hooks.default, root, date_str)
+    if args.cmd == "repair":
+        from trowel_py.memory import paths
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        return _run_repair(root, args.date, apply=args.apply)
     return 2  # unreachable: subparser is required
 
 
@@ -181,6 +197,42 @@ def _run_memory_tidy(registry: object, root: Path) -> int:
         f"registered jobs: {len(registry._tidy)} | "  # noqa: SLF001 — 空跑 trace
         f"log: {registry.dispatch_log}"
     )
+    return 0
+
+
+def _run_repair(root: Path, date_str: str, *, apply: bool) -> int:
+    """Backfill per-session episodes from surviving drafts (slice-040-a P1 fix).
+
+    Reads ``review-daily-work/<date>/*/draft.json`` and replays each into an
+    ``episodes/<sid>.md`` file, then rebuilds the derived daily. Dry-run by
+    default; ``apply`` backs up the memory root first. Never re-runs the agent
+    and never touches notes.
+
+    Args:
+        root: the memory root.
+        date_str: target day ``YYYY-MM-DD``.
+        apply: True to back up + write; False to print the plan only.
+
+    Returns:
+        Process exit code (0 on success, 1 if apply verification failed).
+    """
+    from trowel_py.memory.repair import repair_memory
+
+    report = repair_memory(root, date_str, apply=apply)
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"[memory] repair {mode} over {root} for {date_str}")
+    print(f"  drafts found: {sum(1 for p in report.planned if p.has_draft)}")
+    print(f"  missing drafts (session registered, no draft): {len(report.missing_drafts)}")
+    for sid in report.missing_drafts:
+        print(f"    - {sid}")
+    if apply:
+        print(f"  episodes created: {report.episodes_created}")
+        print(f"  daily rebuilt: {report.daily_rebuilt}")
+        print(f"  backup: {report.backup_dir}")
+        print(f"  notes unchanged: {report.notes_before}")
+        if not report.ok:
+            print("  VERIFICATION FAILED: episodes_created != draft count")
+            return 1
     return 0
 
 

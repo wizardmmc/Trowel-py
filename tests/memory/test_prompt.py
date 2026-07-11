@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from trowel_py.memory.prompt import (
     DUALTRACK_SIGNAL_WORDS,
+    NOTE_KINDS,
     VERIFICATION_TIERS,
     REFINE_PROMPT_TEMPLATE,
     build_refine_prompt,
@@ -48,3 +49,33 @@ def test_build_refine_prompt_fills_placeholders() -> None:
     assert "tokens=100" in p
     assert "{jsonl_path}" not in p
     assert "{cost}" not in p
+
+
+# ---------- slice-040-a: procedural memory (kind + four elements) ----------
+
+
+def test_prompt_lists_note_kinds() -> None:
+    # D3: every note gets a kind; all five kinds appear in the prompt so the
+    # agent knows the menu.
+    for kind in NOTE_KINDS:
+        assert kind in REFINE_PROMPT_TEMPLATE
+
+
+def test_prompt_guides_procedure_four_elements() -> None:
+    # C-3: a kind=procedure note is guided to carry trigger/procedure/stop/
+    # anti-pattern in its body.
+    for elem in ("trigger", "procedure", "stop", "anti-pattern"):
+        assert elem in REFINE_PROMPT_TEMPLATE
+
+
+def test_prompt_asks_procedural_self_question() -> None:
+    # the "what did I get stuck on / redo?" reflex that turns a painful session
+    # into a reusable procedure.
+    assert "卡了" in REFINE_PROMPT_TEMPLATE or "返工" in REFINE_PROMPT_TEMPLATE
+
+
+def test_draft_schema_includes_kind() -> None:
+    # the JSON schema shown to the agent carries the kind field.
+    from trowel_py.memory.prompt import DRAFT_SCHEMA
+
+    assert "kind" in DRAFT_SCHEMA

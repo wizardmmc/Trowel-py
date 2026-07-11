@@ -16,20 +16,24 @@ rewrites/retires. This module is the shared substrate.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.schema import validate_entry
-from trowel_py.memory.types import CoreItem, Diary, Note, NoteId
+from trowel_py.memory.types import CoreItem, Diary, Note, NoteId, PersistContext
 
 logger = logging.getLogger(__name__)
 
 _NOTES_DIR = "notes"
 _DIARY_DIR = "diary"
+_EPISODES_DIR = "episodes"
 _CORE_FILE = "core.md"
 _DICT_L0 = "dictionary-L0.md"
 
@@ -39,9 +43,15 @@ _DICT_L0 = "dictionary-L0.md"
 _LAYER_DIR = {"day": "daily", "week": "weekly", "month": "monthly"}
 
 # Stable, readable key order for serialized note frontmatter.
+# slice-040-a adds kind (after title), the *_reason / conflicts_with rationale
+# block, and the source_sessions / content_hash provenance tail.
 _NOTE_KEY_ORDER = (
-    "type", "title", "tags", "summary", "confidence",
-    "created", "updated", "verification", "refs", "last_ref", "retired", "pain",
+    "type", "title", "kind", "tags", "summary", "confidence",
+    "created", "updated",
+    "verification", "verification_reason",
+    "pain", "pain_reason", "conflicts_with",
+    "refs", "last_ref", "retired",
+    "source_sessions", "content_hash",
 )
 
 
@@ -166,6 +176,52 @@ class MemoryStore:
         fm["last_ref"] = date
         path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
 
+    def find_note_by_source(self, cc_session_id: str, content_hash: str) -> NoteId | None:
+        """Return the id of the note from ``cc_session_id`` with this content_hash.
+
+        slice-040-a idempotence key (D4): ``(cc_session_id, content_hash)``. A
+        re-run with the same source+content finds the existing note so persist
+        updates mutable fields instead of duplicating. Returns ``None`` when no
+        note carries that source session + hash (existing 45 notes predate this
+        field and are skipped — they simply become new writes once).
+
+        TODO(041): this is O(n) per call — ``persist_draft`` calls it once per
+        draft note, so the whole landing is O(notes × existing_notes). Fine at
+        the current corpus size (tens); build an in-memory
+        ``(cc_session_id, content_hash) → id`` index when notes reach hundreds.
+        """
+        notes_dir = self.root / _NOTES_DIR
+        if not notes_dir.exists():
+            return None
+        for p in sorted(notes_dir.glob("*.md")):
+            fm, _body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if not fm:
+                continue
+            sources = fm.get("source_sessions") or []
+            if cc_session_id in sources and fm.get("content_hash") == content_hash:
+                return p.stem
+        return None
+
+    def update_note_fields(self, note_id: NoteId, fields: dict[str, Any]) -> None:
+        """Read-modify-write a note's frontmatter fields (idempotent re-judge path).
+
+        Only the mutable judgment fields are ever updated this way
+        (verification / pain / *_reason / conflicts_with / updated / refs …);
+        the title/summary/body/kind identity is stable (their hash is the key).
+        Preserves unknown wiki fields and the body (W3 symmetry with record_ref).
+
+        Raises:
+            FileNotFoundError: no note with that id.
+        """
+        path = self.root / _NOTES_DIR / f"{note_id}.md"
+        if not path.exists():
+            raise FileNotFoundError(note_id)
+        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+        if fm is None:
+            raise ValueError(f"note {note_id!r} has no frontmatter")
+        fm.update(fields)
+        path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
+
     # ---- experience track (diary) ----
     def load_diary(self, since: str | None = None,
                    layer: str | None = None) -> list[Diary]:
@@ -190,6 +246,118 @@ class MemoryStore:
                 continue
             out.append(d)
         return out
+
+    # ---- experience track (episodes) — slice-040-a ----
+    def write_episode(
+        self, context: PersistContext, diary_entries: tuple[DraftDiary, ...]
+    ) -> str:
+        """Upsert one segment into ``episodes/<cc_session_id>.md`` (C-1).
+
+        One source session maps to exactly one episode file; the file may hold
+        multiple segments (040-b incremental re-runs). This call upserts the
+        ``context.segment_id`` segment: a same-id segment replaces only its own
+        body, a new-id segment is appended — an existing sibling segment is
+        never clobbered, so the original experience is never lost.
+
+        ``diary_entries`` come straight from the distilled DraftDiary tuple; a
+        session whose agent returned zero events still gets a skeletal segment
+        flagged ``empty_reason`` (no silent skip → no lost provenance).
+
+        Returns:
+            the ``cc_session_id`` (the episode filename stem).
+        """
+        path = self.root / _EPISODES_DIR / f"{context.cc_session_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if path.exists():
+            fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+            fm = fm or {}
+            blocks = _parse_segment_blocks(body)
+            segs = list(fm.get("segments") or [])
+            prior_dates = set(fm.get("activity_dates") or [])
+        else:
+            fm, body = {}, ""
+            blocks = _parse_segment_blocks(body)
+            segs = []
+            prior_dates = set()
+
+        block_text, content_hash, dates, empty_reason = _render_segment(
+            context.segment_id, diary_entries
+        )
+        # upsert block (preserve insertion order; replace in place if exists)
+        blocks[context.segment_id] = block_text
+        # upsert segment metadata (replace in place, else append)
+        seg_meta: dict[str, Any] = {
+            "segment_id": context.segment_id,
+            "start_offset": context.source_start_offset,
+            "end_offset": context.source_end_offset,
+            "review_date": context.review_date,
+            "content_hash": content_hash,
+        }
+        if empty_reason:
+            seg_meta["empty_reason"] = empty_reason
+        new_segs: list[dict[str, Any]] = []
+        replaced = False
+        for s in segs:
+            if s.get("segment_id") == context.segment_id:
+                new_segs.append(seg_meta)
+                replaced = True
+            else:
+                new_segs.append(s)
+        if not replaced:
+            new_segs.append(seg_meta)
+
+        fm_out: dict[str, Any] = {
+            "type": "episode",
+            "cc_session_id": context.cc_session_id,
+            "workdir": context.workdir,
+            "registered_at": context.registered_at,
+            "review_date": context.review_date,
+            "activity_dates": sorted(prior_dates | set(dates)),
+            "source_jsonl": context.source_jsonl,
+            "segments": new_segs,
+        }
+        body_out = "".join(blocks.values())
+        path.write_text(_dump_frontmatter(fm_out, body_out), encoding="utf-8")
+        return context.cc_session_id
+
+    def derive_daily_from_episodes(self, date: str) -> str:
+        """Rebuild ``diary/daily/<date>.md`` as the aggregate of that day's episodes.
+
+        C-8: the daily file is a *derived cache* of episodes, never the source
+        of truth. Reads every ``episodes/*.md`` whose ``review_date`` == ``date``,
+        orders them by ``registered_at`` (time order, not filename order), and
+        concatenates their segment bodies into one daily body via
+        ``write_diary`` (same-date overwrite = rebuild).
+
+        Returns:
+            the date stem, or ``""`` when no episode matches (no fabricated
+            empty daily — preserves 039's "empty = nothing happened" contract).
+        """
+        eps_dir = self.root / _EPISODES_DIR
+        if not eps_dir.exists():
+            return ""
+        items: list[tuple[str, str]] = []
+        for p in sorted(eps_dir.glob("*.md")):
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if not fm or fm.get("review_date") != date:
+                continue
+            items.append((str(fm.get("registered_at", "")), body))
+        if not items:
+            return ""
+        items.sort(key=lambda x: x[0])
+        daily_body = "\n\n".join(body for _ts, body in items)
+        self.write_diary(
+            {
+                "type": "diary",
+                "date": date,
+                "layer": "day",
+                "period": date,
+                "promoted_knowledge": [],
+                "__body": daily_body,
+            }
+        )
+        return date
 
     # ---- dictionary ----
     def load_dictionary_L0(self) -> str:
@@ -283,15 +451,21 @@ def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
         type="note",
         title=str(fm.get("title", "")),
         tags=tuple(fm.get("tags") or ()),
+        kind=fm.get("kind", "fact"),
         summary=str(fm.get("summary", "")),
         confidence=fm.get("confidence", "draft"),
         created=str(fm.get("created", "")),
         updated=str(fm.get("updated", "")),
         verification=fm.get("verification", "inferred-untested"),
+        verification_reason=str(fm.get("verification_reason", "")),
+        pain=int(fm.get("pain") or 0),
+        pain_reason=str(fm.get("pain_reason", "")),
+        conflicts_with=tuple(fm.get("conflicts_with") or ()),
         refs=int(fm.get("refs") or 0),
         last_ref=str(fm.get("last_ref", "")),
         retired=bool(fm.get("retired", False)),
-        pain=int(fm.get("pain") or 0),
+        source_sessions=tuple(fm.get("source_sessions") or ()),
+        content_hash=str(fm.get("content_hash", "")),
         body=body,
     )
 
@@ -345,3 +519,82 @@ def _slugify(title: str) -> str:
     s = _WS_SLASH.sub("-", title.strip())
     s = _ILLEGAL.sub("", s)
     return s or "untitled"
+
+
+# ---------------------------------------------------------------- episode IO
+
+
+_SEG_START = re.compile(r"<!-- @segment (\S+) -->")
+_SEG_END = re.compile(r"<!-- @endsegment (\S+) -->")
+
+
+def _render_segment(
+    segment_id: str, diary_entries: tuple[DraftDiary, ...]
+) -> tuple[str, str, list[str], str]:
+    """Render one segment block (markers + dated events) + its content hash.
+
+    Args:
+        segment_id: the stable segment key.
+        diary_entries: the distilled DraftDiary tuple (may be empty).
+
+    Returns:
+        (block_text, content_hash, activity_dates, empty_reason).
+        ``empty_reason`` is ``""`` when the segment has events, else a short
+        reason string (also written into the block so the file is self-describing).
+    """
+    dates: list[str] = []
+    if diary_entries:
+        inner_parts: list[str] = []
+        for d in sorted(diary_entries, key=lambda x: x.date):
+            dates.append(d.date)
+            inner_parts.append(f"## {d.date}\n\n{d.events.rstrip()}\n")
+        inner = "\n".join(inner_parts)
+        empty_reason = ""
+    else:
+        empty_reason = "agent distilled no diary events"
+        inner = f"_empty_reason: {empty_reason}_\n"
+    block = (
+        f"<!-- @segment {segment_id} -->\n"
+        f"{inner}"
+        f"<!-- @endsegment {segment_id} -->\n"
+    )
+    content_hash = hashlib.sha256(inner.encode("utf-8")).hexdigest()[:16]
+    return block, content_hash, dates, empty_reason
+
+
+def _parse_segment_blocks(body: str) -> "OrderedDict[str, str]":
+    """Parse a segment-marked body into an ordered ``{segment_id: block_text}``.
+
+    Preserves first-seen order so re-upserts replace in place rather than
+    appending. Returns an empty dict when the body carries no markers (a fresh
+    file). Stray text outside markers is dropped — episodes are marker-delimited
+    by contract.
+
+    The end marker's id must MATCH the start marker's id; a mismatched (e.g.
+    hand-edited into crossing) pair is treated as an unterminated segment and
+    dropped, never silently capturing another segment's content.
+    """
+    blocks: "OrderedDict[str, str]" = OrderedDict()
+    pos = 0
+    while True:
+        m = _SEG_START.search(body, pos)
+        if not m:
+            break
+        sid = m.group(1)
+        # scan for the MATCHING end marker (same id), skipping any inner markers
+        # of other ids so crossing pairs can't swallow a sibling segment.
+        search_from = m.end()
+        while True:
+            m2 = _SEG_END.search(body, search_from)
+            if not m2:
+                break  # unterminated → drop this start
+            if m2.group(1) == sid:
+                break
+            search_from = m2.end()
+        if not m2 or m2.group(1) != sid:
+            # no matching end marker; advance past this start to keep parsing
+            pos = m.end()
+            continue
+        blocks[sid] = body[m.start() : m2.end()] + "\n"
+        pos = m2.end()
+    return blocks

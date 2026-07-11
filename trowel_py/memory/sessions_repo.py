@@ -118,6 +118,19 @@ class SessionsRepository:
             ).fetchall()
         return [_row_to_record(r) for r in rows]
 
+    def find_by_date(self, date: str) -> list[SessionRecord]:
+        """Return ALL sessions of ``date`` (extracted or not), oldest first.
+
+        slice-040-a repair uses this to replay a day's drafts into episodes
+        regardless of extracted_at — the repair reads surviving drafts, not the
+        pending queue.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM sessions WHERE date = ? ORDER BY registered_at",
+            (date,),
+        ).fetchall()
+        return [_row_to_record(r) for r in rows]
+
     def mark_extracted(self, cc_session_id: str, when: str) -> None:
         """Stamp extracted_at on a session after the review extracted it."""
         self._conn.execute(

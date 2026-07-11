@@ -21,6 +21,7 @@ DiaryLayer = Literal["day", "week", "month"]
 DictionaryLayer = Literal["L0", "L1"]
 Scope = Literal["high-risk", "low-risk"]
 CoreStatus = Literal["seed", "active", "retired"]
+NoteKind = Literal["fact", "gotcha", "procedure", "preference", "hypothesis"]
 
 
 @dataclass(frozen=True)
@@ -69,20 +70,38 @@ class Note:
 
     Fields ``title``/``tags``/``summary``/``confidence``/``created``/``updated``
     are wiki-compatible; the rest are memory-only.
+
+    slice-040-a adds:
+        kind: procedural-memory classifier (fact | gotcha | procedure | …).
+            Defaults to ``fact`` so the existing 45 notes (no kind field) load
+            unchanged. ``procedure`` notes carry trigger/procedure/stop/
+            anti-pattern in the body.
+        verification_reason / pain_reason / conflicts_with: the agent's
+            ``why this tier / why this score / which existing notes this
+            contradicts`` rationale — persisted, never evaporated (P2).
+        source_sessions / content_hash: provenance for idempotent re-runs and
+            future correction (041). content_hash = sha256(title+summary+body+
+            kind); (cc_session_id, hash) is the dedupe key.
     """
 
     type: Literal["note"]
     title: str
     tags: tuple[str, ...] = ()
+    kind: NoteKind = "fact"
     summary: str = ""
     confidence: Confidence = "draft"
     created: str = ""
     updated: str = ""
     verification: Verification = "inferred-untested"
+    verification_reason: str = ""
+    pain: int = 0
+    pain_reason: str = ""
+    conflicts_with: tuple[str, ...] = ()
     refs: int = 0
     last_ref: str = ""
     retired: bool = False
-    pain: int = 0
+    source_sessions: tuple[str, ...] = ()
+    content_hash: str = ""
     body: str = ""
 
 
@@ -116,3 +135,35 @@ class DictionaryEntry:
     type: Literal["dictionary"]
     layer: DictionaryLayer
     domain: str = ""
+
+
+@dataclass(frozen=True)
+class PersistContext:
+    """Provenance for landing one distilled session (slice-040-a).
+
+    Built by ``run_daily_review`` from the SessionRecord and passed alongside
+    the Draft to ``persist_draft`` — persist MUST NOT guess its source. One
+    source session maps to exactly one episode file (``episodes/<cc_session_id>
+    .md``) but may grow multiple incremental segments across re-runs; 040-a
+    uses a single whole-file segment ``<cc_session_id>:0:end``, 040-b reuses
+    the same contract with incremental offsets.
+
+    Attributes:
+        segment_id: stable segment key (``<cc_session_id>:<start>:<end>``).
+        cc_session_id: cc's uuid session id (the jsonl filename stem).
+        workdir: the session's working directory.
+        registered_at: ISO timestamp the session was registered.
+        review_date: ISO ``YYYY-MM-DD`` the review runs for (= session.date).
+        source_jsonl: absolute path to the cc session jsonl.
+        source_start_offset: byte offset the segment starts at (0 for 040-a).
+        source_end_offset: byte offset the segment ends at (None = EOF).
+    """
+
+    segment_id: str
+    cc_session_id: str
+    workdir: str
+    registered_at: str
+    review_date: str
+    source_jsonl: str
+    source_start_offset: int = 0
+    source_end_offset: int | None = None

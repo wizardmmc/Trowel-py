@@ -72,3 +72,90 @@ def test_validate_accepts_inferred_untested() -> None:
     # (confidence is derived from verification there).
     d = parse_draft(json.dumps({"notes": [{"title": "x", "verification": "inferred-untested"}]}))
     assert validate_draft(d) == []
+
+
+# ---------- slice-040-a: procedural-memory soft check ----------
+
+
+def test_procedure_note_with_four_elements_no_warning() -> None:
+    # C-3 soft gate: a kind=procedure note whose body carries all four elements
+    # (trigger / procedure / stop / anti-pattern, CN or EN) yields no warning.
+    from trowel_py.memory.draft import procedure_warnings
+
+    d = parse_draft(
+        json.dumps(
+            {
+                "notes": [
+                    {
+                        "title": "build 不生效",
+                        "kind": "procedure",
+                        "verification": "verified",
+                        "body": (
+                            "trigger: build 不生效。\n"
+                            "procedure: 先 hard-refresh。\n"
+                            "stop: 看到 200 响应即停。\n"
+                            "anti-pattern: 别只重启 dev server。"
+                        ),
+                    }
+                ]
+            }
+        )
+    )
+    assert procedure_warnings(d) == []
+
+
+def test_procedure_note_missing_elements_warned() -> None:
+    # missing elements → warning returned (NOT a hard reject — D5 帮模型不约束).
+    from trowel_py.memory.draft import procedure_warnings
+
+    d = parse_draft(
+        json.dumps(
+            {
+                "notes": [
+                    {
+                        "title": "半成品",
+                        "kind": "procedure",
+                        "verification": "verified",
+                        "body": "trigger 出现时做点什么。",  # only trigger present
+                    }
+                ]
+            }
+        )
+    )
+    warns = procedure_warnings(d)
+    assert any("'procedure'" in w for w in warns)
+    assert any("'stop'" in w for w in warns)
+    assert any("'anti-pattern'" in w for w in warns)
+
+
+def test_non_procedure_note_not_checked() -> None:
+    # fact / gotcha notes are never flagged for missing procedure elements.
+    from trowel_py.memory.draft import procedure_warnings
+
+    d = parse_draft(
+        json.dumps(
+            {
+                "notes": [
+                    {"title": "事实", "kind": "fact", "verification": "verified",
+                     "body": "就是一句话。"}
+                ]
+            }
+        )
+    )
+    assert procedure_warnings(d) == []
+
+
+def test_procedure_empty_body_warned() -> None:
+    from trowel_py.memory.draft import procedure_warnings
+
+    d = parse_draft(
+        json.dumps(
+            {
+                "notes": [
+                    {"title": "空", "kind": "procedure", "verification": "verified",
+                     "body": ""}
+                ]
+            }
+        )
+    )
+    assert procedure_warnings(d)
