@@ -247,35 +247,6 @@ def handle_outcome(
     return {"ok": True, "read_id": read_id, "outcome": outcome}
 
 
-def write_mcp_config() -> Path:
-    """Write the mcp-config JSON pointing at this server, return its path.
-
-    Idempotent (overwrites) so the command path stays current as the venv
-    moves. The path is ``~/.trowel/memory-mcp-config.json`` (or
-    ``$TROWEL_MCP_CONFIG``). CCHost passes it to cc via
-    ``--mcp-config --strict-mcp-config`` so cc spawns this server as a stdio
-    subprocess per session.
-    """
-    import json
-    import sys
-
-    path = Path(
-        os.environ.get("TROWEL_MCP_CONFIG", str(Path.home() / ".trowel" / "memory-mcp-config.json"))
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    config = {
-        "mcpServers": {
-            "memory": {
-                "type": "stdio",
-                "command": sys.executable,
-                "args": ["-m", "trowel_py.memory.mcp_server"],
-            }
-        }
-    }
-    path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-    return path
-
-
 # --------------------------------------------------------------------------- MCP run
 
 

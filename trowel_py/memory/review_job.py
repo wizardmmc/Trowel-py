@@ -111,7 +111,7 @@ async def run_one_session(
         # does not need. memory injection is added by CCHost._spawn via
         # --append-system-prompt, independent of the proxy. Verify end-to-end
         # in a standalone terminal (#46416 — never nest in interactive claude).
-        from trowel_py.memory.mcp_server import write_mcp_config
+        from trowel_py.memory.mcp_config import write_mcp_config
 
         host = CCHost(
             session_id=uuid.uuid4().hex,

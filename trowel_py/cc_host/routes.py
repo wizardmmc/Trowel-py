@@ -115,8 +115,10 @@ def create_session(
         )
     sid = uuid.uuid4().hex
     # slice-040-c: attach the memory MCP server (search/read/outcome) so the
-    # model can query notes. write_mcp_config is idempotent.
-    from trowel_py.memory.mcp_server import write_mcp_config
+    # model can query notes. write_mcp_config is idempotent. Imported from the
+    # SDK-free mcp_config module so session creation does not require the mcp
+    # package (only the spawned subprocess does).
+    from trowel_py.memory.mcp_config import write_mcp_config
 
     mcp_config = write_mcp_config()
     host = CCHost(

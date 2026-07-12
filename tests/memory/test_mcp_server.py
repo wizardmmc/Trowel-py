@@ -12,7 +12,6 @@ from trowel_py.memory.mcp_server import (
     handle_search,
     parse_memory_uri,
     requires_read,
-    write_mcp_config,
 )
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
@@ -185,22 +184,3 @@ def test_outcome_rejects_invalid_outcome(tmp_path: Path) -> None:
     """HIGH-4: outcome must be one of the four valid values (schema enum)."""
     out = handle_outcome("any", "badvalue", "x", tmp_path, IDENT)
     assert "invalid outcome" in out["error"]
-
-
-# ---- write_mcp_config ----
-
-
-def test_write_mcp_config_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The config JSON has the stdio shape cc requires (C-10: explicit type)."""
-    import json
-
-    cfg = tmp_path / "mcp.json"
-    monkeypatch.setenv("TROWEL_MCP_CONFIG", str(cfg))
-    out = write_mcp_config()
-    assert out == cfg
-    data = json.loads(cfg.read_text(encoding="utf-8"))
-    srv = data["mcpServers"]["memory"]
-    assert srv["type"] == "stdio"  # C-10: explicit, else cc cleanup skips signal escalation
-    assert srv["command"]
-    assert "-m" in srv["args"]
-    assert "trowel_py.memory.mcp_server" in srv["args"]
