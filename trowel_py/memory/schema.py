@@ -17,7 +17,6 @@ from trowel_py.memory.types import ValidationResult
 
 _ENTRY_TYPES = ("core", "note", "diary", "dictionary")
 
-_CONFIDENCE = {"draft", "evolving", "stable"}
 _VERIFICATION = {"verified", "inferred-untested", "event-data-supported"}
 #: single source of truth — NOTE_KINDS lives in prompt (the agent-facing menu)
 #: and the schema validator reuses it so the two can never drift.
@@ -25,7 +24,10 @@ _NOTE_KIND = set(NOTE_KINDS)
 _DIARY_LAYER = {"day", "week", "month"}
 _DICT_LAYER = {"L0", "L1"}
 _SCOPE = {"high-risk", "low-risk"}
-_CORE_STATUS = {"seed", "active", "retired"}
+#: slice-041: layer-one gains `trial` (monthly promote → approve → trial).
+_CORE_STATUS = {"seed", "trial", "active", "retired"}
+#: slice-041 note lifecycle (C-9). `candidate` removed (grill 2026-07-11).
+_NOTE_STATUS = {"active", "contradicted", "superseded", "retired"}
 
 
 def validate_entry(entry_type: str, fm: dict[str, Any]) -> ValidationResult:
@@ -59,7 +61,6 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     title = fm.get("title")
     if not isinstance(title, str) or not title.strip():
         errors.append("note: 'title' is required and must be a non-empty string")
-    _enum(fm, "confidence", _CONFIDENCE, errors, prefix="note")
     # C-3: verification is mandatory on knowledge entries.
     verification = fm.get("verification")
     if not verification:
@@ -72,18 +73,27 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     # slice-040-a: kind is optional (defaults to `fact` at the read/persist
     # layer) but, when present, must be one of the allowed procedural kinds.
     _enum(fm, "kind", _NOTE_KIND, errors, prefix="note")
+    # slice-041: status replaces retired:bool (C-9). Optional at write time
+    # (defaults to `active`); when present, must be a known lifecycle state.
+    _enum(fm, "status", _NOTE_STATUS, errors, prefix="note")
     _int_field(fm, "refs", errors, prefix="note")
     _int_field(fm, "pain", errors, prefix="note")
-    _bool_field(fm, "retired", errors, prefix="note")
+    _int_field(fm, "helpful_refs", errors, prefix="note")
+    _int_field(fm, "harmful_refs", errors, prefix="note")
     tags = fm.get("tags")
     if tags is not None and not isinstance(tags, list):
         errors.append("note: 'tags' must be a list when present")
     conflicts = fm.get("conflicts_with")
     if conflicts is not None and not isinstance(conflicts, list):
         errors.append("note: 'conflicts_with' must be a list when present")
-    source_sessions = fm.get("source_sessions")
-    if source_sessions is not None and not isinstance(source_sessions, list):
-        errors.append("note: 'source_sessions' must be a list when present")
+    # slice-041 correction-chain + provenance list fields.
+    for key in ("supersedes", "sources", "source_sessions"):
+        val = fm.get(key)
+        if val is not None and not isinstance(val, list):
+            errors.append(f"note: '{key}' must be a list when present")
+    superseded_by = fm.get("superseded_by")
+    if superseded_by is not None and not isinstance(superseded_by, str):
+        errors.append("note: 'superseded_by' must be a string when present")
 
 
 def _validate_diary(fm: dict[str, Any], errors: list[str]) -> None:

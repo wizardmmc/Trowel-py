@@ -43,15 +43,19 @@ _DICT_L0 = "dictionary-L0.md"
 _LAYER_DIR = {"day": "daily", "week": "weekly", "month": "monthly"}
 
 # Stable, readable key order for serialized note frontmatter.
-# slice-040-a adds kind (after title), the *_reason / conflicts_with rationale
-# block, and the source_sessions / content_hash provenance tail.
+# slice-041: confidence + retired removed (C-9); memory_id/status/supersedes/
+# helpful_refs/harmful_refs/trigger/sources added (correction + lifecycle).
 _NOTE_KEY_ORDER = (
-    "type", "title", "kind", "tags", "summary", "confidence",
+    "type", "title", "kind", "tags", "summary",
     "created", "updated",
     "verification", "verification_reason",
     "pain", "pain_reason", "conflicts_with",
-    "refs", "last_ref", "retired",
-    "source_sessions", "content_hash",
+    "memory_id", "status",
+    "supersedes", "superseded_by",
+    "valid_from", "last_verified_at",
+    "refs", "helpful_refs", "harmful_refs", "last_ref",
+    "trigger", "do_not_use_when",
+    "sources", "source_sessions", "content_hash",
 )
 
 
@@ -83,8 +87,9 @@ class MemoryStore:
         """Return all notes (including retired — C-4 retirement ≠ deletion).
 
         Args:
-            filter: optional ``{"retired": bool}`` and/or ``{"tag": str}`` to
-                narrow the set (the 039 inject set filters retired out).
+            filter: optional ``{"status": str}`` (slice-041 lifecycle) and/or
+                ``{"tag": str}`` to narrow the set. ``{"retired": bool}`` is
+                kept as a legacy alias (retired=True → status=="retired").
 
         Note:
             Files with no/invalid frontmatter, or whose type is not ``note``,
@@ -266,11 +271,23 @@ class MemoryStore:
         path = self.root / _NOTES_DIR / f"{note_id}.md"
         if not path.exists():
             raise FileNotFoundError(note_id)
-        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
-        if fm is None:
-            raise ValueError(f"note {note_id!r} has no frontmatter")
-        fm.update(fields)
-        path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
+        # W5 (auto-cr): flock the read-modify-write — record_ref already locks,
+        # so an unlocked update_note_fields (tidy apply / recompute / persist
+        # re-judge) racing it could overwrite a fresh refs increment.
+        import fcntl
+
+        with path.open("r+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                fm, body = _split_frontmatter(f.read())
+                if fm is None:
+                    raise ValueError(f"note {note_id!r} has no frontmatter")
+                fm.update(fields)
+                f.seek(0)
+                f.truncate()
+                f.write(_dump_frontmatter(fm, body))
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     # ---- experience track (diary) ----
     def load_diary(self, since: str | None = None,
@@ -497,13 +514,18 @@ def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:
 def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
     if not fm or fm.get("type") != "note":
         return None
+    # slice-041: status replaces retired:bool (C-9). A legacy file (pre-migrate)
+    # may carry `retired:true` with no `status` — map it so the read path sees
+    # the right lifecycle until `trowel memory migrate` backfills `status`.
+    status = fm.get("status")
+    if not status:
+        status = "retired" if fm.get("retired") else "active"
     return Note(
         type="note",
         title=str(fm.get("title", "")),
         tags=tuple(fm.get("tags") or ()),
         kind=fm.get("kind", "fact"),
         summary=str(fm.get("summary", "")),
-        confidence=fm.get("confidence", "draft"),
         created=str(fm.get("created", "")),
         updated=str(fm.get("updated", "")),
         verification=fm.get("verification", "inferred-untested"),
@@ -511,9 +533,19 @@ def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
         pain=int(fm.get("pain") or 0),
         pain_reason=str(fm.get("pain_reason", "")),
         conflicts_with=tuple(fm.get("conflicts_with") or ()),
+        memory_id=str(fm.get("memory_id", "")),
+        status=status,
+        supersedes=tuple(fm.get("supersedes") or ()),
+        superseded_by=str(fm.get("superseded_by", "")),
+        valid_from=str(fm.get("valid_from", "")),
+        last_verified_at=str(fm.get("last_verified_at", "")),
         refs=int(fm.get("refs") or 0),
+        helpful_refs=int(fm.get("helpful_refs") or 0),
+        harmful_refs=int(fm.get("harmful_refs") or 0),
         last_ref=str(fm.get("last_ref", "")),
-        retired=bool(fm.get("retired", False)),
+        trigger=str(fm.get("trigger", "")),
+        do_not_use_when=str(fm.get("do_not_use_when", "")),
+        sources=tuple(fm.get("sources") or ()),
         source_sessions=tuple(fm.get("source_sessions") or ()),
         content_hash=str(fm.get("content_hash", "")),
         body=body,
@@ -552,8 +584,17 @@ def _core_item_from_dict(d: object) -> CoreItem | None:
 
 
 def _matches(note: Note, filter: dict[str, Any]) -> bool:
-    if "retired" in filter and note.retired != filter["retired"]:
+    # slice-041: status replaces retired. ``{"status": "active"}`` narrows by
+    # lifecycle; ``{"retired": bool}`` is kept as a legacy alias (retired=True
+    # → status=="retired", retired=False → status!="retired") so existing
+    # callers keep working through the migration.
+    if "status" in filter and note.status != filter["status"]:
         return False
+    if "retired" in filter:
+        want_retired = bool(filter["retired"])
+        is_retired = note.status == "retired"
+        if want_retired != is_retired:
+            return False
     tag = filter.get("tag")
     if tag is not None and tag not in note.tags:
         return False

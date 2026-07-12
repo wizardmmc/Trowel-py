@@ -98,7 +98,8 @@ def _hit(note_id: str, note: Note, rank: int) -> dict[str, Any]:
         "score": 1.0 / (rank + 1),
         "kind": note.kind,
         "verification": note.verification,
-        "status": "retired" if note.retired else "active",
+        # slice-041: real status enum (was retired-bool mirror in 040-c).
+        "status": note.status,
         "requires_read": requires_read(note),
     }
 
@@ -154,7 +155,7 @@ def handle_search(
         note = store.load_note(stem)
         if note is None:
             continue
-        if not include_inactive and note.retired:
+        if not include_inactive and note.status != "active":
             continue
         hits.append(_hit(stem, note, rank))
         log_access(
@@ -209,7 +210,8 @@ def handle_read(
         "body": note.body,
         "kind": note.kind,
         "verification": note.verification,
-        "status": "retired" if note.retired else "active",
+        # slice-041: real status enum (was retired-bool mirror in 040-c).
+        "status": note.status,
         "tags": list(note.tags),
     }
 

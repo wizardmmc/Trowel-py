@@ -51,11 +51,13 @@ def test_note_bad_verification_rejected() -> None:
     assert any("verification" in e for e in res.errors)
 
 
-def test_note_bad_confidence_rejected() -> None:
+def test_note_bad_confidence_silently_ignored() -> None:
+    # slice-041 (C-9): confidence field removed. A legacy file still carrying
+    # a confidence value must NOT be rejected — it is an unknown field now,
+    # silently ignored (verification is the only evidence axis).
     fm = {"type": "note", "title": "x", "verification": "verified", "confidence": "wild"}
     res = validate_entry("note", fm)
-    assert not res.ok
-    assert any("confidence" in e for e in res.errors)
+    assert res.ok
 
 
 def test_note_refs_must_be_int() -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from trowel_py.memory.injection import build_memory_injection
+from trowel_py.memory.injection import _render_diary, build_memory_injection
 from trowel_py.memory.store import MemoryStore
 
 
@@ -80,8 +80,9 @@ def test_injects_l0(tmp_path: Path) -> None:
 
 def test_injects_recent_daily_diary(tmp_path: Path) -> None:
     _write_core(tmp_path, [_item("a", "x", "active")])
-    _write_diary(tmp_path, "2026-07-05", "day", "RECENT_DAY_MARKER")  # within 7d
-    out = build_memory_injection("2026-07-09", root=tmp_path)
+    # slice-041: daily injected only when in THIS ISO week. 2026-07-08 is in W28.
+    _write_diary(tmp_path, "2026-07-08", "day", "RECENT_DAY_MARKER")
+    out = build_memory_injection("2026-07-09", root=tmp_path)  # 07-09 is in W28
     assert "RECENT_DAY_MARKER" in out
 
 
@@ -94,8 +95,10 @@ def test_excludes_daily_beyond_7d(tmp_path: Path) -> None:
 
 def test_injects_recent_weekly(tmp_path: Path) -> None:
     _write_core(tmp_path, [_item("a", "x", "active")])
-    _write_diary(tmp_path, "2026-06-15", "week", "WEEK_MARKER")  # within ~1mo of 07-09
-    out = build_memory_injection("2026-07-09", root=tmp_path)
+    # slice-041: weekly injected when in THIS month but NOT this ISO week.
+    # now 2026-07-15 is W29; W28 (Mon 07-06) is in July but not this week.
+    _write_diary(tmp_path, "2026-W28", "week", "WEEK_MARKER")
+    out = build_memory_injection("2026-07-15", root=tmp_path)
     assert "WEEK_MARKER" in out
 
 
@@ -151,7 +154,8 @@ def test_token_budget_warning_on_oversize(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     # C-6: over soft budget logs a warning, does NOT truncate.
-    big = "大" * 6000  # ~12K tokens by the CJK estimate → over the 8K budget
+    # slice-041: budget raised to 30K; need ~40K tokens of CJK to exceed it.
+    big = "大" * 20000  # ~40K tokens by the CJK estimate → over the 30K budget
     _write_core(tmp_path, [_item("a", big, "active")])
     with caplog.at_level(logging.WARNING):
         out = build_memory_injection("2026-07-09", root=tmp_path)
@@ -174,3 +178,30 @@ def test_bad_now_skips_diary_not_core(
     assert "CORE_MARKER" in out  # core still injected
     assert "DAY_MARKER" not in out  # diary skipped
     assert any("malformed" in r.message.lower() for r in caplog.records)
+
+
+# ---------- W4 (codex): injection truncation priority ----------
+
+
+def test_injection_caps_earlier_monthlies_to_three(tmp_path: Path) -> None:
+    """W4: earlier monthlies capped to 3 most recent (no unbounded growth)."""
+    for m in ["2025-06", "2025-07", "2025-08", "2025-09", "2025-10"]:
+        _write_diary(tmp_path, m, "month", f"month {m}")
+    out = build_memory_injection("2026-07-11", root=tmp_path)
+    assert "2025-10" in out  # 3 most recent kept
+    assert "2025-09" in out
+    assert "2025-08" in out
+    assert "2025-07" not in out  # beyond cap
+    assert "2025-06" not in out
+
+
+def test_render_diary_include_layers_drops_earlier(tmp_path: Path) -> None:
+    """W4: include_layers controls which month tiers are included (truncation)."""
+    store = MemoryStore(tmp_path)
+    _write_diary(tmp_path, "2026-07-09", "day", "today gotcha")
+    _write_diary(tmp_path, "2025-06", "month", "old month flow")
+    full = _render_diary(store, "2026-07-11", include_layers=4)
+    truncated = _render_diary(store, "2026-07-11", include_layers=1)
+    assert "old month flow" in full
+    assert "old month flow" not in truncated
+    assert "today gotcha" in truncated  # week dailies always kept

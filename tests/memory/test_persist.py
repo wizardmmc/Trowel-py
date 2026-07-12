@@ -1,12 +1,12 @@
 """tests for persist_draft.
 
-slice-040 landed notes + a per-session daily; slice-040-a re-routes the
-experience track to a per-session EPISODE file (P1 overwrite fix) and gates
-the landing on a completion manifest. These tests keep the slice-040
-invariants that 040-a INHERITS (C-6): verification field round-trips,
+The base persist contract: notes land + a per-session daily; the experience
+track re-routes to a per-session EPISODE file (P1 overwrite fix) and gates
+landing on a completion manifest. These tests keep the invariants the
+procedural upgrade INHERITS (C-6): verification field round-trips,
 inferred-untested never stable, never writes core, per-tier counts. The new
 full-field / idempotence / manifest behavior is covered in
-``test_persist_040a.py``.
+``test_persist_procedural.py``.
 """
 from __future__ import annotations
 
@@ -55,12 +55,14 @@ def test_persist_verification_field_written_consistently(tmp_path: Path) -> None
 
 
 def test_persist_inferred_untested_never_stable(tmp_path: Path) -> None:
-    # C-2 hard rule (inherited): inferred-untested never lands as stable.
+    # C-2 (inherited): inferred-untested lands as inferred-untested, never
+    # upgraded to verified. (slice-041: confidence removed — verification is
+    # the only evidence axis now, C-9.)
     store = MemoryStore(tmp_path)
     draft = Draft(notes=(DraftNote(title="x", verification="inferred-untested"),))
     persist_draft(store, draft, _ctx())
     [n] = store.load_notes()
-    assert n.confidence != "stable"
+    assert n.verification == "inferred-untested"
 
 
 def test_persist_never_writes_core(tmp_path: Path) -> None:

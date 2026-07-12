@@ -194,6 +194,7 @@ async def run_daily_review(
     date_str: str | None = None,
     *,
     host_factory: HostFactory | None = None,
+    provider: Any = None,
 ) -> None:
     """Daily batch: distill every completed-not-yet-extracted slice (slice-040-b).
 
@@ -209,6 +210,10 @@ async def run_daily_review(
         date_str: kept for CLI/event compat; only used as a fallback review_date
             label when a segment's session.date is missing.
         host_factory: optional ``(session, workdir) -> cc host`` for tests.
+        provider: optional LLMProvider for slice-041 daily compression. None
+            (production) builds an ``AnthropicProvider`` from config; tests
+            inject a fake. On compression failure the daily falls back to the
+            040-a aggregate (no LLM) so 039 injection stays non-empty.
     """
     root = Path(memory_root) if memory_root is not None else resolve_memory_root()
     if date_str is None:
@@ -218,15 +223,28 @@ async def run_daily_review(
             date_str = date.today().isoformat()
     try:
         with _review_lock(root):
-            await _run_daily_review_locked(root, date_str, host_factory)
+            await _run_daily_review_locked(root, date_str, host_factory, provider)
     except BlockingIOError:
         logger.warning("daily review already running; skipping this run")
 
 
 async def _run_daily_review_locked(
-    root: Path, date_str: str, host_factory: HostFactory | None
+    root: Path, date_str: str, host_factory: HostFactory | None,
+    provider: Any,
 ) -> None:
     """The locked body: find_incremental → distil each slice → advance_extracted."""
+    # slice-041: build the LLM provider once (daily compression + dictionary
+    # sync share it). Tests inject a fake; production loads from config. A
+    # None provider (config missing) degrades daily to the 040-a aggregate.
+    if provider is None:
+        try:
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+
+            provider = AnthropicProvider(load_llm_config())
+        except Exception:
+            logger.warning("daily review: no LLM provider; daily degrades to aggregate")
+            provider = None
     # sqlite calls below are synchronous. The incremental segment count is small
     # (a few to a dozen sessions) and each query is sub-ms, so they run directly
     # in the event loop rather than via run_in_executor (the register埋点 in
@@ -310,30 +328,46 @@ async def _run_daily_review_locked(
                 session.cc_session_id, seg.end, datetime.now().isoformat()
             )
             created_note_ids.extend(report.notes_created)
-        # Derive the daily aggregate for every touched date (P1 fix: the daily
-        # is the union of all episodes for a date, not the last session's
-        # overwrite). No-op when nothing landed for a date.
+        # slice-041: compress each touched date's episodes into a ≤800-char
+        # daily (gotcha/pain/decision kept, flow dropped). Falls back to the
+        # 040-a aggregate (no LLM) on failure so 039 injection stays non-empty.
         for review_date in sorted(touched_dates):
-            store.derive_daily_from_episodes(review_date)
+            _compress_or_aggregate(store, root, review_date, provider)
         # slice-040-c C-3: sync the dictionary with this run's new notes
         # (incremental; falls back to full rebuild if no dictionary yet).
         # Non-fatal — a failure leaves the old dictionary; search degrades to
         # a hint only if the dictionary was empty.
-        if created_note_ids:
+        if created_note_ids and provider is not None:
             try:
-                from trowel_py.config import load_llm_config
-                from trowel_py.llm.client import AnthropicProvider
                 from trowel_py.memory.dictionary import sync_dictionary_incremental
 
-                sync_dictionary_incremental(
-                    root, created_note_ids, AnthropicProvider(load_llm_config())
-                )
+                sync_dictionary_incremental(root, created_note_ids, provider)
             except Exception:
                 logger.warning(
                     "dictionary sync failed (non-fatal; old index kept)", exc_info=True
                 )
     finally:
         conn.close()
+
+
+def _compress_or_aggregate(
+    store: MemoryStore, root: Path, review_date: str, provider: Any
+) -> None:
+    """slice-041: compress one day's episodes into a ≤800-char daily; fall
+    back to the 040-a aggregate (no LLM) so 039 injection never goes empty."""
+    if provider is not None:
+        try:
+            from trowel_py.memory.compress import compress_daily
+
+            if compress_daily(root, review_date, provider):
+                return
+        except Exception:
+            logger.warning(
+                "daily compress failed for %s; falling back to aggregate",
+                review_date,
+                exc_info=True,
+            )
+    store.derive_daily_from_episodes(review_date)
 
 
 def _context_for(

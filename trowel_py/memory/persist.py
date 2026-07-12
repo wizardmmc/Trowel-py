@@ -12,10 +12,11 @@ session's provenance — persist MUST NOT guess its source), and lands:
 It NEVER writes layer one (C-4) — this module does not import ``seeds`` and
 never touches ``core.md``.
 
-confidence is DERIVED from verification (C-2, unchanged from 040).
-Idempotence (slice-040-a D4): ``(cc_session_id, content_hash)`` where
-content_hash = sha256(title+summary+body+kind) — verification/pain re-judgements
-UPDATE the existing note instead of duplicating.
+slice-041: ``confidence`` was removed (C-9 — it was a derived mirror of
+``verification``). New notes get ``status="active"`` + a fresh UUIDv7
+``memory_id`` (D1) + ``valid_from=today``. Idempotence (040-a D4) unchanged:
+``(cc_session_id, content_hash)`` where content_hash = sha256(title+summary+
+body+kind) — verification/pain re-judgements UPDATE the existing note.
 """
 from __future__ import annotations
 
@@ -25,16 +26,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trowel_py.memory.draft import Draft, DraftNote
+from trowel_py.memory.ids import uuid7
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.store import _dump_frontmatter, _split_frontmatter
 from trowel_py.memory.types import PersistContext
-
-#: verification → confidence. inferred-untested is forced to draft (C-2).
-_VERIFICATION_TO_CONFIDENCE = {
-    "inferred-untested": "draft",
-    "event-data-supported": "evolving",
-    "verified": "evolving",
-}
 
 _SEGMENTS_META_DIR = "meta/persisted-segments"
 _REFLECTIONS_DIR = "meta/reflections"
@@ -190,7 +185,6 @@ def _write_new_note(
     today: str,
 ) -> str:
     """Persist a brand-new note with full provenance fields. Returns the note id."""
-    confidence = _VERIFICATION_TO_CONFIDENCE.get(note.verification, "draft")
     return store.write_note(
         {
             "type": "note",
@@ -198,17 +192,23 @@ def _write_new_note(
             "kind": note.kind,
             "summary": note.summary,
             "tags": list(note.tags),
-            "confidence": confidence,
             "verification": note.verification,
             "verification_reason": note.verification_reason,
             "pain": note.pain,
             "pain_reason": note.pain_reason,
             "conflicts_with": list(note.conflicts_with),
+            # slice-041: stable identity + lifecycle (C-7/C-9). New notes are
+            # `active` (grill 2026-07-11 — no candidate state).
+            "memory_id": str(uuid7()),
+            "status": "active",
+            "valid_from": today,
             "created": today,
             "updated": today,
             "refs": 0,
+            "helpful_refs": 0,
+            "harmful_refs": 0,
             "last_ref": "",
-            "retired": False,
+            "sources": [context.cc_session_id],
             "source_sessions": [context.cc_session_id],
             "content_hash": content_hash,
             "__body": note.body,
@@ -236,20 +236,25 @@ def _update_note(
     """
     path = store.root / "notes" / f"{note_id}.md"
     fm, _body = _split_frontmatter(path.read_text(encoding="utf-8"))
-    sources = set(fm.get("source_sessions") or []) if fm else set()
-    sources.add(context.cc_session_id)
-    confidence = _VERIFICATION_TO_CONFIDENCE.get(note.verification, "draft")
+    sessions = set(fm.get("source_sessions") or []) if fm else set()
+    sessions.add(context.cc_session_id)
+    # slice-041: keep `sources` (multi-source provenance) in sync with
+    # source_sessions on the re-judge path — merge_sources (TidyPlan) absorbs
+    # siblings into `sources`, so a re-judge from another session must add
+    # itself here too, or `sources` drifts behind `source_sessions`.
+    provenance = set(fm.get("sources") or []) if fm else set()
+    provenance.add(context.cc_session_id)
     store.update_note_fields(
         note_id,
         {
             "verification": note.verification,
             "verification_reason": note.verification_reason,
-            "confidence": confidence,
             "pain": note.pain,
             "pain_reason": note.pain_reason,
             "conflicts_with": list(note.conflicts_with),
             "updated": today,
-            "source_sessions": sorted(sources),
+            "source_sessions": sorted(sessions),
+            "sources": sorted(provenance),
             "content_hash": content_hash,
         },
     )

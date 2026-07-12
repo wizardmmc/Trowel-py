@@ -34,6 +34,21 @@ FINISHED = SimpleNamespace(type="finished")
 ERROR = SimpleNamespace(type="error")
 
 
+@pytest.fixture(autouse=True)
+def _stub_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """slice-041: stub AnthropicProvider so review_job tests never hit the
+    network (daily compress + dictionary sync go through the fake). Tests that
+    need a specific compressed body inject ``provider=`` explicitly."""
+    class _FakeProvider:
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            return "压缩版日记"
+
+    monkeypatch.setattr(
+        "trowel_py.llm.client.AnthropicProvider",
+        lambda _cfg: _FakeProvider(),
+    )
+
+
 class FakeHost:
     """Yields preset events; the factory pre-places draft.json in the workdir."""
 
@@ -296,10 +311,14 @@ async def test_daily_review_daily_aggregates_all_sessions(tmp_path: Path) -> Non
         None, memory_root=mem, date_str="2026-07-09", host_factory=factory
     )
 
+    # slice-041: daily is now the LLM-compressed body (stub returns a fixed
+    # string). The P1 regression — 3 sessions not overwriting each other — is
+    # verified at the episode layer (each session has its own file).
     [d] = MemoryStore(mem).load_diary(layer="day")
-    assert "锚点 s1" in d.body
-    assert "锚点 s2" in d.body
-    assert "锚点 s3" in d.body
+    assert d.body == "压缩版日记"
+    assert (mem / "episodes" / "s1.md").exists()
+    assert (mem / "episodes" / "s2.md").exists()
+    assert (mem / "episodes" / "s3.md").exists()
 
 
 async def test_daily_review_writes_per_session_episodes(tmp_path: Path) -> None:

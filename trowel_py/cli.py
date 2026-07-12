@@ -107,11 +107,33 @@ def main() -> None:
         raise
 
 
+def _current_iso_week() -> str:
+    """Current ISO week as ``YYYY-Www`` (e.g. ``2026-W28``)."""
+    from datetime import date
+
+    y, w, _ = date.today().isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def _current_month() -> str:
+    """Current month as ``YYYY-MM``."""
+    from datetime import date
+
+    return date.today().strftime("%Y-%m")
+
+
 def _run_memory_cli(argv: list[str]) -> int:
     """Dispatch ``trowel-py memory <subcommand>``."""
     parser = argparse.ArgumentParser(prog="trowel-py memory", description="memory subsystem")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    tidy = sub.add_parser("tidy", help="run registered memory tidy jobs (batch; 空跑 in 038)")
+    tidy = sub.add_parser("tidy", help="weekly/monthly tidy + rollback (041)")
+    tidy.add_argument("--weekly", action="store_true",
+                      help="run weekly tidy (compress + bypass + TidyPlan) for one ISO week")
+    tidy.add_argument("--monthly", action="store_true",
+                      help="run monthly tidy (compress + retire + promote + TidyPlan)")
+    tidy.add_argument("--iso-week", help="ISO week YYYY-Www (default: current week)")
+    tidy.add_argument("--month", help="YYYY-MM (default: current month)")
+    tidy.add_argument("--rollback", help="rollback a tidy plan id (restore notes/)")
     tidy.add_argument("--root", help="memory root (default: resolved from config.toml)")
     review = sub.add_parser(
         "review", help="run the daily write loop: distill a day's cc sessions"
@@ -154,12 +176,60 @@ def _run_memory_cli(argv: list[str]) -> int:
     )
     dr.add_argument("--apply", action="store_true", help="write; default is dry-run")
     dr.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    mig = sub.add_parser(
+        "migrate",
+        help="backfill memory_id/status/valid_from on legacy notes (041 C-9)",
+    )
+    mig.add_argument("--apply", action="store_true", help="write; default is dry-run")
+    mig.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    core = sub.add_parser("core", help="layer-one promotion: nominate/approve/activate (041)")
+    core_sub = core.add_subparsers(dest="core_cmd", required=True)
+    core_nom = core_sub.add_parser("nominate", help="nominate a note as core candidate")
+    core_nom.add_argument("note_stem", help="note filename stem")
+    core_app = core_sub.add_parser("approve", help="candidate → core.md (status=trial)")
+    core_app.add_argument("candidate_id", help="candidate memory_id")
+    core_act = core_sub.add_parser("activate", help="core item trial → active")
+    core_act.add_argument("memory_id", help="core item memory_id")
+    core.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    metrics_cmd = sub.add_parser(
+        "metrics", help="print north-star metrics (041): harmful_memory_rate + raw material"
+    )
+    metrics_cmd.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
-        from trowel_py.memory import hooks, paths
+        from trowel_py.memory import paths
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
+        if args.rollback:
+            from trowel_py.memory.tidy import rollback_plan
+
+            rollback_plan(root, args.rollback)
+            print(f"[memory] tidy rollback: plan {args.rollback} restored")
+            return 0
+        if args.weekly:
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+            from trowel_py.memory.tidy import run_weekly_tidy
+
+            iso_week = args.iso_week or _current_iso_week()
+            provider = AnthropicProvider(load_llm_config())
+            report = run_weekly_tidy(root, iso_week, provider)
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0
+        if args.monthly:
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+            from trowel_py.memory.tidy import run_monthly_tidy
+
+            month = args.month or _current_month()
+            provider = AnthropicProvider(load_llm_config())
+            report = run_monthly_tidy(root, month, provider)
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0
+        # default (038 behavior): dispatch registered tidy jobs (空跑 trace)
+        from trowel_py.memory import hooks
+
         return _run_memory_tidy(hooks.default, root)
     if args.cmd == "review":
         from datetime import date as _date
@@ -189,6 +259,47 @@ def _run_memory_cli(argv: list[str]) -> int:
         provider = AnthropicProvider(load_llm_config())
         out = rebuild_dictionary(root, apply=args.apply, provider=provider)
         print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "migrate":
+        from trowel_py.memory import paths
+        from trowel_py.memory.migrate import migrate_memory
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        report = migrate_memory(root, apply=args.apply)
+        mode = "apply" if args.apply else "dry-run"
+        print(
+            f"[memory] migrate {mode}: scanned={report.scanned} "
+            f"migrated={report.migrated} skipped={report.skipped}"
+        )
+        if report.backed_up:
+            print(f"[memory] backup -> {report.backed_up}")
+        return 0
+    if args.cmd == "core":
+        from trowel_py.memory import paths
+        from trowel_py.memory.core_ops import (
+            activate_core_item,
+            approve_candidate,
+            nominate_candidate,
+        )
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        if args.core_cmd == "nominate":
+            mid = nominate_candidate(root, args.note_stem)
+            print(f"[memory] nominated {args.note_stem} -> candidate {mid}")
+        elif args.core_cmd == "approve":
+            approve_candidate(root, args.candidate_id)
+            print(f"[memory] approved {args.candidate_id} -> core.md (trial)")
+        elif args.core_cmd == "activate":
+            activate_core_item(root, args.memory_id)
+            print(f"[memory] activated {args.memory_id} -> core (active)")
+        return 0
+    if args.cmd == "metrics":
+        from trowel_py.memory import paths
+        from trowel_py.memory.north_star import compute_north_star
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        report = compute_north_star(root)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "schedule":
         from trowel_py.memory import schedule as sched

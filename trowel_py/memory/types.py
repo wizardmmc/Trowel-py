@@ -15,13 +15,18 @@ NoteId = str
 
 EntryType = Literal["core", "note", "diary", "dictionary"]
 
-Confidence = Literal["draft", "evolving", "stable"]
 Verification = Literal["verified", "inferred-untested", "event-data-supported"]
 DiaryLayer = Literal["day", "week", "month"]
 DictionaryLayer = Literal["L0", "L1"]
 Scope = Literal["high-risk", "low-risk"]
-CoreStatus = Literal["seed", "active", "retired"]
+#: slice-041: layer-one gains a `trial` state (monthly promote → approve →
+#: trial → activate → active). seed is the one-time bootstrap seed (038).
+CoreStatus = Literal["seed", "trial", "active", "retired"]
 NoteKind = Literal["fact", "gotcha", "procedure", "preference", "hypothesis"]
+#: slice-041: layer-two note lifecycle (C-9). `candidate` was removed (grill
+#: 2026-07-11 — notes are for the model, not human-reviewed, so no "awaiting
+#: confirmation" state; new notes default to `active`).
+NoteStatus = Literal["active", "contradicted", "superseded", "retired"]
 
 
 @dataclass(frozen=True)
@@ -68,20 +73,33 @@ class Core:
 class Note:
     """A layer-two knowledge note (the reusable-conclusion track).
 
-    Fields ``title``/``tags``/``summary``/``confidence``/``created``/``updated``
-    are wiki-compatible; the rest are memory-only.
+    Fields ``title``/``tags``/``summary``/``created``/``updated`` are
+    wiki-compatible; the rest are memory-only.
 
-    slice-040-a adds:
-        kind: procedural-memory classifier (fact | gotcha | procedure | …).
-            Defaults to ``fact`` so the existing 45 notes (no kind field) load
-            unchanged. ``procedure`` notes carry trigger/procedure/stop/
-            anti-pattern in the body.
-        verification_reason / pain_reason / conflicts_with: the agent's
-            ``why this tier / why this score / which existing notes this
-            contradicts`` rationale — persisted, never evaporated (P2).
-        source_sessions / content_hash: provenance for idempotent re-runs and
-            future correction (041). content_hash = sha256(title+summary+body+
-            kind); (cc_session_id, hash) is the dedupe key.
+    slice-040-a added: ``kind`` (procedural-memory classifier),
+    ``verification_reason`` / ``pain_reason`` / ``conflicts_with`` (the agent's
+    rationale), ``source_sessions`` / ``content_hash`` (idempotence key).
+
+    slice-041 adds the correction + lifecycle layer (C-7/C-8/C-9):
+        memory_id: stable UUIDv7 identity (D1). Survives title/slug edits —
+            the filename stem is a human-readable index, NOT the identity.
+            The supersedes chain threads ``memory_id`` values, not slugs.
+        status: lifecycle (active | contradicted | superseded | retired).
+            Replaces the old ``retired:bool`` (C-9 — one axis, no clash).
+        supersedes / superseded_by: the correction chain. A new note that
+            replaces an old one sets ``supersedes=[old_memory_id]``; the old
+            note gets ``superseded_by=<new_memory_id>`` + ``status=superseded``.
+        valid_from / last_verified_at: when the conclusion became true / was
+            last independently confirmed.
+        helpful_refs / harmful_refs: split the old ``refs`` (C-8). Rebuilt
+            from outcome-log (C-10 — logs are truth, these are caches).
+        trigger / do_not_use_when: scope a procedural note (when to apply /
+            when NOT to). Body still carries the four-element procedure.
+        sources: multi-source provenance — merge absorbs siblings here.
+
+    ``confidence`` and ``retired:bool`` were REMOVED (C-9, grill 2026-07-11):
+    confidence was a derived mirror of verification; retired was a status
+    value. Both are rebuilt from verification + status at read time.
     """
 
     type: Literal["note"]
@@ -89,7 +107,6 @@ class Note:
     tags: tuple[str, ...] = ()
     kind: NoteKind = "fact"
     summary: str = ""
-    confidence: Confidence = "draft"
     created: str = ""
     updated: str = ""
     verification: Verification = "inferred-untested"
@@ -97,9 +114,23 @@ class Note:
     pain: int = 0
     pain_reason: str = ""
     conflicts_with: tuple[str, ...] = ()
+    # slice-041 correction + lifecycle (C-7/C-8/C-9)
+    memory_id: str = ""
+    status: NoteStatus = "active"
+    supersedes: tuple[str, ...] = ()
+    superseded_by: str = ""
+    valid_from: str = ""
+    last_verified_at: str = ""
+    # refs split (C-8); logs are truth, these are rebuildable caches (C-10)
     refs: int = 0
+    helpful_refs: int = 0
+    harmful_refs: int = 0
     last_ref: str = ""
-    retired: bool = False
+    # procedural scope
+    trigger: str = ""
+    do_not_use_when: str = ""
+    # multi-source provenance (merge absorbs siblings)
+    sources: tuple[str, ...] = ()
     source_sessions: tuple[str, ...] = ()
     content_hash: str = ""
     body: str = ""

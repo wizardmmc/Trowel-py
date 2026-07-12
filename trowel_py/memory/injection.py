@@ -15,16 +15,18 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
+from trowel_py.memory.compress import _in_iso_week, _week_in_month
 from trowel_py.memory.paths import resolve_memory_root
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Diary
 
 logger = logging.getLogger(__name__)
 
-#: soft token budget (C-6, ~4K Hanzi). Over-budget logs a warning, no truncation.
-TOKEN_BUDGET = 8000
-_RECENT_DAYS = 7   # daily diary recency window
-_WEEKLY_DAYS = 30  # weekly diary recency window
+#: slice-041 progressive window: this week's dailies + this month's weeklies
+#: (minus this week) + last 6 months' monthlies (minus this month) + earlier.
+#: Each entry ≤800 chars (grill 2026-07-11). Total ~24K tokens — raised from
+#: 039's 8K soft budget (GLM 200K window absorbs it).
+TOKEN_BUDGET = 30000
 
 
 def build_memory_injection(now: str, root: Path | str | None = None) -> str:
@@ -51,17 +53,24 @@ def build_memory_injection(now: str, root: Path | str | None = None) -> str:
     l0 = _render_l0(store)
     if l0:
         sections.append(l0)
-    diary = _render_diary(store, now)
-    if diary:
-        sections.append(diary)
     # slice-040-c C-2: always carry the memory root + retrieval tool usage so
     # the model knows where memory lives and how to query it (search→read).
-    sections.append(_render_memory_root(store.root))
-    body = "\n\n".join(sections)
+    root_section = _render_memory_root(store.root)
+    # W4 (codex): progressive truncation — if core+L0+diary+root exceeds
+    # TOKEN_BUDGET, drop the lowest-priority diary layers first (earlier
+    # monthlies → half-year → month weeklies), keeping week dailies (gotcha-rich).
+    body = "\n\n".join(sections + [root_section])
+    for layers in (4, 3, 2, 1):
+        diary = _render_diary(store, now, include_layers=layers)
+        body = "\n\n".join(
+            s for s in sections + ([diary] if diary else []) + [root_section]
+        )
+        if _estimate_tokens(body) <= TOKEN_BUDGET:
+            break
     estimated = _estimate_tokens(body)
     if estimated > TOKEN_BUDGET:
         logger.warning(
-            "memory injection ~%d tokens exceeds soft budget %d (C-6; not truncated)",
+            "memory injection ~%d tokens exceeds soft budget %d even after truncation (C-6)",
             estimated,
             TOKEN_BUDGET,
         )
@@ -100,34 +109,62 @@ def _render_memory_root(root: Path) -> str:
     )
 
 
-def _render_diary(store: MemoryStore, now: str) -> str:
-    """Recent diary in three recency windows (daily / weekly / this-year monthly).
+def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> str:
+    """Progressive recency window (slice-041 grill 2026-07-11).
 
-    A malformed ``now`` (not strict zero-padded ISO) logs a warning and skips
-    only the diary section — layer-one and L0 are still injected, so a bad date
-    never blanks the whole injection (defense-in-depth below service's catch).
+    ``include_layers`` controls which month tiers are included (W4 codex
+    truncation priority): 4=all, 3=drop earlier, 2=drop earlier+half-year,
+    1=only this week's dailies (gotcha-rich, always kept).
+
+    Four tiers, each ≤800 chars per entry, span越大越流水:
+    - this week's dailies (keep gotcha — span small)
+    - this month's weeklies minus this week (flow-ish)
+    - last 6 months' monthlies minus this month (flow)
+    - earlier monthlies (pure flow, if any)
+
+    A malformed ``now`` logs a warning and skips only the diary section —
+    layer-one and L0 are still injected.
     """
     try:
         today = date.fromisoformat(now)
     except ValueError:
         logger.warning("injection: malformed 'now' %r; skipping diary section", now)
         return ""
-    daily_since = (today - timedelta(days=_RECENT_DAYS)).isoformat()
-    weekly_since = (today - timedelta(days=_WEEKLY_DAYS)).isoformat()
-    # this-year monthly subsumes the近1月 monthly window (year-start <= 30d ago).
-    month_since = today.replace(month=1, day=1).isoformat()
+    iso_year, iso_week, _ = today.isocalendar()
+    this_week = f"{iso_year}-W{iso_week:02d}"
+    this_month = today.strftime("%Y-%m")
+    six_months_ago = (today - timedelta(days=180)).strftime("%Y-%m")
 
-    daily = store.load_diary(since=daily_since, layer="day")
-    weekly = store.load_diary(since=weekly_since, layer="week")
-    monthly = store.load_diary(since=month_since, layer="month")
+    week_dailies = [
+        d for d in store.load_diary(layer="day")
+        if _in_iso_week(d.date, iso_year, iso_week)
+    ]
+    month_weeklies = [
+        w for w in store.load_diary(layer="week")
+        if _week_in_month(w.period or w.date, this_month)
+        and (w.period or w.date) != this_week
+    ]
+    half_year_monthlies = [
+        m for m in store.load_diary(layer="month")
+        if this_month > (m.period or m.date) >= six_months_ago
+    ]
+    # W4 (codex): cap earlier monthlies to the 3 most recent — without this
+    # the injection grows without bound as months accumulate.
+    earlier_monthlies = sorted(
+        [m for m in store.load_diary(layer="month")
+         if (m.period or m.date) < six_months_ago],
+        key=lambda m: m.period or m.date, reverse=True,
+    )[:3]
 
     blocks: list[str] = []
-    if daily:
-        blocks.append("## 近 7 天（daily）\n" + _format_diary(daily))
-    if weekly:
-        blocks.append("## 近 1 月（weekly）\n" + _format_diary(weekly))
-    if monthly:
-        blocks.append("## 今年（monthly）\n" + _format_diary(monthly))
+    if week_dailies:
+        blocks.append("## 本周（daily）\n" + _format_diary(week_dailies))
+    if include_layers >= 2 and month_weeklies:
+        blocks.append("## 本月除本周（weekly）\n" + _format_diary(month_weeklies))
+    if include_layers >= 3 and half_year_monthlies:
+        blocks.append("## 近半年除本月（monthly）\n" + _format_diary(half_year_monthlies))
+    if include_layers >= 4 and earlier_monthlies:
+        blocks.append("## 上半年及更早（monthly）\n" + _format_diary(earlier_monthlies))
     if not blocks:
         return ""
     return "# 近期日记\n\n" + "\n\n".join(blocks)

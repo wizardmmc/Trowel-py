@@ -1,7 +1,7 @@
-"""tests for the slice-040-a persist upgrades: full-field landing, idempotence,
-episode + reflection + escalation + completion manifest.
+"""tests for the procedural-memory persist upgrades: full-field landing,
+idempotence, episode + reflection + escalation + completion manifest.
 
-These sit on top of the slice-040 persist contract (verification three-tier,
+These sit on top of the base persist contract (verification three-tier,
 dual-track, never writes layer one — all unchanged, see test_persist.py) and
 add: PersistContext-driven landing, procedural kind, full rationale fields,
 (cc_session_id, content_hash) idempotence, per-session reflection/escalation
@@ -217,7 +217,9 @@ def test_persist_mid_failure_leaves_no_manifest(tmp_path: Path, monkeypatch) -> 
 
 
 def test_persist_inferred_untested_never_stable(tmp_path: Path) -> None:
-    # C-6 (继承 040 C-2): inferred-untested must never land as stable.
+    # C-6 (继承 040 C-2): inferred-untested lands as inferred-untested, never
+    # upgraded. (slice-041: confidence removed — verification is the only
+    # evidence axis, C-9.)
     store = MemoryStore(tmp_path)
     persist_draft(
         store,
@@ -225,7 +227,7 @@ def test_persist_inferred_untested_never_stable(tmp_path: Path) -> None:
         _ctx("s1"),
     )
     [n] = store.load_notes()
-    assert n.confidence != "stable"
+    assert n.verification == "inferred-untested"
 
 
 def test_persist_never_writes_core(tmp_path: Path) -> None:
