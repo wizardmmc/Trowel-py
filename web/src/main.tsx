@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import 'lxgw-wenkai-webfont/style.css'
+import 'katex/dist/katex.min.css'
 import './styles/index.css'
 import App from './App.tsx'
 

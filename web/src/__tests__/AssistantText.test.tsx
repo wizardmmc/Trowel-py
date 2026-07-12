@@ -40,4 +40,23 @@ describe("AssistantText", () => {
     // into real elements/attributes.
     expect(container.querySelectorAll("script, [onerror], [onload]")).toHaveLength(0);
   });
+
+  it("renders block math $$...$$ as KaTeX", () => {
+    const md = "$$E=mc^2$$";
+    const { container } = render(<AssistantText text={md} />);
+    expect(container.querySelector(".katex")).toBeTruthy();
+  });
+
+  it("renders inline math $...$ as KaTeX", () => {
+    const md = "展开 $x$ 是输出";
+    const { container } = render(<AssistantText text={md} />);
+    expect(container.querySelector(".katex")).toBeTruthy();
+  });
+
+  it("does not swallow currency $...$ into math (GitHub closing rule)", () => {
+    // `$50` has a space before it → not a math close → no .katex span.
+    const md = "价格 $100 优惠，恢复 $50。";
+    const { container } = render(<AssistantText text={md} />);
+    expect(container.querySelector(".katex")).toBeNull();
+  });
 });
