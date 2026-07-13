@@ -46,7 +46,32 @@ async def lifespan(app: FastAPI):
     # slice-039: ensure layer-one core.md exists before any cc session injects it.
     if bootstrap_layer_one():
         logger.info("[memory] seeded layer-one core.md (试用期)")
+    # slice-046: in-app daily memory review scheduler (replaces launchd). Fires
+    # a startup catchup + a daily fixed-time run; any failure is swallowed
+    # (C-5) so the app still starts. start() only schedules background tasks
+    # (C-1, non-blocking).
+    try:
+        from trowel_py.memory import paths as _mem_paths
+        from trowel_py.memory.review_scheduler import (
+            MemoryReviewScheduler,
+            load_review_config,
+        )
+
+        scheduler = MemoryReviewScheduler(
+            load_review_config(), _mem_paths.resolve_memory_root()
+        )
+        await scheduler.start()
+        app.state.memory_scheduler = scheduler
+    except Exception:
+        logger.warning("[memory] review scheduler failed to start", exc_info=True)
+        app.state.memory_scheduler = None
     yield
+    _scheduler = getattr(app.state, "memory_scheduler", None)
+    if _scheduler is not None:
+        try:
+            await _scheduler.stop()
+        except Exception:
+            logger.warning("[memory] review scheduler stop failed", exc_info=True)
     await app.state.cc_http_client.aclose()
 
 

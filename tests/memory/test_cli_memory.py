@@ -266,36 +266,3 @@ def test_backfill_completed_sets_extracted_for_already_extracted(
     assert rec.last_extracted_at == "2026-07-10T08:00:00"  # preserved
 
 
-# ---------- slice-040-b: `trowel-py memory schedule` ----------
-
-
-def test_memory_cli_routes_schedule_install(monkeypatch) -> None:
-    seen: dict[str, str] = {}
-
-    def fake_install(time: str = "02:30", home=None, *, load: bool = True):  # noqa: ANN001
-        seen["time"] = time
-        return Path("/fake/plist")
-
-    monkeypatch.setattr("trowel_py.memory.schedule.install", fake_install)
-    rc = cli._run_memory_cli(["schedule", "install", "--time", "03:05"])
-    assert rc == 0
-    assert seen["time"] == "03:05"
-
-
-def test_memory_cli_routes_schedule_status(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        "trowel_py.memory.schedule.status", lambda home=None: (True, False)
-    )
-    rc = cli._run_memory_cli(["schedule", "status"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "installed=True" in out
-    assert "loaded=False" in out
-
-
-def test_memory_cli_routes_schedule_uninstall(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("trowel_py.memory.schedule.uninstall", lambda home=None: True)
-    rc = cli._run_memory_cli(["schedule", "uninstall"])
-    assert rc == 0
-    assert "uninstalled: True" in capsys.readouterr().out
-

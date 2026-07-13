@@ -21,10 +21,21 @@ def web_dist(tmp_path: Path, monkeypatch) -> Path:
 @pytest.fixture(autouse=True)
 def _isolate_memory_root(tmp_path: Path, monkeypatch) -> None:
     """slice-039: lifespan bootstraps layer-one core.md — route
-    resolve_memory_root to tmp so app tests never write ~/.trowel/memory."""
+    resolve_memory_root to tmp so app tests never write ~/.trowel/memory.
+
+    slice-046: also disable the in-app review scheduler so app tests neither
+    fire a real review nor spawn cc on startup."""
     import trowel_py.memory.paths as paths
+    from trowel_py.memory import review_scheduler
 
     monkeypatch.setattr(paths, "resolve_memory_root", lambda: tmp_path / "mem")
+    monkeypatch.setattr(
+        review_scheduler,
+        "load_review_config",
+        lambda *_a, **_k: review_scheduler.ReviewScheduleConfig(
+            review_scheduler.DEFAULT_REVIEW_TIME, False
+        ),
+    )
 
 
 def test_spa_fallback_serves_index_for_unknown_path(web_dist):

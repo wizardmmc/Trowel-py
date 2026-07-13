@@ -34,15 +34,23 @@ class HookRegistry:
         self.dispatch_log: list[str] = []
 
     def register_inject_hook(self, fn: HookFn) -> HookFn:
-        self._inject.append(fn)
+        # dedup: slice-046 — register is called from multiple paths (CLI +
+        # in-app scheduler) and from worker threads; a duplicate would fire the
+        # hook twice per dispatch. Idempotent append keeps every caller safe.
+        if fn not in self._inject:
+            self._inject.append(fn)
         return fn
 
     def register_write_job(self, fn: HookFn) -> HookFn:
-        self._write.append(fn)
+        # dedup: see register_inject_hook (slice-046).
+        if fn not in self._write:
+            self._write.append(fn)
         return fn
 
     def register_tidy_job(self, fn: HookFn) -> HookFn:
-        self._tidy.append(fn)
+        # dedup: see register_inject_hook (slice-046).
+        if fn not in self._tidy:
+            self._tidy.append(fn)
         return fn
 
     def dispatch_inject(self, event: Any = None) -> None:

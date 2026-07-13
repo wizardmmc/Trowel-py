@@ -28,6 +28,15 @@ def _find_config_path() -> Path:
     return _candidate_config_paths()[-1]
 
 
+def find_config_path() -> Path:
+    """Public entry to the config search order (slice-046).
+
+    Wraps the internal ``_find_config_path`` so callers outside this module
+    don't reach for a private name.
+    """
+    return _find_config_path()
+
+
 def resolve_memory_root(config_path: Path | None = None) -> Path:
     """Return the memory root, honoring ``[memory] root`` in config.toml if set.
 

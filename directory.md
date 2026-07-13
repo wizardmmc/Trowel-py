@@ -28,6 +28,7 @@ trowel-py/
 │   ├── db/                数据库连接 + 迁移（connection.py / migrate.py / migrations/）
 │   ├── cards/             卡片领域：提取、存储、去重、re-explain
 │   ├── review/            复习领域 + 调度器（scheduler.py）
+│   ├── memory/            记忆领域：review_scheduler.py（app 内每日 review 调度，slice-046，替代已删的 launchd schedule.py）+ review_job/sessions_repo/hooks/store 等（slice-038+）
 │   ├── garden/            花园领域
 │   ├── pet/               宠物领域（brain / mood）
 │   ├── events/            事件引擎 + 冷却 + 奖励

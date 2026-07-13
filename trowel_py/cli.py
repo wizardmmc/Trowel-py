@@ -162,15 +162,6 @@ def _run_memory_cli(argv: list[str]) -> int:
         help="apply (write); default is a dry-run listing",
     )
     backfill.add_argument("--root", help="memory root (default: resolved from config.toml)")
-    sched = sub.add_parser(
-        "schedule", help="manage the daily-review launchd job (040-b C-3)"
-    )
-    sched_sub = sched.add_subparsers(dest="sched_cmd", required=True)
-    si = sched_sub.add_parser("install", help="install the launchd plist (default 02:30)")
-    si.add_argument("--time", default="02:30", help="HH:MM start time (default 02:30)")
-    sched_sub.add_parser("status", help="show installed/loaded status")
-    sched_sub.add_parser("uninstall", help="unload + remove the plist")
-    sched_sub.add_parser("run-now", help="trigger one immediate run")
     dr = sub.add_parser(
         "dict-rebuild", help="regenerate dictionary L0/L1 from notes (040-c C-3)"
     )
@@ -300,29 +291,6 @@ def _run_memory_cli(argv: list[str]) -> int:
         root = Path(args.root) if args.root else paths.resolve_memory_root()
         report = compute_north_star(root)
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
-    if args.cmd == "schedule":
-        from trowel_py.memory import schedule as sched
-
-        if args.sched_cmd == "install":
-            try:
-                path = sched.install(args.time)
-            except ValueError as exc:
-                print(f"[memory] schedule install error: {exc}")
-                return 2
-            print(f"[memory] schedule installed ({args.time}) -> {path}")
-        elif args.sched_cmd == "status":
-            installed, loaded = sched.status()
-            print(f"[memory] schedule installed={installed} loaded={loaded}")
-        elif args.sched_cmd == "uninstall":
-            removed = sched.uninstall()
-            print(f"[memory] schedule uninstalled: {removed}")
-        elif args.sched_cmd == "run-now":
-            ok = sched.run_now()
-            print(
-                "[memory] schedule run-now: "
-                + ("ok" if ok else "failed (off-Darwin or not loaded)")
-            )
         return 0
     return 2  # unreachable: subparser is required
 
