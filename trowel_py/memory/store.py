@@ -16,6 +16,7 @@ rewrites/retires. This module is the shared substrate.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import logging
 import re
@@ -26,8 +27,14 @@ from typing import Any
 import yaml
 
 from trowel_py.memory.draft import DraftDiary
+from trowel_py.memory.profile import (
+    body_to_profile,
+    empty_profile,
+    profile_to_body,
+    validate_profile,
+)
 from trowel_py.memory.schema import validate_entry
-from trowel_py.memory.types import CoreItem, Diary, Note, NoteId, PersistContext
+from trowel_py.memory.types import CoreItem, Diary, Note, NoteId, PersistContext, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,7 @@ _NOTES_DIR = "notes"
 _DIARY_DIR = "diary"
 _EPISODES_DIR = "episodes"
 _CORE_FILE = "core.md"
+_PROFILE_FILE = "profile.md"
 _DICT_L0 = "dictionary-L0.md"
 
 # schema layer value (day|week|month) → 038 storage-layout directory name.
@@ -455,6 +463,72 @@ class MemoryStore:
             if (core_item := _core_item_from_dict(it)) is not None
         )
 
+    # ---- profile (slice-047) ----
+    def load_profile(self) -> Profile:
+        """Return the user self-description profile, or an empty Profile if absent.
+
+        C-6: a missing or empty profile.md (or one with no frontmatter) yields
+        ``empty_profile()`` — cold-start seeding is 050's job, not the store's.
+        Parse is lenient (see ``body_to_profile``): missing/reordered ``##``
+        sections degrade to empty strings, never raise.
+        """
+        path = self.root / _PROFILE_FILE
+        if not path.exists():
+            return empty_profile()
+        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+        if not fm:
+            return empty_profile()
+        return body_to_profile(
+            body,
+            updated=_coerce_meta_str(fm.get("updated")),
+            source=_coerce_meta_str(fm.get("source")) or "user-edit",
+        )
+
+    def write_profile(self, p: Profile, *, source: str) -> None:
+        """Validate, snapshot the prior version, then overwrite profile.md.
+
+        C-3: every write stamps ``updated`` (from ``p``) and ``source`` (the arg —
+        authoritative caller intent for immutability routing; it overrules
+        ``p.source``). C-4: an existing file is snapshotted to
+        ``meta/profile-history/`` BEFORE the overwrite (insurance, not a
+        user-facing rollback feature). Uses bare ``write_text`` like the rest of
+        the store — the C-5 "atomic write + flock" invariant was a false premise
+        (the store never had it); the snapshot is the real safety net.
+
+        Raises:
+            ValueError: the profile or source tag fails validation.
+        """
+        validate_profile(p, source)
+        path = self.root / _PROFILE_FILE
+        if path.exists():
+            self._snapshot_profile(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fm = {"updated": p.updated, "source": source}
+        path.write_text(_dump_frontmatter(fm, profile_to_body(p)), encoding="utf-8")
+
+    def _snapshot_profile(self, path: Path) -> None:
+        """Copy the current profile.md into meta/profile-history/ (C-4 insurance).
+
+        Named after the OLD file's ``(updated, source)`` so a snapshot records
+        which version it captured. A same-key collision (e.g. two same-day
+        same-source writes) disambiguates with a ``-2``/``-3`` suffix so an
+        intermediate version is never silently lost. A missing/unparseable
+        frontmatter falls back to ``unknown`` placeholders — the raw bytes are
+        still snapshotted (insurance should never fail on a parse error).
+        """
+        text = path.read_text(encoding="utf-8")
+        fm, _body = _split_frontmatter(text)
+        updated = _safe_snapshot_name((fm or {}).get("updated"))
+        source = _safe_snapshot_name((fm or {}).get("source"))
+        hist_dir = self.root / "meta" / "profile-history"
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        target = hist_dir / f"{updated}-{source}.md"
+        n = 2
+        while target.exists():
+            target = hist_dir / f"{updated}-{source}-{n}.md"
+            n += 1
+        target.write_text(text, encoding="utf-8")
+
     # ---- internals ----
     def _unique_slug(self, title: str) -> str:
         base = _slugify(title)
@@ -498,6 +572,32 @@ def _dump_frontmatter(fm: dict[str, Any], body: str) -> str:
     """Serialize a frontmatter dict + body back to a markdown file string."""
     dumped = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True, default_flow_style=False)
     return f"---\n{dumped}---\n{body}"
+
+
+def _coerce_meta_str(value: object) -> str:
+    """Stringify a frontmatter meta value, normalizing YAML-parsed dates.
+
+    ``yaml.safe_load`` turns an unquoted ``2026-07-14`` into a ``datetime.date``
+    (and ``2026-07-14 10:30`` into ``datetime.datetime``); a naive ``str()``
+    would render the latter with a space. ``isoformat()`` keeps the canonical
+    ISO shape so a hand-edited profile.md round-trips cleanly (lenient read).
+    """
+    if isinstance(value, datetime.date):  # datetime.datetime subclasses date
+        return value.isoformat()
+    return str(value or "")
+
+
+def _safe_snapshot_name(value: object) -> str:
+    """Render a frontmatter value safe to use as a snapshot filename.
+
+    Strips path separators (and NUL) so a hand-edited ``updated: ../../etc``
+    cannot write the snapshot outside ``meta/profile-history/``; also drops a
+    leading dot so the file is not hidden from ``*.md`` globs. Reuses
+    ``_coerce_meta_str`` so a YAML-parsed date still names the snapshot by its
+    ISO string. Empty → ``unknown``.
+    """
+    text = re.sub(r"[\\/\x00]+", "_", _coerce_meta_str(value)).strip().lstrip(".")
+    return text or "unknown"
 
 
 def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:

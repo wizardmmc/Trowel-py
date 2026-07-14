@@ -27,6 +27,11 @@ NoteKind = Literal["fact", "gotcha", "procedure", "preference", "hypothesis"]
 #: 2026-07-11 — notes are for the model, not human-reviewed, so no "awaiting
 #: confirmation" state; new notes default to `active`).
 NoteStatus = Literal["active", "contradicted", "superseded", "retired"]
+#: slice-047: profile.md write-path tag (immutability routing). The body is
+#: always user-blessed; this tags the NATURE of the last commit, not per-field
+#: origin. user-edit = the user typed/edited directly; ai-calibration = the
+#: last commit was an accepted AI proposal merge (→ 050).
+ProfileSource = Literal["user-edit", "ai-calibration"]
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,43 @@ class Core:
     """Layer-one container: the always-injected imperatives."""
 
     items: tuple[CoreItem, ...]
+
+
+@dataclass(frozen=True)
+class Profile:
+    """User self-description (slice-047): the集中 editable "who you are" file.
+
+    Path-平级 to ``core.md`` (``memory_root/profile.md``) but a distinct layer:
+    user-owned and writeable via ``store.write_profile`` (unlike core, which has
+    no general write API — that C-5 docstring guard is for layer one only).
+    Five free-text dimensions; the body is always user-blessed. Provenance is
+    STRUCTURAL (the write path is tagged), not per-field — AI only proposes via
+    a side-channel (→ 050), it never gets the body write path. See milestone-7
+    §画哪五维 and slice-047 grill 定案.
+
+    Attributes:
+        ability / methodology / expression / goal: the four self-description
+            dimensions.
+        other: catch-all escape hatch (AI proposals that fit none of the four
+            land here; dedup → tidy slice).
+        updated: ISO date of the last write (C-3).
+        source: nature of the last commit. This is the LOADED value;
+            ``write_profile`` re-stamps it from its ``source`` argument
+            (authoritative caller intent), so it round-trips only when the
+            caller echoes it.
+    """
+
+    ability: str = ""
+    methodology: str = ""
+    expression: str = ""
+    goal: str = ""
+    other: str = ""
+    updated: str = ""
+    # str (not ProfileSource): this is the LOADED value, which a hand-edited
+    # frontmatter could populate with anything. It is validated against
+    # ProfileSource only at write time (validate_profile). See profile.py,
+    # which derives the allowed set from the ProfileSource Literal.
+    source: str = "user-edit"
 
 
 @dataclass(frozen=True)
