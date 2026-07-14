@@ -205,3 +205,101 @@ def test_render_diary_include_layers_drops_earlier(tmp_path: Path) -> None:
     assert "old month flow" in full
     assert "old month flow" not in truncated
     assert "today gotcha" in truncated  # week dailies always kept
+
+
+# ---------- slice-048: profile injection ----------
+
+
+def _write_profile(root: Path, **dims: str) -> None:
+    """Seed profile.md via the real store write path (round-trips serializer).
+
+    Mirrors the file's other ``_write_*`` helpers: hand-built memory tree under
+    tmp_path, no mocks. Uses 047's ``store.write_profile`` so the on-disk shape
+    is exactly what production reads.
+    """
+    from trowel_py.memory.types import Profile
+
+    MemoryStore(root).write_profile(
+        Profile(updated="2026-07-14", **dims), source="user-edit"
+    )
+
+
+def test_render_profile_all_five_dims(tmp_path: Path) -> None:
+    from trowel_py.memory.injection import _render_profile
+
+    _write_profile(
+        tmp_path,
+        ability="ABILITY_MARKER",
+        methodology="METHOD_MARKER",
+        expression="EXPR_MARKER",
+        goal="GOAL_MARKER",
+        other="OTHER_MARKER",
+    )
+    out = _render_profile(MemoryStore(tmp_path))
+    assert "# 用户画像" in out
+    titles = ("能力水平", "方法论偏好", "表达风格", "长程目标", "其他")
+    for title in titles:
+        assert f"## {title}" in out
+    # C-4 canonical order: dims render in _FIELD_TO_TITLE insertion order
+    positions = [out.index(f"## {t}") for t in titles]
+    assert positions == sorted(positions)
+    assert "ABILITY_MARKER" in out
+    assert "OTHER_MARKER" in out
+
+
+def test_render_profile_empty_when_no_file(tmp_path: Path) -> None:
+    # C-4: no profile.md → empty_profile() → "" (section omitted, no empty heading)
+    from trowel_py.memory.injection import _render_profile
+
+    assert _render_profile(MemoryStore(tmp_path)) == ""
+
+
+def test_render_profile_empty_when_all_dims_blank(tmp_path: Path) -> None:
+    # C-4: a profile that exists but has every dim blank → "" too
+    from trowel_py.memory.injection import _render_profile
+
+    _write_profile(tmp_path)  # all five dims default to ""
+    assert _render_profile(MemoryStore(tmp_path)) == ""
+
+
+def test_render_profile_skips_empty_dims(tmp_path: Path) -> None:
+    # C-4 (partial): only filled dims render; empty dims' headings are NOT emitted
+    from trowel_py.memory.injection import _render_profile
+
+    _write_profile(tmp_path, ability="ABILITY_MARKER", goal="GOAL_MARKER")
+    out = _render_profile(MemoryStore(tmp_path))
+    assert "# 用户画像" in out
+    assert "## 能力水平" in out
+    assert "## 长程目标" in out
+    assert "ABILITY_MARKER" in out
+    assert "GOAL_MARKER" in out
+    # canonical order preserved: ability before goal
+    assert out.index("能力水平") < out.index("长程目标")
+    # skipped (empty) dims: headings must NOT appear
+    assert "## 方法论偏好" not in out
+    assert "## 表达风格" not in out
+    assert "## 其他" not in out
+
+
+def test_build_injection_includes_profile_between_core_and_l0(tmp_path: Path) -> None:
+    _write_core(tmp_path, [_item("a", "CORE_MARKER imperative", "active")])
+    _write_profile(tmp_path, ability="PROFILE_MARKER")
+    _write_l0(tmp_path, "L0_MARKER index")
+    out = build_memory_injection("2026-07-09", root=tmp_path)
+    assert "# 用户画像" in out
+    assert "PROFILE_MARKER" in out
+    # D1 order: core → profile → L0
+    assert out.index("CORE_MARKER") < out.index("PROFILE_MARKER") < out.index("L0_MARKER")
+
+
+def test_profile_survives_when_diary_truncated(tmp_path: Path) -> None:
+    # C-3: profile sits in `sections`; the budget-truncation loop only shrinks
+    # diary layers, so profile is never dropped. An oversized earlier-monthly
+    # forces the loop to drop it (include_layers 4→3), yet profile remains.
+    _write_profile(tmp_path, ability="PROFILE_SURVIVES_MARKER")
+    big = "大" * 20000  # ~40K tokens → over the 30K budget at include_layers=4
+    _write_diary(tmp_path, "2025-09", "month", big + "BIGMONTHLY_MARKER")  # earlier monthly
+    out = build_memory_injection("2026-07-11", root=tmp_path)
+    assert "# 用户画像" in out
+    assert "PROFILE_SURVIVES_MARKER" in out  # profile kept
+    assert "BIGMONTHLY_MARKER" not in out  # earlier monthly dropped by truncation

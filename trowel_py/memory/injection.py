@@ -17,6 +17,7 @@ from pathlib import Path
 
 from trowel_py.memory.compress import _in_iso_week, _week_in_month
 from trowel_py.memory.paths import resolve_memory_root
+from trowel_py.memory.profile import _FIELD_TO_TITLE
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Diary
 
@@ -50,6 +51,9 @@ def build_memory_injection(now: str, root: Path | str | None = None) -> str:
     core = _render_core(store)
     if core:
         sections.append(core)
+    profile = _render_profile(store)
+    if profile:
+        sections.append(profile)
     l0 = _render_l0(store)
     if l0:
         sections.append(l0)
@@ -86,6 +90,32 @@ def _render_core(store: MemoryStore) -> str:
     for i, it in enumerate(items, 1):
         lines.append(f"{i}. {it.imperative}")
     return "\n".join(lines)
+
+
+def _render_profile(store: MemoryStore) -> str:
+    """Render the user self-description profile section (slice-048).
+
+    Five dims (ability/methodology/expression/goal/other) in canonical order,
+    reusing ``profile._FIELD_TO_TITLE`` so the title mapping has a single source
+    of truth. Only dims whose body is non-empty (``val.strip()``) render, each
+    as ``## 标题\\n内容``. Returns ``""`` when the profile is empty (C-4) — the
+    section is then omitted, never an empty ``# 用户画像`` heading.
+
+    No try/except (C-2): failure semantics match ``_render_core``/``_render_l0``.
+    ``store.load_profile`` does not raise on normal paths (missing/empty file →
+    ``empty_profile()``; body parse is lenient). Any raw IO error propagates to
+    ``service._spawn``'s whole-string net, which drops the entire injection and
+    spawns cc bare — identical to how a core.md IO error behaves today.
+    """
+    p = store.load_profile()
+    blocks = [
+        f"## {_FIELD_TO_TITLE[field]}\n{getattr(p, field)}"
+        for field in _FIELD_TO_TITLE
+        if getattr(p, field).strip()
+    ]
+    if not blocks:
+        return ""
+    return "# 用户画像\n\n" + "\n\n".join(blocks)
 
 
 def _render_l0(store: MemoryStore) -> str:
