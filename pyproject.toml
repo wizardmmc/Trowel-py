@@ -49,8 +49,14 @@ trowel_py = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    # slice-047: typecheck/lint surfaced as missing (venv had neither; the
+    # .mypy_cache / .ruff_cache at the root were stale leftovers). dev-only.
+    "mypy>=1.13",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.8",
+    # mypy stubs for third-party libs (yaml had no stubs → import-untyped).
+    "types-PyYAML>=6.0",
 ]
 
 [tool.pytest.ini_options]
