@@ -6,6 +6,7 @@ import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
 import { SessionView } from "./components/cc/SessionView";
+import { ProfileView } from "./components/profile/ProfileView";
 import { WorkdirPicker } from "./components/cc/WorkdirPicker";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
@@ -144,6 +145,7 @@ function App() {
           loading={loading}
         />
       )}
+      {!reviewActive && activeTool === "profile" && <ProfileView />}
       {activeTool === "cc" && (
         <SessionView
           workdir={ccWorkdir}

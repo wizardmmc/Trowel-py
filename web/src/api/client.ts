@@ -329,6 +329,48 @@ export async function buyItem(itemId: string): Promise<BuyResult> {
   });
 }
 
+// ── Profile API types & functions ──
+
+const PROFILE_API_BASE = "/api/profile";
+
+/** PUT /api/profile body: the five editable dimensions (updated/source are
+ * server-stamped, never sent by the client). Mirrors the five-dim Profile
+ * dataclass (slice-047); `other` is always present. */
+export interface ProfileUpdate {
+  readonly ability: string;
+  readonly methodology: string;
+  readonly expression: string;
+  readonly goal: string;
+  readonly other: string;
+}
+
+/** GET/PUT /api/profile response: five dims + provenance. */
+export interface ProfileDTO {
+  readonly ability: string;
+  readonly methodology: string;
+  readonly expression: string;
+  readonly goal: string;
+  readonly other: string;
+  readonly updated: string;
+  readonly source: string;
+}
+
+/** GET /api/profile — the user self-description profile (empty dims on cold start). */
+export async function fetchProfile(): Promise<ProfileDTO> {
+  return request<ProfileDTO>(PROFILE_API_BASE);
+}
+
+/** PUT /api/profile — write the five dims back to profile.md via the store.
+ * Returns the freshly loaded profile (server-stamped updated/source), so the
+ * caller need not re-GET. */
+export async function putProfile(input: ProfileUpdate): Promise<ProfileDTO> {
+  return request<ProfileDTO>(PROFILE_API_BASE, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
 // ── Events API types & functions ──
 
 const EVENTS_API_BASE = "/api/events";

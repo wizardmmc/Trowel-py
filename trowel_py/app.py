@@ -19,6 +19,7 @@ from trowel_py.feynman.routes import router as feynman_router
 from trowel_py.garden.routes import router as garden_router
 from trowel_py.pet.routes import router as pet_router
 from trowel_py.player.routes import router as player_router
+from trowel_py.profile.routes import router as profile_router
 from trowel_py.review.routes import router as review_router
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(review_router, prefix="/api/review")
     app.include_router(garden_router, prefix="/api/garden")
     app.include_router(player_router, prefix="/api/player")
+    app.include_router(profile_router, prefix="/api/profile")
     app.include_router(events_router, prefix="/api/events")
     app.include_router(pet_router, prefix="/api/pet")
     app.include_router(feynman_router, prefix="/api/feynman")

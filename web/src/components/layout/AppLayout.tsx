@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import "./AppLayout.css";
 
-export type Tool = "garden" | "extract" | "review" | "cc";
+export type Tool = "garden" | "extract" | "review" | "cc" | "profile";
 
 interface AppLayoutProps {
   readonly children: ReactNode;
@@ -61,11 +61,22 @@ function IconCC() {
   );
 }
 
+function IconProfile() {
+  // person silhouette — the "who you are" self-description tab (slice-049)
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c0-4 4-7 8-7s8 3 8 7" />
+    </svg>
+  );
+}
+
 const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
   { id: "cc", icon: <IconCC />, label: "CC" },
+  { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
 
 export function AppLayout({

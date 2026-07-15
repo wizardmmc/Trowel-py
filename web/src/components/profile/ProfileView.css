@@ -1,0 +1,163 @@
+/* ProfileView — 方案 B 单栏档案 (slice-049). Scoped to .profile-view so it
+ * never collides with other views' .btn / section styles. All colors/fonts/
+ * radii/shadows come from tokens.css (C-3). */
+.profile-view {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-xl) var(--space-lg);
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+
+/* ---- header ---- */
+.profile-view .doc-header {
+  margin-bottom: var(--space-xl);
+}
+.profile-view .eyebrow {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--soil-brown);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.profile-view h1 {
+  font-family: var(--font-display);
+  font-size: 2.2rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.profile-view .intro {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  margin-top: var(--space-md);
+  padding-left: 14px;
+  border-left: 3px solid var(--color-border);
+}
+.profile-view .doc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-border);
+}
+.profile-view .doc-toolbar .meta {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* ---- edit bar (shown only in edit mode) ---- */
+.profile-view .edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--sunshine-soft);
+  border: 1px solid var(--sunshine);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+.profile-view .edit-bar .lbl {
+  font-size: 0.82rem;
+  color: var(--sunshine-ink);
+  font-family: var(--font-display);
+}
+.profile-view .edit-bar .acts {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+/* ---- error / loading ---- */
+.profile-view .profile-error {
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+  background: var(--error-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.88rem;
+  margin-bottom: var(--space-lg);
+}
+.profile-view .profile-loading {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* ---- dimension sections ---- */
+.profile-view section.dim {
+  margin-bottom: var(--space-xl);
+}
+.profile-view section.dim > h2 {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--garden-green);
+  margin-bottom: var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.profile-view section.dim > h2 .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sunshine);
+  display: inline-block;
+}
+.profile-view section.dim > .body {
+  font-size: 0.96rem;
+  line-height: 1.75;
+  color: var(--text-primary);
+  padding-left: 14px;
+  border-left: 3px solid var(--color-border);
+  white-space: pre-wrap;
+}
+.profile-view section.dim > .body .muted {
+  color: var(--text-tertiary);
+}
+
+/* ---- editor shell (sunshine ring; reuses cc-composer__shell focus-within
+ * pattern, but the ring is always on here since the whole section is editing) ---- */
+.profile-view .editor-shell {
+  border: 1px solid var(--sunshine);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: 0 0 0 2px var(--sunshine-ring);
+  padding-left: 14px;
+}
+.profile-view .editor-shell textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: var(--space-sm) var(--space-md) var(--space-sm) 0;
+  font-family: var(--font-sans);
+  font-size: 0.96rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+  outline: none;
+  min-height: 88px;
+  resize: vertical;
+}
+
+/* ---- buttons (scoped) ---- */
+.profile-view .btn {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  padding: 7px 16px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  border: none;
+  min-height: 36px;
+}
+.profile-view .btn--primary {
+  background: var(--garden-green);
+  color: var(--text-inverse);
+}
+.profile-view .btn--secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--soil-brown);
+}
