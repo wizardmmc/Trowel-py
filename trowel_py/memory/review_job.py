@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover — non-Unix
 
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
 from trowel_py.memory.draft import Draft, parse_draft, procedure_warnings, validate_draft
+from trowel_py.memory.judge import judge_session
 from trowel_py.memory.dualtrack import audit_draft
 from trowel_py.memory.paths import resolve_memory_root
 from trowel_py.memory.persist import persist_draft
@@ -328,6 +329,22 @@ async def _run_daily_review_locked(
                 session.cc_session_id, seg.end, datetime.now().isoformat()
             )
             created_note_ids.extend(report.notes_created)
+            # slice-053: judge this session's memory usage right after it lands.
+            # The advance above already happened, so a judge failure can NEVER
+            # block review (C-2 — judge is an extension, not a precondition).
+            # judge_session swallows internally; this try/except is defense in
+            # depth. judge reuses review's host_factory (D4: distill → judge the
+            # same session in place).
+            try:
+                await judge_session(
+                    session, review_date, root, host_factory=host_factory
+                )
+            except Exception as exc:  # noqa: BLE001 — C-2 defense-in-depth
+                logger.warning(
+                    "judge raised for %s (isolated; review unaffected): %s",
+                    session.cc_session_id,
+                    exc,
+                )
         # slice-041: compress each touched date's episodes into a ≤800-char
         # daily (gotcha/pain/decision kept, flow dropped). Falls back to the
         # 040-a aggregate (no LLM) on failure so 039 injection stays non-empty.

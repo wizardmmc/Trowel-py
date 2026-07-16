@@ -61,6 +61,19 @@ def test_memory_review_dispatches_write_job(tmp_path: Path, capsys) -> None:
     assert "2026-07-09" in out
 
 
+def test_memory_metrics_prints_usage_indicators(tmp_path: Path, capsys) -> None:
+    """slice-053: `trowel memory metrics` prints the three usage indicators
+    (read_rate / hit_quality / recall_miss_rate) alongside the north-star block."""
+    rc = cli._run_memory_cli(["metrics", "--root", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "north_star" in out
+    assert "usage" in out
+    assert "read_rate" in out
+    assert "hit_quality" in out
+    assert "recall_miss_rate" in out
+
+
 def test_memory_cli_routes_review(tmp_path: Path, monkeypatch) -> None:
     seen: dict[str, str] = {}
 

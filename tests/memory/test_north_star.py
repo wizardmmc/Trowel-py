@@ -79,3 +79,168 @@ def test_no_notes_does_not_divide_by_zero(tmp_path: Path) -> None:
     m = compute_north_star(tmp_path, today="2026-07-11")
     assert m["harmful_memory_rate"] == 0.0
     assert m["active_notes"] == 0
+
+
+# ---------- slice-053: memory_usage_metrics (three indicators) ----------
+
+from trowel_py.memory.judgements import (  # noqa: E402
+    HitJudgement,
+    JudgementReport,
+    MissJudgement,
+    save_judgement_report,
+)
+from trowel_py.memory.north_star import memory_usage_metrics  # noqa: E402
+from trowel_py.memory.sessions_repo import (  # noqa: E402
+    SessionRecord,
+    create_sessions_repository,
+    open_sessions_db,
+)
+
+
+def _access(root: Path, cc: str, action: str, *, n: int = 1, query: str = "q") -> None:
+    """Seed n access-log records under cc_session_id=cc.
+
+    search records are CANDIDATES (carry memory_id+rank, like mcp_server's
+    per-candidate record); a separate summary record is not seeded since it is
+    not a "hit" and must not count toward read_rate's denominator.
+    """
+    for i in range(n):
+        log_access(
+            root,
+            AccessRecord(
+                ts="2026-07-16T10:00:00",
+                trowel_session_id="t",
+                cc_session_id=cc,
+                toolUseId=f"tu-{cc}-{action}-{i}",
+                action=action,  # type: ignore[arg-type]
+                search_id="s" if action == "search" else "",
+                read_id="r" if action == "read" else "",
+                query=query if action == "search" else "",
+                memory_id=f"m-{i}" if action in ("search", "read") else "",
+                rank=i if action == "search" else None,
+            ),
+        )
+
+
+def _seed_session_kind(root: Path, cc_id: str, kind: str = "user") -> None:
+    conn = open_sessions_db(root)
+    try:
+        create_sessions_repository(conn).register(
+            SessionRecord(
+                cc_session_id=cc_id,
+                workdir="/p",
+                date="2026-07-16",
+                registered_at="2026-07-16T10:00:00",
+                session_kind=kind,
+            )
+        )
+    finally:
+        conn.close()
+
+
+def _hit(mid: str, outcome: str, used: bool = True) -> HitJudgement:
+    return HitJudgement(
+        memory_id=mid, used=used, outcome=outcome,  # type: ignore[arg-type]
+        reason="r", evidence="e",
+    )
+
+
+def _miss(mid: str, attribution: str) -> MissJudgement:
+    return MissJudgement(
+        memory_id=mid, attribution=attribution,  # type: ignore[arg-type]
+        reason="r", evidence="e",
+    )
+
+
+def _report(
+    cc: str, hits=(), recall_miss=(), summary: str = "s"
+) -> JudgementReport:
+    return JudgementReport(
+        cc_session_id=cc,
+        hits=tuple(hits),
+        recall_miss=tuple(recall_miss),
+        summary=summary,
+    )
+
+
+def test_read_rate_reads_over_searches(tmp_path: Path) -> None:
+    # user session: 5 search candidates, 2 reads → read_rate = 2/5
+    _seed_session_kind(tmp_path, "u1", "user")
+    _access(tmp_path, "u1", "search", n=5)
+    _access(tmp_path, "u1", "read", n=2)
+    m = memory_usage_metrics(tmp_path)
+    assert m["reads"] == 2
+    assert m["search_hits"] == 5
+    assert m["read_rate"] == round(2 / 5, 4)
+
+
+def test_read_rate_excludes_eval_sessions(tmp_path: Path) -> None:
+    # C-3: the judge's own eval-kind search/read must NOT count.
+    # user: 4 search + 1 read → 1/4 ; eval: 100 search + 0 read (must be ignored)
+    _seed_session_kind(tmp_path, "u1", "user")
+    _seed_session_kind(tmp_path, "eval1", "eval")
+    _seed_session_kind(tmp_path, "dist1", "distill")
+    _access(tmp_path, "u1", "search", n=4)
+    _access(tmp_path, "u1", "read", n=1)
+    _access(tmp_path, "eval1", "search", n=100)
+    _access(tmp_path, "dist1", "search", n=50)
+    m = memory_usage_metrics(tmp_path)
+    assert m["reads"] == 1
+    assert m["search_hits"] == 4
+    assert m["read_rate"] == round(1 / 4, 4)
+
+
+def test_read_rate_none_when_no_searches(tmp_path: Path) -> None:
+    _seed_session_kind(tmp_path, "u1", "user")
+    _access(tmp_path, "u1", "read", n=3)  # reads but zero searches → undefined
+    m = memory_usage_metrics(tmp_path)
+    assert m["read_rate"] is None
+    assert m["reads"] == 3
+    assert m["search_hits"] == 0
+
+
+def test_hit_quality_helpful_over_judged(tmp_path: Path) -> None:
+    save_judgement_report(
+        tmp_path,
+        _report(
+            "s1",
+            hits=(_hit("a", "helpful"), _hit("b", "helpful"),
+                  _hit("c", "harmful"), _hit("d", "unused")),
+        ),
+    )
+    m = memory_usage_metrics(tmp_path)
+    # helpful 2 / (helpful 2 + harmful 1 + unused 1) = 0.5 ; unknown excluded
+    assert m["hit_quality"] == round(2 / 4, 4)
+    assert m["hits_helpful"] == 2
+    assert m["hits_harmful"] == 1
+    assert m["hits_unused"] == 1
+
+
+def test_hit_quality_none_when_all_unknown(tmp_path: Path) -> None:
+    save_judgement_report(tmp_path, _report("s1", hits=(_hit("a", "unknown"),)))
+    m = memory_usage_metrics(tmp_path)
+    assert m["hit_quality"] is None  # no helpful/harmful/unused to divide
+
+
+def test_recall_miss_rate_over_judged_sessions(tmp_path: Path) -> None:
+    save_judgement_report(
+        tmp_path,
+        _report("s1", recall_miss=(_miss("a", "retrieval_miss"),
+                                    _miss("b", "awareness_miss"))),
+    )
+    save_judgement_report(tmp_path, _report("s2", recall_miss=(_miss("c", "retrieval_miss"),)))
+    m = memory_usage_metrics(tmp_path)
+    # 3 misses / 2 judged sessions = 1.5
+    assert m["recall_miss_rate"] == round(3 / 2, 4)
+    assert m["retrieval_miss"] == 2
+    assert m["awareness_miss"] == 1
+    assert m["judged_sessions"] == 2
+    # known_issue_repeat_rate approximated by recall_miss_rate (no longer None)
+    assert m["known_issue_repeat_rate"] == m["recall_miss_rate"]
+
+
+def test_recall_miss_rate_none_when_no_judgements(tmp_path: Path) -> None:
+    m = memory_usage_metrics(tmp_path)
+    assert m["recall_miss_rate"] is None
+    assert m["known_issue_repeat_rate"] is None
+    assert m["judged_sessions"] == 0

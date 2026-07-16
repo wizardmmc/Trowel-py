@@ -270,13 +270,16 @@ class SessionsRepository:
         """Return every session with a not-yet-distilled completed slice (C-6/C-7).
 
         A session is included iff it has a completed water mark strictly greater
-        than its extracted water mark (NULL extracted → 0). Review sessions are
-        always excluded (C-5: by kind, not workdir). Legacy NULL kinds read as
-        ``'user'`` via COALESCE so pre-040-b rows are still picked up.
+        than its extracted water mark (NULL extracted → 0). ONLY user sessions
+        are eligible (slice-053): review / distill / eval agent sessions are all
+        excluded by kind (C-5: by kind, not workdir). A review that distilled a
+        distill/eval agent's own run would both pollute notes with agent chatter
+        AND recurse (judging a judge). Legacy NULL kinds read as ``'user'`` via
+        COALESCE so pre-040-b rows are still picked up.
         """
         rows = self._conn.execute(
             "SELECT * FROM sessions"
-            " WHERE COALESCE(session_kind, 'user') != 'review'"
+            " WHERE COALESCE(session_kind, 'user') = 'user'"
             " AND last_completed_offset IS NOT NULL"
             " AND last_completed_offset > COALESCE(last_extracted_offset, 0)"
             " ORDER BY registered_at"

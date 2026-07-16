@@ -273,7 +273,10 @@ async def test_review_workdir_session_not_processed(tmp_path: Path) -> None:
         None, memory_root=mem, date_str="2026-07-09", host_factory=factory
     )
 
-    assert calls == ["user"]  # review-self never distilled
+    # slice-053: the user session is now touched TWICE — once by the refine
+    # agent (run_one_session) and once by the judge agent — but review-self is
+    # still never touched (kept out by kind, C-5).
+    assert calls == ["user", "user"]
 
 
 # ---------- slice-040-a: P1 daily aggregate + atomic + idempotent rerun ----------
@@ -603,5 +606,66 @@ def test_review_lock_is_mutually_exclusive(tmp_path: Path) -> None:
     finally:
         fcntl.flock(holder, fcntl.LOCK_UN)
         os.close(holder)
+
+
+# ---------- slice-053: judge orchestration (C-2 isolation) ----------
+
+
+async def test_run_daily_review_judges_each_distilled_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """slice-053: after a session lands + is advanced, judge_session runs on it
+    (D4: distill → judge the same session in place). judge_session is mocked so
+    no real judge agent spawns; we only assert the orchestration calls it."""
+    judged: list[str] = []
+
+    async def fake_judge(session, review_date, root, *, host_factory=None):
+        judged.append(session.cc_session_id)
+        return None
+
+    monkeypatch.setattr("trowel_py.memory.review_job.judge_session", fake_judge)
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1"))
+    repo.update_completed("s1", 4096)
+    conn.close()
+
+    await run_daily_review(
+        None,
+        memory_root=mem,
+        date_str="2026-07-09",
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+    )
+    assert judged == ["s1"]  # judged exactly the distilled session
+
+
+async def test_judge_failure_does_not_block_review(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """C-2: even if judge_session RAISES (breaches its own internal swallow),
+    review's advance_extracted still completes and the note still lands."""
+    async def raising_judge(*a, **kw):
+        raise RuntimeError("judge blew up")
+
+    monkeypatch.setattr("trowel_py.memory.review_job.judge_session", raising_judge)
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1"))
+    repo.update_completed("s1", 4096)
+    conn.close()
+
+    await run_daily_review(
+        None,
+        memory_root=mem,
+        date_str="2026-07-09",
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+    )
+    # review still advanced → no incremental work left
+    conn2 = open_sessions_db(mem)
+    assert create_sessions_repository(conn2).find_incremental() == []
+    conn2.close()
+    assert len(MemoryStore(mem).load_notes()) == 1  # note still landed
 
 

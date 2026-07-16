@@ -278,6 +278,20 @@ def test_find_incremental_excludes_review() -> None:
     assert repo.find_incremental() == []
 
 
+def test_find_incremental_excludes_distill_and_eval_kinds() -> None:
+    """slice-053: distill + eval agent sessions never enter the review queue
+    (otherwise review would distill an agent's own run + recurse on the judge)."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="user", session_kind="user"))
+    repo.register(_rec(cc_session_id="dist", session_kind="distill"))
+    repo.register(_rec(cc_session_id="ev", session_kind="eval"))
+    repo.update_completed("user", 2048, when="t")
+    repo.update_completed("dist", 2048, when="t")
+    repo.update_completed("ev", 2048, when="t")
+    segs = repo.find_incremental()
+    assert [s.session.cc_session_id for s in segs] == ["user"]
+
+
 def test_find_incremental_excludes_half_turn() -> None:
     """No completed water mark (result not seen yet) → not pending (C-6 half-turn)."""
     repo = _repo()

@@ -81,3 +81,111 @@ def compute_north_star(
         "raw_reads": reads,
         "raw_harmful_outcomes": harmful_outcomes,
     }
+
+
+def _non_user_cc_session_ids(root: Path) -> frozenset[str]:
+    """cc_session_ids of non-user sessions (review/distill/eval).
+
+    Their access-log entries are excluded from ``read_rate`` (C-3 — the judge's
+    own eval-kind search/read, or the distill/review agents', must not count as
+    user retrieval). A missing/unreadable sessions.db → empty set (exclude
+    nothing; access-log cc_session_ids not in the db are treated as user).
+    """
+    from trowel_py.memory.sessions_repo import open_sessions_db
+
+    try:
+        conn = open_sessions_db(root)
+    except Exception:
+        return frozenset()
+    try:
+        rows = conn.execute(
+            "SELECT cc_session_id FROM sessions"
+            " WHERE COALESCE(session_kind, 'user') != 'user'"
+        ).fetchall()
+    except Exception:
+        return frozenset()
+    finally:
+        conn.close()
+    return frozenset(
+        row["cc_session_id"] for row in rows if row["cc_session_id"]
+    )
+
+
+def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
+    """Three effectiveness indicators for memory usage (slice-053).
+
+    Plugs the memory system's biggest blind spot: a search hit does not tell
+    you whether the model USED the note, whether that use HELPED, or whether a
+    relevant note SHOULD have been used but wasn't.
+
+    - ``read_rate`` = read records / search-hit records, over USER sessions'
+      access-log (hard). "search hits" = the returned candidates (mcp_server
+      writes one search record per candidate, carrying memory_id+rank); the
+      per-call summary record (no memory_id) is NOT a hit. Non-user sessions
+      (review/distill/eval) are excluded (C-3). None when no search hits.
+    - ``hit_quality`` = helpful / (helpful+harmful+unused), over judgement hits
+      (soft, LLM-judged). None when no judged hits with a usable outcome.
+    - ``recall_miss_rate`` = recall-miss count / judged-session count (soft),
+      split by attribution (retrieval_miss / awareness_miss). None when no
+      judgements. ``known_issue_repeat_rate`` is approximated by it (the strict
+      definition stays a TODO — north_star.compute_north_star still returns
+      None for the 041 metric; this soft proxy is what unblocks it).
+
+    Args:
+        root: the memory root directory.
+
+    Returns:
+        A metrics dict (rates are None when the denominator is zero).
+    """
+    from trowel_py.memory.access_log import read_access_log
+    from trowel_py.memory.judgements import load_all_judgement_reports
+
+    root_path = Path(root)
+    non_user = _non_user_cc_session_ids(root_path)
+
+    user_records = [
+        r for r in read_access_log(root_path) if r.cc_session_id not in non_user
+    ]
+    reads = sum(1 for r in user_records if r.action == "read")
+    # "search 命中数" = returned candidates (one search record per candidate,
+    # carrying memory_id+rank). The per-call summary record mcp_server writes
+    # without a memory_id is a call, not a hit — counting it would understate
+    # read_rate (one search = 1 summary + N candidate records).
+    search_hits = sum(
+        1 for r in user_records if r.action == "search" and r.memory_id
+    )
+    read_rate = round(reads / search_hits, 4) if search_hits else None
+
+    reports = load_all_judgement_reports(root_path)
+    hits = [h for report in reports for h in report.hits]
+    helpful = sum(1 for h in hits if h.outcome == "helpful")
+    harmful = sum(1 for h in hits if h.outcome == "harmful")
+    unused = sum(1 for h in hits if h.outcome == "unused")
+    outcome_denom = helpful + harmful + unused
+    hit_quality = round(helpful / outcome_denom, 4) if outcome_denom else None
+
+    all_miss = [m for report in reports for m in report.recall_miss]
+    retrieval = sum(1 for m in all_miss if m.attribution == "retrieval_miss")
+    awareness = sum(1 for m in all_miss if m.attribution == "awareness_miss")
+    judged_sessions = len(reports)
+    recall_miss_rate = (
+        round(len(all_miss) / judged_sessions, 4) if judged_sessions else None
+    )
+
+    return {
+        "reads": reads,
+        "search_hits": search_hits,
+        "read_rate": read_rate,
+        "hits_total": len(hits),
+        "hits_helpful": helpful,
+        "hits_harmful": harmful,
+        "hits_unused": unused,
+        "hit_quality": hit_quality,
+        "recall_miss_total": len(all_miss),
+        "retrieval_miss": retrieval,
+        "awareness_miss": awareness,
+        "judged_sessions": judged_sessions,
+        "recall_miss_rate": recall_miss_rate,
+        # soft proxy for the 041 north-star metric (strict def is a TODO).
+        "known_issue_repeat_rate": recall_miss_rate,
+    }

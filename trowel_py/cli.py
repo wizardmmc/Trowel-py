@@ -286,10 +286,18 @@ def _run_memory_cli(argv: list[str]) -> int:
         return 0
     if args.cmd == "metrics":
         from trowel_py.memory import paths
-        from trowel_py.memory.north_star import compute_north_star
+        from trowel_py.memory.north_star import (
+            compute_north_star,
+            memory_usage_metrics,
+        )
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
-        report = compute_north_star(root)
+        # slice-053: north_star (correction/retirement) + usage (the three
+        # effectiveness indicators: read_rate / hit_quality / recall_miss_rate).
+        report = {
+            "north_star": compute_north_star(root),
+            "usage": memory_usage_metrics(root),
+        }
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     return 2  # unreachable: subparser is required
