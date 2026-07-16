@@ -24,7 +24,6 @@ from typing import Any
 
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 
 from trowel_py.memory.access_log import (
@@ -249,6 +248,17 @@ def handle_outcome(
 
 # --------------------------------------------------------------------------- MCP run
 
+#: slice-052 温和版: search tool description nudges the model to memory.read
+#: requires_read=true hits instead of summary-scanning them. The signal was
+#: always returned (``_hit``), just never emphasized — audit found 304 search
+#: / 13 read. The aggressive variant (drop summary when requires_read=true) is
+#: a slice-053 spike; this keeps the search contract intact (C-6).
+_SEARCH_DESC = (
+    "Search memory notes by query. Returns candidates (title+summary+uri). "
+    "Hits with requires_read=true must be opened with memory.read — don't "
+    "rely on the summary alone."
+)
+
 
 def _build_server(root: Path) -> Server:
     """Build the lowlevel Server with the three memory tools."""
@@ -261,7 +271,7 @@ def _build_server(root: Path) -> Server:
         return [
             types.Tool(
                 name=_TOOL_SEARCH,
-                description="Search memory notes by query. Returns candidates (title+summary+uri). Use memory.read to open a body.",
+                description=_SEARCH_DESC,
                 inputSchema={
                     "type": "object",
                     "properties": {

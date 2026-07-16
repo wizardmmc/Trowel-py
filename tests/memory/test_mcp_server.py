@@ -85,6 +85,15 @@ def test_requires_read_by_verification() -> None:
     assert not requires_read(_note(kind="fact", verification="verified"))
 
 
+def test_search_description_requires_read_hint() -> None:
+    """slice-052 温和版: the search tool description must tell the model that
+    requires_read=true hits can't be summary-scanned — memory.read the body."""
+    from trowel_py.memory.mcp_server import _SEARCH_DESC
+
+    assert "requires_read" in _SEARCH_DESC
+    assert "memory.read" in _SEARCH_DESC
+
+
 # ---- handle_search ----
 
 

@@ -135,7 +135,8 @@ def _render_memory_root(root: Path) -> str:
     return (
         "# memory 根路径 + 检索\n"
         f"根：{root.resolve()}\n"
-        "查笔记：memory.search(query) → memory.read(uri)"
+        "查笔记：memory.search(query) → memory.read(uri)\n"
+        "search 结果里 requires_read=true 的笔记，看摘要不够，必须 memory.read 正文"
     )
 
 

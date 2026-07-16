@@ -127,6 +127,8 @@ def test_injection_carries_memory_root_and_tool_usage(tmp_path: Path) -> None:
     assert "memory.search(query)" in out
     assert "memory.read(uri)" in out
     assert str(tmp_path.resolve()) in out
+    # slice-052 温和版: tell the model requires_read=true hits MUST be read
+    assert "requires_read" in out
 
 
 def test_no_notes_body_injected(tmp_path: Path) -> None:
