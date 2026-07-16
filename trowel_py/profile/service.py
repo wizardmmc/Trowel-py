@@ -29,10 +29,10 @@ def get_profile_store() -> MemoryStore:
 def write_profile(store: MemoryStore, update: ProfileUpdate) -> Profile:
     """Stamp provenance, write via the store, and re-read to confirm.
 
-    ``updated`` is today (ISO date) and ``source`` is ``user-edit`` — the
-    front-end edit path. AI calibration proposes via a side-channel (slice-050)
-    and never reaches this write path. Returns the freshly loaded profile so
-    the HTTP response reflects exactly what landed on disk.
+    ``updated`` is today (ISO date). ``source`` comes from the update body
+    (default ``user-edit``; the front-end passes ``ai-calibration`` when
+    merging accepted AI suggestions — slice-050). Returns the freshly loaded
+    profile so the HTTP response reflects exactly what landed on disk.
 
     Raises:
         ValueError: the profile or source tag fails store validation.
@@ -45,5 +45,5 @@ def write_profile(store: MemoryStore, update: ProfileUpdate) -> Profile:
         other=update.other,
         updated=date.today().isoformat(),
     )
-    store.write_profile(profile, source="user-edit")
+    store.write_profile(profile, source=update.source)
     return store.load_profile()

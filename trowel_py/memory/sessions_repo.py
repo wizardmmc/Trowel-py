@@ -314,6 +314,40 @@ class SessionsRepository:
         )
         self._conn.commit()
 
+    def find_all_completed_sessions(
+        self, exclude_kinds: list[str] | None = None
+    ) -> list[SessionRecord]:
+        """Return every session with a completed offset, regardless of extracted
+        state (slice-050: the profile distill job keeps its OWN watermark in
+        ``meta/profile-distill-state.json``, so review's
+        ``last_extracted_offset`` is irrelevant here — C-7).
+
+        By default review AND distill kind sessions are excluded: the distill
+        job must never re-distill its own agent runs, nor the review agent's
+        (C-5: filter by kind, not workdir path). Pass ``exclude_kinds`` to
+        override.
+
+        Args:
+            exclude_kinds: session kinds to drop (default
+                ``["review", "distill"]``). Legacy NULL kinds read as ``'user'``
+                via COALESCE so pre-040-b rows are still picked up.
+
+        Returns:
+            candidate sessions, oldest first (stable processing order). The
+            distill job subtracts those already in profile-distill-state.json
+            to find the real backlog.
+        """
+        excluded = exclude_kinds if exclude_kinds is not None else ["review", "distill"]
+        ph = ",".join("?" * len(excluded))
+        rows = self._conn.execute(
+            "SELECT * FROM sessions"
+            " WHERE COALESCE(session_kind, 'user') NOT IN ({ph})"
+            " AND last_completed_offset IS NOT NULL"
+            " ORDER BY registered_at".format(ph=ph),
+            excluded,
+        ).fetchall()
+        return [_row_to_record(r) for r in rows]
+
 
 def create_sessions_repository(conn: sqlite3.Connection) -> SessionsRepository:
     """Factory mirroring the cards/review repository pattern."""

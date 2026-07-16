@@ -333,8 +333,13 @@ export async function buyItem(itemId: string): Promise<BuyResult> {
 
 const PROFILE_API_BASE = "/api/profile";
 
-/** PUT /api/profile body: the five editable dimensions (updated/source are
- * server-stamped, never sent by the client). Mirrors the five-dim Profile
+/** file-level provenance stamp: user-edit (hand edit, default) or ai-calibration
+ * (the front-end passes this when merging accepted AI suggestions — slice-050). */
+export type ProfileSource = "user-edit" | "ai-calibration";
+
+/** PUT /api/profile body: the five editable dimensions. `updated` is always
+ * server-stamped. `source` is optional (defaults to user-edit; pass
+ * ai-calibration on the accept-merge path). Mirrors the five-dim Profile
  * dataclass (slice-047); `other` is always present. */
 export interface ProfileUpdate {
   readonly ability: string;
@@ -342,6 +347,7 @@ export interface ProfileUpdate {
   readonly expression: string;
   readonly goal: string;
   readonly other: string;
+  readonly source?: ProfileSource;
 }
 
 /** GET/PUT /api/profile response: five dims + provenance. */
@@ -368,6 +374,50 @@ export async function putProfile(input: ProfileUpdate): Promise<ProfileDTO> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
+  });
+}
+
+// ── Profile suggestions (slice-050) ──
+
+/** which of the five profile dims a suggestion targets (mirrors ProfileUpdate). */
+export type ProfileDimension =
+  | "ability"
+  | "methodology"
+  | "expression"
+  | "goal"
+  | "other";
+
+/** lifecycle of a suggestion in the candidate queue. */
+export type SuggestionStatus = "pending" | "accepted" | "discarded";
+
+/** GET /api/profile/suggestions item: one AI-proposed profile addition (a
+ * pending candidate the user accepts — merged into profile via PUT — or
+ * discards). The agent never writes profile.md (C-1). */
+export interface Suggestion {
+  readonly id: string;
+  readonly dimension: ProfileDimension;
+  readonly body: string;
+  readonly sources: readonly string[];
+  readonly date: string;
+  readonly status: SuggestionStatus;
+}
+
+/** GET /api/profile/suggestions — the pending AI suggestions for the user. */
+export async function getSuggestions(): Promise<Suggestion[]> {
+  return request<Suggestion[]>(`${PROFILE_API_BASE}/suggestions`);
+}
+
+/** PATCH /api/profile/suggestions/{id} — accept / discard one suggestion.
+ * Accept does NOT write profile.md here; the caller merges the accepted body
+ * into the profile and PUTs with source=ai-calibration. */
+export async function patchSuggestionStatus(
+  id: string,
+  status: "accepted" | "discarded",
+): Promise<void> {
+  await request<null>(`${PROFILE_API_BASE}/suggestions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
   });
 }
 

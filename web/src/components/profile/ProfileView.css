@@ -161,3 +161,19 @@
   color: var(--text-secondary);
   border: 1px solid var(--soil-brown);
 }
+.profile-view .btn--ghost {
+  background: none;
+  color: var(--sunshine-ink);
+  border: 1px solid var(--sunshine);
+}
+.profile-view .btn--ghost:hover {
+  background: var(--sunshine-soft);
+}
+.profile-view .doc-toolbar__btns {
+  display: flex;
+  gap: var(--space-sm);
+}
+.profile-view .doc-toolbar .meta .badge {
+  color: var(--sunshine-ink);
+  font-family: var(--font-mono);
+}

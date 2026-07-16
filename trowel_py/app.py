@@ -66,6 +66,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] review scheduler failed to start", exc_info=True)
         app.state.memory_scheduler = None
+    # slice-050: in-app daily profile distill scheduler (sister of the review
+    # scheduler). Carries proxy_base_url so distill goes through the trowel proxy
+    # (C-4 — 529 prep). Any failure is swallowed (C-6) so the app still starts.
+    try:
+        from trowel_py.memory import paths as _distill_paths
+        from trowel_py.memory.profile_distill_scheduler import (
+            ProfileDistillScheduler,
+            load_distill_config,
+        )
+
+        distill_scheduler = ProfileDistillScheduler(
+            load_distill_config(),
+            _distill_paths.resolve_memory_root(),
+            app.state.proxy_base_url,
+            app.state.cc_settings_path,
+        )
+        await distill_scheduler.start()
+        app.state.distill_scheduler = distill_scheduler
+    except Exception:
+        logger.warning("[memory] profile distill scheduler failed to start", exc_info=True)
+        app.state.distill_scheduler = None
     yield
     _scheduler = getattr(app.state, "memory_scheduler", None)
     if _scheduler is not None:
@@ -73,6 +94,14 @@ async def lifespan(app: FastAPI):
             await _scheduler.stop()
         except Exception:
             logger.warning("[memory] review scheduler stop failed", exc_info=True)
+    _distill = getattr(app.state, "distill_scheduler", None)
+    if _distill is not None:
+        try:
+            await _distill.stop()
+        except Exception:
+            logger.warning(
+                "[memory] profile distill scheduler stop failed", exc_info=True
+            )
     await app.state.cc_http_client.aclose()
 
 

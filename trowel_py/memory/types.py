@@ -32,6 +32,13 @@ NoteStatus = Literal["active", "contradicted", "superseded", "retired"]
 #: origin. user-edit = the user typed/edited directly; ai-calibration = the
 #: last commit was an accepted AI proposal merge (→ 050).
 ProfileSource = Literal["user-edit", "ai-calibration"]
+#: slice-050: the five profile dimensions a suggestion targets (mirrors the
+#: Profile fields). Used by the suggestion queue + the distill agent's output.
+ProfileDimension = Literal["ability", "methodology", "expression", "goal", "other"]
+#: slice-050: lifecycle of a profile suggestion in the candidate queue.
+#: pending = not yet seen by the user; accepted = merged into profile.md;
+#: discarded = user rejected it (kept for audit, not deleted).
+SuggestionStatus = Literal["pending", "accepted", "discarded"]
 
 
 @dataclass(frozen=True)
@@ -109,6 +116,35 @@ class Profile:
     # ProfileSource only at write time (validate_profile). See profile.py,
     # which derives the allowed set from the ProfileSource Literal.
     source: str = "user-edit"
+
+
+@dataclass(frozen=True)
+class Suggestion:
+    """One AI-proposed profile addition (slice-050 candidate-queue item).
+
+    The distill agent derives these from session history; they live in
+    ``meta/profile-suggestions.json`` as ``pending`` candidates. The user
+    accepts (merged into profile.md) or discards them — the agent NEVER gets
+    the profile write path (C-1: structural provenance).
+
+    Attributes:
+        id: stable identifier (unique within the queue; the distill agent
+            assigns it, the job does not rewrite it).
+        dimension: which of the five profile dims this proposes to extend.
+        body: the proposed text, appended to the dimension's existing body on
+            accept (never replaces — C-1).
+        sources: provenance pointers (cc_session_id / date) so the suggestion
+            is traceable (C-2). Tuple so the value object is immutable.
+        date: ISO date of the source session this was derived from.
+        status: pending | accepted | discarded.
+    """
+
+    id: str
+    dimension: ProfileDimension
+    body: str
+    sources: tuple[str, ...] = ()
+    date: str = ""
+    status: SuggestionStatus = "pending"
 
 
 @dataclass(frozen=True)

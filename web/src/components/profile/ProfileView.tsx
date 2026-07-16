@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useProfileStore } from "../../stores/profileStore";
+import { useSuggestionsStore } from "../../stores/suggestionsStore";
 import type { ProfileDTO, ProfileUpdate } from "../../api/client";
+import { SuggestionsModal } from "./SuggestionsModal";
 import "./ProfileView.css";
 
 /** the five dimensions, in canonical order (mirrors profile._FIELD_TO_TITLE
@@ -36,20 +38,26 @@ function profileToDraft(p: ProfileDTO): ProfileUpdate {
  * (editor-shell sunshine ring) and saves them in one PUT. Save failure is
  * shown explicitly (C-6) and keeps the draft so the user can retry. Cold
  * start (empty profile) shows five empty sections + the edit button.
+ *
+ * slice-050: the doc-toolbar shows a 「查看 AI 建议」 entry when there are
+ * pending suggestions, opening the SuggestionsModal (accept appends to the
+ * dims, never replacing).
  */
 export function ProfileView() {
   const { profile, loading, error, fetchProfile, updateProfile } =
     useProfileStore();
+  const { suggestions, fetchSuggestions } = useSuggestionsStore();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ProfileUpdate>(emptyDraft());
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
-  // fetchProfile is a stable zustand action (defined once at create), so this
-  // effect runs once on mount — the dep array satisfies exhaustive-deps
-  // without causing re-fetches.
+  // fetchProfile / fetchSuggestions are stable zustand actions (defined once at
+  // create), so this effect runs once on mount.
   useEffect(() => {
     fetchProfile();
-  }, [fetchProfile]);
+    fetchSuggestions();
+  }, [fetchProfile, fetchSuggestions]);
 
   const startEdit = () => {
     setDraft(profile ? profileToDraft(profile) : emptyDraft());
@@ -101,14 +109,34 @@ export function ProfileView() {
             <div className="doc-toolbar">
               <div className="meta">
                 {profile.updated ? `更新于 ${profile.updated}` : "尚未保存"}
+                {suggestions.length > 0 && (
+                  <span
+                    className="badge"
+                    data-testid="profile-suggestions-count"
+                  >
+                    {" "}
+                    · ✦ {suggestions.length} 条 AI 校准建议
+                  </span>
+                )}
               </div>
-              <button
-                className="btn btn--secondary"
-                onClick={startEdit}
-                data-testid="profile-edit-button"
-              >
-                编辑画像
-              </button>
+              <div className="doc-toolbar__btns">
+                {suggestions.length > 0 && (
+                  <button
+                    className="btn btn--ghost"
+                    onClick={() => setModalOpen(true)}
+                    data-testid="profile-suggestions-button"
+                  >
+                    查看 AI 建议
+                  </button>
+                )}
+                <button
+                  className="btn btn--secondary"
+                  onClick={startEdit}
+                  data-testid="profile-edit-button"
+                >
+                  编辑画像
+                </button>
+              </div>
             </div>
           )}
         </header>
@@ -169,6 +197,7 @@ export function ProfileView() {
           </section>
         ))}
       </div>
+      <SuggestionsModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </div>
   );
 }

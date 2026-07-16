@@ -74,6 +74,65 @@ def test_register_is_idempotent_on_session_id() -> None:
     assert rows[0].workdir == "/p1"
 
 
+# ---------- slice-050: find_all_completed_sessions (distill candidates) ----------
+
+
+def _complete(repo: object, *sids: str) -> None:
+    """stamp a completed offset on each sid so they surface as distill candidates."""
+    for sid in sids:
+        repo.update_completed(sid, 1000)
+
+
+def test_find_all_completed_returns_sessions_with_completed_offset() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.register(_rec(cc_session_id="b"))
+    repo.register(_rec(cc_session_id="c"))  # no completed offset → excluded
+    _complete(repo, "a", "b")
+    found = repo.find_all_completed_sessions()
+    assert {s.cc_session_id for s in found} == {"a", "b"}
+
+
+def test_find_all_completed_excludes_review_and_distill_kinds() -> None:
+    # distill must not re-distill its own agent runs NOR the review agent's.
+    repo = _repo()
+    repo.register(_rec(cc_session_id="user", session_kind="user"))
+    repo.register(_rec(cc_session_id="rev", session_kind="review"))
+    repo.register(_rec(cc_session_id="dist", session_kind="distill"))
+    _complete(repo, "user", "rev", "dist")
+    found = repo.find_all_completed_sessions()
+    assert {s.cc_session_id for s in found} == {"user"}
+
+
+def test_find_all_completed_ignores_review_extracted_state() -> None:
+    # C-7: distill uses its OWN watermark. A session review already extracted
+    # is STILL a distill candidate (review's last_extracted_offset is irrelevant).
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a"))
+    repo.update_completed("a", 1000)
+    repo.advance_extracted("a", 1000)  # review says "done"
+    found = repo.find_all_completed_sessions()
+    assert {s.cc_session_id for s in found} == {"a"}
+
+
+def test_find_all_completed_ordered_by_registered_at() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="late", registered_at="2026-07-10T10:00:00"))
+    repo.register(_rec(cc_session_id="early", registered_at="2026-07-09T10:00:00"))
+    _complete(repo, "late", "early")
+    found = repo.find_all_completed_sessions()
+    assert [s.cc_session_id for s in found] == ["early", "late"]
+
+
+def test_find_all_completed_custom_exclude_kinds() -> None:
+    repo = _repo()
+    repo.register(_rec(cc_session_id="a", session_kind="user"))
+    repo.register(_rec(cc_session_id="b", session_kind="custom"))
+    _complete(repo, "a", "b")
+    found = repo.find_all_completed_sessions(exclude_kinds=["custom"])
+    assert {s.cc_session_id for s in found} == {"a"}
+
+
 def test_find_pending_preserves_jsonl_path() -> None:
     repo = _repo()
     repo.register(_rec(cc_session_id="a", jsonl_path="/projects/slug/a.jsonl"))

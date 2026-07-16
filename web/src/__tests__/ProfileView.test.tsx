@@ -9,9 +9,15 @@ import type { ProfileDTO } from "../api/client";
 vi.mock("../api/client", () => ({
   fetchProfile: vi.fn(),
   putProfile: vi.fn(),
+  getSuggestions: vi.fn(),
+  patchSuggestionStatus: vi.fn(),
 }));
 
-import { fetchProfile as fetchProfileApi, putProfile as putProfileApi } from "../api/client";
+import {
+  fetchProfile as fetchProfileApi,
+  getSuggestions as getSuggestionsApi,
+  putProfile as putProfileApi,
+} from "../api/client";
 
 const testProfile: ProfileDTO = {
   ability: "网安硕士",
@@ -27,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchProfileApi).mockResolvedValue(testProfile);
   vi.mocked(putProfileApi).mockResolvedValue(testProfile);
+  vi.mocked(getSuggestionsApi).mockResolvedValue([]);
 });
 
 describe("ProfileView", () => {
@@ -106,5 +113,25 @@ describe("ProfileView", () => {
     await waitFor(() => expect(screen.getByText("能力水平")).toBeInTheDocument());
     // all five titles present even when empty (cold-start: empty sections shown)
     expect(screen.getByText("其他")).toBeInTheDocument();
+  });
+
+  it("shows the 查看建议 entry when there are pending suggestions and opens the modal on click (slice-050)", async () => {
+    vi.mocked(getSuggestionsApi).mockResolvedValue([
+      {
+        id: "s1",
+        dimension: "ability",
+        body: "新增能力",
+        sources: ["sess-abc"],
+        date: "2026-07-14",
+        status: "pending",
+      },
+    ]);
+    render(<ProfileView />);
+    const btn = await screen.findByTestId("profile-suggestions-button");
+    expect(screen.getByTestId("profile-suggestions-count")).toHaveTextContent(
+      "1 条 AI 校准建议",
+    );
+    await userEvent.click(btn);
+    expect(await screen.findByTestId("suggestions-modal")).toBeInTheDocument();
   });
 });
