@@ -1643,11 +1643,27 @@
   border-bottom: none;
 }
 .cc-ac__group-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
   font-size: 0.68rem;
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  padding: 4px 14px 2px;
+  padding: 5px 14px 3px;
+}
+.cc-ac__group-label:hover {
+  background: var(--neutral-soft);
+}
+.cc-ac__tri {
+  font-size: 0.7rem;
+  line-height: 1;
 }
 .cc-ac__item {
   display: flex;
@@ -1685,10 +1701,34 @@
   border-radius: var(--radius-pill);
   background: var(--neutral-soft);
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+/* slice-042 P4: per-source badges, harmonized to the app's warm garden/soil
+ * palette (the picker's own mockup said to follow cc.css's cc-ac__* language,
+ * not introduce generic blue/purple). Plugin recedes — it's collapsed by
+ * default and is the long tail. */
+.cc-ac__badge--builtin {
+  background: var(--soil-brown-soft);
+  color: var(--soil-brown);
 }
 .cc-ac__badge--bundled {
   background: var(--sunshine-soft);
   color: var(--sunshine-ink);
+}
+.cc-ac__badge--user {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+}
+.cc-ac__badge--project {
+  background: var(--garden-green);
+  color: var(--bg-card);
+}
+.cc-ac__badge--plugin {
+  background: var(--neutral-soft);
+  color: var(--text-tertiary);
+}
+.cc-ac__pre {
+  color: var(--text-tertiary);
 }
 .cc-ac__desc {
   flex: 1;

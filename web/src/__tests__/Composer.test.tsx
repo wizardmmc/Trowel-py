@@ -92,9 +92,12 @@ describe("Composer slash autocomplete (slice-027)", () => {
     );
     const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "/" } });
-    fireEvent.keyDown(ta, { key: "ArrowDown" }); // monthly-etf → review
+    // slice-042: rows are grouped by source (bundled before user), so the flat
+    // order is [review(bundled), monthly-etf(user)]. ArrowDown 0→1 lands on
+    // monthly-etf.
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "Enter" });
-    expect(ta.value).toBe("/review ");
+    expect(ta.value).toBe("/monthly-etf ");
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -198,5 +201,126 @@ describe("Composer slash autocomplete (slice-027)", () => {
     fireEvent.change(ta, { target: { value: "/monthly-etf 查看沪深300" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("/monthly-etf 查看沪深300");
+  });
+});
+
+describe("Composer slash autocomplete (slice-042 P4: source grouping + collapse)", () => {
+  const items: readonly SlashItem[] = [
+    { name: "model", description: "切换模型", source: "builtin", type: "command" },
+    {
+      name: "everything-claude-code:code-review",
+      description: "Expert code review",
+      source: "plugin",
+      type: "skill",
+    },
+    {
+      name: "codex:rescue",
+      description: "Codex rescue",
+      source: "plugin",
+      type: "command",
+    },
+  ];
+
+  it("plugin group is collapsed by default — its items are not rendered", () => {
+    render(
+      <Composer streaming={false} disabled={false} onSend={() => {}}
+                onInterrupt={() => {}} slashItems={items} />,
+    );
+    fireEvent.change(screen.getByLabelText("CC 消息输入"),
+      { target: { value: "/" } });
+    expect(screen.queryByText(/code-review/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/rescue/)).not.toBeInTheDocument();
+    // non-plugin still present
+    expect(screen.getByText(/model/)).toBeInTheDocument();
+  });
+
+  it("clicking the plugin group header expands it", () => {
+    render(
+      <Composer streaming={false} disabled={false} onSend={() => {}}
+                onInterrupt={() => {}} slashItems={items} />,
+    );
+    fireEvent.change(screen.getByLabelText("CC 消息输入"),
+      { target: { value: "/" } });
+    fireEvent.click(screen.getByRole("button", { name: /plugin 组/ }));
+    expect(screen.getByText(/code-review/)).toBeInTheDocument();
+  });
+
+  it("ArrowDown is clamped to visible rows — collapsed plugin is unreachable", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer streaming={false} disabled={false} onSend={onSend}
+                onInterrupt={() => {}} slashItems={items} />,
+    );
+    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "/" } });
+    // spam ArrowDown past the single visible row — index must clamp at 0,
+    // never descend into the hidden plugin rows.
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    // clamped to model (index 0) → fills /model  ... but model opens no picker
+    // here (no onRequestModelPicker), so pickItem fills "/model ".
+    expect(ta.value).toBe("/model ");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("searching expands the plugin group so matches are pickable", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer streaming={false} disabled={false} onSend={onSend}
+                onInterrupt={() => {}} slashItems={items} />,
+    );
+    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    // "review" matches only the plugin item; even though plugin is collapsed
+    // by default, searching forces it open.
+    fireEvent.change(ta, { target: { value: "/review" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(ta.value).toBe("/everything-claude-code:code-review ");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("collapsing a group that holds the highlight clamps it back into view", () => {
+    // Guards the HIGH review finding: stale acIndex after a collapse must not
+    // make the highlight vanish.
+    render(
+      <Composer streaming={false} disabled={false} onSend={() => {}}
+                onInterrupt={() => {}} slashItems={items} />,
+    );
+    const ta = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(ta, { target: { value: "/" } });
+    // expand plugin → flat = [model, codex:rescue, ecc:code-review]
+    // (localeCompare: "codex:rescue" < "everything-claude-code:code-review")
+    fireEvent.click(screen.getByRole("button", { name: /plugin 组/ }));
+    fireEvent.keyDown(ta, { key: "ArrowDown" }); // → codex:rescue
+    fireEvent.keyDown(ta, { key: "ArrowDown" }); // → ecc:code-review (acIndex 2)
+    // collapse plugin again → flat shrinks to [model]; clamp must move index to 0
+    fireEvent.click(screen.getByRole("button", { name: /plugin 组/ }));
+    const opts = screen.getAllByRole("option");
+    expect(opts).toHaveLength(1);
+    expect(opts[0]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keyboard index lines up with the rendered row across multi-item groups", () => {
+    // Adversarial alignment check: 2 items per group, navigate to a known
+    // flat index, assert the aria-selected row is the one acFlat points at.
+    const multi: readonly SlashItem[] = [
+      { name: "model", description: "", source: "builtin", type: "command" },
+      { name: "status", description: "", source: "builtin", type: "command" },
+      { name: "grill-me", description: "", source: "user", type: "skill" },
+      { name: "monthly-etf", description: "", source: "user", type: "skill" },
+    ];
+    render(
+      <Composer streaming={false} disabled={false} onSend={() => {}}
+                onInterrupt={() => {}} slashItems={multi} />,
+    );
+    const ta = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(ta, { target: { value: "/" } });
+    // flat order: model, status, grill-me, monthly-etf. Two ArrowDowns → index 2.
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
+    const opts = screen.getAllByRole("option");
+    expect(opts[2]).toHaveAttribute("aria-selected", "true");
+    expect(opts[2].textContent).toMatch(/grill-me/);
   });
 });

@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelEffortChip } from "./ModelEffortChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
+import {
+  flatVisible,
+  groupSlashItems,
+  type SlashSource,
+} from "./slashGroups";
 import type { ModelOption, SlashItem } from "../../api/cc";
 
 /**
@@ -39,20 +44,6 @@ interface ComposerProps {
   readonly onPickEffort?: (value: string) => void;
 }
 
-/** Filter + order items exactly like SlashAutocomplete (skills then commands)
- * so the keyboard index lines up with the highlighted row. */
-function flatFiltered(
-  items: readonly SlashItem[],
-  query: string,
-): readonly SlashItem[] {
-  const q = query.trim().toLowerCase();
-  const f = q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
-  return [
-    ...f.filter((i) => i.type === "skill"),
-    ...f.filter((i) => i.type === "command"),
-  ];
-}
-
 export function Composer({
   streaming,
   disabled,
@@ -71,6 +62,14 @@ export function Composer({
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  // slice-042 P4: which source groups the user has collapsed. Plugin starts
+  // collapsed so its ~200 skills don't drown the daily commands; any group is
+  // toggleable via its header. Owned here (not in SlashAutocomplete) because
+  // the keyboard index must skip collapsed rows — the component can't own the
+  // flat list the Composer navigates.
+  const [collapsedSources, setCollapsedSources] = useState<ReadonlySet<SlashSource>>(
+    () => new Set<SlashSource>(["plugin"]),
+  );
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   const acOpen =
@@ -78,6 +77,25 @@ export function Composer({
     (slashItems?.length ?? 0) > 0 &&
     !dismissed;
   const query = acOpen ? text.slice(1) : "";
+  const searching = query.trim() !== "";
+
+  // Shared with SlashAutocomplete via slashGroups: same filter + group order, so
+  // the flat index below lines up with the rows it renders. Recomputed cheaply
+  // (a few hundred items); memoized on its inputs.
+  const acGroups = useMemo(
+    () => groupSlashItems(slashItems ?? [], query),
+    [slashItems, query],
+  );
+  const acFlat = useMemo(
+    () => flatVisible(acGroups, searching, collapsedSources),
+    [acGroups, searching, collapsedSources],
+  );
+  // Always keep the highlighted index inside the visible rows. Collapsing a
+  // group (or the item set changing under a stale index) can shrink acFlat
+  // below acIndex; clamping the DISPLAYED index here means the highlight never
+  // points at a row that isn't rendered. (Typing resets acIndex to 0 already;
+  // toggleGroup clamps the stored index too so arrow nav stays tidy.)
+  const safeIndex = Math.min(acIndex, Math.max(0, acFlat.length - 1));
 
   // Auto-grow the textarea up to a cap.
   useEffect(() => {
@@ -86,6 +104,17 @@ export function Composer({
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   }, [text]);
+
+  function toggleGroup(source: SlashSource) {
+    const next = new Set(collapsedSources);
+    if (next.has(source)) next.delete(source);
+    else next.add(source);
+    setCollapsedSources(next);
+    // Collapsing shrinks the flat list; clamp the stored index into the new
+    // range right away so the next Arrow key starts from a valid row.
+    const nextLen = flatVisible(acGroups, searching, next).length;
+    setAcIndex((i) => Math.min(i, Math.max(0, nextLen - 1)));
+  }
 
   function pickItem(item: SlashItem) {
     // model/effort open their picker instead of filling the input — reached
@@ -108,9 +137,13 @@ export function Composer({
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (acOpen) {
+      // Clamp to the visible (expanded) rows so ArrowDown can't run past the
+      // list or onto a collapsed group's hidden rows. acFlat matches the order
+      // SlashAutocomplete renders, so the index tracks the highlighted row.
+      const last = acFlat.length - 1;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setAcIndex((i) => i + 1);
+        setAcIndex((i) => Math.min(last, i + 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -143,9 +176,10 @@ export function Composer({
           return;
         }
         // otherwise pick the highlighted autocomplete row (model/effort rows
-        // open their picker via pickItem; skills/commands fill `/<name> `)
-        const flat = flatFiltered(slashItems ?? [], query);
-        const item = flat[Math.min(acIndex, flat.length - 1)];
+        // open their picker via pickItem; skills/commands fill `/<name> `).
+        // safeIndex is already clamped to the visible rows (same value this
+        // inline min would compute) — read it directly instead of re-clamping.
+        const item = acFlat[safeIndex];
         if (item) {
           pickItem(item);
           return;
@@ -191,10 +225,12 @@ export function Composer({
     <div className="cc-composer">
       {acOpen && (
         <SlashAutocomplete
-          query={query}
-          items={slashItems ?? []}
-          selectedIndex={acIndex}
+          groups={acGroups}
+          searching={searching}
+          collapsed={collapsedSources}
+          selectedIndex={safeIndex}
           onSelect={pickItem}
+          onToggleGroup={toggleGroup}
         />
       )}
       <div className="cc-composer__shell">

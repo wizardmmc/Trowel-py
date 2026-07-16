@@ -220,11 +220,15 @@ export async function listModels(): Promise<readonly ModelOption[]> {
 
 /** One row of GET /api/cc/slash-items — a '/' autocomplete entry (slice-027 C1).
  * cc init's slash_commands are bare names; descriptions come from reading the
- * skill/command frontmatter locally on the backend. */
+ * skill/command frontmatter locally on the backend.
+ *
+ * slice-042: source gains "plugin" — plugin skills arrive as "mp:skill" full
+ * names (kept verbatim so cc can disambiguate on trigger) and group separately
+ * so the picker can collapse the hundreds of plugin skills by default. */
 export interface SlashItem {
   readonly name: string;
   readonly description: string;
-  readonly source: "project" | "user" | "bundled" | "builtin";
+  readonly source: "project" | "user" | "bundled" | "builtin" | "plugin";
   readonly type: "skill" | "command";
 }
 
