@@ -303,6 +303,12 @@ def _translate_line(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent
                 cwd=str(ev.get("cwd", "")),
                 cc_session_id=str(ev.get("session_id", "")),
                 tools=list(ev.get("tools", [])),
+                # slice-042: carry the roster through replay so a resumed
+                # session's first /slash-items has a floor before the live
+                # init arrives (empty if this transcript's init row lacks it).
+                slash_commands=list(ev.get("slash_commands", [])),
+                skills=list(ev.get("skills", [])),
+                agents=list(ev.get("agents", [])),
             )
         ]
     if top == "user":

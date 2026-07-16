@@ -57,6 +57,7 @@ from trowel_py.schemas.cc_host import (
     LocalCommandEvent,
     ModelChangedEvent,
     SessionExitedEvent,
+    SessionStartedEvent,
     StalledWarningEvent,
     StatusEvent,
     SubagentProgressEvent,
@@ -241,6 +242,10 @@ class CCHost:
         # can't write two control_response rows for the same request_id.
         self._pending_elicit: dict[str, Any] | None = None
         self._elicit_lock = asyncio.Lock()
+        # slice-042 P1: cc init's slash_commands roster — the authoritative
+        # name floor for GET /slash-items (keeps up with cc updates). Filled
+        # when SessionStartedEvent flows through send().
+        self._init_roster: list[str] = []
 
         # slice-026 E1: a session-start checkpoint captures the worktree (and,
         # for resumed sessions, the jsonl cut) BEFORE turn 1 runs, so the first
@@ -965,6 +970,11 @@ class CCHost:
                         # in task_* events; sum the subagent transcript's
                         # message usage instead (mirrors cc's own TUI).
                         tev = self._backfill_subagent_usage(tev)
+                    if isinstance(tev, SessionStartedEvent):
+                        # slice-042 P1: cache cc init's slash_commands roster
+                        # as the name floor for GET /slash-items. A fresh list
+                        # copy — cc sends a new roster on every init.
+                        self._init_roster = list(tev.slash_commands)
                     yield tev
                     if isinstance(tev, FinishedEvent):
                         self._last_finished = tev

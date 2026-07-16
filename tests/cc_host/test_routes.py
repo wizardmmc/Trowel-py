@@ -476,7 +476,7 @@ class TestSlashItemsEndpoint:
 
         monkeypatch.setattr(
             "trowel_py.cc_host.routes.list_slash_items",
-            lambda workdir: [SlashItem(name="monthly-etf", description="月度ETF",
+            lambda workdir, init_roster=None: [SlashItem(name="monthly-etf", description="月度ETF",
                                        source="user", type="skill")],
         )
         client = _mini_app({})
@@ -492,6 +492,44 @@ class TestSlashItemsEndpoint:
         client = _mini_app({})
         resp = client.get("/api/cc/slash-items")
         assert resp.status_code == 422  # missing required query param
+
+    def test_passes_active_session_init_roster_as_floor(self, monkeypatch, tmp_path):
+        """slice-042 P1: the active session's cached cc init slash_commands
+        roster is passed to list_slash_items as the name floor (C-1)."""
+        import types as _types
+
+        captured: dict = {}
+
+        def fake_list(workdir, init_roster=None):
+            captured["init_roster"] = init_roster
+            return []
+
+        monkeypatch.setattr("trowel_py.cc_host.routes.list_slash_items", fake_list)
+        fake_host = _types.SimpleNamespace(
+            _init_roster=["deep-research", "everything-claude-code:aside"],
+        )
+        sid = "s-init"
+        client = _mini_app({sid: fake_host})
+        cc_routes._WORKDIR_INDEX[str(tmp_path)] = {sid}
+        cc_routes._ACTIVE_SID = sid
+        resp = client.get(f"/api/cc/slash-items?workdir={tmp_path}")
+        assert resp.status_code == 200
+        assert captured["init_roster"] == ["deep-research", "everything-claude-code:aside"]
+
+    def test_no_active_session_yields_empty_roster(self, monkeypatch, tmp_path):
+        """slice-042 P1: no active session for this workdir → empty floor,
+        list_slash_items still returns disk+hardcoded (no crash)."""
+        captured: dict = {}
+
+        def fake_list(workdir, init_roster=None):
+            captured["init_roster"] = init_roster
+            return []
+
+        monkeypatch.setattr("trowel_py.cc_host.routes.list_slash_items", fake_list)
+        client = _mini_app({})
+        resp = client.get(f"/api/cc/slash-items?workdir={tmp_path}")
+        assert resp.status_code == 200
+        assert captured["init_roster"] == []
 
 
 class TestListDirEndpoint:

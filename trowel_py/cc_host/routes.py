@@ -345,18 +345,42 @@ def list_models_endpoint() -> dict:
     return {"success": True, "data": items, "error": None}
 
 
+def _init_roster_for_workdir(
+    workdir: str, registry: dict[str, CCHost]
+) -> list[str]:
+    """slice-042 P1: cc init's slash_commands roster cached on the workdir's
+    active cc session — the authoritative name floor that keeps up with cc
+    updates (a skill cc adds shows with no trowel code change).
+
+    Prefer the active session, else any session registered for this workdir;
+    none found → empty floor (list_slash_items still returns disk+hardcoded).
+    """
+    sids = _WORKDIR_INDEX.get(workdir, set())
+    ordered = ([_ACTIVE_SID] if _ACTIVE_SID in sids else []) + [
+        s for s in sids if s != _ACTIVE_SID
+    ]
+    for sid in ordered:
+        roster = getattr(registry.get(sid), "_init_roster", None)
+        if roster:
+            return roster
+    return []
+
+
 @router.get("/slash-items")
 def list_slash_items_endpoint(
     workdir: str = Query(..., min_length=1),
+    registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """List slash commands + skills for the '/' autocomplete (slice-027 C1).
+    """List slash commands + skills for the '/' autocomplete.
 
-    Scans <workdir>/.claude/{skills,commands} + ~/.claude/{skills,commands}
-    (frontmatter) plus a hardcoded bundled-skill map. Priority project > user
-    > bundled. cc init's bare-name rosters (SessionStartedEvent) are the floor;
-    this endpoint adds the descriptions cc init doesn't carry.
+    slice-027 C1: scans <workdir>/.claude/{skills,commands} + ~/.claude/
+    {skills,commands} (frontmatter) plus a hardcoded bundled-skill map.
+    slice-042 P1: merges the active cc session's init slash_commands roster
+    as the name floor (the part that keeps up with cc updates); this endpoint
+    adds the descriptions cc init doesn't carry.
     """
-    items = [asdict(i) for i in list_slash_items(workdir)]
+    init_roster = _init_roster_for_workdir(workdir, registry)
+    items = [asdict(i) for i in list_slash_items(workdir, init_roster=init_roster)]
     return {"success": True, "data": items, "error": None}
 
 
