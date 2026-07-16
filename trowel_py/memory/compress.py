@@ -1,21 +1,26 @@
-"""LLM diary compression for the three layers (slice-041).
+"""LLM diary compression for the three layers (slice-041 / -052).
 
-daily (review_job each night): episodes → ≤800-char compressed daily, keep
-gotcha/pain/decision, drop flow. weekly (tidy --weekly): this ISO week's
-dailies → ≤800-char weekly + three bypass files (span越大越流水). monthly
-(tidy --monthly): this month's weeklies → ≤800-char monthly, flow-only.
+daily (review_job each night): episodes → compressed daily — the prompt asks
+≤800 字 but output is persisted in FULL (no hard cap), and input is fed in
+FULL too (slice-052 C-1/C-2 — a truncated daily is injected into the next cc
+session as 残缺记忆). Keeps gotcha/pain/decision, drops flow. weekly (tidy
+--weekly): this ISO week's dailies → ≤800-char weekly + three bypass files
+(span越大越流水). monthly (tidy --monthly): this month's weeklies → ≤800-char
+monthly, flow-only.
 
 Three bypass categories (technical-detail / emotional-trigger / cross-week-
 causal) are week-level only (S3 — never enter monthly). The weekly prompt
 splits content into the four routes in one JSON call; bypass bodies land in
 ``diary/bypass/<category>/<YYYY-Www>.md``.
 
-Each layer caps input to keep the LLM call bounded; the 800-char cap is a
-prompt instruction (soft, like the injection budget).
+weekly/monthly cap raw input (``_INPUT_CAP``) and hard-cap output (``_cap``)
+to keep the LLM call bounded; daily stopped capping in slice-052 (全量保真).
+The ≤800-char ask is a prompt instruction (soft, like the injection budget).
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -23,11 +28,20 @@ from typing import Any
 from trowel_py.llm.client import LLMProvider
 from trowel_py.memory.store import MemoryStore, _dump_frontmatter, _split_frontmatter
 
-#: cap the raw body fed to the LLM (chars) so a huge day doesn't blow tokens.
+logger = logging.getLogger(__name__)
+
+#: weekly/monthly raw-body cap fed to the LLM (chars). Daily STOPPED capping
+#: in slice-052 C-1 (全量保真 — a truncated daily is injected into the next cc
+#: session as 残缺记忆); weekly/monthly still cap (span越大越流水, lower fidelity).
 _INPUT_CAP = 8000
-#: W4 (codex): hard cap on compressed output. The prompt asks for <=800 but a
-#: verbose model can exceed it; truncate on persist so bloat doesn't propagate
-#: to weekly/monthly or inflate injection.
+#: soft warning threshold for DAILY input size (slice-052 C-1). A normal day is
+#: ~1.5–1.8 万字 (2026-07-16 audit); 50000 字 flags a genuinely huge day yet is
+#: still well within GLM's 200K-token window (Chinese ≈ 1–2 token/字). Warn
+#: only — never blocks the call.
+_DAILY_INPUT_WARN = 50000
+#: W4 (codex): hard cap on WEEKLY/MONTHLY compressed output. The prompt asks
+#: for <=800 but a verbose model can exceed it; truncate on persist so bloat
+#: doesn't propagate. Daily stopped hard-capping in slice-052 C-2 (保完整 > 保短).
 _OUTPUT_CAP = 800
 
 
@@ -84,7 +98,13 @@ def _episode_bodies_for_date(root: Path, date_str: str) -> list[tuple[str, str]]
 def compress_daily(
     root: Path | str, date_str: str, provider: LLMProvider
 ) -> str:
-    """Compress one day's episodes into ``diary/daily/<date>.md`` (≤800 chars).
+    """Compress one day's episodes into ``diary/daily/<date>.md`` (full I/O).
+
+    slice-052 C-1/C-2: the day's episodes are fed to the LLM in FULL (no
+    ``_INPUT_CAP`` tail drop — a truncated daily is injected into the next cc
+    session as 残缺记忆), and the output is persisted in full (no ``_cap`` hard
+    slice — the prompt still asks ≤800 字, but persist keeps whatever returns,
+    保完整 > 保短). A genuinely huge day warns but never blocks.
 
     Returns the date stem, or ``""`` when no episode matches (no fabricated
     empty daily — preserves 039's "empty = nothing happened" contract).
@@ -93,11 +113,16 @@ def compress_daily(
     items = _episode_bodies_for_date(root_path, date_str)
     if not items:
         return ""
-    raw = "\n\n".join(body for _ts, body in items)[:_INPUT_CAP]
-    compressed = _cap(provider.complete(_DAILY_SYS, _DAILY_USER.format(body=raw)))
+    raw = "\n\n".join(body for _ts, body in items)  # C-1: full input, no slice
+    if len(raw) > _DAILY_INPUT_WARN:
+        logger.warning(
+            "[memory] daily %s input %d chars exceeds %d (full input kept, "
+            "watch GLM context)", date_str, len(raw), _DAILY_INPUT_WARN,
+        )
+    compressed = provider.complete(_DAILY_SYS, _DAILY_USER.format(body=raw))
     MemoryStore(root_path).write_diary({
         "type": "diary", "date": date_str, "layer": "day", "period": date_str,
-        "promoted_knowledge": [], "__body": compressed,
+        "promoted_knowledge": [], "__body": compressed,  # C-2: no _cap
     })
     return date_str
 

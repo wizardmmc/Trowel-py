@@ -353,8 +353,9 @@ async def _run_daily_review_locked(
 def _compress_or_aggregate(
     store: MemoryStore, root: Path, review_date: str, provider: Any
 ) -> None:
-    """slice-041: compress one day's episodes into a ≤800-char daily; fall
-    back to the 040-a aggregate (no LLM) so 039 injection never goes empty."""
+    """slice-041: compress one day's episodes into a daily diary (prompt asks
+    ≤800 字, output persisted in full — slice-052 C-2); fall back to the 040-a
+    aggregate (no LLM) so 039 injection never goes empty."""
     if provider is not None:
         try:
             from trowel_py.memory.compress import compress_daily

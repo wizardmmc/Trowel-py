@@ -92,6 +92,49 @@ def test_compress_daily_only_matches_reviews_date(tmp_path: Path) -> None:
     assert "OTHER_DAY" not in provider.calls[0][1]
 
 
+def test_compress_daily_feeds_full_input_untruncated(tmp_path: Path) -> None:
+    """C-1 (slice-052): a day's episodes reach the LLM in FULL — no 8000-char
+    tail drop. The 2026-07-16 audit found 07-15 lost 56% to the old
+    ``[:_INPUT_CAP]`` slice; daily is injected into the next cc session, so a
+    truncated daily feeds it 残缺记忆."""
+    head = "头" * 8000
+    tail_marker = "尾部唯一标记TAILMARKER"
+    _episode(tmp_path, "s1", "2026-07-01", head + tail_marker)
+    provider = FakeProvider("压缩")
+    compress_daily(tmp_path, "2026-07-01", provider)
+    assert provider.calls
+    assert "TAILMARKER" in provider.calls[0][1]  # 尾部没丢
+
+
+def test_compress_daily_feeds_full_input_multi_episode(tmp_path: Path) -> None:
+    """C-1 (slice-052): multiple episodes joined together also feed the LLM
+    in FULL. The 2026-07-16 audit found days like 07-15 where SEVERAL episodes
+    concatenated past 8000 chars and the tail episode was dropped — the slice
+    sits on ``"\\n\\n".join(...)``, not a single body, so cover that path."""
+    _episode(tmp_path, "s1", "2026-07-01", "头" * 5000,
+             registered_at="2026-07-01T09:00:00")
+    _episode(tmp_path, "s2", "2026-07-01", "中" * 5000,
+             registered_at="2026-07-01T10:00:00")
+    _episode(tmp_path, "s3", "2026-07-01", "尾部唯一标记TAILMARKER",
+             registered_at="2026-07-01T11:00:00")
+    provider = FakeProvider("压缩")
+    compress_daily(tmp_path, "2026-07-01", provider)
+    assert provider.calls
+    assert "TAILMARKER" in provider.calls[0][1]  # 拼接后尾部 episode 没丢
+
+
+def test_compress_daily_output_not_hard_capped(tmp_path: Path) -> None:
+    """C-2 (slice-052): daily output is persisted in FULL — no hard 800-char
+    ``_cap``. The prompt still asks for ≤800 字 (soft), but persist keeps
+    whatever the model returns (保完整 > 保短). Weekly/monthly still hard-cap."""
+    _episode(tmp_path, "s1", "2026-07-01", "raw events")
+    long_body = "字" * 1200
+    compress_daily(tmp_path, "2026-07-01", FakeProvider(long_body))
+    [d] = MemoryStore(tmp_path).load_diary(layer="day")
+    assert d.body == long_body  # 完整，无截断
+    assert not d.body.endswith("…")
+
+
 # ---------- weekly ----------
 
 
@@ -179,17 +222,8 @@ def test_parse_weekly_non_json_uses_raw_fallback() -> None:
     assert out["bypass"] == {}
 
 
-# ---------- W4 (codex): hard 800-char cap on persist ----------
-
-
-def test_compress_daily_caps_long_output(tmp_path: Path) -> None:
-    """W4: daily output is hard-capped on persist (prompt cap was soft)."""
-    _episode(tmp_path, "s1", "2026-07-01", "raw events")
-    long_body = "字" * 1200
-    compress_daily(tmp_path, "2026-07-01", FakeProvider(long_body))
-    [d] = MemoryStore(tmp_path).load_diary(layer="day")
-    assert len(d.body) <= 800
-    assert d.body.endswith("…")
+# ---------- W4 (codex): weekly/monthly hard 800-char cap on persist ----------
+# (daily stopped hard-capping in slice-052 C-2; weekly/monthly still do — span更大)
 
 
 def test_compress_weekly_caps_long_weekly(tmp_path: Path) -> None:
