@@ -325,6 +325,35 @@ function updateToolInTree(
   return found ? result : null;
 }
 
+/** Recursively find the Agent tool whose toolUseId matches (top-level OR nested
+ * inside another Agent's childTools) and merge a subagent_progress event onto
+ * it. Returns the new items array when a matching Agent was found, else null.
+ *
+ * Constrained to toolName === "Agent" — unlike updateToolInTree (which matches
+ * any toolUseId), a subagent_progress event must not attach to a non-Agent tool
+ * that happens to share the id (that stays a standalone row; see the
+ * "non-Agent same-id" test). The Agent match keeps its own childTools via spread
+ * (tool_use_id is globally unique, so no deeper match is needed once found). */
+function mergeSubagentIntoTree(
+  items: readonly TurnItem[],
+  toolUseId: string,
+  event: SubagentProgressEvent,
+): readonly TurnItem[] | null {
+  let found = false;
+  const merge = (it: ToolItem): ToolItem => {
+    if (it.toolName === "Agent" && it.toolUseId === toolUseId) {
+      found = true;
+      return { ...it, subagent: mergeSubagent(it.subagent, event) };
+    }
+    if (it.childTools.length > 0) {
+      return { ...it, childTools: it.childTools.map(merge) };
+    }
+    return it;
+  };
+  const result = items.map((it) => (it.kind === "tool" ? merge(it) : it));
+  return found ? result : null;
+}
+
 /** Attach a child tool_use to the parent Agent ToolItem (matched by
  * parent_tool_use_id). Returns null when no parent matches so the caller can
  * fall back to a top-level append (never lose the event). slice-025-a 阶段B. */
@@ -699,18 +728,19 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       const turns = prev.turns;
       if (turns.length === 0) return prev;
       const last = turns[turns.length - 1];
-      const items = [...last.items];
-      for (let i = items.length - 1; i >= 0; i--) {
-        const it = items[i];
-        if (
-          it.kind === "tool" &&
-          it.toolName === "Agent" &&
-          it.toolUseId === event.tool_use_id
-        ) {
-          items[i] = { ...it, subagent: mergeSubagent(it.subagent, event) };
-          const updatedLast: Turn = { ...last, items };
-          return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
-        }
+      // 递归在整个 items 树（含嵌套 Agent 的 childTools）里找匹配的 Agent tool
+      // 合并进度。之前只扫顶层 items：subagent 调 subagent 时，内层 Agent 嵌在
+      // 父 Agent 的 childTools 里，其进度事件匹配不到 → 整条进度流溢出成顶层
+      // standalone 块（实测一次嵌套调用撑出 313 个平铺 subagent，每次
+      // last_tool_name 更新都新加一行）。
+      const merged = mergeSubagentIntoTree(
+        last.items,
+        event.tool_use_id,
+        event,
+      );
+      if (merged !== null) {
+        const updatedLast: Turn = { ...last, items: merged };
+        return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
       }
       // slice-036: workflow subagent 的 task_* 事件 tool_use_id 指向 workflow
       // 内部（无顶层 Agent tool_use），走不到上面的合并分支。若 session 任意

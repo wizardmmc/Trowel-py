@@ -627,6 +627,141 @@ describe("reduceEvent — subagent_progress (slice-025-a A3)", () => {
     });
     expect(state.turns[0].items.map((i) => i.kind)).toEqual(["tool", "subagent"]);
   });
+
+  it("attaches to a NESTED Agent (subagent calling subagent), not a top-level standalone row", () => {
+    // 嵌套 subagent：外层 Agent 调用内层 Agent。内层 Agent 的 tool_call 带
+    // parent_tool_use_id → attach 进外层 childTools；内层的 subagent_progress
+    // 事件 tool_use_id 指向内层 Agent。合并必须递归 childTools 找到内层，
+    // 否则整条内层进度流匹配不到 → 溢出成顶层 standalone SubagentItem。
+    // 实测一次嵌套调用撑出 313 个平铺 subagent 块（每个 last_tool_name 更新
+    // 都新加一行），就是这条路径漏了递归。
+    let state = withOpenTurn("use agent");
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "outer",
+      tool_name: "Agent",
+      input: { description: "outer", subagent_type: "general-purpose" },
+    });
+    // 内层 Agent：parent 指向外层 → attach 进 outer.childTools，不进顶层
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "inner",
+      tool_name: "Agent",
+      input: { description: "inner", subagent_type: "general-purpose" },
+      parent_tool_use_id: "outer",
+    });
+    // 内层 Agent 的进度事件（started + progress）
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "inner",
+      task_id: "t-inner",
+      status: "started",
+      description: "inner work",
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "inner",
+      task_id: "t-inner",
+      status: "progress",
+      last_tool_name: "Bash",
+      usage: { total_tokens: 5 },
+    });
+
+    // 顶层只有一个 tool（outer）——没有溢出的 standalone subagent
+    const top = state.turns[0].items;
+    expect(top).toHaveLength(1);
+    expect(top[0].kind).toBe("tool");
+    if (top[0].kind === "tool") {
+      // 进度合并进嵌套的内层 Agent，且多次 progress 合到同一个 inner（不新增）
+      expect(top[0].childTools).toHaveLength(1);
+      const inner = top[0].childTools[0];
+      expect(inner.toolUseId).toBe("inner");
+      expect(inner.subagent?.status).toBe("progress");
+      expect(inner.subagent?.description).toBe("inner work");
+      expect(inner.subagent?.last_tool_name).toBe("Bash");
+      expect(inner.subagent?.usage).toEqual({ total_tokens: 5 });
+    }
+  });
+
+  it("does not attach to a non-Agent tool with the same id even when nested in childTools", () => {
+    // 防御回归：mergeSubagentIntoTree 必须限定 toolName==="Agent"。一个嵌在
+    // Agent.childTools 里的 Bash tool 即便 tool_use_id 撞了 subagent_progress
+    // 的 id，也不能被合并——进度走 standalone fallback。
+    let state = withOpenTurn("agent with bash child");
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "agent-1",
+      tool_name: "Agent",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "bash-x",
+      tool_name: "Bash",
+      input: {},
+      parent_tool_use_id: "agent-1",
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "bash-x",
+      task_id: "t1",
+      status: "started",
+      description: "should not merge into Bash",
+    });
+    const top = state.turns[0].items;
+    // 顶层：agent tool + 一个溢出的 standalone subagent（没合并进 Bash）
+    expect(top.map((i) => i.kind)).toEqual(["tool", "subagent"]);
+    if (top[0].kind === "tool") {
+      expect(top[0].childTools).toHaveLength(1);
+      expect(top[0].childTools[0].toolName).toBe("Bash");
+      // Bash child 没被塞 subagent
+      expect(top[0].childTools[0].subagent).toBeUndefined();
+    }
+  });
+
+  it("merges subagent_progress for a deeply nested Agent (3 levels)", () => {
+    // 任意深度递归：outer → middle → inner。inner 的进度事件应合并到
+    // inner.subagent（completed 也覆盖），顶层只有 outer，无溢出。
+    let state = withOpenTurn("deep");
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "outer",
+      tool_name: "Agent",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "middle",
+      tool_name: "Agent",
+      input: {},
+      parent_tool_use_id: "outer",
+    });
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "inner",
+      tool_name: "Agent",
+      input: {},
+      parent_tool_use_id: "middle",
+    });
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "inner",
+      task_id: "ti",
+      status: "completed",
+      usage: { total_tokens: 0, tool_uses: 3 },
+    });
+    const top = state.turns[0].items;
+    expect(top).toHaveLength(1);
+    expect(top[0].kind).toBe("tool");
+    if (top[0].kind === "tool") {
+      const middle = top[0].childTools[0];
+      expect(middle.toolUseId).toBe("middle");
+      const inner = middle.childTools[0];
+      expect(inner.toolUseId).toBe("inner");
+      expect(inner.subagent?.status).toBe("completed");
+      expect(inner.subagent?.usage).toEqual({ total_tokens: 0, tool_uses: 3 });
+    }
+  });
 });
 
 describe("reduceEvent — sub-agent childTools attach (slice-025-a 阶段B)", () => {
