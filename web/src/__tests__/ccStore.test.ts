@@ -5,6 +5,7 @@ import {
   _resetTurnIdCounterForTests,
   endActiveTurnOnStreamClose,
   finalizeHistoryForView,
+  type ReducerState,
 } from "../stores/ccStore";
 import type { TrowelEvent } from "../api/ccTypes";
 
@@ -335,6 +336,110 @@ describe("reduceEvent — history replay via user event", () => {
       { type: "text", text: "a2" },
     ]);
     expect(state.turns.map((t) => t.userText)).toEqual(["q1", "q2"]);
+  });
+});
+
+describe("reduceEvent — turn duration (用时)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("history: stamps durationSeconds from the user event's duration_seconds", () => {
+    const state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+      duration_seconds: 78,
+    });
+    expect(state.turns[0].durationSeconds).toBe(78);
+  });
+
+  it("history: absent duration_seconds → no durationSeconds", () => {
+    const state = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+    });
+    expect(state.turns[0].durationSeconds).toBeUndefined();
+  });
+
+  it("live: finished computes durationSeconds from startedAtMs → now", () => {
+    // startedAtMs is stamped by ccStore.send() on the optimistic turn; here it
+    // is set directly to test the reducer's finished math in isolation.
+    vi.setSystemTime(new Date("2026-07-16T12:00:00Z").getTime());
+    const started = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+    });
+    const withStart: ReducerState = {
+      ...started,
+      turns: [{ ...started.turns[0], startedAtMs: Date.now() }],
+    };
+    vi.setSystemTime(new Date("2026-07-16T12:01:18Z").getTime()); // +78s
+    const done = reduceEvent(withStart, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+    expect(done.turns[0].status).toBe("done");
+    expect(done.turns[0].durationSeconds).toBe(78);
+    expect(done.turns[0].startedAtMs).toBeUndefined(); // cleared after stamping
+  });
+
+  it("live: finished on a turn with no startedAtMs → no durationSeconds", () => {
+    // A turn that never got send-time stamping must not get a fabricated value.
+    const started = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+    });
+    const done = reduceEvent(started, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+    expect(done.turns[0].durationSeconds).toBeUndefined();
+  });
+
+  it("live: sub-second delta (rawDelta 0) → no durationSeconds, matches history", () => {
+    // A turn that finishes within the same second it started. history would
+    // drop a <=0 timestamp delta to None; live must match (no "Ran for 0s").
+    vi.setSystemTime(new Date("2026-07-16T12:00:00Z").getTime());
+    const started = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+    });
+    const withStart: ReducerState = {
+      ...started,
+      turns: [{ ...started.turns[0], startedAtMs: Date.now() }],
+    };
+    // do NOT advance the clock → rawDelta 0 → fall back, no fabricated label
+    const done = reduceEvent(withStart, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+    expect(done.turns[0].durationSeconds).toBeUndefined();
+  });
+
+  it("live: clock skew (finished before start) → no durationSeconds", () => {
+    // startedAtMs lies in the future relative to finished (NTP skew / sleep) →
+    // negative rawDelta → drop, never a negative "Ran for -5s".
+    vi.setSystemTime(new Date("2026-07-16T12:00:10Z").getTime());
+    const started = reduceEvent(INITIAL_REDUCER_STATE, {
+      type: "user",
+      text: "hi",
+    });
+    const withStart: ReducerState = {
+      ...started,
+      turns: [{ ...started.turns[0], startedAtMs: Date.now() }],
+    };
+    vi.setSystemTime(new Date("2026-07-16T12:00:05Z").getTime()); // 5s BEFORE start
+    const done = reduceEvent(withStart, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+    expect(done.turns[0].durationSeconds).toBeUndefined();
   });
 });
 

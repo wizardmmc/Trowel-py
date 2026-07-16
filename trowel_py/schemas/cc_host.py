@@ -162,6 +162,15 @@ class UserEvent(_Event):
 
     type: Literal["user"] = "user"
     text: str
+    # Whole seconds this turn took — history-replay only. The live stream has
+    # no UserEvent (the FE renders the user's message optimistically and times
+    # the turn send->finished itself); this field carries that same "one turn's
+    # wall-clock" value for replayed turns. CC's jsonl has no `result` line
+    # (interrupted sessions never write one), so history has no finished event;
+    # history.py back-fills this from the delta between the turn's user entry
+    # timestamp and its last assistant entry timestamp. None (no usable
+    # timestamps) makes the frontend omit the "Ran for …" label.
+    duration_seconds: int | None = None
 
 
 class TextEvent(_Event):

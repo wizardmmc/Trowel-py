@@ -285,6 +285,16 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
+/* 每轮用时标签（Ran for …）：轮结束后贴在 assistant 卡片左下角的灰色小字。
+   turn 是 flex column，align-self: flex-start 左对齐；只在 done 且有时长时渲染。 */
+.cc-turn__duration {
+  align-self: flex-start;
+  margin-top: -2px;
+  padding-left: 4px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
 
 .cc-msg {
   display: flex;

@@ -38,6 +38,13 @@ export interface TurnStartEvent {
 export interface UserEvent {
   readonly type: "user";
   readonly text: string;
+  /** Whole seconds this turn took — history-replay only. The live stream has
+   * no UserEvent (the FE renders the user's message optimistically and times
+   * the turn send→finished itself); history.py back-fills this from jsonl
+   * entry-timestamp deltas (no `result` line exists on disk). The reducer
+   * copies it onto the Turn so live + replay render the same "Ran for …" label.
+   * Absent/undefined → no label. */
+  readonly duration_seconds?: number;
 }
 
 export interface TextEvent {

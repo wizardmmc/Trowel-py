@@ -75,6 +75,36 @@ def _parse_iso_ts(ts: Any) -> datetime | None:
         return None
 
 
+def _ts_delta_seconds(prev_ts: Any, cur_ts: Any) -> int | None:
+    """Whole seconds between two raw CC jsonl timestamps, clamped to >=1.
+
+    Shared backbone of the history-replay duration reconstructions: the jsonl
+    carries no timing signal of its own, but every entry has an ISO timestamp,
+    so a delta between two entries approximates a duration (a think, a whole
+    turn). Used by both ``_compute_thinking_duration`` and the per-turn
+    ``UserEvent.duration_seconds`` back-fill.
+
+    Args:
+        prev_ts: the earlier entry's raw timestamp (may be None / unparseable).
+        cur_ts: the later entry's raw timestamp (may be None / unparseable).
+
+    Returns:
+        Whole seconds clamped to >=1, or None when either timestamp is missing
+        or unparseable, or the delta is non-positive (clock skew / same
+        instant). None makes the frontend omit the duration label.
+    """
+    start = _parse_iso_ts(prev_ts)
+    end = _parse_iso_ts(cur_ts)
+    if start is None or end is None:
+        return None
+    delta = round((end - start).total_seconds())
+    if delta <= 0:
+        return None
+    # Match the live reducer's clamp (ccReducer.ts: Math.max(1, round(...))) so
+    # a sub-second span still surfaces as "1s", never 0.
+    return max(1, delta)
+
+
 def _compute_thinking_duration(
     prev_ts: Any, thinking_ts: Any
 ) -> int | None:
@@ -84,28 +114,30 @@ def _compute_thinking_duration(
     none, but every entry carries an ISO timestamp and CC persists a thinking
     block as its own assistant entry. So the delta between the thinking entry's
     timestamp and the previous entry's timestamp approximates how long the think
-    took — matching what CC's own TUI shows on reload.
-
-    Args:
-        prev_ts: the previous jsonl entry's timestamp (raw, may be None).
-        thinking_ts: the thinking entry's timestamp (raw, may be None).
-
-    Returns:
-        Whole seconds clamped to >=1, or None when there is no prev, no current
-        timestamp, the delta is non-positive (clock skew / same instant), or
-        either timestamp is unparseable. None makes the frontend fall back to a
-        bare "思考" label, consistent with the live path's no-heartbeat branch.
+    took — matching what CC's own TUI shows on reload. Returns None when no
+    usable timestamps are available (frontend falls back to a bare "思考" label,
+    consistent with the live path's no-heartbeat branch).
     """
-    start = _parse_iso_ts(prev_ts)
-    end = _parse_iso_ts(thinking_ts)
-    if start is None or end is None:
-        return None
-    delta = round((end - start).total_seconds())
-    if delta <= 0:
-        return None
-    # Match the live reducer's clamp (ccReducer.ts: Math.max(1, round(...))) so
-    # a sub-second think still surfaces as "Thought for 1s", never 0.
-    return max(1, delta)
+    return _ts_delta_seconds(prev_ts, thinking_ts)
+
+
+def _close_pending_turn(
+    events: list[TrowelEvent], pending: dict[str, Any] | None
+) -> None:
+    """Back-fill ``duration_seconds`` onto the pending turn's UserEvent.
+
+    Called when the NEXT user turn starts, or at EOF. The pending turn's
+    duration is the delta from its user-entry timestamp to the last timestamp
+    seen in the turn (its final assistant entry). Replaces the UserEvent at
+    ``pending["user_idx"]`` with an immutable ``model_copy`` carrying the
+    duration; a no-op when ``pending`` is None (no open turn) or when the delta
+    is unusable (``_ts_delta_seconds`` returns None → frontend omits the label).
+    """
+    if pending is None:
+        return
+    duration = _ts_delta_seconds(pending["user_ts"], pending["last_ts"])
+    idx = pending["user_idx"]
+    events[idx] = events[idx].model_copy(update={"duration_seconds": duration})
 
 
 def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
@@ -137,6 +169,13 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     # without a timestamp do not update this, so a malformed line in between
     # can't reset the anchor.
     prev_ts: str | None = None
+    # Pending turn awaiting its duration back-fill. Set when a UserEvent is
+    # appended (a real user turn starts); its duration is the delta from the
+    # turn's user-entry timestamp to its last seen entry timestamp, back-filled
+    # onto the UserEvent when the NEXT turn starts or at EOF. None outside a
+    # turn. (jsonl has no `result` line, so this is how history reconstructs the
+    # "Ran for Ns" label the live path derives from send→finished.)
+    pending: dict[str, Any] | None = None
     # slice-036 (C 层): preload completed-workflow snapshots from the
     # same-named transcript dir's workflows/wf_*.json. cc persists the whole
     # tree there (it pushes nothing to the dialogue jsonl), so replay reads it
@@ -162,6 +201,16 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
                 continue
             cur_ts = ev.get("timestamp") if isinstance(ev, dict) else None
             for tev in _translate_line(ev, prev_ts):
+                if isinstance(tev, UserEvent):
+                    # A real user turn starts — close out the previous turn's
+                    # duration, then anchor a new pending turn at this UserEvent
+                    # (about to be appended at len(events)).
+                    _close_pending_turn(events, pending)
+                    pending = {
+                        "user_idx": len(events),
+                        "user_ts": cur_ts,
+                        "last_ts": cur_ts,
+                    }
                 events.append(tev)
                 if (
                     workflows_injected < len(workflow_snapshots)
@@ -172,11 +221,18 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
                     workflows_injected += 1
             if isinstance(cur_ts, str) and cur_ts:
                 prev_ts = cur_ts
+                # Advance the pending turn's "last seen" timestamp so its
+                # duration spans user-entry → this turn's final entry. Rebuilt
+                # immutably (pending is a local accumulator).
+                if pending is not None:
+                    pending = {**pending, "last_ts": cur_ts}
     # orphan snapshots (more wf.json than tool_uses — e.g. a workflow whose
     # tool_use lives in a sidechain jsonl tcc didn't parse) still surface so a
     # completed/killed run isn't invisible on reload.
     for i in range(workflows_injected, len(workflow_snapshots)):
         events.append(workflow_snapshots[i])
+    # Back-fill the final turn's duration (no next UserEvent to trigger it).
+    _close_pending_turn(events, pending)
     return events
 
 

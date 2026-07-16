@@ -975,3 +975,210 @@ def test_parse_history_each_tool_use_gets_own_workflow(fake_projects: Path) -> N
     after2 = events[_tu_idx("second") + 1]
     assert isinstance(after1, WorkflowTreeEvent) and after1.run_id == "wf_1"
     assert isinstance(after2, WorkflowTreeEvent) and after2.run_id == "wf_2"
+
+
+# --- 每轮总用时回填（timestamp-delta，同 thinking duration 思路）------------
+#
+# live 流用 send→finished 墙钟记一轮用时；jsonl 没有 result 行（中断会话不写），
+# 所以 history 没有 finished 事件。但每条 entry 带 ISO timestamp，一轮 = user
+# entry → 本轮最后一个 assistant entry，时间差近似这轮用时（与 cc tui reload
+# 行为一致）。回填到 UserEvent.duration_seconds；None 时前端不显示 "Ran for …"。
+
+
+def test_parse_history_turn_duration_single_turn(fake_projects: Path) -> None:
+    """user(t=0) → assistant(t=12): 该轮用时 12s，回填到 UserEvent。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "hi"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:12.000Z",
+                [{"type": "text", "text": "hello"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds == 12
+
+
+def test_parse_history_turn_duration_multi_turn(fake_projects: Path) -> None:
+    """两轮各自回填：每轮用时算到该轮最后一个 assistant ts。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "q1"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:10.000Z",
+                [{"type": "text", "text": "a1"}],
+            ),
+            _ts_entry("user", "2026-07-06T12:05:00.000Z", "q2"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:05:33.000Z",
+                [{"type": "text", "text": "a2"}],
+            ),
+        ],
+    )
+    user_evs = [
+        e for e in history.parse_history("/workdir", "dur") if isinstance(e, UserEvent)
+    ]
+    assert [e.text for e in user_evs] == ["q1", "q2"]
+    assert user_evs[0].duration_seconds == 10  # 12:00:00 -> 12:00:10
+    assert user_evs[1].duration_seconds == 33  # 12:05:00 -> 12:05:33
+
+
+def test_parse_history_turn_duration_uses_last_assistant_ts(
+    fake_projects: Path,
+) -> None:
+    """一轮内多个 assistant entry：用时算到最后一个（不是第一个）。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "hi"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:05.000Z",
+                [{"type": "text", "text": "part1"}],
+            ),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:20.000Z",
+                [{"type": "text", "text": "part2"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds == 20  # 到 part2，不是 part1
+
+
+def test_parse_history_turn_duration_missing_user_ts_is_none(
+    fake_projects: Path,
+) -> None:
+    """user entry 缺 timestamp → 无法算 → None（前端不显示）。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            {"type": "user", "message": {"role": "user", "content": "hi"}},
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:10.000Z",
+                [{"type": "text", "text": "x"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds is None
+
+
+def test_parse_history_turn_duration_only_user_no_assistant_is_none(
+    fake_projects: Path,
+) -> None:
+    """只有 user entry、无后续带 ts 的 entry（delta=0）→ None。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [_ts_entry("user", "2026-07-06T12:00:00.000Z", "hi")],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds is None
+
+
+def test_parse_history_turn_duration_tool_result_echo_does_not_split_turn(
+    fake_projects: Path,
+) -> None:
+    """轮中间的 tool_result echo（user type 但不发 UserEvent）不截断轮：
+    用时算到这轮最后的 assistant，echo 不算新轮。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "do it"),
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:03.000Z",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "c1",
+                        "name": "Bash",
+                        "input": {"command": "echo hi"},
+                    }
+                ],
+            ),
+            # tool_result echo：user type，但 _translate_user 返回 ToolResultEvent
+            {
+                "type": "user",
+                "timestamp": "2026-07-06T12:00:08.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "c1",
+                            "content": "hi",
+                        }
+                    ],
+                },
+            },
+            _ts_entry(
+                "assistant",
+                "2026-07-06T12:00:25.000Z",
+                [{"type": "text", "text": "done"}],
+            ),
+        ],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_evs = [e for e in events if isinstance(e, UserEvent)]
+    assert len(user_evs) == 1  # echo 没产生第二个 UserEvent
+    assert user_evs[0].duration_seconds == 25  # user -> 最后 assistant
+
+
+def test_parse_history_turn_duration_prev_skips_unparseable_line(
+    fake_projects: Path,
+) -> None:
+    """user 与最后 assistant 之间的坏行不重置时间锚：用时仍从 user 算起。"""
+    target = fake_projects / "dur.jsonl"
+    with target.open("w", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(_ts_entry("user", "2026-07-06T12:00:00.000Z", "hi")) + "\n"
+        )
+        fh.write("not json at all\n")
+        fh.write(
+            json.dumps(
+                _ts_entry(
+                    "assistant",
+                    "2026-07-06T12:00:20.000Z",
+                    [{"type": "text", "text": "x"}],
+                )
+            )
+            + "\n"
+        )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds == 20
+
+
+def test_parse_history_turn_duration_assistant_missing_ts_is_none(
+    fake_projects: Path,
+) -> None:
+    """user 有 ts、但本轮 assistant entry 缺 ts（无时间信号可推进 last_ts）→ None。"""
+    _write_jsonl(
+        fake_projects / "dur.jsonl",
+        [
+            _ts_entry("user", "2026-07-06T12:00:00.000Z", "hi"),
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "x"}],
+                },
+            },
+        ],
+    )
+    events = history.parse_history("/workdir", "dur")
+    user_ev = next(e for e in events if isinstance(e, UserEvent))
+    assert user_ev.duration_seconds is None

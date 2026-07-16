@@ -1,6 +1,7 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 
 import type { Turn } from "../../stores/ccStore";
+import { formatRunDuration } from "./durationLabel";
 import { EventTimeline } from "./EventTimeline";
 import { scrubUserText } from "./scrubUserText";
 import { SpinnerLine } from "./SpinnerLine";
@@ -97,6 +98,16 @@ function TurnCard({
           </div>
         </div>
       )}
+      {turn.status === "done" &&
+        turn.durationSeconds != null &&
+        turn.durationSeconds > 0 && (
+          <div
+            className="cc-turn__duration"
+            aria-label={`本轮用时 ${turn.durationSeconds} 秒`}
+          >
+            Ran for {formatRunDuration(turn.durationSeconds)}
+          </div>
+        )}
     </div>
   );
 }

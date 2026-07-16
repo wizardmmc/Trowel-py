@@ -375,6 +375,10 @@ export function createCcStore() {
           status: "active",
           turnId: null,
           revertible: false,
+          // Stamp the live turn's start so the finished event can compute this
+          // turn's wall-clock duration ("Ran for Ns"). History-replayed turns
+          // never go through send() — they get durationSeconds from UserEvent.
+          startedAtMs: Date.now(),
         };
         const abort = new AbortController();
         let accepted = true;

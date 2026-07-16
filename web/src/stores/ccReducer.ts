@@ -188,6 +188,20 @@ export interface Turn {
    * workdir is a git repo AND the turn saved a checkpoint (TurnStartEvent said
    * revertible=true). History turns are never revertible. */
   readonly revertible: boolean;
+  /** Whole seconds this turn took, shown as "Ran for …" once the turn is done.
+   * Two symmetric sources so live + history render identically:
+   *   1. history replay — copied from the UserEvent's duration_seconds (history.py
+   *      back-filled it from jsonl entry-timestamp deltas; there is no result
+   *      line on disk, so no finished event);
+   *   2. live — computed at finished from startedAtMs → Date.now() (send →
+   *      finished wall clock).
+   * Undefined while the turn is in progress or when no timing is available. */
+  readonly durationSeconds?: number;
+  /** Wall-clock ms the live turn started (stamped by ccStore.send on the
+   * optimistic turn). Consumed by the finished case to compute durationSeconds,
+   * then cleared. Absent on history-replayed turns (they carry durationSeconds
+   * directly from the UserEvent). */
+  readonly startedAtMs?: number;
 }
 
 export interface SessionMeta {
@@ -530,7 +544,9 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     }
 
     case "user": {
-      // history-only: start a fresh turn carrying the user's text
+      // history-only: start a fresh turn carrying the user's text + the
+      // history.py back-filled turn duration (undefined on the live path,
+      // which has no UserEvent — it times the turn at finished instead).
       const turn: Turn = {
         id: nextTurnId(),
         userText: event.text,
@@ -538,6 +554,7 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         status: "active",
         turnId: null,
         revertible: false,
+        durationSeconds: event.duration_seconds,
       };
       return { ...prev, turns: [...prev.turns, turn] };
     }
@@ -796,7 +813,29 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       };
       if (turns.length > 0) {
         const last = turns[turns.length - 1];
-        const updatedLast: Turn = { ...last, status: "done" };
+        // Live turn timing: send stamped startedAtMs; finished is the end of
+        // the wall clock. NOTE: Date.now() — non-pure; tests use
+        // vi.setSystemTime (same precedent as the thinking case).
+        const startedAtMs = last.startedAtMs;
+        const rawDelta =
+          startedAtMs !== undefined
+            ? Math.round((Date.now() - startedAtMs) / 1000)
+            : undefined;
+        // Clamp mirrors history's _ts_delta_seconds (round, then drop <=0): a
+        // sub-second or clock-skewed live turn yields no label — identical to a
+        // history turn whose timestamps give a <=0 delta (reload-consistency).
+        // Fall back to last.durationSeconds (a history turn carries it already
+        // and has no startedAtMs) rather than overwriting with undefined.
+        const durationSeconds =
+          rawDelta !== undefined && rawDelta > 0
+            ? Math.max(1, rawDelta)
+            : last.durationSeconds;
+        const updatedLast: Turn = {
+          ...last,
+          status: "done",
+          durationSeconds,
+          startedAtMs: undefined,
+        };
         return {
           ...state,
           turns: [...turns.slice(0, -1), updatedLast],
