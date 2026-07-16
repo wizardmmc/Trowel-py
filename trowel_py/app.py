@@ -87,6 +87,28 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] profile distill scheduler failed to start", exc_info=True)
         app.state.distill_scheduler = None
+    # slice-052: weekly/monthly tidy scheduler. Unlike review/distill it does
+    # NOT spawn cc — Python calls the provider directly (C-4) — so it just needs
+    # a provider_factory. Fires weekly Mon 03:30 / monthly 1st 04:00 on
+    # completed intervals; any failure is swallowed (C-5, same as the others).
+    try:
+        from trowel_py.memory import paths as _tidy_paths
+        from trowel_py.memory.tidy_scheduler import TidyScheduler
+
+        def _tidy_provider_factory():  # -> AnthropicProvider(load_llm_config())
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+
+            return AnthropicProvider(load_llm_config())
+
+        tidy_scheduler = TidyScheduler(
+            _tidy_paths.resolve_memory_root(), _tidy_provider_factory
+        )
+        await tidy_scheduler.start()
+        app.state.tidy_scheduler = tidy_scheduler
+    except Exception:
+        logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
+        app.state.tidy_scheduler = None
     yield
     _scheduler = getattr(app.state, "memory_scheduler", None)
     if _scheduler is not None:
@@ -102,6 +124,12 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "[memory] profile distill scheduler stop failed", exc_info=True
             )
+    _tidy = getattr(app.state, "tidy_scheduler", None)
+    if _tidy is not None:
+        try:
+            await _tidy.stop()
+        except Exception:
+            logger.warning("[memory] tidy scheduler stop failed", exc_info=True)
     await app.state.cc_http_client.aclose()
 
 
