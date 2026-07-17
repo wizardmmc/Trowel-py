@@ -34,6 +34,7 @@ from trowel_py.memory.paths import resolve_memory_root
 from trowel_py.memory.persist import persist_draft
 from trowel_py.memory.prompt import build_refine_prompt
 from trowel_py.memory.review_workspace import ensure_review_workdir
+from trowel_py.memory.activity_dates import extract_activity_dates
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
     create_sessions_repository,
@@ -272,7 +273,6 @@ async def _run_daily_review_locked(
             # session.date — a cross-day session lands in the day the user asked
             # to review, not a stray daily for its start date.
             review_date = date_str
-            touched_dates.add(review_date)
             try:
                 draft = await run_one_session(
                     session,
@@ -289,6 +289,32 @@ async def _run_daily_review_locked(
                     exc,
                 )
                 continue
+            # slice-061 block-3: extract the segment's REAL activity dates from
+            # the jsonl (C-1 — never the run day) and gate the agent's diary
+            # dates on them. An out-of-range date voids the draft (not
+            # persisted, water mark not advanced) so the segment is retried.
+            activity = extract_activity_dates(
+                session.jsonl_path,
+                seg.start,
+                seg.end,
+                last_completed_at=session.last_completed_at,
+                registered_at=session.registered_at,
+            )
+            bad_dates = _out_of_range_dates(draft.diary, activity.dates)
+            if bad_dates:
+                logger.warning(
+                    "draft diary dates %s outside activity_dates %s for %s "
+                    "(skipped, not advanced)",
+                    bad_dates,
+                    activity.dates,
+                    session.cc_session_id,
+                )
+                continue
+            # slice-061 block-4: rebuild daily for the dates this segment
+            # actually lands entries under (the real diary dates), not just the
+            # run day — a补跑 segment must update its own day's daily.
+            for d in draft.diary:
+                touched_dates.add(d.date)
             audit = audit_draft(draft)
             if not audit.clean:
                 logger.warning(
@@ -306,7 +332,15 @@ async def _run_daily_review_locked(
                     session.cc_session_id,
                     proc_warns,
                 )
-            context = _context_for(session, review_date, seg.start, seg.end)
+            context = _context_for(
+                session,
+                review_date,
+                seg.start,
+                seg.end,
+                activity_dates=activity.dates,
+                date_basis=activity.basis,
+                processed_date=datetime.now().date().isoformat(),
+            )
             try:
                 report = persist_draft(store, draft, context)
             except OSError as exc:
@@ -337,7 +371,8 @@ async def _run_daily_review_locked(
             # same session in place).
             try:
                 await judge_session(
-                    session, review_date, root, host_factory=host_factory
+                    session, review_date, root, host_factory=host_factory,
+                    segment_id=context.segment_id,
                 )
             except Exception as exc:  # noqa: BLE001 — C-2 defense-in-depth
                 logger.warning(
@@ -389,14 +424,23 @@ def _compress_or_aggregate(
 
 
 def _context_for(
-    session: SessionRecord, date_str: str, start: int, end: int
+    session: SessionRecord,
+    date_str: str,
+    start: int,
+    end: int,
+    *,
+    activity_dates: tuple[str, ...] = (),
+    date_basis: str = "",
+    processed_date: str = "",
 ) -> PersistContext:
-    """Build the PersistContext for one incremental slice (slice-040-b).
+    """Build the PersistContext for one incremental slice (slice-040-b + 061).
 
     ``segment_id = <cc_session_id>:<start>:<end>`` is the stable manifest key;
     a resumed session's later slice gets a different segment_id (e.g. ``s:2048:
     4096`` after ``s:0:2048``) so the two coexist in the same episode file via
-    ``write_episode``'s per-segment upsert.
+    ``write_episode``'s per-segment upsert. slice-061: ``activity_dates`` /
+    ``date_basis`` / ``processed_date`` are filled from the jsonl extraction
+    (block-3) so the daily projection (block-4) routes by the real date.
     """
     return PersistContext(
         segment_id=f"{session.cc_session_id}:{start}:{end}",
@@ -407,7 +451,26 @@ def _context_for(
         source_jsonl=session.jsonl_path,
         source_start_offset=start,
         source_end_offset=end,
+        activity_dates=activity_dates,
+        date_basis=date_basis,
+        processed_date=processed_date,
     )
+
+
+def _out_of_range_dates(
+    diary: tuple, activity_dates: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Diary dates not backed by the segment's real activity_dates (slice-061 C-1).
+
+    Returns ``()`` (valid) when every diary date is backed. When
+    ``activity_dates`` is empty there is no ground truth, so EVERY diary date is
+    treated as out-of-range — a non-empty draft is rejected (C-1: never persist
+    an unverified date) while an empty draft still passes (skeletal segment).
+    """
+    if not activity_dates:
+        return tuple(d.date for d in diary)
+    allowed = set(activity_dates)
+    return tuple(d.date for d in diary if d.date not in allowed)
 
 
 def run_daily_review_sync(event: Any = None) -> None:

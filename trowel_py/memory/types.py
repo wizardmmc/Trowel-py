@@ -276,3 +276,11 @@ class PersistContext:
     source_jsonl: str
     source_start_offset: int = 0
     source_end_offset: int | None = None
+    # slice-061: the real calendar dates this segment's events fall on, + how
+    # they were derived. daily projection reads per-segment activity_dates
+    # (block-4) instead of the top-level review_date, so a re-run / resume never
+    # re-files old content under today. ``activity_dates`` is empty when the
+    # segment had no attributable day (block-3 extraction returned nothing).
+    activity_dates: tuple[str, ...] = ()
+    date_basis: str = ""
+    processed_date: str = ""

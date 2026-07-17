@@ -100,6 +100,11 @@ class JudgementReport:
     hits: tuple[HitJudgement, ...]
     recall_miss: tuple[MissJudgement, ...]
     summary: str
+    # slice-061 block-5: the segment this judgement covers. One cc session
+    # resumed across runs produces one judgement file PER segment, so a new
+    # segment's judgement never overwrites a prior segment's. Empty for legacy
+    # per-session judgements (stored at <cc_session_id>.json).
+    segment_id: str = ""
 
 
 # ---------- serialization ----------
@@ -155,6 +160,7 @@ def _report_to_dict(r: JudgementReport) -> dict[str, object]:
         "hits": [_hit_to_dict(h) for h in r.hits],
         "recall_miss": [_miss_to_dict(m) for m in r.recall_miss],
         "summary": r.summary,
+        "segment_id": r.segment_id,
     }
 
 
@@ -172,24 +178,37 @@ def _report_from_dict(d: dict[str, object]) -> JudgementReport:
             _miss_from_dict(m) for m in raw_miss if isinstance(m, dict)
         ),
         summary=str(d.get("summary") or ""),
+        segment_id=str(d.get("segment_id") or ""),
     )
 
 
 # ---------- IO ----------
 
 
-def _judgement_path(root: Path, cc_session_id: str) -> Path:
-    """Where one judged session's report lives (C-3 — keyed by judged id)."""
+def _judgement_path(
+    root: Path, cc_session_id: str, segment_id: str = ""
+) -> Path:
+    """Where one judgement lives (slice-061 block-5: per-segment when set).
+
+    A segment judgement lands at ``judgements/<cc_session_id>/<seg>.json`` so a
+    resumed segment's judgement never overwrites a prior segment's; a legacy
+    per-session judgement (no segment_id) stays at ``<cc_session_id>.json``.
+    """
+    if segment_id:
+        safe = segment_id.replace(":", "_")
+        return root / _META_DIR / _JUDGEMENTS_DIR / cc_session_id / f"{safe}.json"
     return root / _META_DIR / _JUDGEMENTS_DIR / f"{cc_session_id}.json"
 
 
 def save_judgement_report(root: Path | str, report: JudgementReport) -> None:
-    """Persist one report to ``meta/judgements/<cc_session_id>.json``.
+    """Persist one report (slice-061 block-5: per-segment when segment_id set).
 
-    Parent dirs are created. The report is the Python-validated truth (already
-    C-6 filtered by the caller), so this is a plain overwrite.
+    A segment judgement lands in ``<cc_session_id>/<seg>.json`` (resume does NOT
+    overwrite a prior segment); a legacy judgement stays at
+    ``<cc_session_id>.json``. Parent dirs are created. The report is the
+    Python-validated truth (already C-6 filtered), so this is a plain overwrite.
     """
-    path = _judgement_path(Path(root), report.cc_session_id)
+    path = _judgement_path(Path(root), report.cc_session_id, report.segment_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(_report_to_dict(report), ensure_ascii=False, indent=2),
@@ -226,16 +245,35 @@ def load_all_judgement_reports(root: Path | str) -> list[JudgementReport]:
     d = Path(root) / _META_DIR / _JUDGEMENTS_DIR
     if not d.exists():
         return []
-    out: list[JudgementReport] = []
-    for p in sorted(d.glob("*.json")):
+    by_cc: dict[str, list[JudgementReport]] = {}
+    # slice-061: rglob picks up both legacy <cc>.json and per-segment
+    # <cc>/<seg>.json files.
+    for p in sorted(d.rglob("*.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            out.append(_report_from_dict(data))
+            report = _report_from_dict(data)
         except (ValueError, json.JSONDecodeError, OSError):
             # corrupt JSON, unknown outcome/attribution, or unreadable file
             # (permissions / deleted-between-glob-and-read) — skip one bad
             # report, do NOT blank the whole metric.
             logger.warning("skipping corrupt judgement file: %s", p.name)
+            continue
+        by_cc.setdefault(report.cc_session_id, []).append(report)
+    out: list[JudgementReport] = []
+    for _cc, reports in by_cc.items():
+        segmented = [r for r in reports if r.segment_id]
+        if segmented:
+            # slice-061: segment-level judgements supersede a legacy flat one
+            # for the same cc session — keeping both double-counts hits/miss
+            # across the migration.
+            out.extend(segmented)
+            if any(not r.segment_id for r in reports):
+                logger.info(
+                    "legacy flat judgement for %s ignored (segment-level present)",
+                    _cc,
+                )
+        else:
+            out.extend(reports)
     return out
 
 

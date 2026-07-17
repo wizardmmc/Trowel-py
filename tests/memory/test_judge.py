@@ -300,3 +300,58 @@ async def test_judge_session_no_access_log_still_works(tmp_path: Path) -> None:
         host_factory=_factory([FINISHED], _VALID_DRAFT),
     )
     assert report is not None  # empty access-log is fine, not a failure
+
+
+def test_summarize_pulls_pre_init_records_via_binding(tmp_path: Path) -> None:
+    """C-3: judge gathers access records written before cc init (empty
+    cc_session_id) once the trowel binding is persisted."""
+    from trowel_py.memory.attribution import AttributionIndex
+    from trowel_py.memory.judge import _summarize_access_log
+    from trowel_py.memory.sessions_repo import (
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    root = tmp_path / "memory"
+    conn = open_sessions_db(root)
+    try:
+        create_sessions_repository(conn).register(
+            SessionRecord(
+                cc_session_id="cc-x", workdir="/p", date="2026-07-16",
+                registered_at="t", session_kind="user", trowel_session_id="t1",
+            )
+        )
+    finally:
+        conn.close()
+    # pre-init search: cc_session_id empty, resolves via the t1→cc-x binding
+    log_access(
+        root,
+        AccessRecord(
+            ts="t", trowel_session_id="t1", cc_session_id="",
+            toolUseId="tu-1", action="search", search_id="s1",
+            query="how to X", memory_id="m1", rank=0,
+        ),
+    )
+    # post-init read: cc_session_id present
+    log_access(
+        root,
+        AccessRecord(
+            ts="t", trowel_session_id="t1", cc_session_id="cc-x",
+            toolUseId="tu-2", action="read", search_id="", read_id="r1",
+            memory_id="m1",
+        ),
+    )
+    # unrelated session — must be excluded
+    log_access(
+        root,
+        AccessRecord(
+            ts="t", trowel_session_id="t-other", cc_session_id="cc-other",
+            toolUseId="tu-3", action="search", search_id="s2",
+            query="unrelated query", memory_id="m2", rank=0,
+        ),
+    )
+    index = AttributionIndex.from_root(root)
+    summary = _summarize_access_log(root, "cc-x", index)
+    assert "how to X" in summary
+    assert "m1" in summary
+    assert "unrelated query" not in summary

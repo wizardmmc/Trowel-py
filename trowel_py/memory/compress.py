@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.llm.client import LLMProvider
-from trowel_py.memory.store import MemoryStore, _dump_frontmatter, _split_frontmatter
+from trowel_py.memory.store import MemoryStore, _dump_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -80,19 +80,13 @@ _MONTHLY_USER = "本月周记（按周序）：\n{body}\n\n输出压缩月记（
 
 
 def _episode_bodies_for_date(root: Path, date_str: str) -> list[tuple[str, str]]:
-    """Return ``[(registered_at, body)]`` for every episode whose review_date
-    matches, sorted by registered_at (time order). Empty when none match."""
-    eps_dir = root / "episodes"
-    if not eps_dir.exists():
-        return []
-    items: list[tuple[str, str]] = []
-    for p in sorted(eps_dir.glob("*.md")):
-        fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
-        if not fm or fm.get("review_date") != date_str:
-            continue
-        items.append((str(fm.get("registered_at", "")), body))
-    items.sort(key=lambda x: x[0])
-    return items
+    """Return ``[(registered_at, body)]`` for ``date_str``'s entries (block-4).
+
+    slice-061: delegates to ``MemoryStore.project_daily_entries`` so daily
+    compress reads the precise per-segment projection, not the review_date
+    whole-episode selection. Empty when no segment covers the date.
+    """
+    return MemoryStore(root).project_daily_entries(date_str)
 
 
 def compress_daily(

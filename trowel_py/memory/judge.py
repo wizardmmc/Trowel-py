@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from trowel_py.memory.access_log import AccessRecord, read_access_log
+from trowel_py.memory.attribution import AttributionIndex
 from trowel_py.memory.judge_prompt import build_judge_prompt
 from trowel_py.memory.judgements import (
     VALID_ATTRIBUTIONS,
@@ -77,16 +78,24 @@ def _coerce_bool(value: object) -> bool:
     return bool(value)
 
 
-def _summarize_access_log(root: Path, cc_session_id: str) -> str:
+def _summarize_access_log(
+    root: Path, cc_session_id: str, index: AttributionIndex
+) -> str:
     """Pre-extract the judged session's retrieval history as hard evidence (C-3).
 
-    Filters ``access-log.jsonl`` by the JUDGED session's cc_session_id (so the
-    judge's own eval-kind reads never appear here) and renders a compact
-    summary: each search query + its candidate ids, then the read ids. Empty
-    when the session never touched memory — that is itself signal, not an error.
+    Gathers every access-log record that resolves to ``cc_session_id`` via the
+    attribution index — by trowel binding OR by the record's own cc_session_id
+    — so the judge's own eval-kind reads never appear here. slice-061: this no
+    longer relies on a non-empty cc_session_id; records written before cc init
+    (empty cc_session_id) are pulled in through their trowel binding (C-3).
+    Empty when the session never touched memory — that is itself signal, not an
+    error.
     """
     records = [
-        r for r in read_access_log(root) if r.cc_session_id == cc_session_id
+        r
+        for r in read_access_log(root)
+        if index.resolve(r.trowel_session_id, r.cc_session_id).cc_session_id
+        == cc_session_id
     ]
     if not records:
         return "（该会话没有检索记录：没 search 也没 read）"
@@ -136,7 +145,7 @@ def _dictionary_index(store: MemoryStore) -> str:
     return "\n".join(f"- {mid}: {summary}" for mid, summary in rows)
 
 
-def _parse_draft(text: str, *, cc_session_id: str) -> JudgementReport:
+def _parse_draft(text: str, *, cc_session_id: str, segment_id: str = "") -> JudgementReport:
     """Parse the agent's judgement-draft.json into a JudgementReport (loose).
 
     Tolerant of shape wobble: a bad outcome collapses to ``unknown`` (kept with
@@ -196,6 +205,7 @@ def _parse_draft(text: str, *, cc_session_id: str) -> JudgementReport:
         hits=tuple(hits),
         recall_miss=tuple(miss),
         summary=str(data.get("summary") or ""),
+        segment_id=segment_id,
     )
 
 
@@ -204,10 +214,14 @@ async def _judge_session_inner(
     review_date: str,
     memory_root: Path,
     host_factory: HostFactory | None,
+    segment_id: str = "",
 ) -> JudgementReport:
     """Spawn the eval agent, parse + C-6 filter + save. Raises on failure."""
     store = MemoryStore(memory_root)
-    access_summary = _summarize_access_log(memory_root, session.cc_session_id)
+    index = AttributionIndex.from_root(memory_root)
+    access_summary = _summarize_access_log(
+        memory_root, session.cc_session_id, index
+    )
     dict_index = _dictionary_index(store)
     prompt = build_judge_prompt(
         session.jsonl_path or "", access_summary, dict_index
@@ -261,6 +275,7 @@ async def _judge_session_inner(
     report = _parse_draft(
         draft_path.read_text(encoding="utf-8"),
         cc_session_id=session.cc_session_id,
+        segment_id=segment_id,
     )
 
     # C-6: drop judgements whose memory_id is not a real note.
@@ -287,6 +302,7 @@ async def judge_session(
     memory_root: Path,
     *,
     host_factory: HostFactory | None = None,
+    segment_id: str = "",
 ) -> JudgementReport | None:
     """Judge one session's memory usage; None on any failure (C-2).
 
@@ -304,7 +320,7 @@ async def judge_session(
     """
     try:
         return await _judge_session_inner(
-            session, review_date, memory_root, host_factory
+            session, review_date, memory_root, host_factory, segment_id
         )
     except Exception as exc:  # noqa: BLE001 — C-2: isolate every failure mode
         logger.warning(

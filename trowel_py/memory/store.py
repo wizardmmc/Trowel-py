@@ -368,6 +368,12 @@ class MemoryStore:
             "end_offset": context.source_end_offset,
             "review_date": context.review_date,
             "content_hash": content_hash,
+            # slice-061: per-segment activity dates + basis drive the daily
+            # projection (block-4). review_date is kept for back-compat reads
+            # but no longer routes daily.
+            "activity_dates": list(context.activity_dates),
+            "date_basis": context.date_basis,
+            "processed_date": context.processed_date,
         }
         if empty_reason:
             seg_meta["empty_reason"] = empty_reason
@@ -399,28 +405,19 @@ class MemoryStore:
     def derive_daily_from_episodes(self, date: str) -> str:
         """Rebuild ``diary/daily/<date>.md`` as the aggregate of that day's episodes.
 
-        C-8: the daily file is a *derived cache* of episodes, never the source
-        of truth. Reads every ``episodes/*.md`` whose ``review_date`` == ``date``,
-        orders them by ``registered_at`` (time order, not filename order), and
-        concatenates their segment bodies into one daily body via
-        ``write_diary`` (same-date overwrite = rebuild).
+        slice-061 block-4: the daily is a precise projection — only the
+        ``## <date>`` blocks of segments whose ``activity_dates`` include
+        ``date`` (C-2 — a resumed/补跑 segment never re-files its content under
+        the run day). Delegates to ``project_daily_entries`` (which recovers
+        dates from headings for legacy episodes).
 
         Returns:
             the date stem, or ``""`` when no episode matches (no fabricated
             empty daily — preserves 039's "empty = nothing happened" contract).
         """
-        eps_dir = self.root / _EPISODES_DIR
-        if not eps_dir.exists():
-            return ""
-        items: list[tuple[str, str]] = []
-        for p in sorted(eps_dir.glob("*.md")):
-            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
-            if not fm or fm.get("review_date") != date:
-                continue
-            items.append((str(fm.get("registered_at", "")), body))
+        items = self.project_daily_entries(date)
         if not items:
             return ""
-        items.sort(key=lambda x: x[0])
         daily_body = "\n\n".join(body for _ts, body in items)
         self.write_diary(
             {
@@ -433,6 +430,83 @@ class MemoryStore:
             }
         )
         return date
+
+    def project_daily_entries(self, date: str) -> list[tuple[str, str]]:
+        """Project one date's diary entries across all episodes (slice-061 block-4).
+
+        Walk each episode's segments and take ONLY the ``## <date>`` block of
+        segments whose ``activity_dates`` include ``date``. A resumed/补跑
+        segment whose real activity is another day contributes nothing here
+        (C-2). Legacy episodes without ``activity_dates`` meta recover the
+        segment's dates from its ``##`` headings.
+
+        Returns:
+            ``[(registered_at, entry_body)]`` ordered by registered_at (time).
+        """
+        eps_dir = self.root / _EPISODES_DIR
+        if not eps_dir.exists():
+            return []
+        items: list[tuple[str, str]] = []
+        for p in sorted(eps_dir.glob("*.md")):
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if not fm:
+                continue
+            registered_at = _coerce_meta_str(fm.get("registered_at"))
+            seg_metas = {
+                s.get("segment_id"): s
+                for s in (fm.get("segments") or [])
+                if isinstance(s, dict)
+            }
+            blocks = _parse_segment_blocks(body)
+            if blocks:
+                for seg_id, block in blocks.items():
+                    entry = _segment_entry_for_date(
+                        block, date, seg_metas.get(seg_id, {})
+                    )
+                    if entry:
+                        items.append((registered_at, entry))
+            elif _h2_headings(body):
+                # bare legacy body that still carries ## <date> headings: slice
+                # the matching day (C-2 — never dump a whole multi-day body).
+                entry = _extract_h2_block(body, date)
+                if entry:
+                    items.append((registered_at, entry))
+            elif _episode_covers_date(fm, date):
+                # bare body with NO date headings at all: attribute the whole
+                # body by the top-level activity_dates (review_date is a last
+                # resort for the oldest episodes that predate both).
+                stripped = body.strip()
+                if stripped:
+                    items.append((registered_at, stripped))
+        items.sort(key=lambda x: x[0])
+        return items
+
+    def audit_episode_attribution(self) -> dict[str, Any]:
+        """Attribution health across episodes (slice-061 block-5, read-only).
+
+        Counts how many episodes carry per-segment ``activity_dates`` (the
+        block-4 precise path) vs legacy ones that rely on heading / top-level
+        fallback. Never writes — the read path already tolerates both (block-4
+        recovers dates from headings or the top-level field); this is an
+        operator-facing health report so the legacy tail is visible.
+        """
+        eps_dir = self.root / _EPISODES_DIR
+        report: dict[str, Any] = {
+            "episodes": 0, "with_segment_dates": 0, "legacy": 0,
+        }
+        if not eps_dir.exists():
+            return report
+        for p in sorted(eps_dir.glob("*.md")):
+            fm, _body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if not fm:
+                continue
+            report["episodes"] += 1
+            segs = [s for s in (fm.get("segments") or []) if isinstance(s, dict)]
+            if any(s.get("activity_dates") for s in segs):
+                report["with_segment_dates"] += 1
+            else:
+                report["legacy"] += 1
+        return report
 
     # ---- dictionary ----
     def load_dictionary_L0(self) -> str:
@@ -789,3 +863,54 @@ def _parse_segment_blocks(body: str) -> "OrderedDict[str, str]":
         blocks[sid] = body[m.start() : m2.end()] + "\n"
         pos = m2.end()
     return blocks
+
+
+def _episode_covers_date(fm: dict[str, Any], date: str) -> bool:
+    """Does a (legacy/bare) episode cover ``date``? Top-level activity_dates
+    win; a missing set falls back to review_date (oldest episodes only)."""
+    ad = fm.get("activity_dates")
+    if ad:
+        return date in [_coerce_meta_str(d) for d in ad]
+    return _coerce_meta_str(fm.get("review_date")) == date
+
+
+def _segment_entry_for_date(
+    block: str, date: str, seg_meta: dict[str, Any]
+) -> str | None:
+    """The ``## <date>`` body of one segment for ``date``, or None (block-4).
+
+    When the segment carries ``activity_dates`` meta, ``date`` must be in it;
+    otherwise (legacy episode) the segment's dates are recovered from its
+    headings. Either way the body is sliced from the ``## <date>`` block, so a
+    cross-midnight segment contributes only the matching day.
+    """
+    ad = seg_meta.get("activity_dates")
+    if ad:
+        # yaml may parse a bare ``2026-07-16`` into a date object; coerce to str.
+        ad_str = [_coerce_meta_str(d) for d in ad]
+        if date not in ad_str:
+            return None
+    elif date not in _h2_headings(block):
+        return None
+    return _extract_h2_block(block, date)
+
+
+def _h2_headings(block: str) -> list[str]:
+    """All ``## <x>`` heading texts in a segment block (in order)."""
+    return [ln.strip()[3:] for ln in block.splitlines() if ln.startswith("## ")]
+
+
+def _extract_h2_block(block: str, date: str) -> str | None:
+    """Body under ``## <date>`` until the next heading / endmarker; None if absent."""
+    target = f"## {date}"
+    out: list[str] = []
+    capturing = False
+    for ln in block.splitlines():
+        if capturing:
+            if ln.startswith("## ") or ln.startswith("<!-- @endsegment"):
+                break
+            out.append(ln)
+        elif ln.strip() == target:
+            capturing = True
+    text = "\n".join(out).strip()
+    return text or None

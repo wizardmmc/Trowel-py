@@ -79,7 +79,7 @@ def _session(sid: str = "s1", workdir: str = "/proj") -> SessionRecord:
         cc_session_id=sid,
         workdir=workdir,
         date="2026-07-09",
-        jsonl_path="",
+        jsonl_path=_DEFAULT_JSONL_PATH,
         registered_at="2026-07-09T10:00:00",
     )
 
@@ -90,6 +90,32 @@ _VALID_DRAFT = json.dumps(
         "diary": [{"date": "2026-07-09", "events": "事件流"}],
     }
 )
+
+
+def _write_jsonl(path: Path, timestamps: list[str]) -> int:
+    """Write a minimal cc-shaped jsonl (user rows with timestamps); return size."""
+    lines = [json.dumps({"type": "user", "timestamp": ts}) for ts in timestamps]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path.stat().st_size
+
+
+# slice-061: a default jsonl segment (one user turn on 2026-07-09 CST) so the
+# standard _session() fixture carries real activity_dates — the daily review's
+# date gate (block-3) then accepts _VALID_DRAFT's 2026-07-09 diary entry.
+import tempfile  # noqa: E402
+
+_default_jsonl = tempfile.NamedTemporaryFile(  # noqa: SIM115
+    mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+)
+# 100 lines (~5.5KB) so any byte offset < 4096 (the tests' completed watermark)
+# still lands inside the file and yields the 2026-07-09 activity date — the
+# resume/incremental tests slice [start, end) at various offsets.
+_default_jsonl.write(
+    (json.dumps({"type": "user", "timestamp": "2026-07-09T02:00:00.000Z"}) + "\n")
+    * 100
+)
+_default_jsonl.close()
+_DEFAULT_JSONL_PATH = _default_jsonl.name
 
 
 async def test_run_one_session_reads_draft(tmp_path: Path) -> None:
@@ -253,7 +279,7 @@ async def test_review_workdir_session_not_processed(tmp_path: Path) -> None:
             cc_session_id="review-self",
             workdir="/Users/x/.trowel/review-daily-work/2026-07-09",
             date="2026-07-09",
-            jsonl_path="",
+            jsonl_path=_DEFAULT_JSONL_PATH,
             registered_at="2026-07-09T11:00:00",
             session_kind="review",
         )
@@ -527,7 +553,7 @@ async def test_review_uses_date_str_not_session_date(tmp_path: Path) -> None:
             cc_session_id="s1",
             workdir="/proj",
             date="2026-07-08",  # session started 07-08
-            jsonl_path="",
+            jsonl_path=_DEFAULT_JSONL_PATH,
             registered_at="2026-07-08T10:00:00",
         )
     )
@@ -619,7 +645,7 @@ async def test_run_daily_review_judges_each_distilled_session(
     no real judge agent spawns; we only assert the orchestration calls it."""
     judged: list[str] = []
 
-    async def fake_judge(session, review_date, root, *, host_factory=None):
+    async def fake_judge(session, review_date, root, *, host_factory=None, segment_id=""):
         judged.append(session.cc_session_id)
         return None
 
@@ -667,5 +693,57 @@ async def test_judge_failure_does_not_block_review(
     assert create_sessions_repository(conn2).find_incremental() == []
     conn2.close()
     assert len(MemoryStore(mem).load_notes()) == 1  # note still landed
+
+
+# --- slice-061 block-3: diary-date gated on real activity_dates (C-1) -------
+
+
+def _seed_segment(mem: Path, sid: str, jsonl: Path) -> int:
+    """Register a session whose completed offset covers the whole jsonl."""
+    size = _write_jsonl(jsonl, ["2026-07-09T02:00:00.000Z"])  # 10:00 CST → 07-09
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(
+        SessionRecord(
+            cc_session_id=sid, workdir="/proj", date="2026-07-09",
+            jsonl_path=str(jsonl), registered_at="2026-07-09T10:00:00",
+        )
+    )
+    repo.update_completed(sid, size)
+    conn.close()
+    return size
+
+
+async def test_daily_review_rejects_out_of_range_diary_date(tmp_path: Path) -> None:
+    """C-1: a diary date outside the segment's real activity_dates voids the
+    draft — not persisted, water mark not advanced (segment stays retryable)."""
+    mem = tmp_path / "memory"
+    _seed_segment(mem, "s1", tmp_path / "s1.jsonl")
+    bad = json.dumps({"notes": [], "diary": [{"date": "2026-07-10", "events": "x"}]})
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09",
+        host_factory=_factory([FINISHED], bad),
+    )
+    conn = open_sessions_db(mem)
+    pending = create_sessions_repository(conn).find_incremental()
+    conn.close()
+    assert len(pending) == 1  # not advanced
+    assert not (mem / "episodes" / "s1.md").exists()  # not persisted
+
+
+async def test_daily_review_accepts_in_range_diary_date(tmp_path: Path) -> None:
+    """the matching case: a diary date inside activity_dates lands + advances."""
+    mem = tmp_path / "memory"
+    _seed_segment(mem, "s1", tmp_path / "s1.jsonl")
+    good = json.dumps({"notes": [], "diary": [{"date": "2026-07-09", "events": "事件"}]})
+    await run_daily_review(
+        None, memory_root=mem, date_str="2026-07-09",
+        host_factory=_factory([FINISHED], good),
+    )
+    conn = open_sessions_db(mem)
+    pending = create_sessions_repository(conn).find_incremental()
+    conn.close()
+    assert pending == []  # advanced
+    assert (mem / "episodes" / "s1.md").exists()  # persisted
 
 

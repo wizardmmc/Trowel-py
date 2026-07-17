@@ -53,12 +53,14 @@ def _report(
     hits=(),
     recall_miss=(),
     summary: str = "用得还行",
+    segment_id: str = "",
 ) -> JudgementReport:
     return JudgementReport(
         cc_session_id=cc_session_id,
         hits=tuple(hits),
         recall_miss=tuple(recall_miss),
         summary=summary,
+        segment_id=segment_id,
     )
 
 
@@ -158,3 +160,57 @@ def test_drop_unknown_all_fabricated_yields_empty() -> None:
     cleaned = drop_unknown_memory_ids(report, known)
     assert cleaned.hits == ()
     assert cleaned.recall_miss == ()
+
+
+# ---------- slice-061 block-5: per-segment judgement files ----------
+
+
+def test_segment_judgement_lands_in_per_segment_file(tmp_path: Path) -> None:
+    root = tmp_path / "memory"
+    save_judgement_report(root, _report("cc1", segment_id="cc1:0:100"))
+    assert (root / "meta" / "judgements" / "cc1" / "cc1_0_100.json").exists()
+    # no legacy flat file when a segment_id is set
+    assert not (root / "meta" / "judgements" / "cc1.json").exists()
+
+
+def test_two_segments_same_session_kept_separately(tmp_path: Path) -> None:
+    """C-5: resume adds a segment judgement without overwriting the prior one."""
+    root = tmp_path / "memory"
+    save_judgement_report(root, _report("cc1", segment_id="cc1:0:100", summary="第一段"))
+    save_judgement_report(
+        root, _report("cc1", segment_id="cc1:100:200", summary="第二段")
+    )
+    all_reports = load_all_judgement_reports(root)
+    assert len(all_reports) == 2
+    assert {r.segment_id for r in all_reports} == {"cc1:0:100", "cc1:100:200"}
+
+
+def test_same_segment_rerun_overwrites_not_duplicates(tmp_path: Path) -> None:
+    """re-judging the same segment replaces, not appends (no double count)."""
+    root = tmp_path / "memory"
+    save_judgement_report(root, _report("cc1", segment_id="cc1:0:100", summary="第一次"))
+    save_judgement_report(root, _report("cc1", segment_id="cc1:0:100", summary="重跑"))
+    all_reports = load_all_judgement_reports(root)
+    assert len(all_reports) == 1
+    assert all_reports[0].summary == "重跑"
+
+
+def test_load_all_reads_legacy_and_segment_files(tmp_path: Path) -> None:
+    """mix: a legacy <cc>.json + a per-segment <cc>/<seg>.json both load."""
+    root = tmp_path / "memory"
+    save_judgement_report(root, _report("legacy"))  # no segment_id → flat file
+    save_judgement_report(root, _report("cc1", segment_id="cc1:0:100"))
+    all_reports = load_all_judgement_reports(root)
+    assert {r.cc_session_id for r in all_reports} == {"legacy", "cc1"}
+
+
+def test_load_all_segment_supersedes_legacy_flat(tmp_path: Path) -> None:
+    """double-count guard (codex): when a cc has BOTH a legacy flat judgement and
+    a per-segment one, only the segment one counts (avoid migration double-count)."""
+    root = tmp_path / "memory"
+    save_judgement_report(root, _report("cc1", summary="legacy flat"))
+    save_judgement_report(
+        root, _report("cc1", segment_id="cc1:0:100", summary="segment")
+    )
+    all_reports = load_all_judgement_reports(root)
+    assert [r.summary for r in all_reports] == ["segment"]

@@ -244,3 +244,62 @@ def test_recall_miss_rate_none_when_no_judgements(tmp_path: Path) -> None:
     assert m["recall_miss_rate"] is None
     assert m["known_issue_repeat_rate"] is None
     assert m["judged_sessions"] == 0
+
+
+# ---------- slice-061: attribution coverage + trowel-binding resolution -----
+
+
+def test_coverage_counts_unattributed(tmp_path: Path) -> None:
+    """C-7: records with no verifiable mapping are unattributed (never guessed)."""
+    _seed_session_kind(tmp_path, "u1", "user")
+    _access(tmp_path, "u1", "search", n=2)  # attributed via cc_session_id
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="t", trowel_session_id="", cc_session_id="",
+            toolUseId="tu-x", action="search", search_id="s",
+            query="q", memory_id="m", rank=0,
+        ),
+    )
+    m = memory_usage_metrics(tmp_path)
+    assert m["attributed"] == 2
+    assert m["unattributed"] == 1
+    assert m["coverage"] == round(2 / 3, 4)
+
+
+def test_empty_cc_id_record_attributed_via_trowel_binding(tmp_path: Path) -> None:
+    """C-3: a fresh-session record (cc_id empty, written pre-init) re-enters the
+    user population once its trowel binding lands."""
+    conn = open_sessions_db(tmp_path)
+    try:
+        create_sessions_repository(conn).register(
+            SessionRecord(
+                cc_session_id="u1", workdir="/p", date="2026-07-16",
+                registered_at="t", session_kind="user", trowel_session_id="t1",
+            )
+        )
+    finally:
+        conn.close()
+    # pre-init records: cc_session_id empty, trowel_session_id known
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="t", trowel_session_id="t1", cc_session_id="",
+            toolUseId="tu-1", action="search", search_id="s",
+            query="q", memory_id="m0", rank=0,
+        ),
+    )
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="t", trowel_session_id="t1", cc_session_id="",
+            toolUseId="tu-2", action="read", search_id="", read_id="r",
+            memory_id="m0",
+        ),
+    )
+    m = memory_usage_metrics(tmp_path)
+    assert m["search_hits"] == 1
+    assert m["reads"] == 1
+    assert m["read_rate"] == 1.0
+    assert m["unattributed"] == 0
+    assert m["coverage"] == 1.0

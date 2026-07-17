@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_extracted_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
+CREATE TABLE IF NOT EXISTS session_bindings (
+    trowel_session_id TEXT PRIMARY KEY,
+    cc_session_id     TEXT NOT NULL,
+    session_kind      TEXT NOT NULL,
+    workdir           TEXT NOT NULL,
+    bound_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
 """
 
 #: columns added by slice-040-b's first schema evolution. SQLite has no
@@ -68,6 +76,12 @@ class SessionRecord:
     cc_session_id: str
     workdir: str
     date: str
+    # slice-061: trowel's session id (CCHost ``session_id``). NOT persisted into
+    # the sessions table — ``register()`` uses it to write the session_bindings
+    # row so access/outcome records written before cc init (empty
+    # cc_session_id) can be attributed back via trowel_session_id (C-3).
+    # Defaults to "" for legacy callers; an empty value skips the bind.
+    trowel_session_id: str = ""
     jsonl_path: str = ""
     registered_at: str = ""
     extracted_at: str | None = None
@@ -76,6 +90,38 @@ class SessionRecord:
     last_completed_at: str | None = None
     last_extracted_offset: int | None = None
     last_extracted_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionBinding:
+    """One persisted trowel→cc identity mapping (slice-061).
+
+    The memory MCP records every retrieval under ``trowel_session_id`` (known
+    at CCHost spawn, before cc init emits a cc_session_id). This binding lets
+    judge/metrics resolve those records back to a cc session + kind AFTER init
+    lands — instead of relying on a non-empty ``cc_session_id`` at write time
+    (C-3: identity must not depend on init timing; that is why 842/845 access
+    rows carried an empty cc_session_id).
+
+    A cc session may be resumed from several trowel sessions, so the relation
+    is many-to-one (multiple ``trowel_session_id`` → one ``cc_session_id``);
+    ``trowel_session_id`` is the PK and a re-bind is a no-op (C-4: never
+    overwrite a prior bind).
+
+    Attributes:
+        trowel_session_id: trowel's session id (CCHost ``session_id``; PK).
+        cc_session_id: cc's uuid session id resolved at init.
+        session_kind: user / review / distill / eval — carried on the binding
+            so kind filtering never depends on a non-empty cc_session_id.
+        workdir: the session's working directory.
+        bound_at: ISO timestamp the binding was persisted.
+    """
+
+    trowel_session_id: str
+    cc_session_id: str
+    session_kind: str
+    workdir: str
+    bound_at: str
 
 
 @runtime_checkable
@@ -182,6 +228,19 @@ class SessionsRepository:
                 rec.session_kind,
             ),
         )
+        # slice-061: persist the trowel→cc binding alongside the session row so
+        # retrieval records written before cc init (empty cc_session_id) resolve
+        # later via trowel_session_id (C-3). Idempotent on trowel_id (C-4).
+        if rec.trowel_session_id:
+            self.bind_session(
+                SessionBinding(
+                    trowel_session_id=rec.trowel_session_id,
+                    cc_session_id=rec.cc_session_id,
+                    session_kind=rec.session_kind,
+                    workdir=rec.workdir,
+                    bound_at=rec.registered_at or datetime.now().isoformat(),
+                )
+            )
         self._conn.commit()
 
     def find_pending(
@@ -351,6 +410,82 @@ class SessionsRepository:
         ).fetchall()
         return [_row_to_record(r) for r in rows]
 
+    # ---- slice-061: persistent session binding (trowel_id -> cc_id + kind) ----
+
+    def bind_session(self, binding: SessionBinding) -> None:
+        """Persist a trowel→cc identity mapping (idempotent on trowel_id).
+
+        ``INSERT OR IGNORE`` on the ``trowel_session_id`` PK: a re-bind (init
+        firing twice, or a registrar replay) is a no-op that NEVER overwrites a
+        prior bind (C-4). A cc session resumed from a second trowel session
+        adds a second row — many trowel ids may map to one cc id.
+        """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO session_bindings"
+            " (trowel_session_id, cc_session_id, session_kind, workdir, bound_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                binding.trowel_session_id,
+                binding.cc_session_id,
+                binding.session_kind,
+                binding.workdir,
+                binding.bound_at,
+            ),
+        )
+        self._conn.commit()
+
+    def find_cc_by_trowel(
+        self, trowel_session_id: str
+    ) -> SessionBinding | None:
+        """Resolve one trowel id to its cc binding, or None if never bound (C-3).
+
+        This is the primary attribution key: an access/outcome record carrying a
+        ``trowel_session_id`` resolves to a cc session + kind through here, even
+        when the record's own ``cc_session_id`` was empty (written before init).
+        """
+        row = self._conn.execute(
+            "SELECT * FROM session_bindings WHERE trowel_session_id = ?",
+            (trowel_session_id,),
+        ).fetchone()
+        return _row_to_binding(row) if row is not None else None
+
+    def find_trowels_by_cc(self, cc_session_id: str) -> list[SessionBinding]:
+        """Return every trowel id bound to this cc id, oldest bind first (C-4).
+
+        judge/metrics use this to gather ALL retrieval records of one cc session
+        — including those written under a different trowel id before/after a
+        resume — instead of filtering access-log by a single cc_session_id.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM session_bindings WHERE cc_session_id = ?"
+            " ORDER BY bound_at",
+            (cc_session_id,),
+        ).fetchall()
+        return [_row_to_binding(r) for r in rows]
+
+    def all_bindings(self) -> list[SessionBinding]:
+        """Return every persisted binding (slice-061 attribution index source).
+
+        judge/metrics build an in-memory ``trowel_id → binding`` index from this
+        once per run instead of hitting the db per access/outcome record.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM session_bindings"
+        ).fetchall()
+        return [_row_to_binding(r) for r in rows]
+
+    def all_cc_kinds(self) -> dict[str, str]:
+        """Return ``{cc_session_id: session_kind}`` for every registered session.
+
+        The cc_session_id fallback path of attribution needs a kind for a record
+        that carries a non-empty cc_session_id but no trowel binding. NULL kinds
+        (pre-040-b legacy rows) read as ``'user'`` via COALESCE.
+        """
+        rows = self._conn.execute(
+            "SELECT cc_session_id, COALESCE(session_kind, 'user') FROM sessions"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows if row[0]}
+
 
 def create_sessions_repository(conn: sqlite3.Connection) -> SessionsRepository:
     """Factory mirroring the cards/review repository pattern."""
@@ -379,4 +514,14 @@ def _row_to_record(row: sqlite3.Row) -> SessionRecord:
         last_completed_at=row["last_completed_at"],
         last_extracted_offset=row["last_extracted_offset"],
         last_extracted_at=row["last_extracted_at"],
+    )
+
+
+def _row_to_binding(row: sqlite3.Row) -> SessionBinding:
+    return SessionBinding(
+        trowel_session_id=row["trowel_session_id"],
+        cc_session_id=row["cc_session_id"],
+        session_kind=row["session_kind"],
+        workdir=row["workdir"],
+        bound_at=row["bound_at"],
     )

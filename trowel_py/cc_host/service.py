@@ -589,6 +589,9 @@ class CCHost:
                 jsonl_path=jsonl_path,
                 registered_at=now.isoformat(),
                 session_kind=self._session_kind,
+                # slice-061: trowel's session id, so register() can persist the
+                # trowel→cc binding (C-3 — lets pre-init access records resolve).
+                trowel_session_id=self.session_id,
             )
             if self._session_registrar is not None:
                 self._session_registrar.register(rec)

@@ -83,34 +83,6 @@ def compute_north_star(
     }
 
 
-def _non_user_cc_session_ids(root: Path) -> frozenset[str]:
-    """cc_session_ids of non-user sessions (review/distill/eval).
-
-    Their access-log entries are excluded from ``read_rate`` (C-3 — the judge's
-    own eval-kind search/read, or the distill/review agents', must not count as
-    user retrieval). A missing/unreadable sessions.db → empty set (exclude
-    nothing; access-log cc_session_ids not in the db are treated as user).
-    """
-    from trowel_py.memory.sessions_repo import open_sessions_db
-
-    try:
-        conn = open_sessions_db(root)
-    except Exception:
-        return frozenset()
-    try:
-        rows = conn.execute(
-            "SELECT cc_session_id FROM sessions"
-            " WHERE COALESCE(session_kind, 'user') != 'user'"
-        ).fetchall()
-    except Exception:
-        return frozenset()
-    finally:
-        conn.close()
-    return frozenset(
-        row["cc_session_id"] for row in rows if row["cc_session_id"]
-    )
-
-
 def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
     """Three effectiveness indicators for memory usage (slice-053).
 
@@ -138,14 +110,24 @@ def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
         A metrics dict (rates are None when the denominator is zero).
     """
     from trowel_py.memory.access_log import read_access_log
+    from trowel_py.memory.attribution import AttributionIndex
     from trowel_py.memory.judgements import load_all_judgement_reports
 
     root_path = Path(root)
-    non_user = _non_user_cc_session_ids(root_path)
-
-    user_records = [
-        r for r in read_access_log(root_path) if r.cc_session_id not in non_user
+    index = AttributionIndex.from_root(root_path)
+    resolved = [
+        (r, index.resolve(r.trowel_session_id, r.cc_session_id))
+        for r in read_access_log(root_path)
     ]
+    user_records = [r for r, a in resolved if a.is_user]
+    # slice-061: attribution coverage (C-7 — unattributed counted, never guessed
+    # into the user population). Historical empty-cc_session_id rows that now
+    # resolve via a trowel binding re-enter the user denominator; rows with no
+    # verifiable mapping stay unattributed and are excluded from read_rate.
+    attributed = sum(1 for _r, a in resolved if a.attributed)
+    total = len(resolved)
+    unattributed = total - attributed
+    coverage = round(attributed / total, 4) if total else None
     reads = sum(1 for r in user_records if r.action == "read")
     # "search 命中数" = returned candidates (one search record per candidate,
     # carrying memory_id+rank). The per-call summary record mcp_server writes
@@ -167,7 +149,9 @@ def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
     all_miss = [m for report in reports for m in report.recall_miss]
     retrieval = sum(1 for m in all_miss if m.attribution == "retrieval_miss")
     awareness = sum(1 for m in all_miss if m.attribution == "awareness_miss")
-    judged_sessions = len(reports)
+    # slice-061: a cc session judged across multiple segments counts ONCE at
+    # the session level (hits/miss still aggregate per segment above).
+    judged_sessions = len({r.cc_session_id for r in reports})
     recall_miss_rate = (
         round(len(all_miss) / judged_sessions, 4) if judged_sessions else None
     )
@@ -176,6 +160,9 @@ def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
         "reads": reads,
         "search_hits": search_hits,
         "read_rate": read_rate,
+        "attributed": attributed,
+        "unattributed": unattributed,
+        "coverage": coverage,
         "hits_total": len(hits),
         "hits_helpful": helpful,
         "hits_harmful": harmful,

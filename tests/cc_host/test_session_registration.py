@@ -195,6 +195,8 @@ async def test_cchost_uses_injected_registrar(tmp_path: Path) -> None:
     assert rec.cc_session_id == "cc-inj"
     assert rec.session_kind == "review"  # kind flows through to the registrar
     assert rec.workdir == str(tmp_path)
+    # slice-061: trowel session id flows through so register() can bind it.
+    assert rec.trowel_session_id == "trowel-sid"
 
 
 async def test_cchost_default_registrar_is_none(tmp_path: Path) -> None:

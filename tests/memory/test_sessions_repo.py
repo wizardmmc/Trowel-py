@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from trowel_py.memory.sessions_repo import (
+    SessionBinding,
     SessionRecord,
     SessionRegistrar,
     create_sessions_repository,
@@ -308,5 +309,106 @@ def test_advance_extracted_stamps() -> None:
     ).fetchone()
     assert row["last_extracted_offset"] == 4096
     assert row["last_extracted_at"] == "2026-07-11T02:35:00"
+
+
+# --- slice-061: persistent session binding (trowel_id -> cc_id + kind) -------
+
+
+def _binding(**over) -> SessionBinding:
+    base = dict(
+        trowel_session_id="t1",
+        cc_session_id="cc-1",
+        session_kind="user",
+        workdir="/w",
+        bound_at="2026-07-17T10:00:00",
+    )
+    base.update(over)
+    return SessionBinding(**base)
+
+
+def test_bind_and_find_cc_by_trowel() -> None:
+    repo = _repo()
+    repo.bind_session(_binding())
+    b = repo.find_cc_by_trowel("t1")
+    assert b is not None
+    assert b.cc_session_id == "cc-1"
+    assert b.session_kind == "user"
+    assert b.workdir == "/w"
+
+
+def test_bind_many_trowel_to_one_cc() -> None:
+    """C-4: one cc id may map to many trowel ids (a cc session resumed from two
+    different trowel sessions). The second bind must NOT overwrite the first."""
+    repo = _repo()
+    repo.bind_session(_binding(trowel_session_id="t1", bound_at="t1"))
+    repo.bind_session(_binding(trowel_session_id="t2", bound_at="t2"))
+    trowels = repo.find_trowels_by_cc("cc-1")
+    assert {b.trowel_session_id for b in trowels} == {"t1", "t2"}
+    # each keeps its own bound_at (C-4 — no overwrite of prior binds)
+    by_id = {b.trowel_session_id: b for b in trowels}
+    assert by_id["t1"].bound_at == "t1"
+    assert by_id["t2"].bound_at == "t2"
+
+
+def test_bind_idempotent_on_trowel_id() -> None:
+    """re-binding the same trowel id is a no-op (PK keeps it harmless)."""
+    repo = _repo()
+    repo.bind_session(_binding())
+    repo.bind_session(_binding())
+    assert len(repo.find_trowels_by_cc("cc-1")) == 1
+
+
+def test_find_cc_by_trowel_missing() -> None:
+    assert _repo().find_cc_by_trowel("nope") is None
+
+
+def test_find_trowels_by_cc_empty() -> None:
+    assert _repo().find_trowels_by_cc("nope") == []
+
+
+def test_binding_kind_independent_of_sessions_row() -> None:
+    """A trowel binding carries its OWN kind, so a non-user session is
+    identifiable even when its access-log cc_session_id is empty (C-3)."""
+    repo = _repo()
+    repo.bind_session(_binding(trowel_session_id="te", cc_session_id="cce",
+                               session_kind="eval"))
+    b = repo.find_cc_by_trowel("te")
+    assert b is not None and b.session_kind == "eval"
+
+
+def test_bindings_table_created_on_old_db(tmp_path) -> None:
+    """A pre-061 db (sessions table only) gains the bindings table on connect."""
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(str(db))
+    create_sessions_repository(conn)
+    conn.close()
+    # second connect on a db that already has the table — no duplicate error
+    conn = sqlite3.connect(str(db))
+    create_sessions_repository(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(session_bindings)")}
+    assert {
+        "trowel_session_id", "cc_session_id", "session_kind", "workdir", "bound_at"
+    } <= cols
+    conn.close()
+
+
+def test_register_persists_trowel_binding() -> None:
+    """register() with a trowel_session_id also writes the binding (C-3)."""
+    repo = _repo()
+    repo.register(
+        _rec(cc_session_id="cc-x", trowel_session_id="t-x", session_kind="user")
+    )
+    b = repo.find_cc_by_trowel("t-x")
+    assert b is not None
+    assert b.cc_session_id == "cc-x"
+    assert b.session_kind == "user"
+
+
+def test_register_without_trowel_id_skips_bind() -> None:
+    """legacy register (no trowel_session_id) writes no binding."""
+    repo = _repo()
+    repo.register(_rec(cc_session_id="cc-y"))
+    assert repo.find_cc_by_trowel("anything") is None
+    assert repo.find_trowels_by_cc("cc-y") == []
 
 
