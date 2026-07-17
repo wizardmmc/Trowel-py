@@ -22,6 +22,8 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     transportError: null,
     abort: null,
     connected: true,
+    memoryEnabled: true,
+    profileEnabled: true,
     ...over,
   };
 }

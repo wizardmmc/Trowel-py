@@ -130,6 +130,29 @@ export function MultiSessionBar({
                   <span className="cc-multibar__name">{s.name}</span>
                 </span>
                 <span className="cc-multibar__row2">{statusText(s)}</span>
+                {/* slice-060: M·P condition marker so the user can tell the four
+                    experiment sessions apart at a glance (green=on, dim=off). */}
+                <span className="cc-multibar__cond" title="Memory · Profile">
+                  <span
+                    className={
+                      s.memoryEnabled
+                        ? "cc-multibar__cond-on"
+                        : "cc-multibar__cond-off"
+                    }
+                  >
+                    M
+                  </span>
+                  <span className="cc-multibar__cond-sep">·</span>
+                  <span
+                    className={
+                      s.profileEnabled
+                        ? "cc-multibar__cond-on"
+                        : "cc-multibar__cond-off"
+                    }
+                  >
+                    P
+                  </span>
+                </span>
               </button>
               <button
                 type="button"

@@ -73,6 +73,10 @@ export interface PerSessionState extends ReducerState {
    * the user switches away. Matches the user's mental model: 多开栏 = 有活 cc
    * 进程的 session. */
   readonly connected: boolean;
+  /** slice-060: frozen memory/profile A/B switches for this session. Read-only
+   * after create (想换条件就新建会话). Reconciled from the backend on refresh. */
+  readonly memoryEnabled: boolean;
+  readonly profileEnabled: boolean;
 }
 
 interface CcState {
@@ -222,6 +226,9 @@ export function createCcStore() {
             transportError: null,
             abort: null,
             connected: false,
+            // slice-060: freeze the A/B condition the backend stamped on create.
+            memoryEnabled: session.memory_enabled,
+            profileEnabled: session.profile_enabled,
           };
           set((state) => ({
             ...state,
@@ -305,6 +312,9 @@ export function createCcStore() {
               // 后端 list 带 connected 字段：True = 有活 cc 进程；temp（从未发消息）→ false。
               // 不再写死 true —— 否则 temp 会被误标 live 显示在多开栏（ClaudeDesktop 多开 bug）。
               connected: b.connected,
+              // slice-060: 用后端 active-session 返回值恢复开关，不用本地默认覆盖。
+              memoryEnabled: b.memory_enabled,
+              profileEnabled: b.profile_enabled,
             };
           }
           // keep an existing frontend activeSid; else fall back to the backend's

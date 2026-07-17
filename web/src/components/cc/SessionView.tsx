@@ -12,6 +12,7 @@ import { EffortPicker } from "./EffortPicker";
 import { MessageList } from "./MessageList";
 import { ModelPicker } from "./ModelPicker";
 import { MultiSessionBar } from "./MultiSessionBar";
+import { NewSessionDialog } from "./NewSessionDialog";
 import { RevertConfirmModal } from "./RevertConfirmModal";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";
@@ -77,6 +78,9 @@ export function SessionView({
   const [models, setModels] = useState<readonly ModelOption[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
+  // slice-060: the "+ 新会话" setup dialog (choose Memory/Profile A/B condition
+  // before creating). Mount-auto-create still uses the backend default (on/on).
+  const [showNewDialog, setShowNewDialog] = useState(false);
   // slice-032: mirror the Composer's live height into --composer-h so
   // .cc-view__scroll's scroll-padding-bottom tracks it — the ✻ thinking row
   // stays visible above the Composer without a hardcoded constant that drifts
@@ -184,7 +188,9 @@ export function SessionView({
   }
 
   function handleNewSameWorkdir() {
-    void startSession({ workdir });
+    // slice-060: open the setup dialog so the user picks the Memory/Profile
+    // condition first. The mount/auto path still calls startSession directly.
+    setShowNewDialog(true);
   }
 
   function handleRetryLast() {
@@ -348,6 +354,8 @@ export function SessionView({
             onPickEffort={(v) => void send(`/effort ${v}`)}
             onRequestModelPicker={() => setShowModelPicker(true)}
             onRequestEffortPicker={() => setShowEffortPicker(true)}
+            memoryEnabled={active?.memoryEnabled ?? null}
+            profileEnabled={active?.profileEnabled ?? null}
           />
         </div>
         {revertTarget && (
@@ -355,6 +363,20 @@ export function SessionView({
             lostTurns={lostTurns}
             onConfirm={() => void handleRevertConfirm()}
             onCancel={() => setRevertTarget(null)}
+          />
+        )}
+        {showNewDialog && (
+          <NewSessionDialog
+            workdir={workdir}
+            onCreate={(memoryEnabled, profileEnabled) => {
+              setShowNewDialog(false);
+              void startSession({
+                workdir,
+                memory_enabled: memoryEnabled,
+                profile_enabled: profileEnabled,
+              });
+            }}
+            onCancel={() => setShowNewDialog(false)}
           />
         )}
         {/* slice-034 feat 3: 双入口并存——bare `/model` `/effort` slash 走这个居中 modal；

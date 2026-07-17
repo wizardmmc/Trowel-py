@@ -50,6 +50,8 @@ function mockCreate(sid: string, over: Partial<CcSession> = {}) {
     model: "glm-5.2",
     name: sid,
     revert_enabled: true,
+    memory_enabled: true,
+    profile_enabled: true,
     ...over,
   };
   vi.mocked(apiCreateSession).mockResolvedValueOnce(session);
@@ -295,8 +297,8 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       const store = createCcStore();
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
         sessions: [
-          { id: "s1", workdir: "/wd", model: "glm-5.2", name: "trowel-py", running: false, connected: true },
-          { id: "s2", workdir: "/wd", model: "glm-5.2", name: "wiki", running: true, connected: true },
+          { id: "s1", workdir: "/wd", model: "glm-5.2", name: "trowel-py", running: false, connected: true, memory_enabled: true, profile_enabled: true },
+          { id: "s2", workdir: "/wd", model: "glm-5.2", name: "wiki", running: true, connected: true, memory_enabled: true, profile_enabled: true },
         ],
         activeId: "s1",
       });
@@ -314,7 +316,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       await store.getState().startSession({ workdir: "/wd" });
       const before = store.getState().sessions["s1"];
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
-        sessions: [{ id: "s1", workdir: "/wd", model: "glm-5.2", name: "renamed", running: false, connected: true }],
+        sessions: [{ id: "s1", workdir: "/wd", model: "glm-5.2", name: "renamed", running: false, connected: true, memory_enabled: true, profile_enabled: true }],
         activeId: "s1",
       });
       await store.getState().refreshActiveSessions();
@@ -327,6 +329,51 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       vi.mocked(listActiveSessions).mockRejectedValueOnce(new Error("backend down"));
       await store.getState().refreshActiveSessions();
       expect(store.getState().sessions).toEqual({});
+    });
+  });
+
+  describe("slice-060: memory/profile A/B switches", () => {
+    it("startSession stores the condition from the backend response", async () => {
+      const store = createCcStore();
+      mockCreate("s1", { memory_enabled: false, profile_enabled: true });
+      await store.getState().startSession({
+        workdir: "/wd",
+        memory_enabled: false,
+        profile_enabled: true,
+      });
+      const s = store.getState().sessions["s1"];
+      expect(s?.memoryEnabled).toBe(false);
+      expect(s?.profileEnabled).toBe(true);
+    });
+
+    it("startSession forwards the switches to the API", async () => {
+      const store = createCcStore();
+      mockCreate("s1");
+      await store.getState().startSession({
+        workdir: "/wd",
+        memory_enabled: false,
+        profile_enabled: false,
+      });
+      expect(apiCreateSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          memory_enabled: false,
+          profile_enabled: false,
+        }),
+      );
+    });
+
+    it("refreshActiveSessions reconciles the condition from the backend", async () => {
+      const store = createCcStore();
+      vi.mocked(listActiveSessions).mockResolvedValueOnce({
+        sessions: [
+          { id: "s1", workdir: "/wd", model: "m", name: "wd", running: false, connected: true, memory_enabled: false, profile_enabled: true },
+        ],
+        activeId: "s1",
+      });
+      await store.getState().refreshActiveSessions();
+      const s = store.getState().sessions["s1"];
+      expect(s?.memoryEnabled).toBe(false); // backend value, not a local default
+      expect(s?.profileEnabled).toBe(true);
     });
   });
 

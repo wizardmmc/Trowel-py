@@ -21,6 +21,8 @@ function makeSession(tasks: Task[]): PerSessionState {
     transportError: null,
     abort: null,
     connected: true,
+    memoryEnabled: true,
+    profileEnabled: true,
     tasks,
   };
 }

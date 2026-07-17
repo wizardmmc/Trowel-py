@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MemoryProfileChip } from "./MemoryProfileChip";
 import { ModelEffortChip } from "./ModelEffortChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
 import {
@@ -42,6 +43,10 @@ interface ComposerProps {
   readonly currentEffort?: string | null;
   readonly onPickModel?: (alias: string) => void;
   readonly onPickEffort?: (value: string) => void;
+  /** slice-060: frozen memory/profile condition for the active session. When
+   * both are non-null, read-only chips render next to model/effort. */
+  readonly memoryEnabled?: boolean | null;
+  readonly profileEnabled?: boolean | null;
 }
 
 export function Composer({
@@ -58,6 +63,8 @@ export function Composer({
   currentEffort,
   onPickModel,
   onPickEffort,
+  memoryEnabled,
+  profileEnabled,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
@@ -260,6 +267,12 @@ export function Composer({
               currentEffort={currentEffort ?? null}
               onPickModel={onPickModel}
               onPickEffort={onPickEffort}
+            />
+          )}
+          {memoryEnabled != null && profileEnabled != null && (
+            <MemoryProfileChip
+              memoryEnabled={memoryEnabled}
+              profileEnabled={profileEnabled}
             />
           )}
           <span className="cc-composer__spacer" />

@@ -168,6 +168,8 @@ class CCHost:
         session_registrar: Any = None,
         session_kind: str = "user",
         mcp_config: str | None = None,
+        memory_enabled: bool = True,
+        profile_enabled: bool = True,
     ) -> None:
         """Store session config and the injection hooks for tests.
 
@@ -204,6 +206,16 @@ class CCHost:
                 so ``find_pending(exclude_kinds=["review"])`` keeps the
                 distillation sessions out of their own queue (C-5: kind, not
                 workdir-path guessing).
+            mcp_config: path to an mcp-config JSON attaching the memory MCP
+                server (search/read/outcome). None → no ``--mcp-config`` flag.
+                Dropped to None when ``memory_enabled`` is False (C-3: memory off
+                closes the MCP read-path too), frozen at construction.
+            memory_enabled: slice-060 A/B switch, frozen for the session. False
+                drops every memory read-path section (core/L0/diary/root) and
+                detaches the memory MCP, for a clean "no stored memory" baseline.
+            profile_enabled: slice-060 A/B switch, frozen for the session. False
+                drops only the ``# 用户画像`` section; memory read-paths are
+                unaffected. Isolates the effect of the explicit profile.
         """
         self.session_id = session_id
         self.workdir = workdir
@@ -227,9 +239,19 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        # slice-060: two independent A/B switches, frozen at construction.
+        # memory_enabled governs the whole memory read-path (core/L0/diary/root
+        # injection AND the memory MCP server). profile_enabled governs ONLY the
+        # explicit `# 用户画像` section. C-5: both are immutable for the session
+        # so respawns (/model, stall, interrupt) keep the same condition.
+        self._memory_enabled = memory_enabled
+        self._profile_enabled = profile_enabled
         # slice-040-c: path to an mcp-config JSON attaching the memory MCP
-        # server (search/read/outcome). None → no --mcp-config flag (pre-040-c).
-        self._mcp_config = mcp_config
+        # server (search/read/outcome). slice-060 C-3: when memory is off, the
+        # MCP read-path is closed too — the config is dropped HERE (not only at
+        # the route), so a memory-off session never re-attaches memory on
+        # respawn even when a config path was passed in.
+        self._mcp_config = mcp_config if memory_enabled else None
 
         self._proc: Any = None
         self._started = False
@@ -298,6 +320,20 @@ class CCHost:
         """True when there is no live subprocess (none yet, or already exited)."""
         return self._proc is None or self._proc.returncode is not None
 
+    @property
+    def memory_enabled(self) -> bool:
+        """slice-060: whether this session injects memory read-paths + MCP.
+
+        Frozen at construction; read by routes to surface the condition in the
+        create / active-session responses.
+        """
+        return self._memory_enabled
+
+    @property
+    def profile_enabled(self) -> bool:
+        """slice-060: whether this session injects the ``# 用户画像`` section."""
+        return self._profile_enabled
+
     # -- lifecycle ---------------------------------------------------------
 
     async def _spawn(self, resume_from: str | None) -> Any:
@@ -314,7 +350,11 @@ class CCHost:
         # read error must NEVER block a cc spawn (spike 2026-07-09: append lands
         # in the system tail, proxy identity-rewrite stays untouched).
         try:
-            injection = build_memory_injection(date.today().isoformat())
+            injection = build_memory_injection(
+                date.today().isoformat(),
+                memory_enabled=self._memory_enabled,
+                profile_enabled=self._profile_enabled,
+            )
         except Exception:
             logger.warning(
                 "memory injection failed; cc spawns without it", exc_info=True

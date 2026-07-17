@@ -29,6 +29,11 @@ export interface CcSession {
   /** slice-026: whether reverting turns is supported for this workdir (non-git
    * workdirs get the banner + no revert buttons). */
   readonly revert_enabled: boolean;
+  /** slice-060: whether the memory read-path (core/L0/diary/root) + memory MCP
+   * are attached. Frozen at create; A/B experiment switch. */
+  readonly memory_enabled: boolean;
+  /** slice-060: whether the `# 用户画像` section is injected. Frozen at create. */
+  readonly profile_enabled: boolean;
 }
 
 export interface CreateSessionParams {
@@ -37,6 +42,10 @@ export interface CreateSessionParams {
   readonly permission_mode?: string;
   readonly model?: string;
   readonly effort?: string;
+  /** slice-060 A/B switch. Omit = backend default (true, zero-regression). */
+  readonly memory_enabled?: boolean;
+  /** slice-060 A/B switch. Omit = backend default (true). */
+  readonly profile_enabled?: boolean;
 }
 
 interface ApiEnvelope<T> {
@@ -113,6 +122,10 @@ export interface ActiveSession {
   /** True = 有活 cc 子进程（发过消息且未退出）；temp（从未 spawn）→ false.
    * 前端 reconcile 据此判断是否进多开栏，避免 temp 被误显示成多开。 */
   readonly connected: boolean;
+  /** slice-060: frozen A/B condition for this session (drives the chip + M·P
+   * marker); reconciled from the backend on page refresh. */
+  readonly memory_enabled: boolean;
+  readonly profile_enabled: boolean;
 }
 
 /** Result of GET /api/cc/sessions/active — the live sessions + which is active. */

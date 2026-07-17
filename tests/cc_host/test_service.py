@@ -653,7 +653,7 @@ class TestMemoryInjection:
         import trowel_py.cc_host.service as svc
 
         monkeypatch.setattr(
-            svc, "build_memory_injection", lambda now: "INJECTION_MARKER_XYZ"
+            svc, "build_memory_injection", lambda now, **kw: "INJECTION_MARKER_XYZ"
         )
         proc = FakeProc([line(init_event()), line(result_ok())])
         spawner = FakeSpawner([proc])
@@ -666,7 +666,7 @@ class TestMemoryInjection:
     async def test_spawn_survives_injection_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(now: str) -> str:
+        def boom(now: str, **kw) -> str:
             raise RuntimeError("memory dir gone")
 
         import trowel_py.cc_host.service as svc

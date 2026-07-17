@@ -55,6 +55,33 @@ describe("cc REST client", () => {
     expect(call?.[1]?.method).toBe("POST");
   });
 
+  it("createSession forwards memory_enabled/profile_enabled (slice-060)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchEnvelope({
+        session_id: "s1",
+        cc_session_id: null,
+        model: "m",
+        name: "n",
+        revert_enabled: true,
+        memory_enabled: false,
+        profile_enabled: true,
+      }),
+    );
+    await createSession({
+      workdir: "/wd",
+      memory_enabled: false,
+      profile_enabled: true,
+    });
+    const call = vi.mocked(fetch).mock.calls[0];
+    const body = JSON.parse((call?.[1]?.body as string) ?? "{}");
+    expect(body).toEqual({
+      workdir: "/wd",
+      memory_enabled: false,
+      profile_enabled: true,
+    });
+  });
+
   it("listActiveSessions returns the active list + active_id (slice-028 D2)", async () => {
     vi.stubGlobal(
       "fetch",

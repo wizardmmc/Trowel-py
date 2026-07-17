@@ -74,7 +74,7 @@ describe("SessionView (slice-028 three-column)", () => {
     // bug：多出 ClaudeDesktop 多开 —— 后端返回的 temp 被 reconcile 一律标 live。
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
-        { id: "temp1", workdir: "/wd", model: "m", name: "wd", running: false, connected: false },
+        { id: "temp1", workdir: "/wd", model: "m", name: "wd", running: false, connected: false, memory_enabled: true, profile_enabled: true },
       ],
       activeId: "temp1",
     });
@@ -96,6 +96,8 @@ describe("SessionView (slice-028 three-column)", () => {
       model: "m",
       name: params.workdir,
       revert_enabled: true,
+      memory_enabled: true,
+      profile_enabled: true,
     }));
     const { rerender } = render(<SessionView workdir="/a" />);
     await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/a"));

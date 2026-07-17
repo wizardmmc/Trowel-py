@@ -3,6 +3,30 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { SlashItem } from "../api/cc";
 import { Composer } from "../components/cc/Composer";
 
+describe("Composer memory/profile chips (slice-060)", () => {
+  it("renders read-only chips reflecting the active session's condition", () => {
+    const { container } = render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={() => {}}
+        onInterrupt={() => {}}
+        memoryEnabled={false}
+        profileEnabled={true}
+      />,
+    );
+    expect(container.querySelector(".cc-cond--off")).not.toBeNull(); // memory off
+    expect(container.querySelector(".cc-cond--on")).not.toBeNull(); // profile on
+  });
+
+  it("renders no chips when the condition is unknown (no active session)", () => {
+    const { container } = render(
+      <Composer streaming={false} disabled={false} onSend={() => {}} onInterrupt={() => {}} />,
+    );
+    expect(container.querySelector(".cc-cond")).toBeNull();
+  });
+});
+
 describe("Composer Esc three-state", () => {
   it("Enter sends and clears the input", () => {
     const onSend = vi.fn();

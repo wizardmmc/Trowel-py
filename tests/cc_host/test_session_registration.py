@@ -229,3 +229,46 @@ async def test_normal_end_updates_completed(tmp_path: Path) -> None:
     assert cap.completed[0] == ("cc-wm", 100)
 
 
+async def test_both_switches_off_still_registers_and_stamps_completed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """slice-060 C-4: closing the READ switches does not close the WRITE loop.
+
+    A memory=off + profile=off experiment session must STILL register into the
+    sessions db and stamp its completed offset, so it stays distillable by the
+    daily review afterwards. This is a characterization test (the registration
+    code never reads the switches) — it pins the invariant against future
+    regressions, e.g. someone gating registration on memory_enabled.
+    """
+    monkeypatch.setattr(
+        "trowel_py.memory.injection.resolve_memory_root",
+        lambda config_path=None: tmp_path,
+    )
+    cap = _CapturingRegistrar()
+    jsonl = tmp_path / "fake.jsonl"
+    jsonl.write_text("x" * 100)
+    proc = FakeProc([_line(_init("cc-off")), _line(_result())])
+    host = CCHost(
+        "trowel-sid",
+        tmp_path,
+        spawner=FakeSpawner([proc]),
+        session_registrar=cap,
+        memory_enabled=False,
+        profile_enabled=False,
+    )
+    host._jsonl_path = lambda sid: jsonl  # type: ignore[assignment] — stub for the test
+
+    async for _ in host.send("hi"):
+        pass
+
+    # C-4: the write loop is intact — register + completed both fired.
+    assert len(cap.registered) == 1
+    assert cap.registered[0].cc_session_id == "cc-off"
+    assert len(cap.completed) == 1
+    assert cap.completed[0] == ("cc-off", 100)
+    # sanity: the read switches really did take effect on this host.
+    assert host.memory_enabled is False
+    assert host.profile_enabled is False
+    assert host._mcp_config is None  # noqa: SLF001 — C-3 read-path closed
+
+

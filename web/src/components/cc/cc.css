@@ -2561,3 +2561,98 @@
 .cc-wf-error__label { font-family: var(--font-sans); font-weight: 600; margin-bottom: 2px; }
 
 @keyframes cc-pulse { 50% { box-shadow: 0 0 0 5px var(--sunshine-soft); } }
+
+/* =========================================================================
+   slice-060: memory/profile A/B switches — condition chips + new-session dialog
+   ========================================================================= */
+
+/* read-only condition chips on the Composer bottom bar (next to model/effort) */
+.cc-cond {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+.cc-cond__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.cc-cond__label { color: var(--text-tertiary); font-family: var(--font-sans); font-size: 0.7rem; }
+.cc-cond__val { font-weight: 600; }
+.cc-cond--on { background: var(--garden-soft); border-color: var(--garden-green); }
+.cc-cond--on .cc-cond__dot { background: var(--garden-green); }
+.cc-cond--on .cc-cond__val { color: var(--garden-green); }
+.cc-cond--off { background: var(--bg-card); }
+.cc-cond--off .cc-cond__dot { background: var(--text-tertiary); }
+.cc-cond--off .cc-cond__val { color: var(--text-tertiary); }
+
+/* "+ 新会话" setup dialog — choose Memory/Profile before creating */
+.cc-dialog__backdrop {
+  position: fixed; inset: 0;
+  background: rgba(45, 40, 30, 0.35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+.cc-dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(60, 50, 30, 0.22);
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+}
+.cc-dialog__head { padding: 16px 20px 6px; }
+.cc-dialog__title { margin: 0; font-size: 1rem; font-weight: 600; }
+.cc-dialog__workdir {
+  display: inline-block; margin-top: 6px; padding: 3px 8px;
+  background: var(--bg-garden); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-secondary);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-dialog__body { padding: 6px 20px; }
+.cc-dialog__row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 13px 0; border-bottom: 1px solid var(--color-border);
+}
+.cc-dialog__row:last-child { border-bottom: none; }
+.cc-dialog__main { flex: 1; min-width: 0; }
+.cc-dialog__name { font-size: 0.9rem; font-weight: 600; }
+.cc-dialog__desc { font-size: 0.76rem; color: var(--text-secondary); margin-top: 3px; line-height: 1.5; }
+.cc-dialog__note { font-size: 0.72rem; color: var(--text-tertiary); padding: 4px 20px 12px; line-height: 1.5; margin: 0; }
+.cc-dialog__foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 20px 16px; background: var(--bg-garden);
+  border-top: 1px solid var(--color-border);
+}
+.cc-dialog__btn {
+  font-family: var(--font-sans); font-size: 0.82rem;
+  padding: 7px 16px; border-radius: var(--radius-md);
+  border: 1px solid var(--color-border); background: var(--bg-card);
+  cursor: pointer; color: var(--text-primary);
+}
+.cc-dialog__btn--primary { background: var(--garden-green); color: #fff; border-color: var(--garden-green); }
+
+/* iOS-ish toggle switch */
+.cc-toggle {
+  width: 38px; height: 22px; border-radius: var(--radius-pill);
+  background: var(--color-border); border: none; cursor: pointer;
+  position: relative; flex-shrink: 0; transition: background 0.15s; margin-top: 2px;
+}
+.cc-toggle::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s;
+}
+.cc-toggle--on { background: var(--garden-green); }
+.cc-toggle--on::after { left: 18px; }
+.cc-toggle:focus-visible { outline: 2px solid var(--garden-green); outline-offset: 2px; }
+.cc-dialog__btn:focus-visible { outline: 2px solid var(--garden-green); outline-offset: 2px; }
+
+/* M·P condition marker on each multi-session row */
+.cc-multibar__cond { padding-left: 15px; font-size: 0.66rem; font-family: var(--font-mono); }
+.cc-multibar__cond-on { color: var(--garden-green); font-weight: 600; }
+.cc-multibar__cond-off { color: var(--text-tertiary); }
+.cc-multibar__cond-sep { color: var(--text-tertiary); margin: 0 1px; }

@@ -109,6 +109,78 @@ class TestCreateSession:
         assert resp.status_code == 400
 
 
+class TestSessionSwitches:
+    """slice-060: memory/profile A/B switches on the create + active contract."""
+
+    def test_defaults_to_both_on(self, tmp_path: Path):
+        # C-1: a request that omits the new fields == production default.
+        client = _mini_app({})
+        resp = client.post("/api/cc/sessions", json={"workdir": str(tmp_path)})
+        data = resp.json()["data"]
+        assert data["memory_enabled"] is True
+        assert data["profile_enabled"] is True
+
+    def test_explicit_four_combos_round_trip(self, tmp_path: Path):
+        client = _mini_app({})
+        for memory_enabled, profile_enabled in [
+            (True, True),
+            (True, False),
+            (False, True),
+            (False, False),
+        ]:
+            resp = client.post(
+                "/api/cc/sessions",
+                json={
+                    "workdir": str(tmp_path),
+                    "memory_enabled": memory_enabled,
+                    "profile_enabled": profile_enabled,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()["data"]
+            assert data["memory_enabled"] is memory_enabled
+            assert data["profile_enabled"] is profile_enabled
+
+    def test_non_boolean_rejected_as_422(self, tmp_path: Path):
+        # spec: no string-truthiness coercion — non-boolean → Pydantic 422.
+        client = _mini_app({})
+        resp = client.post(
+            "/api/cc/sessions",
+            json={"workdir": str(tmp_path), "memory_enabled": "yes"},
+        )
+        assert resp.status_code == 422
+
+    def test_active_sessions_carry_switches(self, tmp_path: Path):
+        # C-5/C-6: GET /sessions/active surfaces the frozen condition per session
+        # so a page refresh reconciles the real value, not a local default.
+        client = _mini_app({})
+        client.post(
+            "/api/cc/sessions",
+            json={
+                "workdir": str(tmp_path),
+                "memory_enabled": False,
+                "profile_enabled": True,
+            },
+        )
+        sessions = client.get("/api/cc/sessions/active").json()["data"]["sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["memory_enabled"] is False
+        assert sessions[0]["profile_enabled"] is True
+
+    def test_memory_off_session_has_no_mcp_config(self, tmp_path: Path):
+        # C-3 end-to-end at the route layer: memory off → routes does not hand a
+        # mcp path to CCHost, so the host holds None and spawns no --mcp-config.
+        reg: dict = {}
+        client = _mini_app(reg)
+        sid = client.post(
+            "/api/cc/sessions",
+            json={"workdir": str(tmp_path), "memory_enabled": False},
+        ).json()["data"]["session_id"]
+        host = reg[sid]
+        assert host._mcp_config is None
+        assert host.memory_enabled is False
+
+
 class TestMultiSession:
     """slice-028 D2: 多 session 并存 + 命名序号 + active/activate + 资源限制。"""
 

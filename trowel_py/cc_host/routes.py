@@ -120,7 +120,13 @@ def create_session(
     # package (only the spawned subprocess does).
     from trowel_py.memory.mcp_config import write_mcp_config
 
-    mcp_config = write_mcp_config()
+    # slice-060 C-3: attach the memory MCP only when the memory switch is on.
+    # (CCHost also freezes mcp to None when memory is off, so this is belt-and-
+    # braces.) A memory-off session skips write_mcp_config ON PURPOSE: it never
+    # consumes that file (CCHost._mcp_config is None), and every memory-on
+    # create rewrites it idempotently — so the shared global file stays current
+    # regardless of which session was created last.
+    mcp_config = str(write_mcp_config()) if req.memory_enabled else None
     host = CCHost(
         sid,
         req.workdir,
@@ -130,7 +136,9 @@ def create_session(
         resume_from=req.resume_from,
         proxy_base_url=getattr(request.app.state, "proxy_base_url", None),
         settings_path=getattr(request.app.state, "cc_settings_path", None),
-        mcp_config=str(mcp_config),
+        mcp_config=mcp_config,
+        memory_enabled=req.memory_enabled,
+        profile_enabled=req.profile_enabled,
     )
     registry[sid] = host
     # 注册多开状态（命名序号 + workdir 索引 + 设为活跃）
@@ -149,6 +157,10 @@ def create_session(
             # whether reverting turns is supported for this workdir
             # (non-git workdirs get the banner + no revert buttons in the UI).
             "revert_enabled": checkpoint.is_git_repo(req.workdir),
+            # slice-060: surface the frozen A/B condition so the frontend can
+            # render it and reconcile on refresh (C-5/C-6).
+            "memory_enabled": req.memory_enabled,
+            "profile_enabled": req.profile_enabled,
         },
         "error": None,
     }
@@ -176,6 +188,10 @@ def list_active_sessions(
             # 前端 exited 状态由 SSE 事件驱动，page refresh 后该标志丢失，这类会话
             # 会成为不显示的幽灵行（已知清理项，非本次 bug 范围）。
             "connected": not getattr(host, "is_dead", True),
+            # slice-060: frozen A/B condition per session (defaults True for the
+            # duck-typed FakeHost used elsewhere in tests).
+            "memory_enabled": getattr(host, "memory_enabled", True),
+            "profile_enabled": getattr(host, "profile_enabled", True),
         }
         for sid, host in registry.items()
     ]

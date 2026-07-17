@@ -30,33 +30,61 @@ logger = logging.getLogger(__name__)
 TOKEN_BUDGET = 30000
 
 
-def build_memory_injection(now: str, root: Path | str | None = None) -> str:
+def build_memory_injection(
+    now: str,
+    root: Path | str | None = None,
+    *,
+    memory_enabled: bool = True,
+    profile_enabled: bool = True,
+) -> str:
     """Assemble the memory injection string (layer-one + L0 + recent diary).
 
     Args:
         now: ISO date (``YYYY-MM-DD``) anchoring the diary recency windows.
         root: memory root; ``None`` resolves via ``paths.resolve_memory_root``.
+        memory_enabled: slice-060 A/B switch. When False, drop EVERY memory
+            read-path section — core imperatives, dictionary L0, recent diary,
+            and the memory-root + search→read pointer. The matching MCP server
+            is also detached upstream (CCHost), so a False here is a clean
+            "model cannot see stored memory" baseline, not just an empty prompt.
+        profile_enabled: slice-060 A/B switch. When False, drop ONLY the
+            ``# 用户画像`` section; every memory section is unaffected. This
+            isolates the effect of the explicit profile alone.
 
     Returns:
         The injection string; empty string when there is nothing to inject
-        (the launcher then adds no ``--append-system-prompt`` flag).
+        (the launcher then adds no ``--append-system-prompt`` flag). Both
+        switches off, or memory off with no profile on disk, both yield ``""``.
 
+    Section ordering (memory on): core → profile → L0 → diary → memory-root.
     Layer-one items with ``status == 'retired'`` are filtered out (C-1/C-2).
     Notes bodies are never injected (C-5) — they are read on demand via the
     dictionary L0 → L1 → body drill-down. Over ``TOKEN_BUDGET`` logs a warning
-    and does NOT truncate (C-6 soft budget).
+    and does NOT truncate (C-6 soft budget); the truncation loop only runs when
+    memory is on (diary is the only layer it can shrink).
     """
     store = MemoryStore(root if root is not None else resolve_memory_root())
     sections: list[str] = []
-    core = _render_core(store)
-    if core:
-        sections.append(core)
-    profile = _render_profile(store)
-    if profile:
-        sections.append(profile)
-    l0 = _render_l0(store)
-    if l0:
-        sections.append(l0)
+    if memory_enabled:
+        core = _render_core(store)
+        if core:
+            sections.append(core)
+    if profile_enabled:
+        profile = _render_profile(store)
+        if profile:
+            sections.append(profile)
+    if memory_enabled:
+        l0 = _render_l0(store)
+        if l0:
+            sections.append(l0)
+    # slice-060: both switches off → the clean no-personalization baseline.
+    if not memory_enabled and not profile_enabled:
+        return ""
+    # slice-060: memory off → no core/L0/diary, no memory-root read pointer.
+    # The body is at most the profile section ("" when profile is also absent),
+    # so cc spawns with profile-only or bare.
+    if not memory_enabled:
+        return "\n\n".join(sections)
     # slice-040-c C-2: always carry the memory root + retrieval tool usage so
     # the model knows where memory lives and how to query it (search→read).
     root_section = _render_memory_root(store.root)

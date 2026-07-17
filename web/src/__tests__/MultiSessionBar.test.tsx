@@ -26,6 +26,8 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     transportError: null,
     abort: null,
     connected: true,
+    memoryEnabled: true,
+    profileEnabled: true,
     ...over,
   };
 }
@@ -68,6 +70,21 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
     // active row carries the active class on the item container
     const activeItem = screen.getByText("trowel-py").closest(".cc-multibar__item");
     expect(activeItem?.className).toMatch(/--active/);
+  });
+
+  it("shows the M·P condition marker per session (slice-060)", () => {
+    setSessions(
+      { s1: makeSession({ name: "A", memoryEnabled: false, profileEnabled: true }) },
+      "s1",
+    );
+    const { container } = render(
+      <MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />,
+    );
+    const cond = container.querySelector(".cc-multibar__cond");
+    expect(cond).not.toBeNull();
+    // M off (dim), P on (green) — so four experiment sessions stay distinguishable
+    expect(cond?.querySelectorAll(".cc-multibar__cond-off")).toHaveLength(1);
+    expect(cond?.querySelectorAll(".cc-multibar__cond-on")).toHaveLength(1);
   });
 
   it("does NOT render sessions that haven't sent a message (connected=false)", () => {

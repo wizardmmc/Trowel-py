@@ -31,6 +31,11 @@ class CreateSessionRequest(BaseModel):
             for a smooth, non-interrupting experience (v1 has no permission UI).
         model: override --model (defaults handled by launcher).
         effort: override --effort (defaults handled by launcher).
+        memory_enabled: slice-060 A/B switch. False drops every memory read-path
+            section (core/L0/diary/root) and detaches the memory MCP, for a
+            clean "no stored memory" baseline. Defaults True (C-1 zero-regression).
+        profile_enabled: slice-060 A/B switch. False drops only the explicit
+            ``# 用户画像`` section. Defaults True.
     """
 
     workdir: str = Field(min_length=1)
@@ -38,6 +43,10 @@ class CreateSessionRequest(BaseModel):
     permission_mode: str = "bypassPermissions"
     model: str | None = None
     effort: str | None = None
+    # strict=True (spec C-1): only a real JSON boolean is accepted — strings
+    # like "yes"/"true" or numbers are NOT coerced, they 422. No truthiness.
+    memory_enabled: bool = Field(default=True, strict=True)
+    profile_enabled: bool = Field(default=True, strict=True)
 
 
 class SendMessageRequest(BaseModel):

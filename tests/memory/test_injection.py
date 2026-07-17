@@ -305,3 +305,78 @@ def test_profile_survives_when_diary_truncated(tmp_path: Path) -> None:
     assert "# 用户画像" in out
     assert "PROFILE_SURVIVES_MARKER" in out  # profile kept
     assert "BIGMONTHLY_MARKER" not in out  # earlier monthly dropped by truncation
+
+
+# ---------- slice-060: memory/profile A/B switches ----------
+
+
+def _seed_full_memory(root: Path) -> None:
+    """Seed one of each layer so every section has a marker to assert on."""
+    _write_core(root, [_item("a", "CORE_MARKER imperative", "active")])
+    _write_profile(root, ability="PROFILE_MARKER")
+    _write_l0(root, "L0_MARKER index")
+    _write_diary(root, "2026-07-08", "day", "DAY_MARKER")  # W28, in this week
+
+
+def test_injection_defaults_to_both_on(tmp_path: Path) -> None:
+    # C-1: omitting the switches == current production (memory=on + profile=on).
+    _seed_full_memory(tmp_path)
+    out = build_memory_injection("2026-07-09", root=tmp_path)
+    assert "CORE_MARKER" in out
+    assert "# 用户画像" in out
+    assert "PROFILE_MARKER" in out
+    assert "L0_MARKER" in out
+    assert "DAY_MARKER" in out
+    assert "memory 根路径" in out
+
+
+def test_memory_off_drops_all_memory_sections_keeps_profile(tmp_path: Path) -> None:
+    # memory=false, profile=true: ONLY the profile section remains. No core /
+    # L0 / diary / memory-root, so the model has no read-path pointers either.
+    _seed_full_memory(tmp_path)
+    out = build_memory_injection(
+        "2026-07-09", root=tmp_path, memory_enabled=False, profile_enabled=True
+    )
+    assert "# 用户画像" in out
+    assert "PROFILE_MARKER" in out
+    assert "CORE_MARKER" not in out
+    assert "L0_MARKER" not in out
+    assert "DAY_MARKER" not in out
+    assert "memory 根路径" not in out
+    assert "memory.search" not in out
+
+
+def test_profile_off_drops_profile_section_keeps_memory(tmp_path: Path) -> None:
+    # memory=true, profile=false: core/L0/diary/root + MCP pointers stay; only
+    # the explicit `# 用户画像` heading is gone.
+    _seed_full_memory(tmp_path)
+    out = build_memory_injection(
+        "2026-07-09", root=tmp_path, memory_enabled=True, profile_enabled=False
+    )
+    assert "CORE_MARKER" in out
+    assert "L0_MARKER" in out
+    assert "DAY_MARKER" in out
+    assert "memory 根路径" in out
+    assert "memory.search" in out
+    assert "# 用户画像" not in out
+    assert "PROFILE_MARKER" not in out
+
+
+def test_both_off_returns_empty(tmp_path: Path) -> None:
+    # memory=false, profile=false: the clean no-personalization baseline. Empty
+    # string → launcher adds no --append-system-prompt flag at all.
+    _seed_full_memory(tmp_path)
+    out = build_memory_injection(
+        "2026-07-09", root=tmp_path, memory_enabled=False, profile_enabled=False
+    )
+    assert out == ""
+
+
+def test_memory_off_with_no_profile_returns_empty(tmp_path: Path) -> None:
+    # memory=false, profile=true but there is no profile.md → nothing to inject.
+    _seed_full_memory(tmp_path)
+    (tmp_path / "profile.md").unlink()
+    out = build_memory_injection(
+        "2026-07-09", root=tmp_path, memory_enabled=False, profile_enabled=True
+    )
+    assert out == ""
