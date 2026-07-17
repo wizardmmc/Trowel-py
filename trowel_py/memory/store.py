@@ -50,6 +50,11 @@ _DICT_L0 = "dictionary-L0.md"
 # decoupled; this map keeps write_diary consistent with the 038 convention.
 _LAYER_DIR = {"day": "daily", "week": "weekly", "month": "monthly"}
 
+#: slice-062: the four structured experience-track lists, in render order.
+#: ``_render_date_block`` emits a ``#### <field>`` section per non-empty list;
+#: ``_parse_structured_block`` is its inverse (renderer/parser closed pair).
+_DIARY_FIELDS = ("outcomes", "decisions", "corrections", "open_loops")
+
 # Stable, readable key order for serialized note frontmatter.
 # slice-041: confidence + retired removed (C-9); memory_id/status/supersedes/
 # helpful_refs/harmful_refs/trigger/sources added (correction + lifecycle).
@@ -481,6 +486,65 @@ class MemoryStore:
         items.sort(key=lambda x: x[0])
         return items
 
+    def project_daily_sources(
+        self, date: str
+    ) -> list[tuple[str, str, DraftDiary]]:
+        """Project one date's structured entries across all episodes (slice-062).
+
+        Like ``project_daily_entries`` (same per-segment, per-date routing — a
+        resumed/补跑 segment never re-files its content under the run day), but
+        returns the RECOVERED structured entry plus its source ``segment_id`` so
+        the daily derivation can attribute every summary item to a real segment
+        (contract 4 / C-6). Legacy free-text bodies degrade to
+        ``DraftDiary(events=...)`` with the episode's ``cc_session_id`` as the
+        source id (no segment markers to cite).
+
+        Returns:
+            ``[(segment_id, registered_at, entry)]`` ordered by registered_at.
+        """
+        eps_dir = self.root / _EPISODES_DIR
+        if not eps_dir.exists():
+            return []
+        out: list[tuple[str, str, DraftDiary]] = []
+        for p in sorted(eps_dir.glob("*.md")):
+            fm, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if not fm:
+                continue
+            registered_at = _coerce_meta_str(fm.get("registered_at"))
+            cc_id = _coerce_meta_str(fm.get("cc_session_id"))
+            seg_metas = {
+                s.get("segment_id"): s
+                for s in (fm.get("segments") or [])
+                if isinstance(s, dict)
+            }
+            blocks = _parse_segment_blocks(body)
+            if blocks:
+                for seg_id, block in blocks.items():
+                    entry_block = _segment_entry_for_date(
+                        block, date, seg_metas.get(seg_id, {})
+                    )
+                    if entry_block:
+                        out.append(
+                            (seg_id, registered_at,
+                             _parse_structured_block(entry_block, date))
+                        )
+            elif _h2_headings(body):
+                entry_block = _extract_h2_block(body, date)
+                if entry_block:
+                    out.append(
+                        (cc_id, registered_at,
+                         _parse_structured_block(entry_block, date))
+                    )
+            elif _episode_covers_date(fm, date):
+                stripped = body.strip()
+                if stripped:
+                    out.append(
+                        (cc_id, registered_at,
+                         _parse_structured_block(stripped, date))
+                    )
+        out.sort(key=lambda x: x[1])
+        return out
+
     def audit_episode_attribution(self) -> dict[str, Any]:
         """Attribution health across episodes (slice-061 block-5, read-only).
 
@@ -796,7 +860,12 @@ _SEG_END = re.compile(r"<!-- @endsegment (\S+) -->")
 def _render_segment(
     segment_id: str, diary_entries: tuple[DraftDiary, ...]
 ) -> tuple[str, str, list[str], str]:
-    """Render one segment block (markers + dated events) + its content hash.
+    """Render one segment block (markers + dated entries) + its content hash.
+
+    slice-062: each date is rendered by ``_render_date_block`` — structured
+    lists become ``#### <field>`` bullet sections; a legacy ``events``-only
+    entry degrades to prose. ``_parse_structured_block`` inverts the structured
+    form, so the on-disk body is the single recoverable source of truth.
 
     Args:
         segment_id: the stable segment key.
@@ -804,7 +873,7 @@ def _render_segment(
 
     Returns:
         (block_text, content_hash, activity_dates, empty_reason).
-        ``empty_reason`` is ``""`` when the segment has events, else a short
+        ``empty_reason`` is ``""`` when the segment has entries, else a short
         reason string (also written into the block so the file is self-describing).
     """
     dates: list[str] = []
@@ -812,7 +881,7 @@ def _render_segment(
         inner_parts: list[str] = []
         for d in sorted(diary_entries, key=lambda x: x.date):
             dates.append(d.date)
-            inner_parts.append(f"## {d.date}\n\n{d.events.rstrip()}\n")
+            inner_parts.append(_render_date_block(d))
         inner = "\n".join(inner_parts)
         empty_reason = ""
     else:
@@ -825,6 +894,80 @@ def _render_segment(
     )
     content_hash = hashlib.sha256(inner.encode("utf-8")).hexdigest()[:16]
     return block, content_hash, dates, empty_reason
+
+
+def _render_date_block(d: DraftDiary) -> str:
+    """Render one date's block: ``## <date>`` + structured sections or legacy prose.
+
+    Structured lists (slice-062) win when present — a ``#### <field>`` section of
+    ``- `` bullets per non-empty list. An entry with no structured lists but a
+    legacy ``events`` text renders that prose (so old drafts and existing tests
+    keep working). A totally empty entry renders only the date heading (the date
+    still counts toward ``activity_dates``; it just contributes no daily body).
+
+    Each item is flattened to a single line (``_single_line``): items are
+    self-contained sentences by contract, and a multi-line bullet would break
+    the renderer/parser round-trip (the parser keys on ``- `` line starts).
+    """
+    sections: list[str] = []
+    for field_name in _DIARY_FIELDS:
+        items = getattr(d, field_name)
+        if items:
+            bullets = "\n".join(f"- {_single_line(it)}" for it in items)
+            sections.append(f"#### {field_name}\n{bullets}")
+    if sections:
+        return f"## {d.date}\n\n" + "\n\n".join(sections) + "\n"
+    if d.events.strip():
+        return f"## {d.date}\n\n{d.events.rstrip()}\n"
+    return f"## {d.date}\n"
+
+
+def _single_line(text: str) -> str:
+    """Collapse all whitespace (incl. newlines) to single spaces (slice-062).
+
+    A structured item is one sentence; flattening keeps the renderer/parser
+    round-trip exact — a ``- `` bullet stays one parseable line.
+    """
+    return " ".join(text.split())
+
+
+def _parse_structured_block(block_text: str, date: str) -> DraftDiary:
+    """Recover a DraftDiary from one date's block text (``_render`` inverse).
+
+    Structured blocks carry ``#### <field>`` sections of ``- `` bullets; each
+    non-empty bullet under a known field becomes one item. A block with no
+    ``####`` section is legacy free text → ``DraftDiary(events=...)``. Unknown
+    field headers and non-bullet lines are ignored, so a hand-edited or partial
+    block degrades instead of raising. If a block carries ``####`` headers but
+    NONE are known fields (e.g. a hand-edited ``#### summary``), the whole block
+    is kept as legacy ``events`` rather than silently emptied.
+    """
+    has_sections = any(
+        line.startswith("#### ") for line in block_text.splitlines()
+    )
+    if not has_sections:
+        return DraftDiary(date=date, events=block_text.strip())
+    fields: dict[str, list[str]] = {f: [] for f in _DIARY_FIELDS}
+    current: str | None = None
+    for line in block_text.splitlines():
+        if line.startswith("#### "):
+            name = line[len("#### "):].strip().lower()
+            current = name if name in fields else None
+        elif current is not None and line.startswith("- "):
+            item = line[len("- "):].strip()
+            if item:
+                fields[current].append(item)
+    entry = DraftDiary(
+        date=date,
+        outcomes=tuple(fields["outcomes"]),
+        decisions=tuple(fields["decisions"]),
+        corrections=tuple(fields["corrections"]),
+        open_loops=tuple(fields["open_loops"]),
+    )
+    if entry.outcomes or entry.decisions or entry.corrections or entry.open_loops:
+        return entry
+    # only unknown #### headers (or all-blank bullets) → keep the text as events
+    return DraftDiary(date=date, events=block_text.strip())
 
 
 def _parse_segment_blocks(body: str) -> "OrderedDict[str, str]":

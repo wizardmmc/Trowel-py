@@ -38,10 +38,43 @@ class DraftNote:
 
 @dataclass(frozen=True)
 class DraftDiary:
-    """One experience-track event entry from the distillation agent."""
+    """One experience-track entry for a date from the distillation agent.
+
+    slice-062: the experience track is no longer one free-text ``events`` blob.
+    Each date carries four nullable lists — outcomes / decisions / corrections
+    / open_loops — so the daily derivation can compress a *structured* record
+    instead of re-parsing prose. ``events`` stays for reading legacy drafts;
+    new writes go structured (contract 1).
+
+    Attributes:
+        date: ISO ``YYYY-MM-DD`` the entry falls on (gated on activity_dates).
+        outcomes: observable results — what got done / verified to what state.
+        decisions: choices made, with a one-clause reason when it matters.
+        corrections: ``原判断/做法 -> 更正后的结论/做法`` reversals.
+        open_loops: unfinished work; the next step or blocker.
+        events: legacy free-text event stream. Read-only compat; the renderer
+            falls back to it only when a draft carries no structured lists.
+    """
 
     date: str
+    outcomes: tuple[str, ...] = ()
+    decisions: tuple[str, ...] = ()
+    corrections: tuple[str, ...] = ()
+    open_loops: tuple[str, ...] = ()
     events: str = ""
+
+    def all_items(self) -> list[str]:
+        """Every structured item text across the four lists (slice-062).
+
+        Used by the dual-track audit so knowledge-track signal words are scanned
+        in the structured items too, not only in legacy ``events``.
+        """
+        return [
+            *self.outcomes,
+            *self.decisions,
+            *self.corrections,
+            *self.open_loops,
+        ]
 
 
 @dataclass(frozen=True)
@@ -148,4 +181,28 @@ def _parse_note(n: dict[str, Any]) -> DraftNote:
 
 
 def _parse_diary(d: dict[str, Any]) -> DraftDiary:
-    return DraftDiary(date=str(d.get("date", "")), events=str(d.get("events", "")))
+    """Parse one diary entry dict into a DraftDiary (slice-062 structured).
+
+    Reads the four structured lists and the legacy ``events`` free text. List
+    items are coerced to ``str`` and blanks dropped — an item must be a
+    complete, self-contained sentence (contract 1), so empty strings add noise.
+    """
+    return DraftDiary(
+        date=str(d.get("date", "")),
+        outcomes=_str_list(d.get("outcomes")),
+        decisions=_str_list(d.get("decisions")),
+        corrections=_str_list(d.get("corrections")),
+        open_loops=_str_list(d.get("open_loops")),
+        events=str(d.get("events") or ""),
+    )
+
+
+def _str_list(value: Any) -> tuple[str, ...]:
+    """Coerce a draft list field into a tuple of non-blank strings.
+
+    A missing / non-list value yields ``()``; each surviving item is a stripped
+    ``str``. Blanks are dropped (contract 1: no-information items stay out).
+    """
+    if not isinstance(value, list):
+        return ()
+    return tuple(s for s in (str(v).strip() for v in value) if s)

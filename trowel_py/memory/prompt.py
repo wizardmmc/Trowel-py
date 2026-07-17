@@ -53,7 +53,13 @@ DRAFT_SCHEMA = """\
     }
   ],
   "diary": [
-    {"date": "YYYY-MM-DD", "events": "事件流（时间 / 做了啥 / 卡哪 / 痛感）"}
+    {
+      "date": "YYYY-MM-DD",
+      "outcomes": ["完成或推进到什么可观察状态"],
+      "decisions": ["做了什么选择 + 必要的一句理由"],
+      "corrections": ["原判断/做法 -> 更正后的结论/做法"],
+      "open_loops": ["还没完成什么；下一步或阻塞是什么"]
+    }
   ],
   "reflection": "温故反思：有没有已存在笔记没用上导致绕弯路",
   "escalate_to_human": ["万策尽才问人的问题"]
@@ -106,9 +112,15 @@ REFINE_PROMPT_TEMPLATE = """\
 
 【双轨分流】
 - 知识轨（notes）：可复用结论 / gotcha / 方法论
-- 经历轨（diary）：事件流（时间 / 做了啥 / 卡哪 / 痛感）
+- 经历轨（diary）：结构化四列表，不是自由流水账。每个日期产出四类可空列表：
+  - outcomes：完成或推进到什么可观察状态（做了什么、验证到什么程度）
+  - decisions：做了什么选择 + 必要的一句理由（只在影响后续行为时记）
+  - corrections：原判断/做法 -> 更正后的结论/做法（用户纠错、被证据推翻的旧判断）
+  - open_loops：还没完成什么；下一步或阻塞是什么（仍有效的待办）
+- 经历轨硬规则：每项必须是完整、可独立理解的一句话；无信息的字段输出空列表，不写"无"。
+- 经历轨禁 agent 自评：不写"认真检查/反复确认/表现不错/全程高价值"这类绩效复盘腔，也不写 agent 自己的情绪，除非它反映用户真实痛点且影响后续决策。工具调用顺序、逐轮尝试、常规测试流水不进经历轨。
 - 元话语（我想到 / 感悟 / 本质是 / 原理是 / 启示 / 教训 / 规律 / 方法论 / 告诉我们）→ 知识轨，不要漏进 diary。
-- 同一个坑两处都可能记：日记记"7/8 卡两小时在 X"，笔记记"遇到 X 先查 Y"。
+- 同一个坑两处都可能记：经历轨记"7/8 卡两小时在 X（open_loop 或 correction）"，笔记记"遇到 X 先查 Y"。
 
 【程序性记忆（第 9 步）】
 对每条知识候选判 kind（默认 fact）：
@@ -155,3 +167,68 @@ def build_refine_prompt(
             + prompt
         )
     return prompt
+
+
+# ---------- slice-062: daily compression (structured I/O) ----------
+#
+# Daily is a derived cache, not a fact source. The LLM does NOT emit the final
+# Markdown — it emits typed daily items (each citing a source segment id);
+# Python validates, dedupes, budget-selects and renders the fixed Markdown
+# (contract 4). This keeps the model from writing un-sourced content into the
+# daily and lets Python enforce the 800-char budget by dropping whole bullets.
+
+#: the four item types, mapped to three daily sections at render time:
+#: outcome + decision -> 进展, correction -> 更正, open_loop -> 待续.
+DAILY_ITEM_TYPES = ("outcome", "decision", "correction", "open_loop")
+
+DAILY_ITEMS_SCHEMA = """\
+{
+  "items": [
+    {
+      "type": "outcome | decision | correction | open_loop",
+      "text": "完整、可独立理解的一句话",
+      "source": "<必须填上面某个 segment id>"
+    }
+  ]
+}
+"""
+
+DAILY_COMPRESS_TEMPLATE = """\
+你是日记压缩器。把 {date} 当天的结构化经历，压缩成可回忆的当天摘要——像人第二天需要的记忆，不像 agent 的工作复盘。
+
+【输入】
+当天各 segment 的结构化经历（每个 segment 带 id，下面四类可空）：
+{sources_block}
+
+【任务】
+跨 segment 做语义合并、措辞压缩、重要性选择，产出 daily items。每个 item 必须带 source（填上面某个 segment id），Python 会校验来源是否真实存在——不要编造 source。
+
+【三类映射】
+- outcome / decision → 进展（决定只在影响后续行为时保留）
+- correction → 更正（优先用"原来以为 X，现确认 Y"的对照表达）
+- open_loops → 待续（当天已经解决的阻塞不要写进待续）
+
+【硬规则】
+- 同一件事在多 segment 重复出现：只保留一条最完整的，source 填其中任一即可（Python 会合并所有来源）。
+- 删 agent 自评（认真检查/反复确认/表现不错/全程高价值这类绩效腔）、agent 情绪（除非反映用户真实痛点且影响后续决策）、工具调用顺序、逐轮尝试、常规测试流水、同义重复、已解决的临时阻塞。
+- 每项完整、可独立理解的一句话。无信息就别产。
+- 正文预算 ≤ 800 字（含标题）。预算优先级：更正 / 未关闭待续 > 关键结果 / 决定。超预算时 Python 会按完整 item 删低优先级项，绝不会从一句话中间截断——所以你按重要性排序产出即可，不要为了凑短而写半句。
+
+【输出】
+只输出 JSON，严格按此 schema：
+""" + DAILY_ITEMS_SCHEMA + """
+不要解释，不要输出 markdown，只输出上面的 JSON 对象。
+"""
+
+
+def build_daily_compress_prompt(*, date: str, sources_block: str) -> str:
+    """Fill the daily-compress template with the target date + structured sources.
+
+    Uses str.replace (not ``.format``) so the JSON ``{}`` braces in the embedded
+    schema are not mistaken for format placeholders.
+    """
+    return (
+        DAILY_COMPRESS_TEMPLATE
+        .replace("{date}", date)
+        .replace("{sources_block}", sources_block)
+    )

@@ -36,12 +36,21 @@ ERROR = SimpleNamespace(type="error")
 
 @pytest.fixture(autouse=True)
 def _stub_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """slice-041: stub AnthropicProvider so review_job tests never hit the
-    network (daily compress + dictionary sync go through the fake). Tests that
-    need a specific compressed body inject ``provider=`` explicitly."""
+    """slice-041/062: stub AnthropicProvider so review_job tests never hit the
+    network (daily compress + dictionary sync go through the fake). The stub
+    returns a valid slice-062 items JSON citing the first source segment, so
+    the daily lands as a realistic ``ok`` body. Tests that need a specific body
+    inject ``provider=`` explicitly."""
     class _FakeProvider:
         def complete(self, system_prompt: str, user_prompt: str) -> str:
-            return "压缩版日记"
+            marker = "【segment "
+            seg = "s1:0:end"
+            i = user_prompt.find(marker)
+            if i >= 0:
+                seg = user_prompt[i + len(marker):].split("】", 1)[0]
+            return json.dumps({"items": [
+                {"type": "outcome", "text": "压缩版日记", "source": seg}
+            ]})
 
     monkeypatch.setattr(
         "trowel_py.llm.client.AnthropicProvider",
@@ -340,11 +349,11 @@ async def test_daily_review_daily_aggregates_all_sessions(tmp_path: Path) -> Non
         None, memory_root=mem, date_str="2026-07-09", host_factory=factory
     )
 
-    # slice-041: daily is now the LLM-compressed body (stub returns a fixed
-    # string). The P1 regression — 3 sessions not overwriting each other — is
-    # verified at the episode layer (each session has its own file).
+    # slice-062: daily is the structured-compressed body (stub returns a valid
+    # items JSON). The P1 regression — 3 sessions not overwriting each other —
+    # is verified at the episode layer (each session has its own file).
     [d] = MemoryStore(mem).load_diary(layer="day")
-    assert d.body == "压缩版日记"
+    assert "压缩版日记" in d.body
     assert (mem / "episodes" / "s1.md").exists()
     assert (mem / "episodes" / "s2.md").exists()
     assert (mem / "episodes" / "s3.md").exists()

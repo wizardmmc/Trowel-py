@@ -42,6 +42,75 @@ def test_parse_empty_draft() -> None:
     assert d.reflection == ""
 
 
+# ---------- slice-062: structured experience track (four lists) ----------
+
+
+def _structured_diary_json() -> str:
+    """slice-062 contract 1: each date carries four nullable lists, not one
+    free-text ``events`` blob."""
+    return json.dumps(
+        {
+            "diary": [
+                {
+                    "date": "2026-07-17",
+                    "outcomes": ["完成了 daily 重写", "验证到全量测试通过"],
+                    "decisions": ["固定三问结构（进展/更正/待续）"],
+                    "corrections": ["原来以为单 $ 零误伤 -> 实测就近配对吞整段"],
+                    "open_loops": ["weekly 表达重写未做"],
+                }
+            ]
+        }
+    )
+
+
+def test_parse_structured_diary_four_lists() -> None:
+    d = parse_draft(_structured_diary_json())
+    assert len(d.diary) == 1
+    entry = d.diary[0]
+    assert entry.date == "2026-07-17"
+    assert entry.outcomes == ("完成了 daily 重写", "验证到全量测试通过")
+    assert entry.decisions == ("固定三问结构（进展/更正/待续）",)
+    assert entry.corrections == ("原来以为单 $ 零误伤 -> 实测就近配对吞整段",)
+    assert entry.open_loops == ("weekly 表达重写未做",)
+
+
+def test_parse_structured_diary_empty_lists_default() -> None:
+    # an informational field is an empty list, never "无" prose (contract 1).
+    d = parse_draft(json.dumps({"diary": [{"date": "2026-07-17"}]}))
+    entry = d.diary[0]
+    assert entry.outcomes == ()
+    assert entry.decisions == ()
+    assert entry.corrections == ()
+    assert entry.open_loops == ()
+
+
+def test_parse_legacy_events_still_readable() -> None:
+    # contract 1: old ``events`` free text is still read (compat); new writes
+    # go structured. A legacy draft round-trips its events untouched.
+    d = parse_draft(json.dumps({"diary": [{"date": "2026-07-09", "events": "卡两小时在浏览器缓存"}]}))
+    entry = d.diary[0]
+    assert entry.events == "卡两小时在浏览器缓存"
+    assert entry.outcomes == ()
+
+
+def test_diary_all_items_concatenates_four_lists() -> None:
+    # dualtrack scans every structured item, not just events.
+    d = parse_draft(_structured_diary_json())
+    entry = d.diary[0]
+    items = entry.all_items()
+    assert "完成了 daily 重写" in items
+    assert "固定三问结构（进展/更正/待续）" in items
+    assert "原来以为单 $ 零误伤 -> 实测就近配对吞整段" in items
+    assert "weekly 表达重写未做" in items
+    assert len(items) == 5  # 2 outcomes + 1 decision + 1 correction + 1 open_loop
+
+
+def test_validate_accepts_structured_only_diary() -> None:
+    # a date with structured lists and no events is a valid draft.
+    d = parse_draft(_structured_diary_json())
+    assert validate_draft(d) == []
+
+
 def test_validate_accepts_valid_draft() -> None:
     d = parse_draft(_valid_draft_json())
     assert validate_draft(d) == []

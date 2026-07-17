@@ -85,3 +85,77 @@ def test_draft_schema_includes_kind() -> None:
     from trowel_py.memory.prompt import DRAFT_SCHEMA
 
     assert "kind" in DRAFT_SCHEMA
+
+
+# ---------- slice-062: structured experience track (four lists) ----------
+
+
+def test_draft_schema_diary_uses_four_lists() -> None:
+    # contract 1: the diary schema shows the four structured lists.
+    from trowel_py.memory.prompt import DRAFT_SCHEMA
+
+    for field in ("outcomes", "decisions", "corrections", "open_loops"):
+        assert field in DRAFT_SCHEMA
+
+
+def test_refine_prompt_describes_four_diary_lists() -> None:
+    # the agent is told what each list means so it routes correctly.
+    for needle in ("outcomes", "decisions", "corrections", "open_loops"):
+        assert needle in REFINE_PROMPT_TEMPLATE
+
+
+def test_refine_prompt_forbids_agent_self_eval_in_diary() -> None:
+    # C-5: agent self-evaluation / performance-review tone must stay out of the
+    # experience track. The prompt names this ban.
+    assert "自评" in REFINE_PROMPT_TEMPLATE or "绩效" in REFINE_PROMPT_TEMPLATE
+
+
+# ---------- slice-062: daily compression prompt (structured I/O) ----------
+
+
+def test_daily_compress_prompt_requires_source_per_item() -> None:
+    # contract 4 / C-6: every daily item must cite a source segment id.
+    from trowel_py.memory.prompt import DAILY_COMPRESS_TEMPLATE
+
+    assert "source" in DAILY_COMPRESS_TEMPLATE
+    assert "segment" in DAILY_COMPRESS_TEMPLATE
+
+
+def test_daily_compress_prompt_states_budget_priority() -> None:
+    # contract 4: corrections + open loops outrank outcomes/decisions when trimming.
+    from trowel_py.memory.prompt import DAILY_COMPRESS_TEMPLATE
+
+    assert "更正" in DAILY_COMPRESS_TEMPLATE
+    assert "待续" in DAILY_COMPRESS_TEMPLATE
+    assert "800" in DAILY_COMPRESS_TEMPLATE
+
+
+def test_daily_items_schema_has_type_text_source() -> None:
+    from trowel_py.memory.prompt import DAILY_ITEMS_SCHEMA
+
+    assert '"type"' in DAILY_ITEMS_SCHEMA
+    assert '"text"' in DAILY_ITEMS_SCHEMA
+    assert '"source"' in DAILY_ITEMS_SCHEMA
+
+
+def test_daily_compress_prompt_bans_self_eval_and_flow() -> None:
+    # C-5 + the delete list: agent self-eval, tool-call flow, resolved blockers
+    # are named so the model keeps them out of the daily.
+    from trowel_py.memory.prompt import DAILY_COMPRESS_TEMPLATE
+
+    assert "自评" in DAILY_COMPRESS_TEMPLATE
+    assert "工具调用" in DAILY_COMPRESS_TEMPLATE or "逐轮" in DAILY_COMPRESS_TEMPLATE
+    assert "已解决" in DAILY_COMPRESS_TEMPLATE
+
+
+def test_build_daily_compress_prompt_fills_placeholders() -> None:
+    from trowel_py.memory.prompt import build_daily_compress_prompt
+
+    p = build_daily_compress_prompt(
+        date="2026-07-17",
+        sources_block="【seg-1】outcomes: 完成了 X",
+    )
+    assert "2026-07-17" in p
+    assert "seg-1" in p
+    assert "{date}" not in p
+    assert "{sources_block}" not in p

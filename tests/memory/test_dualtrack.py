@@ -32,3 +32,37 @@ def test_one_leak_per_diary_entry() -> None:
     )
     rep = audit_draft(d)
     assert len(rep.leaks) == 1
+
+
+# ---------- slice-062: structured items are scanned too ----------
+
+
+def test_structured_item_with_signal_word_flagged() -> None:
+    # the four lists hold the experience now; a knowledge-track signal word in
+    # any of them is a leak the backstop must catch (not only in legacy events).
+    d = Draft(
+        diary=(
+            DraftDiary(
+                date="2026-07-17",
+                corrections=("原来理解偏了，本质是 GLM 兜底 200K",),
+            ),
+        )
+    )
+    rep = audit_draft(d)
+    assert not rep.clean
+    assert rep.leaks[0].signal == "本质是"
+    assert rep.leaks[0].date == "2026-07-17"
+
+
+def test_structured_clean_entry_not_flagged() -> None:
+    # a clean structured entry (no signal words) stays clean.
+    d = Draft(
+        diary=(
+            DraftDiary(
+                date="2026-07-17",
+                outcomes=("完成了 daily 重写",),
+                open_loops=("weekly 表达重写未做",),
+            ),
+        )
+    )
+    assert audit_draft(d).clean

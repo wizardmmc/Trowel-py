@@ -380,11 +380,13 @@ async def _run_daily_review_locked(
                     session.cc_session_id,
                     exc,
                 )
-        # slice-041: compress each touched date's episodes into a ≤800-char
-        # daily (gotcha/pain/decision kept, flow dropped). Falls back to the
-        # 040-a aggregate (no LLM) on failure so 039 injection stays non-empty.
+        # slice-062: compress each touched date's structured episodes into a
+        # ≤800-char daily (LLM emits typed items; Python validates + budget-
+        # selects + renders). compress_daily writes its own fallback notice on
+        # failure (never the full aggregate); with no provider a fallback notice
+        # is written directly (contract 5).
         for review_date in sorted(touched_dates):
-            _compress_or_aggregate(store, root, review_date, provider)
+            _compress_or_aggregate(root, review_date, provider)
         # slice-040-c C-3: sync the dictionary with this run's new notes
         # (incremental; falls back to full rebuild if no dictionary yet).
         # Non-fatal — a failure leaves the old dictionary; search degrades to
@@ -402,25 +404,38 @@ async def _run_daily_review_locked(
         conn.close()
 
 
-def _compress_or_aggregate(
-    store: MemoryStore, root: Path, review_date: str, provider: Any
-) -> None:
-    """slice-041: compress one day's episodes into a daily diary (prompt asks
-    ≤800 字, output persisted in full — slice-052 C-2); fall back to the 040-a
-    aggregate (no LLM) so 039 injection never goes empty."""
+def _compress_or_aggregate(root: Path, review_date: str, provider: Any) -> None:
+    """slice-062: compress one day's structured episodes into a daily.
+
+    With a provider, ``compress_daily`` runs the structured pipeline and writes
+    its own fallback notice on failure. With no provider (no LLM configured) a
+    fallback notice is written directly. Either way the daily is never the full
+    aggregate (contract 5 / C-7 — a failed compression must not be disguised as
+    a summary). A day with no episodes writes nothing (both paths no-op).
+    """
+    from trowel_py.memory.compress import compress_daily, write_fallback_daily
+
     if provider is not None:
         try:
-            from trowel_py.memory.compress import compress_daily
-
-            if compress_daily(root, review_date, provider):
-                return
+            compress_daily(root, review_date, provider)
+            return
         except Exception:
             logger.warning(
-                "daily compress failed for %s; falling back to aggregate",
+                "daily compress raised for %s; writing fallback notice",
                 review_date,
                 exc_info=True,
             )
-    store.derive_daily_from_episodes(review_date)
+    # No provider, or compress_daily raised. Write a fallback notice; if THAT
+    # also fails (e.g. disk full), isolate it so one bad day never aborts the
+    # whole review loop — the episodes remain as the fact source either way.
+    try:
+        write_fallback_daily(root, review_date)
+    except Exception:  # noqa: BLE001 — isolate fallback-write failure
+        logger.warning(
+            "fallback daily write also failed for %s (isolated; review continues)",
+            review_date,
+            exc_info=True,
+        )
 
 
 def _context_for(

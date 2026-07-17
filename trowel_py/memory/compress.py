@@ -1,48 +1,89 @@
-"""LLM diary compression for the three layers (slice-041 / -052).
+"""LLM diary compression for the three layers.
 
-daily (review_job each night): episodes → compressed daily — the prompt asks
-≤800 字 but output is persisted in FULL (no hard cap), and input is fed in
-FULL too (slice-052 C-1/C-2 — a truncated daily is injected into the next cc
-session as 残缺记忆). Keeps gotcha/pain/decision, drops flow. weekly (tidy
---weekly): this ISO week's dailies → ≤800-char weekly + three bypass files
-(span越大越流水). monthly (tidy --monthly): this month's weeklies → ≤800-char
-monthly, flow-only.
+daily (slice-062 rewrite): the LLM no longer emits the final Markdown. It emits
+typed items (each citing a source segment id); Python validates the schema +
+source, dedupes, budget-selects and renders the fixed 进展/更正/待续 Markdown
+(≤800 chars, whole-bullet trims only). Failure writes a
+``generation_status=fallback`` notice that points at the source segments — never
+the full aggregate (C-7). ``source_hash`` idempotence skips the LLM when the
+structured inputs are unchanged and the existing daily still validates.
+
+weekly (tidy --weekly, slice-041): this ISO week's dailies → ≤800-char weekly +
+three bypass files (span越大越流水). monthly (tidy --monthly): this month's
+weeklies → ≤800-char monthly, flow-only. weekly/monthly cap raw input
+(``_INPUT_CAP``) and hard-cap output (``_cap``); daily stopped capping in
+slice-052 and now hard-selects whole bullets (slice-062 C-3).
 
 Three bypass categories (technical-detail / emotional-trigger / cross-week-
-causal) are week-level only (S3 — never enter monthly). The weekly prompt
-splits content into the four routes in one JSON call; bypass bodies land in
+causal) are week-level only (S3 — never enter monthly). The weekly prompt splits
+content into the four routes in one JSON call; bypass bodies land in
 ``diary/bypass/<category>/<YYYY-Www>.md``.
-
-weekly/monthly cap raw input (``_INPUT_CAP``) and hard-cap output (``_cap``)
-to keep the LLM call bounded; daily stopped capping in slice-052 (全量保真).
-The ≤800-char ask is a prompt instruction (soft, like the injection budget).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from trowel_py.llm.client import LLMProvider
-from trowel_py.memory.store import MemoryStore, _dump_frontmatter
+from trowel_py.memory.prompt import (
+    DAILY_ITEM_TYPES,
+    build_daily_compress_prompt,
+)
+from trowel_py.memory.store import MemoryStore, _dump_frontmatter, _split_frontmatter
 
 logger = logging.getLogger(__name__)
 
-#: weekly/monthly raw-body cap fed to the LLM (chars). Daily STOPPED capping
-#: in slice-052 C-1 (全量保真 — a truncated daily is injected into the next cc
-#: session as 残缺记忆); weekly/monthly still cap (span越大越流水, lower fidelity).
+#: slice-062 daily body char budget (contract 2 / C-3). Counts the rendered
+#: Markdown body INCLUDING the ``# date`` title and ``## section`` headers,
+#: excluding frontmatter. Enforced by whole-bullet selection — never a
+#: mid-sentence cut.
+_DAILY_BUDGET = 800
+#: weekly/monthly raw-body cap fed to the LLM (chars). Daily does not cap input
+#: (the structured projection is already the compressed experience track).
 _INPUT_CAP = 8000
-#: soft warning threshold for DAILY input size (slice-052 C-1). A normal day is
-#: ~1.5–1.8 万字 (2026-07-16 audit); 50000 字 flags a genuinely huge day yet is
-#: still well within GLM's 200K-token window (Chinese ≈ 1–2 token/字). Warn
-#: only — never blocks the call.
-_DAILY_INPUT_WARN = 50000
-#: W4 (codex): hard cap on WEEKLY/MONTHLY compressed output. The prompt asks
-#: for <=800 but a verbose model can exceed it; truncate on persist so bloat
-#: doesn't propagate. Daily stopped hard-capping in slice-052 C-2 (保完整 > 保短).
+#: W4 (codex): hard cap on WEEKLY/MONTHLY compressed output. Daily enforces its
+#: budget via whole-bullet selection instead (slice-062 C-3).
 _OUTPUT_CAP = 800
+
+#: item type → daily section. outcome + decision merge into 进展.
+_SECTION_FOR_TYPE: dict[str, str] = {
+    "outcome": "进展",
+    "decision": "进展",
+    "correction": "更正",
+    "open_loop": "待续",
+}
+#: stable render order for the three sections (empty ones omitted).
+_SECTION_ORDER = ("进展", "更正", "待续")
+#: budget priority (contract 4): corrections + open loops outrank outcomes +
+#: decisions, so the latter are dropped first when trimming. Higher = keep first.
+_TYPE_PRIORITY: dict[str, int] = {
+    "correction": 1,
+    "open_loop": 1,
+    "outcome": 0,
+    "decision": 0,
+}
+
+
+@dataclass(frozen=True)
+class _DailyItem:
+    """One typed daily summary item emitted by the LLM (slice-062).
+
+    Attributes:
+        type: one of ``DAILY_ITEM_TYPES`` (outcome/decision/correction/open_loop).
+        text: a complete, self-contained sentence.
+        source: the segment_id this item was derived from (must be a real
+            contributing segment — validated, never hallucinated).
+    """
+
+    type: str
+    text: str
+    source: str
 
 
 def _cap(text: str) -> str:
@@ -54,12 +95,320 @@ def _cap(text: str) -> str:
 #: the three bypass categories (S3). Order is stable for output.
 BYPASS_CATEGORIES = ("technical-detail", "emotional-trigger", "cross-week-causal")
 
-_DAILY_SYS = (
-    "你是日记压缩器。把一天的 cc 经历压缩成 ≤800 字 markdown。"
-    "保住 gotcha / 痛点 / 决策 / 洞察，丢流水。保人风格（情绪 / 场景 / 自我评估）。"
-    "只输出压缩后的日记正文，不要解释。"
-)
-_DAILY_USER = "原始经历（按时间序）：\n{body}\n\n输出压缩日记（≤800字 markdown）："
+
+# --------------------------- daily (slice-062) ---------------------------
+
+
+def _source_hash(sources: list[tuple[str, str, Any]]) -> str:
+    """Stable hash of the structured daily inputs (idempotence key, contract 6).
+
+    Covers every contributing segment id and its structured items (plus legacy
+    ``events``), in registered_at order. Any change to the inputs changes the
+    hash → the daily is rebuilt; an unchanged hash lets the existing daily stand.
+    """
+    parts: list[str] = []
+    for seg_id, _registered_at, entry in sources:
+        parts.append(seg_id)
+        for field in ("outcomes", "decisions", "corrections", "open_loops"):
+            parts.append(field)
+            parts.extend(getattr(entry, field))
+        if entry.events.strip():
+            parts.append("events:" + entry.events.strip())
+    blob = "\n".join(parts)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _render_sources_block(sources: list[tuple[str, str, Any]]) -> str:
+    """Render the day's structured sources for the LLM (one block per segment)."""
+    lines: list[str] = []
+    for seg_id, _registered_at, entry in sources:
+        lines.append(f"【segment {seg_id}】")
+        wrote = False
+        for field in ("outcomes", "decisions", "corrections", "open_loops"):
+            items = getattr(entry, field)
+            if items:
+                lines.append(f"{field}:")
+                lines.extend(f"- {it}" for it in items)
+                wrote = True
+        if entry.events.strip():
+            lines.append("events (legacy 自由文本，从中提取结构化 items):")
+            lines.append(entry.events.strip())
+            wrote = True
+        if not wrote:
+            lines.append("(该 segment 无结构化经历)")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _parse_and_validate(
+    raw: str, valid_ids: list[str]
+) -> tuple[list[_DailyItem], list[str]]:
+    """Parse one LLM response into validated items + per-item errors (contract 4).
+
+    An item is rejected (counted as an error, dropped) when its type is unknown,
+    its text is empty, or its source is not one of the contributing segments. A
+    non-JSON response yields a single ``invalid JSON`` error. Empty list ``[]``
+    means every item passed.
+    """
+    errors: list[str] = []
+    start = raw.find("{")
+    if start < 0:
+        return [], ["response has no JSON object"]
+    try:
+        data, _end = json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError as exc:
+        return [], [f"invalid JSON: {exc}"]
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list):
+        return [], ["'items' missing or not a list"]
+    valid_set = set(valid_ids)
+    items: list[_DailyItem] = []
+    for i, it in enumerate(raw_items):
+        if not isinstance(it, dict):
+            errors.append(f"items[{i}]: not an object")
+            continue
+        typ = str(it.get("type", "")).strip()
+        text = str(it.get("text", "")).strip()
+        source = str(it.get("source", "")).strip()
+        if typ not in DAILY_ITEM_TYPES:
+            errors.append(f"items[{i}]: bad type {typ!r}")
+            continue
+        if not text:
+            errors.append(f"items[{i}]: empty text")
+            continue
+        if source not in valid_set:
+            errors.append(
+                f"items[{i}]: source {source!r} not in provided segments"
+            )
+            continue
+        items.append(_DailyItem(type=typ, text=text, source=source))
+    return items, errors
+
+
+def _generate_items(
+    provider: LLMProvider,
+    date_str: str,
+    sources_block: str,
+    valid_ids: list[str],
+) -> tuple[list[_DailyItem], str]:
+    """Run the LLM (with one retry on validation failure) → (items, status).
+
+    status is ``ok`` when a clean response was obtained, else ``fallback``. A
+    provider exception at either attempt degrades straight to ``fallback``
+    (contract 5). The retry feeds the concrete errors back so the model can fix
+    a bad source / schema (contract 4 step 5).
+    """
+    sys_prompt = (
+        "你是日记压缩器。把当天结构化经历压缩成可回忆的当天摘要，输出带 source 的结构化 items。"
+        "只输出 JSON 对象，不要 markdown，不要解释。"
+    )
+    try:
+        raw1 = provider.complete(
+            sys_prompt, build_daily_compress_prompt(
+                date=date_str, sources_block=sources_block
+            )
+        )
+    except Exception:  # noqa: BLE001 — provider failure is a fallback, not a crash
+        logger.warning("daily %s: provider call failed", date_str, exc_info=True)
+        return [], "fallback"
+    items1, errs1 = _parse_and_validate(raw1, valid_ids)
+    if not errs1:
+        return items1, "ok"
+    logger.info("daily %s: first response rejected (%s) — retrying", date_str, errs1[:3])
+    try:
+        retry_prompt = build_daily_compress_prompt(
+            date=date_str, sources_block=sources_block
+        ) + "\n\n【上次返回被拒绝，具体错误】\n- " + "\n- ".join(errs1)
+        raw2 = provider.complete(sys_prompt, retry_prompt)
+    except Exception:  # noqa: BLE001
+        logger.warning("daily %s: provider retry failed", date_str, exc_info=True)
+        return [], "fallback"
+    items2, errs2 = _parse_and_validate(raw2, valid_ids)
+    if errs2:
+        logger.warning("daily %s: retry still rejected (%s) — fallback", date_str, errs2[:3])
+        return [], "fallback"
+    return items2, "ok"
+
+
+def _normalize(text: str) -> str:
+    """Collapse whitespace for an exact-dedup key (the stored text is untouched)."""
+    return re.sub(r"\s+", "", text).strip()
+
+
+def _dedup_items(items: list[_DailyItem]) -> list[_DailyItem]:
+    """Drop exact-duplicate text, keeping the first occurrence (contract 4)."""
+    seen: set[str] = set()
+    out: list[_DailyItem] = []
+    for it in items:
+        key = _normalize(it.text)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(it)
+    return out
+
+
+def _render_daily_body(date_str: str, items: list[_DailyItem]) -> str:
+    """Render the fixed 进展/更正/待续 Markdown (empty sections omitted, contract 2)."""
+    by_section: dict[str, list[str]] = {s: [] for s in _SECTION_ORDER}
+    for it in items:
+        section = _SECTION_FOR_TYPE.get(it.type)
+        if section:
+            by_section[section].append(it.text)
+    parts = [f"# {date_str}"]
+    for section in _SECTION_ORDER:
+        bullets = by_section[section]
+        if bullets:
+            parts.append(f"## {section}\n" + "\n".join(f"- {b}" for b in bullets))
+    return "\n\n".join(parts) + "\n"
+
+
+def _select_within_budget(
+    date_str: str, items: list[_DailyItem], budget: int = _DAILY_BUDGET
+) -> list[_DailyItem]:
+    """Trim items to fit the body budget by dropping WHOLE bullets (C-3).
+
+    Low-priority items (outcome/decision) are dropped first, latest-first; only
+    when those are exhausted are corrections/open_loops dropped. The last
+    surviving item is never removed, so a single huge item is kept verbatim
+    rather than truncated or emptied (best effort, logged by the caller).
+    """
+    selected = list(items)
+    while len(selected) > 1 and len(_render_daily_body(date_str, selected)) > budget:
+        low_priority = [
+            i for i, it in enumerate(selected)
+            if _TYPE_PRIORITY.get(it.type, 0) == 0
+        ]
+        drop = low_priority[-1] if low_priority else len(selected) - 1
+        selected.pop(drop)
+    return selected
+
+
+def _existing_daily_ok(root_path: Path, date_str: str, shash: str) -> bool:
+    """Idempotence gate (contract 6): keep the daily when inputs unchanged.
+
+    True only when an ``ok`` daily exists with a matching ``source_hash`` whose
+    body still fits the budget. A missing or ``fallback`` daily rebuilds. Reads
+    the file once (frontmatter + body) — no TOCTOU window between the two.
+    """
+    path = root_path / "diary" / "daily" / f"{date_str}.md"
+    if not path.exists():
+        return False
+    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    if not fm:
+        return False
+    if fm.get("generation_status") != "ok":
+        return False
+    if fm.get("source_hash") != shash:
+        return False
+    return len(body.strip()) <= _DAILY_BUDGET
+
+
+def _write_daily(
+    store: MemoryStore, date_str: str, body: str,
+    source_segments: list[str], shash: str, status: str,
+) -> None:
+    """Persist one daily with its slice-062 provenance frontmatter."""
+    store.write_diary({
+        "type": "diary",
+        "date": date_str,
+        "layer": "day",
+        "period": date_str,
+        "promoted_knowledge": [],
+        "source_segments": source_segments,
+        "source_hash": shash,
+        "generated_at": datetime.now().isoformat(),
+        "generation_status": status,
+        "__body": body,
+    })
+
+
+def _write_fallback_body(
+    store: MemoryStore, date_str: str, source_segments: list[str], shash: str
+) -> None:
+    """Write a ``generation_status=fallback`` notice (contract 5 / C-7).
+
+    The notice names the source segments so the raw experience is recoverable,
+    but never echoes the experience itself — a failed compression must not be
+    disguised as a summary by dumping the full aggregate.
+    """
+    seg_list = "\n".join(f"- {s}" for s in source_segments) or "- (无来源)"
+    body = (
+        f"# {date_str}\n\n"
+        f"当日未生成可用摘要（fallback）。原始结构化经历保存在以下 episode segment，"
+        f"下次 review/tidy 会重试：\n{seg_list}\n"
+    )
+    _write_daily(store, date_str, body, source_segments, shash, "fallback")
+
+
+def compress_daily(
+    root: Path | str, date_str: str, provider: LLMProvider
+) -> str:
+    """Compress one day's structured episodes into ``diary/daily/<date>.md``.
+
+    slice-062 pipeline: project the day's structured sources → idempotence gate
+    on ``source_hash`` → LLM emits typed items (citing source segments) → Python
+    validates + dedupes + budget-selects → render fixed Markdown. On any failure
+    (provider down, unparseable / un-sourced output after one retry) a fallback
+    notice is written instead (C-7 — never the full aggregate).
+
+    Returns the date stem, or ``""`` when no episode matches (no fabricated
+    empty daily — preserves 039's "empty = nothing happened" contract).
+    """
+    root_path = Path(root)
+    store = MemoryStore(root_path)
+    sources = store.project_daily_sources(date_str)
+    if not sources:
+        return ""
+    source_segments = sorted({seg_id for seg_id, _reg, _entry in sources})
+    shash = _source_hash(sources)
+    if _existing_daily_ok(root_path, date_str, shash):
+        return date_str
+
+    valid_ids = [seg_id for seg_id, _reg, _entry in sources]
+    sources_block = _render_sources_block(sources)
+    items, status = _generate_items(provider, date_str, sources_block, valid_ids)
+    if status == "ok" and items:
+        items = _dedup_items(items)
+        items = _select_within_budget(date_str, items)
+        body = _render_daily_body(date_str, items)
+        if len(body) <= _DAILY_BUDGET:
+            _write_daily(store, date_str, body, source_segments, shash, "ok")
+            return date_str
+        # C-3: still over budget after dropping whole bullets — a single item
+        # alone exceeds it (can't trim without truncating). Fall back rather
+        # than persist an over-budget "ok" daily, which would also defeat
+        # idempotence (_existing_daily_ok rejects a >800 body) and re-call the
+        # LLM on every rerun.
+        logger.warning(
+            "daily %s: body still %d chars after whole-bullet selection; fallback",
+            date_str, len(body),
+        )
+    # fallback (contract 5): compression failed, yielded nothing usable, or a
+    # single oversized item could not fit the budget.
+    _write_fallback_body(store, date_str, source_segments, shash)
+    return date_str
+
+
+def write_fallback_daily(root: Path | str, date_str: str) -> str:
+    """Write a fallback daily without an LLM (the no-provider path, contract 5).
+
+    Used when no LLM provider is configured: the day still gets a traceable
+    fallback daily (not the full aggregate) so injection stays non-empty and the
+    next review/tidy can retry. Returns the date stem, or ``""`` when no episode
+    matches.
+    """
+    root_path = Path(root)
+    store = MemoryStore(root_path)
+    sources = store.project_daily_sources(date_str)
+    if not sources:
+        return ""
+    source_segments = sorted({seg_id for seg_id, _reg, _entry in sources})
+    shash = _source_hash(sources)
+    _write_fallback_body(store, date_str, source_segments, shash)
+    return date_str
+
+
+# --------------------------- weekly/monthly (slice-041) ---------------------------
 
 _WEEKLY_SYS = (
     "你是周记压缩器。把本周每天的日记压缩成 ≤800 字周记 + 三类旁路。"
@@ -77,48 +426,6 @@ _MONTHLY_SYS = (
     "只输出月记正文，不要解释。"
 )
 _MONTHLY_USER = "本月周记（按周序）：\n{body}\n\n输出压缩月记（≤800字 markdown）："
-
-
-def _episode_bodies_for_date(root: Path, date_str: str) -> list[tuple[str, str]]:
-    """Return ``[(registered_at, body)]`` for ``date_str``'s entries (block-4).
-
-    slice-061: delegates to ``MemoryStore.project_daily_entries`` so daily
-    compress reads the precise per-segment projection, not the review_date
-    whole-episode selection. Empty when no segment covers the date.
-    """
-    return MemoryStore(root).project_daily_entries(date_str)
-
-
-def compress_daily(
-    root: Path | str, date_str: str, provider: LLMProvider
-) -> str:
-    """Compress one day's episodes into ``diary/daily/<date>.md`` (full I/O).
-
-    slice-052 C-1/C-2: the day's episodes are fed to the LLM in FULL (no
-    ``_INPUT_CAP`` tail drop — a truncated daily is injected into the next cc
-    session as 残缺记忆), and the output is persisted in full (no ``_cap`` hard
-    slice — the prompt still asks ≤800 字, but persist keeps whatever returns,
-    保完整 > 保短). A genuinely huge day warns but never blocks.
-
-    Returns the date stem, or ``""`` when no episode matches (no fabricated
-    empty daily — preserves 039's "empty = nothing happened" contract).
-    """
-    root_path = Path(root)
-    items = _episode_bodies_for_date(root_path, date_str)
-    if not items:
-        return ""
-    raw = "\n\n".join(body for _ts, body in items)  # C-1: full input, no slice
-    if len(raw) > _DAILY_INPUT_WARN:
-        logger.warning(
-            "[memory] daily %s input %d chars exceeds %d (full input kept, "
-            "watch GLM context)", date_str, len(raw), _DAILY_INPUT_WARN,
-        )
-    compressed = provider.complete(_DAILY_SYS, _DAILY_USER.format(body=raw))
-    MemoryStore(root_path).write_diary({
-        "type": "diary", "date": date_str, "layer": "day", "period": date_str,
-        "promoted_knowledge": [], "__body": compressed,  # C-2: no _cap
-    })
-    return date_str
 
 
 def _parse_iso_week(s: str) -> tuple[int, int]:

@@ -368,3 +368,168 @@ def test_derive_daily_no_episodes_is_noop(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path)
     store.derive_daily_from_episodes("2026-07-09")
     assert not (tmp_path / "diary" / "daily" / "2026-07-09.md").exists()
+
+
+# --- slice-062: structured experience track (four lists) ---------------------
+#
+# The experience track is no longer one free-text ``events`` blob. The renderer
+# emits ``#### <field>`` sections of bullets; ``project_daily_sources`` is the
+# renderer's inverse and also returns the segment_id (source) for each entry.
+
+
+def _structured_entry(date: str = "2026-07-17") -> DraftDiary:
+    return DraftDiary(
+        date=date,
+        outcomes=("完成了 daily 重写", "验证到全量测试通过"),
+        decisions=("固定三问结构：进展 / 更正 / 待续",),
+        corrections=("原来以为单 $ 零误伤 -> 实测就近配对吞整段",),
+        open_loops=("weekly 表达重写未做",),
+    )
+
+
+def test_render_structured_segment_writes_field_sections(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-17",), date_basis="jsonl_timestamp"),
+        (_structured_entry(),),
+    )
+    text = (tmp_path / "episodes" / "s1.md").read_text(encoding="utf-8")
+    assert "#### outcomes" in text
+    assert "#### decisions" in text
+    assert "#### corrections" in text
+    assert "#### open_loops" in text
+    assert "- 完成了 daily 重写" in text
+
+
+def test_render_omits_empty_field_sections(tmp_path: Path) -> None:
+    # contract 1: a no-information field is omitted, not written as "无".
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-17",)),
+        (DraftDiary(date="2026-07-17", outcomes=("只有结果",)),),
+    )
+    text = (tmp_path / "episodes" / "s1.md").read_text(encoding="utf-8")
+    assert "#### outcomes" in text
+    assert "#### decisions" not in text
+    assert "#### corrections" not in text
+    assert "#### open_loops" not in text
+
+
+def test_render_legacy_events_still_supported(tmp_path: Path) -> None:
+    # a DraftDiary with only legacy ``events`` renders as prose (no ####), so
+    # old-style writes and existing tests keep working.
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-09",)),
+        (DraftDiary(date="2026-07-09", events="卡两小时在浏览器缓存"),),
+    )
+    text = (tmp_path / "episodes" / "s1.md").read_text(encoding="utf-8")
+    assert "卡两小时在浏览器缓存" in text
+    assert "#### " not in text
+
+
+def test_project_daily_sources_recovers_structured(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", segment_id="s1:0:100", activity_dates=("2026-07-17",),
+             registered_at="2026-07-17T10:00:00"),
+        (_structured_entry(),),
+    )
+    sources = store.project_daily_sources("2026-07-17")
+    assert len(sources) == 1
+    seg_id, registered_at, entry = sources[0]
+    assert seg_id == "s1:0:100"
+    assert registered_at == "2026-07-17T10:00:00"
+    assert entry.date == "2026-07-17"
+    assert entry.outcomes == ("完成了 daily 重写", "验证到全量测试通过")
+    assert entry.decisions == ("固定三问结构：进展 / 更正 / 待续",)
+    assert entry.corrections == ("原来以为单 $ 零误伤 -> 实测就近配对吞整段",)
+    assert entry.open_loops == ("weekly 表达重写未做",)
+
+
+def test_project_daily_sources_legacy_recovers_events(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-09",)),
+        (DraftDiary(date="2026-07-09", events="legacy 自由文本经历"),),
+    )
+    sources = store.project_daily_sources("2026-07-09")
+    assert len(sources) == 1
+    _seg, _reg, entry = sources[0]
+    assert entry.events == "legacy 自由文本经历"
+    assert entry.outcomes == ()
+
+
+def test_project_daily_sources_cross_day_splits(tmp_path: Path) -> None:
+    # a cross-midnight segment contributes only the matching date's items.
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-16", "2026-07-17")),
+        (
+            DraftDiary(date="2026-07-16", outcomes=("16号结果",)),
+            DraftDiary(date="2026-07-17", outcomes=("17号结果",)),
+        ),
+    )
+    d16 = store.project_daily_sources("2026-07-16")
+    d17 = store.project_daily_sources("2026-07-17")
+    assert d16[0][2].outcomes == ("16号结果",)
+    assert d17[0][2].outcomes == ("17号结果",)
+    # C-2: 16号 projection must NOT carry 17号's items
+    assert "17号结果" not in d16[0][2].outcomes
+
+
+def test_project_daily_sources_empty_when_no_episodes(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    assert store.project_daily_sources("2026-07-17") == []
+
+
+def test_project_daily_sources_two_segments_distinct_ids(tmp_path: Path) -> None:
+    # resume: two segments of one cc session project with their own segment_id.
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", segment_id="s1:0:100", activity_dates=("2026-07-09",)),
+        (DraftDiary(date="2026-07-09", outcomes=("第一段结果",)),),
+    )
+    store.write_episode(
+        _ctx("s1", segment_id="s1:100:200", activity_dates=("2026-07-09",),
+             registered_at="2026-07-09T12:00:00"),
+        (DraftDiary(date="2026-07-09", outcomes=("第二段结果",)),),
+    )
+    sources = store.project_daily_sources("2026-07-09")
+    assert {s[0] for s in sources} == {"s1:0:100", "s1:100:200"}
+    # ordered by registered_at
+    assert sources[0][2].outcomes == ("第一段结果",)
+
+
+def test_structured_multiline_item_roundtrips_as_one(tmp_path: Path) -> None:
+    """An item containing a newline must not lose its tail on re-parse. The
+    renderer collapses a multiline item to one line (items are single sentences
+    by contract); without that, the continuation line is dropped by the parser."""
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-17",)),
+        (DraftDiary(date="2026-07-17", outcomes=("主结论\n续接补充说明",)),),
+    )
+    sources = store.project_daily_sources("2026-07-17")
+    assert len(sources[0][2].outcomes) == 1  # one item, not split or truncated
+    assert "主结论" in sources[0][2].outcomes[0]
+    assert "补充说明" in sources[0][2].outcomes[0]
+
+
+def test_parse_unknown_field_header_degrades_to_events(tmp_path: Path) -> None:
+    """A hand-edited block whose only #### header is an unknown field must not
+    silently empty — degrade to legacy events so the content survives."""
+    from trowel_py.memory.store import _dump_frontmatter
+
+    ep = tmp_path / "episodes" / "s1.md"
+    ep.parent.mkdir(parents=True, exist_ok=True)
+    ep.write_text(_dump_frontmatter({
+        "type": "episode", "cc_session_id": "s1", "workdir": "/tmp",
+        "registered_at": "2026-07-17T10:00:00", "review_date": "2026-07-17",
+        "activity_dates": ["2026-07-17"], "source_jsonl": "/tmp/x.jsonl",
+        "segments": [],
+    }, "## 2026-07-17\n\n#### summary\n- 某条手写内容\n"), encoding="utf-8")
+    sources = MemoryStore(tmp_path).project_daily_sources("2026-07-17")
+    assert len(sources) == 1
+    entry = sources[0][2]
+    assert entry.events and "某条手写内容" in entry.events  # content preserved

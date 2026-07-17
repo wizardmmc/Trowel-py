@@ -50,10 +50,14 @@ def audit_draft(draft: Draft) -> DualtrackReport:
     Notes are NOT scanned — they are the knowledge track, so signal words there
     are expected and correct. Only diary entries (the experience track) are
     audited.
+
+    slice-062: the experience track is structured into four lists, so the scan
+    covers ``all_items()`` plus legacy ``events`` — a knowledge conclusion that
+    slipped into ``corrections`` is still a leak.
     """
     leaks: list[DiaryLeak] = []
     for d in draft.diary:
-        text = d.events
+        text = "\n".join([*d.all_items(), d.events])
         for sig in DUALTRACK_SIGNAL_WORDS:
             idx = text.find(sig)
             if idx != -1:
