@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,25 @@ except ImportError:  # pragma: no cover
 
 from trowel_py.llm.client import LLMProvider
 from trowel_py.memory.store import MemoryStore, _dump_frontmatter
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_dictionary(root: Path | str, provider: LLMProvider) -> dict[str, Any]:
+    """slice-064 §4: converge the dictionary after a tidy batch; surface status.
+
+    tidy mutates notes (retire/supersede/merge/revise), so the index can drift.
+    This runs the read-only check and full-rebuilds if stale, returning
+    ``dictionary_status`` for the tidy report. Never raises — a rebuild failure
+    marks the state stale (C-7) and is retried on the next run.
+    """
+    from trowel_py.memory.dictionary import ensure_dictionary_consistent
+
+    try:
+        return ensure_dictionary_consistent(root, provider)
+    except Exception as exc:  # noqa: BLE001 — isolate; tidy already succeeded
+        logger.warning("dictionary ensure failed after tidy: %s", exc)
+        return {"dictionary_status": "stale", "error": str(exc)}
 
 OpType = Literal["merge_sources", "revise", "supersede", "contradict", "retire", "keep"]
 
@@ -559,18 +579,23 @@ def run_weekly_tidy(
             if plan.operations:
                 try:
                     tidy_report = apply_plan(root_path, plan)
-                except ValueError as exc:
+                except Exception as exc:  # noqa: BLE001 — apply failure still converges dict
                     tidy_report = {"plan_id": plan.plan_id, "error": str(exc),
                                    "applied": [], "operations": len(plan.operations)}
             else:
                 tidy_report = {"plan_id": plan.plan_id, "applied": [],
                                "operations": 0}
+            # slice-064 F7: ALWAYS converge the dictionary — whether or not this
+            # run applied ops, a prior failed run may have left the index stale,
+            # and a partial apply may have changed notes. Rebuild on stale.
+            dict_report = _ensure_dictionary(root_path, provider)
     except BlockingIOError:
         return {"plan_id": f"weekly-{iso_week}", "skipped": "another tidy is running"}
     return {
         "plan_id": plan.plan_id,
         "compress": compress_report,
         "tidy": tidy_report,
+        "dictionary": dict_report,
     }
 
 
@@ -678,7 +703,7 @@ def run_monthly_tidy(
             if merged_plan.operations:
                 try:
                     tidy_report = apply_plan(root_path, merged_plan)
-                except ValueError as exc:
+                except Exception as exc:  # noqa: BLE001 — apply failure still converges dict
                     tidy_report = {
                         "plan_id": merged_plan.plan_id, "error": str(exc),
                         "applied": [], "operations": len(merged_plan.operations),
@@ -686,10 +711,13 @@ def run_monthly_tidy(
             else:
                 tidy_report = {"plan_id": merged_plan.plan_id, "applied": [],
                                "operations": 0}
+            # slice-064 F7: ALWAYS converge (see run_weekly_tidy).
+            dict_report = _ensure_dictionary(root_path, provider)
     except BlockingIOError:
         return {"plan_id": f"monthly-{month}", "skipped": "another tidy is running"}
     return {
         "plan_id": merged_plan.plan_id, "compress": compress_report,
         "tidy": tidy_report, "promoted": promoted,
         "retire_ops": len(retire_ops),
+        "dictionary": dict_report,
     }

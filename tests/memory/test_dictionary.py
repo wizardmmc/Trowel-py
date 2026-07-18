@@ -6,23 +6,19 @@ from pathlib import Path
 from trowel_py.memory.dictionary import (
     derive_dictionary_full,
     rebuild_dictionary,
-    sync_dictionary_incremental,
 )
 from trowel_py.memory.store import MemoryStore
 
 
 class _FakeProvider:
-    """Returns a canned cluster/assign JSON."""
+    """Returns a canned cluster JSON."""
 
-    def __init__(self, cluster_json: str, assign_json: str = "") -> None:
+    def __init__(self, cluster_json: str) -> None:
         self._cluster = cluster_json
-        self._assign = assign_json
         self.calls = 0
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         self.calls += 1
-        if "分类器" in system_prompt:
-            return self._assign or '{"assign":[]}'
         return self._cluster
 
 
@@ -63,6 +59,22 @@ def test_derive_full_orphans_go_to_misc(tmp_path: Path) -> None:
     assert "Note-B" in out["L1"]["misc"]
 
 
+def test_derive_full_excludes_inactive_notes(tmp_path: Path) -> None:
+    """slice-064 C-3: superseded/contradicted/retired never enter the index."""
+    store = MemoryStore(tmp_path)
+    live = _write_note(tmp_path, "Live", "active note", ["t"])
+    dead = _write_note(tmp_path, "Dead", "superseded note", ["t"])
+    store.update_note_fields(dead, {"status": "superseded"})
+    cluster = (
+        '{"domains":[{"name":"d","description":"x","triggers":"t",'
+        '"note_ids":["' + live + '","' + dead + '"]}]}'
+    )
+    out = derive_dictionary_full(tmp_path, _FakeProvider(cluster))
+    rendered = "\n".join(out["L1"].values())
+    assert live in rendered
+    assert dead not in rendered  # superseded dropped from the default index
+
+
 def test_derive_full_llm_failure_fallback(tmp_path: Path) -> None:
     _write_note(tmp_path, "X", "x", [])
     out = derive_dictionary_full(tmp_path, _FakeProvider("not json at all"))
@@ -92,35 +104,3 @@ def test_rebuild_apply_writes_files(tmp_path: Path) -> None:
     assert "触发词：t" in l0
 
 
-def test_sync_incremental_appends_to_existing_domain(tmp_path: Path) -> None:
-    _write_note(tmp_path, "Old", "old note", ["t"])
-    cluster = '{"domains":[{"name":"d","description":"x","triggers":"t","note_ids":["Old"]}]}'
-    rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(cluster))
-    # add a new note
-    new_id = _write_note(tmp_path, "New Note", "new", ["t"])
-    assign = f'{{"assign":[{{"note_id":"{new_id}","domain":"d"}}]}}'
-    out = sync_dictionary_incremental(tmp_path, [new_id], _FakeProvider(cluster, assign))
-    assert out["synced"] == 1
-    l1 = (tmp_path / "dictionary-L1" / "d.md").read_text(encoding="utf-8")
-    assert "Old" in l1
-    assert "New Note" in l1
-
-
-def test_sync_incremental_no_dictionary_falls_back_to_full(tmp_path: Path) -> None:
-    _write_note(tmp_path, "N", "n", [])
-    cluster = '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["N"]}]}'
-    out = sync_dictionary_incremental(tmp_path, ["N"], _FakeProvider(cluster))
-    assert (tmp_path / "dictionary-L0.md").exists()  # full rebuild happened
-
-
-def test_sync_misc_domain_added_to_l0(tmp_path: Path) -> None:
-    """codex P2-2: a new note sent to misc must surface in L0 so search finds it."""
-    _write_note(tmp_path, "Old", "old", ["t"])
-    cluster = '{"domains":[{"name":"d","description":"x","triggers":"t","note_ids":["Old"]}]}'
-    rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(cluster))
-    new_id = _write_note(tmp_path, "NewUnrelated", "new", [])
-    assign = f'{{"assign":[{{"note_id":"{new_id}","domain":"misc"}}]}}'
-    sync_dictionary_incremental(tmp_path, [new_id], _FakeProvider(cluster, assign))
-    l0 = (tmp_path / "dictionary-L0.md").read_text(encoding="utf-8")
-    assert "### misc" in l0  # misc added to L0 so search discovers its L1
-    assert (tmp_path / "dictionary-L1" / "misc.md").exists()

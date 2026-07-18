@@ -144,11 +144,27 @@ def handle_search(
         from trowel_py.memory.retrievers import LLMRetriever
 
         retriever = LLMRetriever(AnthropicProvider(load_llm_config()))
-    stems = retriever(
-        query,
-        corpus_dir=str(store.root / "notes"),
-        dictionary_path=dictionary_path,
-    )
+    # slice-064 C-2/F11: take a shared dictionary lock around the L0/L1 read
+    # AND the state read, so a concurrent rebuild cannot delete/swap an L1 file
+    # mid-retrieval (two LLM round-trips happen inside the retriever) and the
+    # stale warning describes the generation actually being served. The notes/
+    # read below is off the index and needs no lock. Search never rebuilds (C-8).
+    from trowel_py.memory.dictionary_lock import dictionary_lock
+    from trowel_py.memory.dictionary_state import load_state
+
+    with dictionary_lock(store.root, exclusive=False):
+        # warn on ANY non-consistent state (stale / missing / corrupt-loaded-as
+        # -missing), not just stale — slice-064 F6/codex: drift must be visible.
+        stale_warning = (
+            "dictionary index is stale; results may be incomplete. "
+            "run: trowel memory dict-rebuild --apply"
+            if load_state(store.root).status != "consistent" else None
+        )
+        stems = retriever(
+            query,
+            corpus_dir=str(store.root / "notes"),
+            dictionary_path=dictionary_path,
+        )
     hits: list[dict[str, Any]] = []
     for rank, stem in enumerate(stems[:top_k]):
         note = store.load_note(stem)
@@ -170,7 +186,10 @@ def handle_search(
                 rank=rank,
             ),
         )
-    return {"search_id": search_id, "results": hits}
+    out: dict[str, Any] = {"search_id": search_id, "results": hits}
+    if stale_warning:
+        out["warning"] = stale_warning
+    return out
 
 
 def handle_read(

@@ -266,7 +266,6 @@ async def _run_daily_review_locked(
         )
         store = MemoryStore(root)
         touched_dates: set[str] = set()
-        created_note_ids: list[str] = []  # slice-040-c: feed dictionary sync
         for seg in segments:
             session = seg.session
             # 040-a behavior: review_date = date_str (the CLI/run date), NOT
@@ -362,7 +361,6 @@ async def _run_daily_review_locked(
             repo.advance_extracted(
                 session.cc_session_id, seg.end, datetime.now().isoformat()
             )
-            created_note_ids.extend(report.notes_created)
             # slice-053: judge this session's memory usage right after it lands.
             # The advance above already happened, so a judge failure can NEVER
             # block review (C-2 — judge is an extension, not a precondition).
@@ -387,19 +385,35 @@ async def _run_daily_review_locked(
         # is written directly (contract 5).
         for review_date in sorted(touched_dates):
             _compress_or_aggregate(root, review_date, provider)
-        # slice-040-c C-3: sync the dictionary with this run's new notes
-        # (incremental; falls back to full rebuild if no dictionary yet).
-        # Non-fatal — a failure leaves the old dictionary; search degrades to
-        # a hint only if the dictionary was empty.
-        if created_note_ids and provider is not None:
-            try:
-                from trowel_py.memory.dictionary import sync_dictionary_incremental
+        # slice-064 §4: converge the dictionary to the note facts. A full
+        # rebuild (check → rebuild if stale) is the contract path — it is the
+        # only writer that goes through staging + atomic replace + state, so
+        # the index provably agrees with the notes. A rebuild failure never
+        # rolls back the note writes (C-7); it marks the state stale so the
+        # next review/tidy retries.
+        # slice-064 §4/F6: converge the dictionary (or at least observe drift).
+        # With a provider, check → rebuild if stale. Without one, still run the
+        # read-only check and mark stale on drift so MCP search warns and the
+        # next run with a provider retries. Either way a failure never rolls
+        # back the note writes (C-7).
+        try:
+            if provider is not None:
+                from trowel_py.memory.dictionary import ensure_dictionary_consistent
 
-                sync_dictionary_incremental(root, created_note_ids, provider)
-            except Exception:
-                logger.warning(
-                    "dictionary sync failed (non-fatal; old index kept)", exc_info=True
-                )
+                dict_out = ensure_dictionary_consistent(root, provider)
+            else:
+                from trowel_py.memory.dictionary import mark_dictionary_stale_if_drifted
+
+                dict_out = mark_dictionary_stale_if_drifted(root)
+        except Exception:  # noqa: BLE001 — defense-in-depth; both helpers never raise
+            logger.warning(
+                "dictionary ensure raised (non-fatal; notes kept)", exc_info=True
+            )
+            dict_out = {"dictionary_status": "stale"}
+        if dict_out.get("dictionary_status") == "stale":
+            logger.warning(
+                "dictionary stale after daily: %s", dict_out.get("check_after")
+            )
     finally:
         conn.close()
 

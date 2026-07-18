@@ -122,6 +122,36 @@ def _current_month() -> str:
     return date.today().strftime("%Y-%m")
 
 
+def _ensure_dict_after_batch(root: Path) -> None:
+    """slice-064 §4: after a CLI batch note change (rollback/migrate), check +
+    rebuild the dictionary so it tracks the note facts. With no provider it
+    still runs the read-only check and marks stale on drift (F6). Prints the
+    outcome; a rebuild failure only warns (state marked stale, retried later)."""
+    from trowel_py.memory.dictionary import (
+        ensure_dictionary_consistent,
+        mark_dictionary_stale_if_drifted,
+    )
+
+    try:
+        from trowel_py.config import load_llm_config
+        from trowel_py.llm.client import AnthropicProvider
+
+        provider = AnthropicProvider(load_llm_config())
+    except Exception as exc:  # noqa: BLE001 — no provider: observe + mark stale
+        out = mark_dictionary_stale_if_drifted(root)
+        print(
+            f"[memory] dictionary: {out['dictionary_status']} "
+            f"(no provider: {exc}; will retry)"
+        )
+        return
+    try:
+        out = ensure_dictionary_consistent(root, provider)
+    except Exception as exc:  # noqa: BLE001 — never block the batch op
+        print(f"[memory] dictionary rebuild skipped: {exc}")
+        return
+    print(f"[memory] dictionary: {out['dictionary_status']}")
+
+
 def _run_memory_cli(argv: list[str]) -> int:
     """Dispatch ``trowel-py memory <subcommand>``."""
     parser = argparse.ArgumentParser(prog="trowel-py memory", description="memory subsystem")
@@ -188,6 +218,11 @@ def _run_memory_cli(argv: list[str]) -> int:
     )
     dr.add_argument("--apply", action="store_true", help="write; default is dry-run")
     dr.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    dc = sub.add_parser(
+        "dict-check",
+        help="read-only dictionary consistency report vs notes (064)",
+    )
+    dc.add_argument("--root", help="memory root (default: resolved from config.toml)")
     mig = sub.add_parser(
         "migrate",
         help="backfill memory_id/status/valid_from on legacy notes (041 C-9)",
@@ -218,6 +253,8 @@ def _run_memory_cli(argv: list[str]) -> int:
 
             rollback_plan(root, args.rollback)
             print(f"[memory] tidy rollback: plan {args.rollback} restored")
+            # slice-064: rollback restored prior notes → converge the index
+            _ensure_dict_after_batch(root)
             return 0
         if args.status:
             from trowel_py.memory.tidy_state import tidy_status
@@ -296,6 +333,13 @@ def _run_memory_cli(argv: list[str]) -> int:
         out = rebuild_dictionary(root, apply=args.apply, provider=provider)
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
+    if args.cmd == "dict-check":
+        from trowel_py.memory import paths
+        from trowel_py.memory.dictionary_check import check_dictionary
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        print(json.dumps(check_dictionary(root), ensure_ascii=False, indent=2))
+        return 0
     if args.cmd == "migrate":
         from trowel_py.memory import paths
         from trowel_py.memory.migrate import migrate_memory
@@ -309,6 +353,10 @@ def _run_memory_cli(argv: list[str]) -> int:
         )
         if report.backed_up:
             print(f"[memory] backup -> {report.backed_up}")
+        if args.apply:
+            # slice-064: migrate backfills status/memory_id across legacy notes,
+            # so the active set (and thus the index) likely changed → converge.
+            _ensure_dict_after_batch(root)
         return 0
     if args.cmd == "core":
         from trowel_py.memory import paths

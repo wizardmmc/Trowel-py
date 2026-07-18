@@ -125,6 +125,8 @@ def test_run_weekly_tidy_compresses_and_applies(tmp_path: Path) -> None:
     notes = {n.memory_id: n for n in MemoryStore(tmp_path).load_notes()}
     assert notes["mid-old"].status == "superseded"
     assert notes["mid-old"].superseded_by == "mid-new"
+    # slice-064 F7: the supersede changed notes → dictionary converged
+    assert report["dictionary"]["dictionary_status"] == "consistent"
 
 
 def test_run_weekly_tidy_no_ops_skips_apply(tmp_path: Path) -> None:
@@ -140,3 +142,6 @@ def test_run_weekly_tidy_no_ops_skips_apply(tmp_path: Path) -> None:
     assert report["compress"]["weekly_written"]
     assert report["tidy"]["operations"] == 0
     assert report["tidy"]["applied"] == []
+    # slice-064 F7: even a no-op tidy converges the dictionary (self-heals any
+    # prior stale state); this assertion is what makes _ensure_dictionary load-bearing.
+    assert report["dictionary"]["dictionary_status"] == "consistent"

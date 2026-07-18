@@ -23,6 +23,10 @@ _L0_DOMAIN_RE = re.compile(r"dictionary-L1/([^\s.)]+)\.md")
 # slice-040-c: accept both `pages/<stem>.md` (S1 wiki corpus) and
 # `notes/<stem>.md` (040-c memory notes) so the generated L1 is parseable.
 _L1_STEM_RE = re.compile(r"(?:pages|notes)/([^`]+?)\.md")
+# slice-064: content-independent stem anchor (see dictionary._l1_entry). Prefers
+# this over the backtick extractor so a stem that itself contains a backtick
+# (which would close the `notes/{stem}.md` code span early) is still retrievable.
+_L1_STEM_ANCHOR_RE = re.compile(r"<!-- @stem (\S+) -->")
 _MAX_DOMAINS = 2
 
 _DOMAIN_SYS = (
@@ -115,7 +119,15 @@ def _parse_l0_domains(l0_text: str) -> list[str]:
 
 
 def _parse_l1_stems(l1_text: str) -> set[str]:
-    """Extract note stems referenced as ``pages/<stem>.md`` in an L1 file."""
+    """Extract indexed note stems from an L1 file.
+
+    Prefers the ``<!-- @stem ... -->`` anchor (robust to stems containing a
+    backtick, slice-064); falls back to the legacy ``notes/<stem>.md`` code-span
+    extractor for L1 files rendered before the anchor existed.
+    """
+    anchored = _L1_STEM_ANCHOR_RE.findall(l1_text)
+    if anchored:
+        return set(anchored)
     return set(_L1_STEM_RE.findall(l1_text))
 
 
