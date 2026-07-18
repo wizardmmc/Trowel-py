@@ -392,3 +392,146 @@ def test_memory_tidy_catchup_runs_explicit_range(
     assert out["from"] == "2026-W20"
 
 
+# ---------- slice-067: `trowel-py memory profile-recalibrate` ----------
+
+
+def _seed_user_session(mem: Path, sid: str, jsonl_path: str) -> None:
+    """Register one completed user session into a tmp sessions.db."""
+    from trowel_py.memory.sessions_repo import (
+        SessionRecord,
+        create_sessions_repository,
+        open_sessions_db,
+    )
+
+    conn = open_sessions_db(mem)
+    try:
+        repo = create_sessions_repository(conn)
+        repo.register(
+            SessionRecord(
+                cc_session_id=sid,
+                workdir="/proj",
+                date="2026-07-14",
+                jsonl_path=jsonl_path,
+                registered_at="2026-07-14T10:00:00",
+            )
+        )
+        repo.update_completed(sid, 500)
+    finally:
+        conn.close()
+
+
+def test_profile_recalibrate_default_is_plan(tmp_path: Path, capsys) -> None:
+    """no --run → read-only plan: no model, no staging, prints the plan dict."""
+    import json
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    jsonl = tmp_path / "s.jsonl"
+    jsonl.write_text("payload", encoding="utf-8")
+    _seed_user_session(mem, "s1", str(jsonl))
+
+    rc = cli._run_memory_cli(
+        ["profile-recalibrate", "--all", "--root", str(mem)]
+    )
+    assert rc == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["scope"] == {"all": True, "from": None}
+    assert [s["cc_session_id"] for s in plan["sessions"]] == ["s1"]
+    assert plan["sessions"][0]["end_offset"] == 500
+    assert plan["estimated_agent_calls"] == 1
+    # plan created no staging
+    assert not (mem / "meta" / "profile-recalibration").exists()
+
+
+def test_profile_recalibrate_plan_from_date(tmp_path: Path, capsys) -> None:
+    import json
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    jsonl = tmp_path / "s.jsonl"
+    jsonl.write_text("payload", encoding="utf-8")
+    _seed_user_session(mem, "s1", str(jsonl))
+    rc = cli._run_memory_cli(
+        ["profile-recalibrate", "--from", "2026-07-01", "--root", str(mem)]
+    )
+    assert rc == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["scope"] == {"all": False, "from": "2026-07-01"}
+
+
+def test_profile_recalibrate_requires_scope(tmp_path: Path, capsys) -> None:
+    # neither --all nor --from → exit 2 (avoid unbounded historical cost)
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    rc = cli._run_memory_cli(["profile-recalibrate", "--root", str(mem)])
+    assert rc == 2
+    assert "--all" in capsys.readouterr().out or "scope" in capsys.readouterr().out
+
+
+def test_profile_recalibrate_rejects_both_scope_modes(tmp_path: Path, capsys) -> None:
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    rc = cli._run_memory_cli(
+        [
+            "profile-recalibrate", "--all", "--from", "2026-07-01",
+            "--root", str(mem),
+        ]
+    )
+    assert rc == 2
+
+
+def test_profile_recalibrate_run_requires_proxy(tmp_path: Path, capsys) -> None:
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    rc = cli._run_memory_cli(
+        ["profile-recalibrate", "--all", "--run", "--root", str(mem)]
+    )
+    assert rc == 2
+    assert "proxy" in capsys.readouterr().out.lower()
+
+
+def test_profile_recalibrate_run_with_proxy_dispatches(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """--run + --proxy-base-url routes to run_recalibration with the resolved
+    root + scope; run_recalibration is monkeypatched so no real cc spawns."""
+    import json
+
+    import trowel_py.memory.profile_recalibrate as rmod
+
+    seen: dict[str, object] = {}
+
+    class _FakeResult:
+        def to_report_dict(self) -> dict:
+            return {"status": "complete", "run_id": "fake"}
+
+    async def fake_run(root, *, scope_all, from_date, proxy_base_url, **kw):
+        seen["root"] = str(root)
+        seen["scope_all"] = scope_all
+        seen["from_date"] = from_date
+        seen["proxy_base_url"] = proxy_base_url
+        seen["settings_path"] = kw.get("settings_path")
+        return _FakeResult()
+
+    monkeypatch.setattr(rmod, "run_recalibration", fake_run)
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    rc = cli._run_memory_cli(
+        [
+            "profile-recalibrate", "--all", "--run",
+            "--proxy-base-url", "http://127.0.0.1:8000",
+            "--root", str(mem),
+        ]
+    )
+    assert rc == 0
+    assert seen["scope_all"] is True
+    assert seen["proxy_base_url"] == "http://127.0.0.1:8000"
+    assert seen["root"] == str(mem)
+    # codex P1-b: --run must pass settings_path (proxy strips provider vars → 401)
+    sp = Path(str(seen["settings_path"]))
+    assert sp.name == "settings.json"
+    assert sp.parent.name == ".claude"
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "complete"
+
+

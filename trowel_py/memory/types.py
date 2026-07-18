@@ -145,6 +145,12 @@ class Suggestion:
     sources: tuple[str, ...] = ()
     date: str = ""
     status: SuggestionStatus = "pending"
+    #: slice-067: the distill-policy version that produced this suggestion. v1
+    #: records on disk predate the field and load as 1 (compat, never rewritten
+    #: in place); new suggestions load-stamp 2. The default-aged GET pending API
+    #: surfaces only the current policy so v1 long bodies stop polluting the
+    #: review list, but v1 records stay on disk for audit (C-6 版本可审计).
+    policy_version: int = 1
 
 
 @dataclass(frozen=True)

@@ -254,6 +254,28 @@ def _run_memory_cli(argv: list[str]) -> int:
         help="write/refresh candidate files (default: dry-run gap report)",
     )
     prom_cmd.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    recal = sub.add_parser(
+        "profile-recalibrate",
+        help="re-distill history under v2 hard rules into isolated staging "
+        "(067); default is a read-only plan, never touching live data",
+    )
+    recal.add_argument(
+        "--all", action="store_true",
+        help="replay every user completed session (exclusive with --from)",
+    )
+    recal.add_argument(
+        "--from", dest="from_date", metavar="YYYY-MM-DD",
+        help="replay sessions on/after this date (exclusive with --all)",
+    )
+    recal.add_argument(
+        "--run", action="store_true",
+        help="run the shadow replay (default: read-only plan)",
+    )
+    recal.add_argument(
+        "--proxy-base-url",
+        help="trowel proxy URL (required for --run; never bypass slice-030)",
+    )
+    recal.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -415,6 +437,56 @@ def _run_memory_cli(argv: list[str]) -> int:
         policy = load_policy(args.policy) if args.policy else PromotionPolicy()
         report = evaluate_promotion(root, policy, dry_run=not args.apply)
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.cmd == "profile-recalibrate":
+        from trowel_py.memory import paths
+        from trowel_py.memory.profile_recalibrate import (
+            RecalibrationRunResult,
+            RecalibrationScopeError,
+            plan_recalibration,
+            run_recalibration,
+        )
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        if args.run:
+            # §4: --run must go through the trowel proxy (never bypass
+            # slice-030's cache / identity fixes).
+            if not args.proxy_base_url:
+                print(
+                    "[memory] profile-recalibrate --run needs --proxy-base-url"
+                )
+                return 2
+            import asyncio
+
+            # codex P1-b: the proxy turns on CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,
+            # which makes cc strip provider vars from settings.json; without
+            # re-injecting them via settings_path the spawned cc 401s. The
+            # scheduler path passes this; the CLI path must too.
+            settings_path = Path.home() / ".claude" / "settings.json"
+            try:
+                run_result: RecalibrationRunResult = asyncio.run(
+                    run_recalibration(
+                        root,
+                        scope_all=args.all,
+                        from_date=args.from_date,
+                        proxy_base_url=args.proxy_base_url,
+                        settings_path=settings_path,
+                    )
+                )
+            except RecalibrationScopeError as exc:
+                print(f"[memory] profile-recalibrate: {exc}")
+                return 2
+            print(json.dumps(run_result.to_report_dict(), ensure_ascii=False, indent=2))
+            return 0
+        # default: read-only plan (no model, no staging, no live writes)
+        try:
+            plan = plan_recalibration(
+                root, scope_all=args.all, from_date=args.from_date
+            )
+        except RecalibrationScopeError as exc:
+            print(f"[memory] profile-recalibrate: {exc}")
+            return 2
+        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
         return 0
     return 2  # unreachable: subparser is required
 

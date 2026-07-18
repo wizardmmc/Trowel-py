@@ -173,12 +173,17 @@ class IncrementalSegment:
 class SessionsRepository:
     """CRUD over the sessions table. Holds one sqlite connection."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, migrate: bool = True) -> None:
         self._conn = conn
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_CREATE_SQL)
-        self._ensure_columns()
-        self._conn.commit()
+        if migrate:
+            self._conn.executescript(_CREATE_SQL)
+            self._ensure_columns()
+            self._conn.commit()
+        # migrate=False: a read-only caller (slice-067 profile-recalibrate plan)
+        # assumes a current-schema db and only SELECTs — skip the DDL so a ro
+        # connection (mode=ro uri) is not asked to write. A stale-schema db
+        # then surfaces as a clean query-time error instead of a silent write.
 
     def _ensure_columns(self) -> None:
         """Idempotent column additions (slice-040-b's first schema evolution).
@@ -487,9 +492,15 @@ class SessionsRepository:
         return {row[0]: row[1] for row in rows if row[0]}
 
 
-def create_sessions_repository(conn: sqlite3.Connection) -> SessionsRepository:
-    """Factory mirroring the cards/review repository pattern."""
-    return SessionsRepository(conn)
+def create_sessions_repository(
+    conn: sqlite3.Connection, *, migrate: bool = True
+) -> SessionsRepository:
+    """Factory mirroring the cards/review repository pattern.
+
+    ``migrate=False`` skips the schema DDL so a read-only connection (e.g. the
+    slice-067 recalibration ``plan``) can SELECT without being asked to write.
+    """
+    return SessionsRepository(conn, migrate=migrate)
 
 
 def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
@@ -497,6 +508,25 @@ def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
     meta = memory_root / _META_DIR
     meta.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(meta / _SESSIONS_DB))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def open_sessions_db_readonly(
+    memory_root: Path,
+) -> sqlite3.Connection | None:
+    """Open sessions.db read-only; return None if it does not exist.
+
+    slice-067: the recalibration ``plan`` must never materialize a sessions.db
+    on a fresh root or migrate a stale one (§4 plan is read-only). Unlike
+    ``open_sessions_db`` this does NOT create the file or the meta dir, and the
+    ``mode=ro`` uri refuses to write even if a caller later tries. Returns None
+    for a missing db so the caller can treat it as "no sessions registered yet".
+    """
+    db = memory_root / _META_DIR / _SESSIONS_DB
+    if not db.exists():
+        return None
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 

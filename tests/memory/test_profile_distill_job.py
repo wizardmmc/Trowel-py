@@ -15,6 +15,7 @@ import pytest
 
 from trowel_py.memory.profile_distill_job import (
     DistillError,
+    parse_and_gate_draft,
     run_daily_distill,
     run_one_session,
 )
@@ -22,7 +23,10 @@ from trowel_py.memory.profile_distill_state import (
     load_processed,
     mark_processed,
 )
-from trowel_py.memory.profile_suggestions import load_suggestions
+from trowel_py.memory.profile_suggestions import (
+    PROFILE_DISTILL_POLICY_VERSION,
+    load_suggestions,
+)
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
     create_sessions_repository,
@@ -316,3 +320,283 @@ async def test_run_daily_distill_excludes_review_and_distill_kinds(
         root, "http://x", host_factory=factory, date_str="2026-07-15"
     )
     assert calls == ["user"]
+
+
+# ---------- slice-067: structure gate (parse_and_gate_draft) ----------
+# Pure-fn tests for the deterministic Python gates that backstop the prompt.
+# Spec 通过标准 §结构 gate: 61→drop, 60→keep; empty body/sources/non-list
+# sources dropped; 3 valid → keep 2 + over_limit=1; unknown dim / bad JSON /
+# missing draft do NOT advance the watermark; all-dropped still advances.
+
+
+def _draft(items: list) -> str:
+    return json.dumps({"suggestions": items})
+
+
+def _item(body: str = "短结论", sources: list | None = None, dim: str = "ability") -> dict:
+    return {
+        "dimension": dim,
+        "body": body,
+        "sources": ["用户原话"] if sources is None else sources,
+        "rationale": "证据",
+    }
+
+
+def test_gate_keeps_60_drops_61() -> None:
+    body60 = "字" * 60
+    body61 = "字" * 61
+    gated = parse_and_gate_draft(
+        _draft([_item(body60), _item(body61)]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert [s.body for s in gated.accepted] == [body60]
+    assert gated.stats.dropped_too_long == 1
+    assert gated.stats.accepted == 1
+
+
+def test_gate_drops_empty_body() -> None:
+    gated = parse_and_gate_draft(
+        _draft([_item(body="   "), _item(body="有结论")]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert len(gated.accepted) == 1
+    assert gated.stats.dropped_empty_body == 1
+
+
+def test_gate_drops_empty_sources() -> None:
+    gated = parse_and_gate_draft(
+        _draft([_item(body="有结论", sources=[])]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert gated.accepted == ()
+    assert gated.stats.dropped_no_evidence == 1
+
+
+def test_gate_drops_non_list_sources() -> None:
+    gated = parse_and_gate_draft(
+        _draft([_item(body="有结论", sources="用户原话")]),  # str, not list
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert gated.accepted == ()
+    assert gated.stats.dropped_no_evidence == 1
+
+
+def test_gate_drops_session_id_only_sources() -> None:
+    # cc_session_id is traceability, not evidence (§2) — a suggestion whose
+    # only non-empty source is the session id is unsupported.
+    gated = parse_and_gate_draft(
+        _draft([_item(body="有结论", sources=["cc1"])]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert gated.accepted == ()
+    assert gated.stats.dropped_no_evidence == 1
+
+
+def test_gate_caps_at_two_records_over_limit() -> None:
+    # 3 valid → keep the model's top 2; over_limit=1
+    gated = parse_and_gate_draft(
+        _draft([_item(body="一"), _item(body="二"), _item(body="三")]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert [s.body for s in gated.accepted] == ["一", "二"]
+    assert gated.stats.over_limit == 1
+    assert gated.stats.accepted == 2
+    assert gated.stats.raw == 3
+
+
+def test_gate_stamps_policy_version_2() -> None:
+    gated = parse_and_gate_draft(
+        _draft([_item()]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert gated.accepted[0].policy_version == PROFILE_DISTILL_POLICY_VERSION
+    assert gated.accepted[0].status == "pending"
+    assert gated.accepted[0].date == "2026-07-17"
+    assert gated.accepted[0].id  # uuid stamped
+
+
+def test_gate_unknown_dimension_raises() -> None:
+    with pytest.raises(DistillError):
+        parse_and_gate_draft(
+            _draft([_item(dim="personality")]),
+            cc_session_id="cc1",
+            date_str="2026-07-17",
+        )
+
+
+def test_gate_bad_json_raises() -> None:
+    with pytest.raises(DistillError):
+        parse_and_gate_draft("{not json", cc_session_id="cc1", date_str="2026-07-17")
+
+
+def test_gate_non_list_suggestions_raises() -> None:
+    # top-level schema invalid → whole draft invalid (does not advance)
+    with pytest.raises(DistillError):
+        parse_and_gate_draft(
+            json.dumps({"suggestions": {"dimension": "ability"}}),
+            cc_session_id="cc1",
+            date_str="2026-07-17",
+        )
+
+
+def test_gate_all_dropped_returns_empty_no_raise() -> None:
+    # every candidate fails a gate, but the draft is structurally valid →
+    # empty result, no raise (the segment may still advance the watermark).
+    gated = parse_and_gate_draft(
+        _draft([_item(body=""), _item(body="x" * 61), _item(sources=[])]),
+        cc_session_id="cc1",
+        date_str="2026-07-17",
+    )
+    assert gated.accepted == ()
+    assert gated.stats.accepted == 0
+    assert gated.stats.raw == 3
+    assert gated.stats.dropped_empty_body == 1
+    assert gated.stats.dropped_too_long == 1
+    assert gated.stats.dropped_no_evidence == 1
+
+
+# ---------- slice-067: watermark advancement boundary ----------
+
+
+async def test_run_daily_distill_advances_when_all_gated_away(tmp_path: Path) -> None:
+    # C-5: a structurally-valid draft whose items all fail the gates STILL
+    # advances the watermark (no sticky daily retry of a stable output) and
+    # leaves the queue empty.
+    root = tmp_path / "memory"
+    _seed_session(root, "s1", completed=1000)
+    all_too_long = json.dumps(
+        {"suggestions": [_item(body="字" * 61)]}
+    )
+    await run_daily_distill(
+        root,
+        "http://x",
+        host_factory=_factory([FINISHED], all_too_long),
+        date_str="2026-07-17",
+    )
+    assert load_suggestions(root) == []  # nothing landed
+    assert load_processed(root)["s1"].end_offset == 1000  # still advanced
+
+
+async def test_run_daily_distill_bad_dim_does_not_advance(tmp_path: Path) -> None:
+    # unknown dimension is a STRUCTURAL failure → not marked → retried next run
+    root = tmp_path / "memory"
+    _seed_session(root, "s1", completed=1000)
+    bad_dim = json.dumps({"suggestions": [_item(dim="personality")]})
+    await run_daily_distill(
+        root,
+        "http://x",
+        host_factory=_factory([FINISHED], bad_dim),
+        date_str="2026-07-17",
+    )
+    assert load_processed(root) == {}  # NOT advanced → next run retries
+    assert load_suggestions(root) == []
+
+
+async def test_run_daily_distill_dedup_ignores_v1_queue(tmp_path: Path) -> None:
+    # §3: v2 dedup must NOT use v1 queue — a v1 long body on the same theme
+    # must not block a shorter v2 proposal. We assert the v2 suggestion still
+    # lands despite a same-theme v1 pending record on disk.
+    root = tmp_path / "memory"
+    _seed_session(root, "s1", completed=1000)
+    # seed a v1 pending suggestion (no policy_version field → loads as v1)
+    (root / "meta").mkdir(parents=True, exist_ok=True)
+    (root / "meta" / "profile-suggestions.json").write_text(
+        json.dumps(
+            {
+                "suggestions": [
+                    {
+                        "id": "v1-old",
+                        "dimension": "methodology",
+                        "body": "把 commit 写清楚这种很长的 v1 methodology 描述含例子",
+                        "sources": ["old-cc"],
+                        "date": "2026-07-01",
+                        "status": "pending",
+                    }
+                ],
+                "updated": "2026-07-01",
+            }
+        ),
+        encoding="utf-8",
+    )
+    v2_draft = json.dumps(
+        {"suggestions": [_item(body="commit 要让外行看懂", dim="methodology")]}
+    )
+    await run_daily_distill(
+        root,
+        "http://x",
+        host_factory=_factory([FINISHED], v2_draft),
+        date_str="2026-07-17",
+    )
+    loaded = load_suggestions(root)
+    # v1 record untouched + v2 record landed alongside it
+    assert {s.id for s in loaded} == {"v1-old"} | {
+        s.id for s in loaded if s.policy_version == PROFILE_DISTILL_POLICY_VERSION
+    }
+    v2 = [s for s in loaded if s.policy_version == PROFILE_DISTILL_POLICY_VERSION]
+    assert len(v2) == 1
+    assert v2[0].body == "commit 要让外行看懂"
+
+
+async def test_run_one_session_feeds_only_current_policy_queue_to_dedup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # I2: directly assert the dedup INPUT excludes v1. Seed v1 + v2 on disk,
+    # spy on build_distill_prompt, and verify only policy_version==2 items are
+    # passed (the v1 long body must not be fed to the agent's dedup view).
+    import trowel_py.memory.profile_distill_job as jobmod
+
+    root = tmp_path / "memory"
+    root.mkdir(parents=True, exist_ok=True)
+    _seed_session(root, "s1", completed=1000)
+    (root / "meta").mkdir(exist_ok=True)
+    (root / "meta" / "profile-suggestions.json").write_text(
+        json.dumps(
+            {
+                "suggestions": [
+                    {
+                        "id": "v1",
+                        "dimension": "ability",
+                        "body": "v1 long ability body",
+                        "sources": ["old"],
+                        "date": "2026-07-01",
+                        "status": "pending",
+                    },
+                    {
+                        "id": "v2",
+                        "dimension": "goal",
+                        "body": "v2 short goal",
+                        "sources": ["new"],
+                        "date": "2026-07-15",
+                        "status": "pending",
+                        "policy_version": PROFILE_DISTILL_POLICY_VERSION,
+                    },
+                ],
+                "updated": "2026-07-15",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, list] = {}
+    real_build = jobmod.build_distill_prompt
+
+    def spy(jsonl_path: str, existing, profile, **kw):
+        captured["pvs"] = [s.policy_version for s in existing]
+        return real_build(jsonl_path, existing, profile, **kw)
+
+    monkeypatch.setattr(jobmod, "build_distill_prompt", spy)
+    await run_one_session(
+        _session(),
+        "2026-07-17",
+        root,
+        proxy_base_url="http://x",
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+    )
+    assert captured["pvs"] == [PROFILE_DISTILL_POLICY_VERSION]

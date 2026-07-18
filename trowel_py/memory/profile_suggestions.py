@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 _META_DIR = "meta"
 _SUGGESTIONS_FILE = "profile-suggestions.json"
 
+#: slice-067: the current profile-distill policy version. v1 = the open-ended
+#: slice-050 prompt (long bodies, over-attribution); v2 = the ten hard rules +
+#: Python structure gate. New suggestions stamp this; the default-aged GET
+#: pending API surfaces only this policy's pending items. Bump here when the
+#: distill rules change again — old records stay on disk as their own version
+#: (C-6 版本可审计: never rewrite v1 in place).
+PROFILE_DISTILL_POLICY_VERSION = 2
+
 #: the closed sets backing the Literal enums in types.py. Kept here (not
 #: derived from typing.get_args) so a corrupt on-disk value is rejected with a
 #: clear message instead of a typing-layer surprise.
@@ -88,6 +96,18 @@ def _suggestion_from_dict(item: dict[str, object]) -> Suggestion:
     if not item.get("id"):
         raise ValueError("suggestion missing id in queue")
     sources = item.get("sources", [])
+    # slice-067: policy_version compat. v1 records on disk predate the field;
+    # read them as 1 rather than failing or batch-rewriting the queue (C-6).
+    raw_pv = item.get("policy_version", 1)
+    if isinstance(raw_pv, bool):  # bool is an int subclass — never a real version
+        policy_version = 1
+    elif isinstance(raw_pv, int):
+        policy_version = raw_pv
+    else:
+        try:
+            policy_version = int(str(raw_pv))
+        except (TypeError, ValueError):
+            policy_version = 1
     return Suggestion(
         id=str(item["id"]),
         dimension=cast(ProfileDimension, dim),
@@ -95,11 +115,18 @@ def _suggestion_from_dict(item: dict[str, object]) -> Suggestion:
         sources=tuple(str(s) for s in sources) if isinstance(sources, list) else (),
         date=str(item.get("date", "")),
         status=cast(SuggestionStatus, status),
+        policy_version=policy_version,
     )
 
 
-def _suggestion_to_dict(s: Suggestion) -> dict[str, object]:
-    """Serialize one suggestion to its on-disk dict form (sources → list)."""
+def suggestion_to_dict(s: Suggestion) -> dict[str, object]:
+    """Serialize one suggestion to its on-disk dict form (sources → list).
+
+    The single serialization source for ``Suggestion``: the live queue writer
+    AND the slice-067 recalibration staging writer both go through here, so a
+    new ``Suggestion`` field lands in both shapes together (no drift between
+    live queue and staging audit artifact).
+    """
     return {
         "id": s.id,
         "dimension": s.dimension,
@@ -107,6 +134,7 @@ def _suggestion_to_dict(s: Suggestion) -> dict[str, object]:
         "sources": list(s.sources),
         "date": s.date,
         "status": s.status,
+        "policy_version": s.policy_version,
     }
 
 
@@ -141,7 +169,7 @@ def _write_queue(
     path = _queue_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "suggestions": [_suggestion_to_dict(s) for s in items],
+        "suggestions": [suggestion_to_dict(s) for s in items],
         "updated": updated,
     }
     path.write_text(
@@ -206,6 +234,18 @@ def update_suggestion_status(
         _write_queue(root, new_items, updated=updated)
 
 
-def pending_suggestions(root: Path) -> list[Suggestion]:
-    """Return only ``status=pending`` suggestions (what the front-end shows)."""
-    return [s for s in load_suggestions(root) if s.status == "pending"]
+def pending_suggestions(
+    root: Path, *, current_policy_version: int = PROFILE_DISTILL_POLICY_VERSION
+) -> list[Suggestion]:
+    """Return only ``status=pending`` suggestions (what the front-end shows).
+
+    slice-067: by default surface ONLY the current policy's pending items, so
+    v1's long/over-attributed bodies stop polluting the review list. v1 pending
+    records stay on disk for audit (not deleted, not coerced to discarded —
+    C-6 版本可审计). Pass ``current_policy_version=None`` to see every pending
+    item regardless of version (audit / recalibration tooling).
+    """
+    items = [s for s in load_suggestions(root) if s.status == "pending"]
+    if current_policy_version is None:
+        return items
+    return [s for s in items if s.policy_version == current_policy_version]

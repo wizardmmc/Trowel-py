@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from trowel_py.memory.profile_suggestions import (
+    PROFILE_DISTILL_POLICY_VERSION,
     append_suggestions,
     load_suggestions,
     pending_suggestions,
@@ -29,6 +30,7 @@ def _sug(
     sources: tuple[str, ...] = ("2026-07-14 cc_session_abc",),
     date: str = "2026-07-14",
     status: str = "pending",
+    policy_version: int = PROFILE_DISTILL_POLICY_VERSION,
 ) -> Suggestion:
     return Suggestion(
         id=id_,
@@ -37,6 +39,7 @@ def _sug(
         sources=sources,
         date=date,
         status=status,  # type: ignore[arg-type]
+        policy_version=policy_version,
     )
 
 
@@ -186,3 +189,103 @@ def test_load_bad_status_value_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError):
         load_suggestions(tmp_path)
+
+
+# ---------- slice-067: policy_version compat + filtering ----------
+
+
+def _write_raw_queue(tmp_path: Path, suggestions: list) -> str:
+    """Hand-write a queue file verbatim (simulates a v1 on-disk shape)."""
+    (tmp_path / "meta").mkdir(exist_ok=True)
+    payload = json.dumps(
+        {"suggestions": suggestions, "updated": "2026-07-15"}, ensure_ascii=False
+    )
+    (tmp_path / "meta" / "profile-suggestions.json").write_text(payload, encoding="utf-8")
+    return payload
+
+
+_V1_SHAPE = {
+    "id": "v1-1",
+    "dimension": "ability",
+    "body": "一条很长的 v1 能力描述，把例子论证评价都塞进同一条 body",
+    "sources": ["cc-sess-old"],
+    "date": "2026-07-10",
+    "status": "pending",
+}  # note: NO policy_version field — a real v1 record on disk
+
+
+def test_v1_record_without_policy_version_loads_as_1(tmp_path: Path) -> None:
+    # C-6 兼容: a v1 record missing the field reads as policy_version=1
+    _write_raw_queue(tmp_path, [_V1_SHAPE])
+    [loaded] = load_suggestions(tmp_path)
+    assert loaded.policy_version == 1
+
+
+def test_v1_record_on_disk_not_rewritten(tmp_path: Path) -> None:
+    # C-6: reading must NOT batch-rewrite old records in place
+    payload = _write_raw_queue(tmp_path, [_V1_SHAPE])
+    load_suggestions(tmp_path)
+    assert (tmp_path / "meta" / "profile-suggestions.json").read_text(
+        encoding="utf-8"
+    ) == payload
+
+
+def test_new_suggestion_writes_policy_version_2(tmp_path: Path) -> None:
+    append_suggestions(tmp_path, [_sug(id_="s1")], updated="2026-07-15")
+    data = json.loads(
+        (tmp_path / "meta" / "profile-suggestions.json").read_text(encoding="utf-8")
+    )
+    assert data["suggestions"][0]["policy_version"] == PROFILE_DISTILL_POLICY_VERSION
+
+
+def test_pending_filters_out_v1_by_default(tmp_path: Path) -> None:
+    # the default-aged GET pending API surfaces only the current policy's pending
+    _write_raw_queue(
+        tmp_path,
+        [
+            _V1_SHAPE,  # v1 pending — must NOT surface by default
+            {
+                "id": "v2-1",
+                "dimension": "expression",
+                "body": "避免 AI 味",
+                "sources": ["cc-sess-new"],
+                "date": "2026-07-17",
+                "status": "pending",
+                "policy_version": PROFILE_DISTILL_POLICY_VERSION,
+            },
+        ],
+    )
+    pending = pending_suggestions(tmp_path)
+    assert [s.id for s in pending] == ["v2-1"]
+
+
+def test_pending_v1_records_unchanged_on_disk(tmp_path: Path) -> None:
+    # surfacing v2 pending must not delete / coerce the v1 records (audit)
+    payload = _write_raw_queue(tmp_path, [_V1_SHAPE])
+    pending_suggestions(tmp_path)  # default: current policy only
+    assert (tmp_path / "meta" / "profile-suggestions.json").read_text(
+        encoding="utf-8"
+    ) == payload
+    # and load_suggestions still returns the v1 record verbatim
+    assert [s.id for s in load_suggestions(tmp_path)] == ["v1-1"]
+
+
+def test_pending_policy_none_returns_all_versions(tmp_path: Path) -> None:
+    # audit / recalibration tooling passes None to see every pending item
+    _write_raw_queue(
+        tmp_path,
+        [
+            _V1_SHAPE,
+            {
+                "id": "v2-1",
+                "dimension": "expression",
+                "body": "避免 AI 味",
+                "sources": ["cc-sess-new"],
+                "date": "2026-07-17",
+                "status": "pending",
+                "policy_version": PROFILE_DISTILL_POLICY_VERSION,
+            },
+        ],
+    )
+    pending = pending_suggestions(tmp_path, current_policy_version=None)
+    assert {s.id for s in pending} == {"v1-1", "v2-1"}

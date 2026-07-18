@@ -135,7 +135,10 @@ def _seed_suggestion(
     body: str = "会 FastAPI",
     status: str = "pending",
 ) -> None:
-    from trowel_py.memory.profile_suggestions import append_suggestions
+    from trowel_py.memory.profile_suggestions import (
+        PROFILE_DISTILL_POLICY_VERSION,
+        append_suggestions,
+    )
     from trowel_py.memory.types import Suggestion
 
     append_suggestions(
@@ -148,6 +151,7 @@ def _seed_suggestion(
                 sources=("sess-abc",),
                 date="2026-07-14",
                 status=status,  # type: ignore[arg-type]
+                policy_version=PROFILE_DISTILL_POLICY_VERSION,
             )
         ],
         updated="2026-07-15",
