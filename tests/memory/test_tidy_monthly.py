@@ -83,32 +83,84 @@ def test_retire_skips_non_active(tmp_path: Path) -> None:
     assert ops == ()
 
 
-# ---------- promote_candidates ----------
+# ---------- promote_candidates (delegates to evaluate_promotion, slice-065) ---
+
+from datetime import timezone  # noqa: E402
+
+from trowel_py.memory.access_log import (  # noqa: E402
+    AccessRecord,
+    OutcomeRecord,
+    log_access,
+    log_outcome,
+)
+from trowel_py.memory.promotion_policy import PromotionPolicy  # noqa: E402
+from trowel_py.memory.sessions_repo import (  # noqa: E402
+    SessionRecord,
+    create_sessions_repository,
+    open_sessions_db,
+)
+
+TZ = timezone.utc
 
 
-def test_promote_helpful_gotcha(tmp_path: Path) -> None:
-    _note(tmp_path, "mid-a", "A", kind="gotcha", helpful_refs=35)
-    promoted = promote_candidates(tmp_path)
+def _seed_user(root: Path, cc: str) -> None:
+    conn = open_sessions_db(root)
+    try:
+        create_sessions_repository(conn).register(
+            SessionRecord(
+                cc_session_id=cc, workdir="/p", date="2026-07-01",
+                registered_at="t", session_kind="user", trowel_session_id=f"t-{cc}",
+            )
+        )
+    finally:
+        conn.close()
+
+
+def _helpful_read(root: Path, cc: str, stem: str, day: int) -> None:
+    log_access(root, AccessRecord(
+        ts=f"2026-07-{day:02d}T10:00:00+00:00", trowel_session_id=f"t-{cc}",
+        cc_session_id=cc, toolUseId="tu", action="read", search_id="s",
+        read_id=f"r{cc}", memory_id=stem,
+    ))
+    log_outcome(root, OutcomeRecord(
+        ts=f"2026-07-{day:02d}T10:01:00+00:00", trowel_session_id=f"t-{cc}",
+        cc_session_id=cc, toolUseId="tu", read_id=f"r{cc}", memory_id=stem,
+        outcome="helpful",
+    ))
+
+
+def test_promote_helpful_via_policy(tmp_path: Path) -> None:
+    nid = _note(tmp_path, "mid-a", "A", kind="gotcha")
+    for i, cc in enumerate(("u1", "u2", "u3"), 1):
+        _seed_user(tmp_path, cc)
+        _helpful_read(tmp_path, cc, nid, i)
+    policy = PromotionPolicy(min_helpful_sessions=3, min_distinct_days=1)
+    promoted = promote_candidates(
+        tmp_path, policy=policy, local_tz=TZ, today="2026-07-11"
+    )
     assert "mid-a" in promoted
     assert (tmp_path / "meta" / "core-candidates" / "mid-a.md").exists()
 
 
-def test_promote_below_threshold_skipped(tmp_path: Path) -> None:
-    _note(tmp_path, "mid-a", "A", kind="gotcha", helpful_refs=10)
-    assert promote_candidates(tmp_path) == []
-    assert not (tmp_path / "meta" / "core-candidates" / "mid-a.md").exists()
-
-
-def test_promote_non_gotcha_skipped(tmp_path: Path) -> None:
-    # only gotcha notes promote (procedural trigger for layer-one)
-    _note(tmp_path, "mid-a", "A", kind="fact", helpful_refs=50)
-    assert promote_candidates(tmp_path) == []
+def test_promote_default_policy_no_log_evidence_no_candidates(tmp_path: Path) -> None:
+    # the cache (helpful_refs) is NOT the truth — with no log evidence, nothing
+    # promotes even when the cache was hand-bumped high.
+    _note(tmp_path, "mid-a", "A", kind="gotcha", helpful_refs=35)
+    assert promote_candidates(tmp_path, today="2026-07-11") == []
 
 
 def test_promote_does_not_touch_core_md(tmp_path: Path) -> None:
-    # C-11: monthly promote NEVER writes core.md
-    _note(tmp_path, "mid-a", "A", kind="gotcha", helpful_refs=40)
-    promote_candidates(tmp_path)
+    # C-8: monthly promote NEVER writes core.md (candidate file only).
+    nid = _note(tmp_path, "mid-a", "A", kind="gotcha")
+    for i, cc in enumerate(("u1", "u2", "u3"), 1):
+        _seed_user(tmp_path, cc)
+        _helpful_read(tmp_path, cc, nid, i)
+    promote_candidates(
+        tmp_path,
+        policy=PromotionPolicy(min_helpful_sessions=3, min_distinct_days=1),
+        local_tz=TZ,
+        today="2026-07-11",
+    )
     assert not (tmp_path / "core.md").exists()
 
 
@@ -141,9 +193,16 @@ def test_compress_monthly_no_weeklies(tmp_path: Path) -> None:
 
 
 def test_run_monthly_tidy_end_to_end(tmp_path: Path) -> None:
-    # a stale note to retire + a weekly to compress + a note to supersede
-    _note(tmp_path, "mid-stale", "Stale", last_ref="2026-04-01",
-          content_hash="hs")
+    # a stale note to retire + a weekly to compress + a note to supersede.
+    # mid-stale needs a REAL read >90 days ago — recompute rebuilds last_ref
+    # from the logs (C-1), so a hand-set last_ref with no read is cleared.
+    stale_nid = _note(tmp_path, "mid-stale", "Stale", content_hash="hs")
+    _seed_user(tmp_path, "u-stale")
+    log_access(tmp_path, AccessRecord(
+        ts="2026-04-01T10:00:00+00:00", trowel_session_id="t-u-stale",
+        cc_session_id="u-stale", toolUseId="tu", action="read",
+        search_id="s", read_id="r-stale", memory_id=stale_nid,
+    ))
     _note(tmp_path, "mid-old", "Old", created="2026-07-08", updated="2026-07-08",
           conflicts_with=(), content_hash="ho")
     _note(tmp_path, "mid-new", "New", created="2026-07-08", updated="2026-07-08",

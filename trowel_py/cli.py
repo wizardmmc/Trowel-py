@@ -239,9 +239,21 @@ def _run_memory_cli(argv: list[str]) -> int:
     core_act.add_argument("memory_id", help="core item memory_id")
     core.add_argument("--root", help="memory root (default: resolved from config.toml)")
     metrics_cmd = sub.add_parser(
-        "metrics", help="print north-star metrics (041): harmful_memory_rate + raw material"
+        "metrics",
+        help="print memory metrics (065): identity/retrieval/effect/recall "
+        "with coverage + quality labels + the policy in force",
     )
     metrics_cmd.add_argument("--root", help="memory root (default: resolved from config.toml)")
+    prom_cmd = sub.add_parser(
+        "promotion",
+        help="evaluate core-candidate promotion gaps (065); --apply writes candidates",
+    )
+    prom_cmd.add_argument("--policy", help="path to a PromotionPolicy JSON override")
+    prom_cmd.add_argument(
+        "--apply", action="store_true",
+        help="write/refresh candidate files (default: dry-run gap report)",
+    )
+    prom_cmd.add_argument("--root", help="memory root (default: resolved from config.toml)")
     args = parser.parse_args(argv)
 
     if args.cmd == "tidy":
@@ -385,13 +397,24 @@ def _run_memory_cli(argv: list[str]) -> int:
         )
 
         root = Path(args.root) if args.root else paths.resolve_memory_root()
-        # slice-053: north_star (correction/retirement) + usage (the three
-        # effectiveness indicators: read_rate / hit_quality / recall_miss_rate).
+        # slice-065: north_star (correction/retirement) + usage (identity /
+        # retrieval / effect / recall, each with coverage + quality + the
+        # policy in force).
         report = {
             "north_star": compute_north_star(root),
             "usage": memory_usage_metrics(root),
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "promotion":
+        from trowel_py.memory import paths
+        from trowel_py.memory.promotion import evaluate_promotion
+        from trowel_py.memory.promotion_policy import PromotionPolicy, load_policy
+
+        root = Path(args.root) if args.root else paths.resolve_memory_root()
+        policy = load_policy(args.policy) if args.policy else PromotionPolicy()
+        report = evaluate_promotion(root, policy, dry_run=not args.apply)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0
     return 2  # unreachable: subparser is required
 

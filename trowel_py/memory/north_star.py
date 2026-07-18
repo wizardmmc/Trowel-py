@@ -16,10 +16,13 @@ retrieval precision/recall module — different concern, left untouched.)
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.tidy import HARMFUL_RETIRE_THRESHOLD
+
+if TYPE_CHECKING:
+    from trowel_py.memory.promotion_policy import PromotionPolicy
 
 
 def compute_north_star(
@@ -83,96 +86,189 @@ def compute_north_star(
     }
 
 
-def memory_usage_metrics(root: Path | str) -> dict[str, Any]:
-    """Three effectiveness indicators for memory usage (slice-053).
+def memory_usage_metrics(
+    root: Path | str,
+    *,
+    policy: "PromotionPolicy | None" = None,
+    local_tz: Any | None = None,
+) -> dict[str, Any]:
+    """Coverage-aware memory-usage metrics (slice-065 §3).
 
-    Plugs the memory system's biggest blind spot: a search hit does not tell
-    you whether the model USED the note, whether that use HELPED, or whether a
-    relevant note SHOULD have been used but wasn't.
+    Four blocks, each reporting its numerator/denominator AND a
+    ``reliable | partial | insufficient`` label whose thresholds come from the
+    in-force policy (C-5 — a rate without coverage/sample size is never
+    reported as reliable):
 
-    - ``read_rate`` = read records / search-hit records, over USER sessions'
-      access-log (hard). "search hits" = the returned candidates (mcp_server
-      writes one search record per candidate, carrying memory_id+rank); the
-      per-call summary record (no memory_id) is NOT a hit. Non-user sessions
-      (review/distill/eval) are excluded (C-3). None when no search hits.
-    - ``hit_quality`` = helpful / (helpful+harmful+unused), over judgement hits
-      (soft, LLM-judged). None when no judged hits with a usable outcome.
-    - ``recall_miss_rate`` = recall-miss count / judged-session count (soft),
-      split by attribution (retrieval_miss / awareness_miss). None when no
-      judgements. ``known_issue_repeat_rate`` is approximated by it (the strict
-      definition stays a TODO — north_star.compute_north_star still returns
-      None for the 041 metric; this soft proxy is what unblocks it).
+    - ``identity``: how many access records resolve to a real cc session
+      (attributed vs unattributed, never guessed — slice-061 C-7).
+    - ``retrieval``: user reads vs search hits (hard, from access-log).
+    - ``effect``: session-level helpful/harmful/unused over BOTH outcome-log
+      and segment judgement (slice-065 — helpful evidence no longer needs the
+      model to call ``memory.outcome``), plus judge coverage.
+    - ``recall``: recall-miss count over judged user sessions (soft), split by
+      attribution.
+
+    ``known_issue_repeat_rate`` is None — its strict definition needs an
+    objective "this session failed AND the relevant note existed" label that
+    does not exist yet (C-6); ``recall.recall_miss_rate`` is the soft proxy
+    under its OWN name, no longer impersonating the strict metric.
 
     Args:
         root: the memory root directory.
+        policy: the promotion policy supplying the quality thresholds (default
+            ``default_policy()``). The policy in force is echoed in the output.
+        local_tz: timezone for the day boundary (None → system local).
 
     Returns:
-        A metrics dict (rates are None when the denominator is zero).
+        A nested metrics dict (rates are None when the denominator is zero).
     """
     from trowel_py.memory.access_log import read_access_log
     from trowel_py.memory.attribution import AttributionIndex
     from trowel_py.memory.judgements import load_all_judgement_reports
+    from trowel_py.memory.promotion_policy import default_policy
+    from trowel_py.memory.recompute import compute_note_effects
+    from trowel_py.memory.store import MemoryStore
 
+    active_policy = policy or default_policy()
     root_path = Path(root)
     index = AttributionIndex.from_root(root_path)
+    effects = compute_note_effects(root_path, local_tz=local_tz)
+
+    # ---- identity: every access record attributed or not (slice-061 C-7) ----
     resolved = [
         (r, index.resolve(r.trowel_session_id, r.cc_session_id))
         for r in read_access_log(root_path)
     ]
-    user_records = [r for r, a in resolved if a.is_user]
-    # slice-061: attribution coverage (C-7 — unattributed counted, never guessed
-    # into the user population). Historical empty-cc_session_id rows that now
-    # resolve via a trowel binding re-enter the user denominator; rows with no
-    # verifiable mapping stay unattributed and are excluded from read_rate.
+    records_total = len(resolved)
     attributed = sum(1 for _r, a in resolved if a.attributed)
-    total = len(resolved)
-    unattributed = total - attributed
-    coverage = round(attributed / total, 4) if total else None
+    unattributed = records_total - attributed
+    coverage = round(attributed / records_total, 4) if records_total else None
+    identity_quality = active_policy.identity_quality(coverage, records_total)
+
+    # ---- retrieval: user-session reads vs search hits ----
+    user_records = [r for r, a in resolved if a.is_user]
     reads = sum(1 for r in user_records if r.action == "read")
-    # "search 命中数" = returned candidates (one search record per candidate,
-    # carrying memory_id+rank). The per-call summary record mcp_server writes
-    # without a memory_id is a call, not a hit — counting it would understate
-    # read_rate (one search = 1 summary + N candidate records).
+    # a "search hit" = a returned candidate (one record per candidate, carrying
+    # memory_id+rank); the per-call summary record (no memory_id) is a call,
+    # not a hit — counting it would understate read_rate.
     search_hits = sum(
         1 for r in user_records if r.action == "search" and r.memory_id
     )
+    # a search CALL is the per-call summary record (no memory_id); the N
+    # per-candidate records it produces are hits, not calls. Counting both
+    # would report N+1 calls for one search.
+    search_calls = sum(
+        1 for r in user_records if r.action == "search" and not r.memory_id
+    )
+    read_sessions = len(
+        {cc for eff in effects.values() for cc in eff.read_sessions}
+    )
     read_rate = round(reads / search_hits, 4) if search_hits else None
+    # retrieval inherits identity coverage (a read's attribution is the same
+    # resolution path); the sample that backs read_rate is its denominator
+    # (search_hits), NOT the numerator (reads) — a 0/20 rate with 20 hits is a
+    # real measurement, not "insufficient".
+    retrieval_quality = active_policy.identity_quality(coverage, search_hits)
+
+    # ---- effect: session-level helpful/harmful (from compute_note_effects) +
+    #      unused (judgement-only) over USER-judged segments ----
+    helpful_sessions = sum(eff.helpful_refs for eff in effects.values())
+    harmful_sessions = sum(eff.harmful_refs for eff in effects.values())
+    # unused is read from the shared effect (it already folds outcome +
+    # judgement unused, with helpful/harmful taking precedence in a session).
+    unused_sessions = sum(eff.unused_refs for eff in effects.values())
 
     reports = load_all_judgement_reports(root_path)
-    hits = [h for report in reports for h in report.hits]
-    helpful = sum(1 for h in hits if h.outcome == "helpful")
-    harmful = sum(1 for h in hits if h.outcome == "harmful")
-    unused = sum(1 for h in hits if h.outcome == "unused")
-    outcome_denom = helpful + harmful + unused
-    hit_quality = round(helpful / outcome_denom, 4) if outcome_denom else None
+    id_to_stem = {
+        n.memory_id: stem
+        for stem, n in MemoryStore(root_path).load_notes_with_id()
+        if n.memory_id
+    }
+    judged_user_cc: set[str] = set()
+    retrieval_miss = 0
+    awareness_miss = 0
+    for report in reports:
+        cc = report.cc_session_id
+        if not cc or not index.resolve("", cc).is_user:
+            continue
+        judged_user_cc.add(cc)
+        for m in report.recall_miss:
+            if id_to_stem.get(m.memory_id) is None:
+                continue  # fabricated or since-deleted memory_id (C-6 parity)
+            if m.attribution == "retrieval_miss":
+                retrieval_miss += 1
+            elif m.attribution == "awareness_miss":
+                awareness_miss += 1
+    effect_denom = helpful_sessions + harmful_sessions + unused_sessions
+    hit_quality = (
+        round(helpful_sessions / effect_denom, 4) if effect_denom else None
+    )
+    judged_user_segments = len(judged_user_cc)
+    # eligible = the union of attributed user cc sessions (from access-log) and
+    # judged user cc sessions (from reports). A judged session may have no
+    # attributed access-log (its reads pre-date the binding), so the union —
+    # not access-only — is the denominator that keeps coverage <= 1.0.
+    access_user_cc = {attr.cc_session_id for _r, attr in resolved if attr.is_user}
+    eligible_user_segments = len(access_user_cc | judged_user_cc)
+    judgement_coverage = (
+        round(judged_user_segments / eligible_user_segments, 4)
+        if eligible_user_segments
+        else None
+    )
+    effect_quality = active_policy.judgement_quality(
+        judgement_coverage, judged_user_segments
+    )
 
-    all_miss = [m for report in reports for m in report.recall_miss]
-    retrieval = sum(1 for m in all_miss if m.attribution == "retrieval_miss")
-    awareness = sum(1 for m in all_miss if m.attribution == "awareness_miss")
-    # slice-061: a cc session judged across multiple segments counts ONCE at
-    # the session level (hits/miss still aggregate per segment above).
-    judged_sessions = len({r.cc_session_id for r in reports})
+    # ---- recall: soft proxy, its own name (NOT known_issue_repeat_rate) ----
+    recall_miss_total = retrieval_miss + awareness_miss
     recall_miss_rate = (
-        round(len(all_miss) / judged_sessions, 4) if judged_sessions else None
+        round(recall_miss_total / judged_user_segments, 4)
+        if judged_user_segments
+        else None
+    )
+    recall_quality = active_policy.judgement_quality(
+        judgement_coverage, judged_user_segments
     )
 
     return {
-        "reads": reads,
-        "search_hits": search_hits,
-        "read_rate": read_rate,
-        "attributed": attributed,
-        "unattributed": unattributed,
-        "coverage": coverage,
-        "hits_total": len(hits),
-        "hits_helpful": helpful,
-        "hits_harmful": harmful,
-        "hits_unused": unused,
-        "hit_quality": hit_quality,
-        "recall_miss_total": len(all_miss),
-        "retrieval_miss": retrieval,
-        "awareness_miss": awareness,
-        "judged_sessions": judged_sessions,
-        "recall_miss_rate": recall_miss_rate,
-        # soft proxy for the 041 north-star metric (strict def is a TODO).
-        "known_issue_repeat_rate": recall_miss_rate,
+        "policy": active_policy.to_dict(),
+        "identity": {
+            "records_total": records_total,
+            "attributed": attributed,
+            "unattributed": unattributed,
+            "coverage": coverage,
+            "quality": identity_quality,
+        },
+        "retrieval": {
+            "search_calls": search_calls,
+            "search_hits": search_hits,
+            "reads": reads,
+            "read_sessions": read_sessions,
+            "read_rate": read_rate,
+            "read_rate_numerator": reads,
+            "read_rate_denominator": search_hits,
+            "quality": retrieval_quality,
+        },
+        "effect": {
+            "judged_user_segments": judged_user_segments,
+            "eligible_user_segments": eligible_user_segments,
+            "judgement_coverage": judgement_coverage,
+            "helpful_sessions": helpful_sessions,
+            "harmful_sessions": harmful_sessions,
+            "unused_sessions": unused_sessions,
+            "hit_quality": hit_quality,
+            "hit_quality_numerator": helpful_sessions,
+            "hit_quality_denominator": effect_denom,
+            "quality": effect_quality,
+        },
+        "recall": {
+            "retrieval_miss": retrieval_miss,
+            "awareness_miss": awareness_miss,
+            "recall_miss_rate": recall_miss_rate,
+            "recall_miss_rate_numerator": recall_miss_total,
+            "recall_miss_rate_denominator": judged_user_segments,
+            "quality": recall_quality,
+        },
+        # C-6: no objective session-failure ground truth yet.
+        "known_issue_repeat_rate": None,
     }

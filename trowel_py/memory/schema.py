@@ -77,6 +77,7 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     # (defaults to `active`); when present, must be a known lifecycle state.
     _enum(fm, "status", _NOTE_STATUS, errors, prefix="note")
     _int_field(fm, "refs", errors, prefix="note")
+    _int_field(fm, "read_sessions", errors, prefix="note")
     _int_field(fm, "pain", errors, prefix="note")
     _int_field(fm, "helpful_refs", errors, prefix="note")
     _int_field(fm, "harmful_refs", errors, prefix="note")

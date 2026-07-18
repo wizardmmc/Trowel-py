@@ -99,9 +99,13 @@ class AttributionIndex:
     def from_root(cls, root: Path | str) -> "AttributionIndex":
         """Build from a memory root, tolerating a missing/unreadable sessions db.
 
-        A failure degrades to an empty index: records with a non-empty
-        cc_session_id still attribute via the fallback, the rest go unattributed.
+        A missing or unreadable db degrades to an empty index: records with a
+        non-empty cc_session_id still attribute via the fallback, the rest go
+        unattributed. Read-only: when the db file is absent we do NOT create it
+        (a dry-run / metrics pass must have no filesystem side effect).
         """
+        if not (Path(root) / "meta" / "sessions.db").exists():
+            return cls.empty()
         try:
             conn = open_sessions_db(Path(root))
         except Exception:

@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from trowel_py.llm.client import LLMProvider
+from trowel_py.memory.promotion_policy import PromotionPolicy, default_policy
 from trowel_py.memory.store import MemoryStore, _dump_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,6 @@ _VALID_OP_TYPES = {
 #: slice-041 retirement + promotion thresholds (grill 2026-07-11).
 HALF_LIFE_DAYS = 90
 HARMFUL_RETIRE_THRESHOLD = 3
-PROMOTE_HELPFUL_THRESHOLD = 30
 _CANDIDATES_DIR = "meta/core-candidates"
 #: C2 (codex): fields a revise op may change. Identity (memory_id/type/
 #: content_hash/kind/title), lifecycle (status/superseded_by/supersedes) and
@@ -637,34 +637,42 @@ def plan_retirements(root: Path | str, today_str: str) -> tuple[TidyOperation, .
     return tuple(ops)
 
 
-def promote_candidates(root: Path | str) -> list[str]:
-    """Write ``meta/core-candidates/<memory_id>.md`` for gotcha notes with
-    ``helpful_refs≥30`` (C-5/C-11 — candidate file only, NEVER core.md). The
-    candidate carries the note body + the promotion rationale; human
-    ``core approve`` moves it into core.md as ``trial``.
+def promote_candidates(
+    root: Path | str,
+    *,
+    policy: PromotionPolicy | None = None,
+    local_tz: Any | None = None,
+    today: str | None = None,
+) -> list[str]:
+    """Write/refresh candidate files for notes that clear ``policy``
+    (slice-065 — candidate file only, NEVER core.md). Delegates to
+    ``evaluate_promotion`` so the gate is the same policy the metrics and the
+    monthly report carry. Returns the promoted memory_ids.
     """
-    store = MemoryStore(root)
-    promoted: list[str] = []
-    for _stem, n in store.load_notes_with_id():
-        if (n.status == "active" and n.kind == "gotcha" and n.memory_id
-                and n.helpful_refs >= PROMOTE_HELPFUL_THRESHOLD):
-            _write_candidate(root, n)
-            promoted.append(n.memory_id)
-    return promoted
+    from trowel_py.memory.promotion import evaluate_promotion
+
+    report = evaluate_promotion(
+        root, policy or default_policy(), local_tz=local_tz, today=today
+    )
+    return list(report["candidates"])
 
 
 def _write_candidate(root: Path, note: Any) -> Path:
-    path = Path(root) / _CANDIDATES_DIR / f"{note.memory_id}.md"
+    """Write a candidate file for a hand-nominated note (``core_ops.nominate`` —
+    below the policy threshold). Distinct from ``promotion._write_candidate``,
+    which carries the full session-level evidence; this one records only what
+    the note already caches plus a ``manual-nominate`` provenance stamp."""
+    path = root / _CANDIDATES_DIR / f"{note.memory_id}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     fm = {
         "type": "core-candidate", "memory_id": note.memory_id,
         "source_title": note.title, "helpful_refs": note.helpful_refs,
         "kind": note.kind, "verification": note.verification,
+        "policy_version": "manual-nominate", "status": "candidate",
     }
     body = (
         f"# 候选：{note.title}\n\n{note.summary}\n\n## 正文\n\n{note.body}\n\n"
-        f"## 晋升理由\n\n被命中 helpful {note.helpful_refs} 次"
-        f"（阈值 {PROMOTE_HELPFUL_THRESHOLD}）。"
+        "## 晋升理由\n\n人工提名（helpful 证据未达自动策略阈值）。"
     )
     path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
     return path
@@ -689,9 +697,13 @@ def run_monthly_tidy(
     today_str = today or _date.today().isoformat()
     try:
         with _tidy_lock(root_path):
-            recompute_counters(root_path)
+            recompute_report = recompute_counters(root_path)
             retire_ops = plan_retirements(root_path, today_str)
-            promoted = promote_candidates(root_path)
+            from trowel_py.memory.promotion import evaluate_promotion
+            promotion_report = evaluate_promotion(
+                root_path, default_policy(), today=today_str
+            )
+            promoted = promotion_report["candidates"]
             compress_report = compress_monthly(root_path, month, provider)
             plan = build_monthly_plan(root_path, month, provider)
             merged_plan = TidyPlan(
@@ -717,7 +729,8 @@ def run_monthly_tidy(
         return {"plan_id": f"monthly-{month}", "skipped": "another tidy is running"}
     return {
         "plan_id": merged_plan.plan_id, "compress": compress_report,
-        "tidy": tidy_report, "promoted": promoted,
+        "tidy": tidy_report, "recompute": recompute_report,
+        "promotion": promotion_report, "promoted": promoted,
         "retire_ops": len(retire_ops),
         "dictionary": dict_report,
     }

@@ -22,7 +22,7 @@ import logging
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -34,7 +34,15 @@ from trowel_py.memory.profile import (
     validate_profile,
 )
 from trowel_py.memory.schema import validate_entry
-from trowel_py.memory.types import CoreItem, Diary, Note, NoteId, PersistContext, Profile
+from trowel_py.memory.types import (
+    CoreItem,
+    Diary,
+    Note,
+    NoteId,
+    NoteStatus,
+    PersistContext,
+    Profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +74,7 @@ _NOTE_KEY_ORDER = (
     "memory_id", "status",
     "supersedes", "superseded_by",
     "valid_from", "last_verified_at",
-    "refs", "helpful_refs", "harmful_refs", "last_ref",
+    "refs", "read_sessions", "helpful_refs", "harmful_refs", "last_ref",
     "trigger", "do_not_use_when",
     "sources", "source_sessions", "content_hash",
 )
@@ -772,12 +780,13 @@ def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
         pain_reason=str(fm.get("pain_reason", "")),
         conflicts_with=tuple(fm.get("conflicts_with") or ()),
         memory_id=str(fm.get("memory_id", "")),
-        status=status,
+        status=cast("NoteStatus", status),
         supersedes=tuple(fm.get("supersedes") or ()),
         superseded_by=str(fm.get("superseded_by", "")),
         valid_from=str(fm.get("valid_from", "")),
         last_verified_at=str(fm.get("last_verified_at", "")),
         refs=int(fm.get("refs") or 0),
+        read_sessions=int(fm.get("read_sessions") or 0),
         helpful_refs=int(fm.get("helpful_refs") or 0),
         harmful_refs=int(fm.get("harmful_refs") or 0),
         last_ref=str(fm.get("last_ref", "")),

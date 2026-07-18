@@ -74,6 +74,39 @@ def test_memory_metrics_prints_usage_indicators(tmp_path: Path, capsys) -> None:
     assert "recall_miss_rate" in out
 
 
+def test_memory_promotion_dry_run_prints_policy_and_gaps(
+    tmp_path: Path, capsys
+) -> None:
+    """slice-065: `trowel memory promotion` prints a dry-run gap report and
+    the policy in force (writes nothing)."""
+    import json
+
+    rc = cli._run_memory_cli(["promotion", "--root", str(tmp_path)])
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["dry_run"] is True
+    assert report["policy"]["min_helpful_sessions"] == 3
+    assert "gaps" in report
+
+
+def test_memory_promotion_policy_override_from_file(
+    tmp_path: Path, capsys
+) -> None:
+    """--policy loads a PromotionPolicy JSON override."""
+    import json
+
+    from trowel_py.memory.promotion_policy import PromotionPolicy, save_policy
+
+    policy_path = tmp_path / "policy.json"
+    save_policy(PromotionPolicy(min_helpful_sessions=1), policy_path)
+    rc = cli._run_memory_cli(
+        ["promotion", "--policy", str(policy_path), "--root", str(tmp_path)]
+    )
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["policy"]["min_helpful_sessions"] == 1
+
+
 def test_memory_cli_routes_review(tmp_path: Path, monkeypatch) -> None:
     seen: dict[str, str] = {}
 

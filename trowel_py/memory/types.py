@@ -170,7 +170,11 @@ class Note:
         valid_from / last_verified_at: when the conclusion became true / was
             last independently confirmed.
         helpful_refs / harmful_refs: split the old ``refs`` (C-8). Rebuilt
-            from outcome-log (C-10 — logs are truth, these are caches).
+            from outcome-log + segment judgement (slice-065 — both are
+            evidence; logs are truth, these are caches). Counts are
+            INDEPENDENT user cc sessions, not raw events.
+        read_sessions: distinct user cc sessions that read this note
+            (slice-065 C-2 — promotion gates on sessions, not read events).
         trigger / do_not_use_when: scope a procedural note (when to apply /
             when NOT to). Body still carries the four-element procedure.
         sources: multi-source provenance — merge absorbs siblings here.
@@ -199,8 +203,13 @@ class Note:
     superseded_by: str = ""
     valid_from: str = ""
     last_verified_at: str = ""
-    # refs split (C-8); logs are truth, these are rebuildable caches (C-10)
+    # refs split (C-8); logs are truth, these are rebuildable caches (C-10).
+    # slice-065: these are now USER-session-scoped. refs = user read EVENTS;
+    # read_sessions = distinct user cc sessions; helpful_refs/harmful_refs =
+    # distinct user cc sessions with a helpful/harmful session-level effect
+    # (not raw outcome events — C-2). All rebuilt from logs + judgement.
     refs: int = 0
+    read_sessions: int = 0
     helpful_refs: int = 0
     harmful_refs: int = 0
     last_ref: str = ""
