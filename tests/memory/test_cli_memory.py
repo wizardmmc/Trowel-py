@@ -279,3 +279,83 @@ def test_backfill_completed_sets_extracted_for_already_extracted(
     assert rec.last_extracted_at == "2026-07-10T08:00:00"  # preserved
 
 
+# ---------- slice-063: `trowel-py memory tidy --status / --catchup` ----------
+
+
+def test_memory_tidy_status_prints_watermark_and_pending(
+    tmp_path: Path, capsys
+) -> None:
+    import json
+
+    from trowel_py.memory.tidy_state import TidyState, save_state
+
+    save_state(tmp_path, TidyState(weekly_last="2026-W29", monthly_last="2026-06"))
+    rc = cli._run_memory_cli(["tidy", "--status", "--root", str(tmp_path)])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["weekly"]["last_successful"] == "2026-W29"
+    assert data["monthly"]["last_successful"] == "2026-06"
+    assert isinstance(data["weekly"]["pending"], list)
+
+
+def test_memory_tidy_status_empty_state_bootstrap(
+    tmp_path: Path, capsys
+) -> None:
+    """no watermark yet → status still works; pending shows the bootstrap
+    single most-recent period (C-8), never the whole history."""
+    import json
+
+    rc = cli._run_memory_cli(["tidy", "--status", "--root", str(tmp_path)])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["weekly"]["last_successful"] is None
+    assert len(data["weekly"]["pending"]) == 1
+
+
+def test_memory_tidy_catchup_requires_from_and_scope(
+    tmp_path: Path, capsys
+) -> None:
+    rc = cli._run_memory_cli(["tidy", "--catchup", "--root", str(tmp_path)])
+    assert rc == 2
+    assert "--from" in capsys.readouterr().out
+
+
+def test_memory_tidy_catchup_runs_explicit_range(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """--catchup --from PERIOD --scope weekly routes to run_explicit_catchup
+    with the resolved root + a lazy provider factory (factory is never called
+    because the catchup fn is monkeypatched, so no real provider is built)."""
+    import json
+
+    import trowel_py.memory.tidy_scheduler as tsmod
+
+    seen: dict[str, object] = {}
+
+    def fake(root, scope, from_period, provider_factory, *, now=None):
+        seen["root"] = str(root)
+        seen["scope"] = scope
+        seen["from"] = from_period
+        assert callable(provider_factory)  # built lazily, not here
+        return {
+            "scope": scope,
+            "from": from_period,
+            "planned": [from_period],
+            "ran": [from_period],
+            "failed_at": None,
+            "watermark": from_period,
+        }
+
+    monkeypatch.setattr(tsmod, "run_explicit_catchup", fake)
+    rc = cli._run_memory_cli(
+        [
+            "tidy", "--catchup", "--from", "2026-W20", "--scope", "weekly",
+            "--root", str(tmp_path),
+        ]
+    )
+    assert rc == 0
+    assert seen == {"root": str(tmp_path), "scope": "weekly", "from": "2026-W20"}
+    out = json.loads(capsys.readouterr().out)
+    assert out["from"] == "2026-W20"
+
+

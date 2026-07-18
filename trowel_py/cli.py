@@ -134,6 +134,27 @@ def _run_memory_cli(argv: list[str]) -> int:
     tidy.add_argument("--iso-week", help="ISO week YYYY-Www (default: current week)")
     tidy.add_argument("--month", help="YYYY-MM (default: current month)")
     tidy.add_argument("--rollback", help="rollback a tidy plan id (restore notes/)")
+    tidy.add_argument(
+        "--status",
+        action="store_true",
+        help="print the tidy watermark + pending periods (read-only, 063)",
+    )
+    tidy.add_argument(
+        "--catchup",
+        action="store_true",
+        help="explicitly catch up a range; needs --from and --scope (063)",
+    )
+    tidy.add_argument(
+        "--from",
+        dest="from_period",
+        metavar="PERIOD",
+        help="starting period for --catchup (YYYY-Www weekly, YYYY-MM monthly)",
+    )
+    tidy.add_argument(
+        "--scope",
+        choices=["weekly", "monthly"],
+        help="which scope --catchup runs",
+    )
     tidy.add_argument("--root", help="memory root (default: resolved from config.toml)")
     review = sub.add_parser(
         "review", help="run the daily write loop: distill a day's cc sessions"
@@ -197,6 +218,30 @@ def _run_memory_cli(argv: list[str]) -> int:
 
             rollback_plan(root, args.rollback)
             print(f"[memory] tidy rollback: plan {args.rollback} restored")
+            return 0
+        if args.status:
+            from trowel_py.memory.tidy_state import tidy_status
+
+            print(json.dumps(tidy_status(root), ensure_ascii=False, indent=2, default=str))
+            return 0
+        if args.catchup:
+            if not args.from_period or not args.scope:
+                print(
+                    "[memory] tidy --catchup needs --from PERIOD and "
+                    "--scope weekly|monthly"
+                )
+                return 2
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+            from trowel_py.memory.tidy_scheduler import run_explicit_catchup
+
+            def _catchup_provider_factory():  # -> AnthropicProvider(load_llm_config())
+                return AnthropicProvider(load_llm_config())
+
+            result = run_explicit_catchup(
+                root, args.scope, args.from_period, _catchup_provider_factory
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
             return 0
         if args.weekly:
             from trowel_py.config import load_llm_config
