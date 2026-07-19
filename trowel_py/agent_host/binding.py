@@ -67,6 +67,11 @@ class SessionBinding:
     running: bool = False
     created_at: str = ""
     updated_at: str = ""
+    permission_preset: str | None = None
+    effective_permission_profile: str | None = None
+    effective_sandbox: str | None = None
+    effective_approval: str | None = None
+    network_access: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
         """JSON-serialisable view (runtime + capabilities unwrapped)."""
@@ -87,6 +92,11 @@ class SessionBinding:
             "running": self.running,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "permission_preset": self.permission_preset,
+            "effective_permission_profile": self.effective_permission_profile,
+            "effective_sandbox": self.effective_sandbox,
+            "effective_approval": self.effective_approval,
+            "network_access": self.network_access,
         }
 
 
@@ -105,6 +115,11 @@ def make_binding(
     name: str,
     connected: bool = False,
     running: bool = False,
+    permission_preset: str | None = None,
+    effective_permission_profile: str | None = None,
+    effective_sandbox: str | None = None,
+    effective_approval: str | None = None,
+    network_access: bool | None = None,
 ) -> SessionBinding:
     """Construct a :class:`SessionBinding`, stamping both timestamps at now.
 
@@ -127,6 +142,11 @@ def make_binding(
         name=name,
         connected=connected,
         running=running,
+        permission_preset=permission_preset,
+        effective_permission_profile=effective_permission_profile,
+        effective_sandbox=effective_sandbox,
+        effective_approval=effective_approval,
+        network_access=network_access,
         created_at=now,
         updated_at=now,
     )
@@ -167,4 +187,29 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         running=bool(data.get("running", False)),
         created_at=str(data.get("created_at", "")),
         updated_at=str(data.get("updated_at", "")),
+        permission_preset=(
+            str(data["permission_preset"])
+            if data.get("permission_preset") is not None
+            else None
+        ),
+        effective_permission_profile=(
+            str(data["effective_permission_profile"])
+            if data.get("effective_permission_profile") is not None
+            else None
+        ),
+        effective_sandbox=(
+            str(data["effective_sandbox"])
+            if data.get("effective_sandbox") is not None
+            else None
+        ),
+        effective_approval=(
+            str(data["effective_approval"])
+            if data.get("effective_approval") is not None
+            else None
+        ),
+        network_access=(
+            bool(data["network_access"])
+            if data.get("network_access") is not None
+            else None
+        ),
     )

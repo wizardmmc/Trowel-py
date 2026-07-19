@@ -65,6 +65,7 @@ class CodexEventAdapter:
             CodexEventType, Callable[[CodexEvent], AgentEvent | None]
         ] = {
             CodexEventType.SESSION_STARTED: self._session_started,
+            CodexEventType.MODEL_CHANGED: self._model_changed,
             CodexEventType.TURN_STARTED: self._turn_started,
             CodexEventType.USER: self._user,
             CodexEventType.ASSISTANT_DELTA: self._assistant_delta,
@@ -130,9 +131,9 @@ class CodexEventAdapter:
 
         The native thread id becomes ``cc_session_id`` (CC's field name for the
         native session id) so the reducer's session_started case works unchanged.
-        Codex-specific facts (provider/sandbox/policy) are NOT duplicated here —
-        they live on the :class:`AgentSession` binding the multi-session bar
-        already shows; the event only carries what the reducer reads.
+        Effective permission facts also ride this first live event so the
+        frontend shell can update immediately after lazy ``thread/start``;
+        the shared reducer safely ignores those extra fields.
         """
 
         return self._envelope(
@@ -143,31 +144,41 @@ class CodexEventAdapter:
                 "cwd": e.payload.get("cwd"),
                 "cc_session_id": e.thread_id,
                 "tools": [],
+                "permission_profile": e.payload.get("permission_profile"),
+                "effective_sandbox": e.payload.get("effective_sandbox"),
+                "effective_approval": e.payload.get("effective_approval"),
+                "network_access": e.payload.get("network_access"),
             },
         )
 
     def _turn_started(self, e: CodexEvent) -> AgentEvent:
         """turn_started → CC turn_start; Codex has no checkpoint concept (revertible False)."""
 
+        return self._envelope(e, type_="turn_start", payload={"revertible": False})
+
+    def _model_changed(self, e: CodexEvent) -> AgentEvent:
+        """Accepted next-turn settings reuse the shared model_changed event."""
+
         return self._envelope(
-            e, type_="turn_start", payload={"revertible": False}
+            e,
+            type_="model_changed",
+            payload={
+                "model": e.payload.get("model"),
+                "effort": e.payload.get("effort"),
+            },
         )
 
     def _user(self, e: CodexEvent) -> AgentEvent:
         """user echo passes through (text only)."""
 
-        return self._envelope(
-            e, type_="user", payload={"text": e.payload.get("text")}
-        )
+        return self._envelope(e, type_="user", payload={"text": e.payload.get("text")})
 
     # ------------------------------------------------------------- streaming
 
     def _assistant_delta(self, e: CodexEvent) -> AgentEvent:
         """assistant_delta → text; payload.delta → payload.text."""
 
-        return self._envelope(
-            e, type_="text", payload={"text": e.payload.get("delta")}
-        )
+        return self._envelope(e, type_="text", payload={"text": e.payload.get("delta")})
 
     def _reasoning_delta(self, e: CodexEvent) -> AgentEvent:
         """reasoning_delta → thinking; payload.delta → payload.text."""
@@ -306,7 +317,9 @@ class CodexEventAdapter:
         message = (
             err
             if isinstance(err, str)
-            else err.get("message") if isinstance(err, dict) else None
+            else err.get("message")
+            if isinstance(err, dict)
+            else None
         )
         return self._envelope(
             e,

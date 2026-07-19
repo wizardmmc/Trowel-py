@@ -43,6 +43,7 @@ class CodexEventType(str, Enum):
 
     # Lifecycle of a session / turn.
     SESSION_STARTED = "session_started"
+    MODEL_CHANGED = "model_changed"
     TURN_STARTED = "turn_started"
     # User echo — emitted locally when ``turn/start`` is accepted (spec §2).
     USER = "user"

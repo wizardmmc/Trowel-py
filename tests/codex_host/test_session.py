@@ -9,7 +9,11 @@ from __future__ import annotations
 import pytest
 
 from trowel_py.codex_host.errors import ProtocolViolationError
-from trowel_py.codex_host.events import CodexEventType, TranslatedItem, immutable_payload
+from trowel_py.codex_host.events import (
+    CodexEventType,
+    TranslatedItem,
+    immutable_payload,
+)
 from trowel_py.codex_host.session import (
     CodexSession,
     CodexSessionConfig,
@@ -46,7 +50,9 @@ def _binding_result(tid: str = "t-1") -> dict:
     }
 
 
-def _drive_to_running(sid: str = "s1", tid: str = "t-1", text: str = "hi") -> CodexSession:
+def _drive_to_running(
+    sid: str = "s1", tid: str = "t-1", text: str = "hi"
+) -> CodexSession:
     """Run a session through begin_send → binding → turn_started (state=RUNNING)."""
 
     session = CodexSession(_config(sid))
@@ -94,6 +100,36 @@ def test_abort_send_releases_reservation() -> None:
     session.begin_send()  # no raise
 
 
+def test_failed_turn_start_keeps_pending_model_effort_pair() -> None:
+    """A rejected native request must not lose or partially commit selection."""
+
+    session = CodexSession(_config())
+    session.attach_thread_binding(_binding_result())
+    session.queue_turn_settings("gpt-5.6-luna", "medium")
+    session.begin_send()
+    assert session.next_turn_settings() == ("gpt-5.6-luna", "medium")
+    session.abort_send()
+    assert session.next_turn_settings() == ("gpt-5.6-luna", "medium")
+    assert session.binding is not None
+    assert session.binding.model == "gpt-5.6-sol"
+
+
+def test_accepted_turn_commits_model_effort_together() -> None:
+    """Only an accepted turn moves both effective settings and emits one event."""
+
+    session = CodexSession(_config())
+    session.attach_thread_binding(_binding_result())
+    session.queue_turn_settings("gpt-5.6-luna", "medium")
+    event = session.commit_turn_settings(model="gpt-5.6-luna", effort="medium")
+    assert event is not None
+    assert event.type is CodexEventType.MODEL_CHANGED
+    assert session.binding is not None
+    assert (session.binding.model, session.binding.reasoning_effort) == (
+        "gpt-5.6-luna",
+        "medium",
+    )
+
+
 # -------------------------------------------------------- binding + session
 
 
@@ -108,11 +144,34 @@ def test_parse_thread_binding_reads_effective_facts() -> None:
     assert dict(binding.sandbox) == {"mode": "read-only"}
 
 
+def test_parse_thread_binding_reads_real_0144_permission_shape() -> None:
+    """Real 0.144.0 strings/profile/network facts remain separately visible."""
+
+    binding = parse_thread_binding(
+        {
+            "thread": {"id": "t-real"},
+            "model": "gpt-5.6-sol",
+            "modelProvider": "openai",
+            "cwd": "/tmp/trowel-test",
+            "sandbox": {"type": "readOnly", "networkAccess": False},
+            "approvalPolicy": "on-request",
+            "activePermissionProfile": {"id": ":read-only", "extends": None},
+            "reasoningEffort": "high",
+        }
+    )
+    assert binding.effective_sandbox == "read-only"
+    assert binding.effective_approval == "on-request"
+    assert binding.permission_profile == ":read-only"
+    assert binding.network_access is False
+
+
 def test_parse_thread_binding_missing_model_raises() -> None:
     """Drift in the response (no model) is structural, not tolerable."""
 
     with pytest.raises(ProtocolViolationError):
-        parse_thread_binding({"thread": {"id": "t"}, "modelProvider": "openai", "cwd": "/x"})
+        parse_thread_binding(
+            {"thread": {"id": "t"}, "modelProvider": "openai", "cwd": "/x"}
+        )
 
 
 def test_parse_thread_binding_missing_thread_id_raises() -> None:
@@ -180,7 +239,9 @@ def test_interrupted_flips_to_interrupted() -> None:
 
     session = _drive_to_running()
     session.emit_translated(
-        TranslatedItem(type=CodexEventType.INTERRUPTED, thread_id="t-1", turn_id="turn-1")
+        TranslatedItem(
+            type=CodexEventType.INTERRUPTED, thread_id="t-1", turn_id="turn-1"
+        )
     )
     assert session.state is CodexSessionState.INTERRUPTED
 

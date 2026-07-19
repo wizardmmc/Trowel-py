@@ -166,6 +166,10 @@ class BindingStore:
         permission: str | None = None,
         connected: bool | None = None,
         running: bool | None = None,
+        effective_permission_profile: str | None = None,
+        effective_sandbox: str | None = None,
+        effective_approval: str | None = None,
+        network_access: bool | None = None,
     ) -> SessionBinding:
         """Write back native facts immutably and return the new binding.
 
@@ -197,6 +201,14 @@ class BindingStore:
             changes["connected"] = connected
         if running is not None:
             changes["running"] = running
+        if effective_permission_profile is not None:
+            changes["effective_permission_profile"] = effective_permission_profile
+        if effective_sandbox is not None:
+            changes["effective_sandbox"] = effective_sandbox
+        if effective_approval is not None:
+            changes["effective_approval"] = effective_approval
+        if network_access is not None:
+            changes["network_access"] = network_access
         updated = replace(existing, **changes)
         self.put(updated)
         return updated

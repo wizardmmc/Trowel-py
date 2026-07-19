@@ -56,6 +56,13 @@ MAX_RUNNING = 5
 #: (spec §4: never leave the UI on a spinner).
 _TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
+_CODEX_PERMISSION_PRESETS: dict[str, tuple[str | None, str | None]] = {
+    "follow": (None, None),
+    "read-only": ("on-request", "read-only"),
+    "workspace-write": ("on-request", "workspace-write"),
+    "danger-full-access": ("never", "danger-full-access"),
+}
+
 
 class RuntimeFrozenError(Exception):
     """A PATCH tried to change a session's runtime (spec C-1)."""
@@ -209,13 +216,22 @@ class SessionHub:
         from trowel_py.codex_host import CodexSession, CodexSessionConfig
 
         sid = uuid.uuid4().hex
+        preset = req.permission_preset or "follow"
+        approval_policy, sandbox = _CODEX_PERMISSION_PRESETS[preset]
+        # Compatibility for callers from slice-072 that still send the two
+        # native fields directly. New UI code sends permission_preset only.
+        if req.permission_preset is None and (
+            req.approval_policy is not None or req.sandbox is not None
+        ):
+            approval_policy = req.approval_policy
+            sandbox = req.sandbox
         config = CodexSessionConfig(
             trowel_session_id=sid,
             workdir=req.workdir,
             model=req.model,
             effort=req.effort,
-            approval_policy=req.approval_policy or "never",
-            sandbox=req.sandbox or "read-only",
+            approval_policy=approval_policy,
+            sandbox=sandbox,
             initial_thread_id=req.resume_from,
         )
         session = CodexSession(config)
@@ -228,11 +244,12 @@ class SessionHub:
             workdir=req.workdir,
             model=req.model,
             effort=req.effort,
-            permission=req.approval_policy or "never",
+            permission=None,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             capabilities=CODEX_CAPABILITIES,
             name=self._display_name(req.workdir),
+            permission_preset=preset,
         )
         self._store.put(binding)
         self._active_id = sid
@@ -242,9 +259,7 @@ class SessionHub:
         """Workdir basename + ``#N`` for duplicates, counted across the store."""
 
         basename = Path(workdir).name or str(workdir)
-        same_workdir = sum(
-            1 for b in self._store.list_all() if b.workdir == workdir
-        )
+        same_workdir = sum(1 for b in self._store.list_all() if b.workdir == workdir)
         return basename if same_workdir == 0 else f"{basename} #{same_workdir + 1}"
 
     # ------------------------------------------------------------- read
@@ -253,6 +268,13 @@ class SessionHub:
         """Return the binding for ``session_id`` or ``None``."""
 
         return self._store.get(session_id)
+
+    async def list_codex_models(self) -> list[dict[str, Any]]:
+        """Return the shared app-server's complete visible model catalog."""
+
+        if self._codex is None:
+            raise HTTPException(status_code=503, detail="codex host unavailable")
+        return await self._codex.list_models()
 
     def _require(self, session_id: str) -> SessionBinding:
         """Look up a binding or raise 404."""
@@ -281,9 +303,7 @@ class SessionHub:
             items.append(item)
         return items, self._active_id
 
-    def _live_status(
-        self, binding: SessionBinding
-    ) -> tuple[bool, bool]:
+    def _live_status(self, binding: SessionBinding) -> tuple[bool, bool]:
         """Read (connected, running) from the native host for one binding."""
 
         if binding.runtime is Runtime.CLAUDE_CODE:
@@ -338,9 +358,103 @@ class SessionHub:
         # Other PATCHable fields (model/effort) follow each host's own contract
         # in later slices; slice-072 intentionally has nothing else to apply.
 
-    def validate_resume(
-        self, runtime: Runtime, native_session_id: str | None
-    ) -> None:
+    async def update_codex_settings(
+        self,
+        session_id: str,
+        *,
+        model: str | None,
+        effort: str | None,
+    ) -> dict[str, Any]:
+        """Validate and stage one atomic Codex model/effort pair.
+
+        Args:
+            session_id: Trowel session whose next turn should use the pair.
+            model: Requested native catalog id, or None to retain the current
+                effective/configured model.
+            effort: Requested native effort, or None to retain the current
+                effort when supported.
+
+        Returns:
+            The staged pair plus whether effort was adjusted to the model's
+            native default.
+
+        Raises:
+            HTTPException: For non-Codex sessions, missing live sessions,
+                unknown models, or running/waiting sessions.
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise HTTPException(
+                status_code=422, detail="model/effort PATCH is Codex-only"
+            )
+        if self._codex is None:
+            raise HTTPException(status_code=503, detail="codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=404, detail=f"codex session {session_id} not live"
+            )
+        catalog = await self._codex.list_models()
+        current_native = getattr(session, "binding", None)
+        default_row = next(
+            (item for item in catalog if item.get("is_default") is True),
+            catalog[0] if catalog else None,
+        )
+        current_model = (
+            model
+            or binding.model
+            or getattr(current_native, "model", None)
+            or session.config.model
+            or (default_row.get("id") if default_row is not None else None)
+        )
+        row = next(
+            (
+                item
+                for item in catalog
+                if item.get("id") == current_model or item.get("model") == current_model
+            ),
+            None,
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"model {current_model!r} is not in the native catalog",
+            )
+        supported = [
+            str(item["value"])
+            for item in row.get("supported_efforts", [])
+            if isinstance(item, dict) and isinstance(item.get("value"), str)
+        ]
+        requested_effort = (
+            effort
+            or binding.effort
+            or getattr(current_native, "reasoning_effort", None)
+            or session.config.effort
+            or row.get("default_effort")
+        )
+        adjusted = requested_effort not in supported
+        selected_effort = (
+            str(row["default_effort"]) if adjusted else str(requested_effort)
+        )
+        if selected_effort not in supported:
+            raise HTTPException(
+                status_code=422,
+                detail=f"model {current_model!r} has no usable default effort",
+            )
+        from trowel_py.codex_host import TurnConflictError
+
+        try:
+            session.queue_turn_settings(str(row["id"]), selected_effort)
+        except TurnConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "model": str(row["id"]),
+            "effort": selected_effort,
+            "adjusted": adjusted,
+        }
+
+    def validate_resume(self, runtime: Runtime, native_session_id: str | None) -> None:
         """Forbid resuming a native id bound to the other runtime (spec C-2).
 
         A ``None`` native id is a fresh session — always allowed.
@@ -416,9 +530,7 @@ class SessionHub:
             self._active_id = None
         return True
 
-    async def stream(
-        self, session_id: str, text: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
         """Yield unified AgentEvent v1 envelopes from the bound runtime.
 
         Both runtimes pass through their adapter (CC via the per-session
@@ -439,15 +551,13 @@ class SessionHub:
                 raise HTTPException(
                     status_code=404, detail=f"cc session {session_id} not live"
                 )
-            adapter = self._cc_adapters.get(session_id)
-            if adapter is None:
-                adapter = CcEventAdapter(session_id)
-                self._cc_adapters[session_id] = adapter
+            cc_adapter = self._cc_adapters.get(session_id)
+            if cc_adapter is None:
+                cc_adapter = CcEventAdapter(session_id)
+                self._cc_adapters[session_id] = cc_adapter
             async for event in host.send(text):
-                raw = (
-                    dict(event) if isinstance(event, dict) else event.model_dump()
-                )
-                yield adapter.wrap(raw).model_dump(by_alias=True)
+                raw = dict(event) if isinstance(event, dict) else event.model_dump()
+                yield cc_adapter.wrap(raw).model_dump(by_alias=True)
             self._writeback_cc_native(session_id, host)
             return
         if self._codex is None:
@@ -465,6 +575,10 @@ class SessionHub:
                     session_id, attached
                 ),
             )
+            # ``turn/start`` accepted: manager committed any pending model and
+            # effort to the native binding. Persist that effective pair now;
+            # the pre-turn callback above only makes the thread id durable.
+            self._writeback_codex_native(session_id, session)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 — surface as 502, not 500
@@ -472,12 +586,12 @@ class SessionHub:
             raise HTTPException(
                 status_code=502, detail=f"codex turn failed: {exc}"
             ) from exc
-        adapter = self._codex_adapters.get(session_id)
-        if adapter is None:
-            adapter = CodexEventAdapter(session_id)
-            self._codex_adapters[session_id] = adapter
+        codex_adapter = self._codex_adapters.get(session_id)
+        if codex_adapter is None:
+            codex_adapter = CodexEventAdapter(session_id)
+            self._codex_adapters[session_id] = codex_adapter
         async for event in session.events():
-            envelope = adapter.wrap(event)
+            envelope = codex_adapter.wrap(event)
             if envelope is None:
                 # adapter dropped a duplicate (assistant_message) or a type with
                 # no real producer (tool_progress); the per-session seq is only
@@ -487,6 +601,7 @@ class SessionHub:
             yield payload
             if _is_terminal(payload):
                 break
+
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
         """Build a terminal error envelope from the session's own seq space.
 
@@ -509,16 +624,16 @@ class SessionHub:
                 payload={"subclass": "host_error", "errors": [str(detail)]},
             ).model_dump(by_alias=True)
         if binding.runtime is Runtime.CLAUDE_CODE:
-            adapter = self._cc_adapters.get(session_id)
-            if adapter is None:
-                adapter = CcEventAdapter(session_id)
-                self._cc_adapters[session_id] = adapter
-        else:
-            adapter = self._codex_adapters.get(session_id)
-            if adapter is None:
-                adapter = CodexEventAdapter(session_id)
-                self._codex_adapters[session_id] = adapter
-        return adapter.error_event(detail).model_dump(by_alias=True)
+            cc_adapter = self._cc_adapters.get(session_id)
+            if cc_adapter is None:
+                cc_adapter = CcEventAdapter(session_id)
+                self._cc_adapters[session_id] = cc_adapter
+            return cc_adapter.error_event(detail).model_dump(by_alias=True)
+        codex_adapter = self._codex_adapters.get(session_id)
+        if codex_adapter is None:
+            codex_adapter = CodexEventAdapter(session_id)
+            self._codex_adapters[session_id] = codex_adapter
+        return codex_adapter.error_event(detail).model_dump(by_alias=True)
 
     # ------------------------------------------------------------- writeback
 
@@ -551,10 +666,20 @@ class SessionHub:
         if thread_binding is None or not thread_binding.model:
             return
         try:
+            sandbox = getattr(thread_binding, "effective_sandbox", None)
+            approval = getattr(thread_binding, "effective_approval", None)
             self._store.update_native(
                 session_id,
                 native_session_id=thread_binding.thread_id,
                 model=thread_binding.model,
+                effort=getattr(thread_binding, "reasoning_effort", None),
+                permission=_permission_label(sandbox, approval),
+                effective_permission_profile=getattr(
+                    thread_binding, "permission_profile", None
+                ),
+                effective_sandbox=sandbox,
+                effective_approval=approval,
+                network_access=getattr(thread_binding, "network_access", None),
             )
         except KeyError:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
@@ -570,9 +695,7 @@ class SessionHub:
         codex_live = 0
         if self._codex is not None:
             codex_live = sum(
-                1
-                for sid in self._codex.session_ids
-                if self._store.get(sid) is not None
+                1 for sid in self._codex.session_ids if self._store.get(sid) is not None
             )
         return cc_live + codex_live
 
@@ -597,3 +720,17 @@ def _is_terminal(payload: dict[str, Any]) -> bool:
         if isinstance(nested, dict) and nested.get("status") == "host_exited":
             return True
     return False
+
+
+def _permission_label(sandbox: str | None, approval: str | None) -> str | None:
+    """Build the compact compatibility label from separate effective facts."""
+
+    labels = {
+        "read-only": "Read only",
+        "workspace-write": "Workspace write",
+        "danger-full-access": "Full access",
+    }
+    if sandbox is None and approval is None:
+        return None
+    sandbox_label = labels.get(sandbox or "", sandbox or "Unknown sandbox")
+    return f"{sandbox_label} · {approval or 'unknown approval'}"

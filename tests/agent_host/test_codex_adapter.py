@@ -67,6 +67,10 @@ class TestTypeAlignment:
                     "cwd": "/repo",
                     "sandbox": {"mode": "workspace-write"},
                     "approval_policy": {"policy": "on-request"},
+                    "permission_profile": ":workspace-write",
+                    "effective_sandbox": "workspace-write",
+                    "effective_approval": "on-request",
+                    "network_access": False,
                 },
             )
         )
@@ -79,21 +83,21 @@ class TestTypeAlignment:
         assert ev.payload["cwd"] == "/repo"
         assert ev.payload["cc_session_id"] == "thr-1"
         assert ev.payload["tools"] == []
+        assert ev.payload["permission_profile"] == ":workspace-write"
+        assert ev.payload["effective_sandbox"] == "workspace-write"
+        assert ev.payload["effective_approval"] == "on-request"
+        assert ev.payload["network_access"] is False
 
     def test_turn_started_maps_to_turn_start(self, adapter) -> None:
         """Codex turn_started (no -ed) → CC turn_start; revertible false."""
 
-        ev = adapter.wrap(
-            _codex(CodexEventType.TURN_STARTED, seq=2, item_id=None)
-        )
+        ev = adapter.wrap(_codex(CodexEventType.TURN_STARTED, seq=2, item_id=None))
         assert ev.type == "turn_start"
         assert ev.turn_id == "turn-1"
         assert ev.payload["revertible"] is False
 
     def test_user_passthrough(self, adapter) -> None:
-        ev = adapter.wrap(
-            _codex(CodexEventType.USER, seq=3, payload={"text": "hi"})
-        )
+        ev = adapter.wrap(_codex(CodexEventType.USER, seq=3, payload={"text": "hi"}))
         assert ev.type == "user"
         assert ev.payload == {"text": "hi"}
 
@@ -181,9 +185,7 @@ class TestTypeAlignment:
             ],
         }
 
-    def test_tool_completed_maps_to_tool_result_with_exit_code(
-        self, adapter
-    ) -> None:
+    def test_tool_completed_maps_to_tool_result_with_exit_code(self, adapter) -> None:
         """command completed → tool_result carrying output/exit_code/duration."""
 
         ev = adapter.wrap(
@@ -351,9 +353,12 @@ class TestEnvelopePassthrough:
             _codex(CodexEventType.ASSISTANT_DELTA, seq=10, payload={"delta": "a"})
         )
         # native seq 11 — dropped (assistant_message), no envelope emitted
-        assert adapter.wrap(
-            _codex(CodexEventType.ASSISTANT_MESSAGE, seq=11, payload={"text": "a"})
-        ) is None
+        assert (
+            adapter.wrap(
+                _codex(CodexEventType.ASSISTANT_MESSAGE, seq=11, payload={"text": "a"})
+            )
+            is None
+        )
         third = adapter.wrap(
             _codex(CodexEventType.ASSISTANT_DELTA, seq=12, payload={"delta": "b"})
         )

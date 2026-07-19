@@ -152,9 +152,28 @@ def test_patch_runtime_change_rejected_422(client: TestClient, workdir: Path):
     assert resp.status_code == 422
 
 
-def test_cross_resume_rejected_409(
-    client: TestClient, workdir: Path, hub: SessionHub
+def test_patch_codex_model_effort_returns_adjusted_pair(
+    client: TestClient, workdir: Path
 ):
+    """PATCH exposes the server-side Luna fallback instead of hiding it."""
+
+    row = client.post(
+        "/api/agent/sessions",
+        json=codex_payload(workdir, model="gpt-5.6-sol", effort="ultra"),
+    ).json()["data"]
+    response = client.patch(
+        f"/api/agent/sessions/{row['session_id']}",
+        json={"model": "gpt-5.6-luna", "effort": "ultra"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "adjusted": True,
+    }
+
+
+def test_cross_resume_rejected_409(client: TestClient, workdir: Path, hub: SessionHub):
     """Resume a native id already bound to CC, as Codex → 409 (C-2)."""
 
     hub.store.put(
@@ -192,13 +211,37 @@ def test_get_runtimes(client: TestClient):
     assert codex["connected"] is True  # FakeCodexManager wired
 
 
-def test_get_history_returns_codex_rows_for_workdir(
-    client: TestClient, workdir: Path
+def test_get_models_returns_the_manager_catalog(
+    client: TestClient, hub: SessionHub, monkeypatch: pytest.MonkeyPatch
 ):
+    """The API returns exactly the native rows; it owns no model whitelist."""
+
+    native = [
+        {
+            "id": "future-model",
+            "model": "future-model-native",
+            "display_name": "Future",
+            "description": "Recorded by the fake app-server.",
+            "is_default": True,
+            "default_effort": "quantum",
+            "supported_efforts": [
+                {"value": "quantum", "description": "Unknown future effort"}
+            ],
+        }
+    ]
+
+    async def list_models():
+        return native
+
+    monkeypatch.setattr(hub._codex, "list_models", list_models)  # noqa: SLF001
+    response = client.get("/api/agent/models")
+    assert response.status_code == 200
+    assert response.json()["data"]["models"] == native
+
+
+def test_get_history_returns_codex_rows_for_workdir(client: TestClient, workdir: Path):
     client.post("/api/agent/sessions", json=codex_payload(workdir))
-    rows = client.get(
-        f"/api/agent/sessions?workdir={workdir}"
-    ).json()["data"]
+    rows = client.get(f"/api/agent/sessions?workdir={workdir}").json()["data"]
     codex_rows = [r for r in rows if r["runtime"] == "codex"]
     assert codex_rows
     assert codex_rows[0]["native_session_id"] is None  # fresh, no thread yet
@@ -325,9 +368,9 @@ def test_get_history_codex_not_implemented(
         name="proj",
     )
     hub.store.put(binding)
-    resp = client.get("/api/agent/sessions/{binding.session_id}/history".format(
-        binding=binding
-    ))
+    resp = client.get(
+        "/api/agent/sessions/{binding.session_id}/history".format(binding=binding)
+    )
     assert resp.status_code == 501
 
 

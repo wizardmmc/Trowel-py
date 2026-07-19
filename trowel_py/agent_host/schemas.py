@@ -14,6 +14,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 RuntimeWire = Literal["claude_code", "codex"]
+PermissionPreset = Literal[
+    "follow", "read-only", "workspace-write", "danger-full-access"
+]
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -34,6 +37,8 @@ class CreateAgentSessionRequest(BaseModel):
         permission_mode: CC ``--permission-mode`` (defaults to bypass).
         approval_policy: Codex ``approvalPolicy`` (defaults to ``never``).
         sandbox: Codex ``sandbox`` mode (defaults to ``read-only``).
+        permission_preset: Host-neutral Codex permission intent. The backend
+            maps it to native sandbox/approval fields.
         memory_enabled / profile_enabled: frozen A/B switches (default True).
     """
 
@@ -45,6 +50,7 @@ class CreateAgentSessionRequest(BaseModel):
     permission_mode: str | None = None
     approval_policy: str | None = None
     sandbox: str | None = None
+    permission_preset: PermissionPreset | None = None
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
 

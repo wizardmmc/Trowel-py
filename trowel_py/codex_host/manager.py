@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Mapping
 
+from trowel_py.codex_host.catalog import parse_model_list_page
 from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.codex_host.events import (
     CodexEventType,
@@ -108,7 +109,9 @@ class CodexHostManager:
                 it is stateless.
         """
 
-        self._client_factory: ClientFactory = client_factory or self._default_client_factory
+        self._client_factory: ClientFactory = (
+            client_factory or self._default_client_factory
+        )
         self._translator: CodexTranslator = translator or CodexTranslator()
         self._client: AppServerClient | None = None
         self._state: CodexHostManagerState = CodexHostManagerState.STOPPED
@@ -276,6 +279,28 @@ class CodexHostManager:
 
     # ------------------------------------------------------------ turn flow
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        """Return every visible native model, following all result cursors.
+
+        The server's row and effort order is preserved. Unknown model ids and
+        effort values are deliberately passed through by the catalog parser.
+        """
+
+        client = await self.ensure_ready()
+        rows: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"includeHidden": False}
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = await client.request(
+                "model/list", params, timeout=_REQUEST_TIMEOUT_S
+            )
+            page, cursor = parse_model_list_page(result)
+            rows.extend(page)
+            if cursor is None:
+                return rows
+
     async def send(
         self,
         session: CodexSession,
@@ -350,10 +375,14 @@ class CodexHostManager:
             if before_turn_start is not None:
                 before_turn_start(session)
             self._require_registered(session)
+            model, effort = session.next_turn_settings()
             turn_result = await client.request(
                 "turn/start",
                 self._turn_start_params(
-                    session.binding.thread_id, text, session.config.effort
+                    session.binding.thread_id,
+                    text,
+                    model=model,
+                    effort=effort,
                 ),
                 timeout=_REQUEST_TIMEOUT_S,
             )
@@ -379,6 +408,7 @@ class CodexHostManager:
                         exc_info=True,
                     )
                 raise
+            session.commit_turn_settings(model=model, effort=effort)
             session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
@@ -425,11 +455,18 @@ class CodexHostManager:
             return  # capability-gated / echo — drop silently
         thread_id = _extract_thread_id(params)
         if thread_id is None:
-            self._record_orphan(method, None, _extract_turn_id_from_params(params), "no_thread_id")
+            self._record_orphan(
+                method, None, _extract_turn_id_from_params(params), "no_thread_id"
+            )
             return
         session = self._thread_to_session.get(thread_id)
         if session is None:
-            self._record_orphan(method, thread_id, _extract_turn_id_from_params(params), "unknown_thread")
+            self._record_orphan(
+                method,
+                thread_id,
+                _extract_turn_id_from_params(params),
+                "unknown_thread",
+            )
             return
         try:
             items = self._translator.translate(method, params)
@@ -455,7 +492,10 @@ class CodexHostManager:
             # is not in the explicit ignore list — record so a new method in a
             # future recording is visible instead of silently dropped.
             self._record_orphan(
-                method, thread_id, _extract_turn_id_from_params(params), "unknown_method"
+                method,
+                thread_id,
+                _extract_turn_id_from_params(params),
+                "unknown_method",
             )
             return
         for item in items:
@@ -530,7 +570,9 @@ class CodexHostManager:
                 session.emit_host_status(HostStatusKind.DEGRADED, reason=reason)
         _log.warning("codex host degraded: %s (exit_code=%s)", reason, exit_code)
 
-    def _broadcast_host_status(self, status: HostStatusKind, *, reason: str | None) -> None:
+    def _broadcast_host_status(
+        self, status: HostStatusKind, *, reason: str | None
+    ) -> None:
         """Push a non-terminal host-status flip to every registered session."""
 
         for session in self._sessions.values():
@@ -555,10 +597,12 @@ class CodexHostManager:
         config = session.config
         params: dict[str, Any] = {
             "cwd": config.workdir,
-            "approvalPolicy": config.approval_policy,
-            "sandbox": config.sandbox,
             "ephemeral": config.ephemeral,
         }
+        if config.approval_policy is not None:
+            params["approvalPolicy"] = config.approval_policy
+        if config.sandbox is not None:
+            params["sandbox"] = config.sandbox
         if config.model is not None:
             params["model"] = config.model
         if config.developer_instructions is not None:
@@ -573,7 +617,11 @@ class CodexHostManager:
 
     @staticmethod
     def _turn_start_params(
-        thread_id: str, text: str, effort: str | None = None
+        thread_id: str,
+        text: str,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> dict[str, Any]:
         """Build ``turn/start`` params for one text user message.
 
@@ -586,6 +634,8 @@ class CodexHostManager:
             "threadId": thread_id,
             "input": [{"type": "text", "text": text, "text_elements": []}],
         }
+        if model is not None:
+            params["model"] = model
         if effort is not None:
             params["effort"] = effort
         return params

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -77,9 +77,9 @@ class CodexSessionConfig:
         effort: Optional reasoning effort override (``low`` / ``high`` …).
         developer_instructions: Optional static instructions injected at thread
             start (M/P injection lives in slice-078; this is the raw pipe).
-        approval_policy: Codex ``approvalPolicy`` string (``never`` by default
-            so slice-071 turns do not stall on approvals — slice-075 overrides).
-        sandbox: Codex ``sandbox`` mode (``read-only`` by default).
+        approval_policy: Optional Codex ``approvalPolicy`` override. ``None``
+            means follow the app-server's effective configuration.
+        sandbox: Optional Codex ``sandbox`` override. ``None`` means follow.
         ephemeral: Whether to skip persisting the native rollout. Normal trowel
             sessions default to ``False`` because their saved thread binding
             must remain resumable after an app-server restart. Isolated smoke
@@ -91,8 +91,8 @@ class CodexSessionConfig:
     model: str | None = None
     effort: str | None = None
     developer_instructions: str | None = None
-    approval_policy: str = "never"
-    sandbox: str = "read-only"
+    approval_policy: str | None = None
+    sandbox: str | None = None
     ephemeral: bool = False
     initial_thread_id: str | None = None
 
@@ -107,7 +107,11 @@ class ThreadBinding:
         model_provider: Effective provider (e.g. ``openai``).
         cwd: Effective working directory the server reported.
         sandbox: Opaque sandbox policy object (rendered as "effective policy").
-        approval_policy: Opaque approval policy object.
+        approval_policy: Raw approval policy returned by app-server.
+        permission_profile: Effective named profile id when reported.
+        effective_sandbox: Normalized sandbox mode for public display.
+        effective_approval: Normalized approval policy for public display.
+        network_access: Effective network fact, or None when native omitted it.
         service_tier: Optional service tier, when the server reports one.
         reasoning_effort: Optional effective reasoning effort.
     """
@@ -117,9 +121,67 @@ class ThreadBinding:
     model_provider: str
     cwd: str
     sandbox: Mapping[str, Any]
-    approval_policy: Mapping[str, Any]
+    approval_policy: str | Mapping[str, Any] | None
+    permission_profile: str | None = None
+    effective_sandbox: str | None = None
+    effective_approval: str | None = None
+    network_access: bool | None = None
     service_tier: str | None = None
     reasoning_effort: str | None = None
+
+
+def _wire_mode(value: object) -> str | None:
+    """Normalize a camelCase app-server mode without guessing unknown values."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    known = {
+        "readOnly": "read-only",
+        "workspaceWrite": "workspace-write",
+        "dangerFullAccess": "danger-full-access",
+        "externalSandbox": "external-sandbox",
+    }
+    return known.get(value, value)
+
+
+def _sandbox_facts(value: object) -> tuple[str | None, bool | None]:
+    """Extract sandbox mode and network access from the native policy object."""
+
+    if not isinstance(value, Mapping):
+        return None, None
+    mode = _wire_mode(value.get("type") or value.get("mode"))
+    raw_network = value.get("networkAccess")
+    if isinstance(raw_network, bool):
+        network = raw_network
+    elif raw_network == "enabled":
+        network = True
+    elif raw_network == "restricted":
+        network = False
+    elif mode == "danger-full-access":
+        # The 0.144.0 DangerFullAccess variant has no networkAccess field; the
+        # protocol variant itself is the explicit unrestricted fact.
+        network = True
+    else:
+        network = None
+    return mode, network
+
+
+def _approval_fact(value: object) -> str | None:
+    """Extract the effective approval policy from new or legacy wire shapes."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("policy"), str):
+        return str(value["policy"])
+    return None
+
+
+def _permission_profile_fact(value: object) -> str | None:
+    """Extract ``activePermissionProfile.id`` when app-server reports it."""
+
+    if isinstance(value, Mapping) and isinstance(value.get("id"), str):
+        return str(value["id"])
+    return None
 
 
 def parse_thread_binding(result: Mapping[str, Any]) -> ThreadBinding:
@@ -154,16 +216,31 @@ def parse_thread_binding(result: Mapping[str, Any]) -> ThreadBinding:
             )
     sandbox = result.get("sandbox")
     approval_policy = result.get("approvalPolicy")
+    effective_sandbox, network_access = _sandbox_facts(sandbox)
+    effective_approval = _approval_fact(approval_policy)
+    permission_profile = _permission_profile_fact(result.get("activePermissionProfile"))
     return ThreadBinding(
         thread_id=str(thread["id"]),
         model=str(result["model"]),
         model_provider=str(result["modelProvider"]),
         cwd=str(result["cwd"]),
-        sandbox=MappingProxyType(dict(sandbox)) if isinstance(sandbox, Mapping) else MappingProxyType({}),
-        approval_policy=MappingProxyType(dict(approval_policy))
-        if isinstance(approval_policy, Mapping)
+        sandbox=MappingProxyType(dict(sandbox))
+        if isinstance(sandbox, Mapping)
         else MappingProxyType({}),
-        service_tier=str(result["serviceTier"]) if result.get("serviceTier") is not None else None,
+        approval_policy=(
+            MappingProxyType(dict(approval_policy))
+            if isinstance(approval_policy, Mapping)
+            else str(approval_policy)
+            if isinstance(approval_policy, str)
+            else None
+        ),
+        permission_profile=permission_profile,
+        effective_sandbox=effective_sandbox,
+        effective_approval=effective_approval,
+        network_access=network_access,
+        service_tier=str(result["serviceTier"])
+        if result.get("serviceTier") is not None
+        else None,
         reasoning_effort=str(result["reasoningEffort"])
         if result.get("reasoningEffort") is not None
         else None,
@@ -195,7 +272,7 @@ class CodexSession:
                 model_provider="",
                 cwd=config.workdir,
                 sandbox=MappingProxyType({}),
-                approval_policy=MappingProxyType({}),
+                approval_policy=None,
             )
         else:
             self._binding = None
@@ -215,8 +292,10 @@ class CodexSession:
         # cannot flip the state machine out from under the TURN_STARTED event
         # (review H-1).
         self._turn_started: bool = False
+        self._has_started_turn: bool = False
         self._pending: list[TranslatedItem] = []
         self._queue: asyncio.Queue[CodexEvent] = asyncio.Queue()
+        self._pending_turn_settings: tuple[str, str] | None = None
 
     # ------------------------------------------------------------- read-only
 
@@ -280,6 +359,67 @@ class CodexSession:
         """True when no binding exists yet (first send must ``thread/start``)."""
 
         return self._binding is None
+
+    def queue_turn_settings(self, model: str, effort: str) -> None:
+        """Stage an idle-only model/effort pair for the next native turn.
+
+        Args:
+            model: Native model id from the current app-server catalog.
+            effort: Native reasoning-effort value supported by that model.
+
+        Raises:
+            TurnConflictError: If a turn is running or a send is being started.
+        """
+
+        if self._sending or self._state not in _SENDABLE_STATES:
+            raise TurnConflictError(
+                f"session {self.session_id} cannot change settings in state "
+                f"{self._state.name}"
+            )
+        self._pending_turn_settings = (model, effort)
+
+    def next_turn_settings(self) -> tuple[str | None, str | None]:
+        """Return the atomic settings pair to put on the next ``turn/start``."""
+
+        if self._pending_turn_settings is not None:
+            return self._pending_turn_settings
+        if not self._has_started_turn:
+            return self._config.model, self._config.effort
+        return None, None
+
+    def commit_turn_settings(
+        self, *, model: str | None, effort: str | None
+    ) -> CodexEvent | None:
+        """Commit settings only after app-server accepted ``turn/start``.
+
+        Args:
+            model: Model sent on the accepted native request, if any.
+            effort: Effort sent on the accepted native request, if any.
+
+        Returns:
+            A ``model_changed`` event when either setting was applied.
+        """
+
+        if self._binding is None or (model is None and effort is None):
+            return None
+        self._binding = replace(
+            self._binding,
+            model=model if model is not None else self._binding.model,
+            reasoning_effort=(
+                effort if effort is not None else self._binding.reasoning_effort
+            ),
+        )
+        self._pending_turn_settings = None
+        return self._emit(
+            TranslatedItem(
+                type=CodexEventType.MODEL_CHANGED,
+                thread_id=self._binding.thread_id,
+                payload=immutable_payload(
+                    model=self._binding.model,
+                    effort=self._binding.reasoning_effort,
+                ),
+            )
+        )
 
     # ------------------------------------------------------- state machine
 
@@ -349,7 +489,15 @@ class CodexSession:
                 service_tier=binding.service_tier,
                 reasoning_effort=binding.reasoning_effort,
                 sandbox=dict(binding.sandbox),
-                approval_policy=dict(binding.approval_policy),
+                approval_policy=(
+                    dict(binding.approval_policy)
+                    if isinstance(binding.approval_policy, Mapping)
+                    else binding.approval_policy
+                ),
+                permission_profile=binding.permission_profile,
+                effective_sandbox=binding.effective_sandbox,
+                effective_approval=binding.effective_approval,
+                network_access=binding.network_access,
             ),
         )
         return self._emit(item)
@@ -383,6 +531,7 @@ class CodexSession:
             )
         )
         self._current_turn_id = turn_id
+        self._has_started_turn = True
         self._state = CodexSessionState.RUNNING
         self._sending = False
         self._turn_started = True
@@ -414,7 +563,9 @@ class CodexSession:
         self._apply_terminal_state(item)
         return event
 
-    def mark_host_exited(self, reason: str, *, exit_code: int | None = None) -> CodexEvent:
+    def mark_host_exited(
+        self, reason: str, *, exit_code: int | None = None
+    ) -> CodexEvent:
         """Synthesise a host-exited terminal event for the running turn.
 
         Spec §4: on EOF, every running turn ends with a concrete HOST_EXITED

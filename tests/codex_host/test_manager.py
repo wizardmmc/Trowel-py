@@ -15,6 +15,8 @@ hold models that real gap and keeps the test deterministic.
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
@@ -102,6 +104,83 @@ def _manager(fake: FakeAppServer) -> CodexHostManager:
     return CodexHostManager(client_factory=factory)
 
 
+def _model_list_fixture() -> dict:
+    """Load the redacted model/list recording captured from Codex 0.144.0."""
+
+    path = Path(__file__).parent / "fixtures" / "model-list-0.144.0.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+async def test_model_list_paginates_and_preserves_native_order() -> None:
+    """All visible rows and per-model efforts survive cursor pagination."""
+
+    recorded = _model_list_fixture()
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        first = yield Step.recv()
+        assert first["method"] == "model/list"
+        assert first["params"] == {"includeHidden": False}
+        yield Step.send(
+            {
+                "id": first["id"],
+                "result": {"data": recorded["data"][:2], "nextCursor": "page-2"},
+            }
+        )
+        second = yield Step.recv()
+        assert second["params"] == {"includeHidden": False, "cursor": "page-2"}
+        yield Step.send(
+            {
+                "id": second["id"],
+                "result": {"data": recorded["data"][2:], "nextCursor": None},
+            }
+        )
+        yield Step.hold(0.05)
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    models = await manager.list_models()
+    assert [row["id"] for row in models] == [row["id"] for row in recorded["data"]]
+    assert [e["value"] for e in models[0]["supported_efforts"]] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    await manager.close()
+
+
+def test_follow_thread_start_omits_permission_overrides() -> None:
+    """The follow preset is omission, not a read-only/never alias."""
+
+    manager = CodexHostManager()
+    session = CodexSession(
+        CodexSessionConfig(
+            trowel_session_id="follow",
+            workdir="/tmp/x",
+            approval_policy=None,
+            sandbox=None,
+        )
+    )
+    params = manager._thread_start_params(session)  # noqa: SLF001
+    assert "approvalPolicy" not in params
+    assert "sandbox" not in params
+
+
+def test_turn_start_carries_model_and_effort_as_one_selection() -> None:
+    """A next-turn selection is encoded atomically in one request."""
+
+    params = CodexHostManager._turn_start_params(  # noqa: SLF001
+        "thr-1", "hello", model="gpt-future", effort="ultra"
+    )
+    assert params["model"] == "gpt-future"
+    assert params["effort"] == "ultra"
+
+
 def _restart_manager(fakes: list[FakeAppServer]) -> CodexHostManager:
     """Build a manager whose factory hands out one fresh fake per lifecycle."""
 
@@ -176,9 +255,7 @@ def _behavior_server(
                 thread_id = params["threadId"]
                 counter += 1
                 turn_id = f"turn-{counter}"
-                yield Step.send(
-                    {"id": request_id, "result": {"turn": {"id": turn_id}}}
-                )
+                yield Step.send({"id": request_id, "result": {"turn": {"id": turn_id}}})
                 if block_on_turn_start:
                     await (yield Step.hold(30))  # never answers turn/start
                 yield Step.hold(0.01)  # model the response→notification gap
@@ -303,10 +380,14 @@ async def test_two_concurrent_threads_are_isolated() -> None:
 
     # The streamed text is the session's own thread id, never its neighbour's.
     text_a = "".join(
-        e.payload.get("delta", "") for e in events_a if e.type is CodexEventType.ASSISTANT_DELTA
+        e.payload.get("delta", "")
+        for e in events_a
+        if e.type is CodexEventType.ASSISTANT_DELTA
     )
     text_b = "".join(
-        e.payload.get("delta", "") for e in events_b if e.type is CodexEventType.ASSISTANT_DELTA
+        e.payload.get("delta", "")
+        for e in events_b
+        if e.type is CodexEventType.ASSISTANT_DELTA
     )
     assert text_a == f"hi-{session_a.thread_id}"
     assert text_b == f"hi-{session_b.thread_id}"
@@ -326,9 +407,7 @@ async def test_second_turn_reuses_thread_loaded_in_current_connection() -> None:
 
     fake = FakeAppServer(_behavior_server(on_turn=_deltas))
     manager = _manager(fake)
-    session = CodexSession(
-        CodexSessionConfig("s1", "/tmp/x", ephemeral=True)
-    )
+    session = CodexSession(CodexSessionConfig("s1", "/tmp/x", ephemeral=True))
     manager.register(session)
 
     await manager.send(session, "first")
@@ -339,9 +418,7 @@ async def test_second_turn_reuses_thread_loaded_in_current_connection() -> None:
     await asyncio.sleep(0.05)
     events = session.drain()
 
-    methods = [
-        message["method"] for message in fake.received if "method" in message
-    ]
+    methods = [message["method"] for message in fake.received if "method" in message]
     assert methods.count("thread/start") == 1
     assert "thread/resume" not in methods
     assert methods.count("turn/start") == 2
@@ -362,9 +439,7 @@ async def test_live_sessions_cannot_share_one_native_thread() -> None:
     assert owner.thread_id is not None
 
     duplicate = CodexSession(
-        CodexSessionConfig(
-            "duplicate", "/tmp/x", initial_thread_id=owner.thread_id
-        )
+        CodexSessionConfig("duplicate", "/tmp/x", initial_thread_id=owner.thread_id)
     )
     manager.register(duplicate)
 
@@ -407,9 +482,7 @@ async def test_concurrent_resume_atomically_claims_native_thread() -> None:
 
     first_send = asyncio.create_task(manager.send(first, "first"))
     for _ in range(100):
-        if any(
-            message.get("method") == "thread/resume" for message in fake.received
-        ):
+        if any(message.get("method") == "thread/resume" for message in fake.received):
             break
         await asyncio.sleep(0.001)
     else:
@@ -452,9 +525,7 @@ async def test_unregister_during_thread_attach_cannot_revive_session() -> None:
 
     send_task = asyncio.create_task(manager.send(session, "hello"))
     for _ in range(100):
-        if any(
-            message.get("method") == "thread/start" for message in fake.received
-        ):
+        if any(message.get("method") == "thread/start" for message in fake.received):
             break
         await asyncio.sleep(0.001)
     else:
@@ -523,9 +594,7 @@ async def test_unregister_while_turn_start_waits_interrupts_native_turn() -> Non
 
     send_task = asyncio.create_task(manager.send(session, "hello"))
     for _ in range(100):
-        if any(
-            message.get("method") == "turn/start" for message in fake.received
-        ):
+        if any(message.get("method") == "turn/start" for message in fake.received):
             break
         await asyncio.sleep(0.001)
     else:
@@ -534,9 +603,7 @@ async def test_unregister_while_turn_start_waits_interrupts_native_turn() -> Non
 
     with pytest.raises(TurnConflictError, match="no longer registered"):
         await send_task
-    assert any(
-        message.get("method") == "turn/interrupt" for message in fake.received
-    )
+    assert any(message.get("method") == "turn/interrupt" for message in fake.received)
     assert session.state.name == "IDLE"
     assert manager.session_for_thread("t-delete") is None
     await manager.close()
@@ -615,7 +682,10 @@ async def test_orphan_unknown_thread_is_not_routed() -> None:
     assert not any("boo" in str(e.payload) for e in events)
     # It was recorded as an orphan diagnostic.
     orphans = manager.orphans
-    assert any(o.method == "item/agentMessage/delta" and o.thread_id == "t-ghost" for o in orphans)
+    assert any(
+        o.method == "item/agentMessage/delta" and o.thread_id == "t-ghost"
+        for o in orphans
+    )
     await manager.close()
 
 
@@ -709,7 +779,8 @@ async def test_eof_while_running_pushes_host_exited_terminal() -> None:
     assert manager.state is CodexHostManagerState.DEGRADED
     events = session.drain()
     assert any(
-        e.type is CodexEventType.HOST_STATUS and e.payload.get("status") == "host_exited"
+        e.type is CodexEventType.HOST_STATUS
+        and e.payload.get("status") == "host_exited"
         for e in events
     )
     # The session kept its binding so it can resume after restart.

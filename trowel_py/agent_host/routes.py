@@ -98,14 +98,12 @@ def get_session(
 
     binding = hub.get(session_id)
     if binding is None:
-        raise HTTPException(
-            status_code=404, detail=f"session {session_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
 @router.patch("/sessions/{session_id}")
-def patch_session(
+async def patch_session(
     session_id: str,
     body: PatchAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
@@ -118,7 +116,12 @@ def patch_session(
         )
     except RuntimeFrozenError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"success": True, "data": None, "error": None}
+    data = None
+    if body.model is not None or body.effort is not None:
+        data = await hub.update_codex_settings(
+            session_id, model=body.model, effort=body.effort
+        )
+    return {"success": True, "data": data, "error": None}
 
 
 @router.delete("/sessions/{session_id}")
@@ -196,6 +199,16 @@ def list_runtimes(
     return {"success": True, "data": runtimes, "error": None}
 
 
+@router.get("/models")
+async def list_models(
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """Return the visible native Codex model catalog without static fallback."""
+
+    models = await hub.list_codex_models()
+    return {"success": True, "data": {"models": models}, "error": None}
+
+
 @router.get("/sessions/{session_id}/history")
 def get_session_history(
     session_id: str,
@@ -218,9 +231,7 @@ def get_session_history(
 
     binding = hub.get(session_id)
     if binding is None:
-        raise HTTPException(
-            status_code=404, detail=f"session {session_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     if binding.runtime is Runtime.CODEX:
         raise HTTPException(
             status_code=501,
@@ -235,9 +246,7 @@ def get_session_history(
     # Fresh adapter: history is an independent stream (seq from 1), never a
     # continuation of the live adapter's counter.
     adapter = CcEventAdapter(session_id)
-    envelopes = [
-        adapter.wrap(e.model_dump()).model_dump(by_alias=True) for e in events
-    ]
+    envelopes = [adapter.wrap(e.model_dump()).model_dump(by_alias=True) for e in events]
     return {"success": True, "data": envelopes, "error": None}
 
 

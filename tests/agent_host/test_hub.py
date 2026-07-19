@@ -65,6 +65,32 @@ class FakeCodexManager:
         self.sessions: dict[str, Any] = {}
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.models: list[dict[str, Any]] = [
+            {
+                "id": "gpt-5.6-sol",
+                "model": "gpt-5.6-sol",
+                "display_name": "Sol",
+                "description": "",
+                "is_default": True,
+                "default_effort": "low",
+                "supported_efforts": [
+                    {"value": "low", "description": ""},
+                    {"value": "ultra", "description": ""},
+                ],
+            },
+            {
+                "id": "gpt-5.6-luna",
+                "model": "gpt-5.6-luna",
+                "display_name": "Luna",
+                "description": "",
+                "is_default": False,
+                "default_effort": "medium",
+                "supported_efforts": [
+                    {"value": "low", "description": ""},
+                    {"value": "medium", "description": ""},
+                ],
+            },
+        ]
 
     def register(self, session: Any) -> None:
         self.sessions[session.session_id] = session
@@ -99,6 +125,11 @@ class FakeCodexManager:
 
     async def interrupt(self, session: Any) -> None:
         self.interrupted.append(session.session_id)
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """Return the fake catalog used by Agent route tests."""
+
+        return self.models
 
 
 class _FakeThreadBinding:
@@ -135,9 +166,7 @@ class FakeCodexSession:
             yield ev
 
 
-def make_cc_opener(
-    registry: dict[str, FakeCcHost], name_counts: dict[str, int]
-):
+def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int]):
     """Build a cc_opener that constructs a FakeCcHost, not a real CCHost."""
 
     def opener(
@@ -236,6 +265,42 @@ def test_create_codex_session_creates_binding_and_registers_manager(
     assert binding.runtime is Runtime.CODEX
     assert binding.session_id in codex_mgr.sessions
     assert hub.get(binding.session_id) is not None
+
+
+def test_create_codex_follow_does_not_invent_overrides(
+    hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
+):
+    """Follow leaves both native permission overrides unset."""
+
+    binding = hub.create(codex_req(workdir, permission_preset="follow"), request=None)
+    session = codex_mgr.get_session(binding.session_id)
+    assert session.config.approval_policy is None
+    assert session.config.sandbox is None
+    assert binding.permission_preset == "follow"
+    assert binding.permission is None
+
+
+@pytest.mark.parametrize(
+    ("preset", "approval", "sandbox"),
+    [
+        ("read-only", "on-request", "read-only"),
+        ("workspace-write", "on-request", "workspace-write"),
+        ("danger-full-access", "never", "danger-full-access"),
+    ],
+)
+def test_create_codex_permission_presets_are_centralized(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    preset: str,
+    approval: str,
+    sandbox: str,
+):
+    """The backend, not the browser, owns preset-to-native parameter mapping."""
+
+    binding = hub.create(codex_req(workdir, permission_preset=preset), request=None)
+    config = codex_mgr.get_session(binding.session_id).config
+    assert (config.approval_policy, config.sandbox) == (approval, sandbox)
 
 
 def test_create_cc_with_resume_carries_native_id(hub: SessionHub, workdir: Path):
@@ -360,6 +425,57 @@ def test_patch_runtime_change_rejected(hub: SessionHub, workdir: Path):
 def test_patch_same_runtime_ok(hub: SessionHub, workdir: Path):
     binding = hub.create(cc_req(workdir), request=None)
     hub.patch(binding.session_id, runtime="claude_code")  # no error
+
+
+async def test_codex_model_switch_queues_valid_pair_and_auto_falls_back(
+    hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
+):
+    """Sol/ultra -> Luna becomes Luna/medium before the next turn."""
+
+    binding = hub.create(
+        codex_req(workdir, model="gpt-5.6-sol", effort="ultra"), request=None
+    )
+    selected = await hub.update_codex_settings(
+        binding.session_id, model="gpt-5.6-luna", effort="ultra"
+    )
+    assert selected == {
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "adjusted": True,
+    }
+    session = codex_mgr.get_session(binding.session_id)
+    assert session.next_turn_settings() == ("gpt-5.6-luna", "medium")
+    # Public binding remains effective, not the unaccepted pending selection.
+    assert hub.get(binding.session_id).model == "gpt-5.6-sol"
+
+
+async def test_codex_model_switch_rejects_unknown_model(hub: SessionHub, workdir: Path):
+    """The backend never sends a combination absent from the native catalog."""
+
+    binding = hub.create(codex_req(workdir), request=None)
+    with pytest.raises(HTTPException) as exc:
+        await hub.update_codex_settings(
+            binding.session_id, model="not-in-catalog", effort="low"
+        )
+    assert exc.value.status_code == 422
+
+
+async def test_codex_effort_only_uses_native_default_model_for_fresh_session(
+    hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
+):
+    """A follow-mode session without a current model still stages a full pair."""
+
+    binding = hub.create(codex_req(workdir, model=None, effort=None), request=None)
+    selected = await hub.update_codex_settings(
+        binding.session_id, model=None, effort="ultra"
+    )
+    assert selected == {
+        "model": "gpt-5.6-sol",
+        "effort": "ultra",
+        "adjusted": False,
+    }
+    session = codex_mgr.get_session(binding.session_id)
+    assert session.next_turn_settings() == ("gpt-5.6-sol", "ultra")
 
 
 def test_validate_resume_rejects_cross_runtime(hub: SessionHub, workdir: Path):
