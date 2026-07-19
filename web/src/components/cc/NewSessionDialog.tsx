@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { AgentRuntimeInfo, Runtime } from "../../api/agent";
+import type { AgentModel, AgentRuntimeInfo, Runtime } from "../../api/agent";
 import type { ModelOption } from "../../api/cc";
 
 /**
@@ -27,7 +27,7 @@ import type { ModelOption } from "../../api/cc";
 
 /** What the dialog hands back on create. Runtime is always set; the
  * permission-shaped field depends on runtime (CC: permission_mode, Codex:
- * sandbox). Empty model/effort/permission strings mean "follow host default". */
+ * permission_preset). Empty CC fields mean "follow host default". */
 export interface NewSessionConfig {
   readonly runtime: Runtime;
   readonly memory_enabled: boolean;
@@ -35,7 +35,8 @@ export interface NewSessionConfig {
   readonly model: string;
   readonly effort: string;
   readonly permission_mode: string;
-  readonly sandbox: string;
+  readonly permission_preset?:
+    "follow" | "read-only" | "workspace-write" | "danger-full-access";
 }
 
 /** Runtime catalog load state — three discrete states (review P1-1). */
@@ -59,6 +60,10 @@ interface NewSessionDialogProps {
   /** CC model aliases from /api/cc/models (opus/sonnet/haiku). Omit = only the
    * "跟随 settings" fallback is shown for CC. */
   readonly ccModels?: readonly ModelOption[];
+  /** Native Codex model/list rows. There is intentionally no static fallback. */
+  readonly codexModels?: readonly AgentModel[];
+  readonly codexCatalogError?: string | null;
+  readonly onRetryCodexCatalog?: () => void;
 }
 
 interface RuntimeOption {
@@ -66,8 +71,14 @@ interface RuntimeOption {
   readonly label: string;
   readonly native: string;
   readonly desc: string;
-  readonly efforts: ReadonlyArray<{ readonly value: string; readonly label: string }>;
-  readonly permissions: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  readonly efforts: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+  }>;
+  readonly permissions: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+  }>;
 }
 
 const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
@@ -97,41 +108,15 @@ const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
     label: "Codex",
     native: "原生 app-server",
     desc: "使用本机 Codex 订阅、sandbox、审批与 usage；不经过 Claude Code。",
-    efforts: [
-      { value: "", label: "跟随" },
-      { value: "low", label: "low" },
-      { value: "medium", label: "medium" },
-      { value: "high", label: "high" },
-    ],
+    efforts: [],
     permissions: [
-      { value: "", label: "跟随 Codex" },
+      { value: "follow", label: "跟随 Codex" },
       { value: "read-only", label: "read-only" },
       { value: "workspace-write", label: "workspace-write" },
+      { value: "danger-full-access", label: "Full access" },
     ],
   },
 ];
-
-/** Codex models are not enumerated by trowel (Codex owns its model catalog in
- * thread/start). Surface the documented subscription default + the spike's
- * gpt-5.6-sol as a concrete pick; "跟随默认" defers to the host. */
-const CODEX_MODELS: ReadonlyArray<{ readonly value: string; readonly label: string }> = [
-  { value: "", label: "跟随 Codex 默认" },
-  { value: "gpt-5.6-sol", label: "gpt-5.6-sol" },
-];
-
-/** Model options for a runtime. CC pulls its aliases from /api/cc/models
- * (opus/sonnet/haiku — whatever cc settings.json declares); Codex uses the
- * fixed CODEX_MODELS list above. */
-function modelsFor(
-  runtime: Runtime,
-  ccModels: readonly ModelOption[],
-): ReadonlyArray<{ readonly value: string; readonly label: string }> {
-  if (runtime === "codex") return CODEX_MODELS;
-  return [
-    { value: "", label: "跟随 settings" },
-    ...ccModels.map((m) => ({ value: m.value, label: m.label })),
-  ];
-}
 
 const RUNTIME_LABEL: Record<Runtime, string> = {
   claude_code: "Claude Code",
@@ -151,6 +136,9 @@ export function NewSessionDialog({
   creating = false,
   error = null,
   ccModels = [],
+  codexModels = [],
+  codexCatalogError = null,
+  onRetryCodexCatalog,
 }: NewSessionDialogProps) {
   const [runtime, setRuntime] = useState<Runtime>("claude_code");
   const [model, setModel] = useState<string>("");
@@ -158,8 +146,21 @@ export function NewSessionDialog({
   const [permission, setPermission] = useState<string>("");
   const [memory, setMemory] = useState(true);
   const [profile, setProfile] = useState(true);
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
 
   const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const defaultCodexModel =
+    codexModels.find((item) => item.is_default) ?? codexModels[0];
+  // The catalog can finish loading after the dialog is already open. Derive
+  // the native defaults instead of copying async props into state, so that
+  // late catalog arrival still produces a complete model/effort pair.
+  const selectedCodexModel =
+    codexModels.find((item) => item.id === model) ?? defaultCodexModel;
+  const selectedCodexEffort = selectedCodexModel?.supported_efforts.some(
+    (item) => item.value === effort,
+  )
+    ? effort
+    : (selectedCodexModel?.default_effort ?? "");
 
   // resolve the catalog into a per-runtime connected map (undefined = assume
   // connected — tests / no catalog).
@@ -176,17 +177,37 @@ export function NewSessionDialog({
   // The create button is blocked while the catalog is loading/erroring, while
   // creating, or when the selected runtime is not connected (review P1-1).
   const selectedConnected = isConnected(runtime);
+  const codexCatalogBlocked =
+    runtime === "codex" &&
+    (codexCatalogError !== null ||
+      selectedCodexModel === undefined ||
+      !selectedCodexModel.supported_efforts.some(
+        (item) => item.value === selectedCodexEffort,
+      ));
   const createBlocked =
-    creating || catalogLoading || catalogError !== null || !selectedConnected;
+    creating ||
+    catalogLoading ||
+    catalogError !== null ||
+    !selectedConnected ||
+    codexCatalogBlocked;
 
   // slice-072: when the active runtime option changes, reset its model/effort/
   // permission selections so a stale CC choice never leaks into a Codex session.
   function selectRuntime(next: Runtime): void {
     if (next === runtime) return;
     setRuntime(next);
-    setModel("");
-    setEffort("");
-    setPermission("");
+    if (next === "codex") {
+      const defaultModel =
+        codexModels.find((item) => item.is_default) ?? codexModels[0];
+      setModel(defaultModel?.id ?? "");
+      setEffort(defaultModel?.default_effort ?? "");
+      setPermission("follow");
+    } else {
+      setModel("");
+      setEffort("");
+      setPermission("");
+    }
+    setConfirmFullAccess(false);
   }
 
   /** Arrow-key handler with roving tabindex: move selection to the next
@@ -206,9 +227,10 @@ export function NewSessionDialog({
     }
     event.preventDefault();
     const n = RUNTIME_OPTIONS.length;
-    const dir = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+    const dir =
+      event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
     for (let step = 1; step <= n; step++) {
-      const nextIdx = ((index + dir * step) % n + n) % n;
+      const nextIdx = (((index + dir * step) % n) + n) % n;
       const next = RUNTIME_OPTIONS[nextIdx];
       if (isConnected(next.value)) {
         selectRuntime(next.value);
@@ -222,20 +244,55 @@ export function NewSessionDialog({
   useEffect(() => {
     const idx = optionIndex(runtime);
     radioRefs.current[idx]?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime]);
 
   const activeOption = RUNTIME_OPTIONS[optionIndex(runtime)];
+  const visibleModels =
+    runtime === "codex"
+      ? codexModels.map((item) => ({ value: item.id, label: item.id }))
+      : [
+          { value: "", label: "跟随 settings" },
+          ...ccModels.map((item) => ({ value: item.value, label: item.label })),
+        ];
+  const visibleEfforts =
+    runtime === "codex"
+      ? (selectedCodexModel?.supported_efforts ?? []).map((item) => ({
+          value: item.value,
+          label: item.value,
+        }))
+      : activeOption.efforts;
+
+  function pickModel(nextModel: string): void {
+    setModel(nextModel);
+    if (runtime !== "codex") return;
+    const next = codexModels.find((item) => item.id === nextModel);
+    if (!next) return;
+    if (!next.supported_efforts.some((item) => item.value === effort)) {
+      setEffort(next.default_effort);
+    }
+  }
+
+  function pickPermission(nextPermission: string): void {
+    if (nextPermission === "danger-full-access") {
+      setConfirmFullAccess(true);
+      return;
+    }
+    setPermission(nextPermission);
+    setConfirmFullAccess(false);
+  }
 
   function submit(): void {
     const config: NewSessionConfig = {
       runtime,
       memory_enabled: memory,
       profile_enabled: profile,
-      model,
-      effort,
+      model: runtime === "codex" ? (selectedCodexModel?.id ?? "") : model,
+      effort: runtime === "codex" ? selectedCodexEffort : effort,
       permission_mode: runtime === "claude_code" ? permission : "",
-      sandbox: runtime === "codex" ? permission : "",
+      permission_preset:
+        runtime === "codex"
+          ? (permission as NonNullable<NewSessionConfig["permission_preset"]>)
+          : undefined,
     };
     onCreate(config);
   }
@@ -259,7 +316,9 @@ export function NewSessionDialog({
           </span>
         </div>
         <div className="cc-dialog__body">
-          <div className="cc-dialog__section-label">Runtime（创建后不可切换）</div>
+          <div className="cc-dialog__section-label">
+            Runtime（创建后不可切换）
+          </div>
           <div
             className="cc-dialog__runtime-grid"
             role="radiogroup"
@@ -291,7 +350,9 @@ export function NewSessionDialog({
                   onKeyDown={(e) => onRuntimeKeyDown(e, idx)}
                 >
                   <span className="cc-dialog__runtime-name">{opt.label}</span>
-                  <span className="cc-dialog__runtime-native">{opt.native}</span>
+                  <span className="cc-dialog__runtime-native">
+                    {opt.native}
+                  </span>
                   <span className="cc-dialog__runtime-desc">{opt.desc}</span>
                   {!connected && (
                     <span className="cc-dialog__runtime-unavailable">
@@ -326,17 +387,36 @@ export function NewSessionDialog({
           {/* runtime-specific model / effort / permission (mockup-confirmed).
               Empty value = follow host default. */}
           <div className="cc-dialog__section-label">Model</div>
+          {runtime === "codex" && codexCatalogError !== null && (
+            <div className="cc-dialog__diag" role="alert">
+              Codex model catalog 不可用：{codexCatalogError}
+              {onRetryCodexCatalog && (
+                <button
+                  type="button"
+                  className="cc-dialog__btn"
+                  onClick={onRetryCodexCatalog}
+                  disabled={creating}
+                  style={{ marginLeft: 8 }}
+                >
+                  重试
+                </button>
+              )}
+            </div>
+          )}
           <div className="cc-dialog__option-row">
-            {modelsFor(runtime, ccModels).map((m) => (
+            {visibleModels.map((m) => (
               <button
                 key={m.label}
                 type="button"
                 className={
                   "cc-dialog__option" +
-                  (model === m.value ? " cc-dialog__option--selected" : "")
+                  ((runtime === "codex" ? selectedCodexModel?.id : model) ===
+                  m.value
+                    ? " cc-dialog__option--selected"
+                    : "")
                 }
                 disabled={creating}
-                onClick={() => setModel(m.value)}
+                onClick={() => pickModel(m.value)}
               >
                 {m.label}
               </button>
@@ -344,13 +424,16 @@ export function NewSessionDialog({
           </div>
           <div className="cc-dialog__section-label">Effort</div>
           <div className="cc-dialog__option-row">
-            {activeOption.efforts.map((e) => (
+            {visibleEfforts.map((e) => (
               <button
                 key={e.label}
                 type="button"
                 className={
                   "cc-dialog__option" +
-                  (effort === e.value ? " cc-dialog__option--selected" : "")
+                  ((runtime === "codex" ? selectedCodexEffort : effort) ===
+                  e.value
+                    ? " cc-dialog__option--selected"
+                    : "")
                 }
                 disabled={creating}
                 onClick={() => setEffort(e.value)}
@@ -367,15 +450,45 @@ export function NewSessionDialog({
                 type="button"
                 className={
                   "cc-dialog__option" +
-                  (permission === p.value ? " cc-dialog__option--selected" : "")
+                  (permission === p.value
+                    ? " cc-dialog__option--selected"
+                    : "") +
+                  (p.value === "danger-full-access"
+                    ? " cc-dialog__option--danger"
+                    : "")
                 }
                 disabled={creating}
-                onClick={() => setPermission(p.value)}
+                onClick={() => pickPermission(p.value)}
               >
                 {p.label}
               </button>
             ))}
           </div>
+          {confirmFullAccess && runtime === "codex" && (
+            <div className="cc-dialog__danger-confirm" role="alert">
+              <span>
+                Full access 会关闭 sandbox，并使用 never approval；Codex
+                可读写工作区外文件并联网。
+              </span>
+              <button
+                type="button"
+                className="cc-dialog__btn cc-dialog__btn--danger"
+                onClick={() => {
+                  setPermission("danger-full-access");
+                  setConfirmFullAccess(false);
+                }}
+              >
+                确认 Full access
+              </button>
+            </div>
+          )}
+          {runtime === "codex" && permission === "workspace-write" && (
+            <div className="cc-dialog__diag" role="status">
+              Workspace 使用 on-request；slice-075
+              完成前，遇到原生审批请求时本轮可能暂停。需要实际写入时可改用 Full
+              access。
+            </div>
+          )}
 
           <SwitchRow
             name="Memory"

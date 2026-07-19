@@ -27,6 +27,7 @@ import {
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
+  updateAgentSessionSettings as apiUpdateSessionSettings,
   type AgentEventLike,
   type AgentHistoryRow,
   type AgentSession,
@@ -87,6 +88,15 @@ export interface PerSessionState extends ReducerState {
   /** slice-072: runtime-specific effective permission/policy, null until
    * reported. The multi-session bar shows it as the per-row policy. */
   readonly permission: string | null;
+  readonly permissionPreset?: string | null;
+  readonly effectivePermissionProfile?: string | null;
+  readonly effectiveSandbox?: string | null;
+  readonly effectiveApproval?: string | null;
+  readonly networkAccess?: boolean | null;
+  /** Codex settings selected for the next accepted turn. */
+  readonly pendingModel?: string | null;
+  readonly pendingEffort?: string | null;
+  readonly settingsNotice?: string | null;
   /** slice-072: runtime-declared capability tags — the UI gates features off
    * this list, never off `runtime === ...` (C-6). */
   readonly capabilities: readonly string[];
@@ -112,6 +122,11 @@ export interface StartSessionParams {
   readonly permission_mode?: string;
   readonly approval_policy?: string;
   readonly sandbox?: string;
+  readonly permission_preset?:
+    | "follow"
+    | "read-only"
+    | "workspace-write"
+    | "danger-full-access";
   readonly memory_enabled?: boolean;
   readonly profile_enabled?: boolean;
 }
@@ -139,6 +154,7 @@ interface CcState {
    * as connected rows the user can activate or close. */
   refreshActiveSessions: () => Promise<void>;
   refreshHistory: (workdir: string) => Promise<void>;
+  updateSessionSettings: (model: string, effort: string) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -155,6 +171,19 @@ interface CcState {
 /** Resource caps mirroring the backend (slice-028 Q5'). */
 export const MAX_RUNNING = 5;
 export const MAX_CONNECTIONS = 20;
+
+function codexPermissionLabel(
+  sandbox: string | null,
+  approval: string | null,
+): string | null {
+  if (sandbox === null && approval === null) return null;
+  const labels: Readonly<Record<string, string>> = {
+    "read-only": "Read only",
+    "workspace-write": "Workspace write",
+    "danger-full-access": "Full access",
+  };
+  return `${labels[sandbox ?? ""] ?? sandbox ?? "Unknown sandbox"} · ${approval ?? "unknown approval"}`;
+}
 
 /** Build a fresh CC store. Exported so tests can isolate instances; the app
  * uses the `useCcStore` singleton below. */
@@ -203,7 +232,30 @@ export function createCcStore() {
         // event carries effort on model_changed.
         const effort = (flat as { effort?: string | null }).effort;
         if (event.type === "model_changed" && effort != null) {
-          next = { ...next, effort };
+          next = {
+            ...next,
+            effort,
+            pendingModel: null,
+            pendingEffort: null,
+            settingsNotice: null,
+          };
+        }
+        if (event.type === "session_started" && event.runtime === "codex") {
+          const profile = event.payload.permission_profile;
+          const sandbox = event.payload.effective_sandbox;
+          const approval = event.payload.effective_approval;
+          const network = event.payload.network_access;
+          const effectiveSandbox = typeof sandbox === "string" ? sandbox : null;
+          const effectiveApproval = typeof approval === "string" ? approval : null;
+          next = {
+            ...next,
+            permission: codexPermissionLabel(effectiveSandbox, effectiveApproval),
+            effectivePermissionProfile:
+              typeof profile === "string" ? profile : null,
+            effectiveSandbox,
+            effectiveApproval,
+            networkAccess: typeof network === "boolean" ? network : null,
+          };
         }
         return {
           ...state,
@@ -268,49 +320,51 @@ export function createCcStore() {
         // active first ("切走即丢"). No cap here: caps count connected sessions
         // and are enforced in send().
         await dropTempActive();
-        try {
-          // slice-072: route through the host-neutral /api/agent. runtime
-          // defaults to claude_code so pre-existing CC-only callers keep
-          // working unchanged (spec C-5).
-          const runtime: Runtime = params.runtime ?? "claude_code";
-          const session = await apiCreateSession({ ...params, runtime });
-          const sid = session.session_id;
-          const name =
-            session.name ?? (params.workdir.split("/").pop() || params.workdir);
-          // connected=false until the first send() spawns the native host.
-          const perSession: PerSessionState = {
-            ...INITIAL_REDUCER_STATE,
-            workdir: params.workdir,
-            effort: params.effort ?? null,
-            name,
-            // slice-072: revert is a CC-checkpoint capability — gate it off
-            // the capability list so Codex sessions simply omit the button.
-            revertEnabled: session.capabilities.includes("checkpoint"),
-            transportError: null,
-            abort: null,
-            connected: false,
-            // slice-060: freeze the A/B condition the backend stamped on create.
-            memoryEnabled: session.memory_enabled,
-            profileEnabled: session.profile_enabled,
-            runtime: session.runtime,
-            nativeSessionId: session.native_session_id,
-            permission: session.permission,
-            capabilities: session.capabilities,
-            lastSeq: null,
-            needsReplay: false,
-          };
-          set((state) => ({
-            ...state,
-            sessions: { ...state.sessions, [sid]: perSession },
-            activeSid: sid,
-          }));
-          return session;
-        } catch (err) {
-          // slice-072: surface the failure to the caller (the new-session
-          // dialog awaits + shows it) instead of writing it onto a maybe-
-          // nonexistent active session (review P1-2).
-          throw err;
-        }
+        // slice-072: route through the host-neutral /api/agent. runtime
+        // defaults to claude_code so pre-existing CC-only callers keep
+        // working unchanged (spec C-5). Rejections intentionally propagate to
+        // the new-session dialog, which owns the inline error state.
+        const runtime: Runtime = params.runtime ?? "claude_code";
+        const session = await apiCreateSession({ ...params, runtime });
+        const sid = session.session_id;
+        const name =
+          session.name ?? (params.workdir.split("/").pop() || params.workdir);
+        const perSession: PerSessionState = {
+          ...INITIAL_REDUCER_STATE,
+          meta: {
+            ...INITIAL_REDUCER_STATE.meta,
+            model: session.model ?? params.model ?? null,
+          },
+          workdir: params.workdir,
+          effort: params.effort ?? null,
+          name,
+          revertEnabled: session.capabilities.includes("checkpoint"),
+          transportError: null,
+          abort: null,
+          connected: false,
+          memoryEnabled: session.memory_enabled,
+          profileEnabled: session.profile_enabled,
+          runtime: session.runtime,
+          nativeSessionId: session.native_session_id,
+          permission: session.permission,
+          permissionPreset: session.permission_preset,
+          effectivePermissionProfile: session.effective_permission_profile,
+          effectiveSandbox: session.effective_sandbox,
+          effectiveApproval: session.effective_approval,
+          networkAccess: session.network_access,
+          pendingModel: null,
+          pendingEffort: null,
+          settingsNotice: null,
+          capabilities: session.capabilities,
+          lastSeq: null,
+          needsReplay: false,
+        };
+        set((state) => ({
+          ...state,
+          sessions: { ...state.sessions, [sid]: perSession },
+          activeSid: sid,
+        }));
+        return session;
       },
 
       activateSession: async (sid) => {
@@ -378,7 +432,7 @@ export function createCcStore() {
               // 显示 "model"（被截成 "mdle"）。
               meta: { ...INITIAL_REDUCER_STATE.meta, model: b.model },
               workdir: b.workdir,
-              effort: null,
+              effort: b.effort,
               name: b.name,
               revertEnabled: b.capabilities.includes("checkpoint"),
               transportError: null,
@@ -389,6 +443,14 @@ export function createCcStore() {
               runtime: b.runtime,
               nativeSessionId: b.native_session_id,
               permission: b.permission,
+              permissionPreset: b.permission_preset,
+              effectivePermissionProfile: b.effective_permission_profile,
+              effectiveSandbox: b.effective_sandbox,
+              effectiveApproval: b.effective_approval,
+              networkAccess: b.network_access,
+              pendingModel: null,
+              pendingEffort: null,
+              settingsNotice: null,
               capabilities: b.capabilities,
               lastSeq: null,
               needsReplay: false,
@@ -423,6 +485,37 @@ export function createCcStore() {
           });
         } catch (err) {
           set({ loadingHistory: false });
+          patchActive(() => ({ transportError: (err as Error).message }));
+        }
+      },
+
+      updateSessionSettings: async (model, effort) => {
+        const sid = get().activeSid;
+        if (!sid) return;
+        const current = get().sessions[sid];
+        if (!current || current.runtime !== "codex" || current.abort) return;
+        try {
+          const selection = await apiUpdateSessionSettings(sid, { model, effort });
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  pendingModel: selection.model,
+                  pendingEffort: selection.effort,
+                  settingsNotice: selection.adjusted
+                    ? `当前模型不支持所选 effort，已改为 ${selection.effort}`
+                    : "将在下一轮生效",
+                  transportError: null,
+                },
+              },
+            };
+          });
+        } catch (err) {
           patchActive(() => ({ transportError: (err as Error).message }));
         }
       },

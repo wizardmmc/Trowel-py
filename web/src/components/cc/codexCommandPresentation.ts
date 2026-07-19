@@ -75,15 +75,28 @@ function fallback(action: NativeAction, fullCommand: string): string {
   return action.command ?? commandPreview(fullCommand);
 }
 
+/** Preserve the useful range encoded by native sed read actions. Semantics
+ * still come from commandActions.type; this only disambiguates repeated reads
+ * of the same path in Explore. */
+function readRange(command: string | null): string | null {
+  if (command === null) return null;
+  const matched = /\bsed\s+-n\s+['"]?(\d+),(\d+)p['"]?/.exec(command);
+  return matched === null ? null : `lines ${matched[1]}–${matched[2]}`;
+}
+
 function explorationRow(
   action: NativeAction,
   fullCommand: string,
   workdir?: string,
 ): CodexCommandRow {
   if (action.type === "read") {
+    const base = action.path
+      ? getDisplayPath(action.path, workdir)
+      : action.name ?? fallback(action, fullCommand);
+    const range = readRange(action.command);
     return {
       verb: "Read",
-      detail: action.path ? getDisplayPath(action.path, workdir) : action.name ?? fallback(action, fullCommand),
+      detail: range === null ? base : `${base} · ${range}`,
     };
   }
   if (action.type === "listFiles") {

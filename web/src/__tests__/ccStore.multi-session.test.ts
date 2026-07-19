@@ -17,6 +17,7 @@ vi.mock("../api/agent", () => ({
   listAgentHistory: vi.fn().mockResolvedValue([]),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   getAgentHistory: vi.fn().mockResolvedValue([]),
+  updateAgentSessionSettings: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
 }));
 
@@ -42,6 +43,7 @@ import {
   createAgentSession as apiCreateSession,
   deleteAgentSession as apiDeleteSession,
   listActiveAgentSessions as listActiveSessions,
+  updateAgentSessionSettings as apiUpdateSessionSettings,
 } from "../api/agent";
 import { createCcStore, MAX_RUNNING, MAX_CONNECTIONS } from "../stores/ccStore";
 import type { AgentSession } from "../api/agent";
@@ -422,6 +424,105 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       const s = store.getState().sessions["s1"];
       expect(s?.memoryEnabled).toBe(false); // backend value, not a local default
       expect(s?.profileEnabled).toBe(true);
+    });
+  });
+
+  describe("slice-075-prefix: Codex next-turn settings", () => {
+    it("stores the backend-validated model/effort pair as pending", async () => {
+      const store = createCcStore();
+      mockCreate("s1", {
+        runtime: "codex",
+        model: "gpt-5.6-sol",
+        effort: "low",
+        capabilities: ["tools", "approval"],
+      });
+      vi.mocked(apiUpdateSessionSettings).mockResolvedValueOnce({
+        model: "gpt-5.6-luna",
+        effort: "medium",
+        adjusted: true,
+      });
+      await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+      await store.getState().updateSessionSettings("gpt-5.6-luna", "ultra");
+      const session = store.getState().sessions.s1;
+      expect(apiUpdateSessionSettings).toHaveBeenCalledWith("s1", {
+        model: "gpt-5.6-luna",
+        effort: "ultra",
+      });
+      expect([session.pendingModel, session.pendingEffort]).toEqual([
+        "gpt-5.6-luna",
+        "medium",
+      ]);
+      expect(session.settingsNotice).toContain("已改为 medium");
+    });
+
+    it("commits and clears the pending pair only on model_changed", async () => {
+      const store = createCcStore();
+      mockCreate("s1", {
+        runtime: "codex",
+        model: "gpt-5.6-sol",
+        effort: "low",
+        capabilities: ["tools", "approval"],
+      });
+      vi.mocked(apiUpdateSessionSettings).mockResolvedValueOnce({
+        model: "gpt-5.6-luna",
+        effort: "medium",
+        adjusted: false,
+      });
+      await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+      await store.getState().updateSessionSettings("gpt-5.6-luna", "medium");
+      const sending = store.getState().send("hi");
+      streamApply!(
+        ev(
+          "model_changed",
+          { model: "gpt-5.6-luna", effort: "medium" },
+          { runtime: "codex" },
+        ),
+      );
+      expect(store.getState().sessions.s1).toMatchObject({
+        effort: "medium",
+        pendingModel: null,
+        pendingEffort: null,
+        settingsNotice: null,
+      });
+      await releaseAllStreams();
+      await sending;
+    });
+
+    it("applies native effective permission facts from lazy thread/start", async () => {
+      const store = createCcStore();
+      mockCreate("s1", {
+        runtime: "codex",
+        permission_preset: "follow",
+        capabilities: ["tools", "approval"],
+      });
+      await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+      const sending = store.getState().send("hi");
+      streamApply!(
+        ev(
+          "session_started",
+          {
+            model: "gpt-5.6-sol",
+            cwd: "/wd",
+            cc_session_id: "thread-1",
+            tools: [],
+            permission_profile: ":read-only",
+            effective_sandbox: "read-only",
+            effective_approval: "on-request",
+            network_access: false,
+          },
+          { runtime: "codex" },
+        ),
+      );
+      expect(store.getState().sessions.s1).toMatchObject({
+        permission: "Read only · on-request",
+        permissionPreset: "follow",
+        effectivePermissionProfile: ":read-only",
+        effectiveSandbox: "read-only",
+        effectiveApproval: "on-request",
+        networkAccess: false,
+      });
+      await releaseAllStreams();
+      await sending;
     });
   });
 

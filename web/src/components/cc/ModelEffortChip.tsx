@@ -1,8 +1,8 @@
-import { useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 import type { ModelOption } from "../../api/cc";
-import { EFFORT_OPTIONS } from "./EffortPicker";
+import { EFFORT_OPTIONS } from "./effortOptions";
 
 /**
  * slice-034 feat 3 — the model + effort chips on the Composer's bottom bar.
@@ -19,24 +19,39 @@ import { EFFORT_OPTIONS } from "./EffortPicker";
  * the chip button's ``getBoundingClientRect()``. A transparent backdrop closes
  * the popover on outside click.
  */
+export interface EffortControlOption {
+  readonly value: string;
+  readonly description: string;
+  readonly isDefault?: boolean;
+}
+
 interface ModelEffortChipProps {
   readonly models: readonly ModelOption[];
+  /** Omit for CC's existing static effort list; Codex passes native values. */
+  readonly efforts?: readonly EffortControlOption[];
   /** Current model alias, or null when meta hasn't arrived (show the default). */
   readonly currentModelAlias: string | null;
   /** Current effort, or null when unset (show ``auto``). */
   readonly currentEffort: string | null;
   readonly onPickModel: (alias: string) => void;
   readonly onPickEffort: (value: string) => void;
+  readonly catalogError?: string | null;
+  readonly onRetryCatalog?: () => void;
+  readonly disabled?: boolean;
 }
 
 const EFFORT_FALLBACK = "auto";
 
 export function ModelEffortChip({
   models,
+  efforts,
   currentModelAlias,
   currentEffort,
   onPickModel,
   onPickEffort,
+  catalogError = null,
+  onRetryCatalog,
+  disabled = false,
 }: ModelEffortChipProps) {
   const [open, setOpen] = useState<"model" | "effort" | null>(null);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -46,12 +61,16 @@ export function ModelEffortChip({
   const defaultModel = models.find((m) => m.is_default) ?? models[0] ?? null;
   const modelDisplay = currentModelAlias ?? defaultModel?.value ?? "—";
   const effortDisplay = currentEffort ?? EFFORT_FALLBACK;
+  const effortOptions: readonly EffortControlOption[] =
+    efforts ?? EFFORT_OPTIONS.map((item) => ({ ...item }));
+  const defaultEffort = effortOptions.find((item) => item.isDefault)?.value;
 
   function close() {
     setOpen(null);
     setAnchor(null);
   }
   function toggle(which: "model" | "effort") {
+    if (disabled) return;
     if (open === which) {
       close();
       return;
@@ -63,6 +82,18 @@ export function ModelEffortChip({
     }
     setOpen(which);
   }
+
+  useEffect(() => {
+    if (open === null) return;
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
+      const focusTarget = open === "model" ? modelBtnRef.current : effortBtnRef.current;
+      close();
+      focusTarget?.focus();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
   function popoverStyle(): CSSProperties | undefined {
     if (!anchor) return undefined;
     // fixed: bottom = distance from chip top to viewport bottom + 6px gap.
@@ -81,6 +112,8 @@ export function ModelEffortChip({
           ref={modelBtnRef}
           className="cc-chip__btn"
           onClick={() => toggle("model")}
+          disabled={disabled}
+          title={disabled ? "本轮结束后可切换" : undefined}
           aria-label={`model: ${modelDisplay}（点击切换）`}
         >
           <span className="cc-chip__label">model</span>
@@ -96,6 +129,16 @@ export function ModelEffortChip({
               aria-label="model 选项"
               style={popoverStyle()}
             >
+              {catalogError !== null && (
+                <div className="cc-picker__error" role="alert">
+                  <span>{catalogError}</span>
+                  {onRetryCatalog && (
+                    <button type="button" onClick={onRetryCatalog}>
+                      重试
+                    </button>
+                  )}
+                </div>
+              )}
               {models.map((m) => {
                 const sel = m.value === modelDisplay;
                 return (
@@ -136,6 +179,8 @@ export function ModelEffortChip({
           ref={effortBtnRef}
           className="cc-chip__btn"
           onClick={() => toggle("effort")}
+          disabled={disabled}
+          title={disabled ? "本轮结束后可切换" : undefined}
           aria-label={`effort: ${effortDisplay}（点击切换）`}
         >
           <span className="cc-chip__label">effort</span>
@@ -151,7 +196,7 @@ export function ModelEffortChip({
               aria-label="effort 选项"
               style={popoverStyle()}
             >
-              {EFFORT_OPTIONS.map((o) => {
+              {effortOptions.map((o) => {
                 const sel = o.value === effortDisplay;
                 return (
                   <button
@@ -167,7 +212,7 @@ export function ModelEffortChip({
                   >
                     <span className="cc-picker__row">
                       <span className="cc-picker__name">{o.value}</span>
-                      {o.value === EFFORT_FALLBACK && (
+                      {(o.value === EFFORT_FALLBACK || o.isDefault) && (
                         <span className="cc-picker__tag">默认</span>
                       )}
                     </span>
@@ -175,7 +220,9 @@ export function ModelEffortChip({
                   </button>
                 );
               })}
-              <div className="cc-picker__foot">不设置时默认用 {EFFORT_FALLBACK}</div>
+              <div className="cc-picker__foot">
+                不设置时默认用 {defaultEffort ?? EFFORT_FALLBACK}
+              </div>
             </div>
           </>,
           document.body,

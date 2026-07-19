@@ -28,6 +28,12 @@ export interface AgentSession {
   readonly effort: string | null;
   /** Runtime-specific effective policy string; null until reported. */
   readonly permission: string | null;
+  /** Requested preset and the effective facts reported by Codex app-server. */
+  readonly permission_preset?: string | null;
+  readonly effective_permission_profile?: string | null;
+  readonly effective_sandbox?: string | null;
+  readonly effective_approval?: string | null;
+  readonly network_access?: boolean | null;
   readonly memory_enabled: boolean;
   readonly profile_enabled: boolean;
   /** Runtime-declared capability tags (tools/approval/checkpoint/...). */
@@ -51,6 +57,12 @@ export interface CreateAgentSessionParams {
   readonly approval_policy?: string;
   /** Codex only (sandbox mode). */
   readonly sandbox?: string;
+  /** Codex-only UI preset; the backend owns the protocol mapping. */
+  readonly permission_preset?:
+    | "follow"
+    | "read-only"
+    | "workspace-write"
+    | "danger-full-access";
   readonly memory_enabled?: boolean;
   readonly profile_enabled?: boolean;
 }
@@ -71,6 +83,29 @@ export interface AgentRuntimeInfo {
   readonly native: string;
   readonly capabilities: readonly string[];
   readonly connected: boolean;
+}
+
+/** One native Codex reasoning effort. Values are deliberately open-ended. */
+export interface AgentEffort {
+  readonly value: string;
+  readonly description: string;
+}
+
+/** One row returned by Codex app-server model/list. */
+export interface AgentModel {
+  readonly id: string;
+  readonly model: string;
+  readonly display_name: string;
+  readonly description: string;
+  readonly is_default: boolean;
+  readonly default_effort: string;
+  readonly supported_efforts: readonly AgentEffort[];
+}
+
+export interface AgentSettingsSelection {
+  readonly model: string;
+  readonly effort: string;
+  readonly adjusted: boolean;
 }
 
 const AGENT_API_BASE = "/api/agent";
@@ -157,6 +192,29 @@ export async function interruptAgentSession(
 /** GET /api/agent/runtimes — the two runtimes + capabilities + connection. */
 export async function listAgentRuntimes(): Promise<readonly AgentRuntimeInfo[]> {
   return request<readonly AgentRuntimeInfo[]>(`${AGENT_API_BASE}/runtimes`);
+}
+
+/** GET /api/agent/models — native Codex catalog in app-server order. */
+export async function listAgentModels(): Promise<readonly AgentModel[]> {
+  const data = await request<{ readonly models: readonly AgentModel[] }>(
+    `${AGENT_API_BASE}/models`,
+  );
+  return data.models;
+}
+
+/** PATCH both next-turn settings atomically; the backend validates the pair. */
+export async function updateAgentSessionSettings(
+  sessionId: string,
+  selection: { readonly model: string; readonly effort: string },
+): Promise<AgentSettingsSelection> {
+  return request<AgentSettingsSelection>(
+    `${AGENT_API_BASE}/sessions/${sessionId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(selection),
+    },
+  );
 }
 
 /** GET /api/agent/sessions?workdir=... — mixed history (CC jsonl + Codex). */

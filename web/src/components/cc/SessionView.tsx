@@ -7,8 +7,8 @@ import {
 } from "../../stores/ccStore";
 import { listModels, listSlashItems } from "../../api/cc";
 import type { ModelOption, SlashItem } from "../../api/cc";
-import { listAgentRuntimes } from "../../api/agent";
-import type { AgentHistoryRow } from "../../api/agent";
+import { listAgentModels, listAgentRuntimes } from "../../api/agent";
+import type { AgentHistoryRow, AgentModel } from "../../api/agent";
 import type { NewSessionConfig, RuntimesState } from "./NewSessionDialog";
 import { Composer } from "./Composer";
 import { EffortPicker } from "./EffortPicker";
@@ -73,12 +73,15 @@ export function SessionView({
   const historyTotal = useCcStore((s) => s.historyTotal);
   const loadingHistory = useCcStore((s) => s.loadingHistory);
   const refreshHistory = useCcStore((s) => s.refreshHistory);
+  const updateSessionSettings = useCcStore((s) => s.updateSessionSettings);
 
   // slice-026: the turn pending a revert confirmation (null = modal closed).
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
   // slice-027: slash items for `/` autocomplete + models for /model picker.
   const [slashItems, setSlashItems] = useState<readonly SlashItem[]>([]);
   const [models, setModels] = useState<readonly ModelOption[]>([]);
+  const [codexModels, setCodexModels] = useState<readonly AgentModel[]>([]);
+  const [codexCatalogError, setCodexCatalogError] = useState<string | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   // slice-060: the "+ 新会话" setup dialog (choose Memory/Profile A/B condition
@@ -99,8 +102,29 @@ export function SessionView({
       );
   }, []);
   useEffect(() => {
-    loadRuntimes();
-  }, [loadRuntimes]);
+    listAgentRuntimes()
+      .then((rs) => setRuntimesState({ status: "ready", runtimes: rs }))
+      .catch((err) =>
+        setRuntimesState({ status: "error", error: (err as Error).message }),
+      );
+  }, []);
+  const loadCodexModels = useCallback(() => {
+    setCodexCatalogError(null);
+    listAgentModels()
+      .then(setCodexModels)
+      .catch((err) => {
+        setCodexModels([]);
+        setCodexCatalogError((err as Error).message);
+      });
+  }, []);
+  useEffect(() => {
+    listAgentModels()
+      .then(setCodexModels)
+      .catch((err) => {
+        setCodexModels([]);
+        setCodexCatalogError((err as Error).message);
+      });
+  }, []);
   // slice-072: create flow — the dialog awaits startSession; the dialog stays
   // open with an error on failure instead of closing fire-and-forget (P1-2).
   const [creating, setCreating] = useState(false);
@@ -125,12 +149,8 @@ export function SessionView({
   const effort = active?.effort ?? null;
   const revertEnabled = active?.revertEnabled ?? false;
   const streaming = ACTIVE_PHASES.has(phase);
-  // slice-072: model/effort/slash are CC-only controls — they ride CC's
-  // /model /effort slash + .claude/ skills. Codex sets its model in
-  // thread/start (host-owned); sending "/model opus" to Codex would just be a
-  // no-op text message, so the Composer hides these controls for Codex
-  // sessions (review P1-5). One runtime check, centralised here.
   const ccControls = active?.runtime === "claude_code";
+  const codexControls = active?.runtime === "codex";
   // slice-034 feat 3: 当前 model 的 alias（从 meta.model 匹配 models），null → chip 显示默认回退。
   const modelAlias = (() => {
     if (!meta?.model) return null;
@@ -139,6 +159,35 @@ export function SessionView({
     );
     return found?.value ?? null;
   })();
+  const codexModelOptions: readonly ModelOption[] = codexModels.map((item) => ({
+    value: item.id,
+    label: item.display_name,
+    real_model: item.model,
+    description: item.description,
+    is_default: item.is_default,
+  }));
+  const codexCurrentModel = active?.pendingModel ?? meta?.model ?? null;
+  const selectedCodexModel =
+    codexModels.find(
+      (item) => item.id === codexCurrentModel || item.model === codexCurrentModel,
+    ) ?? codexModels.find((item) => item.is_default) ?? codexModels[0];
+  const codexEfforts = (selectedCodexModel?.supported_efforts ?? []).map((item) => ({
+    value: item.value,
+    description: item.description,
+    isDefault: item.value === selectedCodexModel?.default_effort,
+  }));
+  const codexCurrentEffort = active?.pendingEffort ?? effort;
+
+  function pickCodexModel(modelId: string): void {
+    const next = codexModels.find((item) => item.id === modelId);
+    if (!next) return;
+    const nextEffort = next.supported_efforts.some(
+      (item) => item.value === codexCurrentEffort,
+    )
+      ? (codexCurrentEffort as string)
+      : next.default_effort;
+    void updateSessionSettings(next.id, nextEffort);
+  }
 
   // Drop a stale revert target if the session changes (reset / new / pick) so
   // we never POST a turn_id from one session to another. This is the canonical
@@ -412,6 +461,11 @@ export function SessionView({
           </button>
         )}
         <div ref={composerRef}>
+          {active?.settingsNotice && (
+            <div className="cc-settings-notice" role="status">
+              {active.settingsNotice}
+            </div>
+          )}
           <Composer
             streaming={streaming}
             disabled={!activeSid || phase === "awaiting_input"}
@@ -424,14 +478,48 @@ export function SessionView({
             }}
             onInterrupt={() => void interrupt()}
             slashItems={ccControls ? slashItems : []}
-            models={ccControls ? models : []}
-            currentModelAlias={ccControls ? modelAlias : null}
-            currentEffort={ccControls ? effort : null}
+            models={
+              ccControls ? models : codexControls ? codexModelOptions : []
+            }
+            efforts={codexControls ? codexEfforts : undefined}
+            currentModelAlias={
+              ccControls ? modelAlias : codexControls ? codexCurrentModel : null
+            }
+            currentEffort={
+              ccControls ? effort : codexControls ? codexCurrentEffort : null
+            }
             onPickModel={
-              ccControls ? (v) => void send(`/model ${v}`) : undefined
+              ccControls
+                ? (v) => void send(`/model ${v}`)
+                : codexControls
+                  ? pickCodexModel
+                  : undefined
             }
             onPickEffort={
-              ccControls ? (v) => void send(`/effort ${v}`) : undefined
+              ccControls
+                ? (v) => void send(`/effort ${v}`)
+                : codexControls
+                  ? (v) => {
+                      if (selectedCodexModel) {
+                        void updateSessionSettings(selectedCodexModel.id, v);
+                      }
+                    }
+                  : undefined
+            }
+            modelCatalogError={codexControls ? codexCatalogError : null}
+            onRetryModelCatalog={codexControls ? loadCodexModels : undefined}
+            settingsDisabled={streaming}
+            permissionFacts={
+              codexControls && active
+                ? {
+                    requested: active.permissionPreset ?? null,
+                    profile: active.effectivePermissionProfile ?? null,
+                    sandbox: active.effectiveSandbox ?? null,
+                    approval: active.effectiveApproval ?? null,
+                    network: active.networkAccess ?? null,
+                    label: active.permission,
+                  }
+                : null
             }
             onRequestModelPicker={
               ccControls ? () => setShowModelPicker(true) : undefined
@@ -458,6 +546,9 @@ export function SessionView({
             creating={creating}
             error={createError}
             ccModels={models}
+            codexModels={codexModels}
+            codexCatalogError={codexCatalogError}
+            onRetryCodexCatalog={loadCodexModels}
             onCreate={(config) => {
               void handleCreate(config);
             }}

@@ -76,4 +76,33 @@ describe("Codex command presentation — native commandActions only", () => {
       { verb: "Search", detail: "x in src" },
     ]);
   });
+
+  it("adds native sed ranges so same-path reads remain distinguishable", () => {
+    const first = command({
+      command: "/bin/zsh -lc sed",
+      command_actions: [
+        {
+          type: "read",
+          command: "sed -n '1,320p' /repo/SKILL.md",
+          path: "/repo/SKILL.md",
+        },
+      ],
+    });
+    const second = command({
+      command: "/bin/zsh -lc sed",
+      command_actions: [
+        {
+          type: "read",
+          command: "sed -n '321,700p' /repo/SKILL.md",
+          path: "/repo/SKILL.md",
+        },
+      ],
+    });
+    expect(getCodexCommandPresentation(first, "/repo").rows[0].detail).toBe(
+      "SKILL.md · lines 1–320",
+    );
+    expect(getCodexCommandPresentation(second, "/repo").rows[0].detail).toBe(
+      "SKILL.md · lines 321–700",
+    );
+  });
 });

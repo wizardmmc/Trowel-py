@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MemoryProfileChip } from "./MemoryProfileChip";
-import { ModelEffortChip } from "./ModelEffortChip";
+import {
+  ModelEffortChip,
+  type EffortControlOption,
+} from "./ModelEffortChip";
+import { PermissionFactsChip } from "./PermissionFactsChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
 import {
   flatVisible,
@@ -39,10 +43,22 @@ interface ComposerProps {
   readonly onRequestEffortPicker?: () => void;
   /** slice-034 feat 3: model/effort chips on the bottom bar. Omit = no chips. */
   readonly models?: readonly ModelOption[];
+  readonly efforts?: readonly EffortControlOption[];
   readonly currentModelAlias?: string | null;
   readonly currentEffort?: string | null;
   readonly onPickModel?: (alias: string) => void;
   readonly onPickEffort?: (value: string) => void;
+  readonly modelCatalogError?: string | null;
+  readonly onRetryModelCatalog?: () => void;
+  readonly settingsDisabled?: boolean;
+  readonly permissionFacts?: {
+    readonly requested: string | null;
+    readonly profile: string | null;
+    readonly sandbox: string | null;
+    readonly approval: string | null;
+    readonly network: boolean | null;
+    readonly label: string | null;
+  } | null;
   /** slice-060: frozen memory/profile condition for the active session. When
    * both are non-null, read-only chips render next to model/effort. */
   readonly memoryEnabled?: boolean | null;
@@ -59,10 +75,15 @@ export function Composer({
   onRequestModelPicker,
   onRequestEffortPicker,
   models,
+  efforts,
   currentModelAlias,
   currentEffort,
   onPickModel,
   onPickEffort,
+  modelCatalogError,
+  onRetryModelCatalog,
+  settingsDisabled = false,
+  permissionFacts,
   memoryEnabled,
   profileEnabled,
 }: ComposerProps) {
@@ -260,15 +281,20 @@ export function Composer({
           aria-label="CC 消息输入"
         />
         <div className="cc-composer__bar">
-          {models && models.length > 0 && onPickModel && onPickEffort && (
+          {models && onPickModel && onPickEffort && (
             <ModelEffortChip
               models={models}
+              efforts={efforts}
               currentModelAlias={currentModelAlias ?? null}
               currentEffort={currentEffort ?? null}
               onPickModel={onPickModel}
               onPickEffort={onPickEffort}
+              catalogError={modelCatalogError}
+              onRetryCatalog={onRetryModelCatalog}
+              disabled={settingsDisabled}
             />
           )}
+          {permissionFacts && <PermissionFactsChip {...permissionFacts} />}
           {memoryEnabled != null && profileEnabled != null && (
             <MemoryProfileChip
               memoryEnabled={memoryEnabled}

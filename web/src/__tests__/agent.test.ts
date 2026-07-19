@@ -13,7 +13,9 @@ import {
   interruptAgentSession,
   listActiveAgentSessions,
   listAgentHistory,
+  listAgentModels,
   listAgentRuntimes,
+  updateAgentSessionSettings,
 } from "../api/agent";
 
 function mockEnvelope(data: unknown, ok = true): Response {
@@ -122,6 +124,49 @@ describe("api/agent", () => {
     const runtimes = await listAgentRuntimes();
     expect(runtimes[0].runtime).toBe("claude_code");
     expect(runtimes[0].capabilities).toEqual(["tools"]);
+  });
+
+  it("listAgentModels returns unknown native rows unchanged", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockEnvelope({
+        models: [
+          {
+            id: "future-model",
+            model: "future-native",
+            display_name: "Future",
+            description: "future",
+            is_default: true,
+            default_effort: "quantum",
+            supported_efforts: [
+              { value: "quantum", description: "future effort" },
+            ],
+          },
+        ],
+      }),
+    );
+    const models = await listAgentModels();
+    expect(models[0].supported_efforts[0].value).toBe("quantum");
+    expect(vi.mocked(globalThis.fetch).mock.calls[0][0]).toBe(
+      "/api/agent/models",
+    );
+  });
+
+  it("updateAgentSessionSettings PATCHes model and effort together", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockEnvelope({ model: "gpt-5.6-luna", effort: "medium", adjusted: true }),
+    );
+    const selected = await updateAgentSessionSettings("s1", {
+      model: "gpt-5.6-luna",
+      effort: "ultra",
+    });
+    expect(selected.adjusted).toBe(true);
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe("/api/agent/sessions/s1");
+    expect((init as RequestInit).method).toBe("PATCH");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      model: "gpt-5.6-luna",
+      effort: "ultra",
+    });
   });
 
   it("listAgentHistory encodes the workdir", async () => {
