@@ -171,6 +171,15 @@ class AppServerClient:
         self._stderr_task: asyncio.Task[None] | None = None
         self._writer_lock = asyncio.Lock()
         self._state = _TransportState()
+        # Set once the transport closes — either the client called close() or
+        # the reader observed EOF / non-zero exit. ``wait_closed`` awaits it so
+        # a manager can react to host exit without polling (slice-071).
+        self._closed_event: asyncio.Event = asyncio.Event()
+        # Exit code the reader observed (None until the process is reaped).
+        # ``close`` and a clean exit leave 0; a crash leaves non-zero. Surfaced
+        # through ``last_exit_code`` so the manager can stamp HOST_EXITED with
+        # a real exit code instead of always None (review M-2).
+        self._last_exit_code: int | None = None
         self._server_handlers: dict[str, ServerRequestHandler] = {}
         self._server_request_tasks: set[asyncio.Task[None]] = set()
         self._notification_listeners: list[NotificationListener] = []
@@ -202,6 +211,22 @@ class AppServerClient:
         """True once close() has run or the reader observed process exit."""
 
         return self._state.closing or self._state.failed
+
+    async def wait_closed(self) -> None:
+        """Block until the transport has closed.
+
+        Returns when the client called :meth:`close` or the reader task
+        observed EOF / a non-zero exit — whichever happens first. A manager
+        awaits this to react to host exit without polling (slice-071).
+        """
+
+        await self._closed_event.wait()
+
+    @property
+    def last_exit_code(self) -> int | None:
+        """The app-server exit code the reader observed, or None until reaped."""
+
+        return self._last_exit_code
 
     @property
     def stderr_tail(self) -> str:
@@ -363,6 +388,10 @@ class AppServerClient:
         for future in pending.values():
             if not future.done():
                 future.set_exception(error)
+        # Notify anyone awaiting wait_closed() — covers both client-initiated
+        # close (``_shutdown``) and server EOF (``_read_loop`` finally), since
+        # both paths drain pending futures through here.
+        self._closed_event.set()
 
     # ------------------------------------------------------------- requests
 
@@ -531,6 +560,7 @@ class AppServerClient:
             _log.exception("app-server reader crashed: %s", exc)
         finally:
             exit_code = proc.returncode
+            self._last_exit_code = exit_code
             reason = self._host_exit_reason(exit_code)
             await self._fail_all(reason)
             self._state.failed = True

@@ -109,6 +109,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
         app.state.tidy_scheduler = None
+    # slice-071: shared Codex app-server manager. Lazy — only spawns the
+    # app-server process on the first Codex send, so opening trowel without
+    # using Codex costs nothing. Shutdown always closes it. Failure is swallowed
+    # so a missing/old Codex install never blocks app startup.
+    try:
+        from trowel_py.codex_host import CodexHostManager
+
+        app.state.codex_host_manager = CodexHostManager()
+    except Exception:
+        logger.warning("[codex] host manager init failed", exc_info=True)
+        app.state.codex_host_manager = None
     yield
     _scheduler = getattr(app.state, "memory_scheduler", None)
     if _scheduler is not None:
@@ -130,6 +141,12 @@ async def lifespan(app: FastAPI):
             await _tidy.stop()
         except Exception:
             logger.warning("[memory] tidy scheduler stop failed", exc_info=True)
+    _codex_mgr = getattr(app.state, "codex_host_manager", None)
+    if _codex_mgr is not None:
+        try:
+            await _codex_mgr.close()
+        except Exception:
+            logger.warning("[codex] host manager close failed", exc_info=True)
     await app.state.cc_http_client.aclose()
 
 
