@@ -160,6 +160,32 @@ class CodexHostManager:
 
         return self._sessions.get(session_id)
 
+    @property
+    def session_ids(self) -> tuple[str, ...]:
+        """Snapshot of registered trowel session ids (slice-072).
+
+        Read-only view so the host-neutral Session Hub can count live Codex
+        sessions without reaching into the private ``_sessions`` dict. Returns
+        a tuple (immutable) so a caller cannot mutate the registry through it.
+        """
+
+        return tuple(self._sessions.keys())
+
+    def unregister(self, session_id: str) -> CodexSession | None:
+        """Drop a session from the registry + its thread route (slice-072).
+
+        Returns the removed session, or None if it was not registered. Used by
+        the Session Hub when a Codex session is deleted so the manager stops
+        routing notifications to it. The app-server thread itself is NOT
+        touched — Codex threads persist server-side; this only drops trowel's
+        bookkeeping (an idle thread re-registers on the next resume).
+        """
+
+        session = self._sessions.pop(session_id, None)
+        if session is not None and session.binding is not None:
+            self._thread_to_session.pop(session.binding.thread_id, None)
+        return session
+
     def session_for_thread(self, thread_id: str) -> CodexSession | None:
         """Look up a session by native thread id (the routing direction)."""
 

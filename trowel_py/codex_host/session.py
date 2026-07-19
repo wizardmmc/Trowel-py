@@ -92,6 +92,7 @@ class CodexSessionConfig:
     approval_policy: str = "never"
     sandbox: str = "read-only"
     ephemeral: bool = True
+    initial_thread_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,22 @@ class CodexSession:
         """Initialise in IDLE with no binding and an empty event queue."""
 
         self._config = config
-        self._binding: ThreadBinding | None = None
+        # slice-072: a resumed thread starts with a minimal placeholder binding
+        # so is_new_thread is False and manager.send routes through
+        # thread/resume; attach_thread_binding overwrites it with the real
+        # ThreadBinding once the resume response arrives.
+        self._binding: ThreadBinding | None
+        if config.initial_thread_id is not None:
+            self._binding = ThreadBinding(
+                thread_id=config.initial_thread_id,
+                model="",
+                model_provider="",
+                cwd=config.workdir,
+                sandbox=MappingProxyType({}),
+                approval_policy=MappingProxyType({}),
+            )
+        else:
+            self._binding = None
         self._current_turn_id: str | None = None
         self._state: CodexSessionState = CodexSessionState.IDLE
         self._seq: int = 0

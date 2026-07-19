@@ -7,6 +7,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from trowel_py.agent_host.routes import router as agent_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
     TUI_SYSTEM_IDENTITY,
@@ -120,6 +121,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
         app.state.codex_host_manager = None
+    # slice-072: host-neutral Session Hub. Wires the binding store to the
+    # shared Codex manager + cc_host's live _REGISTRY (the default cc_registry
+    # / cc_opener point at cc_host.routes). Lazy like the codex manager —
+    # opening trowel costs nothing until a session is created. Failure is
+    # swallowed so a missing piece never blocks app startup.
+    try:
+        from trowel_py.agent_host import (
+            BindingStore,
+            SessionHub,
+            resolve_bindings_path,
+        )
+
+        app.state.agent_hub = SessionHub(
+            BindingStore(resolve_bindings_path()),
+            codex_manager=app.state.codex_host_manager,
+        )
+    except Exception:
+        logger.warning("[agent] session hub init failed", exc_info=True)
+        app.state.agent_hub = None
     yield
     _scheduler = getattr(app.state, "memory_scheduler", None)
     if _scheduler is not None:
@@ -226,6 +246,7 @@ def create_app() -> FastAPI:
     app.include_router(feynman_router, prefix="/api/feynman")
     app.include_router(proxy_router)
     app.include_router(cc_host_router, prefix="/api/cc")
+    app.include_router(agent_router, prefix="/api/agent")
 
     # Serve the built frontend when present (release / `pip install` mode).
     # Skipped in dev — vite serves the frontend on :5173 and proxies /api here.

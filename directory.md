@@ -36,14 +36,15 @@ trowel-py/
 │   ├── feynman/           费曼模式
 │   ├── llm/               LLM 客户端 + prompts + filter
 │   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）；workflow_watcher.py 读 wf_<runId>.json 渲染 workflow 进度树（slice-036）；subagent_usage.py 从 subagent transcript 累加 token（slice-036 D 层）
+│   ├── agent_host/       host-neutral Session Hub（slice-072）：binding.py（SessionBinding/Runtime）+ store.py（json 持久化）+ hub.py（路由 CC/Codex、runtime 冻结、交叉 resume 拒绝）+ routes.py（/api/agent/*）+ schemas.py；cc_host 复用 open_cc_session / close_cc_session
 │   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up / cc_host）
 │
 ├── web/                   前端：React 19 + Vite + Zustand + framer-motion
 │   └── src/
 │       ├── App.tsx        容器组件，订阅 store
-│       ├── api/           API 客户端（fetch 封装）；cc.ts/ccStream.ts/ccTypes.ts = CC 会话（slice023-web）
+│       ├── api/           API 客户端（fetch 封装）；cc.ts/ccStream.ts/ccTypes.ts = CC 会话（slice023-web）；agent.ts = host-neutral /api/agent（slice-072）
 │       ├── components/    展示/容器组件，按领域分子目录（cards/ cc/ 等）
-│       ├── stores/        Zustand store（cardStore 等）；ccStore.ts = CC 事件 reducer（slice023-web）
+│       ├── stores/        Zustand store；ccStore.ts = host-neutral 多 session 壳（CC+Codex，slice-072）；ccReducer.ts/codexReducer.ts = 事件 reducer（CC / Codex）
 │       └── styles/        样式
 │
 ├── tests/                 pytest 测试：conftest.py + 按领域（events/ pet/）+ 跨领域 e2e

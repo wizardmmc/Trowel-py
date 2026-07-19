@@ -17,7 +17,7 @@ registry (stateless host layer: nothing persists across server restarts).
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -98,13 +98,54 @@ def _sse(event: object) -> str:
     return f"data: {event.model_dump_json()}\n\n"  # type: ignore[attr-defined]
 
 
-@router.post("/sessions")
-def create_session(
+@dataclass(frozen=True)
+class OpenedCcSession:
+    """Result of opening a CC session (slice-072).
+
+    Shared by POST ``/api/cc/sessions`` and the ``/api/agent`` CC branch so the
+    live ``_REGISTRY`` stays the single CC session store (spec C-5 — no
+    repo-wide rename, no second CC session pool).
+
+    Attributes:
+        sid: the new trowel session id.
+        host: the constructed CCHost (already registered).
+        name: multi-session display name (workdir basename + ``#N``).
+    """
+
+    sid: str
+    host: CCHost
+    name: str
+
+
+def open_cc_session(
     req: CreateSessionRequest,
     request: Request,
-    registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
-    """Open a new session (optionally resuming a CC session id)."""
+    registry: dict[str, CCHost] | None = None,
+) -> OpenedCcSession:
+    """Build a CCHost, register it in the live registry + multi-session state.
+
+    slice-072: extracted verbatim from the old ``create_session`` body so the
+    new host-neutral Session Hub can open a CC session through the same path
+    without duplicating the construction / multi-open bookkeeping. Behavior is
+    unchanged for ``/api/cc/sessions`` (the existing route tests guard that).
+
+    Args:
+        req: the create request (workdir / model / effort / permission /
+            M/P switches / resume_from).
+        request: the FastAPI request (read for ``app.state`` proxy + settings).
+        registry: override the module ``_REGISTRY`` (tests inject a fresh
+            dict). Defaults to the module-level registry.
+
+    Returns:
+        The opened session (sid + host + display name).
+
+    Raises:
+        HTTPException: 400 if the workdir does not exist; 409 if the live
+            connection cap (``MAX_CONNECTIONS``) is reached.
+    """
+
+    if registry is None:
+        registry = _REGISTRY
     if not Path(req.workdir).is_dir():
         raise HTTPException(status_code=400, detail="workdir does not exist")
     # 连接数限制（已创建 session 总数）
@@ -147,13 +188,24 @@ def create_session(
     _SESSION_NAMES[sid] = name
     global _ACTIVE_SID
     _ACTIVE_SID = sid
+    return OpenedCcSession(sid=sid, host=host, name=name)
+
+
+@router.post("/sessions")
+def create_session(
+    req: CreateSessionRequest,
+    request: Request,
+    registry: dict[str, CCHost] = Depends(get_registry),
+) -> dict:
+    """Open a new session (optionally resuming a CC session id)."""
+    opened = open_cc_session(req, request, registry)
     return {
         "success": True,
         "data": {
-            "session_id": sid,
+            "session_id": opened.sid,
             "cc_session_id": req.resume_from,
-            "model": host.model,
-            "name": name,
+            "model": opened.host.model,
+            "name": opened.name,
             # whether reverting turns is supported for this workdir
             # (non-git workdirs get the banner + no revert buttons in the UI).
             "revert_enabled": checkpoint.is_git_repo(req.workdir),
@@ -422,23 +474,53 @@ def list_dir(
     return {"success": True, "data": children, "error": None}
 
 
+async def close_cc_session(
+    session_id: str, registry: dict[str, CCHost] | None = None
+) -> bool:
+    """Close a CC session: kill the subprocess + drop registry + multi-open state.
+
+    slice-072: extracted from ``delete_session`` so the host-neutral Session
+    Hub can close a CC session through the same path, keeping the live
+    ``_REGISTRY`` + multi-open bookkeeping consistent regardless of which API
+    the deletion came through. Behavior is unchanged for ``/api/cc/*`` (the
+    existing route test guards that).
+
+    Args:
+        session_id: the trowel session id.
+        registry: override the module ``_REGISTRY`` (tests inject a dict).
+
+    Returns:
+        True if the session existed and was closed, False if it was already
+        gone (idempotent — safe for the Hub to call even when the binding
+        outlived the live host).
+    """
+
+    if registry is None:
+        registry = _REGISTRY
+    host = registry.get(session_id)
+    if host is None:
+        return False
+    await host.close()
+    registry.pop(session_id, None)
+    # slice-028 D2: 清理多开状态
+    wd = host.workdir
+    if session_id in _WORKDIR_INDEX.get(wd, set()):
+        _WORKDIR_INDEX[wd].discard(session_id)
+        if not _WORKDIR_INDEX[wd]:
+            _WORKDIR_INDEX.pop(wd, None)
+    _SESSION_NAMES.pop(session_id, None)
+    global _ACTIVE_SID
+    if _ACTIVE_SID == session_id:
+        _ACTIVE_SID = None
+    return True
+
+
 @router.delete("/sessions/{sid}")
 async def delete_session(
     sid: str,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """Kill the subprocess and remove the session from the registry."""
-    host = _require(sid, registry)
-    await host.close()
-    registry.pop(sid, None)
-    # slice-028 D2: 清理多开状态
-    wd = host.workdir
-    if sid in _WORKDIR_INDEX.get(wd, set()):
-        _WORKDIR_INDEX[wd].discard(sid)
-        if not _WORKDIR_INDEX[wd]:
-            _WORKDIR_INDEX.pop(wd, None)
-    _SESSION_NAMES.pop(sid, None)
-    global _ACTIVE_SID
-    if _ACTIVE_SID == sid:
-        _ACTIVE_SID = None
-    return {"success": True, "data": {"closed": True}, "error": None}
+    _require(sid, registry)  # keep the 404 behavior for the legacy route
+    closed = await close_cc_session(sid, registry)
+    return {"success": True, "data": {"closed": closed}, "error": None}
