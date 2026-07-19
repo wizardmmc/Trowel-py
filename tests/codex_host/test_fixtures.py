@@ -68,7 +68,27 @@ def test_server_request_approval_fixture_classifies_as_server_request(
     assert message["method"] == "item/commandExecution/requestApproval"
 
 
-@pytest.mark.parametrize("name", ["initialize-response", "notifications", "server-request-approval"])
+def test_file_approval_fixture_classifies_as_server_request(fixtures_dir) -> None:
+    """The slice-075 file recording is a real bidirectional request."""
+
+    messages = _read_jsonl(
+        fixtures_dir / "server-request-file-approval-075.jsonl"
+    )
+    assert len(messages) == 1
+    message = messages[0]
+    assert classify_server_message(message) is MessageKind.SERVER_REQUEST
+    assert message["method"] == "item/fileChange/requestApproval"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "initialize-response",
+        "notifications",
+        "server-request-approval",
+        "server-request-file-approval-075",
+    ],
+)
 def test_fixtures_carry_no_secrets_or_user_paths(fixtures_dir, name: str) -> None:
     """C-6: no auth, token or user-specific path survives into a fixture."""
 

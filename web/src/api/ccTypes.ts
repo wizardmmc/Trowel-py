@@ -301,6 +301,26 @@ export interface HostStatusEvent {
   readonly exit_code?: number | null;
 }
 
+/** One decision exactly as Codex advertised it for this request. */
+export type ApprovalDecision = string | Readonly<Record<string, unknown>>;
+
+/** slice-075: manager-owned lifecycle for a Codex app-server approval request. */
+export interface ApprovalRequestEvent {
+  readonly type: "approval_request";
+  readonly turn_id?: string;
+  readonly request_id: string;
+  readonly item_id: string | null;
+  readonly approval_kind: "command_approval" | "file_approval" | "unknown";
+  readonly command: string | null;
+  readonly cwd: string | null;
+  readonly reason: string | null;
+  readonly available_decisions: readonly ApprovalDecision[];
+  readonly status: "pending" | "answered" | "expired" | "host_closed";
+  readonly decision: string | null;
+  readonly auto_resolved: boolean;
+  readonly resolution_reason: string | null;
+}
+
 /** One question in an AskUserQuestion elicitation (spec/04 A.1). */
 export interface QuestionInput {
   readonly question: string;
@@ -350,7 +370,8 @@ export type TrowelEvent =
   | ModelChangedEvent
   | WorkflowTreeEvent
   | UsageUpdatedEvent
-  | HostStatusEvent;
+  | HostStatusEvent
+  | ApprovalRequestEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

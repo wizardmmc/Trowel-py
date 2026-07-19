@@ -30,8 +30,10 @@ vi.mock("../api/agent", () => ({
   listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
+  listAgentRequests: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
+  answerAgentRequest: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
 }));
 

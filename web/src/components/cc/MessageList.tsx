@@ -35,6 +35,7 @@ interface MessageListProps {
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   /** slice-026: request to revert a turn — opens the confirm modal. Called
    * only for revertible turns while CC is idle. */
   readonly onRevert?: (turn: Turn) => void;
@@ -57,6 +58,7 @@ function TurnCard({
   onRetryLast,
   onAnswer,
   onCancel,
+  onApprovalDecision,
   onRevert,
   workdir,
   runtime,
@@ -66,6 +68,7 @@ function TurnCard({
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
   readonly runtime?: string;
@@ -103,6 +106,7 @@ function TurnCard({
               isReplay={turn.status !== "active"}
               onAnswer={onAnswer}
               onCancel={onCancel}
+              onApprovalDecision={onApprovalDecision}
               workdir={workdir}
               runtime={runtime}
             />
@@ -131,6 +135,7 @@ export function MessageList({
   onRetryLast,
   onAnswer,
   onCancel,
+  onApprovalDecision,
   onRevert,
   workdir,
   runtime,
@@ -164,6 +169,7 @@ export function MessageList({
           onRetryLast={onRetryLast}
           onAnswer={onAnswer}
           onCancel={onCancel}
+          onApprovalDecision={onApprovalDecision}
           onRevert={onRevert}
           workdir={workdir}
           runtime={runtime}

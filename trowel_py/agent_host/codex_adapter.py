@@ -74,6 +74,7 @@ class CodexEventAdapter:
             CodexEventType.TOOL_STARTED: self._tool_started,
             CodexEventType.TOOL_PROGRESS: self._drop,
             CodexEventType.TOOL_COMPLETED: self._tool_completed,
+            CodexEventType.APPROVAL_REQUEST: self._approval_request,
             CodexEventType.USAGE_UPDATED: self._usage_updated,
             CodexEventType.STATUS: self._status,
             CodexEventType.FINISHED: self._finished,
@@ -244,6 +245,11 @@ class CodexEventAdapter:
         """host_status (extension) — passthrough manager lifecycle."""
 
         return self._passthrough(e, type_="host_status")
+
+    def _approval_request(self, e: CodexEvent) -> AgentEvent:
+        """Pass through the manager-generated approval lifecycle payload."""
+
+        return self._passthrough(e, type_="approval_request")
 
     # ------------------------------------------------------------- terminal
 

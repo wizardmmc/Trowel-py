@@ -58,6 +58,10 @@ class CodexEventType(str, Enum):
     TOOL_STARTED = "tool_started"
     TOOL_PROGRESS = "tool_progress"
     TOOL_COMPLETED = "tool_completed"
+    # User-visible app-server server request lifecycle (slice-075). The
+    # manager synthesises these events; they are not notifications translated
+    # by CodexTranslator.
+    APPROVAL_REQUEST = "approval_request"
     # Token usage, host status and terminal turn states.
     USAGE_UPDATED = "usage_updated"
     STATUS = "status"

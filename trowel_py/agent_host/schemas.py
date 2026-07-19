@@ -72,3 +72,14 @@ class SendMessageBody(BaseModel):
     """Body for POST ``/api/agent/sessions/{id}/messages``."""
 
     text: str = Field(min_length=1)
+
+
+class AnswerAgentRequest(BaseModel):
+    """Body for answering one Codex app-server server request.
+
+    The decision remains an open string at the HTTP boundary because native
+    choices are request-specific. The manager validates it against the exact
+    recorded ``availableDecisions`` for that pending request.
+    """
+
+    decision: str = Field(min_length=1)

@@ -108,6 +108,27 @@ export interface AgentSettingsSelection {
   readonly adjusted: boolean;
 }
 
+/** Retained Codex server request returned by answer/reconnect endpoints. */
+export interface AgentPendingRequest {
+  readonly request_id: string;
+  readonly session_id: string;
+  readonly thread_id: string;
+  readonly turn_id: string | null;
+  readonly item_id: string | null;
+  readonly approval_kind: "command_approval" | "file_approval" | "unknown";
+  readonly command: string | null;
+  readonly cwd: string | null;
+  readonly reason: string | null;
+  readonly available_decisions: readonly (
+    | string
+    | Readonly<Record<string, unknown>>
+  )[];
+  readonly status: "pending" | "answered" | "expired" | "host_closed";
+  readonly decision: string | null;
+  readonly auto_resolved: boolean;
+  readonly resolution_reason: string | null;
+}
+
 const AGENT_API_BASE = "/api/agent";
 
 interface ApiEnvelope<T> {
@@ -187,6 +208,32 @@ export async function interruptAgentSession(
     `${AGENT_API_BASE}/sessions/${sessionId}/interrupt`,
     { method: "POST" },
   );
+}
+
+/** POST one decision to its generation-scoped Codex pending request. */
+export async function answerAgentRequest(
+  sessionId: string,
+  requestId: string,
+  decision: string,
+): Promise<{ answered: boolean; request: AgentPendingRequest }> {
+  return request<{ answered: boolean; request: AgentPendingRequest }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/requests/${encodeURIComponent(requestId)}/answer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    },
+  );
+}
+
+/** GET retained request states after a view switch or short SSE disconnect. */
+export async function listAgentRequests(
+  sessionId: string,
+): Promise<readonly AgentPendingRequest[]> {
+  const data = await request<{ requests: readonly AgentPendingRequest[] }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/requests`,
+  );
+  return data.requests;
 }
 
 /** GET /api/agent/runtimes — the two runtimes + capabilities + connection. */

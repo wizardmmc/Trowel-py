@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   activateAgentSession,
   agentMessagesUrl,
+  answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
   getAgentSession,
@@ -14,6 +15,7 @@ import {
   listActiveAgentSessions,
   listAgentHistory,
   listAgentModels,
+  listAgentRequests,
   listAgentRuntimes,
   updateAgentSessionSettings,
 } from "../api/agent";
@@ -183,6 +185,47 @@ describe("api/agent", () => {
 
   it("agentMessagesUrl builds the SSE endpoint", () => {
     expect(agentMessagesUrl("s1")).toBe("/api/agent/sessions/s1/messages");
+  });
+
+  it("answers a pending Codex request through the host-neutral API", async () => {
+    const request = {
+      request_id: "7-0",
+      session_id: "s1",
+      thread_id: "t1",
+      turn_id: "turn-1",
+      item_id: "exec-1",
+      approval_kind: "command_approval",
+      command: "pwd",
+      cwd: "/tmp",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "answered",
+      decision: "cancel",
+      auto_resolved: false,
+      resolution_reason: null,
+    } as const;
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockEnvelope({ answered: true, request }));
+
+    const result = await answerAgentRequest("s1", "7-0", "cancel");
+
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe("/api/agent/sessions/s1/requests/7-0/answer");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      decision: "cancel",
+    });
+    expect(result.request.status).toBe("answered");
+  });
+
+  it("lists retained requests for disconnect recovery", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockEnvelope({ requests: [] }));
+
+    await expect(listAgentRequests("s1")).resolves.toEqual([]);
+    expect(spy.mock.calls[0][0]).toBe("/api/agent/sessions/s1/requests");
   });
 
   it("throws when the envelope reports an error", async () => {

@@ -23,10 +23,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.catalog import parse_model_list_page
-from trowel_py.codex_host.errors import ProtocolViolationError
+from trowel_py.codex_host.errors import (
+    ProtocolViolationError,
+    ServerRequestUnsupportedError,
+)
 from trowel_py.codex_host.events import (
     CodexEventType,
     HostStatusKind,
@@ -34,6 +38,11 @@ from trowel_py.codex_host.events import (
     immutable_payload,
 )
 from trowel_py.codex_host.session import CodexSession, TurnConflictError
+from trowel_py.codex_host.pending_requests import (
+    PendingRequest,
+    PendingRequestKind,
+    PendingRequestRegistry,
+)
 from trowel_py.codex_host.translator import CodexTranslator
 from trowel_py.codex_host.transport import AppServerClient
 
@@ -43,6 +52,10 @@ _log = logging.getLogger(__name__)
 # ``thread/start`` is fast (<1s on the spike) but the first call waits on the
 # OpenAI login check, so leave plenty of headroom.
 _REQUEST_TIMEOUT_S = 60.0
+_PENDING_REQUEST_TIMEOUT_S = 600.0
+
+_COMMAND_APPROVAL_METHOD = "item/commandExecution/requestApproval"
+_FILE_APPROVAL_METHOD = "item/fileChange/requestApproval"
 
 
 class CodexHostManagerState(str, Enum):
@@ -98,6 +111,7 @@ class CodexHostManager:
         *,
         client_factory: ClientFactory | None = None,
         translator: CodexTranslator | None = None,
+        pending_request_timeout_s: float = _PENDING_REQUEST_TIMEOUT_S,
     ) -> None:
         """Store configuration; the client is created lazily on first use.
 
@@ -107,6 +121,8 @@ class CodexHostManager:
                 lock on); tests inject one wired to a fake app-server.
             translator: The notification translator. A shared default is fine —
                 it is stateless.
+            pending_request_timeout_s: Seconds before an unanswered approval is
+                safely declined and marked expired.
         """
 
         self._client_factory: ClientFactory = (
@@ -127,6 +143,10 @@ class CodexHostManager:
         self._orphans: list[OrphanDiagnostic] = []
         self._ready_lock: asyncio.Lock = asyncio.Lock()
         self._eof_watcher: asyncio.Task[None] | None = None
+        self._pending_requests = PendingRequestRegistry()
+        self._pending_request_timeout_s = pending_request_timeout_s
+        self._connection_generation = 0
+        self._active_generation = 0
 
     # ------------------------------------------------------------- read-only
 
@@ -153,6 +173,12 @@ class CodexHostManager:
         """The translator in use (exposed for tests / diagnostics)."""
 
         return self._translator
+
+    @property
+    def connection_generation(self) -> int:
+        """The current app-server connection generation, starting at zero."""
+
+        return self._active_generation
 
     # ------------------------------------------------------- session registry
 
@@ -193,6 +219,9 @@ class CodexHostManager:
         """
 
         session = self._sessions.pop(session_id, None)
+        for request in self._pending_requests.close_session(session_id):
+            if session is not None:
+                self._emit_request_event(session, request)
         self._attached_session_ids.discard(session_id)
         if session is not None and session.binding is not None:
             self._thread_to_session.pop(session.binding.thread_id, None)
@@ -235,6 +264,20 @@ class CodexHostManager:
             # Bindings survive a restart, attachments do not.
             self._attached_session_ids.clear()
             client = self._client_factory()
+            self._connection_generation += 1
+            generation = self._connection_generation
+            self._active_generation = generation
+            client.register_server_request_handler(
+                _COMMAND_APPROVAL_METHOD,
+                partial(self._handle_server_request, generation),
+            )
+            client.register_server_request_handler(
+                _FILE_APPROVAL_METHOD,
+                partial(self._handle_server_request, generation),
+            )
+            client.register_unknown_server_request_handler(
+                partial(self._handle_unknown_server_request, generation)
+            )
             # Install the new identity before its async handshake. A late EOF
             # watcher from the previous client will then fail the identity
             # check instead of degrading sessions that are already recovering.
@@ -260,6 +303,9 @@ class CodexHostManager:
         """Tear down the shared client. Safe to call when already stopped."""
 
         self._state = CodexHostManagerState.CLOSING
+        self._close_generation_requests(
+            self._active_generation, reason="app-server manager closed"
+        )
         client = self._client
         watcher = self._eof_watcher
         self._eof_watcher = None
@@ -441,6 +487,155 @@ class CodexHostManager:
             {"threadId": binding.thread_id, "turnId": turn_id},
             timeout=_REQUEST_TIMEOUT_S,
         )
+        # The recorded native path interrupts while the approval is still
+        # pending. Resolve the parked server request only after app-server has
+        # acknowledged that interrupt; answering cancel first can terminate the
+        # turn before this explicit interrupt reaches it.
+        for request in self._pending_requests.resolve_turn_with_cancel(
+            session.session_id, turn_id
+        ):
+            self._emit_request_event(session, request)
+
+    def answer_request(
+        self, session_id: str, request_id: str, decision: str
+    ) -> PendingRequest:
+        """Resolve one pending approval after owner and decision validation.
+
+        Args:
+            session_id: Trowel session making the decision.
+            request_id: Public generation-scoped request id.
+            decision: One key advertised by the native request.
+
+        Returns:
+            The answered request.
+        """
+
+        request = self._pending_requests.resolve(session_id, request_id, decision)
+        session = self._sessions.get(session_id)
+        if session is not None:
+            self._emit_request_event(session, request)
+        return request
+
+    def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
+        """Return retained request states for reconnect diagnostics."""
+
+        return self._pending_requests.list_for_session(session_id)
+
+    async def _handle_server_request(
+        self,
+        generation: int,
+        native_request_id: Any,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Register a verified approval and wait for its one-shot response."""
+
+        session = self._request_session(generation, method, native_request_id, params)
+        kind = (
+            PendingRequestKind.COMMAND_APPROVAL
+            if method == _COMMAND_APPROVAL_METHOD
+            else PendingRequestKind.FILE_APPROVAL
+        )
+        request = self._pending_requests.create(
+            native_request_id=native_request_id,
+            generation=generation,
+            session_id=session.session_id,
+            kind=kind,
+            params=params,
+        )
+        if kind is PendingRequestKind.FILE_APPROVAL:
+            self._pending_requests.resolve_automatically(
+                request.request_id,
+                "decline",
+                reason="request omitted path, diff, and available decisions",
+            )
+            self._emit_request_event(session, request)
+            return await request.response
+
+        self._emit_request_event(session, request)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(request.response),
+                timeout=self._pending_request_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            expired = self._pending_requests.expire(request.request_id)
+            self._emit_request_event(session, expired)
+            return await expired.response
+
+    async def _handle_unknown_server_request(
+        self,
+        generation: int,
+        native_request_id: Any,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Surface and safely reject an unknown server-request method."""
+
+        try:
+            session = self._request_session(
+                generation, method, native_request_id, params
+            )
+        except ServerRequestUnsupportedError:
+            raise
+        request = self._pending_requests.create(
+            native_request_id=native_request_id,
+            generation=generation,
+            session_id=session.session_id,
+            kind=PendingRequestKind.UNKNOWN,
+            params=params,
+        )
+        self._pending_requests.resolve_automatically(
+            request.request_id,
+            "unsupported",
+            reason=f"unsupported server request method {method}",
+        )
+        self._emit_request_event(session, request)
+        raise ServerRequestUnsupportedError(method, native_request_id)
+
+    def _request_session(
+        self,
+        generation: int,
+        method: str,
+        native_request_id: Any,
+        params: Mapping[str, Any],
+    ) -> CodexSession:
+        """Resolve a request owner within the active connection generation."""
+
+        if generation != self._active_generation:
+            raise ServerRequestUnsupportedError(method, native_request_id)
+        thread_id = _extract_thread_id(params)
+        session = self._thread_to_session.get(thread_id or "")
+        if session is None:
+            raise ServerRequestUnsupportedError(method, native_request_id)
+        return session
+
+    @staticmethod
+    def _emit_request_event(
+        session: CodexSession, request: PendingRequest
+    ) -> None:
+        """Queue one request lifecycle update on its owning session."""
+
+        session.emit_translated(
+            TranslatedItem(
+                type=CodexEventType.APPROVAL_REQUEST,
+                thread_id=request.thread_id,
+                turn_id=request.turn_id,
+                item_id=request.item_id,
+                payload=immutable_payload(**request.to_payload()),
+            )
+        )
+
+    def _close_generation_requests(self, generation: int, *, reason: str) -> None:
+        """Invalidate and surface all pending requests from a dead host."""
+
+        if generation <= 0:
+            return
+        for request in self._pending_requests.close_generation(generation):
+            request.resolution_reason = reason
+            session = self._sessions.get(request.session_id)
+            if session is not None:
+                self._emit_request_event(session, request)
 
     # ------------------------------------------------------- notification bus
 
@@ -556,6 +751,9 @@ class CodexHostManager:
         self._client = None
         self._attached_session_ids.clear()
         self._eof_watcher = None
+        self._close_generation_requests(
+            self._active_generation, reason="app-server process exited"
+        )
         reason = "app-server process exited unexpectedly"
         if stderr_tail:
             reason = f"{reason}; stderr={stderr_tail!r}"

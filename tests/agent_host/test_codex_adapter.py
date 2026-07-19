@@ -257,6 +257,32 @@ class TestExtensions:
         assert ev.payload["status"] == "host_exited"
         assert ev.payload["exit_code"] == 1
 
+    def test_approval_request_passthrough(self, adapter) -> None:
+        """Manager-generated approval lifecycle keeps the verified payload."""
+
+        ev = adapter.wrap(
+            _codex(
+                CodexEventType.APPROVAL_REQUEST,
+                seq=11,
+                item_id="exec-1",
+                payload={
+                    "request_id": "7-0",
+                    "approval_kind": "command_approval",
+                    "command": "printf PENDING",
+                    "cwd": "/repo",
+                    "reason": "Allow it?",
+                    "available_decisions": ["accept", "cancel"],
+                    "status": "pending",
+                    "decision": None,
+                    "auto_resolved": False,
+                    "resolution_reason": None,
+                },
+            )
+        )
+        assert ev.type == "approval_request"
+        assert ev.payload["request_id"] == "7-0"
+        assert ev.payload["available_decisions"] == ["accept", "cancel"]
+
 
 class TestTerminalStates:
     """finished / interrupted / error map to the CC terminal vocabulary."""

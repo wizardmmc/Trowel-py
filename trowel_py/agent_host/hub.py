@@ -30,6 +30,12 @@ from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
 from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.codex_adapter import CodexEventAdapter
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.codex_host.pending_requests import (
+    PendingRequestConflictError,
+    PendingRequestDecisionError,
+    PendingRequestNotFoundError,
+    PendingRequestOwnershipError,
+)
 from trowel_py.agent_host.store import BindingStore
 from trowel_py.schemas.agent_host import AgentEvent
 
@@ -501,6 +507,54 @@ class SessionHub:
                 status_code=404, detail=f"codex session {session_id} not live"
             )
         await self._codex.interrupt(session)
+
+    def answer_request(
+        self, session_id: str, request_id: str, decision: str
+    ) -> dict[str, Any]:
+        """Answer one Codex pending request through its owning binding.
+
+        Args:
+            session_id: Trowel session from the route path.
+            request_id: Connection-generation-scoped pending id.
+            decision: Native choice key selected by the UI.
+
+        Returns:
+            The request's public terminal payload.
+
+        Raises:
+            HTTPException: For unknown/CC sessions, ownership errors, invalid
+                decisions, or requests that are no longer pending.
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise HTTPException(
+                status_code=422,
+                detail="Codex pending-request answers cannot use the CC contract",
+            )
+        if self._codex is None:
+            raise HTTPException(status_code=503, detail="codex host unavailable")
+        try:
+            request = self._codex.answer_request(session_id, request_id, decision)
+        except PendingRequestNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PendingRequestOwnershipError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except PendingRequestDecisionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PendingRequestConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return request.to_payload()
+
+    def list_requests(self, session_id: str) -> list[dict[str, Any]]:
+        """Return retained Codex request states for reconnect recovery."""
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            return []
+        if self._codex is None:
+            raise HTTPException(status_code=503, detail="codex host unavailable")
+        return [request.to_payload() for request in self._codex.list_requests(session_id)]
 
     async def delete(self, session_id: str) -> bool:
         """Close the native host (CC) / drop the thread (Codex) + drop binding.

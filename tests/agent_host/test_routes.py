@@ -259,6 +259,59 @@ def test_post_interrupt(client: TestClient, workdir: Path):
     assert resp.json()["data"]["interrupted"] is True
 
 
+def test_post_answer_codex_request_routes_by_session(
+    client: TestClient, workdir: Path, hub: SessionHub
+):
+    """slice-075 answer endpoint keeps session + request identity together."""
+
+    row = client.post(
+        "/api/agent/sessions", json=codex_payload(workdir)
+    ).json()["data"]
+    response = client.post(
+        f"/api/agent/sessions/{row['session_id']}/requests/7-0/answer",
+        json={"decision": "cancel"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["request"] == {
+        "request_id": "7-0",
+        "status": "answered",
+        "decision": "cancel",
+    }
+    assert hub._codex.answered_requests == [  # noqa: SLF001
+        (row["session_id"], "7-0", "cancel")
+    ]
+
+
+def test_post_answer_request_rejects_cc_session(
+    client: TestClient, workdir: Path
+):
+    """CC AskUserQuestion keeps its existing /api/cc answer contract."""
+
+    row = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir)
+    ).json()["data"]
+    response = client.post(
+        f"/api/agent/sessions/{row['session_id']}/requests/7-0/answer",
+        json={"decision": "cancel"},
+    )
+    assert response.status_code == 422
+
+
+def test_get_codex_requests_supports_disconnect_recovery(
+    client: TestClient, workdir: Path
+):
+    """The host-neutral recovery endpoint is available only through a binding."""
+
+    row = client.post(
+        "/api/agent/sessions", json=codex_payload(workdir)
+    ).json()["data"]
+    response = client.get(
+        f"/api/agent/sessions/{row['session_id']}/requests"
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"requests": []}
+
+
 def test_post_messages_streams_sse(client: TestClient, workdir: Path):
     r = client.post("/api/agent/sessions", json=cc_payload(workdir)).json()["data"]
     with client.stream(

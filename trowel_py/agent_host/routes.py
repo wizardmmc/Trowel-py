@@ -24,6 +24,7 @@ from trowel_py.agent_host.hub import (
     SessionHub,
 )
 from trowel_py.agent_host.schemas import (
+    AnswerAgentRequest,
     CreateAgentSessionRequest,
     PatchAgentSessionRequest,
     SendMessageBody,
@@ -144,6 +145,34 @@ async def interrupt_session(
 
     await hub.interrupt(session_id)
     return {"success": True, "data": {"interrupted": True}, "error": None}
+
+
+@router.get("/sessions/{session_id}/requests")
+async def list_session_requests(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """List retained request states so a short frontend disconnect can recover."""
+
+    requests = hub.list_requests(session_id)
+    return {"success": True, "data": {"requests": requests}, "error": None}
+
+
+@router.post("/sessions/{session_id}/requests/{request_id}/answer")
+async def answer_session_request(
+    session_id: str,
+    request_id: str,
+    body: AnswerAgentRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """Validate and answer one connection-scoped Codex server request."""
+
+    request = hub.answer_request(session_id, request_id, body.decision)
+    return {
+        "success": True,
+        "data": {"answered": True, "request": request},
+        "error": None,
+    }
 
 
 @router.post("/sessions/{session_id}/messages")

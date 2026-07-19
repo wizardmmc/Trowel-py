@@ -44,7 +44,7 @@ _log = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
 # A server-request handler returns the ``result`` object; raising any exception
 # turns into a JSON-RPC error response with the handler's message.
-ServerRequestHandler = Callable[[str, JsonObject], Awaitable[JsonObject]]
+ServerRequestHandler = Callable[[Any, str, JsonObject], Awaitable[JsonObject]]
 # A notification listener runs inline on the reader task. It MUST NOT block —
 # any slow work must be offloaded to its own queue/task, otherwise it stalls
 # every response and notification behind it. Exceptions are caught so a buggy
@@ -187,6 +187,7 @@ class AppServerClient:
         # a real exit code instead of always None (review M-2).
         self._last_exit_code: int | None = None
         self._server_handlers: dict[str, ServerRequestHandler] = {}
+        self._unknown_server_handler: ServerRequestHandler | None = None
         self._server_request_tasks: set[asyncio.Task[None]] = set()
         self._notification_listeners: list[NotificationListener] = []
         self._stderr_lines: list[str] = []
@@ -489,6 +490,22 @@ class AppServerClient:
 
         self._server_handlers[method] = handler
 
+    def register_unknown_server_request_handler(
+        self, handler: ServerRequestHandler
+    ) -> None:
+        """Register an observer/refusal handler for unrecognised methods.
+
+        The fallback still has to raise :class:`ServerRequestUnsupportedError`;
+        the transport then emits the standard method-not-found response.  Its
+        purpose is to let the manager surface a safe-refusal event before that
+        response is written, never to guess a success payload.
+
+        Args:
+            handler: Async callback receiving raw id, method and params.
+        """
+
+        self._unknown_server_handler = handler
+
     def add_notification_listener(self, listener: NotificationListener) -> None:
         """Append a listener invoked synchronously for every notification."""
 
@@ -501,7 +518,7 @@ class AppServerClient:
         method = str(message["method"])
         params = message.get("params")
         params_obj = params if isinstance(params, dict) else {}
-        handler = self._server_handlers.get(method)
+        handler = self._server_handlers.get(method) or self._unknown_server_handler
         if handler is None:
             _log.warning(
                 "Rejecting unsupported server request %s (id=%r) — no handler registered",
@@ -515,7 +532,7 @@ class AppServerClient:
             )
             return
         try:
-            result = await handler(method, params_obj)
+            result = await handler(request_id, method, params_obj)
         except ServerRequestUnsupportedError as exc:
             _log.warning("Handler refused server request %s: %s", method, exc)
             await self._send_error(request_id, code=_ERR_METHOD_NOT_FOUND, message=str(exc))

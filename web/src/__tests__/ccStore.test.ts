@@ -1674,3 +1674,110 @@ describe("reduceEvent — slice-074 Codex command failure (gpt5.6 Warning 3)", (
     if (tool.kind === "tool") expect(tool.status).toBe("done");
   });
 });
+
+describe("reduceEvent — Codex approval lifecycle (slice-075)", () => {
+  it("upserts the same inline request from pending to answered", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "approval_request",
+      turn_id: "turn-1",
+      request_id: "7-0",
+      item_id: "exec-1",
+      approval_kind: "command_approval",
+      command: "printf PENDING",
+      cwd: "/tmp/workspace",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "pending",
+      decision: null,
+      auto_resolved: false,
+      resolution_reason: null,
+    });
+    expect(state.phase).toBe("awaiting_input");
+    expect(state.turns[0].items).toHaveLength(1);
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "approval",
+      requestId: "7-0",
+      status: "pending",
+    });
+
+    state = reduceEvent(state, {
+      type: "approval_request",
+      turn_id: "turn-1",
+      request_id: "7-0",
+      item_id: "exec-1",
+      approval_kind: "command_approval",
+      command: "printf PENDING",
+      cwd: "/tmp/workspace",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "answered",
+      decision: "accept",
+      auto_resolved: false,
+      resolution_reason: null,
+    });
+    expect(state.phase).toBe("tool");
+    expect(state.turns[0].items).toHaveLength(1);
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "approval",
+      requestId: "7-0",
+      status: "answered",
+      decision: "accept",
+    });
+  });
+
+  it("updates a recovered request in its original turn without duplicating it", () => {
+    let state = withOpenTurn("first");
+    state = reduceEvent(state, {
+      type: "turn_start",
+      turn_id: "turn-1",
+      revertible: false,
+    });
+    state = reduceEvent(state, {
+      type: "approval_request",
+      turn_id: "turn-1",
+      request_id: "7-0",
+      item_id: "exec-1",
+      approval_kind: "command_approval",
+      command: "pwd",
+      cwd: "/tmp",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "pending",
+      decision: null,
+      auto_resolved: false,
+      resolution_reason: null,
+    });
+    state = reduceEvent(state, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+    state = reduceEvent(state, { type: "user", text: "second" });
+
+    state = reduceEvent(state, {
+      type: "approval_request",
+      turn_id: "turn-1",
+      request_id: "7-0",
+      item_id: "exec-1",
+      approval_kind: "command_approval",
+      command: "pwd",
+      cwd: "/tmp",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "host_closed",
+      decision: null,
+      auto_resolved: false,
+      resolution_reason: "host exited",
+    });
+
+    expect(state.turns[0].items).toHaveLength(1);
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "approval",
+      requestId: "7-0",
+      status: "host_closed",
+    });
+    expect(state.turns[1].items).toHaveLength(0);
+  });
+});

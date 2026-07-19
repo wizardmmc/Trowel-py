@@ -67,6 +67,7 @@ export function SessionView({
   const interrupt = useCcStore((s) => s.interrupt);
   const answerElicit = useCcStore((s) => s.answerElicit);
   const cancelElicit = useCcStore((s) => s.cancelElicit);
+  const answerApproval = useCcStore((s) => s.answerApproval);
   const revertTurn = useCcStore((s) => s.revertTurn);
   const activeSid = useCcStore((s) => s.activeSid);
   const history = useCcStore((s) => s.history);
@@ -427,6 +428,9 @@ export function SessionView({
               onRetryLast={handleRetryLast}
               onAnswer={(answers) => void answerElicit(answers)}
               onCancel={() => void cancelElicit()}
+              onApprovalDecision={(requestId, decision) =>
+                void answerApproval(requestId, decision)
+              }
               onRevert={(t) => setRevertTarget(t)}
               workdir={active?.workdir ?? workdir}
               runtime={active.runtime}

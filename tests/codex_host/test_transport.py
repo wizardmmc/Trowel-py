@@ -302,7 +302,8 @@ async def test_registered_server_request_handler_replies_result() -> None:
 
     client, fake = _build(behavior())
 
-    async def approve(_method: str, _params: dict) -> dict:
+    async def approve(request_id: object, _method: str, _params: dict) -> dict:
+        assert request_id == 7
         return {"decision": "decline"}
 
     client.register_server_request_handler(
@@ -370,9 +371,9 @@ async def test_handler_refusal_returns_one_error_no_fallthrough() -> None:
 
     client, fake = _build(behavior())
 
-    async def refuse(_method: str, _params: dict) -> dict:
+    async def refuse(request_id: object, _method: str, _params: dict) -> dict:
         raise ServerRequestUnsupportedError(
-            "item/commandExecution/requestApproval", 5
+            "item/commandExecution/requestApproval", request_id
         )
 
     client.register_server_request_handler(
@@ -629,7 +630,9 @@ async def test_server_request_handler_task_is_cancelled_on_close() -> None:
 
     started = asyncio.Event()
 
-    async def slow_handler(_method: str, _params: dict) -> dict:
+    async def slow_handler(
+        _request_id: object, _method: str, _params: dict
+    ) -> dict:
         started.set()
         # Block forever — close() must cancel us.
         await asyncio.Event().wait()

@@ -13,6 +13,7 @@
  * reducer unit-testable in isolation (see ccStore.test.ts).
  */
 import type {
+  ApprovalDecision,
   HostStatusEvent,
   QuestionInput,
   RetryingEvent,
@@ -150,6 +151,23 @@ export interface ElicitationItem {
   readonly answers: Readonly<Record<string, string>> | null;
 }
 
+/** Codex approval card. Updates with the same requestId replace this item. */
+export interface ApprovalItem {
+  readonly kind: "approval";
+  readonly requestId: string;
+  readonly turnId: string | null;
+  readonly itemId: string | null;
+  readonly approvalKind: "command_approval" | "file_approval" | "unknown";
+  readonly command: string | null;
+  readonly cwd: string | null;
+  readonly reason: string | null;
+  readonly availableDecisions: readonly ApprovalDecision[];
+  readonly status: "pending" | "answered" | "expired" | "host_closed";
+  readonly decision: string | null;
+  readonly autoResolved: boolean;
+  readonly resolutionReason: string | null;
+}
+
 /** One workflow run, rendered as a collapsible progress tree (slice-036).
  * Mirrors WorkflowTreeEvent with wire snake_case → internal camelCase. The
  * reducer matches by runId so a full snapshot replaces the prior one. Lives
@@ -183,6 +201,7 @@ export type TurnItem =
   | ErrorItem
   | InterruptedItem
   | ElicitationItem
+  | ApprovalItem
   | WorkflowItem;
 
 export interface Turn {
@@ -453,6 +472,45 @@ function updateElicitInCurrentTurn(
   if (!found) return null;
   const updatedLast: Turn = { ...last, items: newItems };
   return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+}
+
+/** Insert or replace one approval card in its native turn by request id. */
+function upsertApprovalInTurn(
+  prev: ReducerState,
+  approval: ApprovalItem,
+): ReducerState {
+  const turns = prev.turns;
+  if (turns.length === 0) return prev;
+  const existingTurnIndex = turns.findIndex((turn) =>
+    turn.items.some(
+      (item) => item.kind === "approval" && item.requestId === approval.requestId,
+    ),
+  );
+  const matchingTurnIndex =
+    approval.turnId === null
+      ? -1
+      : turns.findIndex((turn) => turn.turnId === approval.turnId);
+  const turnIndex =
+    existingTurnIndex >= 0
+      ? existingTurnIndex
+      : matchingTurnIndex >= 0
+        ? matchingTurnIndex
+        : turns.length - 1;
+  const target = turns[turnIndex];
+  const index = target.items.findIndex(
+    (item) => item.kind === "approval" && item.requestId === approval.requestId,
+  );
+  const items =
+    index === -1
+      ? [...target.items, approval]
+      : target.items.map((item, itemIndex) =>
+          itemIndex === index ? approval : item,
+        );
+  const updated: Turn = { ...target, items };
+  return {
+    ...prev,
+    turns: turns.map((turn, index) => (index === turnIndex ? updated : turn)),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -784,6 +842,34 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       return {
         ...appendToCurrentTurn(prev, item),
         phase: "awaiting_input",
+      };
+    }
+
+    case "approval_request": {
+      const approval: ApprovalItem = {
+        kind: "approval",
+        requestId: event.request_id,
+        turnId: event.turn_id ?? null,
+        itemId: event.item_id,
+        approvalKind: event.approval_kind,
+        command: event.command,
+        cwd: event.cwd,
+        reason: event.reason,
+        availableDecisions: event.available_decisions,
+        status: event.status,
+        decision: event.decision,
+        autoResolved: event.auto_resolved,
+        resolutionReason: event.resolution_reason,
+      };
+      const phase: Phase =
+        event.status === "pending"
+          ? "awaiting_input"
+          : event.status === "host_closed"
+            ? "error"
+            : "tool";
+      return {
+        ...upsertApprovalInTurn(prev, approval),
+        phase,
       };
     }
 

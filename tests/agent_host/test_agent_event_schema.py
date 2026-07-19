@@ -132,6 +132,7 @@ class TestTypeVocabulary:
 
         assert "usage_updated" in AGENT_EVENT_TYPES
         assert "host_status" in AGENT_EVENT_TYPES
+        assert "approval_request" in AGENT_EVENT_TYPES
 
     def test_every_vocabulary_member_constructs(self) -> None:
         """Smoke: each documented type is accepted by the validator."""

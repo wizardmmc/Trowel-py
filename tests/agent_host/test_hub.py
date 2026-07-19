@@ -65,6 +65,7 @@ class FakeCodexManager:
         self.sessions: dict[str, Any] = {}
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.answered_requests: list[tuple[str, str, str]] = []
         self.models: list[dict[str, Any]] = [
             {
                 "id": "gpt-5.6-sol",
@@ -130,6 +131,33 @@ class FakeCodexManager:
         """Return the fake catalog used by Agent route tests."""
 
         return self.models
+
+    def answer_request(
+        self, session_id: str, request_id: str, decision: str
+    ) -> Any:
+        """Record one pending-request answer and return its public payload."""
+
+        self.answered_requests.append((session_id, request_id, decision))
+
+        class _Answered:
+            """Minimal stand-in for PendingRequest."""
+
+            @staticmethod
+            def to_payload() -> dict[str, Any]:
+                """Return the answered request shape used by the route."""
+
+                return {
+                    "request_id": request_id,
+                    "status": "answered",
+                    "decision": decision,
+                }
+
+        return _Answered()
+
+    def list_requests(self, session_id: str) -> list[Any]:
+        """Return no pending requests unless a route test overrides the fake."""
+
+        return []
 
 
 class _FakeThreadBinding:

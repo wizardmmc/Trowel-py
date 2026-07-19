@@ -21,19 +21,23 @@ import {
 import {
   activateAgentSession as apiActivateSession,
   agentMessagesUrl as messagesUrl,
+  answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
   deleteAgentSession as apiDeleteSession,
   getAgentHistory,
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
+  listAgentRequests,
   updateAgentSessionSettings as apiUpdateSessionSettings,
   type AgentEventLike,
   type AgentHistoryRow,
+  type AgentPendingRequest,
   type AgentSession,
   type Runtime,
 } from "../api/agent";
 import { agentEventToTrowel, type AgentEvent } from "../api/agentTypes";
+import type { ApprovalRequestEvent } from "../api/ccTypes";
 import { postMessageStream } from "../api/ccStream";
 
 // Re-export the reducer's full public surface so existing imports from
@@ -162,6 +166,8 @@ interface CcState {
   answerElicit: (answers: Record<string, string>) => Promise<void>;
   /** Decline the pending AskUserQuestion (writes control_response deny). */
   cancelElicit: () => Promise<void>;
+  /** Answer one pending Codex approval through the host-neutral route. */
+  answerApproval: (requestId: string, decision: string) => Promise<void>;
   /** slice-026: revert a turn — drop it and every later turn from the view and
    * ask the backend to git-restore + truncate the jsonl. */
   revertTurn: (turnId: string) => Promise<void>;
@@ -263,6 +269,65 @@ export function createCcStore() {
           activeSid: state.activeSid,
         };
       });
+    }
+
+    /** Fold a REST-recovered request into the same reducer as its SSE event. */
+    function applyApprovalRequest(
+      sid: string,
+      request: AgentPendingRequest,
+    ): void {
+      const event: ApprovalRequestEvent = {
+        type: "approval_request",
+        turn_id: request.turn_id ?? undefined,
+        request_id: request.request_id,
+        item_id: request.item_id,
+        approval_kind: request.approval_kind,
+        command: request.command,
+        cwd: request.cwd,
+        reason: request.reason,
+        available_decisions: request.available_decisions,
+        status: request.status,
+        decision: request.decision,
+        auto_resolved: request.auto_resolved,
+        resolution_reason: request.resolution_reason,
+      };
+      set((state) => {
+        const session = state.sessions[sid];
+        if (!session) return state;
+        const currentTurn = session.turns[session.turns.length - 1];
+        const belongsToCurrentTurn =
+          request.turn_id === null ||
+          currentTurn?.turnId === request.turn_id ||
+          currentTurn?.items.some(
+            (item) =>
+              item.kind === "approval" && item.requestId === request.request_id,
+          ) === true;
+        const reduced = reduceEvent(session, event);
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: {
+              ...session,
+              ...reduced,
+              phase: belongsToCurrentTurn ? reduced.phase : session.phase,
+            },
+          },
+        };
+      });
+    }
+
+    /** Refresh request states without treating a frontend disconnect as reject. */
+    async function recoverApprovalRequests(sid: string): Promise<void> {
+      const session = get().sessions[sid];
+      if (session?.runtime !== "codex") return;
+      try {
+        const requests = await listAgentRequests(sid);
+        for (const request of requests) applyApprovalRequest(sid, request);
+      } catch {
+        // Recovery is best-effort. The existing inline card remains visible,
+        // and the next SSE lifecycle event or explicit answer can still settle it.
+      }
     }
 
     /** Patch the active session (transport errors, etc.). No-op if none active. */
@@ -372,7 +437,10 @@ export function createCcStore() {
         if (!state.sessions[sid]) return;
         // no-op when clicking the already-active row (also guards dropTempActive
         // from dropping the row the user is activating).
-        if (state.activeSid === sid) return;
+        if (state.activeSid === sid) {
+          await recoverApprovalRequests(sid);
+          return;
+        }
         // slice-028 v2: drop a never-connected temp active when switching away.
         await dropTempActive();
         // Tell the backend this is now active (its _ACTIVE_SID); the frontend
@@ -383,6 +451,7 @@ export function createCcStore() {
           // network error — still swap the local view (best-effort)
         }
         set({ activeSid: sid });
+        await recoverApprovalRequests(sid);
       },
 
       closeSession: async (sid) => {
@@ -683,6 +752,7 @@ export function createCcStore() {
               },
             };
           });
+          if (!abort.signal.aborted) await recoverApprovalRequests(sid);
         } finally {
           // Slash commands end the stream without a finished (see
           // endActiveTurnOnStreamClose); a clean close on an active turn must
@@ -734,6 +804,29 @@ export function createCcStore() {
           await apiAnswerElicit(sid, { answers: {}, cancel: true });
         } catch (err) {
           patchActive(() => ({ transportError: (err as Error).message }));
+        }
+      },
+
+      answerApproval: async (requestId, decision) => {
+        const sid = get().activeSid;
+        if (!sid) return;
+        const session = get().sessions[sid];
+        if (session?.runtime !== "codex") return;
+        try {
+          const result = await apiAnswerAgentRequest(sid, requestId, decision);
+          applyApprovalRequest(sid, result.request);
+        } catch (err) {
+          set((state) => {
+            const current = state.sessions[sid];
+            if (!current) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: { ...current, transportError: (err as Error).message },
+              },
+            };
+          });
         }
       },
 

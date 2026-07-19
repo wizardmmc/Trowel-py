@@ -14,6 +14,7 @@ import { AssistantText } from "./AssistantText";
 import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
+import { ApprovalBlock } from "./ApprovalBlock";
 import { WorkflowTree } from "./WorkflowTree";
 import { CodexExplorationGroup } from "./CodexExplorationGroup";
 import { isCodexExploration } from "./codexCommandPresentation";
@@ -51,6 +52,8 @@ interface EventTimelineProps {
   readonly onAnswer?: (answers: Record<string, string>) => void;
   /** Decline a pending AskUserQuestion. */
   readonly onCancel?: () => void;
+  /** Answer one pending Codex approval by its generation-scoped id. */
+  readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   /** slice-029: the session's cwd, so Edit/Write paths render project-relative
    * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
   readonly workdir?: string;
@@ -212,6 +215,7 @@ function Row({
   isReplay,
   onAnswer,
   onCancel,
+  onApprovalDecision,
   workdir,
   runtime,
   thinkingComplete,
@@ -221,6 +225,7 @@ function Row({
   readonly isReplay?: boolean;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
+  readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
   readonly runtime?: string;
   readonly thinkingComplete?: boolean;
@@ -275,6 +280,18 @@ function Row({
           disabled={isReplay}
         />
       );
+    case "approval":
+      // A live Codex request outlives a short SSE disconnect.  `isReplay`
+      // currently also covers that disconnected turn, so it must not disable
+      // the only control capable of resolving the still-owned host request.
+      // The backend registry remains the authority and rejects stale,
+      // cross-session, repeated, expired, or host-closed answers.
+      return (
+        <ApprovalBlock
+          item={item}
+          onDecision={onApprovalDecision}
+        />
+      );
     case "workflow":
       // slice-036: render the workflow progress tree (live + history share
       // this component — invariant C-1).
@@ -293,6 +310,7 @@ export function EventTimeline({
   isReplay,
   onAnswer,
   onCancel,
+  onApprovalDecision,
   workdir,
   runtime,
 }: EventTimelineProps) {
@@ -358,6 +376,7 @@ export function EventTimeline({
           isReplay={isReplay}
           onAnswer={onAnswer}
           onCancel={onCancel}
+          onApprovalDecision={onApprovalDecision}
           workdir={workdir}
           runtime={runtime}
           thinkingComplete={

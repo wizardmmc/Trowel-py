@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 vi.mock("../api/agent", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  listAgentRequests: vi.fn().mockResolvedValue([]),
 }));
 
 import { MultiSessionBar } from "../components/cc/MultiSessionBar";

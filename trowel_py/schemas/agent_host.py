@@ -52,6 +52,8 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         # Manager lifecycle (ready / degraded / host_exited) — synthesised from
         # transport state, not a single notification.
         "host_status",
+        # Connection-scoped Codex approval lifecycle (slice-075).
+        "approval_request",
     }
 )
 

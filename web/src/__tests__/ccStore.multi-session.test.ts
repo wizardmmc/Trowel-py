@@ -15,7 +15,9 @@ vi.mock("../api/agent", () => ({
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
   listActiveAgentSessions: vi.fn(),
   listAgentHistory: vi.fn().mockResolvedValue([]),
+  listAgentRequests: vi.fn().mockResolvedValue([]),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
+  answerAgentRequest: vi.fn(),
   getAgentHistory: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
@@ -40,6 +42,7 @@ vi.mock("../api/ccStream", () => ({
 }));
 
 import {
+  answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
   deleteAgentSession as apiDeleteSession,
   listActiveAgentSessions as listActiveSessions,
@@ -541,6 +544,69 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     await store.getState().startSession({ workdir: "/wd" });
     expect(store.getState().sessions["s2"].tasks).toHaveLength(0);
     expect(store.getState().sessions["s1"].tasks).toHaveLength(1);
+  });
+});
+
+describe("slice-075: approval recovery", () => {
+  it("folds the answer response into the pending card when SSE is unavailable", async () => {
+    const store = createCcStore();
+    mockCreate("s1", {
+      runtime: "codex",
+      model: "gpt-5.6-sol",
+      capabilities: ["tools", "approval"],
+    });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+    const sending = store.getState().send("run it");
+    streamApply!(
+      ev(
+        "approval_request",
+        {
+          request_id: "7-0",
+          item_id: "exec-1",
+          approval_kind: "command_approval",
+          command: "pwd",
+          cwd: "/wd",
+          reason: "Allow it?",
+          available_decisions: ["accept", "cancel"],
+          status: "pending",
+          decision: null,
+          auto_resolved: false,
+          resolution_reason: null,
+        },
+        { runtime: "codex", turn_id: "turn-1" },
+      ),
+    );
+    vi.mocked(apiAnswerAgentRequest).mockResolvedValue({
+      answered: true,
+      request: {
+        request_id: "7-0",
+        session_id: "s1",
+        thread_id: "thread-1",
+        turn_id: "turn-1",
+        item_id: "exec-1",
+        approval_kind: "command_approval",
+        command: "pwd",
+        cwd: "/wd",
+        reason: "Allow it?",
+        available_decisions: ["accept", "cancel"],
+        status: "answered",
+        decision: "accept",
+        auto_resolved: false,
+        resolution_reason: null,
+      },
+    });
+
+    await store.getState().answerApproval("7-0", "accept");
+
+    const approval = store.getState().sessions.s1.turns[0].items[0];
+    expect(approval).toMatchObject({
+      kind: "approval",
+      requestId: "7-0",
+      status: "answered",
+      decision: "accept",
+    });
+    await releaseAllStreams();
+    await sending;
   });
 });
 
