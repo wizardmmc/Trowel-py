@@ -106,6 +106,11 @@ EVENT_TYPES = frozenset(
         "turn_start",
         "model_changed",
         "workflow_tree",
+        # slice-074: required so the AgentEvent vocabulary validator accepts
+        # the CC subprocess-exit signal. Previously a documentation-only gap;
+        # slice-074's envelope validation turned it into a hard reject that
+        # would break CC /exit (row not dropped + spurious error turn).
+        "session_exited",
     }
 )
 

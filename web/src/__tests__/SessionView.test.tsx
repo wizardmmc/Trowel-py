@@ -145,4 +145,52 @@ describe("SessionView (slice-028 three-column)", () => {
       expect(calls).toContain("/fail");
     });
   });
+
+  it("slice-074: renders the Codex host degraded banner when hostDegraded is set", () => {
+    useCcStore.setState({
+      sessions: {
+        "c1": {
+          turns: [],
+          phase: "error",
+          tasks: [],
+          meta: {
+            model: "gpt-5.6-sol",
+            ccSessionId: "thr-1",
+            costUsd: null,
+            numTurns: null,
+            hookFired: null,
+            thinkingStartedAt: null,
+            thinkingTokens: null,
+            stallWarning: null,
+            exited: false,
+            exitReturncode: null,
+            usage: null,
+            hostDegraded: true,
+          },
+          workdir: "/wd",
+          effort: null,
+          name: "wd",
+          revertEnabled: false,
+          transportError: null,
+          abort: null,
+          connected: true,
+          memoryEnabled: true,
+          profileEnabled: true,
+          runtime: "codex",
+          nativeSessionId: "thr-1",
+          permission: "workspace-write",
+          capabilities: ["tools", "approval"],
+          lastSeq: null,
+          needsReplay: false,
+        },
+      },
+      activeSid: "c1",
+      history: [],
+      historyTotal: 0,
+      loadingHistory: false,
+    });
+    render(<SessionView workdir="/wd" />);
+    expect(screen.getByText(/Codex host 已断开/)).toBeInTheDocument();
+    expect(screen.getByText(/不会自动重放写操作/)).toBeInTheDocument();
+  });
 });

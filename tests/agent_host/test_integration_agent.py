@@ -1,11 +1,13 @@
-"""Real dual-runtime integration smoke for slice-072.
+"""Real dual-runtime integration smoke (slice-072 + slice-074).
 
 Deselected by default (``-m 'not integration'``) and additionally env-gated
 behind both ``CC_INTEGRATION=1`` and ``CODEX_INTEGRATION=1``. It exercises the
 host-neutral ``/api/agent/*`` end-to-end against the real ``claude -p`` and
 the real ``codex app-server``: creates one CC/GLM session and one Codex/GPT
 session, sends one turn each, and verifies the two streams stay tagged with
-their own runtime (spec pass-criterion: 双 runtime 各完成一轮；不串线).
+their own runtime (slice-072) AND that every frame is a unified AgentEvent v1
+envelope with per-session monotonic seq + TrowelEvent-aligned Codex type names
+(slice-074).
 
 Run::
 
@@ -103,6 +105,84 @@ def test_dual_runtime_each_completes_one_turn(tmp_path: Path) -> None:
         cx_types = {e.get("type") for e in cx_events}
         assert cc_types & {"finished", "error", "interrupted", "session_exited"}
         assert cx_types & {"finished", "error", "interrupted"}
+
+
+def test_events_are_unified_agent_event_v1_envelopes(tmp_path: Path) -> None:
+    """slice-074: every streamed event is an AgentEvent v1 envelope.
+
+    Both runtimes pass:
+    * the v1 schema stamp on every frame;
+    * a per-session monotonic seq starting at 1 (cross-session never compared);
+    * Codex type names already aligned to the TrowelEvent vocabulary (no
+      ``assistant_delta`` / ``reasoning_delta`` / ``tool_started`` /
+      ``tool_completed`` — the adapter renamed them).
+    """
+
+    from fastapi.testclient import TestClient
+
+    from trowel_py.app import create_app
+    from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
+
+    workdir = tmp_path / "proj"
+    workdir.mkdir()
+    app = create_app()
+    with TestClient(app) as client:
+        cc = client.post(
+            "/api/agent/sessions",
+            json={"runtime": "claude_code", "workdir": str(workdir)},
+        ).json()["data"]
+        cx = client.post(
+            "/api/agent/sessions",
+            json={"runtime": "codex", "workdir": str(workdir)},
+        ).json()["data"]
+
+        cc_events = _sse_events(
+            client.post(
+                f"/api/agent/sessions/{cc['session_id']}/messages",
+                json={"text": "reply with the single word: pong"},
+            ).content
+        )
+        cx_events = _sse_events(
+            client.post(
+                f"/api/agent/sessions/{cx['session_id']}/messages",
+                json={"text": "reply with the single word: pong"},
+            ).content
+        )
+
+        for events, sid, runtime in (
+            (cc_events, cc["session_id"], "claude_code"),
+            (cx_events, cx["session_id"], "codex"),
+        ):
+            assert events, f"{runtime} stream produced no events"
+            # every frame is a v1 envelope addressed to its session
+            for ev in events:
+                assert ev["schema"] == AGENT_EVENT_SCHEMA, ev
+                assert ev["session_id"] == sid
+                assert ev["runtime"] == runtime
+                assert isinstance(ev["seq"], int) and ev["seq"] >= 1
+                assert "type" in ev and "payload" in ev
+            # seq monotonic from 1, no dups
+            seqs = [ev["seq"] for ev in events]
+            assert seqs == sorted(seqs), f"{runtime} seq not monotonic: {seqs}"
+            assert len(seqs) == len(set(seqs)), f"{runtime} seq has dups: {seqs}"
+            assert seqs[0] == 1, f"{runtime} seq does not start at 1: {seqs[0]}"
+
+        # Codex types must be TrowelEvent-aligned (the adapter renamed them) —
+        # the old Codex-native names must NOT appear.
+        codex_types = {ev["type"] for ev in cx_events}
+        renamed = {
+            "assistant_delta",
+            "reasoning_delta",
+            "tool_started",
+            "tool_completed",
+            "assistant_message",
+        }
+        assert codex_types.isdisjoint(renamed), (
+            f"Codex stream still carries pre-unification types: "
+            f"{codex_types & renamed}"
+        )
+        # and assistant text did surface (as the unified 'text' type)
+        assert "text" in codex_types or "finished" in codex_types, codex_types
 
 
 def test_runtime_patch_rejected_at_http_level(tmp_path: Path) -> None:

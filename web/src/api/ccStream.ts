@@ -1,16 +1,16 @@
 /**
- * SSE client for POST /api/cc/sessions/{id}/messages.
+ * SSE client for POST /api/agent/sessions/{id}/messages (slice-074).
  *
  * EventSource cannot POST (and the existing sse.ts is GET-only, hardcoded to
  * extraction-progress), so this streams the response body manually: read
  * chunks, buffer them, split on the SSE frame delimiter (blank line), and
- * parse each `data:` line as a trowel event.
+ * parse each `data:` line as an AgentEvent v1 envelope.
  *
- * The CC host always emits exactly one trowel event per SSE `data:` frame,
- * but the wire boundary can split a frame across read chunks — hence the
- * carry-over buffer.
+ * The host always emits exactly one AgentEvent per SSE `data:` frame, but the
+ * wire boundary can split a frame across read chunks — hence the carry-over
+ * buffer.
  */
-import type { TrowelEvent } from "./ccTypes";
+import type { AgentEvent } from "./agentTypes";
 
 /** SSE frame delimiter per the spec: a blank line. */
 const FRAME_DELIMITER = "\n\n";
@@ -25,14 +25,14 @@ interface PostStreamOptions {
 }
 
 /**
- * Parse a complete SSE-wire buffer into the trowel events it carries.
+ * Parse a complete SSE-wire buffer into the AgentEvents it carries.
  *
  * Exposed for tests and for feeding history-style buffered input. Handles
  * multi-line frames (only `data:` lines contribute) and skips malformed
  * JSON lines rather than throwing.
  */
-export function parseSseFrames(buffer: string): TrowelEvent[] {
-  const out: TrowelEvent[] = [];
+export function parseSseFrames(buffer: string): AgentEvent[] {
+  const out: AgentEvent[] = [];
   const frames = buffer.split(FRAME_DELIMITER);
   for (const frame of frames) {
     if (!frame.trim()) continue;
@@ -41,7 +41,7 @@ export function parseSseFrames(buffer: string): TrowelEvent[] {
       const payload = line.slice("data:".length).trim();
       if (!payload) continue;
       try {
-        out.push(JSON.parse(payload) as TrowelEvent);
+        out.push(JSON.parse(payload) as AgentEvent);
       } catch {
         // malformed line — skip, the host may emit debug noise
       }
@@ -51,14 +51,14 @@ export function parseSseFrames(buffer: string): TrowelEvent[] {
 }
 
 /**
- * POST a message and drive the SSE response, calling onEvent for each trowel
- * event. Resolves when the stream closes; never rejects on user-initiated
+ * POST a message and drive the SSE response, calling onEvent for each
+ * AgentEvent. Resolves when the stream closes; never rejects on user-initiated
  * abort (AbortError is silent — interrupt is a normal user action).
  */
 export async function postMessageStream(
   url: string,
   body: SendMessageBody,
-  onEvent: (event: TrowelEvent) => void,
+  onEvent: (event: AgentEvent) => void,
   options: PostStreamOptions = {},
 ): Promise<void> {
   let response: Response;

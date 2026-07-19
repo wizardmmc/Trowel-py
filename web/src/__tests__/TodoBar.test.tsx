@@ -27,6 +27,8 @@ function makeSession(tasks: Task[]): PerSessionState {
     nativeSessionId: null,
     permission: null,
     capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    lastSeq: null,
+    needsReplay: false,
     tasks,
   };
 }

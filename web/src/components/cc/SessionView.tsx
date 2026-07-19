@@ -306,6 +306,8 @@ export function SessionView({
                     stallWarning: null,
                     exited: false,
                     exitReturncode: null,
+                    usage: null,
+                    hostDegraded: false,
                   }
             }
             streaming={streaming}
@@ -338,6 +340,20 @@ export function SessionView({
             );
           })()}
         </div>
+        {/* slice-074: Codex host degraded banner (host_status host_exited /
+            degraded). Page-inline, not a centered modal (M9 mockup). The
+            binding survives so the next send can resume; the running turn was
+            already errored by the reducer. Shown only when the active session
+            is flagged degraded. */}
+        {active?.meta.hostDegraded && (
+          <div className="cc-degraded-banner" role="alert">
+            <b>Codex host 已断开</b>
+            <span>
+              运行中的 turn 已按出错收口；idle thread 可在重连后
+              resume，不会自动重放写操作。
+            </span>
+          </div>
+        )}
         {/* slice-026 nogit banner — revert is a CC-checkpoint capability, so
             this "not a git repo" warning only applies to CC sessions. A Codex
             session has no checkpoint capability by design (not a git issue),

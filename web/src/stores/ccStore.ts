@@ -16,7 +16,6 @@ import { create } from "zustand";
 
 import {
   answerElicit as apiAnswerElicit,
-  getHistory,
   revertSession as apiRevertSession,
 } from "../api/cc";
 import {
@@ -24,16 +23,17 @@ import {
   agentMessagesUrl as messagesUrl,
   createAgentSession as apiCreateSession,
   deleteAgentSession as apiDeleteSession,
+  getAgentHistory,
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
+  type AgentEventLike,
   type AgentHistoryRow,
   type AgentSession,
   type Runtime,
 } from "../api/agent";
+import { agentEventToTrowel, type AgentEvent } from "../api/agentTypes";
 import { postMessageStream } from "../api/ccStream";
-import { reduceCodexEvent, type CodexEvent } from "./codexReducer";
-import type { TrowelEvent } from "../api/ccTypes";
 
 // Re-export the reducer's full public surface so existing imports from
 // "ccStore" (components + tests) keep working unchanged after the split.
@@ -90,6 +90,13 @@ export interface PerSessionState extends ReducerState {
   /** slice-072: runtime-declared capability tags — the UI gates features off
    * this list, never off `runtime === ...` (C-6). */
   readonly capabilities: readonly string[];
+  /** slice-074: last seq applied to this session (per-session monotonic).
+   * Null before the first event. Used to drop dups and detect gaps (spec §3). */
+  readonly lastSeq: number | null;
+  /** slice-074: a seq gap was observed (event.seq > lastSeq + 1). The durable
+   * replay that refills the gap lands in slice-081; this slice only flags it so
+   * the UI can show a "needs replay" hint instead of silently losing state. */
+  readonly needsReplay: boolean;
 }
 
 /** slice-072: startSession params. ``runtime`` defaults to ``claude_code`` so
@@ -153,38 +160,48 @@ export const MAX_CONNECTIONS = 20;
  * uses the `useCcStore` singleton below. */
 export function createCcStore() {
   return create<CcState>((set, get) => {
-    /** Route one event to a specific session's reducer. The sid is captured in
-     * the send() closure so a stream keeps feeding the session that opened it
-     * even after the user switches activeSid mid-stream (Q4 切换不 abort). */
-    function applyTo(sid: string, event: TrowelEvent): void {
+    /** Route one AgentEvent to a specific session's reducer. The sid is captured
+     * in the send() closure so a stream keeps feeding the session that opened it
+     * even after the user switches activeSid mid-stream (Q4 切换不 abort).
+     *
+     * slice-074: the envelope is unwrapped into the flat TrowelEvent shape the
+     * reducer consumes (agentEventToTrowel), then seq/gap is enforced before
+     * reduceEvent runs. No runtime branching — both runtimes speak the unified
+     * TrowelEvent type vocabulary after the backend adapter renamed Codex types. */
+    function applyTo(sid: string, event: AgentEvent): void {
       set((state) => {
         const cur = state.sessions[sid];
         if (!cur) return state;
-        // slice-072: dispatch by the event's runtime tag — CC events flow
-        // through ccReducer, Codex events through codexReducer (both produce
-        // the same ReducerState shape so one MessageList renders both).
-        const runtime = (event as { runtime?: string }).runtime;
-        // slice-028 v2 / slice-072: a row-exit signal drops the row entirely
-        // (no live host behind it). Only CC session_exited drops the row —
-        // the cc subprocess is gone. Codex host_status(host_exited) does NOT
-        // drop the row: the binding survives so the next send can resume
-        // (spec §4); codexReducer flips the running turn to error instead.
-        const rawType = (event as { type: string }).type;
-        const isHostExit = rawType === "session_exited";
-        if (isHostExit) {
+        // slice-074 §3: seq dup → drop. Gap (seq > lastSeq+1) → flag needsReplay
+        // (slice-081 refills); the event is still applied best-effort so the UI
+        // shows what arrived rather than stalling on the gap.
+        if (cur.lastSeq !== null && event.seq <= cur.lastSeq) {
+          return state; // duplicate — silently drop
+        }
+        const gapped =
+          cur.lastSeq !== null && event.seq > cur.lastSeq + 1;
+        // slice-028 v2 / slice-072: a CC session_exited drops the row (the cc
+        // subprocess is gone). Codex host_status(host_exited) does NOT drop the
+        // row — the binding survives so the next send can resume (spec §4); the
+        // reducer flips the running turn to error instead.
+        if (event.type === "session_exited") {
           const sessions = { ...state.sessions };
           delete sessions[sid];
           const activeSid = state.activeSid === sid ? null : state.activeSid;
           return { ...state, sessions, activeSid };
         }
-        const reduced =
-          runtime === "codex"
-            ? reduceCodexEvent(cur, event as unknown as CodexEvent)
-            : reduceEvent(cur, event);
-        let next: PerSessionState = { ...cur, ...reduced };
+        const flat = agentEventToTrowel(event);
+        const reduced = reduceEvent(cur, flat);
+        let next: PerSessionState = {
+          ...cur,
+          ...reduced,
+          lastSeq: event.seq,
+          needsReplay: cur.needsReplay || gapped,
+        };
         // slice-027 C2: effort lives on the shell (createSession params), not
-        // ReducerState — fold the /effort change in here (CC only).
-        const effort = (event as { effort?: string | null }).effort;
+        // ReducerState — fold the /effort change in here (CC only). The flat
+        // event carries effort on model_changed.
+        const effort = (flat as { effort?: string | null }).effort;
         if (event.type === "model_changed" && effort != null) {
           next = { ...next, effort };
         }
@@ -279,6 +296,8 @@ export function createCcStore() {
             nativeSessionId: session.native_session_id,
             permission: session.permission,
             capabilities: session.capabilities,
+            lastSeq: null,
+            needsReplay: false,
           };
           set((state) => ({
             ...state,
@@ -371,6 +390,8 @@ export function createCcStore() {
               nativeSessionId: b.native_session_id,
               permission: b.permission,
               capabilities: b.capabilities,
+              lastSeq: null,
+              needsReplay: false,
             };
           }
           // keep an existing frontend activeSid; else fall back to the backend's
@@ -411,28 +432,44 @@ export function createCcStore() {
         if (!sid) return;
         const cur = get().sessions[sid];
         if (!cur) return;
-        // slice-072: CC history replay stays on /api/cc — an agent-created CC
-        // session also lives in the live _REGISTRY, so /api/cc/sessions/{id}/history
-        // resolves. Codex transcript replay lands in slice-079; skip here.
+        // slice-074: history replay now flows through the unified
+        // /api/agent/sessions/{id}/history endpoint (AgentEvent v1 envelopes).
+        // CC wraps cc_host's jsonl scan; Codex returns 501 until slice-079,
+        // so a non-200 just leaves the view as-is (no transport error — the
+        // user simply cannot replay a Codex thread yet).
         if (cur.runtime !== "claude_code") return;
+        let envelopes: readonly AgentEventLike[] = [];
         try {
-          const events = await getHistory(sid);
-          set((state) => {
-            const s = state.sessions[sid];
-            if (!s) return state;
-            let next: ReducerState = { ...INITIAL_REDUCER_STATE, meta: s.meta };
-            for (const ev of events) {
-              next = reduceEvent(next, ev);
-            }
-            const finalized = finalizeHistoryForView(next);
-            return {
-              ...state,
-              sessions: { ...state.sessions, [sid]: { ...s, ...finalized } },
-            };
-          });
-        } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          envelopes = await getAgentHistory(sid);
+        } catch {
+          // 501 (Codex, slice-079) or network error — leave the view unchanged.
+          return;
         }
+        set((state) => {
+          const s = state.sessions[sid];
+          if (!s) return state;
+          let next: ReducerState = { ...INITIAL_REDUCER_STATE, meta: s.meta };
+          // slice-074: history is an INDEPENDENT seq namespace (the backend
+          // history adapter starts seq at 1). Track it locally just to drop dups
+          // within the replay, then RESET the live watermark to null so the next
+          // live stream re-establishes seq from its own first event — otherwise
+          // live seq 1..N would be dropped as dups of the history seq 1..N
+          // (claude C-2 / codex HIGH review finding).
+          let replaySeq: number | null = null;
+          for (const ev of envelopes) {
+            if (replaySeq !== null && ev.seq <= replaySeq) continue;
+            replaySeq = ev.seq;
+            next = reduceEvent(next, agentEventToTrowel(ev as AgentEvent));
+          }
+          const finalized = finalizeHistoryForView(next);
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: { ...s, ...finalized, lastSeq: null, needsReplay: false },
+            },
+          };
+        });
       },
 
       send: async (text) => {

@@ -1445,3 +1445,201 @@ describe("reduceEvent — workflow_tree (slice-036)", () => {
     expect(last.items.some((i) => i.kind === "subagent")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// slice-074: Codex events (unified to TrowelEvent names by the backend adapter)
+// ---------------------------------------------------------------------------
+
+describe("reduceEvent — slice-074 Codex mapping (post-adapter)", () => {
+  it("Codex assistant_delta arrives as text and accumulates", () => {
+    // The backend adapter renamed assistant_delta→text, payload.delta→payload.text.
+    // After agentEventToTrowel unwraps, the reducer sees a flat text event.
+    const state = run([
+      { type: "user", text: "hi" },
+      { type: "text", text: "hello " } as TrowelEvent,
+      { type: "text", text: "world" } as TrowelEvent,
+    ]);
+    const last = state.turns[state.turns.length - 1];
+    expect(last.items).toHaveLength(1);
+    expect((last.items[0] as { text: string }).text).toBe("hello world");
+  });
+
+  it("Codex reasoning_delta arrives as thinking and stays separate from text", () => {
+    const state = run([
+      { type: "user", text: "hi" },
+      { type: "text", text: "answer" } as TrowelEvent,
+      { type: "thinking", text: "because " } as TrowelEvent,
+      { type: "thinking", text: "reasons" } as TrowelEvent,
+    ]);
+    const items = state.turns[state.turns.length - 1].items;
+    // text + thinking are distinct items (spec: reasoning & assistant separate)
+    expect(items.map((i) => i.kind)).toEqual(["text", "thinking"]);
+    expect((items[1] as { text: string }).text).toBe("because reasons");
+  });
+
+  it("Codex command tool_call→tool_result carries exit_code/duration/cwd", () => {
+    const state = run([
+      { type: "user", text: "pwd" },
+      {
+        type: "tool_call",
+        tool_use_id: "cmd-1",
+        tool_name: "command",
+        input: { command: "pwd", cwd: "/repo" },
+      } as TrowelEvent,
+      {
+        type: "tool_result",
+        tool_use_id: "cmd-1",
+        content: "/repo",
+        exit_code: 0,
+        duration_ms: 12,
+        cwd: "/repo",
+        status: "completed",
+      } as TrowelEvent,
+    ]);
+    const tool = state.turns[0].items[0];
+    expect(tool.kind).toBe("tool");
+    if (tool.kind === "tool") {
+      expect(tool.status).toBe("done");
+      expect(tool.result).toBe("/repo");
+      expect(tool.exitCode).toBe(0);
+      expect(tool.durationMs).toBe(12);
+      expect(tool.cwd).toBe("/repo");
+      expect(tool.nativeStatus).toBe("completed");
+    }
+  });
+
+  it("usage_updated stores token accounting on meta.usage", () => {
+    const state = run([
+      { type: "usage_updated", total: 25000, model_context_window: 200000 } as TrowelEvent,
+    ]);
+    expect(state.meta.usage).toEqual({
+      total: 25000,
+      last: null,
+      model_context_window: 200000,
+    });
+  });
+
+  it("host_status host_exited errors the running turn + flags degraded", () => {
+    const state = run([
+      { type: "user", text: "go" },
+      { type: "host_status", status: "host_exited", reason: "eof" } as TrowelEvent,
+    ]);
+    expect(state.phase).toBe("error");
+    expect(state.meta.hostDegraded).toBe(true);
+    expect(state.turns[0].status).toBe("error");
+  });
+
+  it("host_status degraded flags without erroring a turn", () => {
+    const state = run([
+      { type: "host_status", status: "degraded" } as TrowelEvent,
+    ]);
+    expect(state.meta.hostDegraded).toBe(true);
+    expect(state.phase).toBe("idle"); // no running turn to error
+  });
+
+  it("host_status ready clears the degraded flag", () => {
+    const degraded = run([
+      { type: "host_status", status: "degraded" } as TrowelEvent,
+    ]);
+    const recovered = reduceEvent(degraded, {
+      type: "host_status",
+      status: "ready",
+    } as TrowelEvent);
+    expect(recovered.meta.hostDegraded).toBe(false);
+  });
+});
+
+describe("reduceEvent — slice-074 live/history deep-equal (Codex)", () => {
+  /** The same recorded Codex event stream, fed once "live" (with an optimistic
+   * user turn) and once as "history" (user event from the adapter), must reach
+   * structurally equal turn/item state. seq is a transport concern (tracked in
+   * the shell, not the reducer) so it is not part of the comparison. */
+  it("replaying the same Codex events yields equal items/phase/meta-shape", () => {
+    const codexStream = [
+      { type: "user", text: "list files" },
+      { type: "thinking", text: "planning" } as TrowelEvent,
+      { type: "text", text: "running ls" } as TrowelEvent,
+      {
+        type: "tool_call",
+        tool_use_id: "c1",
+        tool_name: "command",
+        input: { command: "ls", cwd: "/r" },
+      } as TrowelEvent,
+      {
+        type: "tool_result",
+        tool_use_id: "c1",
+        content: "a.txt\nb.txt",
+        exit_code: 0,
+        duration_ms: 5,
+      } as TrowelEvent,
+      { type: "usage_updated", total: 100 } as TrowelEvent,
+      { type: "finished", usage: {}, total_cost_usd: 0, num_turns: 1 } as TrowelEvent,
+    ] as TrowelEvent[];
+
+    const live = run(codexStream);
+    _resetTurnIdCounterForTests(); // equal starting counter → equal generated turn ids
+    const history = run(codexStream); // same reducer, same events → same state
+    // Structural equality on the reducer-visible state (the spec contract:
+    // live/history share one reducer → deep equal).
+    expect(history.turns).toEqual(live.turns);
+    expect(history.phase).toEqual(live.phase);
+    expect(history.meta.usage).toEqual(live.meta.usage);
+  });
+});
+
+describe("reduceEvent — slice-074 review fixes", () => {
+  it("Codex live user-echo merges into the optimistic turn (no double turn)", () => {
+    // send() creates an optimistic turn (active, empty, text "hi"). Codex then
+    // emits a live user echo — it must NOT append a second turn (review codex HIGH).
+    const optimistic = run([{ type: "user", text: "hi" }]);
+    expect(optimistic.turns).toHaveLength(1);
+    const afterEcho = reduceEvent(optimistic, { type: "user", text: "hi" });
+    expect(afterEcho.turns).toHaveLength(1); // merged, not appended
+  });
+
+  it("history user event still appends when no optimistic turn exists", () => {
+    // History replay starts fresh — each user event opens a new turn.
+    const state = run([
+      { type: "user", text: "first" },
+      { type: "user", text: "second" },
+    ]);
+    expect(state.turns).toHaveLength(2);
+    expect(state.turns[0].userText).toBe("first");
+    expect(state.turns[1].userText).toBe("second");
+  });
+
+  it("turn_start keeps the optimistic turnId when the event omits one", () => {
+    // Codex turn_start may carry null turn_id; the reducer must not clobber the
+    // optimistic turn's id (review claude M-1).
+    const withOptimistic = reduceEvent(
+      { ...INITIAL_REDUCER_STATE, turns: [{ id: "turn-7", userText: "hi", items: [], status: "active", turnId: "native-9", revertible: false }] },
+      { type: "turn_start", turn_id: undefined, revertible: false } as unknown as TrowelEvent,
+    );
+    expect(withOptimistic.turns[0].turnId).toBe("native-9"); // preserved, not nulled
+  });
+});
+
+describe("reduceEvent — slice-074 Codex command failure (gpt5.6 Warning 3)", () => {
+  it("tool_result with nativeStatus failed → ToolItem status failed", () => {
+    const state = run([
+      { type: "user", text: "go" },
+      { type: "tool_call", tool_use_id: "c1", tool_name: "command", input: { command: "make" } } as TrowelEvent,
+      { type: "tool_result", tool_use_id: "c1", content: "err", exit_code: 2, native_status: "failed" } as TrowelEvent,
+    ]);
+    const tool = state.turns[0].items[0];
+    if (tool.kind === "tool") {
+      expect(tool.status).toBe("failed");
+      expect(tool.exitCode).toBe(2);
+    }
+  });
+
+  it("tool_result with exit_code 0 + no nativeStatus → done", () => {
+    const state = run([
+      { type: "user", text: "go" },
+      { type: "tool_call", tool_use_id: "c1", tool_name: "command", input: { command: "pwd" } } as TrowelEvent,
+      { type: "tool_result", tool_use_id: "c1", content: "/r", exit_code: 0 } as TrowelEvent,
+    ]);
+    const tool = state.turns[0].items[0];
+    if (tool.kind === "tool") expect(tool.status).toBe("done");
+  });
+});

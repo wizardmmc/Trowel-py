@@ -32,6 +32,8 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     nativeSessionId: null,
     permission: null,
     capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    lastSeq: null,
+    needsReplay: false,
     ...over,
   };
 }

@@ -156,6 +156,10 @@ class TestEventDiscriminators:
             "thinking_progress", "subagent_progress",
             "elicit_request", "model_changed",
             "workflow_tree",
+            # slice-074: session_exited is now in EVENT_TYPES (previously a
+            # documentation-only gap that slice-074's envelope validation made
+            # into a hard reject, breaking CC /exit).
+            "session_exited",
         }
         assert etype in EVENT_TYPES
 
@@ -207,3 +211,30 @@ class TestElicitationRequestSchema:
         assert dumped["tool_use_id"] == "call_abc"
         assert dumped["request_id"] == "req-1"
         assert dumped["questions"][0]["header"] == "Pref"
+
+
+def test_event_types_covers_every_trowel_event_subclass():
+    """slice-074 gpt5.6 Info 6: EVENT_TYPES must contain the `type` literal of
+    EVERY TrowelEvent subclass. Catches the class of bug where session_exited
+    was missing — a hand-maintained set drifting from the union."""
+    import inspect
+
+    from trowel_py.schemas import cc_host as mod
+
+    event_classes = [
+        obj
+        for _, obj in inspect.getmembers(mod, inspect.isclass)
+        if issubclass(obj, mod._Event) and obj is not mod._Event
+    ]
+    literals = set()
+    for cls in event_classes:
+        # each _Event subclass sets a `type: Literal["..."]` default
+        type_field = cls.model_fields.get("type")
+        assert type_field is not None, f"{cls.__name__} has no type field"
+        default = type_field.default
+        assert isinstance(default, str), f"{cls.__name__} type default is not a str"
+        literals.add(default)
+    missing = literals - mod.EVENT_TYPES
+    assert not missing, (
+        f"TrowelEvent subclass type literals missing from EVENT_TYPES: {missing}"
+    )

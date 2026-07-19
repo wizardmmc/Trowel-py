@@ -88,6 +88,16 @@ export interface ToolResultEvent {
    * survives BE restart. Absent for other tools / failed edits → FE falls back
    * to its fragment diff for Edit. */
   readonly write_diff?: WriteDiff;
+  /** slice-074: Codex commandExecution exit code (absent for CC tools). */
+  readonly exit_code?: number | null;
+  /** slice-074: Codex commandExecution wall-clock duration in ms. */
+  readonly duration_ms?: number | null;
+  /** slice-074: Codex commandExecution cwd (for command display). */
+  readonly cwd?: string | null;
+  /** slice-074: Codex commandExecution shell command text. */
+  readonly command?: string | null;
+  /** slice-074: Codex commandExecution native status (completed/failed/declined). */
+  readonly status?: string | null;
 }
 
 export interface RetryingEvent {
@@ -256,6 +266,41 @@ export interface WorkflowTreeEvent {
   readonly error: string | null;
 }
 
+/** slice-074: Codex token-usage breakdown — the real shape on the wire (from
+ * the 0.144.0 `thread/tokenUsage/updated` fixture). Both `total` (cumulative)
+ * and `last` (this turn) carry the same field set. */
+export interface TokenUsageBreakdown {
+  readonly totalTokens?: number | null;
+  readonly inputTokens?: number | null;
+  readonly cachedInputTokens?: number | null;
+  readonly outputTokens?: number | null;
+  readonly reasoningOutputTokens?: number | null;
+}
+
+/** slice-074: Codex per-turn token usage (thread/tokenUsage/updated). CC has no
+ * equivalent — usage rides on FinishedEvent for CC. Stored on meta.usage so the
+ * UI (multi-session bar / future views) can show it without a second reducer. */
+export interface UsageUpdatedEvent {
+  readonly type: "usage_updated";
+  /** Cumulative token breakdown (object, not a bare number — see fixture). */
+  readonly total?: Readonly<TokenUsageBreakdown> | null;
+  /** This-turn token breakdown. */
+  readonly last?: Readonly<TokenUsageBreakdown> | null;
+  readonly model_context_window?: number | null;
+}
+
+/** slice-074: Codex manager lifecycle (ready / degraded / host_exited). CC has
+ * no equivalent — a CC process exiting surfaces as session_exited (row drop).
+ * host_exited is a TURN terminal (the running turn errors) AND marks the
+ * session degraded so the UI shows a reconnect banner; the binding survives so
+ * the next send can resume (spec §4). */
+export interface HostStatusEvent {
+  readonly type: "host_status";
+  readonly status: "ready" | "degraded" | "host_exited";
+  readonly reason?: string | null;
+  readonly exit_code?: number | null;
+}
+
 /** One question in an AskUserQuestion elicitation (spec/04 A.1). */
 export interface QuestionInput {
   readonly question: string;
@@ -303,7 +348,9 @@ export type TrowelEvent =
   | SubagentProgressEvent
   | ElicitationRequestEvent
   | ModelChangedEvent
-  | WorkflowTreeEvent;
+  | WorkflowTreeEvent
+  | UsageUpdatedEvent
+  | HostStatusEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([

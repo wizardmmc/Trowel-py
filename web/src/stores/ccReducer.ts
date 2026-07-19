@@ -13,11 +13,13 @@
  * reducer unit-testable in isolation (see ccStore.test.ts).
  */
 import type {
+  HostStatusEvent,
   QuestionInput,
   RetryingEvent,
   SubagentProgressEvent,
   ToolCallEvent,
   TrowelEvent,
+  UsageUpdatedEvent,
   WorkflowAgentInfo,
   WorkflowPhaseInfo,
   WorkflowTreeEvent,
@@ -60,7 +62,7 @@ export interface ToolItem {
   readonly toolUseId: string;
   readonly toolName: string;
   readonly input: Record<string, unknown>;
-  readonly status: "running" | "done";
+  readonly status: "running" | "done" | "failed";
   readonly elapsedSeconds: number | null;
   readonly result: string | null;
   /** slice-029: BE-computed diff for a Write tool_use (overwriting an existing
@@ -75,6 +77,14 @@ export interface ToolItem {
    * parent_tool_use_id points at this tool's id). Recursive — a child may
    * carry its own children for nested sub-agents (slice-025-a 阶段B). */
   readonly childTools: readonly ToolItem[];
+  /** slice-074: Codex commandExecution exit code (absent for CC tools). */
+  readonly exitCode?: number | null;
+  /** slice-074: Codex commandExecution wall-clock duration in ms. */
+  readonly durationMs?: number | null;
+  /** slice-074: Codex commandExecution cwd (for command display). */
+  readonly cwd?: string | null;
+  /** slice-074: Codex commandExecution native status (completed/failed/declined). */
+  readonly nativeStatus?: string | null;
 }
 
 /** Merged sub-agent progress (fields refreshed by each task_* event, newest
@@ -228,6 +238,14 @@ export interface SessionMeta {
   readonly exited: boolean;
   /** slice-028 bug3: the CC subprocess exit code (null until session_exited). */
   readonly exitReturncode: number | null;
+  /** slice-074: Codex per-turn token usage (usage_updated). CC has no per-turn
+   * usage event — its usage rides on finished (costUsd/numTurns). Null until
+   * the first usage_updated arrives. Data layer only — not rendered in the
+   * topbar (people-confirmed: no duplication with the multi-session bar). */
+  readonly usage: Readonly<Record<string, unknown>> | null;
+  /** slice-074: Codex host is degraded/disconnected (host_status). Drives the
+   * page-inline degraded banner (mockup-confirmed). False for CC. */
+  readonly hostDegraded: boolean;
 }
 
 /** slice-028 V2 tasks (TaskCreate/TaskUpdate). Mirrors cc's V2 task model:
@@ -271,6 +289,8 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
     stallWarning: null,
     exited: false,
     exitReturncode: null,
+    usage: null,
+    hostDegraded: false,
   },
 };
 
@@ -532,21 +552,38 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       // optimistic turn the store already created (live path). No-op when
       // there is no current turn (defensive — shouldn't happen on the live
       // path since send() creates the turn before streaming).
+      // slice-074: keep the optimistic turnId when the event omits one (Codex
+      // turn_start may carry null) — don't clobber what send() stamped.
       const turns = prev.turns;
       if (turns.length === 0) return prev;
       const last = turns[turns.length - 1];
       const updatedLast: Turn = {
         ...last,
-        turnId: event.turn_id,
+        turnId: event.turn_id ?? last.turnId,
         revertible: event.revertible,
       };
       return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
     }
 
     case "user": {
-      // history-only: start a fresh turn carrying the user's text + the
-      // history.py back-filled turn duration (undefined on the live path,
-      // which has no UserEvent — it times the turn at finished instead).
+      // history-only OR Codex live echo: a ``user`` event either starts a
+      // fresh turn (history replay, no optimistic turn yet) or should merge
+      // into the optimistic turn send() already created (Codex live emits a
+      // user echo — without this reconciliation each Codex send would produce
+      // two user turns, the first orphaned). Merge when the last turn is an
+      // empty active turn with the same text; else append (slice-074).
+      const turns = prev.turns;
+      if (turns.length > 0) {
+        const last = turns[turns.length - 1];
+        if (
+          last.status === "active" &&
+          last.items.length === 0 &&
+          last.userText === event.text
+        ) {
+          // optimistic turn already exists for this user text — keep it
+          return prev;
+        }
+      }
       const turn: Turn = {
         id: nextTurnId(),
         userText: event.text,
@@ -648,6 +685,10 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     }
 
     case "tool_call": {
+      // slice-074: Codex commandExecution tools surface cwd/command on the
+      // call (the adapter put them in input + as top-level fields); carry them
+      // onto the ToolItem so the command card renders before tool_result.
+      const codexInput = event.input as { command?: unknown; cwd?: unknown };
       const newItem: ToolItem = {
         kind: "tool",
         toolUseId: event.tool_use_id,
@@ -659,6 +700,7 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         childTools: [],
         // writeDiff arrives on the tool_result (slice-033 feat 2 方案 F), not
         // here — cc computes the patch at execution time.
+        cwd: typeof codexInput.cwd === "string" ? codexInput.cwd : null,
       };
       // slice-028: TaskCreate/TaskUpdate also maintain the session task list
       // (the ToolItem above is still appended so the message stream keeps the
@@ -707,13 +749,23 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       return {
         ...updateToolInCurrentTurn(afterTask, event.tool_use_id, (t) => ({
           ...t,
-          status: "done",
+          // slice-074 (gpt5.6 Warning 3): a Codex command that failed/declined
+          // or exited non-zero is NOT "done" — surface a failed state so the
+          // tool card renders red, not a green check. CC tool_results carry no
+          // nativeStatus/exitCode → stays "done".
+          status: _toolResultStatus(event, t),
           result: event.content,
           // slice-033 feat 2 (方案 F): BE attaches cc's own structuredPatch
           // (real file line numbers) to Edit/MultiEdit/Write tool_results.
           // Keep any prior writeDiff as fallback (none in practice — tool_call
           // doesn't set one anymore) when this result carries none.
           writeDiff: event.write_diff ?? t.writeDiff,
+          // slice-074: Codex commandExecution fields (absent on CC tool_results).
+          // `?? t.X` keeps the tool_call's value when the result omits one.
+          exitCode: event.exit_code ?? t.exitCode,
+          durationMs: event.duration_ms ?? t.durationMs,
+          cwd: event.cwd ?? t.cwd,
+          nativeStatus: event.status ?? t.nativeStatus,
         })),
         phase: "tool",
       };
@@ -916,9 +968,74 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       return upsertWorkflowItem(prev, workflowItemFromEvent(event));
     }
 
+    case "usage_updated":
+      // slice-074: Codex per-turn token accounting (extension). Data layer
+      // only — stored on meta.usage, not rendered in the topbar.
+      return { ...prev, meta: { ...prev.meta, usage: usageFrom(event) } };
+
+    case "host_status":
+      // slice-074: Codex manager lifecycle (extension). host_exited is a TURN
+      // terminal (the running turn errors, mirroring codexReducer's old
+      // behaviour) AND marks the session degraded for the reconnect banner.
+      // The binding survives so the next send can resume (spec §4) — this
+      // never drops the row (only CC session_exited does that, in the shell).
+      return applyHostStatus(prev, event);
+
     default:
       return prev;
   }
+}
+
+/** slice-074: lift a UsageUpdatedEvent's fields onto a stable meta.usage shape. */
+function usageFrom(event: UsageUpdatedEvent): Readonly<Record<string, unknown>> {
+  return {
+    total: event.total ?? null,
+    last: event.last ?? null,
+    model_context_window: event.model_context_window ?? null,
+  };
+}
+
+/** slice-074 (gpt5.6 Warning 3): decide a tool_result's status. Codex commands
+ * that the host reported failed/declined, or that exited non-zero, are "failed"
+ * (so the tool card renders red). Everything else (CC tools, Codex success) is
+ * "done". */
+function _toolResultStatus(
+  event: Extract<TrowelEvent, { type: "tool_result" }>,
+  t: ToolItem,
+): "done" | "failed" {
+  const nativeStatus = event.status ?? t.nativeStatus;
+  if (nativeStatus === "failed" || nativeStatus === "declined") {
+    return "failed";
+  }
+  const exitCode = event.exit_code ?? t.exitCode;
+  if (typeof exitCode === "number" && exitCode !== 0) {
+    return "failed";
+  }
+  return "done";
+}
+
+/** slice-074: apply a Codex host_status event. host_exited errors the running
+ * turn + flags degraded; degraded just flags; ready clears the flag. */
+function applyHostStatus(prev: ReducerState, event: HostStatusEvent): ReducerState {
+  if (event.status === "host_exited") {
+    const turns = prev.turns;
+    const meta = { ...prev.meta, hostDegraded: true };
+    if (turns.length === 0) {
+      return { ...prev, phase: "error", meta };
+    }
+    const last = turns[turns.length - 1];
+    const updated: Turn = { ...last, status: "error" };
+    return {
+      ...prev,
+      phase: "error",
+      meta,
+      turns: [...turns.slice(0, -1), updated],
+    };
+  }
+  const degraded = event.status === "degraded";
+  // No-op when the flag isn't changing (avoids a needless new state object).
+  if (degraded === prev.meta.hostDegraded) return prev;
+  return { ...prev, meta: { ...prev.meta, hostDegraded: degraded } };
 }
 
 /** Build a WorkflowItem from a wire WorkflowTreeEvent (snake→camel). */

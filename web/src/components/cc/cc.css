@@ -648,6 +648,17 @@
   gap: 2px;
   color: var(--garden-green);
 }
+/* slice-074: failed command (Codex nativeStatus failed/declined or non-zero exit) */
+.cc-tool__check--failed {
+  color: var(--color-error);
+}
+/* slice-074: Codex command exit/duration/cwd meta line */
+.cc-tool__cmd-meta {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+}
 .cc-tool__check svg {
   width: 12px;
   height: 12px;
@@ -1613,6 +1624,24 @@
   background: var(--sunshine-soft);
   border-bottom: 1px solid var(--sunshine);
   padding: 6px 12px;
+}
+
+/* ── slice-074: Codex host degraded banner (page-inline, mockup-confirmed) ── */
+.cc-degraded-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--error-soft);
+  color: #8f3f34;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--error-soft-strong);
+}
+.cc-degraded-banner b {
+  flex-shrink: 0;
+}
+.cc-degraded-banner span {
+  line-height: 1.5;
 }
 
 /* ═══ slice-027: slash autocomplete + pickers + workdir selector ═══ */

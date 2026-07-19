@@ -348,13 +348,31 @@ function BashCommandView({ command }: { readonly command: string }) {
   );
 }
 
+/** slice-074: Codex commandExecution tools are named "command" by the adapter
+ * and behave like CC's Bash (shell command + output). Treat both the same. */
+function isCommandTool(name: string): boolean {
+  return name === "Bash" || name === "command";
+}
+
+/** slice-074: Codex command exit/duration/cwd meta line (gpt5.6 Warning 3). */
+function CommandMeta({ item }: { readonly item: ToolItem }) {
+  if (!isCommandTool(item.toolName)) return null;
+  const parts: string[] = [];
+  if (typeof item.exitCode === "number") parts.push(`exit ${item.exitCode}`);
+  if (typeof item.durationMs === "number") parts.push(`${item.durationMs}ms`);
+  if (typeof item.cwd === "string" && item.cwd) parts.push(item.cwd);
+  if (parts.length === 0) return null;
+  return <div className="cc-tool__cmd-meta">{parts.join(" · ")}</div>;
+}
+
 /** Decide what the expanded detail shows. Returns null if there's nothing. */
 function renderDetail(item: ToolItem): React.ReactNode {
-  if (item.toolName === "Bash") {
+  if (isCommandTool(item.toolName)) {
     return (
       <>
         <BashCommandView command={asString(item.input.command) ?? ""} />
         {item.result !== null && <pre className="cc-tool__bash-out">{item.result}</pre>}
+        <CommandMeta item={item} />
       </>
     );
   }
@@ -396,6 +414,7 @@ function renderDetail(item: ToolItem): React.ReactNode {
 
 export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) {
   const done = item.status === "done";
+  const failed = item.status === "failed"; // slice-074: Codex command failure
   // slice-033 feat 3: diff tools (Edit/MultiEdit/Write) auto-expand on done
   // (running collapses — the cc patch arrives on tool_result). A manual collapse
   // sticks: done is terminal, so this effect won't re-fire to override it.
@@ -451,8 +470,16 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
       <SummaryBrief item={item} workdir={workdir} />
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
-      {!done && (isDiffTool(item.toolName) || item.toolName === "Read") && (
+      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read") && (
         <span className="cc-tool__spinner" aria-label="进行中" />
+      )}
+      {failed && (
+        <span className="cc-tool__check cc-tool__check--failed" aria-label="失败">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+          {seconds && <span className="cc-tool__elapsed">{seconds}</span>}
+        </span>
       )}
       {done && (
         <span className="cc-tool__check" aria-label="完成">
@@ -462,7 +489,7 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
           {seconds && <span className="cc-tool__elapsed">{seconds}</span>}
         </span>
       )}
-      {!done && seconds && (
+      {!done && !failed && seconds && (
         <span className="cc-tool__elapsed cc-tool__elapsed--running">{seconds}</span>
       )}
     </>

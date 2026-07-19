@@ -91,6 +91,40 @@ class FakeCodexManager:
         self.interrupted.append(session.session_id)
 
 
+class _FakeThreadBinding:
+    """Stand-in for the Codex thread binding the writeback reads."""
+
+    def __init__(self, thread_id: str, model: str) -> None:
+        self.thread_id = thread_id
+        self.model = model
+
+
+class FakeCodexSession:
+    """Duck-typed stand-in for a CodexSession the Hub streams off.
+
+    ``events()`` replays a pre-seeded list of CodexEvents (real dataclass
+    instances, so the adapter under test sees the exact shape the manager
+    emits).
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        events: list[Any],
+        *,
+        thread_id: str = "thr-1",
+        model: str = "gpt-5.6-sol",
+    ) -> None:
+        self.session_id = session_id
+        self._events = list(events)
+        self.binding = _FakeThreadBinding(thread_id, model)
+        self.state = "idle"
+
+    async def events(self) -> AsyncIterator[Any]:
+        for ev in self._events:
+            yield ev
+
+
 def make_cc_opener(
     registry: dict[str, FakeCcHost], name_counts: dict[str, int]
 ):
@@ -437,14 +471,165 @@ async def test_interrupt_unknown_session_404(hub: SessionHub):
 # ---------------------------------------------------------------------------
 
 
-async def test_stream_cc_yields_events_with_runtime_tag(hub: SessionHub, workdir: Path):
-    binding = hub.create(cc_req(workdir), request=None)
-    events = [e async for e in hub.stream(binding.session_id, "hello")]
-    assert events, "expected at least one event from the CC stream"
-    assert all(e.get("runtime") == "claude_code" for e in events)
-
-
 async def test_stream_unknown_session_404(hub: SessionHub):
     with pytest.raises(HTTPException) as exc:
         _ = [e async for e in hub.stream("nope", "hi")]
     assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# slice-074: unified AgentEvent v1 envelope on both runtimes' streams
+# ---------------------------------------------------------------------------
+
+from trowel_py.codex_host.events import (  # noqa: E402 — local after fakes
+    CodexEvent,
+    CodexEventType,
+    immutable_payload,
+)
+from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA  # noqa: E402
+
+
+def _is_envelope(e: dict) -> bool:
+    """Every event the hub emits after slice-074 carries the v1 schema stamp."""
+
+    return e.get("schema") == AGENT_EVENT_SCHEMA
+
+
+async def test_stream_cc_yields_unified_envelope(hub: SessionHub, workdir: Path):
+    """CC events arrive as AgentEvent v1 with monotonic seq + claude_code tag."""
+
+    binding = hub.create(cc_req(workdir), request=None)
+    events = [e async for e in hub.stream(binding.session_id, "hello")]
+    assert events, "expected at least one event from the CC stream"
+    assert all(_is_envelope(e) for e in events), events
+    assert all(e["runtime"] == "claude_code" for e in events)
+    assert all(e["session_id"] == binding.session_id for e in events)
+    # CC adapter stamps type verbatim (the FakeCcHost sends a text event)
+    assert events[0]["type"] == "text"
+    assert events[0]["payload"]["text"] == "echo:hello"
+    # seq monotonic from 1
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+
+
+async def test_stream_cc_seq_persists_across_turns(hub: SessionHub, workdir: Path):
+    """seq spans turns within a session — the adapter is not re-created per send."""
+
+    binding = hub.create(cc_req(workdir), request=None)
+    first = [e async for e in hub.stream(binding.session_id, "one")]
+    second = [e async for e in hub.stream(binding.session_id, "two")]
+    assert first[-1]["seq"] >= 1
+    assert second[0]["seq"] == first[-1]["seq"] + 1, (
+        "seq must continue from the prior turn, not reset to 1"
+    )
+
+
+async def test_stream_codex_yields_unified_envelope(hub: SessionHub, workdir: Path):
+    """Codex events arrive as AgentEvent v1 with TrowelEvent-aligned type names."""
+
+    binding = make_binding(
+        session_id="codex-sess",
+        runtime=Runtime.CODEX,
+        native_session_id=None,
+        workdir=str(workdir),
+        model="gpt-5.6-sol",
+        effort=None,
+        permission=None,
+        memory_enabled=True,
+        profile_enabled=True,
+        capabilities=("tools", "approval"),
+        name="proj",
+    )
+    hub.store.put(binding)
+    codex_events = [
+        CodexEvent(
+            session_id="codex-sess",
+            seq=1,
+            type=CodexEventType.SESSION_STARTED,
+            thread_id="thr-1",
+            payload=immutable_payload(model="gpt-5.6-sol", cwd=str(workdir)),
+        ),
+        CodexEvent(
+            session_id="codex-sess",
+            seq=2,
+            type=CodexEventType.ASSISTANT_DELTA,
+            thread_id="thr-1",
+            turn_id="turn-1",
+            item_id="item-1",
+            payload=immutable_payload(delta="hello "),
+        ),
+        CodexEvent(
+            session_id="codex-sess",
+            seq=3,
+            type=CodexEventType.FINISHED,
+            thread_id="thr-1",
+            turn_id="turn-1",
+            payload=immutable_payload(status="completed"),
+        ),
+    ]
+    session = FakeCodexSession("codex-sess", codex_events)
+    hub._codex.register(session)  # noqa: SLF001 — wire the fake into the manager
+
+    events = [e async for e in hub.stream("codex-sess", "hello")]
+    assert all(_is_envelope(e) for e in events), events
+    assert all(e["runtime"] == "codex" for e in events)
+    # assistant_delta was renamed to text (unified to TrowelEvent vocabulary)
+    types = [e["type"] for e in events]
+    assert types == ["session_started", "text", "finished"], types
+    # payload.delta was remapped to payload.text
+    text_ev = next(e for e in events if e["type"] == "text")
+    assert text_ev["payload"]["text"] == "hello "
+    assert text_ev["item_id"] == "item-1"
+
+
+async def test_stream_codex_finished_terminates_loop(hub: SessionHub, workdir: Path):
+    """A Codex terminal event breaks the stream even if the queue had more."""
+
+    binding = make_binding(
+        session_id="codex-sess",
+        runtime=Runtime.CODEX,
+        native_session_id=None,
+        workdir=str(workdir),
+        model="gpt-5.6-sol",
+        effort=None,
+        permission=None,
+        memory_enabled=True,
+        profile_enabled=True,
+        capabilities=("tools", "approval"),
+        name="proj",
+    )
+    hub.store.put(binding)
+    # finished in the middle; a trailing event must NOT leak through
+    codex_events = [
+        CodexEvent(
+            session_id="codex-sess",
+            seq=1,
+            type=CodexEventType.ASSISTANT_DELTA,
+            thread_id="thr-1",
+            turn_id="turn-1",
+            item_id="item-1",
+            payload=immutable_payload(delta="hi"),
+        ),
+        CodexEvent(
+            session_id="codex-sess",
+            seq=2,
+            type=CodexEventType.FINISHED,
+            thread_id="thr-1",
+            turn_id="turn-1",
+            payload=immutable_payload(status="completed"),
+        ),
+        CodexEvent(
+            session_id="codex-sess",
+            seq=3,
+            type=CodexEventType.ASSISTANT_DELTA,
+            thread_id="thr-1",
+            turn_id="turn-1",
+            item_id="item-2",
+            payload=immutable_payload(delta="should not appear"),
+        ),
+    ]
+    session = FakeCodexSession("codex-sess", codex_events)
+    hub._codex.register(session)  # noqa: SLF001
+
+    events = [e async for e in hub.stream("codex-sess", "hi")]
+    types = [e["type"] for e in events]
+    assert types == ["text", "finished"], types

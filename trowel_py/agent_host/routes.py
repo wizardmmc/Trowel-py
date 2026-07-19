@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
@@ -44,12 +45,6 @@ def _sse(event: dict[str, Any]) -> bytes:
     """Serialize one event dict as an SSE data frame."""
 
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
-
-
-def _error_event(detail: Any) -> dict[str, Any]:
-    """Build a terminal error frame so a stream always ends with a signal."""
-
-    return {"type": "error", "subclass": "host_error", "errors": [str(detail)]}
 
 
 @router.post("/sessions")
@@ -165,9 +160,9 @@ async def send_message(
             async for event in hub.stream(session_id, body.text):
                 yield _sse(event)
         except HTTPException as exc:
-            yield _sse(_error_event(exc.detail))
+            yield _sse(hub.error_envelope(session_id, exc.detail))
         except Exception as exc:  # noqa: BLE001 — surface as terminal error frame
-            yield _sse(_error_event(str(exc)))
+            yield _sse(hub.error_envelope(session_id, str(exc)))
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -199,6 +194,51 @@ def list_runtimes(
         },
     ]
     return {"success": True, "data": runtimes, "error": None}
+
+
+@router.get("/sessions/{session_id}/history")
+def get_session_history(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """Replay a session's stored history as AgentEvent v1 envelopes (slice-074).
+
+    CC history comes from cc_host's on-disk jsonl scan, wrapped through a fresh
+    :class:`CcEventAdapter` (seq starts at 1 — history is a new stream from the
+    reducer's view, not a continuation of a live one). The CC ``native_session_id``
+    must already be written back (i.e. the session completed at least one turn);
+    a fresh session with no native id returns an empty list.
+
+    Codex thread history replay lands in slice-079; this slice returns a clear
+    501 so the frontend can fall back to its existing skip-non-CC behaviour.
+
+    Raises:
+        HTTPException: 404 unknown session; 501 Codex (slice-079).
+    """
+
+    binding = hub.get(session_id)
+    if binding is None:
+        raise HTTPException(
+            status_code=404, detail=f"session {session_id} not found"
+        )
+    if binding.runtime is Runtime.CODEX:
+        raise HTTPException(
+            status_code=501,
+            detail="codex thread history replay lands in slice-079",
+        )
+    native_session_id = binding.native_session_id
+    if not native_session_id:
+        return {"success": True, "data": [], "error": None}
+    from trowel_py.cc_host.history import parse_history
+
+    events = parse_history(binding.workdir, native_session_id)
+    # Fresh adapter: history is an independent stream (seq from 1), never a
+    # continuation of the live adapter's counter.
+    adapter = CcEventAdapter(session_id)
+    envelopes = [
+        adapter.wrap(e.model_dump()).model_dump(by_alias=True) for e in events
+    ]
+    return {"success": True, "data": envelopes, "error": None}
 
 
 @router.get("/sessions")

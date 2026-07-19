@@ -1,8 +1,14 @@
 import type { Phase, SessionMeta } from "../../stores/ccStore";
 
 /**
- * Top status bar: session name/model/effort/cost/current phase + interrupt.
+ * Top status bar: current phase + cost/turns + hook + interrupt.
+ *
  * Sits above the message list; `role="status"` so phase changes are announced.
+ * runtime / model / permission live on the multi-session bar (left) and are
+ * NOT duplicated here. CC cost/turns (meta.costUsd/numTurns) stays — removing
+ * it was a C-5 regression (gpt5.6 Warning 4); the multi-session bar does not
+ * render usage, so the topbar remains its home. Codex token usage
+ * (meta.usage) is data-layer only for now.
  *
  * Colors follow the spec's semantic map: in-flight (thinking/tool/retrying/
  * compacting) = sunshine; done/finished = garden-green; interrupted = neutral;
@@ -48,7 +54,6 @@ export function StatusBar({
   return (
     <div className="cc-status" role="status">
       <div className="cc-status__left">
-        {/* slice-034 feat 3: model/effort 移到 Composer 底栏 chip；顶栏只留 phase/cost/hook */}
         <span className={`cc-status__phase ${phaseClass(phase)}`}>
           {PHASE_LABEL[phase]}
         </span>

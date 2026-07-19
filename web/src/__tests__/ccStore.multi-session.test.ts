@@ -16,21 +16,21 @@ vi.mock("../api/agent", () => ({
   listActiveAgentSessions: vi.fn(),
   listAgentHistory: vi.fn().mockResolvedValue([]),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
+  getAgentHistory: vi.fn().mockResolvedValue([]),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
 }));
 
 vi.mock("../api/cc", () => ({
-  getHistory: vi.fn(),
   revertSession: vi.fn(),
   answerElicit: vi.fn(),
 }));
 
 // ccStream: capture the apply callback + hold the stream OPEN until released.
-let streamApply: ((ev: { type: string }) => void) | null = null;
+let streamApply: ((ev: AgentEvent) => void) | null = null;
 let streamResolvers: (() => void)[] = [];
 vi.mock("../api/ccStream", () => ({
   postMessageStream: vi.fn(
-    (_url: string, _body: unknown, apply: (ev: { type: string }) => void) =>
+    (_url: string, _body: unknown, apply: (ev: AgentEvent) => void) =>
       new Promise<void>((resolve) => {
         streamApply = apply;
         streamResolvers.push(resolve);
@@ -45,6 +45,29 @@ import {
 } from "../api/agent";
 import { createCcStore, MAX_RUNNING, MAX_CONNECTIONS } from "../stores/ccStore";
 import type { AgentSession } from "../api/agent";
+import type { AgentEvent } from "../api/agentTypes";
+
+/** slice-074: build an AgentEvent v1 envelope with an auto-incrementing seq.
+ * Tests feed envelopes (not flat events) to applyTo, matching the real wire. */
+let seqCounter = 0;
+function ev(
+  type: string,
+  payload: Record<string, unknown> = {},
+  over: Partial<AgentEvent> = {},
+): AgentEvent {
+  seqCounter += 1;
+  return {
+    schema: "agent-event-v1",
+    session_id: "s1",
+    runtime: "claude_code",
+    seq: seqCounter,
+    type,
+    turn_id: null,
+    item_id: null,
+    payload,
+    ...over,
+  };
+}
 
 function mockCreate(sid: string, over: Partial<AgentSession> = {}): AgentSession {
   const session: AgentSession = {
@@ -78,6 +101,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   streamApply = null;
   streamResolvers = [];
+  seqCounter = 0;
 });
 
 describe("createCcStore — multi-session v2 (connected model)", () => {
@@ -98,7 +122,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     expect(store.getState().sessions["s1"].connected).toBe(false);
     const p = store.getState().send("hi");
     expect(store.getState().sessions["s1"].connected).toBe(true);
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p;
   });
@@ -108,13 +132,13 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const p1 = store.getState().send("one");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p1;
     mockCreate("s2");
     await store.getState().startSession({ workdir: "/b" });
     const p2 = store.getState().send("two");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p2;
     // both connected, s2 active
@@ -133,7 +157,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     await store.getState().startSession({ workdir: "/a" });
     // connect s1 so it survives the next startSession
     const p1 = store.getState().send("one");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p1;
     mockCreate("s2");
@@ -163,13 +187,13 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const p1 = store.getState().send("one");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p1;
     mockCreate("s2");
     await store.getState().startSession({ workdir: "/b" });
     const p2 = store.getState().send("two");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p2;
 
@@ -179,10 +203,10 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     expect(streamApply).not.toBeNull();
 
     // pump a text event (routes by captured sid = s1)
-    streamApply!({ type: "text" } as never);
+    streamApply!(ev("text", { text: "chunk" }));
     // switch to s2 mid-stream; s1's in-flight text still lands on s1
     await store.getState().activateSession("s2");
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await sendPromise;
 
@@ -198,7 +222,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     await store.getState().startSession({ workdir: "/wd" });
     const first = store.getState().send("one");
     await store.getState().send("two"); // no-op (abort set)
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await first;
     expect(store.getState().sessions["s1"].turns).toHaveLength(1);
@@ -209,8 +233,8 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const p = store.getState().send("/exit");
-    streamApply!({ type: "finished" } as never);
-    streamApply!({ type: "session_exited", returncode: 0 } as never);
+    streamApply!(ev("finished"));
+    streamApply!(ev("session_exited", { returncode: 0 }));
     await releaseAllStreams();
     await p;
     const s = store.getState();
@@ -250,7 +274,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       mockCreate(`s${i}`);
       await store.getState().startSession({ workdir: `/wd${i}` });
       const p = store.getState().send("init");
-      streamApply!({ type: "finished" } as never);
+      streamApply!(ev("finished"));
       await releaseAllStreams();
       await p;
     }
@@ -278,7 +302,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       mockCreate(`s${i}`);
       await store.getState().startSession({ workdir: `/wd${i}` });
       const p = store.getState().send("x");
-      streamApply!({ type: "finished" } as never);
+      streamApply!(ev("finished"));
       await releaseAllStreams();
       await p;
     }
@@ -308,11 +332,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     mockCreate("c1", { runtime: "codex" as never });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
     const p = store.getState().send("hi");
-    streamApply!({
-      type: "host_status",
-      runtime: "codex",
-      payload: { status: "host_exited" },
-    } as never);
+    streamApply!(ev("host_status", { status: "host_exited" }, { runtime: "codex" }));
     await releaseAllStreams();
     await p;
     expect(store.getState().sessions["c1"]).toBeDefined(); // row kept
@@ -410,8 +430,8 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const p = store.getState().send("do it");
-    streamApply!({ type: "tool_call", tool_use_id: "tu_1", tool_name: "TaskCreate", input: { subject: "s1 task" } } as never);
-    streamApply!({ type: "finished" } as never);
+    streamApply!(ev("tool_call", { tool_use_id: "tu_1", tool_name: "TaskCreate", input: { subject: "s1 task" } }));
+    streamApply!(ev("finished"));
     await releaseAllStreams();
     await p;
     expect(store.getState().sessions["s1"].tasks).toHaveLength(1);
@@ -420,5 +440,59 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     await store.getState().startSession({ workdir: "/wd" });
     expect(store.getState().sessions["s2"].tasks).toHaveLength(0);
     expect(store.getState().sessions["s1"].tasks).toHaveLength(1);
+  });
+});
+
+describe("slice-074: per-session seq contract (dup drop + gap flag)", () => {
+  it("drops a duplicate seq (re-delivered event does not double-append)", async () => {
+    const store = createCcStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    const p = store.getState().send("hi");
+    streamApply!(ev("text", { text: "a" })); // seq 1
+    streamApply!(ev("text", { text: "b" }, { seq: 1 })); // dup seq → dropped
+    streamApply!(ev("finished")); // seq 3 (counter continues; gap from the dup's perspective is irrelevant)
+    await releaseAllStreams();
+    await p;
+    const turn = store.getState().sessions["s1"].turns[0];
+    // Only one text item ("a"); the duplicate "b" was dropped.
+    expect(turn.items.filter((i) => i.kind === "text")).toHaveLength(1);
+    expect((turn.items[0] as { text: string }).text).toBe("a");
+  });
+
+  it("flags needsReplay when a seq gap is observed", async () => {
+    const store = createCcStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    const p = store.getState().send("hi");
+    streamApply!(ev("text", { text: "a" })); // seq 1
+    streamApply!(ev("text", { text: "b" }, { seq: 5 })); // gap 1→5
+    streamApply!(ev("finished"));
+    await releaseAllStreams();
+    await p;
+    expect(store.getState().sessions["s1"].needsReplay).toBe(true);
+  });
+
+  it("seq is per-session (two streams do not share the counter)", async () => {
+    // Each session's adapter stamps its own seq from 1; the store tracks them
+    // independently, so a seq-2 on session B does not collide with session A.
+    const store = createCcStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/a" });
+    const p1 = store.getState().send("one");
+    streamApply!(ev("text", { text: "a" })); // s1 seq 1
+    streamApply!(ev("finished")); // s1 seq 2
+    await releaseAllStreams();
+    await p1;
+    mockCreate("s2");
+    await store.getState().startSession({ workdir: "/b" });
+    const p2 = store.getState().send("two");
+    streamApply!(ev("text", { text: "b" }, { seq: 1, session_id: "s2" })); // s2 seq 1 — independent
+    streamApply!(ev("finished", {}, { seq: 2, session_id: "s2" }));
+    await releaseAllStreams();
+    await p2;
+    expect(store.getState().sessions["s1"].lastSeq).toBe(2);
+    expect(store.getState().sessions["s2"].lastSeq).toBe(2);
+    expect(store.getState().sessions["s2"].needsReplay).toBe(false);
   });
 });

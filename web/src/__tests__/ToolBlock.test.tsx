@@ -662,3 +662,49 @@ describe("ToolBlock — slice-034 feat 4 Skill rendering", () => {
     expect(container.querySelector(".cc-tool__stat")).toBeNull();
   });
 });
+
+describe("ToolBlock — slice-074 Codex command rendering", () => {
+  it("a failed Codex command renders the failure mark, not a green check", () => {
+    // gpt5.6 Warning 3: failed/declined/non-zero-exit must NOT show as done.
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "command",
+          input: { command: "make test", cwd: "/repo" },
+          status: "failed",
+          exitCode: 2,
+          durationMs: 120,
+          cwd: "/repo",
+          nativeStatus: "failed",
+          result: "boom",
+        })}
+      />,
+    );
+    expect(container.querySelector(".cc-tool__check--failed")).not.toBeNull();
+    expect(container.querySelector(".cc-tool__check")).not.toBeNull();
+    expect(container.querySelector('[aria-label="失败"]')).not.toBeNull();
+  });
+
+  it("an expanded Codex command shows command, output, exit/duration/cwd", () => {
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "command",
+          input: { command: "rg pattern", cwd: "/repo" },
+          status: "done",
+          exitCode: 0,
+          durationMs: 12,
+          cwd: "/repo",
+          result: "match.txt:1:hit",
+        })}
+      />,
+    );
+    // command tools are not diff tools → detail is collapsed by default; expand.
+    fireEvent.click(container.querySelector(".cc-tool__summary")!);
+    // command tool auto-content: command + output + meta
+    expect(container.querySelector(".cc-tool__bash-cmd")?.textContent).toContain("rg pattern");
+    expect(container.querySelector(".cc-tool__bash-out")?.textContent).toContain("match.txt");
+    expect(container.querySelector(".cc-tool__cmd-meta")?.textContent).toContain("exit 0");
+    expect(container.querySelector(".cc-tool__cmd-meta")?.textContent).toContain("12ms");
+  });
+});

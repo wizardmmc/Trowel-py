@@ -27,8 +27,11 @@ from typing import Any, Callable
 from fastapi import HTTPException, Request
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
+from trowel_py.agent_host.cc_adapter import CcEventAdapter
+from trowel_py.agent_host.codex_adapter import CodexEventAdapter
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.agent_host.store import BindingStore
+from trowel_py.schemas.agent_host import AgentEvent
 
 _log = logging.getLogger(__name__)
 
@@ -46,10 +49,12 @@ CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval")
 MAX_CONNECTIONS = 20
 MAX_RUNNING = 5
 
-#: Codex event types that end a turn — drives the stream loop's exit. The
-#: ``host_status`` / ``host_exited`` case is checked separately (it is a
-#: non-terminal type used as a turn terminal when the manager dies).
-_CODEX_TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
+#: Unified event types that end a turn — drives the Codex stream loop's exit
+#: (CC ends when ``CCHost.send`` returns, so it does not need this gate). The
+#: ``host_status`` / ``host_exited`` case is checked separately: it is a
+#: non-terminal type used as a turn terminal when the Codex manager dies
+#: (spec §4: never leave the UI on a spinner).
+_TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
 
 class RuntimeFrozenError(Exception):
@@ -115,6 +120,12 @@ class SessionHub:
         )
         self._cc_opener = cc_opener if cc_opener is not None else _default_cc_opener()
         self._active_id: str | None = None
+        # slice-074: per-session CC + Codex seq adapters (seq spans turns, so
+        # each outlives one send). Both own a contiguous per-session counter so
+        # dropped events (e.g. Codex assistant_message) don't punch holes the
+        # frontend would flag as a gap.
+        self._cc_adapters: dict[str, CcEventAdapter] = {}
+        self._codex_adapters: dict[str, CodexEventAdapter] = {}
 
     @property
     def store(self) -> BindingStore:
@@ -396,6 +407,10 @@ class SessionHub:
             await cc_routes.close_cc_session(session_id, self._cc_registry)
         elif self._codex is not None:
             self._codex.unregister(session_id)
+        # slice-074: drop the per-session CC + Codex seq adapters so a reused
+        # id starts fresh; the native hosts are closed/unregistered above.
+        self._cc_adapters.pop(session_id, None)
+        self._codex_adapters.pop(session_id, None)
         self._store.delete(session_id)
         if self._active_id == session_id:
             self._active_id = None
@@ -404,13 +419,13 @@ class SessionHub:
     async def stream(
         self, session_id: str, text: str
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield events from the bound runtime, each tagged with its runtime.
+        """Yield unified AgentEvent v1 envelopes from the bound runtime.
 
-        CC events are passed through (already dict-shaped by the translator's
-        Pydantic ``model_dump``) with a ``runtime`` key added; Codex events are
-        the slice-071 :class:`CodexEvent.as_dict` shape. The unified reducer +
-        timeline lands in slice-074; this slice only needs the stream to flow
-        so a real turn completes end-to-end.
+        Both runtimes pass through their adapter (CC via the per-session
+        :class:`CcEventAdapter`, Codex via the shared :class:`CodexEventAdapter`)
+        so every event the client sees is one wire shape. Codex's stream ends
+        on a terminal event (finished / interrupted / error / host_exited); CC
+        ends when ``CCHost.send`` returns.
 
         Raises:
             HTTPException: 404 unknown session or no live host; 502 codex turn
@@ -424,14 +439,15 @@ class SessionHub:
                 raise HTTPException(
                     status_code=404, detail=f"cc session {session_id} not live"
                 )
+            adapter = self._cc_adapters.get(session_id)
+            if adapter is None:
+                adapter = CcEventAdapter(session_id)
+                self._cc_adapters[session_id] = adapter
             async for event in host.send(text):
-                payload = (
-                    dict(event)
-                    if isinstance(event, dict)
-                    else event.model_dump()
+                raw = (
+                    dict(event) if isinstance(event, dict) else event.model_dump()
                 )
-                payload["runtime"] = "claude_code"
-                yield payload
+                yield adapter.wrap(raw).model_dump(by_alias=True)
             self._writeback_cc_native(session_id, host)
             return
         if self._codex is None:
@@ -450,14 +466,55 @@ class SessionHub:
             raise HTTPException(
                 status_code=502, detail=f"codex turn failed: {exc}"
             ) from exc
+        adapter = self._codex_adapters.get(session_id)
+        if adapter is None:
+            adapter = CodexEventAdapter(session_id)
+            self._codex_adapters[session_id] = adapter
         async for event in session.events():
-            payload = (
-                event.as_dict() if hasattr(event, "as_dict") else dict(event)
-            )
+            envelope = adapter.wrap(event)
+            if envelope is None:
+                # adapter dropped a duplicate (assistant_message) or a type with
+                # no real producer (tool_progress); the per-session seq is only
+                # advanced on emit, so no phantom gap is created.
+                continue
+            payload = envelope.model_dump(by_alias=True)
             yield payload
-            if _is_codex_terminal(payload):
+            if _is_terminal(payload):
                 break
         self._writeback_codex_native(session_id, session)
+
+    def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
+        """Build a terminal error envelope from the session's own seq space.
+
+        Route-level failures (the stream raising before/independent of normal
+        adapter emission) still need a closing signal, and after slice-074 that
+        signal must be a valid AgentEvent sharing the per-session seq allocator
+        — a fixed seq=1 would collide with earlier events and be dropped as a
+        dup by the frontend (gpt5.6 Critical 1). Falls back to a best-effort
+        envelope when the binding is gone (the frontend drops it anyway, since
+        ``sessions[sid]`` no longer exists).
+        """
+
+        binding = self._store.get(session_id)
+        if binding is None:
+            return AgentEvent(
+                session_id=session_id,
+                runtime="claude_code",
+                seq=1,
+                type="error",
+                payload={"subclass": "host_error", "errors": [str(detail)]},
+            ).model_dump(by_alias=True)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            adapter = self._cc_adapters.get(session_id)
+            if adapter is None:
+                adapter = CcEventAdapter(session_id)
+                self._cc_adapters[session_id] = adapter
+        else:
+            adapter = self._codex_adapters.get(session_id)
+            if adapter is None:
+                adapter = CodexEventAdapter(session_id)
+                self._codex_adapters[session_id] = adapter
+        return adapter.error_event(detail).model_dump(by_alias=True)
 
     # ------------------------------------------------------------- writeback
 
@@ -516,17 +573,20 @@ class SessionHub:
         return cc_live + codex_live
 
 
-def _is_codex_terminal(payload: dict[str, Any]) -> bool:
-    """True when a Codex event ends the turn (so the stream loop can stop).
+def _is_terminal(payload: dict[str, Any]) -> bool:
+    """True when a unified envelope ends the turn (so the Codex loop can stop).
 
-    ``finished`` / ``interrupted`` / ``error`` are turn terminals. The
-    ``host_status`` event with ``payload.status == "host_exited"`` is also a
-    terminal — it is what a running turn observes when the manager dies
-    (spec §4: never leave the UI on a spinner).
+    ``finished`` / ``interrupted`` / ``error`` are turn terminals. Native Codex
+    errors (translator ``_on_error``) are mapped to ``retrying`` by the adapter
+    (non-terminal — CodexSession keeps waiting for ``turn/completed``), so they
+    never reach this check. The ``host_status`` envelope with
+    ``payload.status == "host_exited"`` is also a terminal — it is what a
+    running turn observes when the Codex manager dies (spec §4: never leave the
+    UI on a spinner).
     """
 
     event_type = payload.get("type")
-    if event_type in _CODEX_TURN_TERMINAL_TYPES:
+    if event_type in _TURN_TERMINAL_TYPES:
         return True
     if event_type == "host_status":
         nested = payload.get("payload")
