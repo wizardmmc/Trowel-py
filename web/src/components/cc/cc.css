@@ -2316,6 +2316,153 @@
   white-space: nowrap;
   min-width: 0;
 }
+/* slice-072: runtime badge — used by MultiSessionBar row + SessionSwitcher row.
+   The multibar row pushes it to the right (margin-left:auto in that context). */
+.cc-runtime-badge {
+  display: inline-block;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.62rem;
+  line-height: 14px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  background: var(--color-bg-elevated);
+  white-space: nowrap;
+}
+.cc-runtime-badge--codex {
+  border-color: #a8a49c;
+  color: #343434;
+}
+.cc-runtime-badge--claude_code {
+  border-color: #c9aa8c;
+  color: #6b4934;
+}
+.cc-multibar__row1 .cc-runtime-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.cc-multibar__perm {
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+/* slice-072: NewSessionDialog runtime cards (mockup-confirmed). Two-column
+   grid, selected/hover/focus states; disabled only dulls the status copy, not
+   the whole card (review: 不可用态只弱化状态文字，别整张灰掉). */
+.cc-dialog__runtime-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-bottom: 16px;
+}
+@media (max-width: 560px) {
+  .cc-dialog__runtime-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.cc-dialog__runtime-card {
+  min-height: 116px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-elevated);
+  color: var(--text-primary, var(--text-tertiary));
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: inherit;
+}
+.cc-dialog__runtime-card:hover:not(:disabled):not(
+    .cc-dialog__runtime-card--disabled
+  ) {
+  border-color: var(--garden-green);
+}
+.cc-dialog__runtime-card--selected {
+  border-color: var(--garden-green);
+  background: var(--sunshine-soft);
+}
+.cc-dialog__runtime-card:focus-visible {
+  outline: 2px solid var(--garden-green);
+  outline-offset: 2px;
+}
+.cc-dialog__runtime-card:disabled {
+  cursor: not-allowed;
+}
+.cc-dialog__runtime-card--disabled {
+  cursor: not-allowed;
+}
+.cc-dialog__runtime-name {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.cc-dialog__runtime-native {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  margin-top: 2px;
+}
+.cc-dialog__runtime-desc {
+  margin-top: 8px;
+  color: var(--text-secondary, var(--text-tertiary));
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+.cc-dialog__runtime-unavailable {
+  margin-top: 6px;
+  color: var(--clay, #c45b4a);
+  font-size: 0.62rem;
+}
+.cc-dialog__option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.cc-dialog__option {
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-elevated);
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+}
+.cc-dialog__option--selected {
+  border-color: var(--garden-green);
+  background: var(--sunshine-soft);
+  color: var(--garden-green);
+}
+.cc-dialog__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.cc-dialog__section-label {
+  margin-bottom: 6px;
+  color: var(--text-tertiary);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.cc-dialog__error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--clay-soft, rgba(196, 91, 74, 0.1));
+  color: var(--clay, #c45b4a);
+  font-size: 0.72rem;
+}
+.cc-dialog__diag {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--sunshine-soft);
+  color: #6c5315;
+  font-size: 0.72rem;
+}
 .cc-multibar__row2 {
   font-size: 0.72rem;
   color: var(--text-tertiary);

@@ -24,6 +24,10 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     connected: true,
     memoryEnabled: true,
     profileEnabled: true,
+    runtime: "claude_code",
+    nativeSessionId: null,
+    permission: null,
+    capabilities: ["tools", "approval", "checkpoint", "workflow"],
     ...over,
   };
 }

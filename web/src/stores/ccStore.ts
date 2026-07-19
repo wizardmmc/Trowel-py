@@ -16,21 +16,23 @@ import { create } from "zustand";
 
 import {
   answerElicit as apiAnswerElicit,
-  activateSession as apiActivateSession,
-  createSession as apiCreateSession,
-  deleteSession as apiDeleteSession,
   getHistory,
-  interruptSession,
-  listActiveSessions,
-  listSessions,
-  messagesUrl,
   revertSession as apiRevertSession,
-  type ActiveSession,
-  type CcSession,
-  type CcSessionSummary,
-  type CreateSessionParams,
 } from "../api/cc";
+import {
+  activateAgentSession as apiActivateSession,
+  agentMessagesUrl as messagesUrl,
+  createAgentSession as apiCreateSession,
+  deleteAgentSession as apiDeleteSession,
+  interruptAgentSession as interruptSession,
+  listActiveAgentSessions as listActiveSessions,
+  listAgentHistory as listSessions,
+  type AgentHistoryRow,
+  type AgentSession,
+  type Runtime,
+} from "../api/agent";
 import { postMessageStream } from "../api/ccStream";
+import { reduceCodexEvent, type CodexEvent } from "./codexReducer";
 import type { TrowelEvent } from "../api/ccTypes";
 
 // Re-export the reducer's full public surface so existing imports from
@@ -77,6 +79,34 @@ export interface PerSessionState extends ReducerState {
    * after create (想换条件就新建会话). Reconciled from the backend on refresh. */
   readonly memoryEnabled: boolean;
   readonly profileEnabled: boolean;
+  /** slice-072: native runtime of this session (frozen at create, C-1). */
+  readonly runtime: Runtime;
+  /** slice-072: native session id (cc_session_id / codex thread_id); null
+   * until the host reports it, then written back atomically by the Hub. */
+  readonly nativeSessionId: string | null;
+  /** slice-072: runtime-specific effective permission/policy, null until
+   * reported. The multi-session bar shows it as the per-row policy. */
+  readonly permission: string | null;
+  /** slice-072: runtime-declared capability tags — the UI gates features off
+   * this list, never off `runtime === ...` (C-6). */
+  readonly capabilities: readonly string[];
+}
+
+/** slice-072: startSession params. ``runtime`` defaults to ``claude_code`` so
+ * existing CC-only callers are zero-regression. Codex-specific fields
+ * (``approval_policy`` / ``sandbox``) are ignored on the CC branch and vice
+ * versa (``permission_mode`` is CC-only). */
+export interface StartSessionParams {
+  readonly workdir: string;
+  readonly runtime?: Runtime;
+  readonly resume_from?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly permission_mode?: string;
+  readonly approval_policy?: string;
+  readonly sandbox?: string;
+  readonly memory_enabled?: boolean;
+  readonly profile_enabled?: boolean;
 }
 
 interface CcState {
@@ -85,13 +115,13 @@ interface CcState {
   /** The session the message area + composer + todo bar are bound to. */
   readonly activeSid: string | null;
   /** On-disk history for the active session's workdir (the resume dropdown). */
-  readonly history: readonly CcSessionSummary[];
+  readonly history: readonly AgentHistoryRow[];
   /** Total sessions on disk (meta.total) — true count for "共 N · 最近 M" display. */
   readonly historyTotal: number;
   readonly loadingHistory: boolean;
 
   // actions
-  startSession: (params: CreateSessionParams) => Promise<CcSession | null>;
+  startSession: (params: StartSessionParams) => Promise<AgentSession>;
   /** slice-028 D2: switch the active session (POST /activate + swap activeSid). */
   activateSession: (sid: string) => Promise<void>;
   /** slice-028 D2: close + drop a session (DELETE + remove from dict). */
@@ -130,23 +160,33 @@ export function createCcStore() {
       set((state) => {
         const cur = state.sessions[sid];
         if (!cur) return state;
-        // slice-028 v2: an exited session is dropped entirely (the cc process
-        // is gone) — the multi-session bar never shows exited rows, and if it
-        // was the active session the view returns to the no-active state.
-        // (Per-session reducer still has a session_exited case for completeness,
-        // but the live path removes the row here before it ever applies.)
-        if (event.type === "session_exited") {
+        // slice-072: dispatch by the event's runtime tag — CC events flow
+        // through ccReducer, Codex events through codexReducer (both produce
+        // the same ReducerState shape so one MessageList renders both).
+        const runtime = (event as { runtime?: string }).runtime;
+        // slice-028 v2 / slice-072: a row-exit signal drops the row entirely
+        // (no live host behind it). Only CC session_exited drops the row —
+        // the cc subprocess is gone. Codex host_status(host_exited) does NOT
+        // drop the row: the binding survives so the next send can resume
+        // (spec §4); codexReducer flips the running turn to error instead.
+        const rawType = (event as { type: string }).type;
+        const isHostExit = rawType === "session_exited";
+        if (isHostExit) {
           const sessions = { ...state.sessions };
           delete sessions[sid];
           const activeSid = state.activeSid === sid ? null : state.activeSid;
           return { ...state, sessions, activeSid };
         }
-        const reduced = reduceEvent(cur, event);
+        const reduced =
+          runtime === "codex"
+            ? reduceCodexEvent(cur, event as unknown as CodexEvent)
+            : reduceEvent(cur, event);
         let next: PerSessionState = { ...cur, ...reduced };
         // slice-027 C2: effort lives on the shell (createSession params), not
-        // ReducerState — fold the /effort change in here.
-        if (event.type === "model_changed" && event.effort != null) {
-          next = { ...next, effort: event.effort };
+        // ReducerState — fold the /effort change in here (CC only).
+        const effort = (event as { effort?: string | null }).effort;
+        if (event.type === "model_changed" && effort != null) {
+          next = { ...next, effort };
         }
         return {
           ...state,
@@ -207,28 +247,38 @@ export function createCcStore() {
       startSession: async (params) => {
         // slice-028 v2: a "+" / load-history / mount creates a session that is
         // NOT yet a connection (connected=false) — it enters the multi-session
-        // bar only after the first send spawns cc. Drop any prior temp active
-        // first ("切走即丢"). No cap here: caps count connected sessions and are
-        // enforced in send().
+        // bar only after the first send spawns the host. Drop any prior temp
+        // active first ("切走即丢"). No cap here: caps count connected sessions
+        // and are enforced in send().
         await dropTempActive();
         try {
-          const session = await apiCreateSession(params);
+          // slice-072: route through the host-neutral /api/agent. runtime
+          // defaults to claude_code so pre-existing CC-only callers keep
+          // working unchanged (spec C-5).
+          const runtime: Runtime = params.runtime ?? "claude_code";
+          const session = await apiCreateSession({ ...params, runtime });
           const sid = session.session_id;
           const name =
             session.name ?? (params.workdir.split("/").pop() || params.workdir);
-          // connected=false until the first send() spawns cc.
+          // connected=false until the first send() spawns the native host.
           const perSession: PerSessionState = {
             ...INITIAL_REDUCER_STATE,
             workdir: params.workdir,
             effort: params.effort ?? null,
             name,
-            revertEnabled: session.revert_enabled,
+            // slice-072: revert is a CC-checkpoint capability — gate it off
+            // the capability list so Codex sessions simply omit the button.
+            revertEnabled: session.capabilities.includes("checkpoint"),
             transportError: null,
             abort: null,
             connected: false,
             // slice-060: freeze the A/B condition the backend stamped on create.
             memoryEnabled: session.memory_enabled,
             profileEnabled: session.profile_enabled,
+            runtime: session.runtime,
+            nativeSessionId: session.native_session_id,
+            permission: session.permission,
+            capabilities: session.capabilities,
           };
           set((state) => ({
             ...state,
@@ -237,8 +287,10 @@ export function createCcStore() {
           }));
           return session;
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
-          return null;
+          // slice-072: surface the failure to the caller (the new-session
+          // dialog awaits + shows it) instead of writing it onto a maybe-
+          // nonexistent active session (review P1-2).
+          throw err;
         }
       },
 
@@ -279,12 +331,15 @@ export function createCcStore() {
 
       refreshActiveSessions: async () => {
         // slice-028 v2 reload reconcile. After a page refresh the frontend
-        // dict is empty but the backend _REGISTRY may still hold live cc
-        // processes; pull them in as connected rows so the user can see them
-        // (and × close / activate). The backend list carries no turns/tasks
-        // (those were in-memory) — activating a reconciled row + send continues
-        // the session; history replay is via loadHistoryIntoView.
-        let backend: readonly ActiveSession[] = [];
+        // dict is empty but the backend may still hold live sessions; pull
+        // them in as connected rows so the user can see them (and × close /
+        // activate). The backend list carries no turns/tasks (those were
+        // in-memory) — activating a reconciled row + send continues the
+        // session; history replay is via loadHistoryIntoView.
+        // slice-072: the list is now the host-neutral /api/agent active list
+        // (mixed CC + Codex); each row carries runtime/native/permission/
+        // capabilities so the multi-session bar renders both runtimes.
+        let backend: readonly AgentSession[] = [];
         let activeId: string | null = null;
         try {
           const result = await listActiveSessions();
@@ -297,31 +352,32 @@ export function createCcStore() {
         set((state) => {
           const merged = { ...state.sessions };
           for (const b of backend) {
-            if (merged[b.id]) continue; // frontend already tracks it
-            merged[b.id] = {
+            if (merged[b.session_id]) continue; // frontend already tracks it
+            merged[b.session_id] = {
               ...INITIAL_REDUCER_STATE,
-              // slice-028 v2 bugfix: 后端 list 带 model，必须写进 meta.model，
-              // 否则多开栏 statusText fallback 显示 "model"（被截成 "mdle"）。
+              // 后端 list 带 model，必须写进 meta.model，否则多开栏 fallback
+              // 显示 "model"（被截成 "mdle"）。
               meta: { ...INITIAL_REDUCER_STATE.meta, model: b.model },
               workdir: b.workdir,
               effort: null,
               name: b.name,
-              revertEnabled: false, // backend list omits this; re-gained on next send
+              revertEnabled: b.capabilities.includes("checkpoint"),
               transportError: null,
               abort: null,
-              // 后端 list 带 connected 字段：True = 有活 cc 进程；temp（从未发消息）→ false。
-              // 不再写死 true —— 否则 temp 会被误标 live 显示在多开栏（ClaudeDesktop 多开 bug）。
               connected: b.connected,
-              // slice-060: 用后端 active-session 返回值恢复开关，不用本地默认覆盖。
               memoryEnabled: b.memory_enabled,
               profileEnabled: b.profile_enabled,
+              runtime: b.runtime,
+              nativeSessionId: b.native_session_id,
+              permission: b.permission,
+              capabilities: b.capabilities,
             };
           }
           // keep an existing frontend activeSid; else fall back to the backend's
           // active_id, or the first backend session if active_id is null (so a
           // refresh always re-shows SOMETHING when the backend has live sessions).
           const fallback =
-            activeId ?? (backend.length > 0 ? backend[0].id : null);
+            activeId ?? (backend.length > 0 ? backend[0].session_id : null);
           const activeSid =
             state.activeSid && merged[state.activeSid]
               ? state.activeSid
@@ -335,8 +391,15 @@ export function createCcStore() {
       refreshHistory: async (workdir) => {
         set({ loadingHistory: true });
         try {
-          const { sessions, total } = await listSessions(workdir);
-          set({ history: sessions, historyTotal: total, loadingHistory: false });
+          // slice-072: mixed history (CC jsonl rows + Codex bindings) via
+          // /api/agent. The agent endpoint returns a flat list with no
+          // meta.total; the switcher shows the list length as the count.
+          const rows = await listSessions(workdir);
+          set({
+            history: rows,
+            historyTotal: rows.length,
+            loadingHistory: false,
+          });
         } catch (err) {
           set({ loadingHistory: false });
           patchActive(() => ({ transportError: (err as Error).message }));
@@ -348,6 +411,10 @@ export function createCcStore() {
         if (!sid) return;
         const cur = get().sessions[sid];
         if (!cur) return;
+        // slice-072: CC history replay stays on /api/cc — an agent-created CC
+        // session also lives in the live _REGISTRY, so /api/cc/sessions/{id}/history
+        // resolves. Codex transcript replay lands in slice-079; skip here.
+        if (cur.runtime !== "claude_code") return;
         try {
           const events = await getHistory(sid);
           set((state) => {
@@ -603,5 +670,5 @@ export function useActiveSession(): PerSessionState | null {
   return useCcStore((s) => (s.activeSid ? s.sessions[s.activeSid] ?? null : null));
 }
 
-// re-export for component convenience
-export type { CcSession, CcSessionSummary, CreateSessionParams };
+// re-export for component convenience (StartSessionParams is exported above).
+export type { AgentHistoryRow, AgentSession, Runtime };

@@ -67,7 +67,7 @@ export function MultiSessionBar({
   const connectionFull = connections >= MAX_CONNECTIONS;
 
   // Display order: active first, then others — stable by sid otherwise.
-  const ordered = connected.sort(([aId], [bId]) => {
+  const ordered = [...connected].sort(([aId], [bId]) => {
     if (aId === activeSid) return -1;
     if (bId === activeSid) return 1;
     return aId < bId ? -1 : 1;
@@ -128,11 +128,24 @@ export function MultiSessionBar({
                     aria-hidden="true"
                   />
                   <span className="cc-multibar__name">{s.name}</span>
+                  <span
+                    className={`cc-runtime-badge cc-runtime-badge--${s.runtime}`}
+                    title={
+                      s.runtime === "codex" ? "Codex runtime" : "Claude Code runtime"
+                    }
+                  >
+                    {s.runtime === "codex" ? "Codex" : "CC"}
+                  </span>
                 </span>
                 <span className="cc-multibar__row2">{statusText(s)}</span>
                 {/* slice-060: M·P condition marker so the user can tell the four
-                    experiment sessions apart at a glance (green=on, dim=off). */}
-                <span className="cc-multibar__cond" title="Memory · Profile">
+                    experiment sessions apart at a glance (green=on, dim=off).
+                    slice-072: append the runtime-effective permission when the
+                    host has reported one (spec: row shows 有效权限). */}
+                <span
+                  className="cc-multibar__cond"
+                  title="Memory · Profile · 权限"
+                >
                   <span
                     className={
                       s.memoryEnabled
@@ -152,6 +165,12 @@ export function MultiSessionBar({
                   >
                     P
                   </span>
+                  {s.permission && (
+                    <>
+                      <span className="cc-multibar__cond-sep">·</span>
+                      <span className="cc-multibar__perm">{s.permission}</span>
+                    </>
+                  )}
                 </span>
               </button>
               <button

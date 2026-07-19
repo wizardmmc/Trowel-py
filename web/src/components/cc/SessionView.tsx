@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import {
@@ -7,6 +7,9 @@ import {
 } from "../../stores/ccStore";
 import { listModels, listSlashItems } from "../../api/cc";
 import type { ModelOption, SlashItem } from "../../api/cc";
+import { listAgentRuntimes } from "../../api/agent";
+import type { AgentHistoryRow } from "../../api/agent";
+import type { NewSessionConfig, RuntimesState } from "./NewSessionDialog";
 import { Composer } from "./Composer";
 import { EffortPicker } from "./EffortPicker";
 import { MessageList } from "./MessageList";
@@ -81,6 +84,27 @@ export function SessionView({
   // slice-060: the "+ 新会话" setup dialog (choose Memory/Profile A/B condition
   // before creating). Mount-auto-create still uses the backend default (on/on).
   const [showNewDialog, setShowNewDialog] = useState(false);
+  // slice-072: runtime catalog tri-state. A fetch failure is surfaced as
+  // "Agent API 不可用" + retry, never disguised as "both unavailable"
+  // (review P1-1).
+  const [runtimesState, setRuntimesState] = useState<RuntimesState>({
+    status: "loading",
+  });
+  const loadRuntimes = useCallback(() => {
+    setRuntimesState({ status: "loading" });
+    listAgentRuntimes()
+      .then((rs) => setRuntimesState({ status: "ready", runtimes: rs }))
+      .catch((err) =>
+        setRuntimesState({ status: "error", error: (err as Error).message }),
+      );
+  }, []);
+  useEffect(() => {
+    loadRuntimes();
+  }, [loadRuntimes]);
+  // slice-072: create flow — the dialog awaits startSession; the dialog stays
+  // open with an error on failure instead of closing fire-and-forget (P1-2).
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   // slice-032: mirror the Composer's live height into --composer-h so
   // .cc-view__scroll's scroll-padding-bottom tracks it — the ✻ thinking row
   // stays visible above the Composer without a hardcoded constant that drifts
@@ -101,6 +125,12 @@ export function SessionView({
   const effort = active?.effort ?? null;
   const revertEnabled = active?.revertEnabled ?? false;
   const streaming = ACTIVE_PHASES.has(phase);
+  // slice-072: model/effort/slash are CC-only controls — they ride CC's
+  // /model /effort slash + .claude/ skills. Codex sets its model in
+  // thread/start (host-owned); sending "/model opus" to Codex would just be a
+  // no-op text message, so the Composer hides these controls for Codex
+  // sessions (review P1-5). One runtime check, centralised here.
+  const ccControls = active?.runtime === "claude_code";
   // slice-034 feat 3: 当前 model 的 alias（从 meta.model 匹配 models），null → chip 显示默认回退。
   const modelAlias = (() => {
     if (!meta?.model) return null;
@@ -131,7 +161,9 @@ export function SessionView({
       const active0 =
         useCcStore.getState().sessions[useCcStore.getState().activeSid ?? ""];
       if (!active0 || active0.workdir !== workdir) {
-        await store.startSession({ workdir });
+        await store.startSession({ workdir }).catch(() => {
+          // best-effort mount create; failure leaves the empty-state prompt.
+        });
       }
       // 兜底刷新历史到 prop workdir：覆盖 startSession 失败（active 仍为 null，
       // [active?.workdir] effect 的守卫会跳过）的窄场景，保证 mount/换路径时
@@ -180,17 +212,41 @@ export function SessionView({
     };
   }, [workdir]);
 
-  async function handlePick(ccSessionId: string) {
-    const session = await startSession({ workdir, resume_from: ccSessionId });
-    if (session) {
+  async function handlePick(row: AgentHistoryRow) {
+    // slice-072: resume stays within the originating runtime (C-2). A row with
+    // no native_session_id (fresh Codex binding) has nothing to resume.
+    if (!row.native_session_id) return;
+    try {
+      await startSession({
+        workdir,
+        runtime: row.runtime,
+        resume_from: row.native_session_id,
+      });
       await loadHistoryIntoView();
+    } catch {
+      // resume failure: leave the no-session state; the user can retry from
+      // the history dropdown.
     }
   }
 
   function handleNewSameWorkdir() {
-    // slice-060: open the setup dialog so the user picks the Memory/Profile
-    // condition first. The mount/auto path still calls startSession directly.
+    setCreateError(null);
     setShowNewDialog(true);
+  }
+
+  // slice-072: create flow — await startSession; keep the dialog open with an
+  // error on failure instead of fire-and-forget (review P1-2).
+  async function handleCreate(config: NewSessionConfig) {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await startSession({ workdir, ...config });
+      setShowNewDialog(false);
+    } catch (err) {
+      setCreateError((err as Error).message);
+    } finally {
+      setCreating(false);
+    }
   }
 
   function handleRetryLast() {
@@ -259,7 +315,7 @@ export function SessionView({
             history={history}
             total={historyTotal}
             loading={loadingHistory}
-            onPick={(id) => void handlePick(id)}
+            onPick={(row) => void handlePick(row)}
             onNew={handleNewSameWorkdir}
           />
           {onRequestChangeWorkdir && (() => {
@@ -282,7 +338,11 @@ export function SessionView({
             );
           })()}
         </div>
-        {!revertEnabled && activeSid && (
+        {/* slice-026 nogit banner — revert is a CC-checkpoint capability, so
+            this "not a git repo" warning only applies to CC sessions. A Codex
+            session has no checkpoint capability by design (not a git issue),
+            so it is not shown the banner (spec C-6: capability-driven UI). */}
+        {active?.runtime === "claude_code" && !revertEnabled && activeSid && (
           <div className="cc-nogit-banner">
             <span aria-hidden>⚠</span>
             此目录不是 git 仓库，不支持回滚（聊天、历史等其他功能正常）。
@@ -346,14 +406,22 @@ export function SessionView({
               requestAnimationFrame(() => jumpToBottom());
             }}
             onInterrupt={() => void interrupt()}
-            slashItems={slashItems}
-            models={models}
-            currentModelAlias={modelAlias}
-            currentEffort={effort}
-            onPickModel={(v) => void send(`/model ${v}`)}
-            onPickEffort={(v) => void send(`/effort ${v}`)}
-            onRequestModelPicker={() => setShowModelPicker(true)}
-            onRequestEffortPicker={() => setShowEffortPicker(true)}
+            slashItems={ccControls ? slashItems : []}
+            models={ccControls ? models : []}
+            currentModelAlias={ccControls ? modelAlias : null}
+            currentEffort={ccControls ? effort : null}
+            onPickModel={
+              ccControls ? (v) => void send(`/model ${v}`) : undefined
+            }
+            onPickEffort={
+              ccControls ? (v) => void send(`/effort ${v}`) : undefined
+            }
+            onRequestModelPicker={
+              ccControls ? () => setShowModelPicker(true) : undefined
+            }
+            onRequestEffortPicker={
+              ccControls ? () => setShowEffortPicker(true) : undefined
+            }
             memoryEnabled={active?.memoryEnabled ?? null}
             profileEnabled={active?.profileEnabled ?? null}
           />
@@ -368,15 +436,18 @@ export function SessionView({
         {showNewDialog && (
           <NewSessionDialog
             workdir={workdir}
-            onCreate={(memoryEnabled, profileEnabled) => {
-              setShowNewDialog(false);
-              void startSession({
-                workdir,
-                memory_enabled: memoryEnabled,
-                profile_enabled: profileEnabled,
-              });
+            runtimesState={runtimesState}
+            onRetryRuntimes={loadRuntimes}
+            creating={creating}
+            error={createError}
+            ccModels={models}
+            onCreate={(config) => {
+              void handleCreate(config);
             }}
-            onCancel={() => setShowNewDialog(false)}
+            onCancel={() => {
+              setShowNewDialog(false);
+              setCreateError(null);
+            }}
           />
         )}
         {/* slice-034 feat 3: 双入口并存——bare `/model` `/effort` slash 走这个居中 modal；

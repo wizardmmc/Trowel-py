@@ -9,17 +9,20 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+vi.mock("../api/agent", () => ({
+  createAgentSession: vi.fn(),
+  activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
+  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  listActiveAgentSessions: vi.fn(),
+  listAgentHistory: vi.fn().mockResolvedValue([]),
+  interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
+  agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
+}));
+
 vi.mock("../api/cc", () => ({
-  createSession: vi.fn(),
-  activateSession: vi.fn().mockResolvedValue({ active_id: "s1" }),
-  deleteSession: vi.fn().mockResolvedValue({ closed: true }),
-  listSessions: vi.fn(),
-  listActiveSessions: vi.fn(),
   getHistory: vi.fn(),
-  interruptSession: vi.fn(),
   revertSession: vi.fn(),
   answerElicit: vi.fn(),
-  messagesUrl: (sid: string) => `/api/cc/sessions/${sid}/messages`,
 }));
 
 // ccStream: capture the apply callback + hold the stream OPEN until released.
@@ -36,22 +39,28 @@ vi.mock("../api/ccStream", () => ({
 }));
 
 import {
-  createSession as apiCreateSession,
-  deleteSession as apiDeleteSession,
-  listActiveSessions,
-} from "../api/cc";
+  createAgentSession as apiCreateSession,
+  deleteAgentSession as apiDeleteSession,
+  listActiveAgentSessions as listActiveSessions,
+} from "../api/agent";
 import { createCcStore, MAX_RUNNING, MAX_CONNECTIONS } from "../stores/ccStore";
-import type { CcSession } from "../api/cc";
+import type { AgentSession } from "../api/agent";
 
-function mockCreate(sid: string, over: Partial<CcSession> = {}) {
-  const session: CcSession = {
+function mockCreate(sid: string, over: Partial<AgentSession> = {}): AgentSession {
+  const session: AgentSession = {
     session_id: sid,
-    cc_session_id: null,
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir: "/wd",
     model: "glm-5.2",
-    name: sid,
-    revert_enabled: true,
+    effort: null,
+    permission: null,
     memory_enabled: true,
     profile_enabled: true,
+    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    name: sid,
+    connected: false,
+    running: false,
     ...over,
   };
   vi.mocked(apiCreateSession).mockResolvedValueOnce(session);
@@ -292,13 +301,32 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
     expect(s.activeSid).toBeNull();
   });
 
+  it("slice-072: Codex host_status(host_exited) keeps the row (binding survives, spec §4)", async () => {
+    // host_exited is a TURN terminal, not a row exit — the binding survives so
+    // the next send can resume. The row stays; only the running turn errors.
+    const store = createCcStore();
+    mockCreate("c1", { runtime: "codex" as never });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+    const p = store.getState().send("hi");
+    streamApply!({
+      type: "host_status",
+      runtime: "codex",
+      payload: { status: "host_exited" },
+    } as never);
+    await releaseAllStreams();
+    await p;
+    expect(store.getState().sessions["c1"]).toBeDefined(); // row kept
+    expect(store.getState().activeSid).toBe("c1"); // still active
+    expect(store.getState().sessions["c1"]?.phase).toBe("error"); // turn errored
+  });
+
   describe("refreshActiveSessions (reload reconcile)", () => {
     it("pulls backend live sessions into the dict as connected rows", async () => {
       const store = createCcStore();
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
         sessions: [
-          { id: "s1", workdir: "/wd", model: "glm-5.2", name: "trowel-py", running: false, connected: true, memory_enabled: true, profile_enabled: true },
-          { id: "s2", workdir: "/wd", model: "glm-5.2", name: "wiki", running: true, connected: true, memory_enabled: true, profile_enabled: true },
+          { session_id: "s1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "glm-5.2", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "trowel-py", connected: true, running: false },
+          { session_id: "s2", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "glm-5.2", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "wiki", connected: true, running: true },
         ],
         activeId: "s1",
       });
@@ -316,7 +344,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       await store.getState().startSession({ workdir: "/wd" });
       const before = store.getState().sessions["s1"];
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
-        sessions: [{ id: "s1", workdir: "/wd", model: "glm-5.2", name: "renamed", running: false, connected: true, memory_enabled: true, profile_enabled: true }],
+        sessions: [{ session_id: "s1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "glm-5.2", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "renamed", connected: true, running: false }],
         activeId: "s1",
       });
       await store.getState().refreshActiveSessions();
@@ -366,7 +394,7 @@ describe("createCcStore — multi-session v2 (connected model)", () => {
       const store = createCcStore();
       vi.mocked(listActiveSessions).mockResolvedValueOnce({
         sessions: [
-          { id: "s1", workdir: "/wd", model: "m", name: "wd", running: false, connected: true, memory_enabled: false, profile_enabled: true },
+          { session_id: "s1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: false, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "wd", connected: true, running: false },
         ],
         activeId: "s1",
       });

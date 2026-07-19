@@ -8,30 +8,46 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
-vi.mock("../api/cc", () => ({
-  createSession: vi.fn().mockResolvedValue({
+vi.mock("../api/agent", () => ({
+  createAgentSession: vi.fn().mockResolvedValue({
     session_id: "s1",
-    cc_session_id: null,
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir: "/wd",
     model: "glm-5.2",
+    effort: null,
+    permission: null,
+    memory_enabled: true,
+    profile_enabled: true,
+    capabilities: ["tools", "approval", "checkpoint", "workflow"],
     name: "wd",
-    revert_enabled: true,
+    connected: false,
+    running: false,
   }),
-  activateSession: vi.fn().mockResolvedValue({ active_id: "s1" }),
-  deleteSession: vi.fn().mockResolvedValue({ closed: true }),
-  listSessions: vi.fn().mockResolvedValue({ sessions: [], total: 0 }),
-  listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
+  activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
+  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  listAgentHistory: vi.fn().mockResolvedValue([]),
+  listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
+  listAgentRuntimes: vi.fn().mockResolvedValue([]),
+  interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
+  agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
+}));
+
+vi.mock("../api/cc", () => ({
   listModels: vi.fn().mockResolvedValue([]),
   listSlashItems: vi.fn().mockResolvedValue([]),
   getHistory: vi.fn().mockResolvedValue([]),
-  interruptSession: vi.fn().mockResolvedValue({ interrupted: true }),
   revertSession: vi.fn().mockResolvedValue({ reverted_turn_id: "x" }),
   answerElicit: vi.fn().mockResolvedValue({ ok: true }),
-  messagesUrl: (sid: string) => `/api/cc/sessions/${sid}/messages`,
 }));
 
 import { SessionView } from "../components/cc/SessionView";
 import { useCcStore } from "../stores/ccStore";
-import { listActiveSessions, createSession, listSessions } from "../api/cc";
+import {
+  createAgentSession as createSession,
+  listAgentHistory as listSessions,
+  listActiveAgentSessions as listActiveSessions,
+} from "../api/agent";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -74,7 +90,7 @@ describe("SessionView (slice-028 three-column)", () => {
     // bug：多出 ClaudeDesktop 多开 —— 后端返回的 temp 被 reconcile 一律标 live。
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
-        { id: "temp1", workdir: "/wd", model: "m", name: "wd", running: false, connected: false, memory_enabled: true, profile_enabled: true },
+        { session_id: "temp1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "wd", connected: false, running: false },
       ],
       activeId: "temp1",
     });
@@ -92,12 +108,18 @@ describe("SessionView (slice-028 three-column)", () => {
     // 让每次 createSession 返回以 workdir 区分的 sid，便于断言
     vi.mocked(createSession).mockImplementation(async (params) => ({
       session_id: `sid-${params.workdir}`,
-      cc_session_id: null,
+      runtime: "claude_code",
+      native_session_id: null,
+      workdir: params.workdir,
       model: "m",
-      name: params.workdir,
-      revert_enabled: true,
+      effort: null,
+      permission: null,
       memory_enabled: true,
       profile_enabled: true,
+      capabilities: ["tools", "approval", "checkpoint", "workflow"],
+      name: params.workdir,
+      connected: false,
+      running: false,
     }));
     const { rerender } = render(<SessionView workdir="/a" />);
     await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/a"));

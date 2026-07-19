@@ -75,7 +75,7 @@ const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
-  { id: "cc", icon: <IconCC />, label: "CC" },
+  { id: "cc", icon: <IconCC />, label: "Agent" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
 

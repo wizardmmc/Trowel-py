@@ -247,7 +247,7 @@ export function Composer({
           placeholder={
             awaitingInput
               ? "等你回答上方问题（Enter 发送）"
-              : "发消息给 CC（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
+              : "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
           }
           value={text}
           onChange={(e) => {

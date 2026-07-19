@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-vi.mock("../api/cc", () => ({
-  activateSession: vi.fn().mockResolvedValue({ active_id: "s1" }),
-  deleteSession: vi.fn().mockResolvedValue({ closed: true }),
+vi.mock("../api/agent", () => ({
+  activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
+  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
 }));
 
 import { MultiSessionBar } from "../components/cc/MultiSessionBar";
@@ -12,7 +12,7 @@ import {
   INITIAL_REDUCER_STATE,
   type PerSessionState,
 } from "../stores/ccStore";
-import { activateSession as apiActivateSession, deleteSession as apiDeleteSession } from "../api/cc";
+import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../api/agent";
 
 /** Default `connected: true` (a live cc process) so the row renders; override
  * with `connected: false` to test the "not yet sent" filtering. */
@@ -28,6 +28,10 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     connected: true,
     memoryEnabled: true,
     profileEnabled: true,
+    runtime: "claude_code",
+    nativeSessionId: null,
+    permission: null,
+    capabilities: ["tools", "approval", "checkpoint", "workflow"],
     ...over,
   };
 }
