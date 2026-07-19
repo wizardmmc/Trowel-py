@@ -37,6 +37,22 @@ describe("MessageList", () => {
     expect(screen.getByText("1")).toBeTruthy();
   });
 
+  it.each([
+    ["codex", "Codex"],
+    ["claude_code", "CC"],
+    ["future-runtime", "Agent"],
+    [undefined, "Agent"],
+  ])("labels %s assistant turns as %s", (runtime, expected) => {
+    render(
+      <MessageList
+        turns={[turn({ items: [{ kind: "text", text: "answer" }] })]}
+        streaming={false}
+        runtime={runtime}
+      />,
+    );
+    expect(screen.getByText(expected, { selector: ".cc-msg__tag" })).toBeInTheDocument();
+  });
+
   it("renders process events between cards via EventTimeline", () => {
     render(
       <MessageList

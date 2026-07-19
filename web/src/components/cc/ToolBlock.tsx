@@ -5,6 +5,7 @@ import type { ToolItem } from "../../stores/ccStore";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 import { getDisplayPath } from "./pathDisplay";
 import { splitBashCommand } from "./bashCommand";
+import { getCodexCommandPresentation } from "./codexCommandPresentation";
 
 /**
  * One tool call rendered as a summary line + collapsible detail.
@@ -28,6 +29,8 @@ interface ToolBlockProps {
    * shows the project-relative path (CC `getDisplayPath` semantics) instead of
    * the full absolute path. Omit → always absolute (tests, isolated renders). */
   readonly workdir?: string;
+  /** Render native Read/List/Search rows inside a Codex exploration cluster. */
+  readonly codexExploration?: boolean;
 }
 
 const WRITE_PREVIEW_LINES = 10; // CC `MAX_LINES_TO_RENDER`
@@ -53,6 +56,10 @@ function displayVerb(item: ToolItem): string {
     return typeof oldStr === "string" && oldStr === "" ? "Create" : "Update";
   }
   if (item.toolName === "Write") return "Write";
+  if (item.toolName === "command") {
+    if (item.status === "failed") return "Failed";
+    return item.status === "running" ? "Running" : "Ran";
+  }
   return item.toolName;
 }
 
@@ -149,7 +156,27 @@ function SummaryBrief({
       <code className="cc-tool__brief cc-tool__brief--mono">{brief(cmd, 60)}</code>
     ) : null;
   }
+  if (item.toolName === "command") {
+    const row = getCodexCommandPresentation(item, workdir).rows[0];
+    return row.detail ? (
+      <code className="cc-tool__brief cc-tool__brief--mono">{brief(row.detail, 72)}</code>
+    ) : null;
+  }
   return null;
+}
+
+function CodexActionRows({ item, workdir }: { readonly item: ToolItem; readonly workdir?: string }) {
+  const rows = getCodexCommandPresentation(item, workdir).rows;
+  return (
+    <span className="cc-tool__action-rows">
+      {rows.map((row, index) => (
+        <span className="cc-tool__action-row" key={`${row.verb}-${index}`}>
+          <span className="cc-tool__name">{row.verb}</span>
+          <span className="cc-tool__brief" title={row.detail}>{row.detail}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function StatPill({
@@ -355,24 +382,78 @@ function isCommandTool(name: string): boolean {
 }
 
 /** slice-074: Codex command exit/duration/cwd meta line (gpt5.6 Warning 3). */
-function CommandMeta({ item }: { readonly item: ToolItem }) {
+function CommandMeta({ item, workdir }: { readonly item: ToolItem; readonly workdir?: string }) {
   if (!isCommandTool(item.toolName)) return null;
   const parts: string[] = [];
   if (typeof item.exitCode === "number") parts.push(`exit ${item.exitCode}`);
   if (typeof item.durationMs === "number") parts.push(`${item.durationMs}ms`);
-  if (typeof item.cwd === "string" && item.cwd) parts.push(item.cwd);
+  if (typeof item.cwd === "string" && item.cwd) {
+    parts.push(getDisplayPath(item.cwd, workdir) || ".");
+  }
   if (parts.length === 0) return null;
   return <div className="cc-tool__cmd-meta">{parts.join(" · ")}</div>;
 }
 
+function CommandOutput({ item }: { readonly item: ToolItem }) {
+  if (item.result === null) return null;
+  const lines = item.result.replace(/\r\n/g, "\n").split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (item.status === "failed") {
+    const tail = lines.slice(-6);
+    const omitted = lines.length - tail.length;
+    return (
+      <pre className="cc-tool__bash-out cc-tool__bash-out--failed">
+        {omitted > 0 && `… ${omitted} earlier lines omitted\n`}
+        {tail.join("\n")}
+      </pre>
+    );
+  }
+  if (lines.length <= 24) return <pre className="cc-tool__bash-out">{item.result}</pre>;
+  const omitted = lines.length - 24;
+  return (
+    <pre className="cc-tool__bash-out">
+      {lines.slice(0, 12).join("\n")}
+      {`\n… ${omitted} lines omitted …\n`}
+      {lines.slice(-12).join("\n")}
+    </pre>
+  );
+}
+
+function CopyButton({ label, text }: { readonly label: string; readonly text: string }) {
+  const copy = async () => {
+    try {
+      await navigator.clipboard?.writeText(text);
+    } catch {
+      // Clipboard permission is browser-owned. The command/output remains
+      // visible and selectable when copying is unavailable.
+    }
+  };
+  return (
+    <button type="button" className="cc-tool__copy" onClick={() => void copy()}>
+      {label}
+    </button>
+  );
+}
+
 /** Decide what the expanded detail shows. Returns null if there's nothing. */
-function renderDetail(item: ToolItem): React.ReactNode {
+function renderDetail(item: ToolItem, workdir?: string): React.ReactNode {
   if (isCommandTool(item.toolName)) {
+    const command = asString(item.input.command) ?? "";
     return (
       <>
-        <BashCommandView command={asString(item.input.command) ?? ""} />
-        {item.result !== null && <pre className="cc-tool__bash-out">{item.result}</pre>}
-        <CommandMeta item={item} />
+        <BashCommandView command={command} />
+        {item.toolName === "command" ? (
+          <CommandOutput item={item} />
+        ) : item.result !== null ? (
+          <pre className="cc-tool__bash-out">{item.result}</pre>
+        ) : null}
+        <CommandMeta item={item} workdir={workdir} />
+        {item.toolName === "command" && (command || item.result !== null) && (
+          <div className="cc-tool__copy-actions">
+            {command && <CopyButton label="复制命令" text={command} />}
+            {item.result !== null && <CopyButton label="复制输出" text={item.result} />}
+          </div>
+        )}
       </>
     );
   }
@@ -412,16 +493,23 @@ function renderDetail(item: ToolItem): React.ReactNode {
   );
 }
 
-export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) {
+export function ToolBlock({
+  item,
+  condensed = false,
+  workdir,
+  codexExploration = false,
+}: ToolBlockProps) {
   const done = item.status === "done";
   const failed = item.status === "failed"; // slice-074: Codex command failure
+  const codexCommand = item.toolName === "command";
   // slice-033 feat 3: diff tools (Edit/MultiEdit/Write) auto-expand on done
-  // (running collapses — the cc patch arrives on tool_result). A manual collapse
-  // sticks: done is terminal, so this effect won't re-fire to override it.
-  const [open, setOpen] = useState(isDiffTool(item.toolName) && done);
-  useEffect(() => {
-    if (isDiffTool(item.toolName) && done) setOpen(true);
-  }, [item.toolName, done]);
+  // (running collapses — the cc patch arrives on tool_result). Failed Codex
+  // commands also auto-expand. Derive the automatic state during render rather
+  // than synchronously setting state in an effect; a user click becomes an
+  // explicit override and therefore remains sticky.
+  const autoOpen = (isDiffTool(item.toolName) && done) || (codexCommand && failed);
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null);
+  const open = openOverride ?? autoOpen;
   // slice-035 bug2: when a diff tool auto-expands (open flips false→true),
   // scroll the block into view so the diff's top stays visible — otherwise
   // MessageList's stick-to-bottom leaves the just-opened diff head clipped by
@@ -462,16 +550,29 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
 
   const summaryInner = (
     <>
-      <svg className="cc-tool__icon" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" />
-      </svg>
-      <span className="cc-tool__name">{verb}</span>
-      <SummaryBrief item={item} workdir={workdir} />
+      {codexCommand ? (
+        <span className="cc-tool__codex-dot" data-state={failed ? "failed" : done ? "done" : "running"} aria-hidden="true" />
+      ) : (
+        <svg className="cc-tool__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" />
+        </svg>
+      )}
+      {codexCommand && codexExploration ? (
+        <CodexActionRows item={item} workdir={workdir} />
+      ) : (
+        <>
+          <span className="cc-tool__name">{verb}</span>
+          <SummaryBrief item={item} workdir={workdir} />
+        </>
+      )}
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
-      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read") && (
+      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexCommand) && (
         <span className="cc-tool__spinner" aria-label="进行中" />
+      )}
+      {failed && typeof item.exitCode === "number" && (
+        <span className="cc-tool__exit">exit {item.exitCode}</span>
       )}
       {failed && (
         <span className="cc-tool__check cc-tool__check--failed" aria-label="失败">
@@ -481,7 +582,7 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
           {seconds && <span className="cc-tool__elapsed">{seconds}</span>}
         </span>
       )}
-      {done && (
+      {done && !codexCommand && (
         <span className="cc-tool__check" aria-label="完成">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M5 13l4 4L19 7" />
@@ -492,6 +593,7 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
       {!done && !failed && seconds && (
         <span className="cc-tool__elapsed cc-tool__elapsed--running">{seconds}</span>
       )}
+      {done && codexCommand && <span className="cc-tool__sr-only" aria-label="完成">完成</span>}
     </>
   );
 
@@ -504,17 +606,23 @@ export function ToolBlock({ item, condensed = false, workdir }: ToolBlockProps) 
     <button
       type="button"
       className="cc-tool__summary"
-      onClick={() => setOpen((o) => !o)}
+      onClick={() => setOpenOverride(!open)}
       aria-expanded={open}
+      title={codexCommand ? getCodexCommandPresentation(item, workdir).fullCommand : undefined}
     >
       {summaryInner}
     </button>
   );
 
   return (
-    <div ref={rootRef} className="cc-tool" data-status={item.status}>
+    <div
+      ref={rootRef}
+      className={`cc-tool${codexExploration ? " cc-tool--exploration" : ""}`}
+      data-status={item.status}
+      data-codex-command={codexCommand || undefined}
+    >
       {summary}
-      {expanded && <div className="cc-tool__detail">{renderDetail(item)}</div>}
+      {expanded && <div className="cc-tool__detail">{renderDetail(item, workdir)}</div>}
     </div>
   );
 }

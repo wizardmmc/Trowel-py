@@ -150,6 +150,15 @@ class TestTypeAlignment:
                     "kind": "commandExecution",
                     "command": "rg pattern",
                     "cwd": "/repo",
+                    "source": "unifiedExecStartup",
+                    "command_actions": (
+                        {
+                            "type": "search",
+                            "command": "rg pattern",
+                            "query": "pattern",
+                            "path": ".",
+                        },
+                    ),
                     "started_at": 1234,
                 },
             )
@@ -158,7 +167,19 @@ class TestTypeAlignment:
         assert ev.item_id == "item-3"
         assert ev.payload["tool_use_id"] == "item-3"
         assert ev.payload["tool_name"] == "command"
-        assert ev.payload["input"] == {"command": "rg pattern", "cwd": "/repo"}
+        assert ev.payload["input"] == {
+            "command": "rg pattern",
+            "cwd": "/repo",
+            "source": "unifiedExecStartup",
+            "command_actions": [
+                {
+                    "type": "search",
+                    "command": "rg pattern",
+                    "query": "pattern",
+                    "path": ".",
+                }
+            ],
+        }
 
     def test_tool_completed_maps_to_tool_result_with_exit_code(
         self, adapter

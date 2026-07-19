@@ -683,6 +683,10 @@ describe("ToolBlock — slice-074 Codex command rendering", () => {
     expect(container.querySelector(".cc-tool__check--failed")).not.toBeNull();
     expect(container.querySelector(".cc-tool__check")).not.toBeNull();
     expect(container.querySelector('[aria-label="失败"]')).not.toBeNull();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("exit 2")).toBeInTheDocument();
+    expect(container.querySelector(".cc-tool__detail")).not.toBeNull();
+    expect(container.querySelector(".cc-tool__bash-out")?.textContent).toContain("boom");
   });
 
   it("an expanded Codex command shows command, output, exit/duration/cwd", () => {
@@ -706,5 +710,58 @@ describe("ToolBlock — slice-074 Codex command rendering", () => {
     expect(container.querySelector(".cc-tool__bash-out")?.textContent).toContain("match.txt");
     expect(container.querySelector(".cc-tool__cmd-meta")?.textContent).toContain("exit 0");
     expect(container.querySelector(".cc-tool__cmd-meta")?.textContent).toContain("12ms");
+    expect(screen.getByRole("button", { name: "复制命令" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制输出" })).toBeInTheDocument();
+  });
+
+  it("renders cwd equal to workdir as dot instead of an empty meta segment", () => {
+    const { container } = render(
+      <ToolBlock
+        workdir="/repo"
+        item={tool({
+          toolName: "command",
+          input: { command: "pwd", cwd: "/repo", command_actions: [{ type: "unknown", command: "pwd" }] },
+          status: "done",
+          cwd: "/repo",
+          exitCode: 0,
+          durationMs: 4,
+        })}
+      />,
+    );
+    fireEvent.click(container.querySelector(".cc-tool__summary")!);
+    expect(container.querySelector(".cc-tool__cmd-meta")?.textContent).toBe("exit 0 · 4ms · .");
+  });
+
+  it("an unknown native action shows Ran and the action command summary", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "command",
+          input: {
+            command: "/bin/zsh -lc 'npm test'",
+            command_actions: [{ type: "unknown", command: "npm test" }],
+          },
+          status: "done",
+          result: "ok",
+        })}
+      />,
+    );
+    expect(screen.getByText("Ran")).toBeInTheDocument();
+    expect(screen.getByText("npm test")).toBeInTheDocument();
+  });
+
+  it("keeps the full command reachable from the collapsed button", () => {
+    const full = "/bin/zsh -lc 'rg a-very-long-pattern src'";
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "command",
+          input: { command: full, command_actions: [{ type: "unknown", command: "rg a-very-long-pattern src" }] },
+          status: "done",
+        })}
+      />,
+    );
+    expect(screen.getByRole("button")).toHaveAttribute("title", full);
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   });
 });

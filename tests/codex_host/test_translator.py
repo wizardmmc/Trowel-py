@@ -30,6 +30,16 @@ def _notifications() -> list[dict]:
     ]
 
 
+def _command_action_notifications() -> list[dict]:
+    """Load the sanitized 2026-07-19 list/read/search probe recording."""
+
+    return [
+        json.loads(line)
+        for line in (_FIXTURES / "command-actions.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+
 def _by_method(method: str) -> dict:
     """Return the first recorded notification with the given method."""
 
@@ -83,6 +93,24 @@ def test_command_completed_translates_to_tool_completed() -> None:
     assert item.payload["output"] == native_item["aggregatedOutput"]
     assert item.payload["duration_ms"] == native_item["durationMs"]
     assert item.payload["status"] == "completed"
+
+
+@pytest.mark.parametrize("method", ["item/started", "item/completed"])
+@pytest.mark.parametrize("item_id", ["<list-item>", "<read-item>", "<search-item>"])
+def test_command_actions_and_source_survive_translation(
+    method: str, item_id: str
+) -> None:
+    """Native 0.144.0 commandActions/source cross the translator unchanged."""
+
+    msg = next(
+        row
+        for row in _command_action_notifications()
+        if row["method"] == method and row["params"]["item"]["id"] == item_id
+    )
+    native = msg["params"]["item"]
+    translated = CodexTranslator().translate(method, msg["params"])[0]
+    assert translated.payload["source"] == "unifiedExecStartup"
+    assert translated.payload["command_actions"] == tuple(native["commandActions"])
 
 
 def test_agent_message_completed_translates_to_assistant_message() -> None:

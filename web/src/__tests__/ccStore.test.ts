@@ -1563,7 +1563,12 @@ describe("reduceEvent — slice-074 live/history deep-equal (Codex)", () => {
         type: "tool_call",
         tool_use_id: "c1",
         tool_name: "command",
-        input: { command: "ls", cwd: "/r" },
+        input: {
+          command: "ls",
+          cwd: "/r",
+          source: "unifiedExecStartup",
+          command_actions: [{ type: "listFiles", command: "ls", path: null }],
+        },
       } as TrowelEvent,
       {
         type: "tool_result",
@@ -1584,6 +1589,32 @@ describe("reduceEvent — slice-074 live/history deep-equal (Codex)", () => {
     expect(history.turns).toEqual(live.turns);
     expect(history.phase).toEqual(live.phase);
     expect(history.meta.usage).toEqual(live.meta.usage);
+  });
+
+  it("keeps Codex command_actions on the immutable ToolItem", () => {
+    const state = run([
+      { type: "user", text: "list files" },
+      {
+        type: "tool_call",
+        tool_use_id: "c1",
+        tool_name: "command",
+        input: {
+          command: "/bin/zsh -lc ls",
+          cwd: "/r",
+          source: "unifiedExecStartup",
+          command_actions: [{ type: "listFiles", command: "ls", path: null }],
+        },
+      } as TrowelEvent,
+    ]);
+    const item = state.turns[0].items[0];
+    expect(item).toMatchObject({
+      kind: "tool",
+      toolUseId: "c1",
+      input: {
+        source: "unifiedExecStartup",
+        command_actions: [{ type: "listFiles", command: "ls", path: null }],
+      },
+    });
   });
 });
 

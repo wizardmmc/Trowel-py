@@ -6,6 +6,7 @@ import type {
   RetryingItem,
   ThinkingItem,
   CompactBoundaryItem,
+  ToolItem,
   TurnItem,
 } from "../../stores/ccStore";
 import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
@@ -14,6 +15,8 @@ import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
 import { WorkflowTree } from "./WorkflowTree";
+import { CodexExplorationGroup } from "./CodexExplorationGroup";
+import { isCodexExploration } from "./codexCommandPresentation";
 
 /** slice-034 feat 5: task 类工具的语义已在右侧 TodoBar（task_* 事件）体现，
  * 对话流不再渲染成 ToolBlock（避免与代办栏重复显示）。
@@ -51,6 +54,8 @@ interface EventTimelineProps {
   /** slice-029: the session's cwd, so Edit/Write paths render project-relative
    * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
   readonly workdir?: string;
+  /** Active agent runtime. Only Codex receives commandActions grouping. */
+  readonly runtime?: string;
 }
 
 function ChevronToggle({
@@ -67,13 +72,25 @@ function ChevronToggle({
   );
 }
 
-function ThinkingRow({ item }: { readonly item: ThinkingItem }) {
+function ThinkingRow({
+  item,
+  runtime,
+  completed,
+}: {
+  readonly item: ThinkingItem;
+  readonly runtime?: string;
+  readonly completed: boolean;
+}) {
   const [open, setOpen] = useState(false);
   // slice-025-a A2: show "Thought for Ns" when a heartbeat-measured duration is
   // stamped on the item; fall back to a bare "思考" when no heartbeat preceded
   // (e.g. non-GLM backend or history replay).
-  const label =
-    item.thinkingDurationSeconds !== undefined
+  const codexVerb = completed ? "Reasoned" : "Reasoning";
+  const label = runtime === "codex"
+    ? item.thinkingDurationSeconds !== undefined
+      ? `${codexVerb} for ${item.thinkingDurationSeconds}s`
+      : codexVerb
+    : item.thinkingDurationSeconds !== undefined
       ? `Thought for ${item.thinkingDurationSeconds}s`
       : "思考";
   return (
@@ -134,11 +151,12 @@ function CompactRow({ item }: { readonly item: CompactBoundaryItem }) {
   );
 }
 
-function InterruptedRow({ item }: { readonly item: InterruptedItem }) {
+function InterruptedRow({ item, runtime }: { readonly item: InterruptedItem; readonly runtime?: string }) {
   void item;
+  const host = runtime === "codex" ? "Codex host" : runtime === "claude_code" ? "CC 进程" : "Agent 进程";
   return (
     <div className="cc-timeline__row cc-timeline__row--interrupted">
-      <span className="cc-timeline__label">已中断 · CC 进程已退出，发下一条会自动接上历史</span>
+      <span className="cc-timeline__label">已中断 · {host}已退出，发下一条会自动接上历史</span>
     </div>
   );
 }
@@ -195,6 +213,8 @@ function Row({
   onAnswer,
   onCancel,
   workdir,
+  runtime,
+  thinkingComplete,
 }: {
   readonly item: TurnItem;
   readonly onRetryLast?: () => void;
@@ -202,10 +222,12 @@ function Row({
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
   readonly workdir?: string;
+  readonly runtime?: string;
+  readonly thinkingComplete?: boolean;
 }) {
   switch (item.kind) {
     case "thinking":
-      return <ThinkingRow item={item} />;
+      return <ThinkingRow item={item} runtime={runtime} completed={Boolean(thinkingComplete)} />;
     case "tool":
       // slice-034 feat 5: task 类工具的语义在右侧 TodoBar 体现，对话流不渲染。
       if (HIDDEN_TOOLS.has(item.toolName)) return null;
@@ -243,7 +265,7 @@ function Row({
     case "error":
       return <ErrorRow item={item} onRetryLast={onRetryLast} />;
     case "interrupted":
-      return <InterruptedRow item={item} />;
+      return <InterruptedRow item={item} runtime={runtime} />;
     case "elicit":
       return (
         <ElicitationBlock
@@ -272,6 +294,7 @@ export function EventTimeline({
   onAnswer,
   onCancel,
   workdir,
+  runtime,
 }: EventTimelineProps) {
   // One in-order pass: consecutive text items merge into a single AssistantText
   // markdown block; every other item renders via Row at its real position.
@@ -289,7 +312,8 @@ export function EventTimeline({
       textBuf = "";
     }
   };
-  for (const item of items) {
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
     if (item.kind === "text") {
       // Join consecutive text items with a blank line. ccStore's text case
       // already folds a same-run delta into one TextItem, so this branch
@@ -299,6 +323,31 @@ export function EventTimeline({
       // The blank-line join keeps the paragraph boundary → markdown renders two
       // <p>. Zero effect on the normal single-item path.
       textBuf = textBuf ? `${textBuf}\n\n${item.text}` : item.text;
+    } else if (
+      runtime === "codex" &&
+      item.kind === "tool" &&
+      item.toolName === "command" &&
+      isCodexExploration(item)
+    ) {
+      flushText();
+      const exploration: ToolItem[] = [item];
+      while (index + 1 < items.length) {
+        const next = items[index + 1];
+        if (
+          next.kind !== "tool" ||
+          next.toolName !== "command" ||
+          !isCodexExploration(next)
+        ) break;
+        exploration.push(next);
+        index += 1;
+      }
+      blocks.push(
+        <CodexExplorationGroup
+          key={`x${key++}`}
+          items={exploration}
+          workdir={workdir}
+        />,
+      );
     } else {
       flushText();
       blocks.push(
@@ -310,6 +359,10 @@ export function EventTimeline({
           onAnswer={onAnswer}
           onCancel={onCancel}
           workdir={workdir}
+          runtime={runtime}
+          thinkingComplete={
+            item.kind === "thinking" && (Boolean(isReplay) || index < items.length - 1)
+          }
         />,
       );
     }

@@ -30,13 +30,13 @@ create a phantom gap that the frontend would flag as ``needsReplay``.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from trowel_py.codex_host.events import CodexEvent, CodexEventType
 from trowel_py.schemas.agent_host import AgentEvent
 
 #: Discriminator value the adapter stamps on every Codex envelope.
-_CODEX_RUNTIME = "codex"
+_CODEX_RUNTIME: Literal["codex"] = "codex"
 
 #: Codex ``commandExecution`` items render as a tool named "command" (the CC
 #: reducer builds a ToolItem from tool_name + input; Codex commands are shell
@@ -195,6 +195,11 @@ class CodexEventAdapter:
                 "input": {
                     "command": e.payload.get("command"),
                     "cwd": e.payload.get("cwd"),
+                    "source": e.payload.get("source"),
+                    "command_actions": [
+                        dict(action)
+                        for action in (e.payload.get("command_actions") or ())
+                    ],
                 },
                 "started_at_ms": e.payload.get("started_at"),
             },

@@ -70,6 +70,16 @@ _CMD_IN_PROGRESS = "inProgress"
 _CMD_FAILED = "failed"
 _CMD_DECLINED = "declined"
 
+# ``v2/item.rs::CommandAction`` tags at Codex 0.144.0. This is deliberately a
+# closed set: silently accepting a future tag would let the UI assign semantics
+# we have not verified against the native source.
+_COMMAND_ACTION_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "read": ("command", "name", "path"),
+    "listFiles": ("command", "path"),
+    "search": ("command", "query", "path"),
+    "unknown": ("command",),
+}
+
 
 def _require(params: Mapping[str, Any], key: str, method: str) -> Any:
     """Return ``params[key]`` or raise a protocol-violation if absent.
@@ -90,6 +100,40 @@ def _as_str(value: Any) -> str:
     """Coerce a non-None notification field to ``str`` for ids and text."""
 
     return value if isinstance(value, str) else str(value)
+
+
+def _command_actions(item: Mapping[str, Any], method: str) -> tuple[dict[str, Any], ...]:
+    """Validate and copy Codex 0.144.0 ``commandActions`` for the UI bridge."""
+
+    raw_actions = _require(item, "commandActions", method)
+    if not isinstance(raw_actions, list):
+        raise ProtocolViolationError(
+            f"notification {method!r} commandActions is not an array",
+            payload=dict(item),
+        )
+    actions: list[dict[str, Any]] = []
+    for raw in raw_actions:
+        if not isinstance(raw, Mapping):
+            raise ProtocolViolationError(
+                f"notification {method!r} commandActions entry is not an object",
+                payload=dict(item),
+            )
+        action_type = raw.get("type")
+        if not isinstance(action_type, str):
+            raise ProtocolViolationError(
+                f"notification {method!r} commandActions has non-string type",
+                payload=dict(item),
+            )
+        fields = _COMMAND_ACTION_FIELDS.get(action_type)
+        if fields is None:
+            raise ProtocolViolationError(
+                f"notification {method!r} commandActions has unexpected type {action_type!r}",
+                payload=dict(item),
+            )
+        action: dict[str, Any] = {"type": action_type}
+        action.update({field: raw.get(field) for field in fields})
+        actions.append(action)
+    return tuple(actions)
 
 
 class CodexTranslator:
@@ -285,6 +329,8 @@ class CodexTranslator:
                 kind=_ITEM_COMMAND,
                 command=item.get("command"),
                 cwd=item.get("cwd"),
+                source=item.get("source"),
+                command_actions=_command_actions(item, "item/started"),
                 started_at=params.get("startedAtMs"),
             ),
         )
@@ -307,6 +353,8 @@ class CodexTranslator:
                 kind=_ITEM_COMMAND,
                 command=item.get("command"),
                 cwd=item.get("cwd"),
+                source=item.get("source"),
+                command_actions=_command_actions(item, "item/completed"),
                 status=item.get("status"),
                 exit_code=item.get("exitCode"),
                 output=item.get("aggregatedOutput"),

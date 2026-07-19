@@ -41,6 +41,14 @@ interface MessageListProps {
   /** slice-029: the session's cwd, so Edit/Write paths render project-relative
    * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
   readonly workdir?: string;
+  /** Agent runtime used for labels and Codex-only timeline presentation. */
+  readonly runtime?: string;
+}
+
+function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
+  if (runtime === "codex") return "Codex";
+  if (runtime === "claude_code") return "CC";
+  return "Agent";
 }
 
 function TurnCard({
@@ -51,6 +59,7 @@ function TurnCard({
   onCancel,
   onRevert,
   workdir,
+  runtime,
 }: {
   readonly turn: Turn;
   readonly streaming: boolean;
@@ -59,6 +68,7 @@ function TurnCard({
   readonly onCancel?: () => void;
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
+  readonly runtime?: string;
 }) {
   const hasContent = turn.items.length > 0;
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
@@ -85,7 +95,7 @@ function TurnCard({
       )}
       {hasContent && (
         <div className="cc-msg cc-msg--assistant">
-          <span className="cc-msg__tag">CC</span>
+          <span className="cc-msg__tag">{runtimeLabel(runtime)}</span>
           <div className="cc-msg__body">
             <EventTimeline
               items={turn.items}
@@ -94,6 +104,7 @@ function TurnCard({
               onAnswer={onAnswer}
               onCancel={onCancel}
               workdir={workdir}
+              runtime={runtime}
             />
           </div>
         </div>
@@ -122,6 +133,7 @@ export function MessageList({
   onCancel,
   onRevert,
   workdir,
+  runtime,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -137,7 +149,7 @@ export function MessageList({
   if (turns.length === 0) {
     return (
       <div className="cc-empty" data-testid="cc-empty">
-        <p>输入一条消息开始与 CC 对话。</p>
+        <p>输入一条消息开始与 {runtimeLabel(runtime)} 对话。</p>
       </div>
     );
   }
@@ -154,6 +166,7 @@ export function MessageList({
           onCancel={onCancel}
           onRevert={onRevert}
           workdir={workdir}
+          runtime={runtime}
         />
       ))}
       {/* slice-025-a A1: the ✻ thinking… row rides the tail of the stream.
