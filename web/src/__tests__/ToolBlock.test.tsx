@@ -765,3 +765,108 @@ describe("ToolBlock — slice-074 Codex command rendering", () => {
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+describe("ToolBlock — slice-076 codex apply_patch rendering", () => {
+  it("apply_patch update renders Update verb + +N −M stat + diff body", () => {
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "apply_patch",
+          input: { paths: ["/a/g.txt"], change_kinds: ["modify"] },
+          status: "done",
+          writeDiff: {
+            type: "update",
+            hunks: [
+              { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-hi", "+hey"] },
+            ],
+          },
+          nativeStatus: "completed",
+        })}
+      />,
+    );
+    expect(screen.getByText("Update")).toBeTruthy();
+    expect(screen.getByText("+1")).toBeTruthy();
+    expect(screen.getByText("−1")).toBeTruthy();
+    // diff tool auto-expands on done
+    expect(container.querySelector(".cc-tool__detail")).toBeTruthy();
+  });
+
+  it("apply_patch create renders Create verb + add-only stat", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "apply_patch",
+          input: { paths: ["/a/new.txt"], change_kinds: ["add"] },
+          status: "done",
+          writeDiff: {
+            type: "create",
+            hunks: [
+              { oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ["+hello", "+world"] },
+            ],
+          },
+          nativeStatus: "completed",
+        })}
+      />,
+    );
+    expect(screen.getByText("Create")).toBeTruthy();
+    expect(screen.getByText("+2")).toBeTruthy();
+  });
+
+  it("apply_patch delete renders Delete verb + remove-only stat", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "apply_patch",
+          input: { paths: ["/a/old.txt"], change_kinds: ["delete"] },
+          status: "done",
+          writeDiff: {
+            type: "delete",
+            hunks: [
+              { oldStart: 1, oldLines: 2, newStart: 0, newLines: 0, lines: ["-a", "-b"] },
+            ],
+          },
+          nativeStatus: "completed",
+        })}
+      />,
+    );
+    expect(screen.getByText("Delete")).toBeTruthy();
+    expect(screen.getByText("−2")).toBeTruthy();
+  });
+
+  it("apply_patch declined renders as failed (no green check)", () => {
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "apply_patch",
+          input: { paths: ["/a/x.txt"], change_kinds: ["add"] },
+          status: "failed",
+          writeDiff: { type: "create", hunks: [] },
+          nativeStatus: "declined",
+        })}
+      />,
+    );
+    expect(container.querySelector(".cc-tool__check--failed")).toBeTruthy();
+    expect(container.querySelector('[aria-label="完成"]')).toBeNull();
+  });
+
+  it("apply_patch summary shows the target path (project-relative when in workdir)", () => {
+    render(
+      <ToolBlock
+        workdir="/Users/me/proj"
+        item={tool({
+          toolName: "apply_patch",
+          input: { paths: ["/Users/me/proj/web/x.ts"], change_kinds: ["modify"] },
+          status: "done",
+          writeDiff: {
+            type: "update",
+            hunks: [
+              { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-a", "+b"] },
+            ],
+          },
+          nativeStatus: "completed",
+        })}
+      />,
+    );
+    expect(screen.getByText("web/x.ts")).toBeTruthy();
+  });
+});

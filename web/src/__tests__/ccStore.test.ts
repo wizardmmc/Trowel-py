@@ -178,6 +178,65 @@ describe("reduceEvent — tool lifecycle", () => {
     expect(tool?.writeDiff?.hunks[0]?.oldStart).toBe(360);
   });
 
+  it("slice-076: codex apply_patch tool_result carries write_diff onto ToolItem", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "fc-1",
+      tool_name: "apply_patch",
+      input: { paths: ["/repo/greeting.txt"], change_kinds: ["modify"] },
+    });
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "fc-1",
+      content: null,
+      write_diff: {
+        type: "update",
+        hunks: [
+          { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-hi", "+hey"] },
+        ],
+      },
+      status: "completed",
+    });
+    const tool = state.turns[0].items.find((i) => i.kind === "tool") as {
+      toolName?: string;
+      writeDiff?: { type: string; hunks: { lines: string[] }[] };
+      nativeStatus?: string;
+    };
+    expect(tool?.toolName).toBe("apply_patch");
+    expect(tool?.writeDiff?.type).toBe("update");
+    expect(tool?.writeDiff?.hunks[0]?.lines).toEqual(["-hi", "+hey"]);
+    expect(tool?.nativeStatus).toBe("completed");
+  });
+
+  it("slice-076: codex apply_patch declined tool_result keeps declined nativeStatus", () => {
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "tool_call",
+      tool_use_id: "fc-2",
+      tool_name: "apply_patch",
+      input: { paths: ["/repo/x.txt"], change_kinds: ["add"] },
+    });
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "fc-2",
+      content: null,
+      write_diff: { type: "create", hunks: [] },
+      status: "declined",
+    });
+    const tool = state.turns[0].items.find((i) => i.kind === "tool") as {
+      toolName?: string;
+      nativeStatus?: string;
+      status?: string;
+    };
+    expect(tool?.toolName).toBe("apply_patch");
+    expect(tool?.nativeStatus).toBe("declined");
+    // slice-076 review M-1: _toolResultStatus must flip declined → ToolItem
+    // status "failed" — that is the exact seam the green-check suppression
+    // keys off. nativeStatus alone would still pass if this flip broke.
+    expect(tool?.status).toBe("failed");
+  });
+
   it("slice-033 feat 2: tool_result WITHOUT write_diff leaves writeDiff undefined", () => {
     let state = withOpenTurn();
     state = reduceEvent(state, {

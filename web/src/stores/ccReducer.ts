@@ -802,7 +802,7 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       const afterTask = assignTaskIdFromResult(
         prev,
         event.tool_use_id,
-        event.content,
+        event.content ?? "",
       );
       return {
         ...updateToolInCurrentTurn(afterTask, event.tool_use_id, (t) => ({

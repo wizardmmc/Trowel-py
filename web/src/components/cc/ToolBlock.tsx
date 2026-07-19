@@ -41,8 +41,16 @@ function isEditTool(name: string): boolean {
 
 /** Tools that produce a diff/create-view in the detail panel. */
 function isDiffTool(name: string): boolean {
-  return isEditTool(name) || name === "Write";
+  return isEditTool(name) || name === "Write" || name === "apply_patch";
 }
+
+/** slice-076: map a Codex apply_patch change_kind to a CC-style display verb. */
+const APPLY_PATCH_VERB: Readonly<Record<string, string>> = {
+  add: "Create",
+  modify: "Update",
+  delete: "Delete",
+  rename: "Rename",
+};
 
 function asString(v: unknown): string | null {
   return typeof v === "string" ? v : null;
@@ -56,6 +64,13 @@ function displayVerb(item: ToolItem): string {
     return typeof oldStr === "string" && oldStr === "" ? "Create" : "Update";
   }
   if (item.toolName === "Write") return "Write";
+  if (item.toolName === "apply_patch") {
+    // slice-076: verb from the change_kind the adapter put on the tool_call
+    // input (stable across running → done — the result only adds write_diff).
+    const kinds = item.input.change_kinds;
+    const first = Array.isArray(kinds) && typeof kinds[0] === "string" ? kinds[0] : "";
+    return APPLY_PATCH_VERB[first] ?? item.toolName;
+  }
   if (item.toolName === "command") {
     if (item.status === "failed") return "Failed";
     return item.status === "running" ? "Running" : "Ran";
@@ -88,6 +103,13 @@ function summaryStat(item: ToolItem): { add: number; remove: number } | null {
     const content = asString(item.input.content);
     if (content === null) return null;
     return { add: countLines(content), remove: 0 };
+  }
+  if (item.toolName === "apply_patch") {
+    // slice-076: stat from writeDiff hunks. create = all-add, delete =
+    // all-remove, update = mixed; summarizeStat counts +/- markers in all cases.
+    const wd = item.writeDiff;
+    if (wd && wd.hunks.length > 0) return summarizeStat(wd.hunks);
+    return null;
   }
   return null;
 }
@@ -137,6 +159,15 @@ function SummaryBrief({
     // slice-029: CC-style display — project-relative when inside the session
     // workdir, else absolute. No char-based ellipsis (the truncation hid the
     // useful tail). Long paths wrap via .cc-tool__summary{flex-wrap:wrap}.
+    return p !== null ? (
+      <span className="cc-tool__brief">{getDisplayPath(p, workdir)}</span>
+    ) : null;
+  }
+  if (item.toolName === "apply_patch") {
+    // slice-076: Codex apply_patch input carries paths[] (one fileChange per
+    // file, verified in the 2026-07-19 probe). Show the first, project-relative.
+    const paths = item.input.paths;
+    const p = Array.isArray(paths) && typeof paths[0] === "string" ? paths[0] : null;
     return p !== null ? (
       <span className="cc-tool__brief">{getDisplayPath(p, workdir)}</span>
     ) : null;
@@ -484,6 +515,17 @@ function renderDetail(item: ToolItem, workdir?: string): React.ReactNode {
       return <CreateBody content={content} filePath={filePath} />;
     }
     // malformed Write input → fall through to JSON
+  }
+  if (item.toolName === "apply_patch") {
+    // slice-076: Codex apply_patch — render writeDiff hunks (create=all-add,
+    // delete=all-remove, update=mixed) via the shared DiffBody. No FE-computed
+    // fallback: the BE always attaches write_diff for a completed fileChange.
+    const wd: WriteDiff | undefined = item.writeDiff;
+    if (wd && wd.hunks.length > 0) {
+      const stat = summarizeStat(wd.hunks);
+      return <DiffBody hunks={wd.hunks} add={stat.add} remove={stat.remove} />;
+    }
+    // no diff content (e.g. empty file) → fall through to JSON
   }
   return (
     <>

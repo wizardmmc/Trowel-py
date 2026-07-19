@@ -81,7 +81,7 @@ export interface ToolProgressEvent {
 export interface ToolResultEvent {
   readonly type: "tool_result";
   readonly tool_use_id: string;
-  readonly content: string;
+  readonly content: string | null;
   /** slice-033 feat 2 (方案 F): present on Edit/MultiEdit/Write tool_results —
    * converted by the BE from cc's own structuredPatch (carried in jsonl
    * `toolUseResult` / stream-json `tool_use_result`). Real file line numbers,
@@ -407,6 +407,6 @@ export interface DiffHunk {
  * carry identical data (reload consistency).
  */
 export interface WriteDiff {
-  readonly type: "create" | "update";
+  readonly type: "create" | "update" | "delete";
   readonly hunks: readonly DiffHunk[];
 }
