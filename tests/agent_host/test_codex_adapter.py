@@ -214,6 +214,119 @@ class TestTypeAlignment:
         assert ev.payload["cwd"] == "/repo"
 
 
+class TestFileChange:
+    """Codex ``fileChange`` items map to tool_call/tool_result (slice-076).
+
+    A fileChange item rides the same TOOL_STARTED / TOOL_COMPLETED channel as
+    a commandExecution, distinguished by ``payload.kind``. The adapter routes
+    it to a tool named ``apply_patch`` and surfaces the per-file ``write_diff``
+    on the result so the existing CC diff renderer can paint it.
+    """
+
+    def test_started_maps_to_apply_patch_tool_call(self, adapter) -> None:
+        """fileChange started → tool_call named 'apply_patch' with target paths."""
+
+        ev = adapter.wrap(
+            _codex(
+                CodexEventType.TOOL_STARTED,
+                seq=6,
+                item_id="item-fc",
+                payload={
+                    "kind": "fileChange",
+                    "changes": (
+                        {
+                            "path": "/repo/hello.txt",
+                            "change_kind": "add",
+                            "move_path": None,
+                            "write_diff": {"type": "create", "hunks": ()},
+                        },
+                    ),
+                    "status": "inProgress",
+                    "started_at": 1234,
+                },
+            )
+        )
+        assert ev.type == "tool_call"
+        assert ev.item_id == "item-fc"
+        assert ev.payload["tool_use_id"] == "item-fc"
+        assert ev.payload["tool_name"] == "apply_patch"
+        assert ev.payload["input"] == {
+            "paths": ["/repo/hello.txt"],
+            "change_kinds": ["add"],
+        }
+
+    def test_completed_maps_to_tool_result_with_write_diff(self, adapter) -> None:
+        """fileChange completed → tool_result carrying write_diff + change_kind."""
+
+        ev = adapter.wrap(
+            _codex(
+                CodexEventType.TOOL_COMPLETED,
+                seq=7,
+                item_id="item-fc",
+                payload={
+                    "kind": "fileChange",
+                    "changes": (
+                        {
+                            "path": "/repo/greeting.txt",
+                            "change_kind": "modify",
+                            "move_path": None,
+                            "write_diff": {
+                                "type": "update",
+                                "hunks": (
+                                    {
+                                        "oldStart": 1,
+                                        "oldLines": 1,
+                                        "newStart": 1,
+                                        "newLines": 1,
+                                        "lines": ("-hi", "+hey"),
+                                    },
+                                ),
+                            },
+                        },
+                    ),
+                    "status": "completed",
+                    "completed_at": 5678,
+                },
+            )
+        )
+        assert ev.type == "tool_result"
+        assert ev.item_id == "item-fc"
+        assert ev.payload["tool_use_id"] == "item-fc"
+        assert ev.payload["change_kind"] == "modify"
+        assert ev.payload["path"] == "/repo/greeting.txt"
+        assert ev.payload["status"] == "completed"
+        wd = ev.payload["write_diff"]
+        assert wd["type"] == "update"
+        assert len(wd["hunks"]) == 1
+        assert list(wd["hunks"][0]["lines"]) == ["-hi", "+hey"]
+
+    def test_declined_maps_to_tool_result_with_declined_status(self, adapter) -> None:
+        """fileChange declined → tool_result status=declined (not a success)."""
+
+        ev = adapter.wrap(
+            _codex(
+                CodexEventType.TOOL_COMPLETED,
+                seq=8,
+                item_id="item-fc",
+                payload={
+                    "kind": "fileChange",
+                    "changes": (
+                        {
+                            "path": "/repo/x.txt",
+                            "change_kind": "add",
+                            "move_path": None,
+                            "write_diff": {"type": "create", "hunks": ()},
+                        },
+                    ),
+                    "status": "declined",
+                    "completed_at": 5678,
+                },
+            )
+        )
+        assert ev.type == "tool_result"
+        assert ev.payload["status"] == "declined"
+
+
 class TestExtensions:
     """Codex events with no CC equivalent keep their own type as extensions."""
 

@@ -43,6 +43,15 @@ _CODEX_RUNTIME: Literal["codex"] = "codex"
 #: invocations, closest CC analogue is the Bash tool's command rendering).
 _COMMAND_TOOL_NAME = "command"
 
+#: Codex ``fileChange`` item kind tag (translator payload ``kind`` value).
+_FILE_CHANGE_KIND = "fileChange"
+
+#: Codex apply_patch file changes render as a tool named "apply_patch". The CC
+#: reducer builds a ToolItem from tool_name + input; the closest CC analogue
+#: for a file edit is the Write/Edit tool family, which the FE renders via
+#: ``write_diff`` attached on the matching tool_result.
+_APPLY_PATCH_TOOL_NAME = "apply_patch"
+
 
 class CodexEventAdapter:
     """Map one :class:`CodexEvent` to an :class:`AgentEvent` (or drop it).
@@ -196,8 +205,14 @@ class CodexEventAdapter:
     # ------------------------------------------------------------------ tool
 
     def _tool_started(self, e: CodexEvent) -> AgentEvent:
-        """commandExecution started → tool_call (tool_name 'command')."""
+        """item/started → tool_call, by item ``kind``.
 
+        ``commandExecution`` → tool named 'command'; ``fileChange`` → tool
+        named 'apply_patch' with the target file paths.
+        """
+
+        if e.payload.get("kind") == _FILE_CHANGE_KIND:
+            return self._file_change_started_envelope(e)
         return self._envelope(
             e,
             type_="tool_call",
@@ -217,9 +232,34 @@ class CodexEventAdapter:
             },
         )
 
-    def _tool_completed(self, e: CodexEvent) -> AgentEvent:
-        """commandExecution completed → tool_result (content/exit_code/duration)."""
+    def _file_change_started_envelope(self, e: CodexEvent) -> AgentEvent:
+        """fileChange started → tool_call named 'apply_patch' (target paths)."""
 
+        changes = [dict(change) for change in (e.payload.get("changes") or ())]
+        return self._envelope(
+            e,
+            type_="tool_call",
+            payload={
+                "tool_use_id": e.item_id,
+                "tool_name": _APPLY_PATCH_TOOL_NAME,
+                "input": {
+                    "paths": [c["path"] for c in changes],
+                    "change_kinds": [c["change_kind"] for c in changes],
+                },
+                "started_at_ms": e.payload.get("started_at"),
+            },
+        )
+
+    def _tool_completed(self, e: CodexEvent) -> AgentEvent:
+        """item/completed → tool_result, by item ``kind``.
+
+        ``commandExecution`` → content/exit_code/duration; ``fileChange`` →
+        per-file ``write_diff`` + ``change_kind`` + native ``status`` so a
+        declined or failed patch is not painted as a successful write.
+        """
+
+        if e.payload.get("kind") == _FILE_CHANGE_KIND:
+            return self._file_change_completed_envelope(e)
         return self._envelope(
             e,
             type_="tool_result",
@@ -231,6 +271,35 @@ class CodexEventAdapter:
                 "cwd": e.payload.get("cwd"),
                 "command": e.payload.get("command"),
                 "status": e.payload.get("status"),
+            },
+        )
+
+    def _file_change_completed_envelope(self, e: CodexEvent) -> AgentEvent:
+        """fileChange completed → tool_result with write_diff + change_kind.
+
+        Codex records one fileChange item per file (verified in the 2026-07-19
+        probe), so the first change's ``write_diff`` is attached at the payload
+        top level for the existing CC diff renderer. The full ``changes`` list
+        is also carried so a future batched multi-file item remains
+        introspectable without an adapter change.
+        """
+
+        changes = [dict(change) for change in (e.payload.get("changes") or ())]
+        first = changes[0] if changes else {}
+        return self._envelope(
+            e,
+            type_="tool_result",
+            payload={
+                "tool_use_id": e.item_id,
+                "tool_name": _APPLY_PATCH_TOOL_NAME,
+                "content": None,
+                "change_kind": first.get("change_kind"),
+                "path": first.get("path"),
+                "move_path": first.get("move_path"),
+                "write_diff": first.get("write_diff"),
+                "changes": changes,
+                "status": e.payload.get("status"),
+                "completed_at_ms": e.payload.get("completed_at"),
             },
         )
 
