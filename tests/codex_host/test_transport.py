@@ -199,6 +199,24 @@ async def test_concurrent_100_out_of_order_responses() -> None:
     await client.close()
 
 
+async def test_large_single_line_response_exceeding_default_limit_is_received() -> None:
+    """An app-server JSONL message larger than asyncio's 64 KiB default works."""
+
+    padding = "x" * 80_000
+
+    async def behavior():
+        msg = yield Step.recv()
+        response = _initialize_response(msg["id"])
+        response.payload["result"]["padding"] = padding
+        yield response
+        yield Step.recv()
+
+    client, _fake = _build(behavior())
+    result = await client.start()
+    assert result["padding"] == padding
+    await client.close()
+
+
 async def test_error_response_raises_protocol_violation() -> None:
     """A JSON-RPC error object fails the request future."""
 

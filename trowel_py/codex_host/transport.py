@@ -57,6 +57,12 @@ Spawner = Callable[[list[str], dict[str, Any]], Awaitable[Any]]
 _CLOSE_GRACE_S = 5.0
 _CLOSE_TERM_S = 5.0
 
+# App-server speaks newline-delimited JSON and may put a large tool result,
+# file body, or diff in one message. asyncio's 64 KiB subprocess default is
+# too small for that wire format; keep a bounded 16 MiB ceiling, matching the
+# already-spiked CC host transport.
+_STDOUT_LIMIT_BYTES = 16 * 1024 * 1024
+
 # JSON-RPC error codes reused for our own responses to the server.
 _ERR_METHOD_NOT_FOUND = -32601
 _ERR_INTERNAL = -32603
@@ -268,6 +274,7 @@ class AppServerClient:
             "stdin": asyncio.subprocess.PIPE,
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
+            "limit": _STDOUT_LIMIT_BYTES,
         }
         if self._env is not None:
             # Merge on top of the parent env so the child keeps PATH / HOME

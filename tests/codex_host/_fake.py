@@ -151,7 +151,9 @@ class FakeAppServer:
             assert "app-server" in args, f"fake expected app-server argv, got {args}"
             self.last_spawn_args = list(args)
             self.last_spawn_kwargs = dict(kwargs)
-            self._process = FakeProcess()
+            stdout_limit = kwargs.get("limit", 2**16)
+            assert isinstance(stdout_limit, int)
+            self._process = FakeProcess(stdout_limit=stdout_limit)
             self._task = asyncio.create_task(self._drive(), name="fake-app-server")
             return self._process
 
@@ -234,11 +236,16 @@ class FakeAppServer:
 class FakeProcess:
     """Subset of ``asyncio.subprocess.Process`` the transport touches."""
 
-    def __init__(self) -> None:
-        """Create fresh stdin/stdout/stderr pipes."""
+    def __init__(self, *, stdout_limit: int = 2**16) -> None:
+        """Create fresh stdin/stdout/stderr pipes.
+
+        Args:
+            stdout_limit: Maximum buffered stdout line size, matching the
+                ``limit`` accepted by :func:`asyncio.create_subprocess_exec`.
+        """
 
         self._stdin = _FakeStdin()
-        self.stdout = asyncio.StreamReader()
+        self.stdout = asyncio.StreamReader(limit=stdout_limit)
         self.stderr = asyncio.StreamReader()
         self._exit = asyncio.Event()
         self._signaled = False
