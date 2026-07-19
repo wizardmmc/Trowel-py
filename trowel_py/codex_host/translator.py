@@ -20,6 +20,7 @@ manager turn it into a structured ERROR event (spec: never fake success).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.errors import ProtocolViolationError
@@ -64,6 +65,12 @@ _TURN_IN_PROGRESS = "inProgress"
 _ITEM_COMMAND = "commandExecution"
 _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
+_ITEM_FILE_CHANGE = "fileChange"
+
+# ``FileUpdateChange.kind.type`` tags (``v2/item.rs::PatchChangeKind``).
+_FC_ADD = "add"
+_FC_DELETE = "delete"
+_FC_UPDATE = "update"
 
 # ``commandExecution.status``, from ``v2/item.rs::CommandExecutionStatus``.
 _CMD_IN_PROGRESS = "inProgress"
@@ -134,6 +141,190 @@ def _command_actions(item: Mapping[str, Any], method: str) -> tuple[dict[str, An
         action.update({field: raw.get(field) for field in fields})
         actions.append(action)
     return tuple(actions)
+
+
+# Regex for a unified-diff hunk header ``@@ -o[,ol] +n[,nl] @@``. The count
+# groups are optional: Codex emits ``@@ -1 +1 @@`` for single-line hunks.
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _parse_unified_diff(patch: str) -> tuple[dict[str, Any], ...]:
+    """Parse a unified diff string into hunk dicts.
+
+    A Codex ``FileUpdateChange.diff`` for an ``update`` change is a standard
+    unified diff. ``add`` / ``delete`` changes carry full file content in
+    ``diff`` and never reach this parser.
+
+    Each dict mirrors the FE ``DiffHunk`` shape
+    (``{oldStart, oldLines, newStart, newLines, lines}``); ``lines`` keeps its
+    leading `` `` / ``+`` / ``-`` marker. A missing count defaults to 1
+    (standard unified-diff elision). Lines outside any hunk (file headers,
+    ``\\ No newline at end of file``) are skipped.
+
+    Args:
+        patch: The ``diff`` string from a Codex ``FileUpdateChange``.
+
+    Returns:
+        Tuple of hunk dicts in document order; empty when there is no
+        ``@@`` header.
+    """
+
+    hunks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    lines_buf: list[str] = []
+    for line in patch.splitlines():
+        match = _HUNK_HEADER.match(line)
+        if match:
+            if current is not None:
+                current["lines"] = tuple(lines_buf)
+                hunks.append(current)
+            current = {
+                "oldStart": int(match.group(1)),
+                "oldLines": int(match.group(2)) if match.group(2) is not None else 1,
+                "newStart": int(match.group(3)),
+                "newLines": int(match.group(4)) if match.group(4) is not None else 1,
+            }
+            lines_buf = []
+            continue
+        if current is None:
+            continue
+        if line.startswith((" ", "+", "-")):
+            lines_buf.append(line)
+    if current is not None:
+        current["lines"] = tuple(lines_buf)
+        hunks.append(current)
+    return tuple(hunks)
+
+
+def _full_file_hunk(text: str, marker: str) -> tuple[dict[str, Any], ...]:
+    """Build a single all-add or all-remove hunk from full file content.
+
+    Codex ``FileUpdateChange.diff`` for ``add`` / ``delete`` carries the full
+    file content (not a unified diff). Convert it to one hunk where every line
+    carries the ``+`` (add) or ``-`` (delete) marker so the existing diff
+    renderer paints it as a green-only / red-only block with a correct stat.
+
+    Args:
+        text: The full file content (``FileUpdateChange.diff`` for add/delete).
+        marker: ``"+"`` for add, ``"-"`` for delete.
+
+    Returns:
+        A one-tuple of the hunk dict, or empty when the file has no lines.
+    """
+
+    lines = text.splitlines()
+    if not lines:
+        return ()
+    marked = tuple(f"{marker}{line}" for line in lines)
+    count = len(lines)
+    if marker == "+":
+        return (
+            {
+                "oldStart": 0,
+                "oldLines": 0,
+                "newStart": 1,
+                "newLines": count,
+                "lines": marked,
+            },
+        )
+    return (
+        {
+            "oldStart": 1,
+            "oldLines": count,
+            "newStart": 0,
+            "newLines": 0,
+            "lines": marked,
+        },
+    )
+
+
+def _file_change_write_diff(kind_type: Any, diff: Any) -> dict[str, Any]:
+    """Build a normalized ``write_diff`` dict for one file change.
+
+    The shape mirrors the FE ``WriteDiff`` (``{type, hunks}``) with Codex's
+    ``delete`` added (CC only emits ``create`` / ``update``):
+
+    * ``add``    → ``{type: "create", hunks: all-added hunk from full content}``.
+    * ``delete`` → ``{type: "delete", hunks: all-removed hunk from full content}``.
+    * ``update`` → ``{type: "update", hunks: parsed from unified_diff}``.
+
+    Add/delete carry full file content in ``diff`` (not a unified diff);
+    converting it to an all-add/all-remove hunk lets the FE reuse the existing
+    diff renderer + stat pill without a separate "full content preview" path.
+
+    Args:
+        kind_type: The ``PatchChangeKind.type`` tag.
+        diff: The raw ``diff`` string from ``FileUpdateChange``.
+
+    Returns:
+        The normalized ``write_diff`` dict.
+    """
+
+    text = str(diff or "")
+    if kind_type == _FC_ADD:
+        return {"type": "create", "hunks": _full_file_hunk(text, "+")}
+    if kind_type == _FC_DELETE:
+        return {"type": "delete", "hunks": _full_file_hunk(text, "-")}
+    if kind_type == _FC_UPDATE:
+        return {"type": "update", "hunks": _parse_unified_diff(text)}
+    # Unreachable in production: ``_file_change_to_change`` raises on an
+    # unknown kind tag before calling this. Defence-in-depth — raise rather
+    # than synthesise a ``type: "unknown"`` dict the FE ``WriteDiff`` type
+    # cannot represent, so a future caller that bypasses the guard fails
+    # loudly instead of leaking an untyped value over the wire.
+    raise ProtocolViolationError(
+        f"fileChange write_diff: unexpected kind type {kind_type!r}",
+        payload={"kind_type": kind_type},
+    )
+
+
+def _file_change_to_change(change: Mapping[str, Any], method: str) -> dict[str, Any]:
+    """Translate one Codex ``FileUpdateChange`` into normalized props.
+
+    Codex's ``update{movePath}`` collapses to ``change_kind="rename"`` when a
+    move target is set, else ``"modify"``. ``move_path`` is preserved
+    separately so the UI can show the rename target without re-reading ``kind``.
+
+    Args:
+        change: One element of ``item.changes`` (a ``FileUpdateChange``).
+        method: The source notification method (for error messages).
+
+    Returns:
+        ``{path, change_kind, move_path, write_diff}``.
+
+    Raises:
+        ProtocolViolationError: If ``kind`` is missing/not an object, or its
+            ``type`` is not a known ``PatchChangeKind`` tag.
+    """
+
+    kind = change.get("kind")
+    if not isinstance(kind, Mapping):
+        raise ProtocolViolationError(
+            f"notification {method!r} fileChange change.kind is not an object",
+            payload=dict(change),
+        )
+    kind_type = kind.get("type")
+    move_path_raw = kind.get("movePath")
+    move_path = str(move_path_raw) if move_path_raw else None
+    if kind_type == _FC_ADD:
+        change_kind = "add"
+    elif kind_type == _FC_DELETE:
+        change_kind = "delete"
+    elif kind_type == _FC_UPDATE:
+        change_kind = "rename" if move_path else "modify"
+    else:
+        raise ProtocolViolationError(
+            f"notification {method!r} fileChange change.kind.type has "
+            f"unexpected value {kind_type!r}",
+            payload=dict(change),
+        )
+    raw_path = change.get("path")
+    return {
+        "path": _as_str(raw_path) if raw_path is not None else "",
+        "change_kind": change_kind,
+        "move_path": move_path,
+        "write_diff": _file_change_write_diff(kind_type, change.get("diff")),
+    }
 
 
 class CodexTranslator:
@@ -281,11 +472,11 @@ class CodexTranslator:
     # ------------------------------------------------------------------ item
 
     def _on_item_started(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """``item/started`` → TOOL_STARTED for commands; other types ignored.
+        """``item/started`` → TOOL_STARTED for commands and file changes.
 
         agentMessage / reasoning items stream via their own ``*delta`` methods,
         so their ``started`` notification carries no extra information the UI
-        needs; file changes and MCP calls are deferred to later slices.
+        needs; MCP calls are deferred to later slices.
         """
 
         item = _require(params, "item", "item/started")
@@ -294,9 +485,11 @@ class CodexTranslator:
                 "item/started.item is not an object", payload=dict(params)
             )
         item_type = item.get("type")
-        if item_type != _ITEM_COMMAND:
-            return []
-        return [self._command_started_item(params, item)]
+        if item_type == _ITEM_COMMAND:
+            return [self._command_started_item(params, item)]
+        if item_type == _ITEM_FILE_CHANGE:
+            return [self._file_change_started_item(params, item)]
+        return []
 
     def _on_item_completed(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
         """``item/completed`` → terminal item event by ``item.type``."""
@@ -311,6 +504,8 @@ class CodexTranslator:
             return [self._command_completed_item(params, item)]
         if item_type == _ITEM_AGENT_MSG:
             return [self._agent_message_item(params, item)]
+        if item_type == _ITEM_FILE_CHANGE:
+            return [self._file_change_completed_item(params, item)]
         # reasoning completed: deltas already streamed; final summary is a
         # future slice. Other item kinds are capability-gated.
         return []
@@ -359,6 +554,58 @@ class CodexTranslator:
                 exit_code=item.get("exitCode"),
                 output=item.get("aggregatedOutput"),
                 duration_ms=item.get("durationMs"),
+                completed_at=params.get("completedAtMs"),
+            ),
+        )
+
+    def _file_change_started_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """Build a TOOL_STARTED for a ``fileChange`` item (apply_patch started).
+
+        The item carries ``changes: [FileUpdateChange]`` with status
+        ``inProgress``; the normalized changes let the UI paint a per-file
+        diff placeholder while the patch is in flight.
+        """
+
+        return TranslatedItem(
+            type=CodexEventType.TOOL_STARTED,
+            thread_id=_as_str(_require(params, "threadId", "item/started")),
+            turn_id=_as_str(_require(params, "turnId", "item/started")),
+            item_id=_as_str(item.get("id")),
+            payload=immutable_payload(
+                kind=_ITEM_FILE_CHANGE,
+                changes=tuple(
+                    _file_change_to_change(c, "item/started")
+                    for c in _require(item, "changes", "item/started")
+                ),
+                status=item.get("status"),
+                started_at=params.get("startedAtMs"),
+            ),
+        )
+
+    def _file_change_completed_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """Build a TOOL_COMPLETED for a ``fileChange`` item.
+
+        ``status`` (``completed`` / ``failed`` / ``declined``) is preserved so
+        the UI does not paint a declined or failed patch as a successful write
+        (spec: declined/failed file item must not show as success).
+        """
+
+        return TranslatedItem(
+            type=CodexEventType.TOOL_COMPLETED,
+            thread_id=_as_str(_require(params, "threadId", "item/completed")),
+            turn_id=_as_str(_require(params, "turnId", "item/completed")),
+            item_id=_as_str(item.get("id")),
+            payload=immutable_payload(
+                kind=_ITEM_FILE_CHANGE,
+                changes=tuple(
+                    _file_change_to_change(c, "item/completed")
+                    for c in _require(item, "changes", "item/completed")
+                ),
+                status=item.get("status"),
                 completed_at=params.get("completedAtMs"),
             ),
         )

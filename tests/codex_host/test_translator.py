@@ -304,3 +304,160 @@ def test_full_fixture_replay_produces_no_protocol_errors() -> None:
     # The fixture has 7 translatable notifications (the rest are echoes /
     # capability-gated: thread/started, turn/started, rateLimits, mcp, resolved).
     assert emitted >= 7
+
+
+# ----------------------------------------------------- file change (slice-076)
+# Real fixtures: file-change-add-modify-076.jsonl (add + add + update on two
+# files), file-change-delete-076.jsonl (delete). Recorded 2026-07-19 against
+# Codex 0.144.0 apply_patch under sandbox=workspace-write, approvalPolicy=never.
+
+
+def _file_change_notifications(name: str) -> list[dict]:
+    """Load one of the 2026-07-19 file-change probe recordings."""
+
+    return [
+        json.loads(line)
+        for line in (_FIXTURES / name).read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def _file_change_msg(name: str, method: str, kind_type: str) -> dict:
+    """Pick the first fileChange notification of ``method`` whose first change
+    matches ``kind_type`` (add/delete/update)."""
+
+    for msg in _file_change_notifications(name):
+        if msg["method"] != method:
+            continue
+        changes = msg["params"]["item"]["changes"]
+        if changes and changes[0]["kind"]["type"] == kind_type:
+            return msg
+    raise AssertionError(
+        f"no {method} fileChange with kind {kind_type!r} in {name}"
+    )
+
+
+def test_file_change_started_add_maps_to_tool_started_with_create_diff() -> None:
+    """item/started{fileChange,add} → TOOL_STARTED, kind=fileChange, create diff."""
+
+    msg = _file_change_msg(
+        "file-change-add-modify-076.jsonl", "item/started", "add"
+    )
+    item = CodexTranslator().translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.TOOL_STARTED
+    assert item.payload["kind"] == "fileChange"
+    assert item.payload["status"] == "inProgress"
+    change = item.payload["changes"][0]
+    assert change["change_kind"] == "add"
+    assert change["path"].endswith("hello.txt")
+    wd = change["write_diff"]
+    assert wd["type"] == "create"
+    # Add carries full file content as one all-added hunk (hello\nworld\n → 2 +lines).
+    assert len(wd["hunks"]) == 1
+    assert wd["hunks"][0]["newStart"] == 1
+    assert wd["hunks"][0]["newLines"] == 2
+    assert wd["hunks"][0]["lines"] == ("+hello", "+world")
+
+
+def test_file_change_completed_update_parses_unified_diff_into_hunks() -> None:
+    """item/completed{fileChange,update} → TOOL_COMPLETED with hunks parsed
+    from the unified_diff string ('@@ -1 +1 @@' → one hunk, -hi/+hey)."""
+
+    msg = _file_change_msg(
+        "file-change-add-modify-076.jsonl", "item/completed", "update"
+    )
+    item = CodexTranslator().translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.TOOL_COMPLETED
+    assert item.payload["status"] == "completed"
+    change = item.payload["changes"][0]
+    assert change["change_kind"] == "modify"
+    assert change["move_path"] is None
+    wd = change["write_diff"]
+    assert wd["type"] == "update"
+    assert len(wd["hunks"]) == 1
+    hunk = wd["hunks"][0]
+    assert hunk["oldStart"] == 1
+    assert hunk["oldLines"] == 1
+    assert hunk["newStart"] == 1
+    assert hunk["newLines"] == 1
+    assert hunk["lines"] == ("-hi", "+hey")
+
+
+def test_file_change_delete_maps_to_delete_write_diff() -> None:
+    """item/completed{fileChange,delete} → change_kind=delete + write_diff
+    type=delete (the diff field carries the removed content, not hunks)."""
+
+    msg = _file_change_msg(
+        "file-change-delete-076.jsonl", "item/completed", "delete"
+    )
+    item = CodexTranslator().translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.TOOL_COMPLETED
+    change = item.payload["changes"][0]
+    assert change["change_kind"] == "delete"
+    wd = change["write_diff"]
+    assert wd["type"] == "delete"
+    # Delete carries the removed file content as one all-removed hunk.
+    assert len(wd["hunks"]) == 1
+    assert wd["hunks"][0]["oldStart"] == 1
+    assert wd["hunks"][0]["oldLines"] == 2
+    assert wd["hunks"][0]["lines"] == ("-hello", "-world")
+
+
+def test_parse_unified_diff_single_line_hunk() -> None:
+    """'@@ -1 +1 @@' (count elided) parses with old/new start and +/- lines."""
+
+    from trowel_py.codex_host.translator import _parse_unified_diff
+
+    hunks = _parse_unified_diff("@@ -1 +1 @@\n-hi\n+hey\n")
+    assert len(hunks) == 1
+    assert hunks[0]["oldStart"] == 1
+    assert hunks[0]["oldLines"] == 1
+    assert hunks[0]["newStart"] == 1
+    assert hunks[0]["newLines"] == 1
+    assert hunks[0]["lines"] == ("-hi", "+hey")
+
+
+def test_parse_unified_diff_multi_line_hunk_with_context() -> None:
+    """'@@ -1,3 +1,3 @@' parses context (' '), removed ('-') and added ('+')."""
+
+    from trowel_py.codex_host.translator import _parse_unified_diff
+
+    patch = "@@ -1,3 +1,3 @@\n keep\n-old\n+new\n keep2\n"
+    hunks = _parse_unified_diff(patch)
+    assert len(hunks) == 1
+    h = hunks[0]
+    assert h["oldStart"] == 1
+    assert h["oldLines"] == 3
+    assert h["newStart"] == 1
+    assert h["newLines"] == 3
+    assert h["lines"] == (" keep", "-old", "+new", " keep2")
+
+
+def test_parse_unified_diff_multiple_hunks() -> None:
+    """Two @@ headers in one patch produce two separate hunks."""
+
+    from trowel_py.codex_host.translator import _parse_unified_diff
+
+    patch = "@@ -1 +1 @@\n-a\n+b\n@@ -10 +10 @@\n-c\n+d\n"
+    hunks = _parse_unified_diff(patch)
+    assert len(hunks) == 2
+    assert hunks[0]["oldStart"] == 1
+    assert hunks[1]["oldStart"] == 10
+
+
+def test_file_change_declined_preserves_declined_status() -> None:
+    """item/completed{fileChange,status=declined} → TOOL_COMPLETED with
+    status=declined. A refused patch must surface as declined, not as a
+    successful write (spec: declined file item must not show as success)."""
+
+    msg = _file_change_msg(
+        "file-change-declined-076.jsonl", "item/completed", "add"
+    )
+    item = CodexTranslator().translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.TOOL_COMPLETED
+    assert item.payload["status"] == "declined"
+    change = item.payload["changes"][0]
+    assert change["change_kind"] == "add"
+    # The proposed change shape is still carried so the UI can show what was
+    # refused; the declined ``status`` is what marks it as not-written.
+    assert change["write_diff"]["type"] == "create"

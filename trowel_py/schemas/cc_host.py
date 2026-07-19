@@ -230,7 +230,7 @@ class WriteDiff(BaseModel):
     events (Edit/MultiEdit diffs are FE-computed from input).
     """
 
-    type: Literal["create", "update"]
+    type: Literal["create", "update", "delete"]
     hunks: tuple[DiffHunk, ...]
 
 
