@@ -25,6 +25,12 @@ def _config(sid: str = "s1") -> CodexSessionConfig:
     return CodexSessionConfig(trowel_session_id=sid, workdir="/tmp/trowel-test")
 
 
+def test_normal_session_persists_rollout_for_future_resume() -> None:
+    """A trowel-managed thread must survive an app-server restart by default."""
+
+    assert _config().ephemeral is False
+
+
 def _binding_result(tid: str = "t-1") -> dict:
     """A ``thread/start`` response result with the documented effective facts."""
 

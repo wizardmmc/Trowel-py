@@ -160,6 +160,17 @@ def _behavior_server(
                 yield Step.send(
                     {"id": request_id, "result": _thread_result(f"t-{counter}")}
                 )
+            elif method == "thread/resume":
+                thread_id = msg["params"]["threadId"]
+                yield Step.send(
+                    {
+                        "id": request_id,
+                        "error": {
+                            "code": -32600,
+                            "message": f"no rollout found for thread id {thread_id}",
+                        },
+                    }
+                )
             elif method == "turn/start":
                 params = msg["params"]
                 thread_id = params["threadId"]
@@ -301,6 +312,287 @@ async def test_two_concurrent_threads_are_isolated() -> None:
     assert text_b == f"hi-{session_b.thread_id}"
     assert session_a.thread_id != session_b.thread_id
 
+    await manager.close()
+
+
+async def test_second_turn_reuses_thread_loaded_in_current_connection() -> None:
+    """A second turn uses turn/start directly instead of thread/resume.
+
+    ``thread/start`` already loads the new thread into the current app-server
+    connection. Calling ``thread/resume`` before every later turn is both
+    redundant and fatal for an ephemeral thread because it has no rollout file
+    to reload. Resume belongs only to a fresh app-server connection.
+    """
+
+    fake = FakeAppServer(_behavior_server(on_turn=_deltas))
+    manager = _manager(fake)
+    session = CodexSession(
+        CodexSessionConfig("s1", "/tmp/x", ephemeral=True)
+    )
+    manager.register(session)
+
+    await manager.send(session, "first")
+    await asyncio.sleep(0.05)
+    session.drain()
+
+    await manager.send(session, "second")
+    await asyncio.sleep(0.05)
+    events = session.drain()
+
+    methods = [
+        message["method"] for message in fake.received if "method" in message
+    ]
+    assert methods.count("thread/start") == 1
+    assert "thread/resume" not in methods
+    assert methods.count("turn/start") == 2
+    assert _has(events, CodexEventType.FINISHED)
+    await manager.close()
+
+
+async def test_live_sessions_cannot_share_one_native_thread() -> None:
+    """A second live trowel session cannot steal an attached thread route."""
+
+    fake = FakeAppServer(_behavior_server(on_turn=_deltas))
+    manager = _manager(fake)
+    owner = CodexSession(_cfg("owner"))
+    manager.register(owner)
+    await manager.send(owner, "first")
+    await asyncio.sleep(0.05)
+    owner.drain()
+    assert owner.thread_id is not None
+
+    duplicate = CodexSession(
+        CodexSessionConfig(
+            "duplicate", "/tmp/x", initial_thread_id=owner.thread_id
+        )
+    )
+    manager.register(duplicate)
+
+    with pytest.raises(TurnConflictError, match="already attached"):
+        await manager.send(duplicate, "steal")
+    assert manager.session_for_thread(owner.thread_id) is owner
+    await manager.close()
+
+
+async def test_concurrent_resume_atomically_claims_native_thread() -> None:
+    """Only one concurrent session may begin resuming the same native thread."""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()  # initialized
+        first = yield Step.recv()  # first thread/resume remains pending
+        second = yield Step.recv()  # buggy manager lets a duplicate through
+        for request in (first, second):
+            yield Step.send(
+                {
+                    "id": request["id"],
+                    "error": {
+                        "code": -32600,
+                        "message": "duplicate resume reached app-server",
+                    },
+                }
+            )
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    first = CodexSession(
+        CodexSessionConfig("first", "/tmp/x", initial_thread_id="shared-thread")
+    )
+    second = CodexSession(
+        CodexSessionConfig("second", "/tmp/x", initial_thread_id="shared-thread")
+    )
+    manager.register(first)
+    manager.register(second)
+
+    first_send = asyncio.create_task(manager.send(first, "first"))
+    for _ in range(100):
+        if any(
+            message.get("method") == "thread/resume" for message in fake.received
+        ):
+            break
+        await asyncio.sleep(0.001)
+    else:
+        pytest.fail("first resume did not reach the fake app-server")
+
+    try:
+        with pytest.raises(TurnConflictError, match="already attached"):
+            await manager.send(second, "second")
+    finally:
+        first_send.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_send
+        await manager.close()
+
+
+async def test_unregister_during_thread_attach_cannot_revive_session() -> None:
+    """A deleted session cannot attach a route after thread/start returns."""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()  # initialized
+        msg = yield Step.recv()  # thread/start
+        yield Step.hold(0.05)
+        yield Step.send({"id": msg["id"], "result": _thread_result("late-thread")})
+        msg = yield Step.recv()  # buggy manager continues with turn/start
+        if msg is None:
+            return
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "ghost-turn"}}})
+        msg = yield Step.recv()  # fixed manager interrupts an accepted ghost turn
+        if msg is None:
+            return
+        assert msg["method"] == "turn/interrupt"
+        yield Step.send({"id": msg["id"], "result": {}})
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("deleted"))
+    manager.register(session)
+
+    send_task = asyncio.create_task(manager.send(session, "hello"))
+    for _ in range(100):
+        if any(
+            message.get("method") == "thread/start" for message in fake.received
+        ):
+            break
+        await asyncio.sleep(0.001)
+    else:
+        pytest.fail("thread/start did not reach the fake app-server")
+    assert manager.unregister(session.session_id) is session
+
+    with pytest.raises(TurnConflictError, match="no longer registered"):
+        await send_task
+    assert manager.get_session(session.session_id) is None
+    assert manager.session_for_thread("late-thread") is None
+    assert session.session_id not in manager._attached_session_ids  # noqa: SLF001
+    assert not any(message.get("method") == "turn/start" for message in fake.received)
+    assert not any(
+        message.get("method") == "turn/interrupt" for message in fake.received
+    )
+    await manager.close()
+
+
+async def test_binding_callback_runs_before_native_turn_start() -> None:
+    """The caller can persist an attached binding before Codex starts work."""
+
+    fake = FakeAppServer(_behavior_server(on_turn=_deltas))
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    callback_methods: list[list[str]] = []
+
+    def persist_binding(attached: CodexSession) -> None:
+        """Capture wire methods visible when persistence is requested."""
+
+        assert attached.binding is not None
+        callback_methods.append(
+            [message["method"] for message in fake.received if "method" in message]
+        )
+
+    await manager.send(session, "hello", before_turn_start=persist_binding)
+    await asyncio.sleep(0.05)
+
+    assert callback_methods == [["initialize", "initialized", "thread/start"]]
+    assert any(message.get("method") == "turn/start" for message in fake.received)
+    await manager.close()
+
+
+async def test_unregister_while_turn_start_waits_interrupts_native_turn() -> None:
+    """Deletion during turn/start interrupts the accepted native turn."""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()  # initialized
+        msg = yield Step.recv()  # thread/start
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-delete")})
+        msg = yield Step.recv()  # turn/start
+        yield Step.hold(0.05)
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "turn-delete"}}})
+        msg = yield Step.recv()  # turn/interrupt
+        if msg is None:
+            return
+        assert msg["method"] == "turn/interrupt"
+        yield Step.send({"id": msg["id"], "result": {}})
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("deleted-during-turn"))
+    manager.register(session)
+
+    send_task = asyncio.create_task(manager.send(session, "hello"))
+    for _ in range(100):
+        if any(
+            message.get("method") == "turn/start" for message in fake.received
+        ):
+            break
+        await asyncio.sleep(0.001)
+    else:
+        pytest.fail("turn/start did not reach the fake app-server")
+    assert manager.unregister(session.session_id) is session
+
+    with pytest.raises(TurnConflictError, match="no longer registered"):
+        await send_task
+    assert any(
+        message.get("method") == "turn/interrupt" for message in fake.received
+    )
+    assert session.state.name == "IDLE"
+    assert manager.session_for_thread("t-delete") is None
+    await manager.close()
+
+
+async def test_stale_eof_does_not_degrade_new_connection() -> None:
+    """An old watcher cannot degrade a replacement while it is starting."""
+
+    class SlowStartingClient:
+        """Minimal client whose start can be paused around the watcher race."""
+
+        def __init__(self) -> None:
+            """Create start/close synchronization events."""
+
+            self.start_entered = asyncio.Event()
+            self.release_start = asyncio.Event()
+            self.closed_event = asyncio.Event()
+            self.closed = False
+
+        async def start(self) -> None:
+            """Pause initialization until the test releases it."""
+
+            self.start_entered.set()
+            await self.release_start.wait()
+
+        def add_notification_listener(self, listener) -> None:
+            """Accept the manager listener without producing notifications."""
+
+            del listener
+
+        async def wait_closed(self) -> None:
+            """Wait until manager.close closes this fake client."""
+
+            await self.closed_event.wait()
+
+        async def close(self) -> None:
+            """Mark the fake transport closed."""
+
+            self.closed = True
+            self.closed_event.set()
+
+    current = SlowStartingClient()
+    manager = CodexHostManager(client_factory=lambda: current)  # type: ignore[arg-type]
+    stale = AppServerClient(expected_version=None)
+    manager._client = stale  # noqa: SLF001
+    manager._state = CodexHostManagerState.DEGRADED  # noqa: SLF001
+    manager._attached_session_ids.add("s1")  # noqa: SLF001
+
+    ready_task = asyncio.create_task(manager.ensure_ready())
+    await current.start_entered.wait()
+    await manager._on_unexpected_exit(stale)  # noqa: SLF001
+
+    assert manager.client is current
+    assert manager.state is CodexHostManagerState.STARTING
+    current.release_start.set()
+    assert await ready_task is current
     await manager.close()
 
 

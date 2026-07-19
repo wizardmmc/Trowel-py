@@ -32,7 +32,7 @@ from trowel_py.codex_host.events import (
     TranslatedItem,
     immutable_payload,
 )
-from trowel_py.codex_host.session import CodexSession
+from trowel_py.codex_host.session import CodexSession, TurnConflictError
 from trowel_py.codex_host.translator import CodexTranslator
 from trowel_py.codex_host.transport import AppServerClient
 
@@ -86,6 +86,7 @@ class OrphanDiagnostic:
 
 
 ClientFactory = Callable[[], AppServerClient]
+BeforeTurnStart = Callable[[CodexSession], None]
 
 
 class CodexHostManager:
@@ -113,6 +114,13 @@ class CodexHostManager:
         self._state: CodexHostManagerState = CodexHostManagerState.STOPPED
         self._sessions: dict[str, CodexSession] = {}
         self._thread_to_session: dict[str, CodexSession] = {}
+        # Trowel sessions whose native thread is already loaded in the current
+        # app-server connection. A later turn in the same connection goes
+        # straight to ``turn/start``; ``thread/resume`` is only needed after a
+        # fresh connection starts. This is session-scoped rather than just a
+        # thread-id set so two live trowel sessions cannot silently share one
+        # attachment and steal each other's notification route.
+        self._attached_session_ids: set[str] = set()
         self._orphans: list[OrphanDiagnostic] = []
         self._ready_lock: asyncio.Lock = asyncio.Lock()
         self._eof_watcher: asyncio.Task[None] | None = None
@@ -182,6 +190,7 @@ class CodexHostManager:
         """
 
         session = self._sessions.pop(session_id, None)
+        self._attached_session_ids.discard(session_id)
         if session is not None and session.binding is not None:
             self._thread_to_session.pop(session.binding.thread_id, None)
         return session
@@ -190,6 +199,14 @@ class CodexHostManager:
         """Look up a session by native thread id (the routing direction)."""
 
         return self._thread_to_session.get(thread_id)
+
+    def _require_registered(self, session: CodexSession) -> None:
+        """Reject work whose session was deleted or replaced while awaiting I/O."""
+
+        if self._sessions.get(session.session_id) is not session:
+            raise TurnConflictError(
+                f"session {session.session_id} is no longer registered"
+            )
 
     # ------------------------------------------------------------- lifecycle
 
@@ -211,10 +228,22 @@ class CodexHostManager:
             ):
                 return self._client
             self._state = CodexHostManagerState.STARTING
+            # Every app-server process has its own in-memory thread registry.
+            # Bindings survive a restart, attachments do not.
+            self._attached_session_ids.clear()
             client = self._client_factory()
-            await client.start()
-            client.add_notification_listener(self._on_notification)
+            # Install the new identity before its async handshake. A late EOF
+            # watcher from the previous client will then fail the identity
+            # check instead of degrading sessions that are already recovering.
             self._client = client
+            try:
+                await client.start()
+            except BaseException:
+                if self._client is client:
+                    self._client = None
+                    self._state = CodexHostManagerState.DEGRADED
+                raise
+            client.add_notification_listener(self._on_notification)
             self._state = CodexHostManagerState.READY
             # Restart after degraded: surface a READY flip so the UI can leave
             # its "host degraded" banner (spec §4 — recovery must be visible).
@@ -242,12 +271,25 @@ class CodexHostManager:
             except Exception:  # noqa: BLE001 — log, do not let close propagate
                 _log.debug("eof watcher raised during close", exc_info=True)
         self._client = None
+        self._attached_session_ids.clear()
         self._state = CodexHostManagerState.STOPPED
 
     # ------------------------------------------------------------ turn flow
 
-    async def send(self, session: CodexSession, text: str) -> str:
-        """Drive one turn for ``session``: ensure_ready → start/resume → turn/start.
+    async def send(
+        self,
+        session: CodexSession,
+        text: str,
+        *,
+        before_turn_start: BeforeTurnStart | None = None,
+    ) -> str:
+        """Drive one turn: ensure ready → attach thread if needed → turn/start.
+
+        A new app-server connection starts or resumes the native thread once;
+        later turns on that connection reuse the loaded thread directly.
+        ``before_turn_start`` runs synchronously after attachment and before
+        native work begins, allowing the caller to persist the binding without
+        creating an untracked live turn on failure.
 
         Returns the native ``turn_id`` (also surfaced via the TURN_STARTED
         event). The caller then drains :meth:`CodexSession.drain` or iterates
@@ -258,25 +300,56 @@ class CodexHostManager:
             TransportClosedError: If the transport closed mid-send.
         """
 
+        self._require_registered(session)
         session.begin_send()
+        reserved_thread_id: str | None = None
         try:
             client = await self.ensure_ready()
+            self._require_registered(session)
+            binding = session.binding
+            if binding is not None:
+                owner = self._thread_to_session.get(binding.thread_id)
+                if owner is None:
+                    # Reserve synchronously before the first resume await. Two
+                    # concurrent sessions targeting the same native thread
+                    # therefore cannot both pass the ownership check and race
+                    # to overwrite the notification route.
+                    self._thread_to_session[binding.thread_id] = session
+                    reserved_thread_id = binding.thread_id
+                elif owner is not session:
+                    raise TurnConflictError(
+                        f"thread {binding.thread_id} is already attached to "
+                        f"session {owner.session_id}"
+                    )
             if session.is_new_thread:
                 result = await client.request(
                     "thread/start",
                     self._thread_start_params(session),
                     timeout=_REQUEST_TIMEOUT_S,
                 )
-            else:
+                self._require_registered(session)
+                session.attach_thread_binding(result)
+                session.emit_session_started_if_first()
+                self._attached_session_ids.add(session.session_id)
+            elif session.session_id not in self._attached_session_ids:
                 result = await client.request(
                     "thread/resume",
                     self._thread_resume_params(session),
                     timeout=_REQUEST_TIMEOUT_S,
                 )
-            session.attach_thread_binding(result)
-            session.emit_session_started_if_first()
-            assert session.binding is not None  # attach_thread_binding just set it
+                self._require_registered(session)
+                session.attach_thread_binding(result)
+                session.emit_session_started_if_first()
+                self._attached_session_ids.add(session.session_id)
+            assert session.binding is not None
+            self._require_registered(session)
             self._thread_to_session[session.binding.thread_id] = session
+            # The thread is now loaded in this connection. Keep its route even
+            # if the following turn/start fails so a retry can reuse it.
+            reserved_thread_id = None
+            if before_turn_start is not None:
+                before_turn_start(session)
+            self._require_registered(session)
             turn_result = await client.request(
                 "turn/start",
                 self._turn_start_params(
@@ -285,9 +358,35 @@ class CodexHostManager:
                 timeout=_REQUEST_TIMEOUT_S,
             )
             turn_id = _extract_turn_id(turn_result)
+            try:
+                self._require_registered(session)
+            except TurnConflictError:
+                # Deletion can race with the turn/start response. Codex has
+                # accepted the turn, so explicitly interrupt it before
+                # rejecting the local start; otherwise invisible native work
+                # would continue with no registered route or consumer.
+                try:
+                    await client.request(
+                        "turn/interrupt",
+                        {"threadId": session.binding.thread_id, "turnId": turn_id},
+                        timeout=_REQUEST_TIMEOUT_S,
+                    )
+                except Exception:  # noqa: BLE001 — preserve registration error
+                    _log.warning(
+                        "failed to interrupt turn %s for deleted session %s",
+                        turn_id,
+                        session.session_id,
+                        exc_info=True,
+                    )
+                raise
             session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
+            if (
+                reserved_thread_id is not None
+                and self._thread_to_session.get(reserved_thread_id) is session
+            ):
+                self._thread_to_session.pop(reserved_thread_id, None)
             # The session clears ``_sending`` itself on success (record_turn_started);
             # any failure path must release the reservation or the session is
             # stuck refusing future sends.
@@ -405,10 +504,17 @@ class CodexHostManager:
     async def _on_unexpected_exit(self, client: AppServerClient) -> None:
         """Flip to degraded and give every running turn a host-exited event."""
 
+        if client is not self._client:
+            # A previous connection's watcher may return after recovery has
+            # already installed a new client. Never let that stale EOF degrade
+            # or detach the current connection.
+            _log.debug("ignoring stale codex host exit")
+            return
         exit_code = client.last_exit_code
         stderr_tail = client.stderr_tail[:200] if client else ""
         self._state = CodexHostManagerState.DEGRADED
         self._client = None
+        self._attached_session_ids.clear()
         self._eof_watcher = None
         reason = "app-server process exited unexpectedly"
         if stderr_tail:

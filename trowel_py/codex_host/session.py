@@ -80,8 +80,10 @@ class CodexSessionConfig:
         approval_policy: Codex ``approvalPolicy`` string (``never`` by default
             so slice-071 turns do not stall on approvals — slice-075 overrides).
         sandbox: Codex ``sandbox`` mode (``read-only`` by default).
-        ephemeral: Start the thread ``ephemeral`` so it evaporates when the
-            app-server process exits — matches the spike's no-residue default.
+        ephemeral: Whether to skip persisting the native rollout. Normal trowel
+            sessions default to ``False`` because their saved thread binding
+            must remain resumable after an app-server restart. Isolated smoke
+            tests may opt into ``True`` explicitly.
     """
 
     trowel_session_id: str
@@ -91,7 +93,7 @@ class CodexSessionConfig:
     developer_instructions: str | None = None
     approval_policy: str = "never"
     sandbox: str = "read-only"
-    ephemeral: bool = True
+    ephemeral: bool = False
     initial_thread_id: str | None = None
 
 

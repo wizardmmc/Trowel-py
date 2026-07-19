@@ -458,7 +458,13 @@ class SessionHub:
                 status_code=404, detail=f"codex session {session_id} not live"
             )
         try:
-            await self._codex.send(session, text)
+            await self._codex.send(
+                session,
+                text,
+                before_turn_start=lambda attached: self._writeback_codex_native(
+                    session_id, attached
+                ),
+            )
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 — surface as 502, not 500
@@ -481,8 +487,6 @@ class SessionHub:
             yield payload
             if _is_terminal(payload):
                 break
-        self._writeback_codex_native(session_id, session)
-
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
         """Build a terminal error envelope from the session's own seq space.
 

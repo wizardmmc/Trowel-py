@@ -83,8 +83,18 @@ class FakeCodexManager:
 
         return self.sessions.pop(sid, None)
 
-    async def send(self, session: Any, text: str) -> str:
+    async def send(
+        self,
+        session: Any,
+        text: str,
+        *,
+        before_turn_start=None,
+    ) -> str:
+        """Record the send and run the manager's pre-turn callback when present."""
+
         self.sent.append((session.session_id, text))
+        if before_turn_start is not None:
+            before_turn_start(session)
         return "fake-turn-id"
 
     async def interrupt(self, session: Any) -> None:
@@ -579,6 +589,74 @@ async def test_stream_codex_yields_unified_envelope(hub: SessionHub, workdir: Pa
     text_ev = next(e for e in events if e["type"] == "text")
     assert text_ev["payload"]["text"] == "hello "
     assert text_ev["item_id"] == "item-1"
+
+
+async def test_stream_codex_persists_binding_when_turn_start_fails(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A native thread remains resumable when failure follows attachment."""
+
+    binding = hub.create(codex_req(workdir), request=None)
+    session = FakeCodexSession(
+        binding.session_id,
+        [],
+        thread_id="thr-created-before-turn-failure",
+    )
+    codex_mgr.sessions[binding.session_id] = session
+
+    async def fail_after_thread_attached(
+        session: Any,
+        text: str,
+        *,
+        before_turn_start=None,
+    ) -> str:
+        """Model a successful thread response followed by turn/start failure."""
+
+        del text
+        if before_turn_start is not None:
+            before_turn_start(session)
+        raise RuntimeError("turn/start failed")
+
+    monkeypatch.setattr(codex_mgr, "send", fail_after_thread_attached)
+
+    with pytest.raises(HTTPException) as exc:
+        _ = [e async for e in hub.stream(binding.session_id, "hello")]
+    assert exc.value.status_code == 502
+    persisted = hub.get(binding.session_id)
+    assert persisted is not None
+    assert persisted.native_session_id == "thr-created-before-turn-failure"
+
+
+async def test_stream_codex_surfaces_writeback_failure_before_native_turn(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Binding persistence failure stops the send before native work begins."""
+
+    binding = hub.create(codex_req(workdir), request=None)
+    codex_mgr.sessions[binding.session_id] = FakeCodexSession(
+        binding.session_id,
+        [],
+        thread_id="thr-non-durable",
+    )
+
+    def fail_writeback(*args: Any, **kwargs: Any) -> None:
+        """Model binding persistence failure before native work begins."""
+
+        del args, kwargs
+        raise OSError("binding store unavailable")
+
+    monkeypatch.setattr(hub.store, "update_native", fail_writeback)
+
+    with pytest.raises(HTTPException) as exc:
+        _ = [e async for e in hub.stream(binding.session_id, "hello")]
+    assert exc.value.status_code == 502
+    assert "binding store unavailable" in str(exc.value.detail)
 
 
 async def test_stream_codex_finished_terminates_loop(hub: SessionHub, workdir: Path):
