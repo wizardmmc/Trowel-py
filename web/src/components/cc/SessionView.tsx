@@ -16,6 +16,7 @@ import { MessageList } from "./MessageList";
 import { ModelPicker } from "./ModelPicker";
 import { MultiSessionBar } from "./MultiSessionBar";
 import { NewSessionDialog } from "./NewSessionDialog";
+import { RateLimitBanner } from "./RateLimitBanner";
 import { RevertConfirmModal } from "./RevertConfirmModal";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";
@@ -358,6 +359,7 @@ export function SessionView({
                     exitReturncode: null,
                     usage: null,
                     hostDegraded: false,
+                    rateLimit: null,
                   }
             }
             streaming={streaming}
@@ -404,6 +406,12 @@ export function SessionView({
             </span>
           </div>
         )}
+        {/* slice-077: Codex account rate-limit banner
+            (account/rateLimits/updated). Account-scoped — the BE fans it out
+            to every active Codex session. CC never receives this event so its
+            snapshot stays null and the banner renders nothing. Capability-
+            driven: a low-usage rolling update also renders nothing (spec C-6). */}
+        <RateLimitBanner snapshot={active?.meta.rateLimit ?? null} />
         {/* slice-026 nogit banner — revert is a CC-checkpoint capability, so
             this "not a git repo" warning only applies to CC sessions. A Codex
             session has no checkpoint capability by design (not a git issue),

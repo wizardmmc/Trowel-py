@@ -16,6 +16,8 @@ import type {
   ApprovalDecision,
   HostStatusEvent,
   QuestionInput,
+  RateLimitSnapshot,
+  RateLimitUpdatedEvent,
   RetryingEvent,
   SubagentProgressEvent,
   ToolCallEvent,
@@ -273,6 +275,12 @@ export interface SessionMeta {
   /** slice-074: Codex host is degraded/disconnected (host_status). Drives the
    * page-inline degraded banner (mockup-confirmed). False for CC. */
   readonly hostDegraded: boolean;
+  /** slice-077: latest Codex account rate-limit snapshot
+   * (``account/rateLimits/updated``). Account-scoped, so the BE fans it out to
+   * every active Codex session. Null on CC and before the first update arrives.
+   * The RateLimitBanner decides near/reached from this (decision 5: UI unfolds
+   * only used_percent / resets_at / rate_limit_reached_type). */
+  readonly rateLimit: RateLimitSnapshot | null;
 }
 
 /** slice-028 V2 tasks (TaskCreate/TaskUpdate). Mirrors cc's V2 task model:
@@ -318,6 +326,7 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
     exitReturncode: null,
     usage: null,
     hostDegraded: false,
+    rateLimit: null,
   },
 };
 
@@ -1075,6 +1084,16 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       // never drops the row (only CC session_exited does that, in the shell).
       return applyHostStatus(prev, event);
 
+    case "rate_limit_updated":
+      // slice-077: Codex account rate-limit snapshot (extension). Data layer
+      // only — stored verbatim on meta.rateLimit; the RateLimitBanner reads it
+      // and decides near/reached. Sparse rolling updates simply replace the
+      // prior snapshot (no history kept).
+      return {
+        ...prev,
+        meta: { ...prev.meta, rateLimit: rateLimitFrom(event) },
+      };
+
     default:
       return prev;
   }
@@ -1086,6 +1105,24 @@ function usageFrom(event: UsageUpdatedEvent): Readonly<Record<string, unknown>> 
     total: event.total ?? null,
     last: event.last ?? null,
     model_context_window: event.model_context_window ?? null,
+  };
+}
+
+/** slice-077: lift a RateLimitUpdatedEvent's flat fields onto the snapshot
+ * shape stored on meta.rateLimit. Null-sparse fields stay null (spec C-4: do
+ * not fabricate values); the nested ``primary`` / ``secondary`` windows are
+ * already the protocol's own shape (translator passes them through verbatim). */
+function rateLimitFrom(event: RateLimitUpdatedEvent): RateLimitSnapshot {
+  return {
+    limit_id: event.limit_id ?? null,
+    limit_name: event.limit_name ?? null,
+    primary: event.primary ?? null,
+    secondary: event.secondary ?? null,
+    credits: event.credits ?? null,
+    individual_limit: event.individual_limit ?? null,
+    spend_control_reached: event.spend_control_reached ?? null,
+    plan_type: event.plan_type ?? null,
+    rate_limit_reached_type: event.rate_limit_reached_type ?? null,
   };
 }
 

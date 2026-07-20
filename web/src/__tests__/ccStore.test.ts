@@ -1642,6 +1642,111 @@ describe("reduceEvent — slice-074 Codex mapping (post-adapter)", () => {
   });
 });
 
+describe("reduceEvent — slice-077 Codex rate-limit", () => {
+  it("INITIAL_REDUCER_STATE has null rateLimit", () => {
+    expect(INITIAL_REDUCER_STATE.meta.rateLimit).toBeNull();
+  });
+
+  it("rate_limit_updated stores the snapshot on meta.rateLimit", () => {
+    const state = run([
+      {
+        type: "rate_limit_updated",
+        limit_id: "codex",
+        limit_name: null,
+        primary: { usedPercent: 84, windowDurationMins: 300, resetsAt: 1784949908 },
+        secondary: null,
+        credits: { hasCredits: false, unlimited: false, balance: "0" },
+        individual_limit: null,
+        spend_control_reached: null,
+        plan_type: "pro",
+        rate_limit_reached_type: null,
+      },
+    ]);
+    expect(state.meta.rateLimit).toEqual({
+      limit_id: "codex",
+      limit_name: null,
+      primary: { usedPercent: 84, windowDurationMins: 300, resetsAt: 1784949908 },
+      secondary: null,
+      credits: { hasCredits: false, unlimited: false, balance: "0" },
+      individual_limit: null,
+      spend_control_reached: null,
+      plan_type: "pro",
+      rate_limit_reached_type: null,
+    });
+  });
+
+  it("preserves null sparse fields verbatim (real 2026-07-18 fixture shape)", () => {
+    const state = run([
+      {
+        type: "rate_limit_updated",
+        limit_id: "codex",
+        limit_name: null,
+        primary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1784949908 },
+        secondary: null,
+        credits: { hasCredits: false, unlimited: false, balance: "0" },
+        individual_limit: null,
+        spend_control_reached: null,
+        plan_type: "pro",
+        rate_limit_reached_type: null,
+      },
+    ]);
+    // spec C-4: a sparse rolling update must not fabricate values. Null fields
+    // stay null; the UI must not paint "0 tokens"-style placeholders.
+    expect(state.meta.rateLimit?.secondary).toBeNull();
+    expect(state.meta.rateLimit?.rate_limit_reached_type).toBeNull();
+    expect(state.meta.rateLimit?.primary?.usedPercent).toBe(20);
+  });
+
+  it("a later rate_limit_updated replaces the prior snapshot (rolling update)", () => {
+    const first = run([
+      {
+        type: "rate_limit_updated",
+        limit_id: "codex",
+        limit_name: null,
+        primary: { usedPercent: 84, windowDurationMins: 300, resetsAt: 1784949908 },
+        secondary: null,
+        credits: null,
+        individual_limit: null,
+        spend_control_reached: null,
+        plan_type: "pro",
+        rate_limit_reached_type: null,
+      },
+    ]);
+    const next = reduceEvent(first, {
+      type: "rate_limit_updated",
+      limit_id: "codex",
+      limit_name: null,
+      primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1784953508 },
+      secondary: null,
+      credits: null,
+      individual_limit: null,
+      spend_control_reached: null,
+      plan_type: "pro",
+      rate_limit_reached_type: null,
+    });
+    expect(next.meta.rateLimit?.primary?.usedPercent).toBe(12);
+    expect(next.meta.rateLimit?.primary?.resetsAt).toBe(1784953508);
+  });
+
+  it("stores rate_limit_reached_type when the limit is hit", () => {
+    const state = run([
+      {
+        type: "rate_limit_updated",
+        limit_id: "codex",
+        limit_name: null,
+        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1784949908 },
+        secondary: null,
+        credits: null,
+        individual_limit: null,
+        spend_control_reached: null,
+        plan_type: "pro",
+        rate_limit_reached_type: "rate_limit_reached",
+      },
+    ]);
+    expect(state.meta.rateLimit?.rate_limit_reached_type).toBe("rate_limit_reached");
+  });
+});
+
 describe("reduceEvent — slice-074 live/history deep-equal (Codex)", () => {
   /** The same recorded Codex event stream, fed once "live" (with an optimistic
    * user turn) and once as "history" (user event from the adapter), must reach

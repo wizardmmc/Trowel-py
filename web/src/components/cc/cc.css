@@ -1858,6 +1858,75 @@
   line-height: 1.5;
 }
 
+/* ── slice-077: Codex account rate-limit banner
+     (milestone-9-codex-advanced-events-20260720.html scenario 5, decision 5).
+     Two visible levels: near (sunshine, not terminal) and reached (error,
+     terminal). A low-usage rolling update never renders a banner. ── */
+
+.cc-rate-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--sunshine-soft);
+  color: var(--sunshine-ink);
+  border-bottom: 1px solid var(--sunshine);
+  font-size: 0.8rem;
+}
+.cc-rate-banner--reached {
+  background: var(--error-soft);
+  color: #8f3f34;
+  border-bottom-color: var(--error-soft-strong);
+}
+.cc-rate-banner__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+.cc-rate-banner__title {
+  font-weight: 700;
+}
+.cc-rate-banner__reached-type,
+.cc-rate-banner__hint {
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+.cc-rate-banner__windows {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.cc-rate-window {
+  min-width: 130px;
+}
+.cc-rate-window__label {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  margin-bottom: 3px;
+}
+.cc-rate-window__bar {
+  height: 5px;
+  background: var(--neutral-soft);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.cc-rate-window__bar span {
+  display: block;
+  height: 100%;
+  background: var(--sunshine);
+}
+.cc-rate-window__bar--high span {
+  background: var(--color-error);
+}
+.cc-rate-window__meta {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  margin-top: 3px;
+}
+
 /* ═══ slice-027: slash autocomplete + pickers + workdir selector ═══ */
 
 /* Composer needs to anchor the autocomplete popup above itself. */

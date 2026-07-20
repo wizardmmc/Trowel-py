@@ -170,6 +170,7 @@ describe("SessionView (slice-028 three-column)", () => {
             exitReturncode: null,
             usage: null,
             hostDegraded: true,
+            rateLimit: null,
           },
           workdir: "/wd",
           effort: null,

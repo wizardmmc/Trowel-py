@@ -311,6 +311,66 @@ export interface HostStatusEvent {
   readonly exit_code?: number | null;
 }
 
+/** slice-077: One rate-limit window from a Codex
+ * ``account/rateLimits/updated`` snapshot. Field names and camelCase are the
+ * protocol's own (``account.rs`` ``RateLimitWindow``) — the BE translator
+ * passes the nested object through verbatim, only the snapshot's top-level
+ * fields are snake-cased. ``resetsAt`` is a unix timestamp in seconds. */
+export interface RateLimitWindow {
+  readonly usedPercent: number | null;
+  readonly windowDurationMins: number | null;
+  readonly resetsAt: number | null;
+}
+
+/** slice-077: ``RateLimitReachedType`` wire values (``account.rs``). The set is
+ * open in practice — a value outside this list is rendered as-is rather than
+ * dropped, so an unknown tag surfaces instead of being hidden as "no limit". */
+export type RateLimitReachedType =
+  | "rate_limit_reached"
+  | "workspace_owner_credits_depleted"
+  | "workspace_member_credits_depleted"
+  | "workspace_owner_usage_limit_reached"
+  | "workspace_member_usage_limit_reached"
+  | (string & {}); // forward-compatible: unknown future tags render verbatim
+
+/** slice-077: Codex account rate-limit snapshot
+ * (``account/rateLimits/updated``). Account-scoped — no per-thread binding —
+ * so the BE fans it out to every active Codex session. The reducer stores the
+ * latest snapshot on ``meta.rateLimit`` and the RateLimitBanner decides
+ * near/reached from ``rate_limit_reached_type`` + ``primary.usedPercent``
+ * (decision 5: UI unfolds only those; ``credits`` / ``individual_limit`` /
+ * ``spend_control_reached`` stay in the payload for a later UI pass, never
+ * thrown away — spec C-4). */
+export interface RateLimitSnapshot {
+  readonly limit_id: string | null;
+  readonly limit_name: string | null;
+  readonly primary: Readonly<RateLimitWindow> | null;
+  readonly secondary: Readonly<RateLimitWindow> | null;
+  readonly credits: Readonly<Record<string, unknown>> | null;
+  readonly individual_limit: Readonly<Record<string, unknown>> | null;
+  readonly spend_control_reached: Readonly<Record<string, unknown>> | null;
+  readonly plan_type: string | null;
+  readonly rate_limit_reached_type: RateLimitReachedType | null;
+}
+
+/** slice-077: Codex account rate-limit update (extension). CC has no
+ * equivalent — CC surfaces 429s as retrying/error events. Sparse rolling
+ * update: the BE emits one event per ``account/rateLimits/updated``
+ * notification, so most turns see none and a rate-limited turn sees several
+ * as the window rolls. */
+export interface RateLimitUpdatedEvent {
+  readonly type: "rate_limit_updated";
+  readonly limit_id: string | null;
+  readonly limit_name: string | null;
+  readonly primary: Readonly<RateLimitWindow> | null;
+  readonly secondary: Readonly<RateLimitWindow> | null;
+  readonly credits: Readonly<Record<string, unknown>> | null;
+  readonly individual_limit: Readonly<Record<string, unknown>> | null;
+  readonly spend_control_reached: Readonly<Record<string, unknown>> | null;
+  readonly plan_type: string | null;
+  readonly rate_limit_reached_type: RateLimitReachedType | null;
+}
+
 /** One decision exactly as Codex advertised it for this request. */
 export type ApprovalDecision = string | Readonly<Record<string, unknown>>;
 
@@ -381,7 +441,8 @@ export type TrowelEvent =
   | WorkflowTreeEvent
   | UsageUpdatedEvent
   | HostStatusEvent
-  | ApprovalRequestEvent;
+  | ApprovalRequestEvent
+  | RateLimitUpdatedEvent;
 
 /** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([
