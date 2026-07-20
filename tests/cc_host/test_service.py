@@ -223,6 +223,323 @@ class TestStartAndSend:
         assert calls[0].tool_name == "Write"
 
 
+class TestBackgroundTaskLogicalTurn:
+    """slice-077-prefix: Bash/Agent 后台任务的第一个 result 只是 cc 的前台回复
+    边界，不是 trowel 的逻辑 turn 终态。后台 task_started 注册 pending；
+    task_notification terminal 移除 pending；只有 pending 清空 + 无 workflow 在跑
+    时的 result 才是终态 finished。
+
+    Ground truth: slice-077-prefix 隔离复现 C（real CC 2.1.197 local_bash 录制）。
+    Order: task_started → result(success) → task_updated → task_notification(completed)
+    → assistant('DONE') → result(success).
+    """
+
+    @staticmethod
+    def _bg_local_bash_lines() -> list[str]:
+        """Raw stream-json lines: local_bash background task with a mid-turn result.
+
+        Real event shapes from tests/cc_host/test_translator.py sample 030 + docs
+        cc-workflow-event-model.md; order from slice-077-prefix 隔离复现 C. Redacted:
+        no real paths/keys/tool outputs.
+        """
+        return [
+            line({"type": "system", "subtype": "init", "session_id": "s-bg",
+                  "model": "glm-5.2", "cwd": "/wd", "tools": ["Read", "Bash"]}),
+            line({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "后台跑着，等通知"}]}}),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "b7cgk2tn3", "tool_use_id": "call_bg1",
+                  "task_type": "local_bash", "description": "sleep 6"}),
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.01, "usage": {"input_tokens": 10},
+                  "num_turns": 1, "duration_ms": 8830}),
+            line({"type": "system", "subtype": "task_updated",
+                  "task_id": "b7cgk2tn3", "patch": {"status": "running"}}),
+            line({"type": "system", "subtype": "task_notification",
+                  "task_id": "b7cgk2tn3", "tool_use_id": "call_bg1",
+                  "status": "completed", "output_file": "", "summary": "sleep 6",
+                  "usage": {"total_tokens": 0, "tool_uses": 0,
+                            "duration_ms": 6000}}),
+            line({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "DONE"}]}}),
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.02, "usage": {"input_tokens": 15},
+                  "num_turns": 2, "duration_ms": 14830}),
+        ]
+
+    async def test_mid_result_does_not_end_turn(self, tmp_path: Path):
+        """P0 (slice-077-prefix 失败测试 1): 第一个 result 出现在 task_started
+        之后、task_notification 之前——只是 cc 的前台回复边界。send 必须继续读
+        到 task_notification 触发的 assistant 'DONE' + 最终 result，全程一个
+        finished，且 finished 携带最终值（num_turns=2）。
+
+        旧代码：第一个 result 直接 break → text 不含 'DONE'，finished.num_turns=1。
+        新代码必须红→绿。
+        """
+        proc = FakeProc(self._bg_local_bash_lines())
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("run sleep 6 in background"))
+        text = "".join(e.text for e in events if isinstance(e, TextEvent))
+        assert "后台跑着" in text, "前台回复文本必须进入本轮"
+        assert "DONE" in text, (
+            "后台 task_notification 触发的 assistant 续跑文本必须进入本轮，"
+            "而不是留给下一轮"
+        )
+        finished = [e for e in events if isinstance(e, FinishedEvent)]
+        assert len(finished) == 1, "一个逻辑 turn 最多一个 finished (C-3)"
+        assert finished[0].num_turns == 2, (
+            "finished 必须是最终 result（num_turns=2），不是中间 result（num_turns=1）"
+        )
+
+    async def test_second_sendtext_rejected_while_turn_active(
+        self, tmp_path: Path
+    ):
+        """P0 (slice-077-prefix 失败测试 2): 上一轮还在跑（stdout reader 活着）
+        时，第二次 SendText 必须被拒绝——yield turn_in_progress error，且不向
+        stdin 写第二条用户消息。否则两条 readline 抢同一根 pipe，第二条文本
+        串入上一轮 (C-1 / C-4)。"""
+        proc = FakeProc([line(init_event())], feed_eof=False)  # cc 还在跑
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        # 第一轮 send 读到 init 后挂在 readline，running=True
+        task1 = asyncio.create_task(collect(host.send("first")))
+        await asyncio.sleep(0.15)
+        assert host.running is True, "第一轮 send 应在跑"
+        written_before = list(proc.stdin.written)
+        # 第二次 SendText 必须被拒绝（不写 stdin、yield turn_in_progress）
+        try:
+            events2 = await asyncio.wait_for(
+                collect(host.send("second")), timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            events2 = []
+        errors = [e for e in events2 if isinstance(e, ErrorEvent)]
+        assert any(
+            getattr(e, "subclass", "") == "turn_in_progress" for e in errors
+        ), "上一轮在跑时第二次 SendText 必须 yield turn_in_progress error"
+        assert proc.stdin.written == written_before, (
+            "拒绝的 send 不能写 stdin（否则第二条用户消息串入上一轮）"
+        )
+        # 清理
+        proc.stdout.feed_eof()
+        task1.cancel()
+        try:
+            await task1
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def test_two_concurrent_tasks_end_only_at_final_result(
+        self, tmp_path: Path
+    ):
+        """slice-077-prefix 失败测试 3 + 通过标准 5: 两个并发后台任务，中间
+        result（两个都在跑）不结束 turn；A 先完成（B 还在 → 仍不结束）；B 完成
+        后的最终 result 才结束。重复 progress / notification 幂等。全程一个
+        finished。"""
+        proc = FakeProc([
+            line(init_event(sid="s-two")),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "A", "tool_use_id": "call_a",
+                  "task_type": "local_bash"}),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "B", "tool_use_id": "call_b",
+                  "task_type": "local_bash"}),
+            # mid result: both A and B still pending → keep draining
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.01, "usage": {"input_tokens": 10},
+                  "num_turns": 1, "duration_ms": 1000}),
+            # duplicate progress for A (idempotent, must not invent/double-count)
+            line({"type": "system", "subtype": "task_progress",
+                  "task_id": "A", "tool_use_id": "call_a",
+                  "last_tool_name": "Bash"}),
+            line({"type": "system", "subtype": "task_progress",
+                  "task_id": "A", "tool_use_id": "call_a",
+                  "last_tool_name": "Bash"}),
+            # A terminates; B still pending → a following result stays mid-turn
+            line({"type": "system", "subtype": "task_notification",
+                  "task_id": "A", "tool_use_id": "call_a",
+                  "status": "completed", "usage": {}}),
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.015, "usage": {"input_tokens": 15},
+                  "num_turns": 1, "duration_ms": 1500}),
+            # duplicate terminal notification for A (idempotent)
+            line({"type": "system", "subtype": "task_notification",
+                  "task_id": "A", "tool_use_id": "call_a",
+                  "status": "completed", "usage": {}}),
+            # B terminates → no pending → next result is terminal
+            line({"type": "system", "subtype": "task_notification",
+                  "task_id": "B", "tool_use_id": "call_b",
+                  "status": "completed", "usage": {}}),
+            line({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "both done"}]}}),
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.02, "usage": {"input_tokens": 20},
+                  "num_turns": 2, "duration_ms": 2000}),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("run A and B"))
+        finished = [e for e in events if isinstance(e, FinishedEvent)]
+        assert len(finished) == 1, (
+            "双任务只在最后一个终止 + 最终 result 后结束，一个 finished"
+        )
+        assert finished[0].num_turns == 2
+        text = "".join(e.text for e in events if isinstance(e, TextEvent))
+        assert "both done" in text
+
+    async def test_disconnect_drain_reads_to_logical_terminal(
+        self, tmp_path: Path
+    ):
+        """slice-077-prefix 失败测试 5 + §6: SSE cancel 发生在中间 result 之后，
+        后台 drain 必须用与 live send 相同的逻辑 turn 终止条件——读到
+        task_notification + 最终 result（tracker 清空）才结束。中途 result 不
+        结束 drain；全程单 readline 消费者（send 入口 await drain 保证）。"""
+        proc = FakeProc([
+            line(init_event(sid="s-drain")),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "bg1", "tool_use_id": "call_bg",
+                  "task_type": "local_bash"}),
+            # mid result: bg1 pending → live send keeps draining
+            line({"type": "result", "subtype": "success", "is_error": False,
+                  "total_cost_usd": 0.01, "usage": {}, "num_turns": 1,
+                  "duration_ms": 1}),
+        ], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        async def consume() -> None:
+            async for _ in host.send("run bg"):
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.15)  # send 读到 mid result，挂在 readline
+        task.cancel()  # 模拟前端 SSE 断开
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.05)  # drain task 调度
+        assert host._drain_task is not None, "cancel 后应起后台 drain"
+        assert host.running is True, "drain 期间 running=True (slice §6)"
+        # feed 后台通知 + 最终 result（无更多 pending）
+        for ev in [
+            {"type": "system", "subtype": "task_notification",
+             "task_id": "bg1", "tool_use_id": "call_bg",
+             "status": "completed"},
+            {"type": "result", "subtype": "success", "is_error": False,
+             "total_cost_usd": 0.02, "usage": {}, "num_turns": 2,
+             "duration_ms": 2},
+        ]:
+            proc.stdout.feed_data((line(ev) + "\n").encode())
+        proc.stdout.feed_eof()
+        # drain 读到 final result（tracker 空）→ return
+        if host._drain_task is not None:
+            await asyncio.wait_for(host._drain_task, timeout=2.0)
+        assert host._drain_task is None, "drain 应在逻辑终态结束"
+        assert host.running is False
+        assert proc.returncode is None, "drain 绝不杀 cc (slice §6)"
+
+    async def test_drain_period_rejects_new_sendtext(self, tmp_path: Path):
+        """codex C1 / C-4: 前端断开后 drain 在后台跑（running=True），新 SendText
+        必须被并发门禁拒（turn_in_progress），不写 stdin——保证 drain 跑时新 send
+        不会抢先 reset tracker 或抢同一根 stdout pipe。
+
+        C1 的 reset-顺序 race 本身在 asyncio FIFO 下无法在单测触发（create_task
+        后 drain 总先于新 send 调度，设 running=True），所以门禁是第一道防线、
+        reset 移到 await drain 之后是 defense-in-depth；这个测试钉住第一道防线。
+        """
+        proc = FakeProc([
+            line(init_event(sid="s-c1")),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "bg1", "tool_use_id": "call_bg",
+                  "task_type": "local_bash"}),
+        ], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        # 第一轮：读 init + task_started，挂 readline → cancel 触发 drain
+        task1 = asyncio.create_task(collect(host.send("first")))
+        await asyncio.sleep(0.15)
+        task1.cancel()
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.05)  # drain 起来，running=True
+        assert host._drain_task is not None
+        assert host.running is True, "drain 期间 running 必须为 True"
+        written_before = list(proc.stdin.written)
+        # 新 SendText 必须被拒（drain 还在跑）
+        events2 = await collect(host.send("second"))
+        errors = [e for e in events2 if isinstance(e, ErrorEvent)]
+        assert any(
+            getattr(e, "subclass", "") == "turn_in_progress" for e in errors
+        ), "drain 期间新 SendText 必须被门禁拒（不抢 pipe / 不抢先 reset）"
+        assert proc.stdin.written == written_before, "拒绝的 send 不能写 stdin"
+        # 清理：让 drain 结束
+        proc.stdout.feed_eof()
+        if host._drain_task is not None:
+            try:
+                await asyncio.wait_for(host._drain_task, timeout=2.0)
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def test_error_result_kills_process_for_generation_isolation(
+        self, tmp_path: Path
+    ):
+        """codex C3: error result 后必须杀进程（finally _sync_kill），下次
+        send respawn 隔离旧 generation 的晚到事件。只 reset tracker 不够。"""
+        proc = FakeProc([
+            line(init_event(sid="s-c3")),
+            line({"type": "result", "subtype": "max_turns", "is_error": True,
+                  "errors": ["exceeded"], "total_cost_usd": 0.0,
+                  "usage": {}, "num_turns": 10}),
+        ])
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        errors = [e for e in events if isinstance(e, ErrorEvent)]
+        assert len(errors) >= 1, "error result 必须 yield error terminal"
+        assert proc.returncode is not None, (
+            "error result 后必须杀进程（finally _sync_kill），实现 generation 隔离 (C3)"
+        )
+
+    async def test_stalled_does_not_fire_while_background_active(
+        self, tmp_path: Path
+    ):
+        """codex H2 (C-7): 后台任务在跑时 stalled 不该触发——合法等待 Bash/Agent
+        完成，不是 hang。pending 清空（最后一个 task_notification terminal）后
+        stall 才恢复正常计时（C-8）。"""
+        proc = FakeProc([
+            line(init_event(sid="s-h2")),
+            line({"type": "system", "subtype": "task_started",
+                  "task_id": "bg1", "tool_use_id": "call_bg",
+                  "task_type": "local_bash"}),
+        ], feed_eof=False)
+        host = CCHost(
+            "sid", tmp_path, spawner=FakeSpawner([proc]),
+            stalled_threshold_mild=0.1, stalled_threshold_severe=0.2,
+            stalled_threshold_kill=0.3, stalled_tick=0.05,
+        )
+        task = asyncio.create_task(collect(host.send("hi")))
+        await asyncio.sleep(0.5)  # 远超 kill 阈值 0.3s
+        assert proc.returncode is None, (
+            "后台 task 在跑时 stalled 不该 kill 进程 (C-7)"
+        )
+        proc.stdout.feed_eof()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def test_proc_exit_without_result_emits_host_error(
+        self, tmp_path: Path
+    ):
+        """codex H6 (C-3): CC 进程退出/stdout EOF 且没发 result 时，必须发唯一
+        terminal (host_error)，否则 turn 没有终态。"""
+        proc = FakeProc([line(init_event(sid="s-h6"))], feed_eof=True)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        events = await collect(host.send("hi"))
+        errors = [e for e in events if isinstance(e, ErrorEvent)]
+        assert any(getattr(e, "subclass", "") == "host_error" for e in errors), (
+            "proc EOF 无 result 必须发 host_error 保证一轮一终态 (C-3 / H6)"
+        )
+
+
 class TestExitSession:
     """slice-028 bug3: /exit (alias /quit) — CC's stream-json mode does NOT
     intercept the literal "/exit" string, so the host shuts CC down via the

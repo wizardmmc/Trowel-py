@@ -184,7 +184,17 @@ export interface SubagentProgressEvent {
   readonly type: "subagent_progress";
   readonly tool_use_id: string;
   readonly task_id: string;
-  readonly status: "started" | "progress" | "completed";
+  // slice-077-prefix: task_notification surfaces CC's native terminal status
+  // verbatim — completed / failed / cancelled (confirmed values). "unknown"
+  // is the backend's marker for a notification that arrived without a status
+  // field. Treat anything that is not started/progress as terminal.
+  readonly status:
+    | "started"
+    | "progress"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "unknown";
   readonly description?: string | null;
   readonly subagent_type?: string | null;
   readonly last_tool_name?: string | null;

@@ -412,7 +412,12 @@ class SubagentProgressEvent(_Event):
     type: Literal["subagent_progress"] = "subagent_progress"
     tool_use_id: str
     task_id: str
-    status: Literal["started", "progress", "completed"]
+    # slice-077-prefix: ``task_notification`` carries CC's native terminal status
+    # (completed / failed / cancelled — confirmed values; others not yet recorded).
+    # Kept as ``str`` (not Literal) so an unforeseen CC status does not crash the
+    # translator — the frontend treats anything that is not started/progress as
+    # terminal. ``task_started`` / ``task_progress`` still set started/progress.
+    status: str
     description: str | None = None
     subagent_type: str | None = None
     last_tool_name: str | None = None

@@ -453,6 +453,37 @@ class TestSubagentProgress:
         assert e.status == "completed"
         assert e.usage == {"total_tokens": 0, "tool_uses": 2, "duration_ms": 13878}
 
+    def test_task_notification_passes_through_non_completed_status(self):
+        """slice-077-prefix 失败测试 6: task_notification must surface CC's
+        native terminal status verbatim (failed / cancelled), not hardcode
+        "completed". Status values are confirmed by slice-077-prefix §3; the
+        real failed/cancelled end-to-end fixture is blocked (not hand-written
+        — slice 测试方法: 触发不了的 status 标 blocked)."""
+        ev_failed = cc(type="system", subtype="task_notification", task_id="t1",
+                tool_use_id="call_x", status="failed",
+                output_file="", summary="boom",
+                usage={"total_tokens": 0, "tool_uses": 1, "duration_ms": 100})
+        out_failed = Translator().translate(ev_failed)
+        assert isinstance(out_failed[0], SubagentProgressEvent)
+        assert out_failed[0].status == "failed"
+        ev_cancelled = cc(type="system", subtype="task_notification",
+                task_id="t1", tool_use_id="call_x", status="cancelled",
+                output_file="", summary="aborted",
+                usage={"total_tokens": 0, "tool_uses": 0, "duration_ms": 0})
+        out_cancelled = Translator().translate(ev_cancelled)
+        assert out_cancelled[0].status == "cancelled"
+
+    def test_task_notification_without_status_surfaces_unknown(self):
+        """slice-077-prefix H-2: a task_notification that arrives WITHOUT a
+        status field (protocol anomaly; the event's arrival still terminates
+        the task in the tracker) must surface as "unknown", not a guessed
+        "completed" that would lie about a possibly-failed task."""
+        ev = cc(type="system", subtype="task_notification", task_id="t1",
+                tool_use_id="call_x", output_file="", summary="no status")
+        out = Translator().translate(ev)
+        assert isinstance(out[0], SubagentProgressEvent)
+        assert out[0].status == "unknown"
+
     def test_task_updated_yields_nothing(self):
         # decision #5: no tool_use_id + duplicates task_notification; stay ignored
         ev = cc(type="system", subtype="task_updated", task_id="t1",

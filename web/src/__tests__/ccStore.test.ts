@@ -763,6 +763,40 @@ describe("reduceEvent — subagent_progress (slice-025-a A3)", () => {
     }
   });
 
+  it("slice-077-prefix: task_started → task_notification → finished keeps one turn + done phase", () => {
+    // 后端在中间 result 时缓冲不发 finished (C-3)，前端只在最终 result 收到
+    // 一个 finished。回放确认前端不变量：subagent 事件流不提前结束 turn，
+    // 全程一个 turn，最终 finished 才 phase=done。
+    let state = withOpenTurn();
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "call_bg",
+      task_id: "b7cgk2tn3",
+      status: "started",
+      description: "sleep 6",
+    });
+    expect(state.phase).not.toBe("done");
+    // 后台任务完成通知（后端 mid-turn 继续 drain，不发 finished）
+    state = reduceEvent(state, {
+      type: "subagent_progress",
+      tool_use_id: "call_bg",
+      task_id: "b7cgk2tn3",
+      status: "completed",
+      usage: { total_tokens: 0 },
+    });
+    expect(state.phase).not.toBe("done");
+    expect(state.turns.length).toBe(1);
+    // 最终 finished → 一个 turn、phase=done
+    state = reduceEvent(state, {
+      type: "finished",
+      total_cost_usd: 0.02,
+      usage: {},
+      num_turns: 2,
+    });
+    expect(state.phase).toBe("done");
+    expect(state.turns.length).toBe(1);
+  });
+
   it("falls back to a standalone subagent item when no Agent tool matches", () => {
     const state = reduceEvent(withOpenTurn(), {
       type: "subagent_progress",

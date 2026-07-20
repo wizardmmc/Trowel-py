@@ -37,6 +37,17 @@ describe("SubagentBlock (slice-025-a A3)", () => {
     expect(screen.queryByLabelText("进行中")).toBeNull();
   });
 
+  it.each(["failed", "cancelled", "unknown"] as const)(
+    "slice-077-prefix: status %s stops the spinner (no permanent spinner, 失败测试 6)",
+    (status) => {
+      render(<SubagentBlock subagent={{ status }} />);
+      // terminal-but-not-completed statuses must NOT keep the spinner running
+      expect(screen.queryByLabelText("进行中")).toBeNull();
+      // they render the terminal ("Done") branch, not the in-progress ring
+      expect(screen.getByText(/Done/)).toBeInTheDocument();
+    },
+  );
+
   it("omits zero/missing usage fields (GLM backend total_tokens=0)", () => {
     render(
       <SubagentBlock

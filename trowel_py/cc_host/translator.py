@@ -215,11 +215,19 @@ class Translator:
                 )
             ]
         if sub == "task_notification":
+            # slice-077-prefix: pass through CC's native terminal status verbatim
+            # (completed / failed / cancelled — confirmed values; others not yet
+            # recorded). Do NOT hardcode "completed": a failed/cancelled task
+            # must surface honestly (slice §3 / 失败测试 6: 不统一写成 completed).
+            # When CC omits the field entirely (protocol anomaly; the event's
+            # arrival still terminates the task in the tracker), surface
+            # "unknown" so the UI can show "status not reported" rather than
+            # lying that the task succeeded.
             return [
                 SubagentProgressEvent(
                     tool_use_id=ev.get("tool_use_id", ""),
                     task_id=ev.get("task_id", ""),
-                    status="completed",
+                    status=ev.get("status") or "unknown",
                     usage=ev.get("usage"),
                 )
             ]

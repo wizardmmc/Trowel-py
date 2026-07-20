@@ -92,7 +92,15 @@ export interface ToolItem {
  * wins; undefined fields fall back to the previous value so started's
  * description/subagent_type survive into the progress/completed updates). */
 export interface SubagentState {
-  readonly status: "started" | "progress" | "completed";
+  // slice-077-prefix: terminal status is surfaced verbatim (completed / failed
+  // / cancelled / unknown). Anything that is not started/progress is terminal.
+  readonly status:
+    | "started"
+    | "progress"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "unknown";
   readonly description?: string | null;
   readonly subagent_type?: string | null;
   readonly last_tool_name?: string | null;

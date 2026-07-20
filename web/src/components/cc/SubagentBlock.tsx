@@ -73,15 +73,18 @@ function brief(text: string, max = 40): string {
  */
 export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockProps) {
   const [expanded, setExpanded] = useState(false);
-  const inProgress = subagent.status !== "completed";
+  // slice-077-prefix: a subagent is in-progress ONLY on started/progress.
+  // Terminal statuses (completed/failed/cancelled/unknown) all stop the
+  // spinner — 失败测试 6: failed/cancelled 不留永久 spinner.
+  const inProgress =
+    subagent.status === "started" || subagent.status === "progress";
   const tokens = tokenCount(subagent.usage);
 
   const kids = childTools ?? [];
   const hasKids = kids.length > 0;
-  const autoCount =
-    subagent.status === "completed"
-      ? CC_VISIBLE_DONE_TOOLS
-      : CC_VISIBLE_RUNNING_TOOLS;
+  const autoCount = inProgress
+    ? CC_VISIBLE_RUNNING_TOOLS
+    : CC_VISIBLE_DONE_TOOLS;
   const visibleCount = expanded ? kids.length : Math.min(autoCount, kids.length);
   const hiddenCount = kids.length - visibleCount;
   // Latest N: slice from the tail (new tools append at the end; the oldest

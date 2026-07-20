@@ -28,6 +28,7 @@ from trowel_py.cc_host.input import (
     ExitSession,
     LocalCommand,
     RestartSession,
+    SendText,
     UnsupportedSlash,
     classify_input,
 )
@@ -42,6 +43,7 @@ from trowel_py.cc_host.launcher import (
 from trowel_py.cc_host.proxy import build_proxy_env, load_settings_env
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.stalled import StalledDetector
+from trowel_py.cc_host.background_tracker import BackgroundActivityTracker
 from trowel_py.cc_host.subagent_usage import (
     merge_usage,
     subagent_transcript_path,
@@ -284,6 +286,18 @@ class CCHost:
         # on a later send's poll (see resync + the poll at the top of the
         # readline loop in send()).
         self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
+        # slice-077-prefix: background task activity tracker. task_started adds
+        # a pending task_id; task_notification removes it; a `result` is the
+        # logical turn terminal only when no tasks are pending AND no workflow
+        # is in flight. Lives across the process but reset() at each turn entry
+        # so a prior turn's pending cannot leak into the next (C-9).
+        self._bg_tracker = BackgroundActivityTracker()
+        # slice-077-prefix: a `result` event's terminal (FinishedEvent /
+        # ErrorEvent) is buffered here, NOT yielded immediately. The result
+        # block below decides: terminal success → yield; mid-turn success
+        # (background still active) → drop and keep draining; error → always
+        # yield + clear pending. C-3: at most one terminal per turn.
+        self._pending_terminal: FinishedEvent | ErrorEvent | None = None
         # Resumed session knows cc_session_id now → save session-start at once.
         # Fresh session defers to the init handler (cc_session_id unknown here).
         if checkpoint.is_git_repo(self.workdir) and resume_from:
@@ -722,10 +736,60 @@ class CCHost:
 
     # -- send --------------------------------------------------------------
 
+    def _update_bg_tracker(self, ev: dict[str, Any]) -> None:
+        """slice-077-prefix: feed one raw CC event into the background tracker.
+
+        task_started registers a pending task; task_progress updates it;
+        task_notification terminates it (the event's arrival is the signal,
+        regardless of its status value — no guessing). Centralised so the live
+        send loop and the disconnect drain stay in lockstep: missing a task_*
+        subtype in one path would let a background task silently strand the
+        turn in the other.
+        """
+        if ev.get("type") != "system":
+            return
+        sub = ev.get("subtype")
+        if sub == "task_started":
+            self._bg_tracker.register_started(
+                ev.get("task_id", ""),
+                ev.get("tool_use_id", ""),
+                ev.get("task_type"),
+            )
+        elif sub == "task_progress":
+            self._bg_tracker.mark_progress(ev.get("task_id", ""))
+        elif sub == "task_notification":
+            self._bg_tracker.terminate(ev.get("task_id", ""))
+
+    def _has_background_activity(self) -> bool:
+        """slice-077-prefix: whether the logical turn is still active.
+
+        True when either a background task is pending (task_started seen
+        without a terminal task_notification) or a workflow is in flight. A
+        ``result`` arriving while this is True is a mid-turn boundary, not the
+        terminal — the live loop and the disconnect drain share this check.
+        """
+        return self._bg_tracker.has_pending_tasks() or (
+            self._workflow_watcher.enabled
+            and not self._workflow_watcher.all_done
+        )
+
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
         """Feed one user message and yield trowel events until the turn ends."""
-        self.running = True  # slice-028 D2: 标记在跑（GET /sessions/active 用）
         action = classify_input(text, self.workdir)
+        # slice-077-prefix C-4: a previous turn still running means its stdout
+        # reader is live — a second SendText would contend for the same pipe
+        # (C-1) and its text would 串 into the prior turn's backlog. Reject
+        # before touching stdin. Control commands (RestartSession /
+        # ExitSession / LocalCommand / UnsupportedSlash) are NOT user messages
+        # and stay allowed — they kill / interrupt / answer locally and never
+        # append text to CC's stdin, so they cannot cause a cross-turn 串流.
+        if self.running and isinstance(action, SendText):
+            yield ErrorEvent(
+                type="error",
+                subclass="turn_in_progress",
+                errors=["another turn is still running on this session"],
+            )
+            return
 
         if isinstance(action, LocalCommand):
             yield self._local_answer(action)
@@ -773,7 +837,13 @@ class CCHost:
                 yield tev
             return
 
-        # SendText main path
+        # SendText main path — only here does a CC turn actually run, so only
+        # here do we flip running (slice-077-prefix: lets the next send's gate
+        # reject correctly). The per-turn tracker/terminal reset happens AFTER
+        # the disconnect drain is awaited below — resetting here would race a
+        # still-running drain (C1: drain would see an empty tracker and treat
+        # a mid-turn result as terminal).
+        self.running = True  # slice-028 D2: 标记在跑（GET /sessions/active 用）
         payload = _user_msg(action.text)
         # slice-026 E1: snapshot the worktree before the turn runs so the user
         # can revert it. turn_id names the checkpoint ref; revertible is False
@@ -817,6 +887,14 @@ class CCHost:
                 except (asyncio.CancelledError, Exception):
                     pass
                 self._drain_task = None
+            # slice-077-prefix C1: reset per-turn state ONLY after any pending
+            # drain has finished — the drain owns the prior turn's tracker
+            # (task_started/notification it may still be processing). Resetting
+            # before the drain completes would empty the tracker mid-drain,
+            # letting a mid-turn result look terminal and strand the prior
+            # turn's tail in stdout for THIS turn to trip over.
+            self._pending_terminal = None
+            self._bg_tracker.reset()
             await self._ensure_process()
             if not await self._safe_write(payload):
                 yield ErrorEvent(
@@ -850,6 +928,13 @@ class CCHost:
                     )
                 except asyncio.TimeoutError:
                     if proc.returncode is not None:
+                        # slice-077-prefix C-3 (codex H6): proc died without a
+                        # result — emit a terminal so the turn has exactly one.
+                        yield ErrorEvent(
+                            type="error",
+                            subclass="host_error",
+                            errors=["CC process exited without a result"],
+                        )
                         break
                     # slice-036 fix: turn boundary is cc's `result` event, NOT
                     # all_done+silence. cc finishes a workflow, then thinks
@@ -864,6 +949,16 @@ class CCHost:
                     # let the stall watchdog kill the process and force a retry
                     # (which would make cc re-emit the AskUserQuestion).
                     if self._pending_elicit is not None:
+                        continue
+                    # slice-077-prefix C-7 (codex H2): a pending background task
+                    # or workflow is legitimate activity — CC is waiting on
+                    # Bash/Agent, not hung. Keep the stall detector quiet while
+                    # _has_background_activity() holds; once the last terminal
+                    # task_notification lands (pending empties), the next
+                    # record_event is that notification and normal stall timing
+                    # resumes from there (C-8).
+                    if self._has_background_activity():
+                        detector.record_event(self._now())
                         continue
                     phase = detector.phase(self._now())
                     if phase == "kill":
@@ -931,6 +1026,15 @@ class CCHost:
                     normal_end = True
                     break
                 if not raw:
+                    # slice-077-prefix C-3 (codex H6): stdout EOF without a
+                    # result — emit a terminal so the turn has exactly one
+                    # (a BufferedState mid-result was dropped on purpose; EOF
+                    # is a host-side failure, not a turn success).
+                    yield ErrorEvent(
+                        type="error",
+                        subclass="host_error",
+                        errors=["CC stdout closed without a result"],
+                    )
                     break
                 try:
                     ev = json.loads(raw)
@@ -974,6 +1078,10 @@ class CCHost:
                         _wf_debug(f"  watcher set_transcript_dir={tdir}")
                         if tdir is not None:
                             self._workflow_watcher.set_transcript_dir(tdir)
+                # slice-077-prefix: keep the background tracker in sync so a
+                # mid-turn `result` does not end the turn while a task is still
+                # pending. Helper shared with the disconnect drain (lockstep).
+                self._update_bg_tracker(ev)
                 # slice-036: workflow completion. cc pushes a system
                 # task_notification when the workflow finishes, but实测 (see
                 # docs/design/front-end/cc-workflow-event-model.md §3) shows
@@ -1018,32 +1126,71 @@ class CCHost:
                         # as the name floor for GET /slash-items. A fresh list
                         # copy — cc sends a new roster on every init.
                         self._init_roster = list(tev.slash_commands)
-                    yield tev
-                    if isinstance(tev, FinishedEvent):
-                        self._last_finished = tev
-                if ev.get("type") == "result":
-                    if (
-                        self._workflow_watcher.enabled
-                        and not self._workflow_watcher.all_done
+                    # slice-077-prefix: buffer the terminal event from a
+                    # `result` — a mid-turn success result must NOT emit
+                    # finished (C-3: at most one terminal per turn). The result
+                    # block below decides yield (terminal) vs drop (mid-turn)
+                    # after checking background activity.
+                    #
+                    # Contract: translator._on_result emits exactly ONE terminal
+                    # event (FinishedEvent on success, ErrorEvent otherwise) per
+                    # `result`, and it is the event translate() yields for that
+                    # result. If that ever changes (e.g. _on_result emits
+                    # multiple events for one result), revisit this buffer.
+                    if ev.get("type") == "result" and isinstance(
+                        tev, (FinishedEvent, ErrorEvent)
                     ):
-                        # slice-036: cc backgrounds the workflow and pushes
-                        # `result` before it finishes. Keep draining so the
-                        # workflow's progress + completion + cc's summary land
-                        # on THIS turn (not the next). The loop-top guard ends
-                        # the turn once the workflow reaches a terminal state.
+                        self._pending_terminal = tev
+                        continue
+                    yield tev
+                if ev.get("type") == "result":
+                    terminal = self._pending_terminal
+                    is_error_result = not (
+                        ev.get("subtype") == "success"
+                        and not ev.get("is_error")
+                    )
+                    if is_error_result:
+                        # slice-077-prefix §4 + codex C3: error result is always
+                        # terminal — clear pending state and yield the error. Do
+                        # NOT set normal_end: the turn did not end cleanly, and
+                        # a still-alive CC may push late task_notification /
+                        # assistant events into the next send's stdout. Leaving
+                        # normal_end=False lets the finally block _sync_kill,
+                        # forcing the next send to respawn a fresh process
+                        # (true generation isolation, not just a tracker reset).
+                        self._bg_tracker.reset()
+                        self._pending_terminal = None
+                        if terminal is not None:
+                            yield terminal
+                        await self._maybe_update_completed()
+                        break
+                    if self._has_background_activity():
+                        # slice-077-prefix: mid-turn boundary. Drop the buffered
+                        # FinishedEvent (C-3) and keep draining so the background
+                        # task's completion + CC's auto-continuation land on THIS
+                        # turn. The accumulator was already reset by the
+                        # translator's _on_result; CC's next assistant text
+                        # starts a fresh native segment.
+                        self._pending_terminal = None
                         _wf_debug(
-                            "  RESULT but workflow in flight (watching="
-                            f"{self._workflow_watcher.is_watching}) — keep draining"
+                            "  RESULT mid-turn (bg_pending="
+                            f"{sorted(self._bg_tracker.pending_ids())}) — keep draining"
                         )
                     else:
                         normal_end = True
                         _wf_debug(
-                            f"  RESULT break watching={self._workflow_watcher.is_watching} "
+                            f"  RESULT terminal watching="
+                            f"{self._workflow_watcher.is_watching} "
                             f"enabled={self._workflow_watcher.enabled}"
                         )
+                        self._pending_terminal = None
+                        if terminal is not None:
+                            yield terminal
+                            if isinstance(terminal, FinishedEvent):
+                                self._last_finished = terminal
                         # slice-040-b: stamp the completed water mark BEFORE
                         # breaking (the result turn is fully done; the next
-                        # increment distils up to this byte offset).
+                        # increment distiles up to this byte offset).
                         await self._maybe_update_completed()
                         break
             # slice-028 bug3: result 后检测 cc 是否退出（用户 /exit）。普通 turn
@@ -1196,8 +1343,39 @@ class CCHost:
                     ev = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
+                # slice-077-prefix: keep the tracker in sync so the drain uses
+                # the SAME logical-turn terminal condition as a live send
+                # (slice §6 断线 drain). Shared helper → no drift between paths.
+                self._update_bg_tracker(ev)
                 if ev.get("type") == "result":
-                    return  # turn 跑完
+                    if self._has_background_activity():
+                        continue  # mid-turn result — keep draining
+                    # logical turn terminal: advance the completed watermark so
+                    # a later reconcile does not leave the background tail for
+                    # the next send to trip over (slice §6 / C-5). Also refresh
+                    # _last_finished from this final result so /cost reflects
+                    # the WHOLE logical turn (background 续跑 included), not
+                    # just the pre-disconnect segment (slice §5 / C-5).
+                    if ev.get("subtype") == "success" and not ev.get("is_error"):
+                        self._last_finished = FinishedEvent(
+                            usage=ev.get("usage") or {},
+                            total_cost_usd=float(ev.get("total_cost_usd", 0.0)),
+                            num_turns=int(ev.get("num_turns", 0)),
+                        )
+                    else:
+                        self._bg_tracker.reset()
+                    # Advance the watermark so a reconcile does not strand the
+                    # background tail (slice §6 / C-5). If this raises (e.g.
+                    # jsonl not yet flushed), the next live send's terminal
+                    # block re-calls _maybe_update_completed — so a drain-side
+                    # failure cannot permanently strand the watermark.
+                    try:
+                        await self._maybe_update_completed()
+                    except Exception as exc:  # noqa: BLE001 — never crash drain
+                        logger.warning(
+                            "drain completed-offset update failed: %s", exc
+                        )
+                    return
         finally:
             self.running = False
             self._drain_task = None  # 释放强引用
