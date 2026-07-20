@@ -1033,6 +1033,27 @@ class TestMcpConfig:
         assert env is not None
         assert env["TROWEL_SESSION_ID"] == "sid"
         assert "MEMORY_ROOT" in env
+        # slice-078: host-neutral identity is always stamped on the CC path.
+        assert env["TROWEL_HOST_KIND"] == "cc"
+
+    def test_build_spawn_env_native_session_id_when_resumed(
+        self, tmp_path: Path
+    ) -> None:
+        """slice-078: a resumed CC session knows cc_session_id at construction,
+        so TROWEL_NATIVE_SESSION_ID (and the legacy CC_SESSION_ID) are stamped
+        too — the memory MCP then writes host-neutral identity on first call."""
+        host = CCHost(
+            "sid",
+            tmp_path,
+            mcp_config="/tmp/mem.json",
+            proxy_base_url=None,
+            resume_from="cc-sid-xyz",
+        )
+        env = host._build_spawn_env()
+        assert env is not None
+        assert env["TROWEL_HOST_KIND"] == "cc"
+        assert env["TROWEL_NATIVE_SESSION_ID"] == "cc-sid-xyz"
+        assert env["CC_SESSION_ID"] == "cc-sid-xyz"
 
     def test_build_spawn_env_no_identity_without_mcp_config(
         self, tmp_path: Path

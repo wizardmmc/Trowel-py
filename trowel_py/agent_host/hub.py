@@ -18,9 +18,11 @@ Invariants enforced here:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -78,6 +80,16 @@ class CrossRuntimeResumeError(Exception):
     """A resume targeted a native id already bound to another runtime (C-2)."""
 
 
+class ConditionMismatchError(Exception):
+    """A resume kept the same native id but flipped the M/P condition (C-2).
+
+    slice-078: the M/P switches are frozen at create. Resuming the same native
+    thread with a different memory_enabled / profile_enabled would silently
+    swap the experiment condition (e.g. a memory-on thread resumed as
+    memory-off), so the hub refuses and the caller must create a new session.
+    """
+
+
 #: Signature of the CC opener the Hub calls to build + register a CCHost.
 #: Production wires this to ``cc_host.routes.open_cc_session``; tests inject a
 #: fake so the Hub is exercised without a real CCHost. Kept as a loose
@@ -113,6 +125,7 @@ class SessionHub:
         *,
         cc_registry: dict[str, Any] | None = None,
         cc_opener: CcOpener | None = None,
+        codex_config_home: str | Path | None = None,
     ) -> None:
         """Wire the Hub to its stores + native hosts.
 
@@ -124,6 +137,10 @@ class SessionHub:
                 ``_REGISTRY``). Inject a fresh dict in tests.
             cc_opener: callable that builds + registers a CCHost (defaults to
                 ``cc_host.routes.open_cc_session``). Inject a fake in tests.
+            codex_config_home: slice-078 override for the codex config dir used
+                by the memory-MCP isolation check (``~/.codex`` by default, or
+                ``$CODEX_HOME``). Tests inject a tmp dir; production leaves it
+                ``None``.
         """
 
         self._store = store
@@ -132,6 +149,11 @@ class SessionHub:
             cc_registry if cc_registry is not None else _default_cc_registry()
         )
         self._cc_opener = cc_opener if cc_opener is not None else _default_cc_opener()
+        # Normalise to Path | None so downstream code (mcp_isolation) handles a
+        # single concrete type regardless of whether a str or Path was passed.
+        self._codex_config_home = (
+            Path(codex_config_home) if codex_config_home is not None else None
+        )
         self._active_id: str | None = None
         # slice-074: per-session CC + Codex seq adapters (seq spans turns, so
         # each outlives one send). Both own a contiguous per-session counter so
@@ -215,11 +237,32 @@ class SessionHub:
         the first send routes through ``thread/resume`` instead of
         ``thread/start`` (spec C-2: resume stays within the originating
         runtime; review HIGH-4).
+
+        slice-078: static M/P injection is computed here via the shared
+        :func:`build_memory_injection` so the Memory Kernel has ONE owner (the
+        cc and codex paths produce the same text for the same switches, C-4).
+        The empty result (memory-off + no profile on disk) maps to ``None`` so
+        the manager omits ``developerInstructions`` entirely. memory-on also
+        attaches the trowel memory MCP via ``config.mcp_servers``; memory-off
+        leaves it off (C-3: the whole read-path is closed, not just hidden).
         """
 
         if self._codex is None:
             raise HTTPException(status_code=503, detail="codex host unavailable")
+        # slice-078 C-3: refuse up front when the user's codex config already
+        # declares a same-named MCP server. ``--disable memories`` does NOT
+        # unregister user MCP servers, so such a collision would let a
+        # memory-off thread still expose a tool named ``trowel_note_search``,
+        # making the off condition a lie (spec: "must detect and explicitly
+        # fail, not claim off"). Checked for EVERY Codex session — the name is
+        # specific enough that a real collision is always experiment-relevant.
+        # HIGH-4 (codex review): check the project-level layers too, not just
+        # the global config — codex deep-merges them.
+        self._refuse_on_memory_mcp_collision(req.workdir)
         from trowel_py.codex_host import CodexSession, CodexSessionConfig
+        from trowel_py.codex_host.session import build_default_trowel_memory_mcp
+        from trowel_py.memory.injection import build_memory_injection
+        from trowel_py.memory.paths import resolve_memory_root
 
         sid = uuid.uuid4().hex
         preset = req.permission_preset or "follow"
@@ -231,6 +274,42 @@ class SessionHub:
         ):
             approval_policy = req.approval_policy
             sandbox = req.sandbox
+        memory_root = resolve_memory_root()
+        # Mirror CCHost._spawn's stance (cc_host/service.py): a memory-subsystem
+        # failure must never block session creation. build_memory_injection can
+        # raise on MemoryStore IO / profile parse / compress edge bugs; falling
+        # back to "" maps to developer_instructions=None (no injection) so the
+        # Codex thread still starts, matching how the CC path degrades.
+        try:
+            injection_text = build_memory_injection(
+                date.today().isoformat(),
+                memory_root,
+                memory_enabled=req.memory_enabled,
+                profile_enabled=req.profile_enabled,
+            )
+        except Exception:
+            _log.warning(
+                "memory injection failed; codex thread starts without it",
+                exc_info=True,
+            )
+            injection_text = ""
+        developer_instructions = injection_text or None
+        injection_hash = _injection_fingerprint(injection_text)
+        trowel_memory_mcp = (
+            build_default_trowel_memory_mcp(
+                trowel_session_id=sid,
+                memory_root=str(memory_root),
+            )
+            if req.memory_enabled
+            else None
+        )
+        # slice-078 C-7: persist the MCP server names trowel itself declared,
+        # so experiments can tell a memory-on thread (has trowel_note_search)
+        # from a memory-off one even after restart. External/user-configured
+        # MCP servers are NOT here — their detection lives in mcp_isolation.
+        declared_mcp_roster = (
+            (trowel_memory_mcp.server_name,) if trowel_memory_mcp else ()
+        )
         config = CodexSessionConfig(
             trowel_session_id=sid,
             workdir=req.workdir,
@@ -239,6 +318,8 @@ class SessionHub:
             approval_policy=approval_policy,
             sandbox=sandbox,
             initial_thread_id=req.resume_from,
+            developer_instructions=developer_instructions,
+            trowel_memory_mcp=trowel_memory_mcp,
         )
         session = CodexSession(config)
         if self._codex is not None:
@@ -256,10 +337,43 @@ class SessionHub:
             capabilities=CODEX_CAPABILITIES,
             name=self._display_name(req.workdir),
             permission_preset=preset,
+            injection_hash=injection_hash,
+            declared_mcp_roster=declared_mcp_roster,
         )
         self._store.put(binding)
         self._active_id = sid
         return binding
+
+    def _refuse_on_memory_mcp_collision(self, workdir: str) -> None:
+        """slice-078 C-3: refuse session creation when the user's codex config
+        already declares an MCP server with trowel's registered name.
+
+        The name trowel registers (``trowel_note_search``) is specific enough
+        that a collision is always experiment-relevant — either the user runs
+        a conflicting memory server, or they happen to reuse the name, and in
+        both cases a memory-off thread cannot be claimed clean. Production
+        leaves ``codex_config_home`` unset so the real ``CODEX_HOME`` /
+        ``~/.codex`` is read; tests inject a tmp dir. ``workdir`` is the
+        session cwd — codex loads project-level config from there and from the
+        git root, both of which are also checked (HIGH-4).
+        """
+
+        from trowel_py.codex_host.mcp_isolation import find_conflicting_mcp_server
+
+        conflict = find_conflicting_mcp_server(
+            codex_home=self._codex_config_home,
+            workdir=workdir,
+        )
+        if conflict is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"a Codex MCP server named {conflict.server_name!r} is "
+                    f"already declared in {conflict.config_path}; trowel "
+                    f"cannot guarantee memory-off isolation. Rename or remove "
+                    f"that entry and retry."
+                ),
+            )
 
     def _display_name(self, workdir: str) -> str:
         """Workdir basename + ``#N`` for duplicates, counted across the store."""
@@ -460,27 +574,66 @@ class SessionHub:
             "adjusted": adjusted,
         }
 
-    def validate_resume(self, runtime: Runtime, native_session_id: str | None) -> None:
-        """Forbid resuming a native id bound to the other runtime (spec C-2).
+    def validate_resume(
+        self,
+        runtime: Runtime,
+        native_session_id: str | None,
+        *,
+        memory_enabled: bool | None = None,
+        profile_enabled: bool | None = None,
+    ) -> None:
+        """Forbid resuming a native id under a different runtime or M/P (C-2).
 
         A ``None`` native id is a fresh session — always allowed.
+
+        Args:
+            runtime: The runtime the caller wants to resume as.
+            native_session_id: The native id being resumed.
+            memory_enabled: slice-078 — when the caller supplied an explicit
+                switch, it must equal the frozen value on the existing binding
+                for the same native id (otherwise the experiment condition is
+                being silently swapped). ``None`` means "caller did not pin"
+                and skips the check (back-compat for pre-078 callers).
+            profile_enabled: Same contract as ``memory_enabled`` for profile.
 
         Raises:
             CrossRuntimeResumeError: if ``native_session_id`` is already bound
                 to a session whose runtime differs from ``runtime``.
+            ConditionMismatchError: if the same native id is already bound
+                under the same runtime but with a different M/P switch.
         """
 
         if native_session_id is None:
             return
         for binding in self._store.list_all():
-            if (
-                binding.native_session_id == native_session_id
-                and binding.runtime is not runtime
-            ):
+            if binding.native_session_id != native_session_id:
+                continue
+            if binding.runtime is not runtime:
                 raise CrossRuntimeResumeError(
                     f"native session {native_session_id!r} is bound to "
                     f"{binding.runtime.value}; cannot resume as "
                     f"{runtime.value} (C-2)"
+                )
+            # Same runtime + same native id: the M/P switches are frozen at the
+            # original create. A mismatch means the caller is trying to resume
+            # the same thread under a different experiment condition.
+            if (
+                memory_enabled is not None
+                and binding.memory_enabled != memory_enabled
+            ):
+                raise ConditionMismatchError(
+                    f"native session {native_session_id!r} is frozen with "
+                    f"memory_enabled={binding.memory_enabled}; cannot resume "
+                    f"as memory_enabled={memory_enabled} (C-2)"
+                )
+            if (
+                profile_enabled is not None
+                and binding.profile_enabled != profile_enabled
+            ):
+                raise ConditionMismatchError(
+                    f"native session {native_session_id!r} is frozen with "
+                    f"profile_enabled={binding.profile_enabled}; cannot "
+                    f"resume as profile_enabled={profile_enabled} (C-2)"
                 )
 
     async def interrupt(self, session_id: str) -> None:
@@ -788,3 +941,22 @@ def _permission_label(sandbox: str | None, approval: str | None) -> str | None:
         return None
     sandbox_label = labels.get(sandbox or "", sandbox or "Unknown sandbox")
     return f"{sandbox_label} · {approval or 'unknown approval'}"
+
+
+def _injection_fingerprint(text: str) -> str:
+    """Short sha of the static M/P injection text (slice-078 C-6).
+
+    Empty text → empty string, so a memory-off + no-profile Codex session
+    (no injection body at all) gets a falsy hash rather than ``sha256("")``.
+    The binding stores only this fingerprint — never the injection body — so
+    experiments can verify a resumed session kept its frozen condition without
+    leaking private injection text into the persisted binding.
+
+    12 hex chars = 48 bits; for a single user's experiment volume (well under
+    10^6 frozen bindings) the birthday-collision probability is negligible
+    (<< 10^-6). If this ever feeds a cross-user aggregate, raise the prefix.
+    """
+
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]

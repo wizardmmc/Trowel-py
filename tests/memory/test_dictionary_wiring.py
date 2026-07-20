@@ -118,7 +118,7 @@ def test_search_warns_when_dictionary_stale(tmp_path: Path) -> None:
     )
     out = handle_search(
         "q", 5, False, MemoryStore(tmp_path), tmp_path / "dictionary-L0.md",
-        {"trowel_session_id": "", "cc_session_id": ""},
+        {"trowel_session_id": "", "cc_session_id": "", "host_kind": "", "native_session_id": ""},
         retriever=lambda *a, **k: ["Alpha"],
     )
     assert "warning" in out
@@ -130,7 +130,7 @@ def test_search_no_warning_when_consistent(tmp_path: Path) -> None:
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(_ONE))
     out = handle_search(
         "q", 5, False, MemoryStore(tmp_path), tmp_path / "dictionary-L0.md",
-        {"trowel_session_id": "", "cc_session_id": ""},
+        {"trowel_session_id": "", "cc_session_id": "", "host_kind": "", "native_session_id": ""},
         retriever=lambda *a, **k: ["Alpha"],
     )
     assert "warning" not in out

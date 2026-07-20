@@ -50,6 +50,18 @@ class SessionBinding:
         connected: ``True`` once the native host has a live process/thread.
         running: ``True`` while a turn is mid-stream.
         created_at / updated_at: ISO timestamps (second precision).
+        injection_hash: slice-078 — short sha of the static M/P injection text
+            (empty on CC, and on a Codex memory-off + no-profile session whose
+            injection is empty). Lets experiments verify a resumed session
+            kept its frozen condition without storing the injection body in
+            the binding (C-6).
+        declared_mcp_roster: slice-078 — the MCP server names trowel itself
+            attached on this thread (``("trowel_note_search",)`` on a Codex
+            memory-on session; empty otherwise). This is the *declared*
+            roster, not the *effective* one — external MCP servers the user
+            configured are not visible here (their detection lives in
+            ``codex_host.mcp_isolation``); a future slice may add a live-roster
+            field populated from ``mcpServerStatus/list`` (C-7).
     """
 
     session_id: str
@@ -72,6 +84,8 @@ class SessionBinding:
     effective_sandbox: str | None = None
     effective_approval: str | None = None
     network_access: bool | None = None
+    injection_hash: str = ""
+    declared_mcp_roster: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """JSON-serialisable view (runtime + capabilities unwrapped)."""
@@ -97,6 +111,8 @@ class SessionBinding:
             "effective_sandbox": self.effective_sandbox,
             "effective_approval": self.effective_approval,
             "network_access": self.network_access,
+            "injection_hash": self.injection_hash,
+            "declared_mcp_roster": list(self.declared_mcp_roster),
         }
 
 
@@ -120,6 +136,8 @@ def make_binding(
     effective_sandbox: str | None = None,
     effective_approval: str | None = None,
     network_access: bool | None = None,
+    injection_hash: str = "",
+    declared_mcp_roster: Iterable[str] = (),
 ) -> SessionBinding:
     """Construct a :class:`SessionBinding`, stamping both timestamps at now.
 
@@ -147,6 +165,8 @@ def make_binding(
         effective_sandbox=effective_sandbox,
         effective_approval=effective_approval,
         network_access=network_access,
+        injection_hash=injection_hash,
+        declared_mcp_roster=tuple(declared_mcp_roster),
         created_at=now,
         updated_at=now,
     )
@@ -211,5 +231,9 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             bool(data["network_access"])
             if data.get("network_access") is not None
             else None
+        ),
+        injection_hash=str(data.get("injection_hash", "")),
+        declared_mcp_roster=tuple(
+            str(s) for s in (data.get("declared_mcp_roster") or ())
         ),
     )

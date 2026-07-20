@@ -410,13 +410,19 @@ class CCHost:
         # engineered), so TROWEL_SESSION_ID / MEMORY_ROOT / CC_SESSION_ID land in
         # the server. CC_SESSION_ID is None for a fresh session until init —
         # injected only when known (resume); per-call identity uses toolUseId.
+        # slice-078: also stamp the host-neutral pair (TROWEL_HOST_KIND=cc +
+        # TROWEL_NATIVE_SESSION_ID=<cc_session_id>) so the memory MCP writes the
+        # same identity shape for CC as it does for Codex. The legacy
+        # CC_SESSION_ID is still set for back-compat reads of pre-078 logs.
         if self._mcp_config:
             env = dict(env) if env is not None else dict(os.environ)
             from trowel_py.memory.paths import resolve_memory_root
             env["TROWEL_SESSION_ID"] = self.session_id
+            env["TROWEL_HOST_KIND"] = "cc"
             env["MEMORY_ROOT"] = str(resolve_memory_root())
             if self._cc_session_id:
                 env["CC_SESSION_ID"] = self._cc_session_id
+                env["TROWEL_NATIVE_SESSION_ID"] = self._cc_session_id
         return env
 
     async def _ensure_process(self) -> None:

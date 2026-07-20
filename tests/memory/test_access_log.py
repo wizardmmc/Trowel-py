@@ -74,3 +74,121 @@ def test_corrupt_line_skipped(tmp_path: Path) -> None:
 def test_read_empty_when_absent(tmp_path: Path) -> None:
     assert read_access_log(tmp_path) == []
     assert read_outcome_log(tmp_path) == []
+
+
+def test_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
+    """slice-078: host_kind + native_session_id persist and read back.
+
+    A Codex-origin record carries host_kind='codex' + the thread_id as
+    native_session_id, and leaves cc_session_id empty (Codex has no cc
+    session). The legacy cc_session_id field still works for CC-origin rows.
+    """
+    codex_rec = AccessRecord(
+        ts="2026-07-20T10:00:00",
+        trowel_session_id="trowel-codex-1",
+        cc_session_id="",
+        toolUseId="",
+        action="search",
+        search_id="search-1",
+        query="note lookup",
+        host_kind="codex",
+        native_session_id="codex-thread-abc",
+    )
+    cc_rec = AccessRecord(
+        ts="2026-07-20T10:00:01",
+        trowel_session_id="trowel-cc-1",
+        cc_session_id="cc-sid-1",
+        toolUseId="call_xyz",
+        action="read",
+        search_id="search-1",
+        read_id="read-1",
+        memory_id="note-x",
+        host_kind="cc",
+        native_session_id="cc-sid-1",
+    )
+    log_access(tmp_path, codex_rec)
+    log_access(tmp_path, cc_rec)
+    out = read_access_log(tmp_path)
+    assert len(out) == 2
+    codex, cc = out
+    assert codex.host_kind == "codex"
+    assert codex.native_session_id == "codex-thread-abc"
+    assert codex.cc_session_id == ""  # Codex path has no cc session
+    assert cc.host_kind == "cc"
+    assert cc.native_session_id == "cc-sid-1"
+    assert cc.cc_session_id == "cc-sid-1"  # legacy field mirrors native
+
+
+def test_pre078_log_line_reads_back_with_empty_host_fields(
+    tmp_path: Path,
+) -> None:
+    """A pre-078 log line lacks host_kind/native_session_id — reading it back
+    must not crash, and the new fields default to empty (back-compat)."""
+    access = tmp_path / "meta" / "access-log.jsonl"
+    access.parent.mkdir(parents=True)
+    access.write_text(
+        '{"ts":"t","trowel_session_id":"s","cc_session_id":"c","toolUseId":"u",'
+        '"action":"search","search_id":"s1","query":"q"}\n',
+        encoding="utf-8",
+    )
+    out = read_access_log(tmp_path)
+    assert len(out) == 1
+    assert out[0].host_kind == ""
+    assert out[0].native_session_id == ""
+    assert out[0].cc_session_id == "c"
+
+
+def test_outcome_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
+    """slice-078: OutcomeRecord carries the same host-neutral pair as
+    AccessRecord. A Codex-origin outcome has host_kind='codex' + the
+    thread/trowel id; a CC-origin outcome mirrors cc_session_id."""
+    codex_rec = OutcomeRecord(
+        ts="2026-07-20T10:00:02",
+        trowel_session_id="trowel-codex-1",
+        cc_session_id="",
+        toolUseId="",
+        read_id="read-1",
+        memory_id="note-x",
+        outcome="helpful",
+        host_kind="codex",
+        native_session_id="codex-thread-abc",
+    )
+    cc_rec = OutcomeRecord(
+        ts="2026-07-20T10:00:03",
+        trowel_session_id="trowel-cc-1",
+        cc_session_id="cc-sid-1",
+        toolUseId="call_xyz",
+        read_id="read-2",
+        memory_id="note-y",
+        outcome="unused",
+        host_kind="cc",
+        native_session_id="cc-sid-1",
+    )
+    log_outcome(tmp_path, codex_rec)
+    log_outcome(tmp_path, cc_rec)
+    out = read_outcome_log(tmp_path)
+    assert len(out) == 2
+    codex, cc = out
+    assert codex.host_kind == "codex"
+    assert codex.native_session_id == "codex-thread-abc"
+    assert cc.host_kind == "cc"
+    assert cc.native_session_id == "cc-sid-1"
+
+
+def test_pre078_outcome_line_reads_back_with_empty_host_fields(
+    tmp_path: Path,
+) -> None:
+    """A pre-078 outcome log line lacks the new fields — reading it back must
+    not crash (same _read helper as AccessRecord, but pinned independently)."""
+    outcome = tmp_path / "meta" / "outcome-log.jsonl"
+    outcome.parent.mkdir(parents=True)
+    outcome.write_text(
+        '{"ts":"t","trowel_session_id":"s","cc_session_id":"c",'
+        '"toolUseId":"u","read_id":"r1","memory_id":"m1","outcome":"helpful"}\n',
+        encoding="utf-8",
+    )
+    out = read_outcome_log(tmp_path)
+    assert len(out) == 1
+    assert out[0].host_kind == ""
+    assert out[0].native_session_id == ""
+    assert out[0].outcome == "helpful"

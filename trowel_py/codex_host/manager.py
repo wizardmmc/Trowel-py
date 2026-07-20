@@ -821,6 +821,10 @@ class CodexHostManager:
         Field names match ``ThreadStartParams`` in ``v2/thread.rs``. Only the
         keys slice-071 uses are set; ``developerInstructions`` is the raw pipe
         for M/P injection (slice-078 fills it with real content).
+        slice-078: when ``trowel_memory_mcp`` is set, its server definition
+        rides under ``config.mcp_servers`` so the app-server spawns the memory
+        MCP for this thread (memory-on path); a memory-off session leaves
+        ``config`` unset, so no trowel MCP is attached (C-3).
         """
 
         config = session.config
@@ -836,13 +840,35 @@ class CodexHostManager:
             params["model"] = config.model
         if config.developer_instructions is not None:
             params["developerInstructions"] = config.developer_instructions
+        if config.trowel_memory_mcp is not None:
+            params["config"] = {
+                "mcp_servers": config.trowel_memory_mcp.to_thread_config()
+            }
         return params
 
     def _thread_resume_params(self, session: CodexSession) -> dict[str, Any]:
-        """Build ``thread/resume`` params — just the thread id (binding kept)."""
+        """Build ``thread/resume`` params — thread id + re-attached memory MCP.
+
+        slice-078 HIGH-1 (codex review): app-server persists model/provider/
+        effort in the thread metadata but NOT the MCP config, so a memory-on
+        thread resumed after an app-server restart would silently lose its
+        memory MCP — turning a frozen memory-on condition into an unintended
+        memory-off. Re-attach the same server declared at ``thread/start``
+        (C-2: the M/P *condition* is unchanged; this restores the runtime
+        capability that the condition requires). The real thread_id is known
+        here, so it is stamped as ``TROWEL_NATIVE_SESSION_ID`` (unlike the
+        fresh start path, which leaves it empty).
+        """
 
         assert session.binding is not None
-        return {"threadId": session.binding.thread_id}
+        params: dict[str, Any] = {"threadId": session.binding.thread_id}
+        if session.config.trowel_memory_mcp is not None:
+            params["config"] = {
+                "mcp_servers": session.config.trowel_memory_mcp.to_thread_config(
+                    native_session_id=session.binding.thread_id
+                )
+            }
+        return params
 
     @staticmethod
     def _turn_start_params(

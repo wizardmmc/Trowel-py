@@ -19,6 +19,7 @@ from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
+    ConditionMismatchError,
     CrossRuntimeResumeError,
     RuntimeFrozenError,
     SessionHub,
@@ -58,8 +59,13 @@ def create_session(
 
     if req.resume_from is not None:
         try:
-            hub.validate_resume(Runtime(req.runtime), req.resume_from)
-        except CrossRuntimeResumeError as exc:
+            hub.validate_resume(
+                Runtime(req.runtime),
+                req.resume_from,
+                memory_enabled=req.memory_enabled,
+                profile_enabled=req.profile_enabled,
+            )
+        except (CrossRuntimeResumeError, ConditionMismatchError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     binding = hub.create(req, request)
     return {"success": True, "data": binding.to_dict(), "error": None}

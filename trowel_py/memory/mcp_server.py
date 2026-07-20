@@ -74,9 +74,27 @@ def _today() -> str:
 
 
 def _identity_from_env() -> dict[str, str]:
+    """Read host-neutral identity from env (slice-078).
+
+    The canonical pair is ``TROWEL_HOST_KIND`` (``cc`` / ``codex``) +
+    ``TROWEL_NATIVE_SESSION_ID`` (cc_session_id / Codex thread_id). The legacy
+    ``CC_SESSION_ID`` env (set by the CC host pre-078) is still read so a CC
+    spawn that has not been updated to set the new vars keeps working: when
+    ``host_kind`` is empty but ``CC_SESSION_ID`` is set, we back-fill
+    ``host_kind="cc"`` and ``native_session_id=cc_session_id``.
+    """
+    cc_session_id = os.environ.get("CC_SESSION_ID", "")
+    host_kind = os.environ.get("TROWEL_HOST_KIND", "")
+    native_session_id = os.environ.get("TROWEL_NATIVE_SESSION_ID", "")
+    if not host_kind and cc_session_id:
+        # Back-compat: a CC spawn predating slice-078 sets only CC_SESSION_ID.
+        host_kind = "cc"
+        native_session_id = native_session_id or cc_session_id
     return {
         "trowel_session_id": os.environ.get("TROWEL_SESSION_ID", ""),
-        "cc_session_id": os.environ.get("CC_SESSION_ID", ""),
+        "cc_session_id": cc_session_id,
+        "host_kind": host_kind,
+        "native_session_id": native_session_id,
     }
 
 
@@ -125,6 +143,8 @@ def handle_search(
             ts=_now(),
             trowel_session_id=identity["trowel_session_id"],
             cc_session_id=identity["cc_session_id"],
+            host_kind=identity["host_kind"],
+            native_session_id=identity["native_session_id"],
             toolUseId=toolUseId,
             action="search",
             search_id=search_id,
@@ -179,6 +199,8 @@ def handle_search(
                 ts=_now(),
                 trowel_session_id=identity["trowel_session_id"],
                 cc_session_id=identity["cc_session_id"],
+                host_kind=identity["host_kind"],
+                native_session_id=identity["native_session_id"],
                 toolUseId=toolUseId,
                 action="search",
                 search_id=search_id,
@@ -215,6 +237,8 @@ def handle_read(
             ts=_now(),
             trowel_session_id=identity["trowel_session_id"],
             cc_session_id=identity["cc_session_id"],
+            host_kind=identity["host_kind"],
+            native_session_id=identity["native_session_id"],
             toolUseId=toolUseId,
             action="read",
             search_id=search_id,
@@ -255,6 +279,8 @@ def handle_outcome(
             ts=_now(),
             trowel_session_id=identity["trowel_session_id"],
             cc_session_id=identity["cc_session_id"],
+            host_kind=identity["host_kind"],
+            native_session_id=identity["native_session_id"],
             toolUseId=toolUseId,
             read_id=read_id,
             memory_id=match.memory_id,

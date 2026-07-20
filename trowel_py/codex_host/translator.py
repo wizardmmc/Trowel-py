@@ -86,6 +86,7 @@ _ITEM_COMMAND = "commandExecution"
 _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
 _ITEM_FILE_CHANGE = "fileChange"
+_ITEM_MCP_TOOL = "mcpToolCall"
 # slice-077 capability=false item types — handlers ready, not routed until
 # activated. Source: item.rs:359 (subAgentActivity) / item.rs:388 (contextCompaction).
 _ITEM_SUBAGENT = "subAgentActivity"
@@ -131,6 +132,19 @@ def _as_str(value: Any) -> str:
     """Coerce a non-None notification field to ``str`` for ids and text."""
 
     return value if isinstance(value, str) else str(value)
+
+
+def _mcp_tool_name(server: Any, tool: Any) -> str:
+    """Build ``<server>.<tool>`` for the reducer's ToolItem key.
+
+    Tolerates a missing half (an item with no ``server`` or no ``tool`` field)
+    so a future schema variant does not break translation; the combined name
+    is what the CC reducer keys ``ToolItem`` on, and an empty-handed MCP call
+    falls back to a generic ``mcp`` so it still renders as a tool.
+    """
+
+    parts = [str(p) for p in (server, tool) if isinstance(p, str) and p]
+    return ".".join(parts) if parts else "mcp"
 
 
 def _command_actions(item: Mapping[str, Any], method: str) -> tuple[dict[str, Any], ...]:
@@ -513,11 +527,11 @@ class CodexTranslator:
     # ------------------------------------------------------------------ item
 
     def _on_item_started(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """``item/started`` → TOOL_STARTED for commands and file changes.
+        """``item/started`` → TOOL_STARTED for commands, file changes, MCP calls.
 
         agentMessage / reasoning items stream via their own ``*delta`` methods,
         so their ``started`` notification carries no extra information the UI
-        needs; MCP calls are deferred to later slices.
+        needs.
         """
 
         item = _require(params, "item", "item/started")
@@ -530,6 +544,8 @@ class CodexTranslator:
             return [self._command_started_item(params, item)]
         if item_type == _ITEM_FILE_CHANGE:
             return [self._file_change_started_item(params, item)]
+        if item_type == _ITEM_MCP_TOOL:
+            return [self._mcp_tool_started_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
             # capability=false (slice-077): _subagent_item is ready below;
             # route once a real fixture is recorded.
@@ -555,6 +571,8 @@ class CodexTranslator:
             return [self._agent_message_item(params, item)]
         if item_type == _ITEM_FILE_CHANGE:
             return [self._file_change_completed_item(params, item)]
+        if item_type == _ITEM_MCP_TOOL:
+            return [self._mcp_tool_completed_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
             return []  # capability=false (slice-077): _subagent_item ready, not routed
         if item_type == _ITEM_COMPACT:
@@ -606,6 +624,88 @@ class CodexTranslator:
                 status=item.get("status"),
                 exit_code=item.get("exitCode"),
                 output=item.get("aggregatedOutput"),
+                duration_ms=item.get("durationMs"),
+                completed_at=params.get("completedAtMs"),
+            ),
+        )
+
+    def _mcp_tool_started_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """Build a TOOL_STARTED for an ``mcpToolCall`` item (slice-078).
+
+        Carries ``server``/``tool`` separately for diagnostics plus a combined
+        ``tool_name`` (``<server>.<tool>``) the CC reducer keys ToolItem on —
+        so the memory MCP shows up in the timeline as one tool per call.
+
+        ``id``/``server``/``tool``/``status`` are required (item.rs:302 marks
+        them mandatory); ``_require`` surfaces a schema drift as a structured
+        ``ProtocolViolationError`` instead of silently degrading to a generic
+        ``mcp`` tool. ``arguments`` defaults to JSON null upstream
+        (thread_history.rs unwrap_or), so it stays optional here. Provenance
+        fields (``appContext`` / ``mcpAppResourceUri`` / ``pluginId``) are
+        passed through when present for diagnostics.
+
+        ``started_at`` reads ``params.startedAtMs`` (the notification envelope,
+        NOT the item body) — same place ``_command_started_item`` reads it
+        from. The 0.144.0 schema does not formally document this field on
+        ``item/started``, but real recordings (and the command/fileChange
+        translations already rely on it) carry it; pin it with a real
+        disposable-thread recording before relying on the value downstream.
+        """
+
+        server = _require(item, "server", "item/started(mcpToolCall)")
+        tool = _require(item, "tool", "item/started(mcpToolCall)")
+        return TranslatedItem(
+            type=CodexEventType.TOOL_STARTED,
+            thread_id=_as_str(_require(params, "threadId", "item/started")),
+            turn_id=_as_str(_require(params, "turnId", "item/started")),
+            item_id=_as_str(_require(item, "id", "item/started(mcpToolCall)")),
+            payload=immutable_payload(
+                kind=_ITEM_MCP_TOOL,
+                server=server,
+                tool=tool,
+                tool_name=_mcp_tool_name(server, tool),
+                arguments=item.get("arguments"),
+                status=_require(item, "status", "item/started(mcpToolCall)"),
+                app_context=item.get("appContext"),
+                mcp_app_resource_uri=item.get("mcpAppResourceUri"),
+                plugin_id=item.get("pluginId"),
+                started_at=params.get("startedAtMs"),
+            ),
+        )
+
+    def _mcp_tool_completed_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """Build a TOOL_COMPLETED for an ``mcpToolCall`` item (slice-078).
+
+        ``status`` is preserved (``completed`` / ``failed``) so the UI can
+        distinguish a failed MCP call from a successful one — the memory MCP
+        returns ``dictionary_empty`` as a structured error result, which Codex
+        marks ``failed``; that must not paint as a successful read. Same
+        required-field + provenance-passthrough stance as the started path.
+        """
+
+        server = _require(item, "server", "item/completed(mcpToolCall)")
+        tool = _require(item, "tool", "item/completed(mcpToolCall)")
+        return TranslatedItem(
+            type=CodexEventType.TOOL_COMPLETED,
+            thread_id=_as_str(_require(params, "threadId", "item/completed")),
+            turn_id=_as_str(_require(params, "turnId", "item/completed")),
+            item_id=_as_str(_require(item, "id", "item/completed(mcpToolCall)")),
+            payload=immutable_payload(
+                kind=_ITEM_MCP_TOOL,
+                server=server,
+                tool=tool,
+                tool_name=_mcp_tool_name(server, tool),
+                arguments=item.get("arguments"),
+                status=_require(item, "status", "item/completed(mcpToolCall)"),
+                result=item.get("result"),
+                error=item.get("error"),
+                app_context=item.get("appContext"),
+                mcp_app_resource_uri=item.get("mcpAppResourceUri"),
+                plugin_id=item.get("pluginId"),
                 duration_ms=item.get("durationMs"),
                 completed_at=params.get("completedAtMs"),
             ),

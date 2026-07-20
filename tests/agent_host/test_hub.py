@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.hub import (
+    ConditionMismatchError,
     CrossRuntimeResumeError,
     RuntimeFrozenError,
     SessionHub,
@@ -248,6 +249,9 @@ def hub(
         codex_manager=codex_mgr,
         cc_registry=cc_registry,
         cc_opener=make_cc_opener(cc_registry, name_counts),
+        # slice-078: isolate the codex config read so the memory-MCP collision
+        # check never touches the developer's real ~/.codex/config.toml.
+        codex_config_home=tmp_path,
     )
 
 
@@ -293,6 +297,120 @@ def test_create_codex_session_creates_binding_and_registers_manager(
     assert binding.runtime is Runtime.CODEX
     assert binding.session_id in codex_mgr.sessions
     assert hub.get(binding.session_id) is not None
+
+
+def test_create_codex_refuses_when_user_config_has_same_named_mcp(
+    hub: SessionHub,
+    workdir: Path,
+    tmp_path: Path,
+) -> None:
+    """slice-078 C-3: a same-named MCP server in the user's codex config
+    blocks Codex session creation — memory-off isolation cannot be guaranteed
+    when ``--disable memories`` does not unregister the user's server."""
+    from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
+
+    (tmp_path / "config.toml").write_text(
+        f"[mcp_servers.{TROWEL_NOTE_SEARCH_SERVER_NAME}]\ncommand = 'x'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(HTTPException) as exc:
+        hub.create(codex_req(workdir), request=None)
+    assert exc.value.status_code == 409
+    assert TROWEL_NOTE_SEARCH_SERVER_NAME in str(exc.value.detail)
+
+
+def test_create_codex_allows_when_user_config_has_unrelated_mcp(
+    hub: SessionHub,
+    workdir: Path,
+    tmp_path: Path,
+    codex_mgr: FakeCodexManager,
+) -> None:
+    """An unrelated MCP server name does not block creation."""
+    (tmp_path / "config.toml").write_text(
+        "[mcp_servers.github]\ncommand = 'gh'\n", encoding="utf-8"
+    )
+    binding = hub.create(codex_req(workdir), request=None)
+    assert binding.session_id in codex_mgr.sessions
+
+
+@pytest.mark.parametrize(
+    ("memory_enabled", "profile_enabled"),
+    [(True, True), (True, False), (False, True), (False, False)],
+)
+def test_create_codex_four_mp_combinations_wire_injection_and_mcp(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_enabled: bool,
+    profile_enabled: bool,
+) -> None:
+    """slice-078: each M/P combination freezes the matching injection text +
+    memory MCP condition. The Memory Kernel (build_memory_injection) is the
+    single owner of the text (C-4); the hub only wires its output onto the
+    session config and binding. build_memory_injection is mocked so the test
+    pins the *wiring*, not the kernel's own content rules (those have tests
+    in tests/memory/test_injection.py)."""
+
+    def fake_injection(now, root, *, memory_enabled, profile_enabled):
+        # Distinct non-empty text per combination so we can assert the hub
+        # wired the RIGHT one, not a stale or default value.
+        return f"INJ M={memory_enabled} P={profile_enabled}"
+
+    monkeypatch.setattr(
+        "trowel_py.memory.injection.build_memory_injection", fake_injection
+    )
+    binding = hub.create(
+        codex_req(
+            workdir,
+            memory_enabled=memory_enabled,
+            profile_enabled=profile_enabled,
+        ),
+        request=None,
+    )
+    session = codex_mgr.get_session(binding.session_id)
+    expected_text = f"INJ M={memory_enabled} P={profile_enabled}"
+    assert session.config.developer_instructions == expected_text
+    # C-3: the memory MCP attaches ONLY when memory is on.
+    if memory_enabled:
+        assert session.config.trowel_memory_mcp is not None
+    else:
+        assert session.config.trowel_memory_mcp is None
+    # C-6: the binding stores a fingerprint, never the body.
+    from trowel_py.agent_host.hub import _injection_fingerprint
+
+    assert binding.injection_hash == _injection_fingerprint(expected_text)
+    assert binding.memory_enabled == memory_enabled
+    assert binding.profile_enabled == profile_enabled
+    # C-7: the declared MCP roster records trowel's own server on memory-on.
+    if memory_enabled:
+        assert binding.declared_mcp_roster == ("trowel_note_search",)
+    else:
+        assert binding.declared_mcp_roster == ()
+
+
+def test_create_codex_empty_injection_maps_to_none_developer_instructions(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """memory-off + no profile → build_memory_injection returns "" → the hub
+    passes None to CodexSessionConfig so the manager omits developerInstructions
+    entirely (a bare "" would still be sent as an override)."""
+
+    monkeypatch.setattr(
+        "trowel_py.memory.injection.build_memory_injection",
+        lambda *a, **k: "",
+    )
+    binding = hub.create(
+        codex_req(workdir, memory_enabled=False, profile_enabled=False),
+        request=None,
+    )
+    session = codex_mgr.get_session(binding.session_id)
+    assert session.config.developer_instructions is None
+    assert session.config.trowel_memory_mcp is None
+    assert binding.injection_hash == ""
 
 
 def test_create_codex_follow_does_not_invent_overrides(
@@ -531,6 +649,95 @@ def test_validate_resume_rejects_cross_runtime(hub: SessionHub, workdir: Path):
 def test_validate_resume_same_runtime_ok(hub: SessionHub):
     hub.validate_resume(Runtime.CLAUDE_CODE, "fresh-cc-id")  # no conflict
     hub.validate_resume(Runtime.CODEX, None)  # fresh codex thread
+
+
+def test_validate_resume_rejects_mp_mismatch_for_same_native_thread(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """slice-078 HIGH-2 (codex review): a native thread frozen memory-on
+    cannot be resumed as memory-off — that would silently swap the
+    experiment condition (C-2)."""
+
+    hub._store.put(
+        make_binding(
+            session_id="orig-mem-on",
+            runtime=Runtime.CODEX,
+            native_session_id="thr-frozen",
+            workdir=str(workdir),
+            model=None,
+            effort=None,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            capabilities=("tools",),
+            name="proj",
+        )
+    )
+    # Resume the same thread but flip memory → rejected.
+    with pytest.raises(ConditionMismatchError):
+        hub.validate_resume(
+            Runtime.CODEX,
+            "thr-frozen",
+            memory_enabled=False,
+            profile_enabled=True,
+        )
+    # Flip profile → also rejected.
+    with pytest.raises(ConditionMismatchError):
+        hub.validate_resume(
+            Runtime.CODEX,
+            "thr-frozen",
+            memory_enabled=True,
+            profile_enabled=False,
+        )
+
+
+def test_validate_resume_allows_matching_mp(hub: SessionHub, workdir: Path) -> None:
+    """Same native id + matching M/P → allowed (the normal resume case)."""
+
+    hub._store.put(
+        make_binding(
+            session_id="orig-mem-on",
+            runtime=Runtime.CODEX,
+            native_session_id="thr-frozen",
+            workdir=str(workdir),
+            model=None,
+            effort=None,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=False,
+            capabilities=("tools",),
+            name="proj",
+        )
+    )
+    hub.validate_resume(
+        Runtime.CODEX,
+        "thr-frozen",
+        memory_enabled=True,
+        profile_enabled=False,
+    )  # no raise
+
+
+def test_validate_resume_skips_mp_check_when_caller_omits_switches(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """A pre-078 caller that does not pin M/P must not break (back-compat)."""
+
+    hub._store.put(
+        make_binding(
+            session_id="orig",
+            runtime=Runtime.CODEX,
+            native_session_id="thr-old",
+            workdir=str(workdir),
+            model=None,
+            effort=None,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            capabilities=("tools",),
+            name="proj",
+        )
+    )
+    hub.validate_resume(Runtime.CODEX, "thr-old")  # no M/P args, no raise
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ from trowel_py.codex_host.events import (
     host_status_item,
     immutable_payload,
 )
+from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
 
 
 class TurnConflictError(CodexHostError):
@@ -67,6 +68,111 @@ _SENDABLE_STATES: frozenset[CodexSessionState] = frozenset(
 
 
 @dataclass(frozen=True)
+class TrowelMemoryMcpConfig:
+    """Config for the trowel memory MCP server attached to a Codex thread.
+
+    slice-078: Codex's app-server spawns MCP servers itself (unlike cc, which
+    trowel spawns via ``--mcp-config``). The full server definition rides on
+    the ``thread/start`` / ``thread/resume`` request under
+    ``config.mcp_servers.<name>``, including the env that carries host-neutral
+    identity (``TROWEL_HOST_KIND`` / ``TROWEL_NATIVE_SESSION_ID`` /
+    ``MEMORY_ROOT``).
+
+    Identity stamping (codex review HIGH-3): ``TROWEL_NATIVE_SESSION_ID`` is
+    left EMPTY on a fresh ``thread/start`` — the native thread_id is only
+    learned from the response, and the MCP server's env freezes mid-request
+    before that. Stamping it with the trowel session id would mislabel the
+    access-log row (the field's contract is the Codex thread_id). On
+    ``thread/resume`` the binding already knows the thread_id, so it is
+    stamped for real. Codex access-log rows for a fresh memory-on session
+    therefore carry ``host_kind='codex'`` and ``native_session_id=''`` until
+    the session is resumed after a restart; cross-reference the trowel
+    session id (always present) to find the binding.
+
+    Attributes:
+        server_name: The MCP server name. Defaults to
+            :data:`TROWEL_NOTE_SEARCH_SERVER_NAME` — specific enough to avoid
+            colliding with user-configured MCP servers in ``~/.codex/config.toml``.
+        command: Executable path (``sys.executable`` in production).
+        module_args: argv tail that spawns ``trowel_py.memory.mcp_server``.
+        memory_root: Absolute path to the memory tree (``MEMORY_ROOT`` env).
+        trowel_session_id: trowel's session id — the always-present routing
+            identity. NOT used as ``native_session_id`` (see stamping note).
+    """
+
+    server_name: str
+    command: str
+    module_args: tuple[str, ...]
+    memory_root: str
+    trowel_session_id: str
+
+    def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
+        """Build the ``config.mcp_servers`` object for ``thread/start`` / ``resume``.
+
+        Args:
+            native_session_id: The value to stamp as ``TROWEL_NATIVE_SESSION_ID``.
+                Empty (default) on a fresh ``thread/start`` — the thread_id is
+                unknown until the response. On ``thread/resume`` pass the real
+                thread_id from the binding so the MCP writes honest identity.
+
+        Returns:
+            The mapping to put under ``params.config.mcp_servers``. The server
+            is ``required`` (a startup failure must surface, not silently drop
+            the read-path), all three tools are enabled, and approval is
+            pre-granted so the model can call search/read/outcome without
+            per-call confirmation — matching the cc path, where the memory MCP
+            is a trusted local server with no per-call approval gate.
+        """
+
+        return {
+            self.server_name: {
+                "command": self.command,
+                "args": list(self.module_args),
+                "env": {
+                    "MEMORY_ROOT": self.memory_root,
+                    "TROWEL_SESSION_ID": self.trowel_session_id,
+                    "TROWEL_HOST_KIND": "codex",
+                    "TROWEL_NATIVE_SESSION_ID": native_session_id,
+                },
+                "required": True,
+                "enabled_tools": ["search", "read", "outcome"],
+                "default_tools_approval_mode": "approve",
+            }
+        }
+
+
+def build_default_trowel_memory_mcp(
+    *,
+    trowel_session_id: str,
+    memory_root: str,
+    server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
+) -> TrowelMemoryMcpConfig:
+    """Build the standard trowel memory MCP config for a Codex thread.
+
+    Args:
+        trowel_session_id: The trowel session id this MCP server is owned by.
+        memory_root: Absolute path to the memory tree.
+        server_name: Override the server name (default
+            :data:`TROWEL_NOTE_SEARCH_SERVER_NAME`). Tests use this to exercise
+            isolation logic without touching the real default.
+
+    Returns:
+        The frozen config; ``command``/``module_args`` point at the current
+        interpreter running ``trowel_py.memory.mcp_server``.
+    """
+
+    import sys
+
+    return TrowelMemoryMcpConfig(
+        server_name=server_name,
+        command=sys.executable,
+        module_args=("-m", "trowel_py.memory.mcp_server"),
+        memory_root=str(memory_root),
+        trowel_session_id=trowel_session_id,
+    )
+
+
+@dataclass(frozen=True)
 class CodexSessionConfig:
     """Frozen inputs that define a Codex session.
 
@@ -77,6 +183,13 @@ class CodexSessionConfig:
         effort: Optional reasoning effort override (``low`` / ``high`` …).
         developer_instructions: Optional static instructions injected at thread
             start (M/P injection lives in slice-078; this is the raw pipe).
+            NB: codex applies this with ``developer_instructions.or(cfg.developer_instructions)``
+            (core/src/config/mod.rs) — passing it **overrides** any user-configured
+            ``developer_instructions`` from ``~/.codex/config.toml`` (it does NOT
+            override codex's own ``base_instructions``). This is an intentional
+            takeover for the experiment: trowel owns the developer channel when
+            M/P injection is on. CC's ``--append-system-prompt`` is genuinely
+            append-only; the codex path is NOT, by upstream design.
         approval_policy: Optional Codex ``approvalPolicy`` override. ``None``
             means follow the app-server's effective configuration.
         sandbox: Optional Codex ``sandbox`` override. ``None`` means follow.
@@ -84,6 +197,10 @@ class CodexSessionConfig:
             sessions default to ``False`` because their saved thread binding
             must remain resumable after an app-server restart. Isolated smoke
             tests may opt into ``True`` explicitly.
+        trowel_memory_mcp: slice-078 — the trowel memory MCP server to attach
+            on ``thread/start`` under ``config.mcp_servers``. ``None`` on a
+            memory-off session (the whole read-path is closed, C-3). Carries
+            the host-neutral identity env the spawned MCP server reads.
     """
 
     trowel_session_id: str
@@ -95,6 +212,7 @@ class CodexSessionConfig:
     sandbox: str | None = None
     ephemeral: bool = False
     initial_thread_id: str | None = None
+    trowel_memory_mcp: TrowelMemoryMcpConfig | None = None
 
 
 @dataclass(frozen=True)

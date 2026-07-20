@@ -7,6 +7,7 @@ import pytest
 
 from trowel_py.memory.access_log import read_access_log, read_outcome_log
 from trowel_py.memory.mcp_server import (
+    _identity_from_env,
     handle_outcome,
     handle_read,
     handle_search,
@@ -16,7 +17,12 @@ from trowel_py.memory.mcp_server import (
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
 
-IDENT = {"trowel_session_id": "t-1", "cc_session_id": "c-1"}
+IDENT = {
+    "trowel_session_id": "t-1",
+    "cc_session_id": "c-1",
+    "host_kind": "cc",
+    "native_session_id": "c-1",
+}
 
 
 def _write_note(root: Path, slug: str, **kw) -> None:
@@ -193,3 +199,51 @@ def test_outcome_rejects_invalid_outcome(tmp_path: Path) -> None:
     """HIGH-4: outcome must be one of the four valid values (schema enum)."""
     out = handle_outcome("any", "badvalue", "x", tmp_path, IDENT)
     assert "invalid outcome" in out["error"]
+
+
+# ---- _identity_from_env (slice-078 host-neutral) ----
+
+
+def test_identity_from_env_reads_host_neutral_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex spawn: TROWEL_HOST_KIND=codex + TROWEL_NATIVE_SESSION_ID=<thread_id>."""
+    monkeypatch.setenv("TROWEL_SESSION_ID", "trowel-codex-1")
+    monkeypatch.setenv("TROWEL_HOST_KIND", "codex")
+    monkeypatch.setenv("TROWEL_NATIVE_SESSION_ID", "codex-thread-abc")
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    identity = _identity_from_env()
+    assert identity["host_kind"] == "codex"
+    assert identity["native_session_id"] == "codex-thread-abc"
+    assert identity["cc_session_id"] == ""  # Codex path has no cc session
+    assert identity["trowel_session_id"] == "trowel-codex-1"
+
+
+def test_identity_from_env_backfills_from_legacy_cc_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Back-compat: a CC spawn predating slice-078 sets only CC_SESSION_ID —
+    the new host-neutral pair is derived from it (host_kind=cc, native = cc_sid)."""
+    monkeypatch.setenv("TROWEL_SESSION_ID", "t-1")
+    monkeypatch.setenv("CC_SESSION_ID", "cc-sid-legacy")
+    monkeypatch.delenv("TROWEL_HOST_KIND", raising=False)
+    monkeypatch.delenv("TROWEL_NATIVE_SESSION_ID", raising=False)
+    identity = _identity_from_env()
+    assert identity["host_kind"] == "cc"
+    assert identity["native_session_id"] == "cc-sid-legacy"
+    assert identity["cc_session_id"] == "cc-sid-legacy"
+
+
+def test_identity_from_env_cc_path_stamps_both_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CC spawn updated for slice-078 sets both the legacy and the new vars —
+    the legacy cc_session_id and native_session_id carry the same value."""
+    monkeypatch.setenv("TROWEL_SESSION_ID", "t-1")
+    monkeypatch.setenv("TROWEL_HOST_KIND", "cc")
+    monkeypatch.setenv("TROWEL_NATIVE_SESSION_ID", "cc-sid-1")
+    monkeypatch.setenv("CC_SESSION_ID", "cc-sid-1")
+    identity = _identity_from_env()
+    assert identity["host_kind"] == "cc"
+    assert identity["native_session_id"] == "cc-sid-1"
+    assert identity["cc_session_id"] == "cc-sid-1"

@@ -32,6 +32,13 @@ SUPPORTED_CODEX_VERSION = "0.144.0"
 # native memories off so trowel owns the memory plane (M9 decision).
 APP_SERVER_ARGS: tuple[str, ...] = ("app-server", "--stdio", "--disable", "memories")
 
+# slice-078: the MCP server name trowel registers on a Codex thread to expose
+# the memory read-path (search/read/outcome). Deliberately specific so it does
+# not collide with a user-configured server in ~/.codex/config.toml; the
+# isolation check (codex_host.mcp_isolation) refuses to create a memory-on
+# session when a same-named server already exists in the user's config.
+TROWEL_NOTE_SEARCH_SERVER_NAME = "trowel_note_search"
+
 # Trowel identifies itself to the OpenAI Compliance Logs Platform via
 # ``clientInfo.name`` (see app-server README → Initialization).
 CLIENT_NAME = "trowel_codex_host"
