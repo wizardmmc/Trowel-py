@@ -22,3 +22,6 @@ logs/
 AGENTS.md
 CLAUDE-archived.md
 /memory
+.playwright-cli
+.gstack/
+output/
