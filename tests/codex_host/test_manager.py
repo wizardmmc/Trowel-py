@@ -998,6 +998,91 @@ async def test_orphan_unknown_method_is_recorded() -> None:
     await manager.close()
 
 
+async def test_rate_limit_update_fans_out_to_bound_session() -> None:
+    """account/rateLimits/updated has no threadId but is a legit account-level
+    notification (source: account.rs:518). It must fan out to the bound session
+    during a turn, not be orphaned as no_thread_id (slice-077: rate-limit is
+    account-scoped, surfaces on every active Codex session)."""
+
+    rate_limit_note = {
+        "method": "account/rateLimits/updated",
+        "params": {
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": None,
+                "primary": {
+                    "usedPercent": 84,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1784949908,
+                },
+                "secondary": None,
+                "credits": {"hasCredits": True, "unlimited": False, "balance": "120"},
+                "individualLimit": None,
+                "planType": "pro",
+                "rateLimitReachedType": None,
+            }
+        },
+    }
+
+    def inject(thread_id, turn_id):
+        return [Step.send(rate_limit_note)]
+
+    fake = FakeAppServer(_behavior_server(on_turn=inject))
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+
+    await manager.send(session, "hi")
+    await asyncio.sleep(0.05)
+    events = session.drain()
+    # The rate-limit update reached the bound session (not orphaned).
+    assert any(e.type is CodexEventType.RATE_LIMIT_UPDATED for e in events)
+    # And it was NOT recorded as a no_thread_id orphan.
+    assert not any(
+        o.method == "account/rateLimits/updated" for o in manager.orphans
+    )
+    await manager.close()
+
+
+async def test_rate_limit_update_fans_out_to_every_active_session() -> None:
+    """account/rateLimits/updated fans out to EVERY active Codex session, not
+    just the one whose turn is running (slice-077 regression guard — the
+    fan-out loop is the critical-fix; a future refactor that breaks the loop
+    must turn this red)."""
+
+    rate_limit_note = {
+        "method": "account/rateLimits/updated",
+        "params": {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 84, "resetsAt": 1784949908},
+                "planType": "pro",
+                "rateLimitReachedType": None,
+            }
+        },
+    }
+
+    def inject(thread_id, turn_id):
+        return [Step.send(rate_limit_note)]
+
+    fake = FakeAppServer(_behavior_server(on_turn=inject))
+    manager = _manager(fake)
+    session_a = CodexSession(_cfg("s-a"))
+    session_b = CodexSession(_cfg("s-b"))
+    manager.register(session_a)
+    manager.register(session_b)
+
+    # Only session_a drives a turn, but rate-limit is account-scoped — both
+    # registered sessions must see it.
+    await manager.send(session_a, "hi")
+    await asyncio.sleep(0.05)
+    events_a = session_a.drain()
+    events_b = session_b.drain()
+    assert any(e.type is CodexEventType.RATE_LIMIT_UPDATED for e in events_a)
+    assert any(e.type is CodexEventType.RATE_LIMIT_UPDATED for e in events_b)
+    await manager.close()
+
+
 # ------------------------------------------------------ single-turn guard
 
 

@@ -45,11 +45,31 @@ _IGNORED_METHODS: frozenset[str] = frozenset(
         # with the turn id, so translating the notification would duplicate it.
         "turn/started",
         # Capability-gated areas with their own slices — no real fixture yet.
-        "account/rateLimits/updated",  # slice-077 (rate-limit view)
         "mcpServer/startupStatus/updated",  # slice-078 (memory MCP wiring)
         "serverRequest/resolved",  # approval bus echo (slice-075)
         "thread/turns/list",  # history pagination (slice-079)
         "thread/items/list",
+        # slice-077 capability=false (handlers ready below — _on_plan_updated /
+        # _on_warning): turn/plan/updated needs todo-mcp (codex-vscode/todo-mcp);
+        # warning family needs a misconfigured MCP / deprecated API. Remove the
+        # entry to activate once a real fixture is recorded.
+        "turn/plan/updated",
+        "warning",
+        "guardianWarning",
+        "configWarning",
+        "deprecationNotice",
+    }
+)
+
+# Account-level notifications carry no top-level ``threadId`` by design — they
+# describe the OpenAI account itself, not any one thread. The manager fans these
+# out to every active Codex session instead of orphaning them as ``no_thread_id``
+# (slice-077: rate-limit is account-scoped). Adding a method here is a conscious
+# decision that the protocol defines it as account-level (source:
+# ``account.rs:518`` for ``account/rateLimits/updated``).
+_ACCOUNT_LEVEL_METHODS: frozenset[str] = frozenset(
+    {
+        "account/rateLimits/updated",  # slice-077 (account.rs:518)
     }
 )
 
@@ -66,6 +86,10 @@ _ITEM_COMMAND = "commandExecution"
 _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
 _ITEM_FILE_CHANGE = "fileChange"
+# slice-077 capability=false item types — handlers ready, not routed until
+# activated. Source: item.rs:359 (subAgentActivity) / item.rs:388 (contextCompaction).
+_ITEM_SUBAGENT = "subAgentActivity"
+_ITEM_COMPACT = "contextCompaction"
 
 # ``FileUpdateChange.kind.type`` tags (``v2/item.rs::PatchChangeKind``).
 _FC_ADD = "add"
@@ -348,6 +372,12 @@ class CodexTranslator:
             "thread/tokenUsage/updated": self._on_token_usage,
             "thread/status/changed": self._on_thread_status,
             "error": self._on_error,
+            "account/rateLimits/updated": self._on_rate_limits,
+            # slice-077 capability=false — registered but gated by
+            # _IGNORED_METHODS. Activate by removing the ignored entry.
+            "turn/plan/updated": self._on_plan_updated,
+            "warning": self._on_warning,
+            "guardianWarning": self._on_warning,
         }
 
     def translate(self, method: str, params: Mapping[str, Any]) -> list[TranslatedItem]:
@@ -377,6 +407,17 @@ class CodexTranslator:
         """Methods intentionally not translated this slice (for diagnostics)."""
 
         return _IGNORED_METHODS
+
+    @property
+    def account_level_methods(self) -> frozenset[str]:
+        """Account-level methods (no threadId) — manager fans out to all sessions.
+
+        Unlike ``ignored_methods`` (dropped silently) these are translated, but
+        the result is broadcast to every active Codex session because the source
+        notification has no thread binding (slice-077).
+        """
+
+        return _ACCOUNT_LEVEL_METHODS
 
     # --------------------------------------------------------------- turn
 
@@ -489,6 +530,14 @@ class CodexTranslator:
             return [self._command_started_item(params, item)]
         if item_type == _ITEM_FILE_CHANGE:
             return [self._file_change_started_item(params, item)]
+        if item_type == _ITEM_SUBAGENT:
+            # capability=false (slice-077): _subagent_item is ready below;
+            # route once a real fixture is recorded.
+            return []
+        if item_type == _ITEM_COMPACT:
+            # capability=false (slice-077): _compaction_item is ready below;
+            # route once a compact client is added.
+            return []
         return []
 
     def _on_item_completed(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
@@ -506,6 +555,10 @@ class CodexTranslator:
             return [self._agent_message_item(params, item)]
         if item_type == _ITEM_FILE_CHANGE:
             return [self._file_change_completed_item(params, item)]
+        if item_type == _ITEM_SUBAGENT:
+            return []  # capability=false (slice-077): _subagent_item ready, not routed
+        if item_type == _ITEM_COMPACT:
+            return []  # capability=false (slice-077): _compaction_item ready, not routed
         # reasoning completed: deltas already streamed; final summary is a
         # future slice. Other item kinds are capability-gated.
         return []
@@ -698,5 +751,185 @@ class CodexTranslator:
                     message=error.get("message"),
                     will_retry=bool(params.get("willRetry", False)),
                 ),
+            )
+        ]
+
+    # -------------------------------------------------- account / rate limit
+
+    def _on_rate_limits(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """``account/rateLimits/updated`` -> RATE_LIMIT_UPDATED (global).
+
+        A sparse rolling update of the account rate-limit snapshot (source:
+        ``account.rs:518 AccountRateLimitsUpdatedNotification``). The
+        notification has no top-level threadId -- it is account-level, so the
+        translated item is addressed to ``thread_id=None``; the manager fans it
+        out to active Codex sessions rather than routing by thread.
+
+        Every snapshot field is preserved verbatim in the payload -- the UI
+        unfolds only ``used_percent`` / ``resets_at`` / ``rate_limit_reached_type``
+        for now (decision 5), but the rest stays so a later UI pass needs no
+        schema change. ``spend_control_reached`` is Optional in the protocol and
+        absent in the 2026-07-18 recording; ``.get`` surfaces it as ``None``
+        rather than fabricating a value (spec C-4: usage null 诚实; same
+        principle for any sparse field).
+        """
+
+        snapshot = _require(params, "rateLimits", "account/rateLimits/updated")
+        if not isinstance(snapshot, Mapping):
+            raise ProtocolViolationError(
+                "account/rateLimits/updated.rateLimits is not an object",
+                payload=dict(params),
+            )
+        return [
+            TranslatedItem(
+                type=CodexEventType.RATE_LIMIT_UPDATED,
+                payload=immutable_payload(
+                    limit_id=snapshot.get("limitId"),
+                    limit_name=snapshot.get("limitName"),
+                    primary=snapshot.get("primary"),
+                    secondary=snapshot.get("secondary"),
+                    credits=snapshot.get("credits"),
+                    individual_limit=snapshot.get("individualLimit"),
+                    spend_control_reached=snapshot.get("spendControlReached"),
+                    plan_type=snapshot.get("planType"),
+                    rate_limit_reached_type=snapshot.get("rateLimitReachedType"),
+                ),
+            )
+        ]
+
+    # --------------------------------------- slice-077 capability=false skeletons
+    # The four handlers below are READY but NOT ROUTED.
+    #   * plan / warning  — method sits in _IGNORED_METHODS, so the manager
+    #     drops the notification before translate(). Activate by removing the
+    #     ignored entry (dispatch is already wired).
+    #   * subagent / compaction — item types hit the explicit `return []`
+    #     branches in _on_item_started / _on_item_completed. Activate by
+    #     replacing the empty return with `[self._xxx_item(params, item)]`.
+    # Each activation also needs a real fixture recorded (spec C-1). Fields are
+    # sourced from codex 0.144.0 — see slice-077.md §阶段2 协议字段备忘.
+
+    def _on_plan_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """``turn/plan/updated`` -> PLAN_UPDATED (capability=false, slice-077).
+
+        Source: ``turn.rs:426 TurnPlanUpdatedNotification``. The model emits
+        this when it calls the ``update_plan`` tool — a todo/checklist tool from
+        codex-vscode's todo-mcp (``protocol/src/plan_tool.rs``). trowel does not
+        configure todo-mcp, so the model never has the tool and this never
+        fires today. ``TurnPlanStep`` has no id — upsert key is step text
+        (decision 2). Only pending/inProgress/completed; no abandoned
+        (decision 1: interrupted plans surface via turn status, not step state).
+        """
+
+        plan = _require(params, "plan", "turn/plan/updated")
+        if not isinstance(plan, list):
+            raise ProtocolViolationError(
+                "turn/plan/updated.plan is not an array", payload=dict(params)
+            )
+        steps = tuple(self._plan_step(raw, "turn/plan/updated") for raw in plan)
+        return [
+            TranslatedItem(
+                type=CodexEventType.PLAN_UPDATED,
+                thread_id=_as_str(_require(params, "threadId", "turn/plan/updated")),
+                turn_id=_as_str(_require(params, "turnId", "turn/plan/updated")),
+                payload=immutable_payload(
+                    explanation=params.get("explanation"),
+                    steps=steps,
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _plan_step(raw: Any, method: str) -> dict[str, Any]:
+        """Validate one ``TurnPlanStep`` — ``{step, status}``, no id.
+
+        ``status`` is the ``camelCase`` serialisation of ``TurnPlanStepStatus``
+        (``turn.rs:441``): ``pending`` / ``inProgress`` / ``completed``. A value
+        outside that set is drift; raise rather than silently coerce.
+        """
+
+        if not isinstance(raw, Mapping):
+            raise ProtocolViolationError(
+                f"notification {method!r} plan step is not an object",
+                payload={"raw": raw},
+            )
+        step = _require(raw, "step", method)
+        status = _require(raw, "status", method)
+        if status not in ("pending", "inProgress", "completed"):
+            raise ProtocolViolationError(
+                f"notification {method!r} plan step has unexpected status {status!r}",
+                payload=dict(raw),
+            )
+        return {"step": _as_str(step), "status": _as_str(status)}
+
+    def _subagent_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """``item.type=subAgentActivity`` -> SUBAGENT_ACTIVITY (capability=false).
+
+        Source: ``item.rs:359 SubAgentActivity``. Only Started/Interacted/
+        Interrupted — there is no progress/result/error/cancel in the parent
+        thread event. usage / summary / per-tool detail require subscribing to
+        the sub-thread (``agent_thread_id``); decision 3 keeps usage null here
+        (spec C-4: never fabricate ``0 tokens``).
+        """
+
+        return TranslatedItem(
+            type=CodexEventType.SUBAGENT_ACTIVITY,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(item.get("id")),
+            payload=immutable_payload(
+                kind=item.get("kind"),
+                agent_thread_id=item.get("agentThreadId"),
+                agent_path=item.get("agentPath"),
+            ),
+        )
+
+    def _compaction_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """``item.type=contextCompaction`` -> COMPACTION (capability=false).
+
+        Source: ``item.rs:388 ContextCompaction``. The item carries only ``id``;
+        pre/post token counts come from ``thread/tokenUsage/updated`` (decision
+        4). ``thread/compacted`` is deprecated (``thread.rs:1603``) and trowel
+        has no ``thread/compact/start`` client, so this never fires today.
+        """
+
+        return TranslatedItem(
+            type=CodexEventType.COMPACTION,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(item.get("id")),
+            payload=immutable_payload(),
+        )
+
+    def _on_warning(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """``warning`` / ``guardianWarning`` -> HOST_WARNING (capability=false).
+
+        Source: ``notification.rs:21 WarningNotification`` (``thread_id``:
+        Option) and ``notification.rs:31 GuardianWarningNotification``
+        (``thread_id``: String). A stderr-only warning is NOT a turn error
+        (decision 6 / spec C-5: never paint a transient warning in the error
+        colour or as a terminal state). ``configWarning`` / ``deprecationNotice``
+        have different field shapes and stay in ``_IGNORED_METHODS`` until a
+        real fixture shows their structure.
+        """
+
+        message = _require(params, "message", "warning")
+        if not isinstance(message, str):
+            # ``_require`` only checks the key exists; a ``null`` here would
+            # otherwise become the literal string "None" via ``_as_str`` and
+            # render as fake warning copy — the exact fabrication spec C-4
+            # forbids. Reject as drift.
+            raise ProtocolViolationError(
+                "warning.message is not a string", payload=dict(params)
+            )
+        thread_id_raw = params.get("threadId")
+        return [
+            TranslatedItem(
+                type=CodexEventType.HOST_WARNING,
+                thread_id=_as_str(thread_id_raw) if thread_id_raw is not None else None,
+                payload=immutable_payload(message=_as_str(message)),
             )
         ]

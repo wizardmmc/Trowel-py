@@ -248,13 +248,56 @@ def test_unknown_method_returns_empty() -> None:
     assert CodexTranslator().translate("some/future/method", {"threadId": "t"}) == []
 
 
+# -------------------------------------------------- rate limit (slice-077)
+# Real fixture: notifications.jsonl has one account/rateLimits/updated recorded
+# 2026-07-18 (usedPercent 20, planType "pro", primary window only, not reached).
+# Source: account.rs:518 AccountRateLimitsUpdatedNotification.
+
+
+def test_rate_limits_updated_translates_to_rate_limit_updated() -> None:
+    """account/rateLimits/updated -> RATE_LIMIT_UPDATED (global, no thread_id).
+
+    The notification has no top-level threadId -- it is an account-level update
+    (source: account.rs:518). Decision 5: the full snapshot is preserved in the
+    payload; the UI unfolds only used_percent / resets_at / reached_type later.
+    """
+
+    msg = _by_method("account/rateLimits/updated")
+    items = CodexTranslator().translate(msg["method"], msg["params"])
+    assert len(items) == 1
+    item = items[0]
+    assert item.type is CodexEventType.RATE_LIMIT_UPDATED
+    assert item.thread_id is None
+    snapshot = msg["params"]["rateLimits"]
+    assert item.payload["limit_id"] == snapshot["limitId"]
+    assert item.payload["limit_name"] == snapshot["limitName"]
+    assert item.payload["plan_type"] == snapshot["planType"]
+    assert item.payload["rate_limit_reached_type"] == snapshot["rateLimitReachedType"]
+    # Windows / credits survive as nested mappings so the UI can read every
+    # field the protocol provides without a later schema change.
+    assert item.payload["primary"] == snapshot["primary"]
+    assert item.payload["secondary"] == snapshot["secondary"]
+    assert item.payload["credits"] == snapshot["credits"]
+    assert item.payload["individual_limit"] == snapshot["individualLimit"]
+    # spend_control_reached is Optional in protocol (account.rs:534) and absent
+    # in this 2026-07-18 recording -- payload surfaces the key as None, never
+    # fabricated (spec C-4: usage null 诚实; same principle for sparse fields).
+    assert item.payload["spend_control_reached"] is None
+
+
+def test_rate_limits_missing_field_raises_protocol_violation() -> None:
+    """A rate-limit update without the rateLimits object is protocol drift."""
+
+    with pytest.raises(ProtocolViolationError):
+        CodexTranslator().translate("account/rateLimits/updated", {})
+
+
 def test_ignored_methods_return_empty() -> None:
     """Capability-gated methods listed in _IGNORED_METHODS translate to nothing."""
 
     translator = CodexTranslator()
     assert translator.translate("thread/started", {"thread": {"id": "t"}}) == []
     assert translator.translate("turn/started", {"threadId": "t", "turn": {"id": "x"}}) == []
-    assert translator.translate("account/rateLimits/updated", {}) == []
     assert translator.translate("mcpServer/startupStatus/updated", {}) == []
 
 
@@ -301,9 +344,10 @@ def test_full_fixture_replay_produces_no_protocol_errors() -> None:
     emitted = 0
     for msg in _notifications():
         emitted += len(translator.translate(msg["method"], msg["params"]))
-    # The fixture has 7 translatable notifications (the rest are echoes /
-    # capability-gated: thread/started, turn/started, rateLimits, mcp, resolved).
-    assert emitted >= 7
+    # The fixture has 8 translatable notifications (the rest are echoes /
+    # capability-gated: thread/started, turn/started, mcp, resolved).
+    # rate-limit joined slice-077; it now translates instead of being gated.
+    assert emitted >= 8
 
 
 # ----------------------------------------------------- file change (slice-076)
@@ -461,3 +505,180 @@ def test_file_change_declined_preserves_declined_status() -> None:
     # The proposed change shape is still carried so the UI can show what was
     # refused; the declined ``status`` is what marks it as not-written.
     assert change["write_diff"]["type"] == "create"
+
+
+# ------------------------------------------- slice-077 capability=false skeletons
+# The handlers below are READY but NOT ROUTED. Inputs are constructed strictly
+# from codex 0.144.0 Rust protocol types (turn.rs:426 / item.rs:359 /
+# item.rs:388 / notification.rs:21) — no real fixture exists because the
+# capability is not wired (todo-mcp / compact client / etc.). See
+# slice-077.md §阶段2 for the activation path.
+
+
+def test_plan_updated_translates_steps_and_status() -> None:
+    """turn/plan/updated -> PLAN_UPDATED with step list + status (constructed).
+
+    step text is the only field per TurnPlanStep (no id) — decision 2 makes it
+    the upsert key. status is camelCase (turn.rs:441).
+    """
+
+    params = {
+        "threadId": "t-1",
+        "turnId": "turn-9",
+        "explanation": "three steps",
+        "plan": [
+            {"step": "read translator", "status": "completed"},
+            {"step": "split handlers", "status": "inProgress"},
+            {"step": "add tests", "status": "pending"},
+        ],
+    }
+    item = CodexTranslator()._on_plan_updated(params)[0]
+    assert item.type is CodexEventType.PLAN_UPDATED
+    assert item.thread_id == "t-1"
+    assert item.turn_id == "turn-9"
+    assert item.payload["explanation"] == "three steps"
+    assert item.payload["steps"] == (
+        {"step": "read translator", "status": "completed"},
+        {"step": "split handlers", "status": "inProgress"},
+        {"step": "add tests", "status": "pending"},
+    )
+
+
+def test_plan_updated_rejects_abandoned_status() -> None:
+    """abandoned is not a protocol TurnPlanStepStatus — drift, not silent.
+
+    Decision 1: no abandoned state. Interrupted plans surface via turn status,
+    never via a step status value.
+    """
+
+    with pytest.raises(ProtocolViolationError):
+        CodexTranslator()._on_plan_updated(
+            {
+                "threadId": "t",
+                "turnId": "x",
+                "plan": [{"step": "s", "status": "abandoned"}],
+            }
+        )
+
+
+def test_subagent_item_translates_kind_and_agent_thread() -> None:
+    """item.type=subAgentActivity -> SUBAGENT_ACTIVITY, no usage (decision 3)."""
+
+    item = CodexTranslator()._subagent_item(
+        {"threadId": "t-1", "turnId": "turn-1"},
+        {
+            "id": "sa-1",
+            "kind": "started",
+            "agentThreadId": "t-sub",
+            "agentPath": "/agent/sub",
+        },
+    )
+    assert item.type is CodexEventType.SUBAGENT_ACTIVITY
+    assert item.item_id == "sa-1"
+    assert item.payload["kind"] == "started"
+    assert item.payload["agent_thread_id"] == "t-sub"
+    assert item.payload["agent_path"] == "/agent/sub"
+    # usage / tokens / summary are NOT protocol fields here — must not appear
+    # fabricated (spec C-4: usage null 诚实).
+    assert "usage" not in item.payload
+    assert "tokens" not in item.payload
+    assert "summary" not in item.payload
+
+
+def test_compaction_item_carries_only_id() -> None:
+    """item.type=contextCompaction -> COMPACTION, id only (decision 4).
+
+    Pre/post token counts are read off thread/tokenUsage/updated (slice-071),
+    never invented here.
+    """
+
+    item = CodexTranslator()._compaction_item(
+        {"threadId": "t-1", "turnId": "turn-1"}, {"id": "comp-a3f"}
+    )
+    assert item.type is CodexEventType.COMPACTION
+    assert item.item_id == "comp-a3f"
+    assert dict(item.payload) == {}
+
+
+def test_warning_translates_message_with_optional_thread() -> None:
+    """warning / guardianWarning -> HOST_WARNING; thread_id optional.
+
+    WarningNotification.thread_id is Option (notification.rs:21) — absent for
+    global warnings. GuardianWarning carries thread_id (notification.rs:31).
+    """
+
+    guardian = CodexTranslator()._on_warning(
+        {"threadId": "t-1", "message": "sandbox denial"}
+    )[0]
+    assert guardian.type is CodexEventType.HOST_WARNING
+    assert guardian.thread_id == "t-1"
+    assert guardian.payload["message"] == "sandbox denial"
+
+    global_warn = CodexTranslator()._on_warning({"message": "global caution"})[0]
+    assert global_warn.thread_id is None
+    assert global_warn.payload["message"] == "global caution"
+
+
+def test_warning_rejects_non_string_message() -> None:
+    """warning.message must be a string — null / int must not become fake copy.
+
+    Regression guard for the C-4 principle: ``_as_str(None)`` would otherwise
+    render the literal "None" as warning text. ``_require`` only checks the key
+    exists, so the handler adds the type check explicitly.
+    """
+
+    with pytest.raises(ProtocolViolationError):
+        CodexTranslator()._on_warning({"threadId": "t-1", "message": None})
+    with pytest.raises(ProtocolViolationError):
+        CodexTranslator()._on_warning({"threadId": "t-1", "message": 123})
+
+
+def test_slice077_skeleton_methods_are_capability_false() -> None:
+    """plan/warning stay in _IGNORED_METHODS until activated (manager gates).
+
+    The dispatch table still has them (handler ready), but the manager drops
+    these methods before translate() fires — capability=false (slice-077).
+    """
+
+    translator = CodexTranslator()
+    ignored = translator.ignored_methods
+    for method in (
+        "turn/plan/updated",
+        "warning",
+        "guardianWarning",
+        "configWarning",
+        "deprecationNotice",
+    ):
+        assert method in ignored, f"{method} should be capability=false"
+
+
+def test_subagent_and_compaction_items_route_to_empty() -> None:
+    """subAgentActivity / contextCompaction items -> [] until activated.
+
+    Handlers (_subagent_item / _compaction_item) are ready; the item/started and
+    item/completed dispatch routes them to an explicit empty return for now.
+    """
+
+    translator = CodexTranslator()
+    assert (
+        translator.translate(
+            "item/started",
+            {
+                "threadId": "t",
+                "turnId": "x",
+                "item": {"type": "subAgentActivity", "id": "s"},
+            },
+        )
+        == []
+    )
+    assert (
+        translator.translate(
+            "item/completed",
+            {
+                "threadId": "t",
+                "turnId": "x",
+                "item": {"type": "contextCompaction", "id": "c"},
+            },
+        )
+        == []
+    )

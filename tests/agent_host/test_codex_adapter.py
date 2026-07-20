@@ -357,6 +357,31 @@ class TestExtensions:
         assert ev.payload["total"]["cachedInputTokens"] == 9984
         assert ev.payload["model_context_window"] == 258400
 
+    def test_rate_limit_updated_passthrough(self, adapter) -> None:
+        # Real fixture shape (notifications.jsonl): account-level snapshot with
+        # primary window + credits. End-to-end regression guard for the codex
+        # review P2 — without the adapter dispatch entry AND the AGENT_EVENT_TYPES
+        # whitelist, this event is dropped before the SSE stream sees it, so the
+        # rate-limit banner never renders even though the translator + manager
+        # produced it correctly.
+        ev = adapter.wrap(
+            _codex(
+                CodexEventType.RATE_LIMIT_UPDATED,
+                seq=9,
+                payload={
+                    "limit_id": "codex",
+                    "primary": {"usedPercent": 20, "resetsAt": 1784949908},
+                    "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+                    "plan_type": "pro",
+                    "rate_limit_reached_type": None,
+                },
+            )
+        )
+        assert ev.type == "rate_limit_updated"
+        assert ev.payload["primary"]["usedPercent"] == 20
+        assert ev.payload["plan_type"] == "pro"
+        assert ev.payload["rate_limit_reached_type"] is None
+
     def test_host_status_passthrough(self, adapter) -> None:
         ev = adapter.wrap(
             _codex(

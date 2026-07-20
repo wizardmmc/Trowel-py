@@ -85,6 +85,7 @@ class CodexEventAdapter:
             CodexEventType.TOOL_COMPLETED: self._tool_completed,
             CodexEventType.APPROVAL_REQUEST: self._approval_request,
             CodexEventType.USAGE_UPDATED: self._usage_updated,
+            CodexEventType.RATE_LIMIT_UPDATED: self._rate_limit_updated,
             CodexEventType.STATUS: self._status,
             CodexEventType.FINISHED: self._finished,
             CodexEventType.INTERRUPTED: self._interrupted,
@@ -309,6 +310,17 @@ class CodexEventAdapter:
         """usage_updated (extension) — passthrough token accounting."""
 
         return self._passthrough(e, type_="usage_updated")
+
+    def _rate_limit_updated(self, e: CodexEvent) -> AgentEvent:
+        """rate_limit_updated (extension) — passthrough account-level snapshot.
+
+        Source: ``account/rateLimits/updated`` (slice-077). The manager fans
+        this out to every active Codex session because it is account-scoped;
+        the adapter just passes the snapshot payload through so the UI can
+        render the rate-limit banner.
+        """
+
+        return self._passthrough(e, type_="rate_limit_updated")
 
     def _host_status(self, e: CodexEvent) -> AgentEvent:
         """host_status (extension) — passthrough manager lifecycle."""

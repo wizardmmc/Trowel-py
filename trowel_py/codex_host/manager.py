@@ -648,6 +648,9 @@ class CodexHostManager:
 
         if method in self._translator.ignored_methods:
             return  # capability-gated / echo — drop silently
+        if method in self._translator.account_level_methods:
+            self._dispatch_account_level(method, params)
+            return
         thread_id = _extract_thread_id(params)
         if thread_id is None:
             self._record_orphan(
@@ -695,6 +698,34 @@ class CodexHostManager:
             return
         for item in items:
             session.emit_translated(item)
+
+    def _dispatch_account_level(
+        self, method: str, params: Mapping[str, Any]
+    ) -> None:
+        """Translate an account-level notification and fan out to all sessions.
+
+        Account-level notifications (``translator.account_level_methods``) carry
+        no ``threadId`` by design — they describe the OpenAI account itself
+        (slice-077: ``account/rateLimits/updated``, source ``account.rs:518``).
+        The manager broadcasts the translated items to every active Codex session
+        so each session's UI can show, e.g., the rate-limit banner.
+
+        A ``ProtocolViolationError`` is logged but not surfaced to any session:
+        no single session owns an account-level notification, and drift here
+        should be visible to operators (log) rather than polluting every session
+        queue with an error.
+        """
+
+        try:
+            items = self._translator.translate(method, params)
+        except ProtocolViolationError as exc:
+            _log.warning("translator rejected account-level %s: %s", method, exc)
+            return
+        if not items:
+            return
+        for session in self._sessions.values():
+            for item in items:
+                session.emit_translated(item)
 
     def _record_orphan(
         self, method: str, thread_id: str | None, turn_id: str | None, reason: str

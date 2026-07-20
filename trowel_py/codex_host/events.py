@@ -68,6 +68,19 @@ class CodexEventType(str, Enum):
     FINISHED = "finished"
     INTERRUPTED = "interrupted"
     ERROR = "error"
+    # Account-level rate-limit update (slice-077). Global notification — no
+    # thread id. Source: account.rs:518 AccountRateLimitsUpdatedNotification.
+    RATE_LIMIT_UPDATED = "rate_limit_updated"
+    # slice-077 capability=false skeletons — handlers ready in the translator,
+    # not routed until each capability is activated (see slice-077.md §阶段2).
+    #   PLAN_UPDATED       — turn/plan/updated (turn.rs:426), needs todo-mcp
+    #   SUBAGENT_ACTIVITY  — item.type=subAgentActivity (item.rs:359)
+    #   COMPACTION         — item.type=contextCompaction (item.rs:388)
+    #   HOST_WARNING       — warning / guardianWarning (notification.rs:21+)
+    PLAN_UPDATED = "plan_updated"
+    SUBAGENT_ACTIVITY = "subagent_activity"
+    COMPACTION = "compaction"
+    HOST_WARNING = "host_warning"
     # Host-level state changes (ready / degraded / host-exited).
     HOST_STATUS = "host_status"
 

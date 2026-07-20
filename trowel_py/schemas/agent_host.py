@@ -54,6 +54,8 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         "host_status",
         # Connection-scoped Codex approval lifecycle (slice-075).
         "approval_request",
+        # Account-level rate-limit snapshot (slice-077; account/rateLimits/updated).
+        "rate_limit_updated",
     }
 )
 
