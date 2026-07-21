@@ -30,16 +30,19 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from contextlib import contextmanager
 from dataclasses import replace
 
 from trowel_py.model_os.redaction import redact_payload
 from trowel_py.model_os.reducer import (
     Snapshot,
+    TaskState,
     initial_snapshot,
     reduce_event,
 )
@@ -51,6 +54,10 @@ from trowel_py.model_os.types import (
     MemoryEligibility,
     Provenance,
     SessionPurpose,
+    Task,
+    TaskOrigin,
+    TaskStatus,
+    WaitingCondition,
     WorkItem,
     WorkItemKind,
     WorkItemStatus,
@@ -58,6 +65,31 @@ from trowel_py.model_os.types import (
 
 _SCHEMA_VERSION = 1
 _DEFAULT_POLICY_VERSION = "v0"
+
+# slice-086: Task lifecycle event kinds that must ONLY be appended by the
+# structured Task commands (create_task_from_user_request / claim_foreground /
+# complete_task / ...). The public ``append_event`` refuses these so a caller
+# that somehow obtains a Store handle cannot bypass the command gates and forge
+# a Task, resurrect a terminal Task, or fake ``running`` without a foreground
+# claim. ``TASK_CREATION_DENIED`` is audit-only (reducer no-op) and stays open.
+# Codex review HIGH 1.
+_TASK_LIFECYCLE_KINDS = frozenset(
+    {
+        EventKind.TASK_CREATED,
+        EventKind.TASK_STATUS_CHANGED,
+        EventKind.TASK_CONSTRAINT_APPENDED,
+        EventKind.TASK_WARM_CHANGED,
+        EventKind.TASK_WARM_RANK_SET,
+        EventKind.TASK_WAITING_SET,
+        EventKind.TASK_WAITING_CLEARED,
+        EventKind.TASK_AUTHORIZATION_CHANGED,
+        EventKind.TASK_COMPLETED,
+        EventKind.TASK_CANCELLED,
+        EventKind.TASK_ERROR_RECORDED,
+        EventKind.FOREGROUND_CLAIMED,
+        EventKind.FOREGROUND_RELEASED,
+    }
+)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -121,6 +153,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_active
 -- idempotency: the same key reclaims the same active lease
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_idem
     ON leases(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- slice-086: foreground attention record. Single row (CHECK id=1); the
+-- task_id is whoever Trowel is currently pushing forward, or NULL. Unlike
+-- leases this row has NO expiry: foreground is "current fact", not a
+-- resource that can be stolen by a timeout (Kleppmann: persistent lock vs
+-- lease). Restart reads this row back as-is.
+CREATE TABLE IF NOT EXISTS foreground_claim (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    task_id TEXT
+);
+
+-- slice-086: idempotency for Task creation. The CreateTaskFromUserRequest
+-- command carries a caller-supplied key; a retry returns the original
+-- task_id instead of producing a second Task + primary WorkItem. The CHECK
+-- guards against NULL/blank keys at the storage layer too (SQLite accepts
+-- NULL in a non-integer PRIMARY KEY, which would silently break the lookup).
+CREATE TABLE IF NOT EXISTS task_create_keys (
+    idempotency_key TEXT PRIMARY KEY NOT NULL
+        CHECK (length(trim(idempotency_key)) > 0),
+    task_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -133,6 +187,49 @@ class LeaseConflict(Exception):
         super().__init__(
             f"lease already held: resource_type={resource_type} resource_id={resource_id}"
         )
+
+
+class ForegroundConflict(Exception):
+    """Raised when a ClaimForeground loses to another Task already foreground.
+
+    The foreground claim is a single-row persistent record (no TTL); only one
+    Task may hold it at a time. Idempotent re-claim by the same owner returns
+    silently; a different owner raises this (slice-086 §foreground claim).
+    """
+
+    def __init__(self, current_owner: str | None) -> None:
+        self.current_owner = current_owner
+        super().__init__(
+            f"foreground already held by task_id={current_owner!r}"
+        )
+
+
+class WarmFull(Exception):
+    """Raised when a PromoteToWarm would exceed ``warm_limit``.
+
+    Per slice-086 grill decision 7 (warm is a fixed-capacity cache, explicit
+    replacement on overflow): the caller must demote an existing warm Task to
+    backlog before promoting a new one. The exception carries the current
+    warm Task ids so the caller / UI can surface the choice to the user.
+    """
+
+    def __init__(self, limit: int, warm_task_ids: tuple[str, ...]) -> None:
+        self.limit = limit
+        self.warm_task_ids = warm_task_ids
+        super().__init__(
+            f"warm pool full (limit={limit}); demote one of {warm_task_ids} first"
+        )
+
+
+class TaskCommandError(Exception):
+    """Raised when a Task command violates an invariant: illegal transition,
+    unknown task, terminal state, or a provenance/authority gate refusal
+    (e.g. MODEL_HYPOTHESIS attempting to create a Task or confirm a user
+    task's completion)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 # ----------------------------------------------------------------- helpers ---
@@ -336,6 +433,7 @@ class ModelOsStore:
         db_path: str | Path,
         *,
         policy_version: str = _DEFAULT_POLICY_VERSION,
+        warm_limit: int = 3,
     ) -> None:
         """Remember the db path and policy version; call ``open()`` to connect.
 
@@ -343,11 +441,20 @@ class ModelOsStore:
             db_path: path to the model_os.db file (created on first open).
             policy_version: recorded on every event/decision so replay can
                 explain why a new policy would decide differently.
+            warm_limit: max number of warm Tasks (slice-086 grill decision 7;
+                default 3, user-overridable policy). The foreground Task counts
+                against this limit.
         """
 
         self._path = Path(db_path)
         self._policy_version = policy_version
+        self._warm_limit = warm_limit
         self._conn: sqlite3.Connection | None = None
+        # slice-086: serialise commands that share this connection. SQLite's
+        # ``in_transaction`` is connection-scoped, not thread-scoped, so
+        # without this lock two request handlers sharing one store would
+        # interleave inside the same transaction (codex review HIGH 3).
+        self._lock = threading.RLock()
 
     @property
     def path(self) -> Path:
@@ -376,10 +483,18 @@ class ModelOsStore:
         ``check_same_thread=False`` is mandatory: later slices expose this
         store through FastAPI routes, whose TestClient runs async endpoints
         on an anyio portal thread (verified memory gotcha).
+
+        ``isolation_level="IMMEDIATE"`` (slice-086): every ``with conn:``
+        block opens an IMMEDIATE transaction, acquiring the reserved write
+        lock up front so concurrent writers serialise rather than racing on
+        a count-then-write window (the warm-pool capacity check relies on
+        this). Lease CAS still works — the partial unique index is the
+        arbiter, not the isolation level — so 084 behaviour is preserved.
         """
 
         conn = sqlite3.connect(str(self._path), timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.isolation_level = "IMMEDIATE"
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
@@ -394,11 +509,20 @@ class ModelOsStore:
         """
 
         assert self._conn is not None
+        # _bootstrap uses ``with self._conn`` (not ``_tx``) because
+        # ``executescript`` manages its own transaction and would fight the
+        # explicit BEGIN that ``_tx`` issues.
         with self._conn:
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                 ("schema_version", str(_SCHEMA_VERSION)),
+            )
+            # slice-086: foreground_claim is a single-row table; seed row id=1
+            # with NULL task_id (no foreground) so UPDATE-based CAS works and
+            # restart always finds exactly one row to read.
+            self._conn.execute(
+                "INSERT OR IGNORE INTO foreground_claim (id, task_id) VALUES (1, NULL)"
             )
 
     def _schema_version(self) -> int:
@@ -426,8 +550,21 @@ class ModelOsStore:
         Validates the kind/task_id invariant, then appends a
         ``work_item.created`` event. The WorkItem starts PENDING; later
         slices drive its lifecycle.
+
+        slice-086: ``kind=TASK`` is refused here. A Task's primary WorkItem
+        must come from ``create_task_from_user_request`` (which creates both
+        atomically and enforces the 1:1 mapping). Allowing ``create_work_item``
+        to mint TASK WorkItems would let a caller give one Task multiple
+        primary WorkItems, or attach one to a non-existent task_id (codex
+        review HIGH 4).
         """
 
+        if kind == WorkItemKind.TASK:
+            raise TaskCommandError(
+                "TASK WorkItems must be created via "
+                "create_task_from_user_request (slice-086: Task↔primary "
+                "WorkItem is 1:1)"
+            )
         _validate_work_item(kind, task_id)
         work_item_id = uuid4().hex
         created_at = _now_iso()
@@ -502,7 +639,7 @@ class ModelOsStore:
 
         lease_id = uuid4().hex
         try:
-            with self._conn:
+            with self._tx():
                 self._conn.execute(
                     "INSERT INTO leases (lease_id, resource_type, resource_id, owner, "
                     "acquired_at, expires_at, idempotency_key, released_at) "
@@ -565,7 +702,7 @@ class ModelOsStore:
         ).fetchone()
         if existing is not None and existing["expires_at"] < now_str:
             new_lease_id = uuid4().hex
-            with self._conn:
+            with self._tx():
                 cur = self._conn.execute(
                     "UPDATE leases SET lease_id=?, owner=?, acquired_at=?, "
                     "expires_at=?, idempotency_key=? "
@@ -598,7 +735,7 @@ class ModelOsStore:
         """Release a lease by id. Returns ``True`` if it was active."""
 
         assert self._conn is not None
-        with self._conn:
+        with self._tx():
             cur = self._conn.execute(
                 "UPDATE leases SET released_at=? WHERE lease_id=? AND released_at IS NULL",
                 (_now_iso(), lease_id),
@@ -625,12 +762,24 @@ class ModelOsStore:
         The payload is redacted before it touches SQLite. Re-appending the
         same ``event_id`` does not duplicate the row and returns the original
         seq.
+
+        slice-086: Task lifecycle kinds (task.created / status_changed /
+        completed / ...) are refused — those must go through the structured
+        Task commands so the gates (USER_REQUEST done requires USER_DECISION,
+        foreground ⇔ running, etc.) cannot be bypassed by a caller that
+        happens to hold a Store handle (codex review HIGH 1).
         """
 
         assert self._conn is not None
+        if event.kind in _TASK_LIFECYCLE_KINDS:
+            raise TaskCommandError(
+                f"event kind {event.kind!r} is a Task lifecycle event; use "
+                f"the corresponding structured command (slice-086 grill "
+                f"decision 5: provenance is not an authorisation mechanism)"
+            )
         payload_text, payload_hash = _payload_json(event.payload)
         try:
-            with self._conn:
+            with self._tx():
                 self._conn.execute(
                     _EVENT_INSERT_SQL,
                     _event_params(event, payload_text, payload_hash),
@@ -654,7 +803,7 @@ class ModelOsStore:
 
         assert self._conn is not None
         try:
-            with self._conn:
+            with self._tx():
                 self._conn.execute(_DECISION_INSERT_SQL, _decision_params(decision))
         except sqlite3.IntegrityError:
             pass
@@ -683,7 +832,7 @@ class ModelOsStore:
         assert self._conn is not None
         payload_text, payload_hash = _payload_json(intent_event.payload)
         try:
-            with self._conn:
+            with self._tx():
                 self._conn.execute(_DECISION_INSERT_SQL, _decision_params(decision))
                 self._conn.execute(
                     _EVENT_INSERT_SQL,
@@ -755,13 +904,897 @@ class ModelOsStore:
             snap = replace(snap, last_seq=seq)
         return snap
 
-    def read_snapshot(self) -> Snapshot:
-        """Return the current derived snapshot (replay + live leases).
+    # ---------------------------------------------------------- task commands
+    #
+    # slice-086 structured command entry points for the Task pool. Each
+    # command runs in a single IMMEDIATE transaction: replay current state,
+    # validate, append journal events, and (where relevant) mutate the
+    # foreground_claim table — all atomic. Provenance is NOT the gate (grill
+    # decision 5): the command identity is. MODEL_HYPOTHESIS never reaches
+    # create_task; user-task completion requires USER_DECISION.
+    #
+    # Retry semantics: event_ids are random uuids, so a crash-mid-commit
+    # retry may append duplicate status events. The reducer is idempotent for
+    # these (setting READY twice leaves the Task READY), so derived state is
+    # correct; only the audit log carries the duplicate. Task creation itself
+    # is fully idempotent via task_create_keys.
 
-        ``schema_version`` is already populated by ``replay`` (via
-        ``initial_snapshot``); only ``active_leases`` needs to be merged in
-        from the live table here.
+    @contextmanager
+    def _tx(self):
+        """IMMEDIATE transaction that puts the replay SELECT inside the snapshot.
+
+        ``isolation_level="IMMEDIATE"`` only auto-BEGINs before DML, so a
+        ``replay()`` (SELECT) at the top of a command reads in autocommit mode
+        — its count can be stale by the time the writes BEGIN, opening a
+        count-then-write race (the warm-pool overflow that this slice's
+        concurrent-promote test catches). This helper BEGINs explicitly so the
+        read and the write share one snapshot; IMMEDIATE also serialises
+        writers on the reserved lock.
+
+        The ``RLock`` serialises commands that share this connection: SQLite's
+        ``in_transaction`` is connection-scoped not thread-scoped, so without
+        it two request handlers sharing one store would interleave inside the
+        same transaction (codex review HIGH 3). Same-thread re-entry (a command
+        calling a helper that also opens ``_tx``) is allowed by the RLock and
+        short-circuits via the ``in_transaction`` check.
         """
 
+        assert self._conn is not None
+        with self._lock:
+            if self._conn.in_transaction:
+                yield
+                return
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    @contextmanager
+    def _read_tx(self):
+        """Read transaction: BEGIN DEFERRED so replay + lease + foreground reads
+        share one snapshot (codex review HIGH 5).
+
+        Without this, ``read_snapshot``'s three SELECTs run in autocommit and
+        a concurrent claim/release commit between them can return inconsistent
+        state (e.g. Task=RUNNING but foreground_task_id=None). DEFERRED takes
+        only a shared lock — WAL writers are not blocked — but the three reads
+        cannot be split by a commit.
+        """
+
+        assert self._conn is not None
+        with self._lock:
+            if self._conn.in_transaction:
+                yield
+                return
+            self._conn.execute("BEGIN")
+            try:
+                yield
+                self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    def _read_foreground_task_id(self) -> str | None:
+        """Return the current foreground task_id, or None (no foreground)."""
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT task_id FROM foreground_claim WHERE id=1"
+        ).fetchone()
+        return None if row is None else row["task_id"]
+
+    def _insert_event_in_tx(self, event: EventEnvelope) -> int | None:
+        """Append an event inside the caller's open transaction.
+
+        Returns the assigned seq, or ``None`` on duplicate event_id (idempotent
+        skip). The caller already holds ``with self._tx():``, so this MUST NOT
+        open its own transaction — a nested ``with conn`` would commit the
+        outer work prematurely.
+        """
+
+        assert self._conn is not None
+        payload_text, payload_hash = _payload_json(event.payload)
+        try:
+            self._conn.execute(
+                _EVENT_INSERT_SQL,
+                _event_params(event, payload_text, payload_hash),
+            )
+        except sqlite3.IntegrityError:
+            return None  # duplicate event_id — idempotent
+        row = self._conn.execute(
+            "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
+        ).fetchone()
+        assert row is not None
+        return int(row["seq"])
+
+    def _require_task(self, snap: Snapshot, task_id: str) -> TaskState:
+        """Return the TaskState for task_id or raise TaskCommandError."""
+
+        task = next((t for t in snap.tasks if t.task_id == task_id), None)
+        if task is None:
+            raise TaskCommandError(f"unknown task_id={task_id!r}")
+        return task
+
+    def _require_non_terminal(self, task: TaskState) -> None:
+        """Raise TaskCommandError if the Task is already terminal."""
+
+        if task.status.is_terminal:
+            raise TaskCommandError(
+                f"task {task.task_id!r} is terminal ({task.status.value})"
+            )
+
+    def _require_status(
+        self, task: TaskState, allowed: set[TaskStatus]
+    ) -> None:
+        """Raise TaskCommandError unless the Task is in one of ``allowed``
+        source states (codex review HIGH 2). Commands check ``non_terminal``
+        first, then this — so the frozen state graph (backlog→ready→running,
+        running→{waiting,done,...}) is enforced, not just "not terminal"."""
+
+        if task.status not in allowed:
+            allowed_str = sorted(s.value for s in allowed)
+            raise TaskCommandError(
+                f"task {task.task_id!r} status {task.status.value} not in "
+                f"allowed source states {allowed_str}"
+            )
+
+    @staticmethod
+    def _task_state_to_task(state: TaskState) -> Task:
+        """Project a reducer TaskState into the public Task value object
+        (drops ``status_provenance``, which is audit-only)."""
+
+        return Task(
+            task_id=state.task_id,
+            origin=state.origin,
+            original_goal=state.original_goal,
+            appended_constraints=state.appended_constraints,
+            status=state.status,
+            priority=state.priority,
+            warm=state.warm,
+            warm_rank=state.warm_rank,
+            authorization_scope=state.authorization_scope,
+            waiting_condition=state.waiting_condition,
+            completion_evidence=state.completion_evidence,
+            error_record=state.error_record,
+            primary_work_item_id=state.primary_work_item_id,
+            created_at=state.created_at,
+            updated_at=state.updated_at,
+        )
+
+    def _make_task_event(
+        self,
+        kind: str,
+        task_id: str,
+        payload: dict[str, Any],
+        provenance: Provenance = Provenance.MACHINE_OBSERVATION,
+        work_item_id: str | None = None,
+    ) -> EventEnvelope:
+        """Build a kernel-originated task event with a fresh event_id."""
+
+        return EventEnvelope(
+            event_id=f"{kind}.{uuid4().hex}",
+            kind=kind,
+            occurred_at=_now_iso(),
+            source="kernel",
+            provenance=provenance,
+            policy_version=self._policy_version,
+            payload=payload,
+            task_id=task_id,
+            work_item_id=work_item_id,
+        )
+
+    def _work_item_status_event(
+        self,
+        work_item_id: str,
+        new_status: WorkItemStatus,
+        task_id: str,
+        now: str,
+    ) -> EventEnvelope:
+        """Build a work_item.status_changed event that keeps the primary
+        WorkItem in lockstep with its Task (slice-086 §映射表)."""
+
+        return EventEnvelope(
+            event_id=f"wi.status.{work_item_id}.{uuid4().hex}",
+            kind=EventKind.WORK_ITEM_STATUS_CHANGED,
+            occurred_at=now,
+            source="kernel",
+            provenance=Provenance.MACHINE_OBSERVATION,
+            policy_version=self._policy_version,
+            payload={"new_status": new_status.value},
+            work_item_id=work_item_id,
+            task_id=task_id,
+        )
+
+    def _release_foreground_in_tx(self, task_id: str) -> None:
+        """Clear foreground_claim + emit FOREGROUND_RELEASED audit event.
+
+        Caller holds the transaction. No-op if this task isn't foreground.
+        """
+
+        assert self._conn is not None
+        self._conn.execute("UPDATE foreground_claim SET task_id=NULL WHERE id=1")
+        self._insert_event_in_tx(
+            self._make_task_event(EventKind.FOREGROUND_RELEASED, task_id, {})
+        )
+
+    # ------------------------------------------------------------- creation
+
+    def create_task_from_user_request(
+        self,
+        *,
+        original_goal: str,
+        idempotency_key: str,
+        authorization_scope: str = "",
+        priority: int = 0,
+    ) -> Task:
+        """Create a Task + its primary WorkItem atomically and idempotently.
+
+        ``provenance=USER_DECISION`` is written by this trusted boundary;
+        callers cannot forge it. Retrying the same ``idempotency_key`` returns
+        the original Task without creating a second primary WorkItem (pass 7).
+        A retry that passes different ``original_goal`` /
+        ``authorization_scope`` / ``priority`` ignores those fields — the first
+        write is authoritative (idempotent retry is crash recovery, not
+        update; to revise a Task use ``append_constraint`` /
+        ``change_authorization``).
+        """
+
+        assert self._conn is not None
+        if not original_goal:
+            raise TaskCommandError("original_goal must be non-empty")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            # SQLite accepts NULL in a non-integer PRIMARY KEY, and
+            # ``WHERE idempotency_key = NULL`` never matches — so a None/blank
+            # key would defeat the idempotency check and let retries create
+            # duplicate Tasks (codex review HIGH 6).
+            raise TaskCommandError("idempotency_key must be a non-empty string")
+        with self._tx():
+            existing = self._conn.execute(
+                "SELECT task_id FROM task_create_keys WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                snap_pre = self.replay()
+                return self._task_state_to_task(
+                    self._require_task(snap_pre, existing["task_id"])
+                )
+
+            task_id = uuid4().hex
+            work_item_id = uuid4().hex
+            now = _now_iso()
+            self._insert_event_in_tx(
+                EventEnvelope(
+                    event_id=f"wi.create.{work_item_id}",
+                    kind=EventKind.WORK_ITEM_CREATED,
+                    occurred_at=now,
+                    source="kernel",
+                    provenance=Provenance.MACHINE_OBSERVATION,
+                    policy_version=self._policy_version,
+                    payload={
+                        "work_item_id": work_item_id,
+                        "kind": WorkItemKind.TASK.value,
+                        "owner_ref": "user",
+                        "task_id": task_id,
+                        "status": WorkItemStatus.PENDING.value,
+                        "session_purpose": SessionPurpose.FOREGROUND.value,
+                        "memory_eligibility": MemoryEligibility.ELIGIBLE.value,
+                    },
+                    work_item_id=work_item_id,
+                    task_id=task_id,
+                )
+            )
+            self._insert_event_in_tx(
+                EventEnvelope(
+                    event_id=f"task.create.{task_id}",
+                    kind=EventKind.TASK_CREATED,
+                    occurred_at=now,
+                    source="kernel",
+                    provenance=Provenance.USER_DECISION,
+                    policy_version=self._policy_version,
+                    payload={
+                        "task_id": task_id,
+                        "origin": TaskOrigin.USER_REQUEST.value,
+                        "original_goal": original_goal,
+                        "appended_constraints": [],
+                        "status": TaskStatus.BACKLOG.value,
+                        "priority": priority,
+                        "warm": False,
+                        "warm_rank": None,
+                        "authorization_scope": authorization_scope,
+                        "primary_work_item_id": work_item_id,
+                    },
+                    task_id=task_id,
+                )
+            )
+            self._conn.execute(
+                "INSERT INTO task_create_keys (idempotency_key, task_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (idempotency_key, task_id, now),
+            )
         snap = self.replay()
-        return replace(snap, active_leases=self._read_active_leases())
+        return self._task_state_to_task(self._require_task(snap, task_id))
+
+    # ----------------------------------------------------- warm / foreground
+
+    def promote_to_warm(self, task_id: str) -> None:
+        """backlog → warm ready. Raises WarmFull if warm_limit reached (grill
+        decision 7: explicit replacement, not auto-overflow)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if task.warm:
+                return  # idempotent
+            warm_count = len(snap.warm_tasks())
+            if warm_count >= self._warm_limit:
+                raise WarmFull(
+                    self._warm_limit,
+                    tuple(t.task_id for t in snap.warm_tasks()),
+                )
+            now = _now_iso()
+            if task.status == TaskStatus.BACKLOG:
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        task_id,
+                        {"new_status": TaskStatus.READY.value},
+                    )
+                )
+                if task.primary_work_item_id:
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            task.primary_work_item_id,
+                            WorkItemStatus.READY,
+                            task_id,
+                            now,
+                        )
+                    )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_WARM_CHANGED, task_id, {"warm": True}
+                )
+            )
+
+    def demote_to_backlog(self, task_id: str) -> None:
+        """warm → backlog (warm=False, status=backlog). Foreground task cannot
+        be demoted — release foreground first."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if self._read_foreground_task_id() == task_id:
+                raise TaskCommandError(
+                    f"cannot demote foreground task {task_id!r}; "
+                    f"release foreground first"
+                )
+            now = _now_iso()
+            if task.warm:
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_WARM_CHANGED, task_id, {"warm": False}
+                    )
+                )
+            if task.status != TaskStatus.BACKLOG:
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        task_id,
+                        {"new_status": TaskStatus.BACKLOG.value},
+                    )
+                )
+                if task.primary_work_item_id:
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            task.primary_work_item_id,
+                            WorkItemStatus.PENDING,
+                            task_id,
+                            now,
+                        )
+                    )
+
+    def claim_foreground(self, task_id: str) -> None:
+        """Atomically claim foreground: Task ready→running, WorkItem→RUNNING,
+        foreground_claim.task_id = this task. Raises ForegroundConflict if
+        another task already holds it (pass 1). Requires warm (foreground ⇒
+        warm, pass 3)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if not task.warm:
+                raise TaskCommandError(
+                    f"task {task_id!r} must be warm before claiming foreground"
+                )
+            # Source state: READY (normal ready→running) or RUNNING (idempotent
+            # re-claim below). BACKLOG/waiting/incubating cannot leap straight
+            # to running (codex review HIGH 2).
+            self._require_status(task, {TaskStatus.READY, TaskStatus.RUNNING})
+            current = self._read_foreground_task_id()
+            if current == task_id:
+                return  # idempotent
+            if current is not None:
+                raise ForegroundConflict(current)
+            now = _now_iso()
+            # Take the foreground slot. IMMEDIATE has already serialised us
+            # against other writers, and the ``current`` checks above ruled
+            # out "already mine" (idempotent return) and "someone else holds
+            # it" (ForegroundConflict) — so reaching here means the slot is
+            # empty. The ``task_id IS NULL`` WHERE + rowcount check is a
+            # defensive backstop in case a future caller bypasses the read.
+            cur = self._conn.execute(
+                "UPDATE foreground_claim SET task_id=? WHERE id=1 "
+                "AND task_id IS NULL",
+                (task_id,),
+            )
+            if cur.rowcount == 0:
+                raise ForegroundConflict(self._read_foreground_task_id())
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_STATUS_CHANGED,
+                    task_id,
+                    {"new_status": TaskStatus.RUNNING.value},
+                )
+            )
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.RUNNING,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.FOREGROUND_CLAIMED, task_id, {"task_id": task_id}
+                )
+            )
+
+    def release_foreground(self) -> None:
+        """Release foreground: Task running→ready, WorkItem→READY, claim
+        cleared. Idempotent if no foreground is held."""
+
+        assert self._conn is not None
+        with self._tx():
+            current = self._read_foreground_task_id()
+            if current is None:
+                return
+            snap = self.replay()
+            now = _now_iso()
+            self._conn.execute(
+                "UPDATE foreground_claim SET task_id=NULL WHERE id=1"
+            )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.FOREGROUND_RELEASED, current, {}
+                )
+            )
+            task = next((t for t in snap.tasks if t.task_id == current), None)
+            if task is not None and not task.status.is_terminal:
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        current,
+                        {"new_status": TaskStatus.READY.value},
+                    )
+                )
+                if task.primary_work_item_id:
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            task.primary_work_item_id,
+                            WorkItemStatus.READY,
+                            current,
+                            now,
+                        )
+                    )
+
+    # --------------------------------------------------------------- waiting
+
+    def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
+        """Shared body for set_waiting_user / _event / _incubating: release
+        foreground if held, suspend WorkItem, set waiting_condition + status.
+
+        Source state must be RUNNING (the frozen graph is running→waiting_*);
+        a backlog/ready Task cannot leap into waiting (codex review HIGH 2)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            self._require_status(task, {TaskStatus.RUNNING})
+            now = _now_iso()
+            if self._read_foreground_task_id() == task_id:
+                self._release_foreground_in_tx(task_id)
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.SUSPENDED,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_WAITING_SET,
+                    task_id,
+                    {
+                        "kind": waiting.kind,
+                        "cause": waiting.cause,
+                        "correlation_id": waiting.correlation_id,
+                        "deadline": waiting.deadline,
+                        "condition_kind": waiting.condition_kind,
+                        "target_ref": waiting.target_ref,
+                        "match_params": waiting.match_params,
+                        "open_question": waiting.open_question,
+                        "preparation_snapshot_ref": waiting.preparation_snapshot_ref,
+                        "earliest_review_at": waiting.earliest_review_at,
+                    },
+                )
+            )
+
+    def set_waiting_user(
+        self,
+        task_id: str,
+        *,
+        cause: str,
+        correlation_id: str,
+        deadline: str | None = None,
+    ) -> None:
+        """running → waiting_user (releases foreground). Matcher (user reply)
+        is slice-095; slice-086 only stores the structure.
+
+        ``correlation_id`` is mandatory — it links the waiting Task to the
+        user reply that will resume it (codex review M3)."""
+
+        if not cause:
+            raise TaskCommandError("waiting_user cause must be non-empty")
+        if not correlation_id:
+            raise TaskCommandError("waiting_user requires correlation_id")
+        self._set_waiting(
+            task_id,
+            WaitingCondition(
+                kind=TaskStatus.WAITING_USER.value,
+                cause=cause,
+                correlation_id=correlation_id,
+                deadline=deadline,
+            ),
+        )
+
+    def set_waiting_event(
+        self,
+        task_id: str,
+        *,
+        cause: str,
+        condition_kind: str,
+        target_ref: str,
+        match_params: dict[str, Any] | None = None,
+        deadline: str | None = None,
+    ) -> None:
+        """running → waiting_event. Requires condition_kind + target_ref
+        (the external predicate); matcher is slice-095."""
+
+        if not cause:
+            raise TaskCommandError("waiting_event cause must be non-empty")
+        if not condition_kind or not target_ref:
+            raise TaskCommandError(
+                "waiting_event requires condition_kind and target_ref"
+            )
+        self._set_waiting(
+            task_id,
+            WaitingCondition(
+                kind=TaskStatus.WAITING_EVENT.value,
+                cause=cause,
+                condition_kind=condition_kind,
+                target_ref=target_ref,
+                match_params=match_params,
+                deadline=deadline,
+            ),
+        )
+
+    def set_incubating(
+        self,
+        task_id: str,
+        *,
+        open_question: str,
+        preparation_snapshot_ref: str,
+        earliest_review_at: str | None = None,
+    ) -> None:
+        """running → incubating. Requires open_question + preparation_snapshot
+        (architecture.md: "必须先有准备 snapshot 和明确未解问题"). Review/reframe
+        is slice-098/099."""
+
+        if not open_question or not preparation_snapshot_ref:
+            raise TaskCommandError(
+                "incubating requires open_question and preparation_snapshot_ref"
+            )
+        self._set_waiting(
+            task_id,
+            WaitingCondition(
+                kind=TaskStatus.INCUBATING.value,
+                cause=open_question,
+                open_question=open_question,
+                preparation_snapshot_ref=preparation_snapshot_ref,
+                earliest_review_at=earliest_review_at,
+            ),
+        )
+
+    def clear_waiting(self, task_id: str) -> None:
+        """waiting_* → ready. The waiting condition is cleared; matcher
+        satisfaction is slice-095/098."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if task.status not in (
+                TaskStatus.WAITING_USER,
+                TaskStatus.WAITING_EVENT,
+                TaskStatus.INCUBATING,
+            ):
+                raise TaskCommandError(
+                    f"task {task_id!r} is not waiting (status={task.status.value})"
+                )
+            now = _now_iso()
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.READY,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_WAITING_CLEARED, task_id, {}
+                )
+            )
+
+    # ------------------------------------------------------------- terminals
+
+    def complete_task(
+        self,
+        task_id: str,
+        *,
+        confirmed_by: str,
+        evidence_refs: tuple[str, ...] = (),
+        confirmation_provenance: Provenance = Provenance.USER_DECISION,
+    ) -> None:
+        """Mark a Task done. Records confirmer + evidence + provenance (pass
+        10). USER_REQUEST tasks require USER_DECISION — a model self-report
+        cannot close a human task. Foreground is released in the same tx."""
+
+        assert self._conn is not None
+        if not confirmed_by:
+            raise TaskCommandError("confirmed_by must be non-empty")
+        if not evidence_refs:
+            raise TaskCommandError(
+                "evidence_refs must be non-empty (model self-report is not "
+                "sufficient — codex review M2)"
+            )
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if (
+                task.origin == TaskOrigin.USER_REQUEST
+                and confirmation_provenance != Provenance.USER_DECISION
+            ):
+                raise TaskCommandError(
+                    f"user-requested task {task_id!r} completion requires "
+                    f"USER_DECISION (got {confirmation_provenance.value})"
+                )
+            # Source state: RUNNING (frozen graph running→done). A waiting or
+            # backlog Task cannot be completed directly (codex review HIGH 2).
+            self._require_status(task, {TaskStatus.RUNNING})
+            if self._read_foreground_task_id() == task_id:
+                self._release_foreground_in_tx(task_id)
+            now = _now_iso()
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.DONE,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_COMPLETED,
+                    task_id,
+                    {
+                        "confirmed_by": confirmed_by,
+                        "confirmation_provenance": confirmation_provenance.value,
+                        "evidence_refs": list(evidence_refs),
+                    },
+                    confirmation_provenance,
+                )
+            )
+
+    def cancel_task(self, task_id: str, *, reason: str) -> None:
+        """Cancel a Task (terminal). Foreground released in the same tx; no
+        orphan claim (pass 6)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if self._read_foreground_task_id() == task_id:
+                self._release_foreground_in_tx(task_id)
+            now = _now_iso()
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.CANCELLED,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_CANCELLED,
+                    task_id,
+                    {"reason": reason},
+                )
+            )
+
+    def record_task_error(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        last_snapshot_ref: str | None = None,
+        last_episode_ref: str | None = None,
+        recovery_hint: str | None = None,
+    ) -> None:
+        """Record a task-level failure (terminal). WorkItem → FAILED (pass 13);
+        ``last_snapshot_ref`` preserved for later reopen (pass 11). Foreground
+        released in the same tx. Transient Episode/tool failures do NOT come
+        here — those return the Task to ready (Temporal activity-retry)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            if self._read_foreground_task_id() == task_id:
+                self._release_foreground_in_tx(task_id)
+            now = _now_iso()
+            if task.primary_work_item_id:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        task.primary_work_item_id,
+                        WorkItemStatus.FAILED,
+                        task_id,
+                        now,
+                    )
+                )
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_ERROR_RECORDED,
+                    task_id,
+                    {
+                        "origin": task.origin.value,
+                        "failure_reason": reason,
+                        "last_snapshot_ref": last_snapshot_ref,
+                        "last_episode_ref": last_episode_ref,
+                        "recovery_hint": recovery_hint,
+                    },
+                )
+            )
+
+    # ----------------------------------------------------- non-state updates
+
+    def append_constraint(self, task_id: str, constraint: str) -> None:
+        """Append a user-clarified constraint. original_goal is never
+        overwritten (pass: original_goal immutable)."""
+
+        assert self._conn is not None
+        if not constraint:
+            raise TaskCommandError("constraint must be non-empty")
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_CONSTRAINT_APPENDED,
+                    task_id,
+                    {"constraint": constraint},
+                )
+            )
+
+    def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
+        """Set / clear the user-controlled warm ordering (pass: warm order
+        by created_at, user can reorder)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_WARM_RANK_SET,
+                    task_id,
+                    {"warm_rank": warm_rank},
+                )
+            )
+
+    def change_authorization(
+        self,
+        task_id: str,
+        *,
+        authorization_scope: str,
+        confirmed_by: str,
+    ) -> None:
+        """Update a Task's authorization scope.
+
+        Records ``confirmed_by`` so audit can distinguish user-driven from
+        kernel-driven scope changes — mirrors ``complete_task``'s confirmer
+        discipline (a scope change is a security-sensitive act: it controls
+        which tools/resources the Task may touch). Refused on terminal tasks
+        (a cancelled/done/errored Task must not be silently re-authorised).
+        Authority comes from the command boundary (only the kernel calls this
+        in response to a user decision channel), not from provenance — which
+        is why ``confirmed_by`` is an explicit parameter rather than a
+        provenance the caller could self-assign.
+        """
+
+        assert self._conn is not None
+        if not authorization_scope:
+            raise TaskCommandError("authorization_scope must be non-empty")
+        with self._tx():
+            snap = self.replay()
+            task = self._require_task(snap, task_id)
+            self._require_non_terminal(task)
+            self._insert_event_in_tx(
+                self._make_task_event(
+                    EventKind.TASK_AUTHORIZATION_CHANGED,
+                    task_id,
+                    {
+                        "authorization_scope": authorization_scope,
+                        "confirmed_by": confirmed_by,
+                    },
+                    Provenance.USER_DECISION,
+                )
+            )
+
+    def read_snapshot(self) -> Snapshot:
+        """Return the current derived snapshot (replay + live leases + foreground).
+
+        ``schema_version`` is already populated by ``replay`` (via
+        ``initial_snapshot``); ``active_leases`` and ``foreground_task_id``
+        are merged in from live tables here — both are operational state, not
+        audit (slice-086: foreground owner lives in foreground_claim, not
+        derived from FOREGROUND_CLAIMED events).
+
+        All three reads run inside one DEFERRED read transaction (``_read_tx``)
+        so a concurrent claim/release commit cannot split them and return an
+        inconsistent snapshot (codex review HIGH 5).
+        """
+
+        with self._read_tx():
+            snap = self.replay()
+            return replace(
+                snap,
+                active_leases=self._read_active_leases(),
+                foreground_task_id=self._read_foreground_task_id(),
+            )

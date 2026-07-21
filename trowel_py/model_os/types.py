@@ -86,6 +86,79 @@ class WorkItemStatus(str, Enum):
     SUSPENDED = "suspended"
     DONE = "done"
     CANCELLED = "cancelled"
+    #: slice-086 — task-level failure. The primary WorkItem of a Task in
+    #: ``error`` enters FAILED: it neither finished nor was abandoned, it
+    #: broke in a way that retrying the same work will not fix (dependency
+    #: overturned, state corruption, etc.). Distinct from a transient
+    #: Episode/tool failure, which returns the WorkItem to READY for retry.
+    FAILED = "failed"
+
+
+# ----------------------------------------------------------------------- task
+#
+# slice-086 introduces the Task entity. A Task is a long-lived objective
+# independent of any native session; its primary execution identity is a
+# WorkItem(kind=TASK, task_id=this task). See slice-086 spec §概念定位 for
+# the four-layer identity split (Task / WorkItem / Episode / Native Session).
+
+
+class TaskOrigin(str, Enum):
+    """Who a Task belongs to — drives who must confirm completion and who is
+    notified on error (slice-086 grill decision 11).
+
+    - ``USER_REQUEST``: a human asked for this. ``done`` requires
+      ``USER_DECISION`` confirmation; ``error`` prompts the human.
+    - ``SELF_INITIATED``: Trowel spawned it (e.g. maintenance, default-state
+      follow-up). ``error`` is recorded for later review, not auto-recovered.
+    - ``ADOPTED_CANDIDATE``: promoted from a default/incubation candidate via
+      explicit adoption. The adoption event reference is mandatory. The
+      ``AdoptCandidate`` command path is reserved in v0 (idea_candidates land
+      in slice-097); MODEL_HYPOTHESIS can never create a Task directly.
+    """
+
+    USER_REQUEST = "user_request"
+    SELF_INITIATED = "self_initiated"
+    ADOPTED_CANDIDATE = "adopted_candidate"
+
+
+class TaskStatus(str, Enum):
+    """Lifecycle of a Task (slice-086 spec §TaskStatus 状态机).
+
+    Legal transitions (anything else is rejected by the command layer):
+
+    ::
+
+        backlog → ready → running
+        running → waiting_user | waiting_event | incubating | ready | done | cancelled | error
+        waiting_user   → ready
+        waiting_event  → ready          # condition matcher is slice-095
+        incubating     → ready          # review/reframe is slice-098/099
+        warm Task      → backlog        # demotion (user-decided)
+        any non-terminal → cancelled
+        any non-terminal → error        # task-level failure only
+
+    ``done`` / ``cancelled`` / ``error`` are terminal: no auto-recovery. To
+    resume after ``error``, reopen via the normal 087/090 path using
+    ``ErrorRecord.last_snapshot_ref`` — the Task does not flip back to ready
+    on its own (Temporal workflow-failure semantics: retrying the same logic
+    does not fix a code-bug or overturned dependency).
+    """
+
+    BACKLOG = "backlog"
+    READY = "ready"
+    RUNNING = "running"
+    WAITING_USER = "waiting_user"
+    WAITING_EVENT = "waiting_event"
+    INCUBATING = "incubating"
+    DONE = "done"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+    @property
+    def is_terminal(self) -> bool:
+        """True for done / cancelled / error — states with no outgoing edge."""
+
+        return self in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ERROR)
 
 
 class SessionPurpose(str, Enum):
@@ -160,6 +233,25 @@ class EventKind:
     #: anti-forgery (pass 4): no event, regardless of provenance, can alter
     #: Self state.
     SELF_CHANGE_PROPOSED = "self.change_proposed"
+    # slice-086 — Task lifecycle. Tasks are event-sourced like work_items;
+    # the reducer folds these into TaskState. The foreground claim pair
+    # (FOREGROUND_CLAIMED / RELEASED) is audit-only: the live foreground
+    # owner lives in the foreground_claim table (read at snapshot time,
+    # same pattern as active_leases — not derived from events).
+    TASK_CREATED = "task.created"
+    TASK_STATUS_CHANGED = "task.status_changed"
+    TASK_CONSTRAINT_APPENDED = "task.constraint_appended"
+    TASK_WARM_CHANGED = "task.warm_changed"
+    TASK_WARM_RANK_SET = "task.warm_rank_set"
+    TASK_WAITING_SET = "task.waiting_set"
+    TASK_WAITING_CLEARED = "task.waiting_cleared"
+    TASK_AUTHORIZATION_CHANGED = "task.authorization_changed"
+    TASK_COMPLETED = "task.completed"
+    TASK_CANCELLED = "task.cancelled"
+    TASK_ERROR_RECORDED = "task.error_recorded"
+    TASK_CREATION_DENIED = "task.creation_denied"
+    FOREGROUND_CLAIMED = "foreground.claimed"
+    FOREGROUND_RELEASED = "foreground.released"
 
 
 @dataclass(frozen=True)
@@ -315,3 +407,110 @@ class SelfManifest:
     task_id: str | None = None
     episode_id: str | None = None
     native_session_id: str | None = None
+
+
+# ----------------------------------------------------- task-shaped payloads ---
+#
+# These frozen dataclasses are shapes used inside Task and inside event
+# payloads (``TASK_WAITING_SET`` / ``TASK_COMPLETED`` / ``TASK_ERROR_RECORDED``).
+# Kept here so the reducer, the store and tests share one canonical shape.
+
+
+@dataclass(frozen=True)
+class WaitingCondition:
+    """Why a Task paused and what it is waiting for (slice-086 §WaitingCondition).
+
+    ``kind`` discriminates the three waiting states. All variants carry a
+    human-readable ``cause`` (the spec mandates "waiting 必须保存可理解的原因").
+    Formal matching (predicate evaluation, review scheduling) is implemented
+    in slice-095/098 — slice-086 only stores the structure and validates the
+    invariants below.
+
+    Invariants by kind:
+    - ``waiting_user``: ``cause`` required; ``correlation_id`` links back to
+      the user input that will resume the Task.
+    - ``waiting_event``: ``condition_kind`` + ``target_ref`` required (the
+      external predicate). Matcher is slice-095.
+    - ``incubating``: ``open_question`` AND ``preparation_snapshot_ref`` both
+      required (architecture.md §默认态与孵化: "必须先有准备 snapshot 和明确未解
+      问题"). Review/reframe is slice-098/099.
+    """
+
+    kind: str
+    cause: str
+    correlation_id: str | None = None
+    deadline: str | None = None
+    # waiting_event only
+    condition_kind: str | None = None
+    target_ref: str | None = None
+    match_params: dict[str, Any] | None = None
+    # incubating only
+    open_question: str | None = None
+    preparation_snapshot_ref: str | None = None
+    earliest_review_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CompletionEvidence:
+    """Who confirmed a Task done and on what basis (slice-086 §CompletionEvidence).
+
+    The spec mandates: ``done`` must record confirmer + evidence; model
+    self-report is not sufficient on its own. For ``USER_REQUEST`` tasks,
+    ``confirmation_provenance`` MUST be ``USER_DECISION`` — the store rejects
+    a model-claimed done on a human task.
+    """
+
+    confirmed_by: str
+    confirmation_provenance: Provenance
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ErrorRecord:
+    """Why a Task entered ``error`` and where its work现场 lives (slice-086
+    §ErrorRecord).
+
+    ``error`` is terminal and never auto-recovered (Temporal workflow-failure
+    semantics). To reopen, a later command follows the normal 087/090 path
+    using ``last_snapshot_ref`` — the Task does not flip back to ready on its
+    own. ``origin`` records who the Task belongs to so the kernel knows whether
+    to prompt a human (USER_REQUEST) or just record for review (SELF_INITIATED).
+    """
+
+    origin: TaskOrigin
+    failure_reason: str
+    last_episode_ref: str | None = None
+    last_snapshot_ref: str | None = None
+    recovery_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class Task:
+    """A long-lived objective tracked across sessions (slice-086).
+
+    A Task is NOT a native session and NOT a single execution. Its primary
+    execution identity is one WorkItem(kind=TASK, task_id=this task), created
+    atomically with the Task. Later slices may attach INCUBATION WorkItems for
+    paused/reframe rounds. The Task owns the business state (goal, constraints,
+    waiting, completion, error); the WorkItem owns the scheduling state.
+
+    ``original_goal`` is frozen at creation and NEVER overwritten — later
+    corrections are appended via ``appended_constraints`` or an explicit
+    reframe event, so the system can always explain where the Task came from.
+    """
+
+    task_id: str
+    origin: TaskOrigin
+    original_goal: str
+    appended_constraints: tuple[str, ...]
+    status: TaskStatus
+    priority: int
+    warm: bool
+    warm_rank: int | None
+    authorization_scope: str
+    waiting_condition: WaitingCondition | None
+    completion_evidence: CompletionEvidence | None
+    error_record: ErrorRecord | None
+    primary_work_item_id: str | None
+    created_at: str
+    updated_at: str

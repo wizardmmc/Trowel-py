@@ -58,21 +58,23 @@ def test_open_bootstraps_missing_db(db_path: Path) -> None:
 
 
 def test_open_idempotent_on_existing_db(store: ModelOsStore) -> None:
-    """Re-opening an already-bootstrapped db preserves prior work items."""
+    """Re-opening an already-bootstrapped db preserves prior tasks + work items.
 
-    created = store.create_work_item(
-        kind=WorkItemKind.TASK,
-        owner_ref="user",
-        task_id="task-1",
-        session_purpose=SessionPurpose.FOREGROUND,
-        memory_eligibility=MemoryEligibility.ELIGIBLE,
+    slice-086: Task WorkItems are created via ``create_task_from_user_request``;
+    ``create_work_item`` no longer accepts ``kind=TASK`` (Task↔primary WorkItem
+    is 1:1)."""
+
+    created = store.create_task_from_user_request(
+        original_goal="t", idempotency_key="k", authorization_scope="d"
     )
     store.close()
 
     reopened = ModelOsStore(store.path)
     reopened.open()
     snap = reopened.read_snapshot()
-    assert any(wi.work_item_id == created.work_item_id for wi in snap.work_items)
+    assert any(
+        wi.work_item_id == created.primary_work_item_id for wi in snap.work_items
+    )
 
 
 # --------------------------------------------------------------- work items ---
@@ -81,8 +83,6 @@ def test_open_idempotent_on_existing_db(store: ModelOsStore) -> None:
 @pytest.mark.parametrize(
     "kind,owner,task_id,purpose,eligibility",
     [
-        (WorkItemKind.TASK, "user", "task-A",
-         SessionPurpose.FOREGROUND, MemoryEligibility.ELIGIBLE),
         (WorkItemKind.DEFAULT, "system", None,
          SessionPurpose.DEFAULT, MemoryEligibility.INELIGIBLE),
         (WorkItemKind.INCUBATION, "system", "task-A",
@@ -101,8 +101,12 @@ def test_all_work_item_kinds_are_legal(
     purpose: SessionPurpose,
     eligibility: MemoryEligibility,
 ) -> None:
-    """Task / default / incubation / maintenance / experiment all create
-    legal WorkItems (spec pass criterion 8)."""
+    """default / incubation / maintenance / experiment all create legal
+    WorkItems via ``create_work_item``.
+
+    slice-086 removed ``WorkItemKind.TASK`` from this path: a Task's primary
+    WorkItem must come from ``create_task_from_user_request`` (1:1 mapping).
+    ``test_create_work_item_rejects_task_kind`` pins the refusal."""
 
     wi = store.create_work_item(
         kind=kind,
@@ -122,14 +126,13 @@ def test_all_work_item_kinds_are_legal(
 
 
 def test_system_work_excluded_from_task_set(store: ModelOsStore) -> None:
-    """default/maintenance/experiment must never appear among task work items."""
+    """default/maintenance/experiment must never appear among task work items.
 
-    store.create_work_item(
-        kind=WorkItemKind.TASK,
-        owner_ref="user",
-        task_id="task-A",
-        session_purpose=SessionPurpose.FOREGROUND,
-        memory_eligibility=MemoryEligibility.ELIGIBLE,
+    slice-086: the Task WorkItem is created via ``create_task_from_user_request``
+    (the only path that mints kind=TASK now)."""
+
+    task = store.create_task_from_user_request(
+        original_goal="t", idempotency_key="k", authorization_scope="d"
     )
     store.create_work_item(
         kind=WorkItemKind.DEFAULT,
@@ -150,7 +153,24 @@ def test_system_work_excluded_from_task_set(store: ModelOsStore) -> None:
     tasks = snap.task_work_items()
     assert all(w.kind == WorkItemKind.TASK for w in tasks)
     assert len(tasks) == 1
-    assert tasks[0].task_id == "task-A"
+    assert tasks[0].task_id == task.task_id
+
+
+def test_create_work_item_rejects_task_kind(store: ModelOsStore) -> None:
+    """slice-086: ``create_work_item(kind=TASK)`` is refused — Task WorkItems
+    come only from ``create_task_from_user_request`` (1:1 mapping, codex
+    review HIGH 4)."""
+
+    from trowel_py.model_os.store import TaskCommandError
+
+    with pytest.raises(TaskCommandError):
+        store.create_work_item(
+            kind=WorkItemKind.TASK,
+            owner_ref="user",
+            task_id="task-A",
+            session_purpose=SessionPurpose.FOREGROUND,
+            memory_eligibility=MemoryEligibility.ELIGIBLE,
+        )
 
 
 # -------------------------------------------------------- append / idempotent ---
@@ -223,12 +243,8 @@ def test_append_decision_persists_and_replays(store: ModelOsStore) -> None:
 def test_replay_twice_yields_equal_snapshot(store: ModelOsStore) -> None:
     """Spec pass criterion 1: same stream replayed twice → equal snapshots."""
 
-    store.create_work_item(
-        kind=WorkItemKind.TASK,
-        owner_ref="user",
-        task_id="task-A",
-        session_purpose=SessionPurpose.FOREGROUND,
-        memory_eligibility=MemoryEligibility.ELIGIBLE,
+    store.create_task_from_user_request(
+        original_goal="t", idempotency_key="k", authorization_scope="d"
     )
     store.create_work_item(
         kind=WorkItemKind.DEFAULT,
@@ -500,12 +516,8 @@ def test_replay_handles_mixed_policy_versions(store: ModelOsStore) -> None:
     policy versions replay into the same deterministic snapshot, and both
     versions are queryable from the journal."""
 
-    store.create_work_item(
-        kind=WorkItemKind.TASK,
-        owner_ref="user",
-        task_id="task-A",
-        session_purpose=SessionPurpose.FOREGROUND,
-        memory_eligibility=MemoryEligibility.ELIGIBLE,
+    store.create_task_from_user_request(
+        original_goal="t", idempotency_key="k", authorization_scope="d"
     )
     wi_snapshot = store.read_snapshot()
     wi_id = wi_snapshot.work_items[0].work_item_id
