@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -41,30 +42,49 @@ from dataclasses import replace
 
 from trowel_py.model_os.redaction import redact_payload
 from trowel_py.model_os.reducer import (
+    EpisodeState,
     Snapshot,
     TaskState,
     initial_snapshot,
     reduce_event,
 )
 from trowel_py.model_os.types import (
+    ArtifactRef,
     DecisionRecord,
+    Episode,
+    EpisodeSnapshot,
+    EpisodeStatus,
     EventEnvelope,
     EventKind,
     Lease,
     MemoryEligibility,
+    PendingDescriptor,
     Provenance,
+    ReconcileReason,
     SessionPurpose,
+    SideEffectRecord,
+    SnapshotRef,
+    SnapshotSource,
     Task,
     TaskOrigin,
     TaskStatus,
     WaitingCondition,
+    WaitingSubtype,
     WorkItem,
     WorkItemKind,
     WorkItemStatus,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 4  # v4 (slice-087 R3-H3): idx_leases_idem scoped to released_at IS NULL so a released lease's key does not block a new grant
 _DEFAULT_POLICY_VERSION = "v0"
+
+_LOGGER = logging.getLogger(__name__)
+
+# slice-087 M2: upper bound on a serialized EpisodeSnapshot payload (spec
+# §设计约束 line 224 mandates a size cap; the exact threshold is a spec gap,
+# 256 KiB is generous for a work现场 snapshot that references — never copies —
+# transcripts). Keeps a pathological payload from bloating the journal.
+_MAX_SNAPSHOT_PAYLOAD_BYTES = 256 * 1024
 
 # slice-086: Task lifecycle event kinds that must ONLY be appended by the
 # structured Task commands (create_task_from_user_request / claim_foreground /
@@ -91,6 +111,68 @@ _TASK_LIFECYCLE_KINDS = frozenset(
     }
 )
 
+# slice-087: Episode lifecycle event kinds that must ONLY be appended by the
+# structured Episode commands. The public ``append_event`` refuses these so a
+# caller holding a Store handle cannot forge an Episode, fake a checkpoint,
+# or write a stale ownership transition. ``LATE_WRITE_REJECTED`` is audit-only
+# but is also gated: only the fencing path writes it (via the internal
+# ``_insert_event_in_tx``), never a bare ``append_event``.
+_EPISODE_LIFECYCLE_KINDS = frozenset(
+    {
+        EventKind.EPISODE_CREATED,
+        EventKind.EPISODE_STATUS_CHANGED,
+        EventKind.EPISODE_OWNERSHIP_ACQUIRED,
+        EventKind.EPISODE_OWNERSHIP_RELEASED,
+        EventKind.EPISODE_YIELD_REQUESTED,
+        EventKind.EPISODE_CHECKPOINT_COMMITTED,
+        EventKind.EPISODE_CLOSED,
+        EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_SUSPENDED,
+        EventKind.EPISODE_WAIT_RESOLVED,
+        EventKind.EPISODE_ACTIVATED,
+        EventKind.EPISODE_RECONCILE_REQUIRED,
+        EventKind.EPISODE_RECONCILE_RESOLVED,
+        EventKind.EPISODE_RECOVERING,
+        EventKind.EPISODE_SIDE_EFFECT_RECORDED,
+        EventKind.LATE_WRITE_REJECTED,
+    }
+)
+
+# slice-087: event kinds that change Episode authoritative state while an
+# ownership lease is held. These MUST carry the caller-held
+# ``(lease_id, owner, fencing_token)``; the store validates them against the
+# live lease before persisting. Created / ownership-acquired / ownership-
+# released are excluded: they are the lease-lifecycle bookends (no lease held
+# yet, or the act of acquiring/releasing itself), not fenced progress writes.
+# ``LATE_WRITE_REJECTED`` is audit and never fenced. ``task.*`` / ``work_item.*``
+# events that happen to carry ``episode_id`` as a causal reference are NOT in
+# this set and are never fencing-checked.
+#
+# codex C1 (2026-07-21): EXTERNALLY-driven kinds are NOT in this set.
+# ``EPISODE_WAIT_RESOLVED`` (an answer arrived via the 095 matcher),
+# ``EPISODE_RECONCILE_REQUIRED`` (the kernel detected a lost pending channel on
+# restart — the lease is gone by definition) and ``EPISODE_RECONCILE_RESOLVED``
+# (a human/kernel decision to close or resume) are driven by something OTHER
+# than the lease holder's progress, so the caller has no lease triple to
+# present. Requiring fencing here would make ``mark_pending_channel_lost``
+# uncallable: it runs precisely when the lease has expired on restart. The gate
+# that remains is structural — these kinds stay in ``_EPISODE_LIFECYCLE_KINDS``,
+# so a bare ``append_event`` still refuses them; only the structured command
+# may write them.
+_EPISODE_FENCED_KINDS = frozenset(
+    {
+        EventKind.EPISODE_STATUS_CHANGED,
+        EventKind.EPISODE_YIELD_REQUESTED,
+        EventKind.EPISODE_CHECKPOINT_COMMITTED,
+        EventKind.EPISODE_CLOSED,
+        EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_SUSPENDED,
+        EventKind.EPISODE_ACTIVATED,
+        EventKind.EPISODE_RECOVERING,
+        EventKind.EPISODE_SIDE_EFFECT_RECORDED,
+    }
+)
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -113,7 +195,15 @@ CREATE TABLE IF NOT EXISTS events (
     correlation_id TEXT,
     outcome TEXT,
     payload TEXT NOT NULL,
-    payload_hash TEXT
+    payload_hash TEXT,
+    -- slice-087 M6: the ownership lease triple that authorised this write.
+    -- NULL for non-fenced events (task.*/work_item.*/notes); for fenced
+    -- Episode events it records WHICH lease/token committed the authoritative
+    -- state change — durable audit (which grant wrote this?) and the basis for
+    -- the full idempotent-retry fingerprint (codex H7).
+    lease_id TEXT,
+    owner TEXT,
+    fencing_token INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
@@ -143,16 +233,61 @@ CREATE TABLE IF NOT EXISTS leases (
     acquired_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     idempotency_key TEXT,
-    released_at TEXT
+    released_at TEXT,
+    -- slice-087: strictly monotonic per (resource_type, resource_id). The
+    -- live counter lives in lease_fence_counters; this column caches the
+    -- token the holder must present on fenced writes. DEFAULT 0 so an
+    -- episode_ownership / work_lease that does not need fencing still works.
+    fencing_token INTEGER NOT NULL DEFAULT 0
 );
 
 -- at most one ACTIVE lease per resource (CAS primitive)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_active
     ON leases(resource_type, resource_id) WHERE released_at IS NULL;
 
--- idempotency: the same key reclaims the same active lease
+-- slice-087: idempotency is scoped to the RESOURCE, not global. codex review
+-- of slice-087 caught that a global-unique key would let the same owner reuse
+-- one key across an episode_ownership lease and a work_lease and silently get
+-- back the wrong resource's lease. The partial index now requires
+-- (resource_type, resource_id, idempotency_key) to be unique together.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_idem
-    ON leases(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    ON leases(resource_type, resource_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL AND released_at IS NULL;
+
+-- slice-087: monotonic fencing counter per resource. Kept in its own table so
+-- garbage-collecting old lease rows cannot roll the token back. Incremented
+-- inside the same IMMEDIATE transaction that grants a new lease.
+CREATE TABLE IF NOT EXISTS lease_fence_counters (
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    last_token INTEGER NOT NULL,
+    PRIMARY KEY (resource_type, resource_id)
+);
+
+-- slice-087: Episode snapshot store. Each checkpoint is a new version row;
+-- the reducer folds only the SnapshotRef (episode_id, version,
+-- committed_event_id, payload_hash) into EpisodeState, never the payload.
+-- checkpoint_key UNIQUE gives idempotent checkpoint on crash retry (version
+-- alone cannot: a crash between COMMIT and response-return would else mint a
+-- second version for the same checkpoint command). journal_through_seq pins
+-- how far the journal was folded into this snapshot, so recovery_partial does
+-- not re-fold events already represented in base_snapshot_ref.
+CREATE TABLE IF NOT EXISTS episode_snapshots (
+    episode_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    checkpoint_key TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    -- base_snapshot_ref split: a SnapshotRef is (episode_id, version, ...);
+    -- the base's episode/version are stored flat for SQL.
+    base_episode_id TEXT,
+    base_version INTEGER,
+    journal_through_seq INTEGER NOT NULL,
+    committed_event_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (episode_id, version)
+);
 
 -- slice-086: foreground attention record. Single row (CHECK id=1); the
 -- task_id is whoever Trowel is currently pushing forward, or NULL. Unlike
@@ -173,6 +308,17 @@ CREATE TABLE IF NOT EXISTS task_create_keys (
     idempotency_key TEXT PRIMARY KEY NOT NULL
         CHECK (length(trim(idempotency_key)) > 0),
     task_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- slice-087: idempotency for Episode creation. start_episode carries a
+-- caller-supplied key; a retry returns the original (episode_id, lease)
+-- instead of producing a second Episode + lease. Same CHECK shape as
+-- task_create_keys.
+CREATE TABLE IF NOT EXISTS episode_create_keys (
+    idempotency_key TEXT PRIMARY KEY NOT NULL
+        CHECK (length(trim(idempotency_key)) > 0),
+    episode_id TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 """
@@ -232,6 +378,48 @@ class TaskCommandError(Exception):
         super().__init__(reason)
 
 
+class EpisodeCommandError(Exception):
+    """Raised when an Episode command violates an invariant: illegal
+    transition, unknown episode, terminal state, ownership-token mismatch, or
+    a checkpoint / snapshot contract violation (slice-087)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class StaleWriterRejected(Exception):
+    """Raised when a fenced Episode write bears a stale ownership token.
+
+    The writer's ``(lease_id, owner, fencing_token)`` did not match the live
+    ownership lease: the lease was taken over (a higher token now exists),
+    the caller is not the current owner, or the lease is expired / released.
+    The attempted write is rejected and a ``late_write_rejected`` audit event
+    is recorded. This is the concrete enforcement of the slice-087 fencing
+    invariant (Kleppmann: storage-layer rejection of stale writers).
+
+    NOT raised for the idempotent-retry case: if the exact same ``event_id``
+    was already persisted, ``append_event`` returns the original seq without
+    consulting fencing (a read-only retry that changed nothing).
+    """
+
+    def __init__(
+        self,
+        episode_id: str,
+        reason: str,
+        attempted_token: int | None = None,
+        current_token: int | None = None,
+    ) -> None:
+        self.episode_id = episode_id
+        self.reason = reason
+        self.attempted_token = attempted_token
+        self.current_token = current_token
+        super().__init__(
+            f"stale writer rejected for episode {episode_id!r}: {reason} "
+            f"(attempted_token={attempted_token}, current_token={current_token})"
+        )
+
+
 # ----------------------------------------------------------------- helpers ---
 
 
@@ -272,8 +460,9 @@ def _dumps(value: Any) -> str:
 _EVENT_INSERT_SQL = (
     "INSERT INTO events (event_id, kind, occurred_at, source, provenance, "
     "policy_version, work_item_id, task_id, episode_id, native_session_id, "
-    "cause_id, correlation_id, outcome, payload, payload_hash) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "cause_id, correlation_id, outcome, payload, payload_hash, "
+    "lease_id, owner, fencing_token) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _DECISION_INSERT_SQL = (
@@ -305,6 +494,65 @@ def _event_params(
         event.outcome,
         payload_text,
         payload_hash,
+        # slice-087 M6: persist the lease triple (NULL for non-fenced events).
+        event.lease_id,
+        event.owner,
+        event.fencing_token,
+    )
+
+
+def _event_identity(event: EventEnvelope, payload_hash: str) -> tuple:
+    """The identity tuple of an event for idempotent-retry comparison.
+
+    Two events sharing an ``event_id`` are the SAME event iff every field here
+    matches. codex H7: the previous check compared only ``payload_hash``, so
+    the same id + same payload but a different kind / entity ref / lease triple
+    was silently treated as idempotent — the second event simply vanished.
+    ``occurred_at`` is intentionally excluded: two retries at different wall-
+    clock times are still the same logical event."""
+
+    return (
+        event.kind,
+        event.source,
+        event.provenance.value,
+        event.policy_version,
+        event.work_item_id,
+        event.task_id,
+        event.episode_id,
+        event.native_session_id,
+        event.cause_id,
+        event.correlation_id,
+        event.outcome,
+        payload_hash,
+        event.lease_id,
+        event.owner,
+        event.fencing_token,
+    )
+
+
+def _event_row_identity(row: sqlite3.Row, payload_hash: str) -> tuple:
+    """Read the identity tuple back from a stored events row (``SELECT *``).
+
+    Mirrors ``_event_identity`` so a stored row and a live envelope compare
+    field-for-field. ``fencing_token`` is normalised NULL→None on both sides."""
+
+    ft = row["fencing_token"]
+    return (
+        row["kind"],
+        row["source"],
+        row["provenance"],
+        row["policy_version"],
+        row["work_item_id"],
+        row["task_id"],
+        row["episode_id"],
+        row["native_session_id"],
+        row["cause_id"],
+        row["correlation_id"],
+        row["outcome"],
+        row["payload_hash"],
+        row["lease_id"],
+        row["owner"],
+        int(ft) if ft is not None else None,
     )
 
 
@@ -351,6 +599,7 @@ def _lease_from_row(row: sqlite3.Row) -> Lease:
         acquired_at=row["acquired_at"],
         expires_at=row["expires_at"],
         idempotency_key=row["idempotency_key"],
+        fencing_token=int(row["fencing_token"]),
     )
 
 
@@ -376,6 +625,12 @@ def _event_from_row(row: sqlite3.Row) -> EventEnvelope:
         cause_id=row["cause_id"],
         correlation_id=row["correlation_id"],
         outcome=row["outcome"],
+        # slice-087 M6: restore the persisted lease triple.
+        lease_id=row["lease_id"],
+        owner=row["owner"],
+        fencing_token=int(row["fencing_token"])
+        if row["fencing_token"] is not None
+        else None,
     )
 
 
@@ -420,6 +675,158 @@ def _validate_work_item(kind: WorkItemKind, task_id: str | None) -> None:
                 f"{kind.value} work item must not reference a task "
                 f"(got task_id={task_id!r})"
             )
+
+
+# -------------------------------------------------- episode snapshot codecs ---
+#
+# slice-087: (de)serialise EpisodeSnapshot <-> JSON-safe dict for the
+# ``episode_snapshots`` table. Kept at module level (like _lease_from_row /
+# _event_from_row) because they are pure functions over value objects.
+
+
+def _pending_to_payload(p: PendingDescriptor) -> dict[str, Any]:
+    """Serialise a PendingDescriptor to a JSON-safe dict (event payload)."""
+
+    return {
+        "kind": p.kind.value,
+        "native_generation": p.native_generation,
+        "correlation_id": p.correlation_id,
+        "cause": p.cause,
+        "posed_at": p.posed_at,
+    }
+
+
+def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
+    """Reconstruct a PendingDescriptor from its stored dict."""
+
+    return PendingDescriptor(
+        kind=WaitingSubtype(p["kind"]),
+        native_generation=p.get("native_generation"),
+        correlation_id=p["correlation_id"],
+        cause=p.get("cause", ""),
+        posed_at=p["posed_at"],
+    )
+
+
+def _snapshot_to_payload(s: EpisodeSnapshot) -> dict[str, Any]:
+    """Serialise an EpisodeSnapshot to a JSON-safe dict for storage.
+
+    Nested records (side effects, artifacts, pending, base ref) are
+    flattened; the reverse is ``_snapshot_from_payload``.
+    """
+
+    return {
+        "work_item_goal": s.work_item_goal,
+        "task_constraints_ref": s.task_constraints_ref,
+        "current_judgment": s.current_judgment,
+        "completed_with_evidence": [list(pair) for pair in s.completed_with_evidence],
+        "side_effects": [
+            {
+                "action_ref": se.action_ref,
+                "idempotency_key": se.idempotency_key,
+                "outcome": se.outcome,
+                "evidence_ref": se.evidence_ref,
+            }
+            for se in s.side_effects
+        ],
+        "unknowns": list(s.unknowns),
+        "waiting_condition": (
+            _pending_to_payload(s.waiting_condition) if s.waiting_condition else None
+        ),
+        "next_steps": list(s.next_steps),
+        "artifacts": [{"kind": a.kind, "ref": a.ref} for a in s.artifacts],
+        "native_transcript_ref": s.native_transcript_ref,
+        "source": s.source.value,
+        "journal_through_seq": s.journal_through_seq,
+        "base_snapshot_ref": (
+            {
+                "episode_id": s.base_snapshot_ref.episode_id,
+                "version": s.base_snapshot_ref.version,
+                "committed_event_id": s.base_snapshot_ref.committed_event_id,
+                "payload_hash": s.base_snapshot_ref.payload_hash,
+            }
+            if s.base_snapshot_ref
+            else None
+        ),
+    }
+
+
+def _validate_episode_snapshot(
+    snapshot: EpisodeSnapshot, payload_text: str
+) -> None:
+    """Boundary validation for a snapshot about to be persisted (codex M2).
+
+    Spec §设计约束 mandates: a byte cap on the payload (line 224), ``next_steps``
+    at most 3 (line 107), completed actions carry evidence (line 102), and a
+    done side effect carries an evidence ref (line 170 / pass 7). The dataclass
+    cannot enforce counts/emptiness, so the store checks at the write boundary.
+    """
+
+    if len(payload_text.encode("utf-8")) > _MAX_SNAPSHOT_PAYLOAD_BYTES:
+        raise EpisodeCommandError(
+            f"snapshot payload exceeds {_MAX_SNAPSHOT_PAYLOAD_BYTES} bytes "
+            f"(got {len(payload_text.encode('utf-8'))}); reduce content or "
+            f"reference instead of copying"
+        )
+    if len(snapshot.next_steps) > 3:
+        raise EpisodeCommandError(
+            f"next_steps must have at most 3 items (got {len(snapshot.next_steps)})"
+        )
+    for action_ref, evidence_ref in snapshot.completed_with_evidence:
+        if not action_ref or not evidence_ref:
+            raise EpisodeCommandError(
+                "completed_with_evidence entries must be non-empty "
+                "(action_ref, evidence_ref)"
+            )
+    for se in snapshot.side_effects:
+        if se.outcome == "done" and not se.evidence_ref:
+            raise EpisodeCommandError(
+                f"side effect {se.action_ref!r} marked done without an "
+                f"evidence_ref; record it unknown_requires_reconcile instead"
+            )
+
+
+def _snapshot_from_payload(p: dict[str, Any]) -> EpisodeSnapshot:
+    """Reconstruct an EpisodeSnapshot from its stored payload dict."""
+
+    waiting = p.get("waiting_condition")
+    base = p.get("base_snapshot_ref")
+    return EpisodeSnapshot(
+        work_item_goal=p.get("work_item_goal", ""),
+        task_constraints_ref=p.get("task_constraints_ref"),
+        current_judgment=p.get("current_judgment", "unknown"),
+        completed_with_evidence=tuple(
+            tuple(pair) for pair in p.get("completed_with_evidence", [])
+        ),
+        side_effects=tuple(
+            SideEffectRecord(
+                action_ref=se["action_ref"],
+                idempotency_key=se["idempotency_key"],
+                outcome=se["outcome"],
+                evidence_ref=se.get("evidence_ref"),
+            )
+            for se in p.get("side_effects", [])
+        ),
+        unknowns=tuple(p.get("unknowns", [])),
+        waiting_condition=_pending_from_payload(waiting) if waiting else None,
+        next_steps=tuple(p.get("next_steps", [])),
+        artifacts=tuple(
+            ArtifactRef(kind=a["kind"], ref=a["ref"]) for a in p.get("artifacts", [])
+        ),
+        native_transcript_ref=p.get("native_transcript_ref"),
+        source=SnapshotSource(p.get("source", "cooperative")),
+        journal_through_seq=int(p.get("journal_through_seq", 0)),
+        base_snapshot_ref=(
+            SnapshotRef(
+                episode_id=base["episode_id"],
+                version=int(base["version"]),
+                committed_event_id=base["committed_event_id"],
+                payload_hash=base["payload_hash"],
+            )
+            if base
+            else None
+        ),
+    )
 
 
 # ----------------------------------------------------------------- the store ---
@@ -505,7 +912,11 @@ class ModelOsStore:
 
         DDL runs via ``executescript`` (idempotent ``IF NOT EXISTS``); the
         schema-version stamp is a separate parameterised ``execute`` so the
-        version never enters SQL via string substitution.
+        version never enters SQL via string substitution. Forward migrations
+        (``_migrate_schema``) run after, for databases whose stamped version
+        is behind ``_SCHEMA_VERSION`` — ``CREATE ... IF NOT EXISTS`` cannot
+        add a column to an existing table or rebuild an index, so those land
+        here as explicit ALTER / DROP + CREATE.
         """
 
         assert self._conn is not None
@@ -523,6 +934,89 @@ class ModelOsStore:
             # restart always finds exactly one row to read.
             self._conn.execute(
                 "INSERT OR IGNORE INTO foreground_claim (id, task_id) VALUES (1, NULL)"
+            )
+            self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Run forward migrations the executing engine is behind on.
+
+        ``meta.schema_version`` is read AFTER ``executescript`` seeded it. On a
+        fresh database the seed wrote the current ``_SCHEMA_VERSION`` and this
+        is a no-op. On an older database the row already held a smaller
+        version and ``CREATE ... IF NOT EXISTS`` left the old shapes in place,
+        so the ALTER / DROP + CREATE work happens here.
+        """
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+        current = int(row["value"]) if row is not None else _SCHEMA_VERSION
+        if current < 2:
+            # v1 → v2 (slice-087): add leases.fencing_token and rebuild
+            # idx_leases_idem as resource-scoped. CREATE ... IF NOT EXISTS in
+            # _SCHEMA_SQL added the column for fresh databases; for old ones
+            # the column must be ALTER-added. SQLite has no CREATE OR REPLACE
+            # INDEX, so the renamed index is dropped and recreated.
+            cols = [
+                r["name"]
+                for r in self._conn.execute("PRAGMA table_info(leases)").fetchall()
+            ]
+            if "fencing_token" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"
+                )
+            self._conn.execute("DROP INDEX IF EXISTS idx_leases_idem")
+            self._conn.execute(
+                "CREATE UNIQUE INDEX idx_leases_idem "
+                "ON leases(resource_type, resource_id, idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL"
+            )
+            # stamp INSIDE the branch. Setting ``current = 2`` and then testing
+            # ``current != _SCHEMA_VERSION`` would be False (2 == 2), silently
+            # no-op the stamp, and every reopen would re-migrate forever.
+            self._conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version'",
+                ("2",),
+            )
+            current = 2
+        if current < 3:
+            # v2 → v3 (slice-087 M6): persist the fenced-event lease triple on
+            # the events row. CREATE ... IF NOT EXISTS added the columns for
+            # fresh databases; old v2 databases need ALTER ADD COLUMN. All
+            # three are nullable (NULL for non-fenced events).
+            ev_cols = [
+                r["name"]
+                for r in self._conn.execute("PRAGMA table_info(events)").fetchall()
+            ]
+            for col in ("lease_id", "owner", "fencing_token"):
+                if col not in ev_cols:
+                    self._conn.execute(
+                        f"ALTER TABLE events ADD COLUMN {col} "
+                        f"{'INTEGER' if col == 'fencing_token' else 'TEXT'}"
+                    )
+            self._conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version'",
+                ("3",),
+            )
+            current = 3
+        if current < 4:
+            # v3 → v4 (slice-087 R3-H3): scope idx_leases_idem to
+            # ``released_at IS NULL`` so a released lease's idempotency_key does
+            # not block a new grant (the takeover redesign marks the old row
+            # released + INSERTs a fresh row, preserving history). The old
+            # index spanned released rows too, so reusing a key across a
+            # takeover raised a raw sqlite3.IntegrityError that leaked past the
+            # command layer. SQLite has no CREATE OR REPLACE INDEX.
+            self._conn.execute("DROP INDEX IF EXISTS idx_leases_idem")
+            self._conn.execute(
+                "CREATE UNIQUE INDEX idx_leases_idem "
+                "ON leases(resource_type, resource_id, idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL AND released_at IS NULL"
+            )
+            self._conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version'",
+                ("4",),
             )
 
     def _schema_version(self) -> int:
@@ -611,14 +1105,21 @@ class ModelOsStore:
         ttl_seconds: int,
         idempotency_key: str | None = None,
     ) -> Lease:
-        """Atomically claim a lease (compare-and-set).
+        """Atomically claim a lease (compare-and-set) with a fencing token.
 
-        Returns the held lease on success. Raises ``LeaseConflict`` if
-        another active, unexpired lease already owns the resource. An expired
-        lease is taken over atomically. Re-claiming with the same
-        ``idempotency_key`` AND the same owner returns the original lease;
-        the same key under a DIFFERENT owner is treated as a conflict (the
-        key is the caller's retry identity, not a transferable handle).
+        Returns the held lease on success. Raises ``LeaseConflict`` if another
+        active, unexpired lease already owns the resource. An expired lease is
+        taken over atomically. Re-claiming with the same ``idempotency_key``
+        AND the same owner returns the original lease; the same key under a
+        different owner, or the same key already used on a DIFFERENT
+        resource, is a conflict — the key is the caller's retry identity for
+        ONE resource, not a transferable handle (slice-087 codex review: the
+        v1 global-unique index let one key silently cross resources).
+
+        slice-087: every grant mints a strictly-higher fencing token for the
+        ``(resource_type, resource_id)`` pair (from ``lease_fence_counters``),
+        so a stale holder that wakes up after takeover cannot pass its old
+        token past a fenced write.
         """
 
         assert self._conn is not None
@@ -629,21 +1130,28 @@ class ModelOsStore:
 
         if idempotency_key is not None:
             existing = self._conn.execute(
-                "SELECT * FROM leases WHERE idempotency_key=? AND released_at IS NULL",
-                (idempotency_key,),
+                "SELECT * FROM leases WHERE resource_type=? AND resource_id=? "
+                "AND idempotency_key=? AND released_at IS NULL",
+                (resource_type, resource_id, idempotency_key),
             ).fetchone()
             if existing is not None:
                 if existing["owner"] != owner:
                     raise LeaseConflict(resource_type, resource_id)
+                # codex R3-M3: do not return an already-expired lease — a retry
+                # that lands after TTL is a conflict; the caller must re-acquire
+                # fresh (otherwise the first fenced write fails on expiry).
+                if existing["expires_at"] <= now_str:
+                    raise LeaseConflict(resource_type, resource_id)
                 return _lease_from_row(existing)
 
-        lease_id = uuid4().hex
         try:
             with self._tx():
+                token = self._next_fence_token_in_tx(resource_type, resource_id)
+                lease_id = uuid4().hex
                 self._conn.execute(
                     "INSERT INTO leases (lease_id, resource_type, resource_id, owner, "
-                    "acquired_at, expires_at, idempotency_key, released_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+                    "acquired_at, expires_at, idempotency_key, released_at, "
+                    "fencing_token) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                     (
                         lease_id,
                         resource_type,
@@ -652,17 +1160,19 @@ class ModelOsStore:
                         now_str,
                         expires_str,
                         idempotency_key,
+                        token,
                     ),
                 )
-            return Lease(
-                lease_id=lease_id,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                owner=owner,
-                acquired_at=now_str,
-                expires_at=expires_str,
-                idempotency_key=idempotency_key,
-            )
+                return Lease(
+                    lease_id=lease_id,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    owner=owner,
+                    acquired_at=now_str,
+                    expires_at=expires_str,
+                    idempotency_key=idempotency_key,
+                    fencing_token=token,
+                )
         except sqlite3.IntegrityError:
             return self._takeover_or_conflict(
                 resource_type,
@@ -672,6 +1182,36 @@ class ModelOsStore:
                 expires_str,
                 idempotency_key,
             )
+
+    def _next_fence_token_in_tx(
+        self, resource_type: str, resource_id: str
+    ) -> int:
+        """Return the next fencing token for a resource, incrementing the
+        counter inside the caller's open transaction.
+
+        ``lease_fence_counters`` lives outside the ``leases`` rows so that
+        releasing or garbage-collecting old lease rows never rolls the token
+        back. The UPSERT and the lease INSERT share one IMMEDIATE
+        transaction, so concurrent grants serialise and each gets a distinct
+        token. A grant that fails (lease INSERT IntegrityError) rolls the
+        whole transaction back, including this increment — no token is wasted.
+        """
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT last_token FROM lease_fence_counters "
+            "WHERE resource_type=? AND resource_id=?",
+            (resource_type, resource_id),
+        ).fetchone()
+        new_token = (int(row["last_token"]) + 1) if row is not None else 1
+        self._conn.execute(
+            "INSERT INTO lease_fence_counters (resource_type, resource_id, last_token) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(resource_type, resource_id) "
+            "DO UPDATE SET last_token=excluded.last_token",
+            (resource_type, resource_id, new_token),
+        )
+        return new_token
 
     def _takeover_or_conflict(
         self,
@@ -683,13 +1223,22 @@ class ModelOsStore:
         idempotency_key: str | None,
     ) -> Lease:
         """Handle an INSERT conflict: reclaim by idempotency, take over an
-        expired lease, or raise ``LeaseConflict``."""
+        expired lease, or raise ``LeaseConflict``.
+
+        slice-087: takeover no longer UPDATEs the old row in place. It marks
+        the expired row released (so the old grant's audit trail and its
+        idempotency key are retained) and INSERTs a fresh lease row with a
+        new, higher fencing token. An in-place UPDATE would lose the old
+        grant's history, drop the old key, and could not hand the new owner a
+        higher token than the old one.
+        """
 
         assert self._conn is not None
         if idempotency_key is not None:
             row = self._conn.execute(
-                "SELECT * FROM leases WHERE idempotency_key=? AND released_at IS NULL",
-                (idempotency_key,),
+                "SELECT * FROM leases WHERE resource_type=? AND resource_id=? "
+                "AND idempotency_key=? AND released_at IS NULL",
+                (resource_type, resource_id, idempotency_key),
             ).fetchone()
             if row is not None:
                 if row["owner"] != owner:
@@ -700,26 +1249,47 @@ class ModelOsStore:
             "AND released_at IS NULL",
             (resource_type, resource_id),
         ).fetchone()
-        if existing is not None and existing["expires_at"] < now_str:
-            new_lease_id = uuid4().hex
+        if existing is not None and existing["expires_at"] <= now_str:
             with self._tx():
+                # Mark the expired grant released, then INSERT a fresh row.
+                # The partial unique index idx_leases_active (WHERE
+                # released_at IS NULL) frees up exactly when the UPDATE
+                # commits, so the INSERT cannot collide with the old row.
+                # codex L2: the boundary is ``<=`` (not ``<``) to match the
+                # fencing check ``expires_at <= now`` — at the exact expiry
+                # tick the old owner has already lost power, so the new owner
+                # must take over immediately with no unwritable gap.
                 cur = self._conn.execute(
-                    "UPDATE leases SET lease_id=?, owner=?, acquired_at=?, "
-                    "expires_at=?, idempotency_key=? "
+                    "UPDATE leases SET released_at=? "
                     "WHERE resource_type=? AND resource_id=? AND released_at IS NULL "
-                    "AND expires_at < ?",
-                    (
-                        new_lease_id,
-                        owner,
-                        now_str,
-                        expires_str,
-                        idempotency_key,
-                        resource_type,
-                        resource_id,
-                        now_str,
-                    ),
+                    "AND expires_at <= ?",
+                    (now_str, resource_type, resource_id, now_str),
                 )
                 if cur.rowcount == 1:
+                    token = self._next_fence_token_in_tx(resource_type, resource_id)
+                    new_lease_id = uuid4().hex
+                    try:
+                        self._conn.execute(
+                            "INSERT INTO leases (lease_id, resource_type, resource_id, owner, "
+                            "acquired_at, expires_at, idempotency_key, released_at, "
+                            "fencing_token) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                            (
+                                new_lease_id,
+                                resource_type,
+                                resource_id,
+                                owner,
+                                now_str,
+                                expires_str,
+                                idempotency_key,
+                                token,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        # codex R3-H3: a collision here is a key-scope or
+                        # active-lease conflict (another writer raced us, or the
+                        # idempotency_key is still in use). Surface it as a
+                        # LeaseConflict, never a raw sqlite3 error.
+                        raise LeaseConflict(resource_type, resource_id) from exc
                     return Lease(
                         lease_id=new_lease_id,
                         resource_type=resource_type,
@@ -728,6 +1298,7 @@ class ModelOsStore:
                         acquired_at=now_str,
                         expires_at=expires_str,
                         idempotency_key=idempotency_key,
+                        fencing_token=token,
                     )
         raise LeaseConflict(resource_type, resource_id)
 
@@ -760,22 +1331,28 @@ class ModelOsStore:
         """Append an event (idempotent on ``event_id``); return its seq.
 
         The payload is redacted before it touches SQLite. Re-appending the
-        same ``event_id`` does not duplicate the row and returns the original
-        seq.
+        same ``event_id`` with the SAME content returns the original seq
+        (idempotent replay); re-appending the same ``event_id`` with DIFFERENT
+        content raises ``ValueError`` — the caller reused an id across
+        distinct events, which must not silently alias them (slice-087 codex
+        review: the v1 path swallowed every duplicate as idempotent).
 
-        slice-086: Task lifecycle kinds (task.created / status_changed /
-        completed / ...) are refused — those must go through the structured
-        Task commands so the gates (USER_REQUEST done requires USER_DECISION,
-        foreground ⇔ running, etc.) cannot be bypassed by a caller that
-        happens to hold a Store handle (codex review HIGH 1).
+        slice-086 / slice-087: Task and Episode lifecycle kinds are refused —
+        those must go through the structured commands so the gates cannot be
+        bypassed by a caller that happens to hold a Store handle.
         """
 
         assert self._conn is not None
         if event.kind in _TASK_LIFECYCLE_KINDS:
             raise TaskCommandError(
                 f"event kind {event.kind!r} is a Task lifecycle event; use "
-                f"the corresponding structured command (slice-086 grill "
-                f"decision 5: provenance is not an authorisation mechanism)"
+                f"the corresponding structured command (provenance is not an "
+                f"authorisation mechanism)"
+            )
+        if event.kind in _EPISODE_LIFECYCLE_KINDS:
+            raise EpisodeCommandError(
+                f"event kind {event.kind!r} is an Episode lifecycle event; "
+                f"use the corresponding structured command (slice-087)"
             )
         payload_text, payload_hash = _payload_json(event.payload)
         try:
@@ -785,8 +1362,21 @@ class ModelOsStore:
                     _event_params(event, payload_text, payload_hash),
                 )
         except sqlite3.IntegrityError:
-            # duplicate event_id — idempotent replay, return existing seq
-            pass
+            # duplicate event_id: idempotent only if the FULL identity matches.
+            # codex H7: comparing payload_hash alone let a reused id with a
+            # different kind / entity / lease triple silently alias to the
+            # first event. Compare every identity field now.
+            existing = self._conn.execute(
+                "SELECT * FROM events WHERE event_id=?",
+                (event.event_id,),
+            ).fetchone()
+            if existing is None or _event_row_identity(
+                existing, payload_hash
+            ) != _event_identity(event, payload_hash):
+                raise ValueError(
+                    f"event_id {event.event_id!r} already exists with "
+                    f"different content (identity mismatch)"
+                )
         row = self._conn.execute(
             "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
         ).fetchone()
@@ -830,6 +1420,22 @@ class ModelOsStore:
         """
 
         assert self._conn is not None
+        # codex N1 (round 2): this public entry point must apply the SAME
+        # lifecycle gate as ``append_event``. Without it a caller could forge
+        # an ``episode.status_changed`` / ``task.created`` intent here and
+        # bypass every structured-command + fencing gate — the journal would
+        # fold the forged event into authoritative state on the next replay.
+        if intent_event.kind in _TASK_LIFECYCLE_KINDS:
+            raise TaskCommandError(
+                f"intent event kind {intent_event.kind!r} is a Task lifecycle "
+                f"event; use the corresponding structured command"
+            )
+        if intent_event.kind in _EPISODE_LIFECYCLE_KINDS:
+            raise EpisodeCommandError(
+                f"intent event kind {intent_event.kind!r} is an Episode "
+                f"lifecycle event; use the corresponding structured command "
+                f"(slice-087)"
+            )
         payload_text, payload_hash = _payload_json(intent_event.payload)
         try:
             with self._tx():
@@ -948,9 +1554,33 @@ class ModelOsStore:
             try:
                 yield
                 self._conn.execute("COMMIT")
-            except BaseException:
+            except BaseException as exc:
                 if self._conn.in_transaction:
                     self._conn.execute("ROLLBACK")
+                # codex M1: a StaleWriterRejected must still leave a DURABLE
+                # ``late_write_rejected`` audit trail. The fenced write was just
+                # rolled back above; record the audit in its OWN transaction so
+                # it survives. The attempted event is attached by
+                # ``_append_fenced_event_in_tx``. Best-effort: an audit failure
+                # must never mask the original rejection.
+                if isinstance(exc, StaleWriterRejected):
+                    attempted = getattr(exc, "attempted_event", None)
+                    if attempted is not None:
+                        try:
+                            self._conn.execute("BEGIN IMMEDIATE")
+                            self._reject_stale_write_in_tx(attempted, exc)
+                            self._conn.execute("COMMIT")
+                        except BaseException:
+                            # codex R3-M7: never silently swallow — log so an
+                            # audit-store failure is observable. The original
+                            # StaleWriterRejected is still re-raised below.
+                            _LOGGER.warning(
+                                "late_write_rejected audit failed; the "
+                                "original StaleWriterRejected is preserved",
+                                exc_info=True,
+                            )
+                            if self._conn.in_transaction:
+                                self._conn.execute("ROLLBACK")
                 raise
 
     @contextmanager
@@ -988,6 +1618,16 @@ class ModelOsStore:
         ).fetchone()
         return None if row is None else row["task_id"]
 
+    def read_foreground_task_id(self) -> str | None:
+        """Public read of the current foreground task_id (or None).
+
+        slice-086 references this as the public check (e.g. before demoting a
+        Task). The private ``_read_foreground_task_id`` is the in-tx helper;
+        this wrapper is the outside-tx read for callers/tests that do not hold
+        a transaction."""
+
+        return self._read_foreground_task_id()
+
     def _insert_event_in_tx(self, event: EventEnvelope) -> int | None:
         """Append an event inside the caller's open transaction.
 
@@ -1005,7 +1645,20 @@ class ModelOsStore:
                 _event_params(event, payload_text, payload_hash),
             )
         except sqlite3.IntegrityError:
-            return None  # duplicate event_id — idempotent
+            # codex H7: duplicate event_id is idempotent ONLY if the full
+            # identity matches; a reused id on a different event must surface
+            # rather than vanish.
+            existing = self._conn.execute(
+                "SELECT * FROM events WHERE event_id=?", (event.event_id,)
+            ).fetchone()
+            if existing is None or _event_row_identity(
+                existing, payload_hash
+            ) != _event_identity(event, payload_hash):
+                raise ValueError(
+                    f"event_id {event.event_id!r} already exists with "
+                    f"different content (identity mismatch)"
+                )
+            return None  # idempotent duplicate
         row = self._conn.execute(
             "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
         ).fetchone()
@@ -1092,7 +1745,7 @@ class ModelOsStore:
         self,
         work_item_id: str,
         new_status: WorkItemStatus,
-        task_id: str,
+        task_id: str | None,
         now: str,
     ) -> EventEnvelope:
         """Build a work_item.status_changed event that keeps the primary
@@ -1111,16 +1764,28 @@ class ModelOsStore:
         )
 
     def _release_foreground_in_tx(self, task_id: str) -> None:
-        """Clear foreground_claim + emit FOREGROUND_RELEASED audit event.
+        """Clear foreground_claim (if held by ``task_id``) + emit
+        FOREGROUND_RELEASED audit event.
 
-        Caller holds the transaction. No-op if this task isn't foreground.
+        Caller holds the transaction. CAS: the UPDATE only fires when the
+        current foreground IS ``task_id``, and the release event is emitted
+        only when a row was actually cleared. slice-087 codex review caught
+        that the old unconditional ``WHERE id=1`` UPDATE would silently clear
+        ANOTHER task's claim the moment this helper is reused by compound
+        Episode commands (suspend) that pass a task_id without pre-checking.
+        Existing 086 callers pre-check ``read_foreground_task_id() == task_id``
+        first, so this CAS is transparent for them and defensive for 087.
         """
 
         assert self._conn is not None
-        self._conn.execute("UPDATE foreground_claim SET task_id=NULL WHERE id=1")
-        self._insert_event_in_tx(
-            self._make_task_event(EventKind.FOREGROUND_RELEASED, task_id, {})
+        cur = self._conn.execute(
+            "UPDATE foreground_claim SET task_id=NULL WHERE id=1 AND task_id=?",
+            (task_id,),
         )
+        if cur.rowcount == 1:
+            self._insert_event_in_tx(
+                self._make_task_event(EventKind.FOREGROUND_RELEASED, task_id, {})
+            )
 
     # ------------------------------------------------------------- creation
 
@@ -1402,48 +2067,73 @@ class ModelOsStore:
     # --------------------------------------------------------------- waiting
 
     def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
-        """Shared body for set_waiting_user / _event / _incubating: release
-        foreground if held, suspend WorkItem, set waiting_condition + status.
+        """Shared body for set_waiting_user / _event / _incubating (opens tx).
 
         Source state must be RUNNING (the frozen graph is running→waiting_*);
         a backlog/ready Task cannot leap into waiting (codex review HIGH 2)."""
 
-        assert self._conn is not None
         with self._tx():
+            self._set_waiting_in_tx(task_id, waiting)
+
+    def _set_waiting_in_tx(
+        self,
+        task_id: str,
+        waiting: WaitingCondition,
+        snap: Snapshot | None = None,
+    ) -> None:
+        """Body of ``_set_waiting``; caller holds the transaction.
+
+        slice-087: ``suspend_episode`` calls this inside its own composite tx
+        so the Episode suspend + Task waiting + foreground CAS + WorkItem
+        SUSPENDED are atomic. The TASK_WAITING_SET payload now carries
+        ``subtype`` + ``episode_id`` so the reducer's WaitingCondition
+        projection mirrors the owning Episode's pending (grill decision 1,
+        14). Pre-087 callers leave them None (back-compat).
+
+        ``snap`` (codex R3-L2): an already-replayed snapshot the caller holds.
+        ``suspend_episode`` has just replayed; passing it avoids a second full
+        replay+reduction over the journal inside this helper (a measurable
+        cost under long journals, and the replay holds the IMMEDIATE lock).
+        """
+
+        assert self._conn is not None
+        if snap is None:
             snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            self._require_status(task, {TaskStatus.RUNNING})
-            now = _now_iso()
-            if self._read_foreground_task_id() == task_id:
-                self._release_foreground_in_tx(task_id)
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.SUSPENDED,
-                        task_id,
-                        now,
-                    )
-                )
+        task = self._require_task(snap, task_id)
+        self._require_non_terminal(task)
+        self._require_status(task, {TaskStatus.RUNNING})
+        now = _now_iso()
+        if self._read_foreground_task_id() == task_id:
+            self._release_foreground_in_tx(task_id)
+        if task.primary_work_item_id:
             self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_WAITING_SET,
+                self._work_item_status_event(
+                    task.primary_work_item_id,
+                    WorkItemStatus.SUSPENDED,
                     task_id,
-                    {
-                        "kind": waiting.kind,
-                        "cause": waiting.cause,
-                        "correlation_id": waiting.correlation_id,
-                        "deadline": waiting.deadline,
-                        "condition_kind": waiting.condition_kind,
-                        "target_ref": waiting.target_ref,
-                        "match_params": waiting.match_params,
-                        "open_question": waiting.open_question,
-                        "preparation_snapshot_ref": waiting.preparation_snapshot_ref,
-                        "earliest_review_at": waiting.earliest_review_at,
-                    },
+                    now,
                 )
             )
+        self._insert_event_in_tx(
+            self._make_task_event(
+                EventKind.TASK_WAITING_SET,
+                task_id,
+                {
+                    "kind": waiting.kind,
+                    "cause": waiting.cause,
+                    "subtype": waiting.subtype.value if waiting.subtype else None,
+                    "episode_id": waiting.episode_id,
+                    "correlation_id": waiting.correlation_id,
+                    "deadline": waiting.deadline,
+                    "condition_kind": waiting.condition_kind,
+                    "target_ref": waiting.target_ref,
+                    "match_params": waiting.match_params,
+                    "open_question": waiting.open_question,
+                    "preparation_snapshot_ref": waiting.preparation_snapshot_ref,
+                    "earliest_review_at": waiting.earliest_review_at,
+                },
+            )
+        )
 
     def set_waiting_user(
         self,
@@ -1776,6 +2466,2351 @@ class ModelOsStore:
                     Provenance.USER_DECISION,
                 )
             )
+
+    # ---------------------------------------------------------- episode commands
+    #
+    # slice-087 structured command entry points for the Episode lifecycle.
+    # Each fenced command runs inside one IMMEDIATE tx: replay state, validate,
+    # check caller-held ownership (lease_id/owner/token), append a fenced
+    # journal event, and (where relevant) mutate the snapshot row / lease — all
+    # atomic. Fencing is enforced by KIND (_EPISODE_FENCED_KINDS), not by
+    # field-presence: a stale writer cannot omit the token to bypass the check
+    # (codex review of slice-087 overturned the original "optional field" plan).
+
+    _EPISODE_OWNERSHIP_RESOURCE_TYPE = "episode_ownership"
+
+    def _read_episode_lease_row(self, episode_id: str) -> sqlite3.Row | None:
+        """Return the active ownership lease row for episode_id, or None."""
+
+        assert self._conn is not None
+        return self._conn.execute(
+            "SELECT * FROM leases WHERE resource_type='episode_ownership' "
+            "AND resource_id=? AND released_at IS NULL",
+            (episode_id,),
+        ).fetchone()
+
+    def _check_ownership_in_tx(
+        self,
+        episode_id: str,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """Validate the caller really holds this Episode's ownership lease.
+
+        All of (lease_id, owner, fencing_token) must match the live lease; it
+        must be unreleased and not expired. Mismatch → ``StaleWriterRejected``;
+        the fenced command catches it and records ``late_write_rejected``.
+
+        Expiry uses wall-clock now: an expired-but-not-taken-over lease is also
+        rejected — authority ends the moment it expires, before any takeover.
+        """
+
+        assert self._conn is not None
+        row = self._read_episode_lease_row(episode_id)
+        now_str = _now_iso()
+        if row is None:
+            raise StaleWriterRejected(
+                episode_id, "no active ownership lease", expected_token, None
+            )
+        current_token = int(row["fencing_token"])
+        if row["lease_id"] != expected_lease_id:
+            raise StaleWriterRejected(
+                episode_id, "lease_id mismatch", expected_token, current_token
+            )
+        if row["owner"] != expected_owner:
+            raise StaleWriterRejected(
+                episode_id, "owner mismatch", expected_token, current_token
+            )
+        if current_token != expected_token:
+            raise StaleWriterRejected(
+                episode_id,
+                "fencing_token mismatch (stale writer)",
+                expected_token,
+                current_token,
+            )
+        if row["expires_at"] <= now_str:
+            raise StaleWriterRejected(
+                episode_id, "lease expired", expected_token, current_token
+            )
+
+    def _reject_stale_write_in_tx(
+        self, event: EventEnvelope, exc: StaleWriterRejected
+    ) -> None:
+        """Record a ``late_write_rejected`` audit event for a rejected stale
+        write. Attempted kind / token / reason stored; no authoritative state
+        change. Caller holds the transaction."""
+
+        assert self._conn is not None
+        audit = EventEnvelope(
+            event_id=f"late_write.{uuid4().hex}",
+            kind=EventKind.LATE_WRITE_REJECTED,
+            occurred_at=_now_iso(),
+            source="kernel",
+            provenance=Provenance.MACHINE_OBSERVATION,
+            policy_version=self._policy_version,
+            payload={
+                "episode_id": exc.episode_id,
+                "attempted_kind": event.kind,
+                "attempted_event_id": event.event_id,
+                "attempted_token": exc.attempted_token,
+                "current_token": exc.current_token,
+                "reason": exc.reason,
+            },
+            episode_id=exc.episode_id,
+        )
+        payload_text, payload_hash = _payload_json(audit.payload)
+        self._conn.execute(
+            _EVENT_INSERT_SQL, _event_params(audit, payload_text, payload_hash)
+        )
+
+    def _append_fenced_event_in_tx(self, event: EventEnvelope) -> int:
+        """Append a fenced Episode event, validating ownership first.
+
+        Idempotent on ``event_id``: if the same event is already persisted
+        (same id AND payload hash) the original seq is returned WITHOUT
+        consulting fencing — a read-only retry by a possibly-stale caller must
+        not error. Same id / different content → ``ValueError``. Otherwise the
+        ownership lease is checked before the write; on stale-writer rejection
+        a ``late_write_rejected`` audit event is recorded and the exception
+        re-raised.
+        """
+
+        assert self._conn is not None
+        if event.kind not in _EPISODE_FENCED_KINDS:
+            raise EpisodeCommandError(
+                f"_append_fenced_event_in_tx called with non-fenced kind "
+                f"{event.kind!r}"
+            )
+        if (
+            event.episode_id is None
+            or event.lease_id is None
+            or event.owner is None
+            or event.fencing_token is None
+        ):
+            raise EpisodeCommandError(
+                f"fenced event {event.kind!r} must carry episode_id, lease_id, "
+                f"owner, fencing_token"
+            )
+        payload_text, payload_hash = _payload_json(event.payload)
+        existing = self._conn.execute(
+            "SELECT * FROM events WHERE event_id=?",
+            (event.event_id,),
+        ).fetchone()
+        if existing is not None:
+            # codex H7: idempotent only if the FULL identity matches (kind /
+            # entity / lease triple / payload_hash), not payload_hash alone.
+            if _event_row_identity(existing, payload_hash) != _event_identity(
+                event, payload_hash
+            ):
+                raise ValueError(
+                    f"event_id {event.event_id!r} already exists with different "
+                    f"content (identity mismatch)"
+                )
+            return int(existing["seq"])
+        try:
+            self._check_ownership_in_tx(
+                event.episode_id, event.lease_id, event.owner, event.fencing_token
+            )
+        except StaleWriterRejected as exc:
+            # codex M1: do NOT write the audit inline — this tx is about to
+            # roll back (the caller's ``_tx`` re-raises), which would undo the
+            # audit row. Attach the attempted event so the outermost ``_tx``
+            # can record it in a FRESH transaction after rollback.
+            exc.attempted_event = event  # type: ignore[attr-defined]
+            raise
+        self._conn.execute(
+            _EVENT_INSERT_SQL, _event_params(event, payload_text, payload_hash)
+        )
+        row = self._conn.execute(
+            "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
+        ).fetchone()
+        assert row is not None
+        return int(row["seq"])
+
+    def _make_episode_event(
+        self,
+        kind: str,
+        episode_id: str,
+        payload: dict[str, Any],
+        *,
+        work_item_id: str | None = None,
+        task_id: str | None = None,
+        provenance: Provenance = Provenance.MACHINE_OBSERVATION,
+        lease_id: str | None = None,
+        owner: str | None = None,
+        fencing_token: int | None = None,
+        event_id: str | None = None,
+    ) -> EventEnvelope:
+        """Build an Episode event. Fenced kinds pass lease_id/owner/token.
+
+        ``event_id`` lets a caller that pre-generated a stable id (e.g. the
+        snapshot row's ``committed_event_id``) use it as the event's primary
+        key, so the snapshot↔event link is real and a read can verify it
+        (codex M2 / spec line 222)."""
+
+        return EventEnvelope(
+            event_id=event_id or f"{kind}.{uuid4().hex}",
+            kind=kind,
+            occurred_at=_now_iso(),
+            source="kernel",
+            provenance=provenance,
+            policy_version=self._policy_version,
+            payload=payload,
+            work_item_id=work_item_id,
+            task_id=task_id,
+            episode_id=episode_id,
+            lease_id=lease_id,
+            owner=owner,
+            fencing_token=fencing_token,
+        )
+
+    def _require_episode(self, snap: Snapshot, episode_id: str) -> EpisodeState:
+        """Return the EpisodeState or raise EpisodeCommandError."""
+
+        ep = snap.episode_by_id(episode_id)
+        if ep is None:
+            raise EpisodeCommandError(f"unknown episode_id={episode_id!r}")
+        return ep
+
+    def _episode_state_to_episode(
+        self, state: EpisodeState, ownership_lease_id: str | None = None
+    ) -> Episode:
+        """Project a reducer EpisodeState into the public Episode value object
+        (drops status_provenance). ``ownership_lease_id`` is filled from the
+        live lease table by the caller (live state, not folded)."""
+
+        return Episode(
+            episode_id=state.episode_id,
+            work_item_id=state.work_item_id,
+            task_id=state.task_id,
+            status=state.status,
+            native_session_id=state.native_session_id,
+            ownership_lease_id=ownership_lease_id,
+            last_snapshot_ref=state.last_snapshot_ref,
+            pending_descriptor=state.pending_descriptor,
+            reconcile_reason=state.reconcile_reason,
+            created_at=state.created_at,
+            updated_at=state.updated_at,
+        )
+
+    def _next_snapshot_version_in_tx(self, episode_id: str) -> int:
+        """Next version number for a new snapshot of this Episode."""
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS v FROM episode_snapshots "
+            "WHERE episode_id=?",
+            (episode_id,),
+        ).fetchone()
+        return int(row["v"]) + 1
+
+    # --------------------------------------------------------------- ownership
+
+    def acquire_episode_ownership(
+        self,
+        episode_id: str,
+        *,
+        owner: str,
+        ttl_seconds: int,
+        idempotency_key: str | None = None,
+    ) -> Lease:
+        """Acquire (or reclaim) the ownership lease for an Episode.
+
+        Thin wrapper over ``acquire_lease`` with resource_type =
+        ``episode_ownership``. Returns the lease carrying the fencing token the
+        caller must present on subsequent fenced writes. Idempotent on
+        ``idempotency_key`` AND same owner (caller's retry identity for THIS
+        episode).
+        """
+
+        return self.acquire_lease(
+            resource_type=self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+            resource_id=episode_id,
+            owner=owner,
+            ttl_seconds=ttl_seconds,
+            idempotency_key=idempotency_key,
+        )
+
+    def release_episode_ownership(self, episode_id: str) -> bool:
+        """Release the active ownership lease for an Episode.
+
+        Returns True if a lease was active. Used by takeover / shutdown paths;
+        normal Episode flow releases via close/fail/suspend which also write
+        the lifecycle event atomically.
+        """
+
+        assert self._conn is not None
+        row = self._read_episode_lease_row(episode_id)
+        if row is None:
+            return False
+        return self.release_lease(row["lease_id"])
+
+    def _grant_episode_ownership_in_tx(
+        self,
+        episode_id: str,
+        owner: str,
+        ttl_seconds: int,
+        idempotency_key: str | None,
+    ) -> Lease:
+        """Grant the ownership lease INSIDE the caller's open transaction.
+
+        Used by ``start_episode`` so the Episode row + lease + idempotency key
+        land atomically. Does not run ``acquire_lease`` (which opens its own
+        tx); mirrors its grant path: idempotent re-claim, fence-counter bump,
+        lease INSERT, ownership_acquired audit event.
+        """
+
+        assert self._conn is not None
+        now_str = _now_iso()
+        expires_str = (
+            datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        ).isoformat()
+        if idempotency_key is not None:
+            existing = self._conn.execute(
+                "SELECT * FROM leases WHERE resource_type='episode_ownership' "
+                "AND resource_id=? AND idempotency_key=? AND released_at IS NULL",
+                (episode_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if existing["owner"] != owner:
+                    raise LeaseConflict("episode_ownership", episode_id)
+                # codex R3-M3: do not hand back an already-expired lease — the
+                # caller would fail the first fenced write. A retry that lands
+                # after TTL is a conflict (the caller must re-acquire fresh).
+                if existing["expires_at"] <= now_str:
+                    raise LeaseConflict("episode_ownership", episode_id)
+                return _lease_from_row(existing)
+        token = self._next_fence_token_in_tx(
+            self._EPISODE_OWNERSHIP_RESOURCE_TYPE, episode_id
+        )
+        lease_id = uuid4().hex
+        try:
+            self._conn.execute(
+                "INSERT INTO leases (lease_id, resource_type, resource_id, owner, "
+                "acquired_at, expires_at, idempotency_key, released_at, "
+                "fencing_token) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    lease_id,
+                    self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+                    episode_id,
+                    owner,
+                    now_str,
+                    expires_str,
+                    idempotency_key,
+                    token,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # codex R3-H3: surface a collision as LeaseConflict, never a raw
+            # sqlite3 error (idempotency_key still in use, or another writer
+            # raced the grant/takeover).
+            raise LeaseConflict("episode_ownership", episode_id) from exc
+        self._insert_event_in_tx(
+            EventEnvelope(
+                event_id=f"episode.ownership_acquired.{uuid4().hex}",
+                kind=EventKind.EPISODE_OWNERSHIP_ACQUIRED,
+                occurred_at=now_str,
+                source="kernel",
+                provenance=Provenance.MACHINE_OBSERVATION,
+                policy_version=self._policy_version,
+                payload={
+                    "lease_id": lease_id,
+                    "owner": owner,
+                    "fencing_token": token,
+                    "expires_at": expires_str,
+                },
+                episode_id=episode_id,
+            )
+        )
+        return Lease(
+            lease_id=lease_id,
+            resource_type=self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+            resource_id=episode_id,
+            owner=owner,
+            acquired_at=now_str,
+            expires_at=expires_str,
+            idempotency_key=idempotency_key,
+            fencing_token=token,
+        )
+
+    # --------------------------------------------------------------- lifecycle
+
+    def start_episode(
+        self,
+        *,
+        work_item_id: str,
+        owner: str,
+        ttl_seconds: int,
+        idempotency_key: str,
+        task_id: str | None = None,
+        previous_snapshot_ref: SnapshotRef | None = None,
+    ) -> tuple[Episode, Lease]:
+        """Create an Episode in STARTING + acquire its ownership lease, atomically.
+
+        ``previous_snapshot_ref`` is the接力 base (None for a first Episode);
+        recorded for 090 / recovery but no fenced check is made yet — the
+        Episode is STARTING, no fenced progress write happens until 090 moves
+        it to ACTIVE. ``native_session_id`` is left None (090 binds it).
+
+        STARTING has no public →ACTIVE command in 087 (spec line 56: 090 binds
+        the native session and flips STARTING → ACTIVE). 087 tests use the
+        internal ``_append_fenced_event_in_tx`` helper to reach ACTIVE; 090
+        MUST add the public command.
+
+        Idempotent on ``idempotency_key``: a retry returns the original
+        (Episode, Lease) ONLY IF its ownership lease is still active AND still
+        owned by the same caller. If the lease expired and a new runner took
+        over (recover_episode), the retry raises ``LeaseConflict`` rather than
+        handing back someone else's lease (codex R3-H4 / R3-M6). If the lease
+        was released (Episode closed/failed), the retry raises
+        ``EpisodeCommandError``.
+        """
+
+        assert self._conn is not None
+        if not work_item_id:
+            raise EpisodeCommandError("work_item_id must be non-empty")
+        if not owner or ttl_seconds <= 0:
+            raise EpisodeCommandError("owner and positive ttl required")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise EpisodeCommandError("idempotency_key must be a non-empty string")
+        with self._tx():
+            existing = self._conn.execute(
+                "SELECT episode_id FROM episode_create_keys WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                episode_id = existing["episode_id"]
+                lease_row = self._read_episode_lease_row(episode_id)
+                snap = self.replay()
+                lease = _lease_from_row(lease_row) if lease_row is not None else None
+                if lease is None:
+                    raise EpisodeCommandError(
+                        f"idempotent replay: episode {episode_id!r} has no active "
+                        f"ownership lease (lease expired before retry)"
+                    )
+                # codex R3-H4: the active lease must still belong to THIS owner.
+                # If the original owner's lease expired and a new runner took
+                # over (recover_episode), the active lease is now the new
+                # owner's — silently returning it would hand the retrier someone
+                # else's lease. Mirror _recover_ownership_in_tx's owner check.
+                if lease.owner != owner:
+                    raise LeaseConflict(
+                        "episode_ownership", episode_id
+                    )
+                # codex R3-L5 / R3-M3: do not return an already-expired lease —
+                # the public Episode.ownership_lease_id must not point at a
+                # dead lease (and the caller's first fenced write would fail).
+                if lease.expires_at <= _now_iso():
+                    raise LeaseConflict("episode_ownership", episode_id)
+                return (
+                    self._episode_state_to_episode(
+                        self._require_episode(snap, episode_id), lease.lease_id
+                    ),
+                    lease,
+                )
+
+            episode_id = uuid4().hex
+            now = _now_iso()
+            # codex H2: verify the binding BEFORE creating the Episode, so a
+            # dangling work_item_id / task_id cannot produce an Episode whose
+            # suspend path would later silently skip the missing half. The
+            # WorkItem must exist; if a task_id is given it must match the
+            # WorkItem's task_id (a Task Episode binds to that Task's primary
+            # WorkItem).
+            snap = self.replay()
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == work_item_id),
+                None,
+            )
+            if work_item is None:
+                raise EpisodeCommandError(
+                    f"work_item_id {work_item_id!r} does not exist; cannot "
+                    f"bind an Episode to a missing WorkItem"
+                )
+            if task_id is not None:
+                if work_item.task_id != task_id:
+                    raise EpisodeCommandError(
+                        f"task_id {task_id!r} does not match WorkItem "
+                        f"{work_item_id!r} (work_item.task_id="
+                        f"{work_item.task_id!r})"
+                    )
+                if not any(t.task_id == task_id for t in snap.tasks):
+                    raise EpisodeCommandError(
+                        f"task_id {task_id!r} does not exist"
+                    )
+            elif work_item.task_id is not None:
+                # codex N8 (round 2): a WorkItem that already carries a task_id
+                # (TASK OR INCUBATION) must be bound to that Task explicitly.
+                # The previous check only caught kind==TASK, letting an
+                # INCUBATION WorkItem (which also has a task_id) be started as a
+                # task-less system Episode — its suspend/activate would then
+                # wrongly take the no-Task branch.
+                raise EpisodeCommandError(
+                    f"WorkItem {work_item_id!r} (kind={work_item.kind.value}) "
+                    f"is bound to task {work_item.task_id!r}; pass that "
+                    f"task_id to bind a Task Episode"
+                )
+            self._insert_event_in_tx(
+                EventEnvelope(
+                    event_id=f"episode.create.{episode_id}",
+                    kind=EventKind.EPISODE_CREATED,
+                    occurred_at=now,
+                    source="kernel",
+                    provenance=Provenance.MACHINE_OBSERVATION,
+                    policy_version=self._policy_version,
+                    payload={
+                        "episode_id": episode_id,
+                        "work_item_id": work_item_id,
+                        "task_id": task_id,
+                        "status": EpisodeStatus.STARTING.value,
+                        "native_session_id": None,
+                        "previous_snapshot_ref": (
+                            {
+                                "episode_id": previous_snapshot_ref.episode_id,
+                                "version": previous_snapshot_ref.version,
+                                "committed_event_id": previous_snapshot_ref.committed_event_id,
+                                "payload_hash": previous_snapshot_ref.payload_hash,
+                            }
+                            if previous_snapshot_ref
+                            else None
+                        ),
+                    },
+                    work_item_id=work_item_id,
+                    task_id=task_id,
+                    episode_id=episode_id,
+                )
+            )
+            lease = self._grant_episode_ownership_in_tx(
+                episode_id, owner, ttl_seconds, idempotency_key
+            )
+            self._conn.execute(
+                "INSERT INTO episode_create_keys (idempotency_key, episode_id, "
+                "created_at) VALUES (?, ?, ?)",
+                (idempotency_key, episode_id, now),
+            )
+        snap = self.replay()
+        return (
+            self._episode_state_to_episode(
+                self._require_episode(snap, episode_id), lease.lease_id
+            ),
+            lease,
+        )
+
+    def _fenced_status_change_in_tx(
+        self,
+        *,
+        episode_id: str,
+        kind: str,
+        new_status: EpisodeStatus,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        extra_payload: dict[str, Any] | None = None,
+        work_item_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """Shared body for fenced pure-status transitions (yield / close / fail
+        / activate / recovering). Caller holds the tx."""
+
+        payload: dict[str, Any] = {"new_status": new_status.value}
+        if extra_payload:
+            payload.update(extra_payload)
+        self._append_fenced_event_in_tx(
+            self._make_episode_event(
+                kind,
+                episode_id,
+                payload,
+                work_item_id=work_item_id,
+                task_id=task_id,
+                lease_id=expected_lease_id,
+                owner=expected_owner,
+                fencing_token=expected_token,
+            )
+        )
+
+    def request_yield(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        reason: str,
+    ) -> None:
+        """active → yield_requested (fenced). Allows in-flight tools to finish;
+        089 then drives checkpoint → close."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.ACTIVE:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be ACTIVE to request yield "
+                    f"(got {ep.status.value})"
+                )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_YIELD_REQUESTED,
+                new_status=EpisodeStatus.YIELD_REQUESTED,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                extra_payload={"reason": reason},
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+
+    def commit_checkpoint(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        snapshot: EpisodeSnapshot,
+        checkpoint_key: str,
+    ) -> SnapshotRef:
+        """Commit a cooperative snapshot for the Episode (fenced), atomically.
+
+        snapshot row (version N+1) + fenced ``episode.checkpoint_committed``
+        event land in one tx. The Episode always moves to ``checkpointing``
+        (the command fixes the target — a caller cannot pick another state).
+        Idempotent on ``checkpoint_key``: a crash retry with the same key
+        returns the original SnapshotRef without minting a second version.
+        ``snapshot.source`` must be COOPERATIVE; ``recovery_partial`` goes
+        through ``checkpoint_recovery_partial``.
+
+        Source states: ``active`` (a cooperative checkpoint mid-work) or
+        ``yield_requested`` (the normal wind-down after request_yield). Blocked
+        states (suspended / reconcile_required / recovering) cannot checkpoint
+        here — they have their own exit commands.
+        """
+
+        assert self._conn is not None
+        if not isinstance(checkpoint_key, str) or not checkpoint_key.strip():
+            raise EpisodeCommandError("checkpoint_key must be non-empty")
+        if snapshot.source != SnapshotSource.COOPERATIVE:
+            raise EpisodeCommandError(
+                "commit_checkpoint is for cooperative snapshots; use "
+                "checkpoint_recovery_partial for recovery_partial"
+            )
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            # codex N2 (round 2): resolve an idempotent retry BEFORE the status
+            # gate. A crash after COMMIT but before the response leaves the
+            # Episode in CHECKPOINTING; the retry would then fail the
+            # ACTIVE/YIELD_REQUESTED check below, breaking the checkpoint_key
+            # idempotency contract (pass 6). Same-episode key hit → return the
+            # original ref; cross-episode hit → M3 conflict; both regardless of
+            # the current status.
+            existing = self._conn.execute(
+                "SELECT episode_id, version, payload_hash, committed_event_id "
+                "FROM episode_snapshots WHERE checkpoint_key=?",
+                (checkpoint_key,),
+            ).fetchone()
+            if existing is not None:
+                # codex M3: checkpoint_key is globally UNIQUE. A hit belonging
+                # to a DIFFERENT Episode is a key-scope conflict (the caller
+                # reused a key across episodes) — NOT an idempotent retry.
+                if existing["episode_id"] != episode_id:
+                    raise EpisodeCommandError(
+                        f"checkpoint_key {checkpoint_key!r} already used by "
+                        f"episode {existing['episode_id']!r}; checkpoint_key "
+                        f"is globally unique — use a different key"
+                    )
+                return SnapshotRef(
+                    episode_id=episode_id,
+                    version=int(existing["version"]),
+                    committed_event_id=existing["committed_event_id"],
+                    payload_hash=existing["payload_hash"],
+                )
+            if ep.status not in (
+                EpisodeStatus.ACTIVE,
+                EpisodeStatus.YIELD_REQUESTED,
+            ):
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be ACTIVE or YIELD_REQUESTED "
+                    f"to commit a cooperative checkpoint (got {ep.status.value})"
+                )
+            # codex R3-M2: journal_through_seq is the high-watermark this
+            # snapshot covers; it must not look past the live journal end. A
+            # too-high value would silently make _collect_recovery_events skip
+            # events in (real_last_seq, claimed] on the next recovery. Reject
+            # rather than clamp, so a caller bug surfaces.
+            if snapshot.journal_through_seq > snap.last_seq:
+                raise EpisodeCommandError(
+                    f"snapshot.journal_through_seq ({snapshot.journal_through_seq}) "
+                    f"exceeds the live journal end ({snap.last_seq}); a checkpoint "
+                    f"cannot cover events that have not happened yet"
+                )
+            version = self._next_snapshot_version_in_tx(episode_id)
+            payload_text, payload_hash = _payload_json(
+                _snapshot_to_payload(snapshot)
+            )
+            _validate_episode_snapshot(snapshot, payload_text)
+            committed_event_id = (
+                f"episode.checkpoint.{episode_id}.{version}.{uuid4().hex}"
+            )
+            self._conn.execute(
+                "INSERT INTO episode_snapshots (episode_id, version, "
+                "checkpoint_key, source, payload_json, payload_hash, "
+                "base_episode_id, base_version, journal_through_seq, "
+                "committed_event_id, created_at) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    episode_id,
+                    version,
+                    checkpoint_key,
+                    snapshot.source.value,
+                    payload_text,
+                    payload_hash,
+                    snapshot.base_snapshot_ref.episode_id
+                    if snapshot.base_snapshot_ref
+                    else None,
+                    snapshot.base_snapshot_ref.version
+                    if snapshot.base_snapshot_ref
+                    else None,
+                    snapshot.journal_through_seq,
+                    committed_event_id,
+                    _now_iso(),
+                ),
+            )
+            self._append_fenced_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_CHECKPOINT_COMMITTED,
+                    episode_id,
+                    {
+                        "version": version,
+                        "source": snapshot.source.value,
+                        "payload_hash": payload_hash,
+                        "journal_through_seq": snapshot.journal_through_seq,
+                        "committed_event_id": committed_event_id,
+                        "new_status": EpisodeStatus.CHECKPOINTING.value,
+                    },
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                    lease_id=expected_lease_id,
+                    owner=expected_owner,
+                    fencing_token=expected_token,
+                    event_id=committed_event_id,
+                )
+            )
+            return SnapshotRef(
+                episode_id=episode_id,
+                version=version,
+                committed_event_id=committed_event_id,
+                payload_hash=payload_hash,
+            )
+
+    def read_episode_snapshot(self, ref: SnapshotRef) -> EpisodeSnapshot:
+        """Read a snapshot payload by precise ref. Fail-closed if the row is
+        missing, its hash does not match the ref, or its committed event is
+        absent from the journal (corruption / forgery, codex M2)."""
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT payload_json, payload_hash, committed_event_id "
+            "FROM episode_snapshots "
+            "WHERE episode_id=? AND version=?",
+            (ref.episode_id, ref.version),
+        ).fetchone()
+        if row is None:
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} not found "
+                f"(reducer referenced a row that is absent)"
+            )
+        if row["payload_hash"] != ref.payload_hash:
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} payload_hash mismatch "
+                f"(row={row['payload_hash']}, ref={ref.payload_hash})"
+            )
+        # codex N7 (round 2): the ref, the row and the journal event must agree
+        # PRECISELY. The ref's committed_event_id (folded by the reducer) must
+        # equal the row's (stored at write time), and that event must exist and
+        # point back at this episode. A mere "event_id exists somewhere in the
+        # journal" check let a forged ref aimed at an unrelated NOTE pass.
+        committed_event_id = row["committed_event_id"]
+        if ref.committed_event_id != committed_event_id:
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} committed_event_id "
+                f"mismatch (ref={ref.committed_event_id!r}, "
+                f"row={committed_event_id!r})"
+            )
+        ev_row = self._conn.execute(
+            "SELECT kind, episode_id FROM events WHERE event_id=?",
+            (committed_event_id,),
+        ).fetchone()
+        if ev_row is None:
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} committed_event "
+                f"{committed_event_id!r} not in journal (corruption)"
+            )
+        if ev_row["episode_id"] != ref.episode_id:
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} committed_event "
+                f"{committed_event_id!r} belongs to a different episode "
+                f"({ev_row['episode_id']!r})"
+            )
+        if ev_row["kind"] not in (
+            EventKind.EPISODE_CHECKPOINT_COMMITTED,
+            EventKind.EPISODE_RECONCILE_RESOLVED,
+        ):
+            raise EpisodeCommandError(
+                f"snapshot {ref.episode_id}#{ref.version} committed_event "
+                f"{committed_event_id!r} has wrong kind {ev_row['kind']!r} "
+                f"(expected checkpoint_committed or reconcile_resolved)"
+            )
+        return _snapshot_from_payload(json.loads(row["payload_json"]))
+
+    def close_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """→ closed (fenced, terminal). Only legal from ``checkpointing``.
+
+        The normal wind-down is ``request_yield → commit_checkpoint (→
+        checkpointing) → close_episode (→ closed)``. Closing from any other
+        state is refused — those states have their own exit path (suspend →
+        resolve/activate, reconcile_required → resolve_reconcile)."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.CHECKPOINTING:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be CHECKPOINTING to close "
+                    f"(got {ep.status.value}); closing from other states has "
+                    f"its own exit command"
+                )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_CLOSED,
+                new_status=EpisodeStatus.CLOSED,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+            # release the ownership lease in the same tx (no orphan lease)
+            row = self._read_episode_lease_row(episode_id)
+            if row is not None and row["lease_id"] == expected_lease_id:
+                self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE lease_id=?",
+                    (_now_iso(), expected_lease_id),
+                )
+
+    def fail_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        reason: str,
+    ) -> None:
+        """→ failed (fenced, terminal). Exec-layer failure; the owning Task
+        returns to READY (087 does not flip Task to error — that is Task-level
+        and decided elsewhere).
+
+        codex H4: the composite restores the Task / WorkItem to a retryable
+        state and releases the foreground + ownership lease in the same tx.
+        The previous code flipped only the Episode, leaving a Task RUNNING with
+        the foreground held — an unrecoverable contradiction."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status.is_terminal:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} already terminal ({ep.status.value})"
+                )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_FAILED,
+                new_status=EpisodeStatus.FAILED,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                extra_payload={"reason": reason},
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+            now = _now_iso()
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if ep.task_id is not None:
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is not None and not task.status.is_terminal:
+                    # release foreground if this Task holds it (CAS), then
+                    # return the Task to READY (retryable, not error).
+                    if self._read_foreground_task_id() == task.task_id:
+                        self._release_foreground_in_tx(task.task_id)
+                    if task.status != TaskStatus.READY:
+                        self._insert_event_in_tx(
+                            self._make_task_event(
+                                EventKind.TASK_STATUS_CHANGED,
+                                task.task_id,
+                                {"new_status": TaskStatus.READY.value},
+                            )
+                        )
+            if (
+                work_item is not None
+                and work_item.status
+                in (WorkItemStatus.RUNNING, WorkItemStatus.SUSPENDED)
+            ):
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        work_item.work_item_id,
+                        WorkItemStatus.READY,
+                        ep.task_id,
+                        now,
+                    )
+                )
+            row = self._read_episode_lease_row(episode_id)
+            if row is not None and row["lease_id"] == expected_lease_id:
+                self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE lease_id=?",
+                    (_now_iso(), expected_lease_id),
+                )
+
+    # --------------------------------------------------- suspend / resume (2-phase)
+
+    def suspend_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        pending: PendingDescriptor,
+    ) -> None:
+        """active → suspended_waiting_* (fenced, composite).
+
+        Atomic same-tx: fenced EPISODE_SUSPENDED + (Task-bound) Task
+        running→waiting_user with subtype/episode_id + foreground CAS release
+        + WorkItem SUSPENDED. system WorkItem (no Task) skips the Task half;
+        WorkLease release is 093's job (it subscribes to episode.suspended).
+        """
+
+        assert self._conn is not None
+        if pending.kind not in (WaitingSubtype.INPUT, WaitingSubtype.APPROVAL):
+            raise EpisodeCommandError(
+                f"suspend_episode pending.kind must be INPUT or APPROVAL "
+                f"(got {pending.kind.value})"
+            )
+        if not pending.correlation_id or not pending.cause:
+            raise EpisodeCommandError("pending requires correlation_id + cause")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.ACTIVE:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be ACTIVE to suspend "
+                    f"(got {ep.status.value})"
+                )
+            # codex H2: validate the WorkItem (+ Task, when bound) BEFORE any
+            # write. The previous code silently skipped a missing or wrong-state
+            # WorkItem/Task, so an Episode could enter suspended_waiting_* while
+            # its Task stayed RUNNING and kept the foreground — breaking
+            # foreground⇔running. Any mismatch now rejects the whole composite.
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if work_item is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} bound WorkItem {ep.work_item_id!r} "
+                    f"not found; cannot suspend"
+                )
+            if work_item.status != WorkItemStatus.RUNNING:
+                raise EpisodeCommandError(
+                    f"WorkItem {ep.work_item_id!r} must be RUNNING to suspend "
+                    f"(got {work_item.status.value})"
+                )
+            task = None
+            if ep.task_id is not None:
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is None:
+                    raise EpisodeCommandError(
+                        f"episode {episode_id!r} bound task {ep.task_id!r} "
+                        f"not found; cannot suspend"
+                    )
+                if task.status != TaskStatus.RUNNING:
+                    raise EpisodeCommandError(
+                        f"task {ep.task_id!r} must be RUNNING to suspend "
+                        f"(got {task.status.value})"
+                    )
+            new_status = (
+                EpisodeStatus.SUSPENDED_WAITING_INPUT
+                if pending.kind == WaitingSubtype.INPUT
+                else EpisodeStatus.SUSPENDED_WAITING_APPROVAL
+            )
+            self._append_fenced_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_SUSPENDED,
+                    episode_id,
+                    {
+                        "new_status": new_status.value,
+                        "kind": pending.kind.value,
+                        "native_generation": pending.native_generation,
+                        "correlation_id": pending.correlation_id,
+                        "cause": pending.cause,
+                        "posed_at": pending.posed_at,
+                    },
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                    lease_id=expected_lease_id,
+                    owner=expected_owner,
+                    fencing_token=expected_token,
+                )
+            )
+            # codex L1: exactly ONE owner of the WorkItem→SUSPENDED transition.
+            # Task-bound: ``_set_waiting_in_tx`` emits it for the primary
+            # WorkItem (== ep.work_item_id for a Task Episode) AND releases
+            # foreground AND moves the Task to waiting_user. system WorkItem
+            # (no Task): emit SUSPENDED here, and there is no foreground/Task
+            # to touch (foreground is task-scoped).
+            if task is not None:
+                self._set_waiting_in_tx(
+                    task.task_id,
+                    WaitingCondition(
+                        kind=TaskStatus.WAITING_USER.value,
+                        cause=pending.cause,
+                        subtype=pending.kind,
+                        episode_id=episode_id,
+                        correlation_id=pending.correlation_id,
+                    ),
+                    snap=snap,
+                )
+            else:
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        work_item.work_item_id,
+                        WorkItemStatus.SUSPENDED,
+                        None,
+                        _now_iso(),
+                    )
+                )
+
+    def resolve_episode_wait(
+        self,
+        episode_id: str,
+        *,
+        answer_correlation_id: str,
+    ) -> None:
+        """suspended_waiting_* → suspended_ready (NOT fenced).
+
+        The answer has arrived but foreground is NOT claimed here: another Task
+        may hold it. ``activate_suspended_episode`` later moves the Episode to
+        ACTIVE once foreground is won. Not fenced because this is driven by an
+        external answer arriving (095 matcher), not by the lease holder's
+        progress write; the Episode is already suspended (no in-flight work).
+        """
+
+        assert self._conn is not None
+        if not answer_correlation_id:
+            raise EpisodeCommandError("answer_correlation_id required")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status not in (
+                EpisodeStatus.SUSPENDED_WAITING_INPUT,
+                EpisodeStatus.SUSPENDED_WAITING_APPROVAL,
+            ):
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be suspended_waiting_* to "
+                    f"resolve wait (got {ep.status.value})"
+                )
+            # codex H1: the answer's correlation_id must match the pending
+            # descriptor — an unrelated or late answer must not clear the real
+            # pending.
+            if (
+                ep.pending_descriptor is None
+                or ep.pending_descriptor.correlation_id != answer_correlation_id
+            ):
+                raise EpisodeCommandError(
+                    f"answer_correlation_id {answer_correlation_id!r} does not "
+                    f"match episode {episode_id!r} pending correlation_id"
+                )
+            # codex N4 (round 2): validate the bound WorkItem (+ Task) BEFORE any
+            # write. The previous code silently skipped a missing or wrong-state
+            # WorkItem/Task, so the Episode could enter suspended_ready while
+            # its Task/WorkItem stayed in an incompatible state — activate would
+            # then fail forever. Any mismatch now rejects the whole composite.
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if work_item is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} bound WorkItem {ep.work_item_id!r} "
+                    f"not found; cannot resolve wait"
+                )
+            if work_item.status != WorkItemStatus.SUSPENDED:
+                raise EpisodeCommandError(
+                    f"WorkItem {ep.work_item_id!r} must be SUSPENDED to resolve "
+                    f"a wait (got {work_item.status.value})"
+                )
+            task = None
+            if ep.task_id is not None:
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is None:
+                    raise EpisodeCommandError(
+                        f"episode {episode_id!r} bound task {ep.task_id!r} "
+                        f"not found; cannot resolve wait"
+                    )
+                if task.status != TaskStatus.WAITING_USER:
+                    raise EpisodeCommandError(
+                        f"task {ep.task_id!r} must be WAITING_USER to resolve "
+                        f"a wait (got {task.status.value})"
+                    )
+            self._insert_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_WAIT_RESOLVED,
+                    episode_id,
+                    {"answer_correlation_id": answer_correlation_id},
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                )
+            )
+            # codex H1: bring the Task (waiting_user → ready) and the WorkItem
+            # (SUSPENDED → READY) back to a schedulable state, so the later
+            # activate can run. Foreground is NOT claimed here (pass 10) — that
+            # is activate's job.
+            now = _now_iso()
+            if task is not None:
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        task.task_id,
+                        {"new_status": TaskStatus.READY.value},
+                    )
+                )
+            self._insert_event_in_tx(
+                self._work_item_status_event(
+                    work_item.work_item_id,
+                    WorkItemStatus.READY,
+                    ep.task_id,
+                    now,
+                )
+            )
+
+    def activate_suspended_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """suspended_ready → active (fenced). Composite: claim foreground +
+        Task ready→running + WorkItem READY→RUNNING + fenced EPISODE_ACTIVATED.
+
+        The caller (scheduler / 091) must have decided this Episode wins
+        foreground. Raises ForegroundConflict if another Task holds it.
+        """
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.SUSPENDED_READY:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be SUSPENDED_READY to "
+                    f"activate (got {ep.status.value})"
+                )
+            if ep.task_id is not None:
+                current_fg = self._read_foreground_task_id()
+                if current_fg is not None and current_fg != ep.task_id:
+                    raise ForegroundConflict(current_fg)
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is None:
+                    raise EpisodeCommandError(
+                        f"episode {episode_id!r} references unknown task "
+                        f"{ep.task_id!r}"
+                    )
+                if task.status != TaskStatus.READY:
+                    raise EpisodeCommandError(
+                        f"task {ep.task_id!r} must be READY to reactivate "
+                        f"(got {task.status.value})"
+                    )
+                cur = self._conn.execute(
+                    "UPDATE foreground_claim SET task_id=? WHERE id=1 "
+                    "AND task_id IS NULL",
+                    (ep.task_id,),
+                )
+                if cur.rowcount != 1 and self._read_foreground_task_id() != ep.task_id:
+                    raise ForegroundConflict(self._read_foreground_task_id())
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        ep.task_id,
+                        {"new_status": TaskStatus.RUNNING.value},
+                    )
+                )
+                if task.primary_work_item_id:
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            task.primary_work_item_id,
+                            WorkItemStatus.RUNNING,
+                            ep.task_id,
+                            _now_iso(),
+                        )
+                    )
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.FOREGROUND_CLAIMED,
+                        ep.task_id,
+                        {"task_id": ep.task_id},
+                    )
+                )
+            else:
+                # codex M5: system WorkItem (no Task) — restore the WorkItem
+                # READY → RUNNING so the Episode is not left ACTIVE with a
+                # SUSPENDED/READY WorkItem. There is no foreground to claim
+                # (foreground is task-scoped).
+                work_item = next(
+                    (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                    None,
+                )
+                if work_item is not None and work_item.status in (
+                    WorkItemStatus.READY,
+                    WorkItemStatus.SUSPENDED,
+                ):
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            work_item.work_item_id,
+                            WorkItemStatus.RUNNING,
+                            None,
+                            _now_iso(),
+                        )
+                    )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_ACTIVATED,
+                new_status=EpisodeStatus.ACTIVE,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+
+    # --------------------------------------------------------------- reconcile
+
+    def mark_pending_channel_lost(
+        self,
+        episode_id: str,
+        *,
+        reason: ReconcileReason,
+    ) -> None:
+        """suspended_* | suspended_ready → reconcile_required (system-detected).
+
+        NOT fenced: this is kernel detection (host generation closed / startup
+        scan, slice-083), called when the ownership lease may already be gone.
+        The caller is the kernel, not a lease holder. ``reconcile_required``
+        is a non-terminal blocked state exited only by ``resolve_reconcile``.
+        """
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status not in (
+                EpisodeStatus.SUSPENDED_WAITING_INPUT,
+                EpisodeStatus.SUSPENDED_WAITING_APPROVAL,
+                EpisodeStatus.SUSPENDED_READY,
+            ):
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be suspended to mark channel "
+                    f"lost (got {ep.status.value})"
+                )
+            self._insert_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_RECONCILE_REQUIRED,
+                    episode_id,
+                    {
+                        "reason": reason.value,
+                        "new_status": EpisodeStatus.RECONCILE_REQUIRED.value,
+                    },
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                )
+            )
+            # codex H3.1 + N5 + R3-H2: mirror the loss into the bound Task so
+            # the 095 matcher + scheduler can tell this wait is no longer
+            # auto-resumable, AND keep the Task non-schedulable while the Episode
+            # is blocked. R3-H2: do NOT silently skip when the Task/WorkItem
+            # state is not what we expected (a TOCTOU — the scheduler may have
+            # claimed the Task between resolve and mark_lost, leaving it
+            # RUNNING). Force any non-terminal Task into the reconcile-wait
+            # (releasing foreground if it was claimed) and any non-terminal
+            # WorkItem to SUSPENDED.
+            subtype = (
+                WaitingSubtype.REQUIRES_USER_RESTART
+                if reason == ReconcileReason.REQUIRES_USER_RESTART
+                else WaitingSubtype.RECONCILE
+            )
+            if ep.task_id is not None:
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is not None and not task.status.is_terminal:
+                    # TOCTOU: scheduler claimed the Task (RUNNING + foreground)
+                    # between resolve and mark_lost. Release the foreground so
+                    # the Task can be pulled back to a non-schedulable wait.
+                    if (
+                        task.status == TaskStatus.RUNNING
+                        and self._read_foreground_task_id() == task.task_id
+                    ):
+                        self._release_foreground_in_tx(task.task_id)
+                    wc = task.waiting_condition
+                    if (
+                        task.status == TaskStatus.WAITING_USER
+                        and wc is not None
+                    ):
+                        # suspended_waiting_*: preserve the original
+                        # correlation/cause, just flip the subtype.
+                        waiting_payload = {
+                            "kind": TaskStatus.WAITING_USER.value,
+                            "cause": wc.cause,
+                            "subtype": subtype.value,
+                            "episode_id": episode_id,
+                            "correlation_id": wc.correlation_id,
+                            "deadline": wc.deadline,
+                            "condition_kind": wc.condition_kind,
+                            "target_ref": wc.target_ref,
+                            "match_params": wc.match_params,
+                            "open_question": wc.open_question,
+                            "preparation_snapshot_ref": wc.preparation_snapshot_ref,
+                            "earliest_review_at": wc.earliest_review_at,
+                        }
+                    else:
+                        # suspended_ready (resolve cleared the waiting) or a
+                        # RUNNING Task that lost its channel: synthetic cause,
+                        # correlation_id gone.
+                        waiting_payload = {
+                            "kind": TaskStatus.WAITING_USER.value,
+                            "cause": (
+                                f"pending channel lost ({reason.value}); "
+                                f"reconcile required"
+                            ),
+                            "subtype": subtype.value,
+                            "episode_id": episode_id,
+                            "correlation_id": None,
+                            "deadline": None,
+                            "condition_kind": None,
+                            "target_ref": None,
+                            "match_params": None,
+                            "open_question": None,
+                            "preparation_snapshot_ref": None,
+                            "earliest_review_at": None,
+                        }
+                    already_correct = (
+                        task.status == TaskStatus.WAITING_USER
+                        and wc is not None
+                        and wc.subtype == subtype
+                    )
+                    if not already_correct:
+                        self._insert_event_in_tx(
+                            self._make_task_event(
+                                EventKind.TASK_WAITING_SET,
+                                task.task_id,
+                                waiting_payload,
+                            )
+                        )
+            work_item = next(
+                (
+                    w
+                    for w in snap.work_items
+                    if w.work_item_id == ep.work_item_id
+                ),
+                None,
+            )
+            if (
+                work_item is not None
+                and not work_item.status.is_terminal
+                and work_item.status != WorkItemStatus.SUSPENDED
+            ):
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        work_item.work_item_id,
+                        WorkItemStatus.SUSPENDED,
+                        ep.task_id,
+                        _now_iso(),
+                    )
+                )
+
+    def resolve_reconcile(
+        self,
+        episode_id: str,
+        *,
+        decision: str,
+        confirmed_by: str,
+        recovery_snapshot: EpisodeSnapshot | None = None,
+        recovery_checkpoint_key: str | None = None,
+    ) -> None:
+        """Exit reconcile_required (human/kernel decision). NOT fenced.
+
+        - ``decision='close'``: ALWAYS leave a recovery_partial snapshot (built
+          internally from the last snapshot + journal when the caller does not
+          pass one) and move to CLOSED. The snapshot identity rides on THIS
+          event — the close path no longer emits a separate
+          ``checkpoint_committed`` (that fenced kind cannot be written unfenced
+          by an external decision; codex C1 corollary).
+        - ``decision='resume_safe'``: land in ``suspended_ready`` (decision 4A)
+          with the Task/WorkItem restored to READY. Foreground is NOT claimed
+          here — the caller runs ``activate_suspended_episode`` next.
+
+        Provenance is ``USER_DECISION`` (codex H3.4): this is a human attestation
+        that reality was checked, distinct from a kernel self-report.
+        """
+
+        assert self._conn is not None
+        if decision not in ("close", "resume_safe"):
+            raise EpisodeCommandError(
+                f"decision must be 'close' or 'resume_safe' (got {decision!r})"
+            )
+        if not confirmed_by:
+            raise EpisodeCommandError("confirmed_by required")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.RECONCILE_REQUIRED:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be reconcile_required "
+                    f"(got {ep.status.value})"
+                )
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            resolve_payload: dict[str, Any] = {
+                "decision": decision,
+                "confirmed_by": confirmed_by,
+            }
+            close_lease_row = None  # set by the close branch (R3-M5 audit)
+            if decision == "close":
+                snapshot_to_write, ck_key = self._reconcile_close_snapshot(
+                    snap, ep, recovery_snapshot, recovery_checkpoint_key
+                )
+                version = self._next_snapshot_version_in_tx(episode_id)
+                payload_text, payload_hash = _payload_json(
+                    _snapshot_to_payload(snapshot_to_write)
+                )
+                _validate_episode_snapshot(snapshot_to_write, payload_text)
+                committed_event_id = (
+                    f"episode.reconcile_close.{episode_id}.{version}.{uuid4().hex}"
+                )
+                self._conn.execute(
+                    "INSERT INTO episode_snapshots (episode_id, version, "
+                    "checkpoint_key, source, payload_json, payload_hash, "
+                    "base_episode_id, base_version, journal_through_seq, "
+                    "committed_event_id, created_at) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        episode_id,
+                        version,
+                        ck_key,
+                        snapshot_to_write.source.value,
+                        payload_text,
+                        payload_hash,
+                        snapshot_to_write.base_snapshot_ref.episode_id
+                        if snapshot_to_write.base_snapshot_ref
+                        else None,
+                        snapshot_to_write.base_snapshot_ref.version
+                        if snapshot_to_write.base_snapshot_ref
+                        else None,
+                        snapshot_to_write.journal_through_seq,
+                        committed_event_id,
+                        _now_iso(),
+                    ),
+                )
+                # codex R3-H1: the bound Task/WorkItem were left in a reconcile-
+                # wait state by mark_pending_channel_lost (Task waiting_user with
+                # a reconcile subtype, WorkItem SUSPENDED). Closing the Episode
+                # without restoring them would leave them stuck — no later
+                # command accepts an Episode that is already terminal. Mirror
+                # fail_episode: return the Task/WorkItem to a retryable READY so
+                # 090 can start fresh.
+                close_now = _now_iso()
+                if ep.task_id is not None:
+                    close_task = next(
+                        (t for t in snap.tasks if t.task_id == ep.task_id), None
+                    )
+                    if (
+                        close_task is not None
+                        and not close_task.status.is_terminal
+                        and close_task.status != TaskStatus.READY
+                    ):
+                        self._insert_event_in_tx(
+                            self._make_task_event(
+                                EventKind.TASK_STATUS_CHANGED,
+                                close_task.task_id,
+                                {"new_status": TaskStatus.READY.value},
+                            )
+                        )
+                if (
+                    work_item is not None
+                    and work_item.status
+                    in (WorkItemStatus.SUSPENDED, WorkItemStatus.RUNNING)
+                ):
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            work_item.work_item_id,
+                            WorkItemStatus.READY,
+                            ep.task_id,
+                            close_now,
+                        )
+                    )
+                resolve_payload["version"] = version
+                resolve_payload["source"] = snapshot_to_write.source.value
+                resolve_payload["payload_hash"] = payload_hash
+                resolve_payload["journal_through_seq"] = (
+                    snapshot_to_write.journal_through_seq
+                )
+                resolve_payload["committed_event_id"] = committed_event_id
+                # codex R3-M5: record the lease this close releases so audit can
+                # attribute the release (the original owner, not just "user
+                # decided to close"). resolve_reconcile has no expected_lease
+                # param (it is a human decision), so this is the audit trail.
+                close_lease_row = self._read_episode_lease_row(episode_id)
+                if close_lease_row is not None:
+                    resolve_payload["released_lease_id"] = close_lease_row[
+                        "lease_id"
+                    ]
+                    resolve_payload["released_lease_owner"] = close_lease_row[
+                        "owner"
+                    ]
+                else:
+                    close_lease_row = None
+                resolve_payload["new_status"] = EpisodeStatus.CLOSED.value
+                new_status = EpisodeStatus.CLOSED
+            else:  # resume_safe — decision 4A: land in suspended_ready
+                now = _now_iso()
+                if ep.task_id is not None:
+                    task = next(
+                        (t for t in snap.tasks if t.task_id == ep.task_id), None
+                    )
+                    if (
+                        task is not None
+                        and not task.status.is_terminal
+                        and task.status != TaskStatus.READY
+                    ):
+                        self._insert_event_in_tx(
+                            self._make_task_event(
+                                EventKind.TASK_STATUS_CHANGED,
+                                task.task_id,
+                                {"new_status": TaskStatus.READY.value},
+                            )
+                        )
+                if (
+                    work_item is not None
+                    and work_item.status
+                    in (WorkItemStatus.SUSPENDED, WorkItemStatus.RUNNING)
+                ):
+                    self._insert_event_in_tx(
+                        self._work_item_status_event(
+                            work_item.work_item_id,
+                            WorkItemStatus.READY,
+                            ep.task_id,
+                            now,
+                        )
+                    )
+                resolve_payload["new_status"] = EpisodeStatus.SUSPENDED_READY.value
+                new_status = EpisodeStatus.SUSPENDED_READY
+            self._insert_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_RECONCILE_RESOLVED,
+                    episode_id,
+                    resolve_payload,
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                    provenance=Provenance.USER_DECISION,
+                    # close path pre-generated committed_event_id to link the
+                    # snapshot row to this event (codex M2). resume_safe has
+                    # no snapshot → None → default id.
+                    event_id=resolve_payload.get("committed_event_id"),
+                )
+            )
+            if new_status == EpisodeStatus.CLOSED:
+                # release the lingering ownership lease (read in the close
+                # branch for the audit payload, R3-M5).
+                if close_lease_row is not None:
+                    self._conn.execute(
+                        "UPDATE leases SET released_at=? WHERE lease_id=?",
+                        (_now_iso(), close_lease_row["lease_id"]),
+                    )
+
+    def _reconcile_close_snapshot(
+        self,
+        snap: Snapshot,
+        ep: EpisodeState,
+        recovery_snapshot: EpisodeSnapshot | None,
+        recovery_checkpoint_key: str | None,
+    ) -> tuple[EpisodeSnapshot, str]:
+        """Pick the recovery_partial snapshot for a reconcile-close.
+
+        H3.2: if the caller supplied one, use it (must be recovery_partial);
+        otherwise build one from the last snapshot + journal high-watermark so
+        close never silently drops the work现场. Returns the snapshot and the
+        checkpoint_key to use.
+        """
+
+        if recovery_snapshot is not None:
+            if recovery_snapshot.source != SnapshotSource.RECOVERY_PARTIAL:
+                raise EpisodeCommandError(
+                    "resolve_reconcile close requires a recovery_partial snapshot"
+                )
+            ck = recovery_checkpoint_key or (
+                f"reconcile-close-{ep.episode_id}-{uuid4().hex}"
+            )
+            return recovery_snapshot, ck
+
+        prev_snapshot = None
+        if ep.last_snapshot_ref is not None:
+            prev_snapshot = self.read_episode_snapshot(ep.last_snapshot_ref)
+        task_goal: str | None = None
+        if ep.task_id is not None:
+            tstate = next(
+                (t for t in snap.tasks if t.task_id == ep.task_id), None
+            )
+            task_goal = tstate.original_goal if tstate is not None else None
+        built = self.build_recovery_partial(
+            work_item_goal=task_goal or f"work_item:{ep.work_item_id}",
+            task_constraints_ref=ep.task_id,
+            prev=prev_snapshot,
+            prev_ref=ep.last_snapshot_ref,
+            journal_through_seq=snap.last_seq,
+            events=self._collect_recovery_events(
+                ep.episode_id, prev_snapshot, snap.last_seq
+            ),
+        )
+        ck = recovery_checkpoint_key or (
+            f"reconcile-close-{ep.episode_id}-{uuid4().hex}"
+        )
+        return built, ck
+
+    # ----------------------------------------------------------------- recovery
+
+    @staticmethod
+    def build_recovery_partial(
+        *,
+        work_item_goal: str,
+        task_constraints_ref: str | None,
+        prev: EpisodeSnapshot | None,
+        journal_through_seq: int,
+        prev_ref: SnapshotRef | None = None,
+        events: tuple[EventEnvelope, ...] = (),
+    ) -> EpisodeSnapshot:
+        """Build a recovery_partial snapshot from prev + journal high-watermark.
+
+        Pure function: no I/O, no model call. Missing slots → ``"unknown"``;
+        only prev's confirmed completed (with evidence) and done side effects
+        survive, PLUS done side effects recorded in the journal range
+        (``events``) — so a crash between the last checkpoint and the failure
+        does not lose a confirmed action (codex H6). An explicit "unverified"
+        marker is added so a reader cannot mistake this for a fully-confirmed
+        cooperative snapshot.
+
+        Args:
+            prev: the previous snapshot payload (None for a first recovery).
+            journal_through_seq: the high-watermark the calling command fixed;
+              stored on the snapshot so the next recovery does not re-fold.
+            prev_ref: the SnapshotRef of ``prev`` (codex M4). The recovery's
+              ``base_snapshot_ref`` points here — NOT at prev's own base or a
+              fabricated dummy — so the recovery lineage stays accurate.
+            events: the journal slice ``(prev.journal_through_seq, high]`` for
+              this Episode. Only ``episode.side_effect_recorded`` events with
+              ``outcome=done`` AND an evidence_ref are folded; unconfirmed
+              actions stay unknown (never auto-replayed).
+        """
+
+        # codex N6 (round 2): preserve BOTH done and unknown side effects. A
+        # done side effect is confirmed (survives into completed_with_evidence);
+        # an unknown_requires_reconcile side effect MUST survive too — as
+        # unknown, carrying its action_ref / idempotency_key so the resuming
+        # runner knows WHICH action to check against reality before replay.
+        # Dropping it (the previous behaviour) hid the action from the recovery,
+        # so the runner might believe it never happened. Unknown NEVER becomes
+        # done and NEVER enters completed_with_evidence.
+        done_side_effects: list[SideEffectRecord] = [
+            se
+            for se in (prev.side_effects if prev else ())
+            if se.outcome == "done"
+        ]
+        unknown_side_effects: list[SideEffectRecord] = [
+            se
+            for se in (prev.side_effects if prev else ())
+            if se.outcome == "unknown_requires_reconcile"
+        ]
+        completed: list[tuple[str, str]] = (
+            list(prev.completed_with_evidence) if prev else []
+        )
+        done_refs = {se.action_ref for se in done_side_effects}
+        unknown_refs = {se.action_ref for se in unknown_side_effects}
+        # codex H6: fold side_effect_recorded events from the journal range
+        # (prev.journal_through_seq, high]. Done ones join completed; unknown
+        # ones are preserved as unknown. Dedup by action_ref (done wins).
+        for ev in events:
+            if ev.kind != EventKind.EPISODE_SIDE_EFFECT_RECORDED:
+                continue
+            p = ev.payload
+            action_ref = p.get("action_ref")
+            if not action_ref or action_ref in done_refs:
+                continue
+            outcome = p.get("outcome")
+            if outcome == "done":
+                evidence_ref = p.get("evidence_ref")
+                if not evidence_ref:
+                    continue
+                done_refs.add(action_ref)
+                unknown_refs.discard(action_ref)
+                unknown_side_effects = [
+                    se for se in unknown_side_effects if se.action_ref != action_ref
+                ]
+                done_side_effects.append(
+                    SideEffectRecord(
+                        action_ref=action_ref,
+                        idempotency_key=p.get("idempotency_key", ""),
+                        outcome="done",
+                        evidence_ref=evidence_ref,
+                    )
+                )
+                completed.append((action_ref, evidence_ref))
+            elif outcome == "unknown_requires_reconcile":
+                if action_ref in unknown_refs:
+                    continue
+                unknown_refs.add(action_ref)
+                unknown_side_effects.append(
+                    SideEffectRecord(
+                        action_ref=action_ref,
+                        idempotency_key=p.get("idempotency_key", ""),
+                        outcome="unknown_requires_reconcile",
+                    )
+                )
+        side_effects = done_side_effects + unknown_side_effects
+        if prev is not None:
+            unknowns = prev.unknowns + (
+                "recovery_partial: progress after base snapshot unverified",
+            )
+            artifacts = prev.artifacts
+            transcript = prev.native_transcript_ref
+            # codex M4: base points at prev's own ref, not prev's base or a
+            # dummy. prev_ref may be None when the caller could not supply it
+            # (kept honest rather than fabricated).
+            base_ref = prev_ref
+        else:
+            unknowns = ("recovery_partial: no base snapshot; full state unverified",)
+            artifacts = ()
+            transcript = None
+            base_ref = None
+        return EpisodeSnapshot(
+            work_item_goal=work_item_goal,
+            task_constraints_ref=task_constraints_ref,
+            current_judgment="unknown",
+            completed_with_evidence=tuple(completed),
+            side_effects=tuple(side_effects),
+            unknowns=unknowns,
+            waiting_condition=None,
+            next_steps=(),
+            artifacts=artifacts,
+            native_transcript_ref=transcript,
+            source=SnapshotSource.RECOVERY_PARTIAL,
+            journal_through_seq=journal_through_seq,
+            base_snapshot_ref=base_ref,
+        )
+
+    def _collect_recovery_events(
+        self,
+        episode_id: str,
+        prev_snapshot: EpisodeSnapshot | None,
+        high_seq: int,
+    ) -> tuple[EventEnvelope, ...]:
+        """Return the ``episode.side_effect_recorded`` events in the journal
+        range ``(prev.journal_through_seq, high_seq]`` for this Episode.
+
+        This is the slice ``build_recovery_partial`` folds (codex H6). Caller
+        holds the transaction; ``list_events`` reads from the same connection.
+        """
+
+        from_seq = prev_snapshot.journal_through_seq if prev_snapshot else 0
+        out: list[EventEnvelope] = []
+        for seq, ev in self.list_events(from_seq=from_seq):
+            if seq > high_seq:
+                break
+            if ev.episode_id != episode_id:
+                continue
+            if ev.kind != EventKind.EPISODE_SIDE_EFFECT_RECORDED:
+                continue
+            out.append(ev)
+        return tuple(out)
+
+    def checkpoint_recovery_partial(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        reason: str,
+        checkpoint_key: str,
+    ) -> SnapshotRef:
+        """Build + commit a recovery_partial snapshot (fenced).
+
+        Fixes the journal high-watermark, reads the previous snapshot, calls
+        ``build_recovery_partial``, commits the snapshot row + fenced
+        checkpoint event. Used by 089 (timeout/shutdown/hard-budget) and by
+        ``recover_episode``.
+        """
+
+        assert self._conn is not None
+        if not isinstance(checkpoint_key, str) or not checkpoint_key.strip():
+            raise EpisodeCommandError("checkpoint_key must be non-empty")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status.is_terminal:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} is terminal ({ep.status.value})"
+                )
+            existing = self._conn.execute(
+                "SELECT episode_id, version, payload_hash, committed_event_id "
+                "FROM episode_snapshots WHERE checkpoint_key=?",
+                (checkpoint_key,),
+            ).fetchone()
+            if existing is not None:
+                # codex M3: a globally-unique key hit on a DIFFERENT Episode is
+                # a key-scope conflict, not an idempotent retry.
+                if existing["episode_id"] != episode_id:
+                    raise EpisodeCommandError(
+                        f"checkpoint_key {checkpoint_key!r} already used by "
+                        f"episode {existing['episode_id']!r}; use a different key"
+                    )
+                return SnapshotRef(
+                    episode_id=episode_id,
+                    version=int(existing["version"]),
+                    committed_event_id=existing["committed_event_id"],
+                    payload_hash=existing["payload_hash"],
+                )
+            prev_snapshot = None
+            if ep.last_snapshot_ref is not None:
+                prev_snapshot = self.read_episode_snapshot(ep.last_snapshot_ref)
+            task_goal = None
+            if ep.task_id is not None:
+                task_state = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                task_goal = task_state.original_goal if task_state is not None else None
+            work_item_goal = task_goal or f"work_item:{ep.work_item_id}"
+            recovery = self.build_recovery_partial(
+                work_item_goal=work_item_goal,
+                task_constraints_ref=ep.task_id,
+                prev=prev_snapshot,
+                prev_ref=ep.last_snapshot_ref,
+                journal_through_seq=snap.last_seq,
+                events=self._collect_recovery_events(
+                    episode_id, prev_snapshot, snap.last_seq
+                ),
+            )
+            version = self._next_snapshot_version_in_tx(episode_id)
+            payload_text, payload_hash = _payload_json(
+                _snapshot_to_payload(recovery)
+            )
+            _validate_episode_snapshot(recovery, payload_text)
+            committed_event_id = (
+                f"episode.checkpoint.{episode_id}.{version}.{uuid4().hex}"
+            )
+            self._conn.execute(
+                "INSERT INTO episode_snapshots (episode_id, version, "
+                "checkpoint_key, source, payload_json, payload_hash, "
+                "base_episode_id, base_version, journal_through_seq, "
+                "committed_event_id, created_at) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    episode_id,
+                    version,
+                    checkpoint_key,
+                    recovery.source.value,
+                    payload_text,
+                    payload_hash,
+                    recovery.base_snapshot_ref.episode_id
+                    if recovery.base_snapshot_ref
+                    else None,
+                    recovery.base_snapshot_ref.version
+                    if recovery.base_snapshot_ref
+                    else None,
+                    recovery.journal_through_seq,
+                    committed_event_id,
+                    _now_iso(),
+                ),
+            )
+            self._append_fenced_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_CHECKPOINT_COMMITTED,
+                    episode_id,
+                    {
+                        "version": version,
+                        "source": recovery.source.value,
+                        "payload_hash": payload_hash,
+                        "journal_through_seq": recovery.journal_through_seq,
+                        "committed_event_id": committed_event_id,
+                        "recovery_reason": reason,
+                        "new_status": ep.status.value,
+                    },
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                    lease_id=expected_lease_id,
+                    owner=expected_owner,
+                    fencing_token=expected_token,
+                    event_id=committed_event_id,
+                )
+            )
+            return SnapshotRef(
+                episode_id=episode_id,
+                version=version,
+                committed_event_id=committed_event_id,
+                payload_hash=payload_hash,
+            )
+
+    def _recover_ownership_in_tx(
+        self,
+        episode_id: str,
+        owner: str,
+        ttl_seconds: int,
+        idempotency_key: str | None,
+    ) -> Lease:
+        """Take over an Episode's ownership lease INSIDE the caller's tx.
+
+        codex H5: recovering a live Episode is a ``LeaseConflict`` — the
+        existing active lease MUST be expired (or absent). Mirrors
+        ``_grant_episode_ownership_in_tx`` but takes over an expired grant:
+        mark the old row released (history preserved), bump the fence counter,
+        INSERT a fresh row with a higher token. The new owner can then write a
+        fenced RECOVERING transition in the same transaction."""
+
+        assert self._conn is not None
+        now_str = _now_iso()
+        expires_str = (
+            datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        ).isoformat()
+        if idempotency_key is not None:
+            existing = self._conn.execute(
+                "SELECT * FROM leases WHERE resource_type='episode_ownership' "
+                "AND resource_id=? AND idempotency_key=? AND released_at IS NULL",
+                (episode_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if existing["owner"] != owner:
+                    raise LeaseConflict("episode_ownership", episode_id)
+                # codex R3-M3: do not hand back an already-expired lease — the
+                # caller would fail the first fenced write. A retry that lands
+                # after TTL is a conflict (the caller must re-acquire fresh).
+                if existing["expires_at"] <= now_str:
+                    raise LeaseConflict("episode_ownership", episode_id)
+                return _lease_from_row(existing)
+        active = self._conn.execute(
+            "SELECT * FROM leases WHERE resource_type='episode_ownership' "
+            "AND resource_id=? AND released_at IS NULL",
+            (episode_id,),
+        ).fetchone()
+        if active is not None and active["expires_at"] > now_str:
+            raise LeaseConflict("episode_ownership", episode_id)
+        if active is not None:
+            self._conn.execute(
+                "UPDATE leases SET released_at=? WHERE lease_id=?",
+                (now_str, active["lease_id"]),
+            )
+        token = self._next_fence_token_in_tx(
+            self._EPISODE_OWNERSHIP_RESOURCE_TYPE, episode_id
+        )
+        lease_id = uuid4().hex
+        try:
+            self._conn.execute(
+                "INSERT INTO leases (lease_id, resource_type, resource_id, owner, "
+                "acquired_at, expires_at, idempotency_key, released_at, "
+                "fencing_token) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    lease_id,
+                    self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+                    episode_id,
+                    owner,
+                    now_str,
+                    expires_str,
+                    idempotency_key,
+                    token,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # codex R3-H3: surface a collision as LeaseConflict, never a raw
+            # sqlite3 error (idempotency_key still in use, or another writer
+            # raced the grant/takeover).
+            raise LeaseConflict("episode_ownership", episode_id) from exc
+        self._insert_event_in_tx(
+            EventEnvelope(
+                event_id=f"episode.ownership_acquired.{uuid4().hex}",
+                kind=EventKind.EPISODE_OWNERSHIP_ACQUIRED,
+                occurred_at=now_str,
+                source="kernel",
+                provenance=Provenance.MACHINE_OBSERVATION,
+                policy_version=self._policy_version,
+                payload={
+                    "lease_id": lease_id,
+                    "owner": owner,
+                    "fencing_token": token,
+                    "expires_at": expires_str,
+                    "recovery": True,
+                },
+                episode_id=episode_id,
+            )
+        )
+        return Lease(
+            lease_id=lease_id,
+            resource_type=self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+            resource_id=episode_id,
+            owner=owner,
+            acquired_at=now_str,
+            expires_at=expires_str,
+            idempotency_key=idempotency_key,
+            fencing_token=token,
+        )
+
+    def recover_episode(
+        self,
+        episode_id: str,
+        *,
+        new_owner: str,
+        ttl_seconds: int,
+        idempotency_key: str,
+        reason: str,
+    ) -> Lease:
+        """Take over an Episode whose ownership lease expired.
+
+        Atomic in ONE transaction (codex H5): verify the Episode exists and is
+        non-terminal, take over the expired lease (higher fencing token), then
+        write a fenced EPISODE_RECOVERING transition with the fresh token. The
+        caller then decides whether to ``checkpoint_recovery_partial`` + close,
+        or to resume.
+
+        The previous implementation split this across two transactions
+        (``acquire_episode_ownership`` committed, then a second tx wrote
+        RECOVERING); a crash between them left an orphan lease on a missing or
+        terminal Episode. Everything now shares one IMMEDIATE tx, so any
+        failure rolls the lease back too.
+        """
+
+        assert self._conn is not None
+        if not new_owner or ttl_seconds <= 0:
+            raise EpisodeCommandError("new_owner and positive ttl required")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise EpisodeCommandError("idempotency_key must be a non-empty string")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status.is_terminal:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} is terminal ({ep.status.value}); "
+                    f"cannot recover"
+                )
+            lease = self._recover_ownership_in_tx(
+                episode_id, new_owner, ttl_seconds, idempotency_key
+            )
+            if ep.status != EpisodeStatus.RECOVERING:
+                self._fenced_status_change_in_tx(
+                    episode_id=episode_id,
+                    kind=EventKind.EPISODE_RECOVERING,
+                    new_status=EpisodeStatus.RECOVERING,
+                    expected_lease_id=lease.lease_id,
+                    expected_owner=new_owner,
+                    expected_token=lease.fencing_token,
+                    extra_payload={"reason": reason},
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                )
+        return lease
+
+    def resume_recovered_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """RECOVERING → ACTIVE (fenced). The new owner resumes the recovered
+        Episode in place.
+
+        codex N3 (round 2): previously ``RECOVERING`` had no exit command, so a
+        recovered Episode was stuck (``close_episode`` only accepts
+        CHECKPOINTING, ``activate_suspended_episode`` only accepts
+        SUSPENDED_READY). This command is the "新 owner 继续" branch of spec
+        line 165. It runs AFTER ``checkpoint_recovery_partial`` has committed a
+        recovery snapshot.
+
+        Composite (Task-bound): claim foreground (CAS, ``ForegroundConflict``
+        if another Task holds it), ensure the Task is RUNNING and the WorkItem
+        is RUNNING. system WorkItem: ensure the WorkItem is RUNNING. Then the
+        fenced RECOVERING → ACTIVE transition. What survived the crash (Task
+        RUNNING, foreground already claimed) is left as-is; only inconsistencies
+        are fixed up."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.RECOVERING:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be RECOVERING to resume "
+                    f"(got {ep.status.value})"
+                )
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            now = _now_iso()
+            if ep.task_id is not None:
+                task = next(
+                    (t for t in snap.tasks if t.task_id == ep.task_id), None
+                )
+                if task is None:
+                    raise EpisodeCommandError(
+                        f"episode {episode_id!r} references unknown task "
+                        f"{ep.task_id!r}"
+                    )
+                # codex R3-M1: gate the Task source state. RUNNING (survived
+                # the crash, foreground still claimed) and READY are the legit
+                # resume sources; anything else (e.g. waiting_user from a
+                # pre-crash reconcile) must be resolved first, not silently
+                # cleared by an unconditional move to RUNNING.
+                if task.status not in (
+                    TaskStatus.READY,
+                    TaskStatus.RUNNING,
+                ):
+                    raise EpisodeCommandError(
+                        f"task {ep.task_id!r} must be READY or RUNNING to resume "
+                        f"a recovered Episode (got {task.status.value})"
+                    )
+                current_fg = self._read_foreground_task_id()
+                if current_fg is not None and current_fg != ep.task_id:
+                    raise ForegroundConflict(current_fg)
+                if current_fg is None:
+                    cur = self._conn.execute(
+                        "UPDATE foreground_claim SET task_id=? WHERE id=1 "
+                        "AND task_id IS NULL",
+                        (ep.task_id,),
+                    )
+                    if (
+                        cur.rowcount != 1
+                        and self._read_foreground_task_id() != ep.task_id
+                    ):
+                        raise ForegroundConflict(self._read_foreground_task_id())
+                    self._insert_event_in_tx(
+                        self._make_task_event(
+                            EventKind.FOREGROUND_CLAIMED,
+                            ep.task_id,
+                            {"task_id": ep.task_id},
+                        )
+                    )
+                if task.status == TaskStatus.READY:
+                    # READY → RUNNING (RUNNING survived the crash; no event)
+                    self._insert_event_in_tx(
+                        self._make_task_event(
+                            EventKind.TASK_STATUS_CHANGED,
+                            ep.task_id,
+                            {"new_status": TaskStatus.RUNNING.value},
+                        )
+                    )
+            if (
+                work_item is not None
+                and work_item.status
+                in (WorkItemStatus.READY, WorkItemStatus.SUSPENDED)
+            ):
+                # codex R3-L3: whitelist the resumable WorkItem source states
+                # (mirror activate_suspended_episode) rather than moving a
+                # WorkItem in any odd state to RUNNING.
+                self._insert_event_in_tx(
+                    self._work_item_status_event(
+                        work_item.work_item_id,
+                        WorkItemStatus.RUNNING,
+                        ep.task_id,
+                        now,
+                    )
+                )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_ACTIVATED,
+                new_status=EpisodeStatus.ACTIVE,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                extra_payload={"recovery_resume": True},
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+
+    def close_recovered_episode(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """RECOVERING → CLOSED (fenced, terminal). The "close after recovery"
+        branch of spec line 165.
+
+        codex N3 (round 2): ``close_episode`` only accepts CHECKPOINTING, so a
+        recovered Episode could not be closed even after
+        ``checkpoint_recovery_partial`` committed its recovery snapshot. This
+        command closes from RECOVERING, requiring that a recovery snapshot was
+        committed (``last_snapshot_ref`` is set) so 090 can start fresh from it.
+        Releases the ownership lease in the same tx."""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.RECOVERING:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be RECOVERING to close after "
+                    f"recovery (got {ep.status.value})"
+                )
+            if ep.last_snapshot_ref is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} has no recovery snapshot; run "
+                    f"checkpoint_recovery_partial before close_recovered_episode"
+                )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_CLOSED,
+                new_status=EpisodeStatus.CLOSED,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                extra_payload={"recovery_close": True},
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+            row = self._read_episode_lease_row(episode_id)
+            if row is not None and row["lease_id"] == expected_lease_id:
+                self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE lease_id=?",
+                    (_now_iso(), expected_lease_id),
+                )
+
+    # ------------------------------------------------------------- side effects
+
+    def record_side_effect(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        action_ref: str,
+        idempotency_key: str,
+        outcome: str,
+        evidence_ref: str | None = None,
+        description: str = "",
+    ) -> None:
+        """Record an external side effect (fenced).
+
+        ``outcome='done'`` requires ``evidence_ref`` (confirmed result).
+        ``outcome='unknown_requires_reconcile'`` means the action may have
+        happened but the result was not written back; an 084
+        ``SIDE_EFFECT_UNCONFIRMED`` event is also appended so the reducer
+        tracks it as an ``UnknownAction`` awaiting reconciliation. Replay is
+        forbidden until reality is checked.
+
+        Idempotent on ``(action_ref, idempotency_key)`` (codex R3-M4): the
+        ``idempotency_key`` parameter is the caller's retry identity for THIS
+        action; a crash-retry that already landed returns without appending a
+        second ``side_effect_recorded`` event or a duplicate UnknownAction.
+        """
+
+        assert self._conn is not None
+        if outcome not in ("done", "unknown_requires_reconcile"):
+            raise EpisodeCommandError(
+                f"outcome must be 'done' or 'unknown_requires_reconcile' "
+                f"(got {outcome!r})"
+            )
+        if outcome == "done" and not evidence_ref:
+            raise EpisodeCommandError("done side effect requires evidence_ref")
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status.is_terminal:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} is terminal ({ep.status.value})"
+                )
+            # codex R3-M4: idempotent on (action_ref, idempotency_key). A retry
+            # that already persisted this action is a no-op (do not append a
+            # second side_effect_recorded event or a duplicate UnknownAction).
+            already = self._conn.execute(
+                "SELECT 1 FROM events "
+                "WHERE kind='episode.side_effect_recorded' AND episode_id=? "
+                "AND json_extract(payload, '$.action_ref')=? "
+                "AND json_extract(payload, '$.idempotency_key')=?",
+                (episode_id, action_ref, idempotency_key),
+            ).fetchone()
+            if already is not None:
+                return
+            self._append_fenced_event_in_tx(
+                self._make_episode_event(
+                    EventKind.EPISODE_SIDE_EFFECT_RECORDED,
+                    episode_id,
+                    {
+                        "action_ref": action_ref,
+                        "idempotency_key": idempotency_key,
+                        "outcome": outcome,
+                        "evidence_ref": evidence_ref,
+                    },
+                    work_item_id=ep.work_item_id,
+                    task_id=ep.task_id,
+                    lease_id=expected_lease_id,
+                    owner=expected_owner,
+                    fencing_token=expected_token,
+                )
+            )
+            if outcome == "unknown_requires_reconcile":
+                self._insert_event_in_tx(
+                    EventEnvelope(
+                        event_id=f"side_effect.unconfirmed.{uuid4().hex}",
+                        kind=EventKind.SIDE_EFFECT_UNCONFIRMED,
+                        occurred_at=_now_iso(),
+                        source="kernel",
+                        provenance=Provenance.MACHINE_OBSERVATION,
+                        policy_version=self._policy_version,
+                        payload={
+                            "action_ref": action_ref,
+                            "idempotency_key": idempotency_key,
+                            "description": description,
+                        },
+                        work_item_id=ep.work_item_id,
+                        task_id=ep.task_id,
+                        episode_id=episode_id,
+                    )
+                )
 
     def read_snapshot(self) -> Snapshot:
         """Return the current derived snapshot (replay + live leases + foreground).

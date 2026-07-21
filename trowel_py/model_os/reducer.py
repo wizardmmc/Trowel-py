@@ -27,15 +27,20 @@ from typing import Any
 
 from trowel_py.model_os.types import (
     CompletionEvidence,
+    EpisodeStatus,
     ErrorRecord,
     EventEnvelope,
     EventKind,
     MemoryEligibility,
+    PendingDescriptor,
     Provenance,
+    ReconcileReason,
     SessionPurpose,
+    SnapshotRef,
     TaskOrigin,
     TaskStatus,
     WaitingCondition,
+    WaitingSubtype,
     WorkItemKind,
     WorkItemStatus,
 )
@@ -100,6 +105,32 @@ class TaskState:
 
 
 @dataclass(frozen=True)
+class EpisodeState:
+    """Derived view of an Episode folded from the event log (slice-087).
+
+    Mirrors ``TaskState`` / ``WorkItemState`` but for the Episode entity. The
+    live ownership lease is NOT folded here — it is live table state read at
+    snapshot time (same pattern as ``foreground_task_id`` /
+    ``active_leases``). ``last_snapshot_ref`` IS folded: it is the reducer's
+    authority for "where this Episode got to"; the snapshot payload itself is
+    read separately from the ``episode_snapshots`` table by
+    ``(episode_id, version)``.
+    """
+
+    episode_id: str
+    work_item_id: str
+    task_id: str | None
+    status: EpisodeStatus
+    status_provenance: Provenance
+    native_session_id: str | None
+    pending_descriptor: PendingDescriptor | None
+    reconcile_reason: ReconcileReason | None
+    last_snapshot_ref: SnapshotRef | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class UnknownAction:
     """A recorded action whose outcome is not confirmed.
 
@@ -133,6 +164,7 @@ class Snapshot:
     last_decision_seq: int
     work_items: tuple[WorkItemState, ...]
     tasks: tuple[TaskState, ...]
+    episodes: tuple[EpisodeState, ...]
     active_leases: tuple[Any, ...]
     foreground_task_id: str | None
     unknown_actions: tuple[UnknownAction, ...]
@@ -162,6 +194,32 @@ class Snapshot:
             )
         )
 
+    def episode_by_id(self, episode_id: str | None) -> EpisodeState | None:
+        """Return the EpisodeState with the given id, or None."""
+
+        if episode_id is None:
+            return None
+        return next(
+            (e for e in self.episodes if e.episode_id == episode_id), None
+        )
+
+    def non_terminal_episodes_for_work_item(
+        self, work_item_id: str
+    ) -> tuple[EpisodeState, ...]:
+        """Return non-terminal Episodes bound to a WorkItem.
+
+        slice-087 spec invariant: a WorkItem has at most one non-terminal
+        Episode at a time. Enforcement lands in 090 (接力 / fresh start); 087
+        exposes this read so tests can assert the expectation and so 090 has
+        the guard already shaped.
+        """
+
+        return tuple(
+            e
+            for e in self.episodes
+            if e.work_item_id == work_item_id and not e.status.is_terminal
+        )
+
 
 def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
     """Return the empty snapshot every replay starts from."""
@@ -172,6 +230,7 @@ def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
         last_decision_seq=0,
         work_items=(),
         tasks=(),
+        episodes=(),
         active_leases=(),
         foreground_task_id=None,
         unknown_actions=(),
@@ -330,11 +389,24 @@ def _replace_task(
 
 
 def _waiting_from_payload(p: dict[str, Any]) -> WaitingCondition:
-    """Reconstruct a WaitingCondition from a task.waiting_set payload."""
+    """Reconstruct a WaitingCondition from a task.waiting_set payload.
 
+    slice-087: ``subtype`` and ``episode_id`` are optional (absent in pre-087
+    payloads). ``subtype`` is stored as its enum value; an unknown value (a
+    future policy invents a new subtype) falls back to ``None`` rather than
+    raising, preserving the reducer's forward-compat rule.
+    """
+
+    raw_subtype = p.get("subtype")
+    try:
+        subtype = WaitingSubtype(raw_subtype) if raw_subtype else None
+    except ValueError:
+        subtype = None
     return WaitingCondition(
         kind=p["kind"],
         cause=p.get("cause", ""),
+        subtype=subtype,
+        episode_id=p.get("episode_id"),
         correlation_id=p.get("correlation_id"),
         deadline=p.get("deadline"),
         condition_kind=p.get("condition_kind"),
@@ -545,6 +617,236 @@ def _apply_task_error_recorded(snap: Snapshot, event: EventEnvelope) -> Snapshot
     )
 
 
+# --------------------------------------------------------------- episode fold
+#
+# slice-087 — Episode fold mirrors the Task fold. Episode status is NOT gated
+# by the no-silent-upgrade rule (same rationale as Task: authority comes from
+# the structured command boundary + fencing, not provenance strength). The
+# live ownership lease is read from the leases table at snapshot time; these
+# folds only derive Episode state.
+
+
+def _episode_from_created(event: EventEnvelope) -> EpisodeState:
+    """Build an EpisodeState from an episode.created payload.
+
+    ``status`` starts at STARTING with ``native_session_id=None`` (090 binds
+    the native session later). ``status_provenance`` follows the event for
+    audit only.
+    """
+
+    p = event.payload
+    return EpisodeState(
+        episode_id=p["episode_id"],
+        work_item_id=p["work_item_id"],
+        task_id=p.get("task_id"),
+        status=EpisodeStatus(p.get("status", EpisodeStatus.STARTING.value)),
+        status_provenance=event.provenance,
+        native_session_id=p.get("native_session_id"),
+        pending_descriptor=None,
+        reconcile_reason=None,
+        last_snapshot_ref=None,
+        created_at=event.occurred_at,
+        updated_at=event.occurred_at,
+    )
+
+
+def _find_episode(snap: Snapshot, episode_id: str | None) -> EpisodeState | None:
+    """Return the EpisodeState with the given id, or None."""
+
+    if episode_id is None:
+        return None
+    return next((e for e in snap.episodes if e.episode_id == episode_id), None)
+
+
+def _replace_episode(
+    snap: Snapshot, episode_id: str | None, new_state: EpisodeState
+) -> Snapshot:
+    """Return a snapshot with the given Episode replaced (immutable)."""
+
+    if episode_id is None:
+        return snap
+    return replace(
+        snap,
+        episodes=tuple(
+            new_state if e.episode_id == episode_id else e for e in snap.episodes
+        ),
+    )
+
+
+def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
+    """Reconstruct a PendingDescriptor from an episode.suspended payload."""
+
+    return PendingDescriptor(
+        kind=WaitingSubtype(p["kind"]),
+        native_generation=p.get("native_generation"),
+        correlation_id=p["correlation_id"],
+        cause=p.get("cause", ""),
+        posed_at=p["posed_at"],
+    )
+
+
+def _apply_episode_status_change(
+    snap: Snapshot, event: EventEnvelope
+) -> Snapshot:
+    """Change an Episode's status.
+
+    Covers EPISODE_STATUS_CHANGED plus the discrete lifecycle kinds
+    (yield_requested / closed / failed / activated / recovering). The
+    payload's ``new_status`` is authoritative; provenance is audit-only.
+    """
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    return _replace_episode(
+        snap,
+        event.episode_id,
+        replace(
+            current,
+            status=EpisodeStatus(event.payload["new_status"]),
+            status_provenance=event.provenance,
+            updated_at=event.occurred_at,
+        ),
+    )
+
+
+def _apply_episode_checkpoint(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """Set the Episode's last_snapshot_ref from a checkpoint_committed event.
+
+    The reducer folds ONLY the SnapshotRef (episode_id / version /
+    committed_event_id / payload_hash); the payload itself lives in the
+    ``episode_snapshots`` table. ``journal_through_seq`` rides in the event
+    payload for 090 / recovery readers but is not needed to fold state. The
+    event may also carry ``new_status`` (checkpointing → closed); applied if
+    present.
+    """
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    p = event.payload
+    ref = SnapshotRef(
+        episode_id=current.episode_id,
+        version=int(p["version"]),
+        committed_event_id=p.get("committed_event_id", event.event_id),
+        payload_hash=p["payload_hash"],
+    )
+    updates: dict[str, Any] = {
+        "last_snapshot_ref": ref,
+        "updated_at": event.occurred_at,
+    }
+    new_status = p.get("new_status")
+    if new_status is not None:
+        updates["status"] = EpisodeStatus(new_status)
+        updates["status_provenance"] = event.provenance
+    return _replace_episode(snap, event.episode_id, replace(current, **updates))
+
+
+def _apply_episode_suspended(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """Set status to suspended_waiting_* and store the pending descriptor."""
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    pending = _pending_from_payload(event.payload)
+    return _replace_episode(
+        snap,
+        event.episode_id,
+        replace(
+            current,
+            status=EpisodeStatus(event.payload["new_status"]),
+            status_provenance=event.provenance,
+            pending_descriptor=pending,
+            updated_at=event.occurred_at,
+        ),
+    )
+
+
+def _apply_episode_wait_resolved(
+    snap: Snapshot, event: EventEnvelope
+) -> Snapshot:
+    """suspended_waiting_* → suspended_ready; clear pending_descriptor.
+
+    The answer has arrived — the Episode is no longer pending, only queued for
+    foreground. activate_suspended_episode later moves it to ACTIVE.
+    """
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    return _replace_episode(
+        snap,
+        event.episode_id,
+        replace(
+            current,
+            status=EpisodeStatus.SUSPENDED_READY,
+            status_provenance=event.provenance,
+            pending_descriptor=None,
+            updated_at=event.occurred_at,
+        ),
+    )
+
+
+def _apply_episode_reconcile_required(
+    snap: Snapshot, event: EventEnvelope
+) -> Snapshot:
+    """Set status to reconcile_required + store the reason.
+
+    Non-terminal: a later reconcile_resolved event exits it.
+    """
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    reason = ReconcileReason(event.payload["reason"])
+    return _replace_episode(
+        snap,
+        event.episode_id,
+        replace(
+            current,
+            status=EpisodeStatus.RECONCILE_REQUIRED,
+            status_provenance=event.provenance,
+            reconcile_reason=reason,
+            updated_at=event.occurred_at,
+        ),
+    )
+
+
+def _apply_episode_reconcile_resolved(
+    snap: Snapshot, event: EventEnvelope
+) -> Snapshot:
+    """Exit reconcile_required: clear reason, move to the resolved status.
+
+    slice-087 H3: the ``close`` decision carries the recovery_partial
+    snapshot identity (version / payload_hash / committed_event_id) on THIS
+    event — the close path no longer emits a separate ``checkpoint_committed``
+    (that would be a fenced kind written unfenced by an external decision). When
+    those fields are present, fold the SnapshotRef so ``last_snapshot_ref``
+    points at the recovery snapshot 090 will resume from.
+    """
+
+    current = _find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    p = event.payload
+    updates: dict[str, Any] = {
+        "status": EpisodeStatus(p["new_status"]),
+        "status_provenance": event.provenance,
+        "reconcile_reason": None,
+        "updated_at": event.occurred_at,
+    }
+    if p.get("version") is not None and p.get("payload_hash"):
+        updates["last_snapshot_ref"] = SnapshotRef(
+            episode_id=current.episode_id,
+            version=int(p["version"]),
+            committed_event_id=p.get("committed_event_id", event.event_id),
+            payload_hash=p["payload_hash"],
+        )
+    return _replace_episode(
+        snap, event.episode_id, replace(current, **updates)
+    )
+
+
 # --------------------------------------------------------------- public API ---
 
 
@@ -613,6 +915,47 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         # snapshot time, same pattern as active_leases). TASK_CREATION_DENIED
         # records that a MODEL_HYPOTHESIS creation attempt was refused —
         # retained for traceability, affects no derived state.
+        return snap
+    # slice-087 — Episode fold. Episodes are event-sourced like work_items /
+    # tasks. The live ownership lease is NOT derived here (read from the
+    # leases table at snapshot time, like foreground_task_id); only Episode
+    # state is folded.
+    if event.kind == EventKind.EPISODE_CREATED:
+        episode_id = event.payload.get("episode_id")
+        if any(e.episode_id == episode_id for e in snap.episodes):
+            return snap  # idempotent replay
+        return replace(
+            snap, episodes=snap.episodes + (_episode_from_created(event),)
+        )
+    if event.kind in (
+        EventKind.EPISODE_STATUS_CHANGED,
+        EventKind.EPISODE_YIELD_REQUESTED,
+        EventKind.EPISODE_CLOSED,
+        EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_ACTIVATED,
+        EventKind.EPISODE_RECOVERING,
+    ):
+        return _apply_episode_status_change(snap, event)
+    if event.kind == EventKind.EPISODE_CHECKPOINT_COMMITTED:
+        return _apply_episode_checkpoint(snap, event)
+    if event.kind == EventKind.EPISODE_SUSPENDED:
+        return _apply_episode_suspended(snap, event)
+    if event.kind == EventKind.EPISODE_WAIT_RESOLVED:
+        return _apply_episode_wait_resolved(snap, event)
+    if event.kind == EventKind.EPISODE_RECONCILE_REQUIRED:
+        return _apply_episode_reconcile_required(snap, event)
+    if event.kind == EventKind.EPISODE_RECONCILE_RESOLVED:
+        return _apply_episode_reconcile_resolved(snap, event)
+    if event.kind in (
+        EventKind.EPISODE_OWNERSHIP_ACQUIRED,
+        EventKind.EPISODE_OWNERSHIP_RELEASED,
+        EventKind.EPISODE_SIDE_EFFECT_RECORDED,
+        EventKind.LATE_WRITE_REJECTED,
+    ):
+        # audit-only: the live ownership lease is read from the leases table;
+        # side effects are folded via SIDE_EFFECT_UNCONFIRMED (084) which
+        # already adds an UnknownAction; a stale-write rejection changes no
+        # derived state.
         return snap
     # forward-compat: retain the kind, do not crash
     if event.kind not in snap.unrecognized_event_kinds:

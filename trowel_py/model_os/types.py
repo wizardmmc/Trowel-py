@@ -93,6 +93,15 @@ class WorkItemStatus(str, Enum):
     #: Episode/tool failure, which returns the WorkItem to READY for retry.
     FAILED = "failed"
 
+    @property
+    def is_terminal(self) -> bool:
+        """True for done / cancelled / failed — states with no outgoing edge.
+
+        slice-087 R3-H2: added so compound Episode commands (mark_lost) can
+        skip a WorkItem that is already gone, mirroring TaskStatus.is_terminal."""
+
+        return self in (WorkItemStatus.DONE, WorkItemStatus.CANCELLED, WorkItemStatus.FAILED)
+
 
 # ----------------------------------------------------------------------- task
 #
@@ -252,6 +261,29 @@ class EventKind:
     TASK_CREATION_DENIED = "task.creation_denied"
     FOREGROUND_CLAIMED = "foreground.claimed"
     FOREGROUND_RELEASED = "foreground.released"
+    # slice-087 — Episode lifecycle. Event-sourced like work_items / tasks.
+    # The reducer folds these into EpisodeState. The live ownership lease is
+    # read from the leases table at snapshot time (same pattern as
+    # active_leases / foreground_claim) — EPISODE_OWNERSHIP_ACQUIRED /
+    # RELEASED are audit + fencing provenance, not the live owner source.
+    EPISODE_CREATED = "episode.created"
+    EPISODE_STATUS_CHANGED = "episode.status_changed"
+    EPISODE_OWNERSHIP_ACQUIRED = "episode.ownership_acquired"
+    EPISODE_OWNERSHIP_RELEASED = "episode.ownership_released"
+    EPISODE_YIELD_REQUESTED = "episode.yield_requested"
+    EPISODE_CHECKPOINT_COMMITTED = "episode.checkpoint_committed"
+    EPISODE_CLOSED = "episode.closed"
+    EPISODE_FAILED = "episode.failed"
+    EPISODE_SUSPENDED = "episode.suspended"
+    EPISODE_WAIT_RESOLVED = "episode.wait_resolved"
+    EPISODE_ACTIVATED = "episode.activated"
+    EPISODE_RECONCILE_REQUIRED = "episode.reconcile_required"
+    EPISODE_RECONCILE_RESOLVED = "episode.reconcile_resolved"
+    EPISODE_RECOVERING = "episode.recovering"
+    EPISODE_SIDE_EFFECT_RECORDED = "episode.side_effect_recorded"
+    #: slice-087 fencing audit: a write bearing a stale lease token was
+    #: rejected. Retained for traceability; affects no derived state.
+    LATE_WRITE_REJECTED = "episode.late_write_rejected"
 
 
 @dataclass(frozen=True)
@@ -263,6 +295,12 @@ class EventEnvelope:
     "may have happened, result not written back" (requires_reconcile) and
     "pending control channel lost on restart" (requires_user_restart, per
     spike-083).
+
+    slice-087 fencing: events in ``_EPISODE_FENCED_KINDS`` must also carry the
+    ownership lease the writer holds (``lease_id`` / ``owner`` /
+    ``fencing_token``). The store checks these against the live lease and
+    rejects stale writers (an old holder that woke up after its lease expired
+    or was taken over). Non-fenced events leave the three ``None``.
     """
 
     event_id: str
@@ -279,6 +317,10 @@ class EventEnvelope:
     cause_id: str | None = None
     correlation_id: str | None = None
     outcome: str | None = None
+    #: slice-087 fencing — see class docstring.
+    lease_id: str | None = None
+    owner: str | None = None
+    fencing_token: int | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +359,14 @@ class Lease:
     ``resource_type``/``resource_id`` identify what is locked; ``owner`` is
     who holds it. Acquisition is compare-and-set: two concurrent claims on
     the same resource yield exactly one winner.
+
+    ``fencing_token`` (slice-087) is a strictly monotonic counter per
+    ``(resource_type, resource_id)``: every new grant on the same resource
+    gets a higher token than the previous one. Protected stores reject writes
+    that carry a stale token, so an old holder that wakes up after its lease
+    expired cannot overwrite the new holder's state (Kleppmann fencing). The
+    counter lives in a separate ``lease_fence_counters`` table so garbage-
+    collecting old lease rows cannot roll the token back.
     """
 
     lease_id: str
@@ -326,6 +376,7 @@ class Lease:
     acquired_at: str
     expires_at: str
     idempotency_key: str | None = None
+    fencing_token: int = 0
 
 
 # ----------------------------------------------------------------------- self manifest
@@ -416,6 +467,32 @@ class SelfManifest:
 # Kept here so the reducer, the store and tests share one canonical shape.
 
 
+class WaitingSubtype(str, Enum):
+    """Why a waiting Task is waiting, finer-grained than ``WaitingCondition.kind``.
+
+    slice-087 adds this so an Episode's pending and its Task's waiting stay
+    aligned as a projection: the Episode's ``PendingDescriptor.kind`` is the
+    authority and the Task's ``WaitingCondition.subtype`` mirrors it. The
+    slice-095 matcher must tell ``APPROVAL`` apart from free-form ``INPUT``
+    (an approval answer must not be treated as plain text and vice-versa), and
+    pending-channel loss (slice-083) needs ``REQUIRES_USER_RESTART`` /
+    ``RECONCILE`` markers so the scheduler does not auto-run a Task whose
+    pending request is no longer deliverable.
+
+    - ``INPUT``: waiting for free-form user text.
+    - ``APPROVAL``: waiting for a structured approval answer.
+    - ``REQUIRES_USER_RESTART``: pending control channel lost on runtime
+      restart (slice-083); cannot be auto-resumed.
+    - ``RECONCILE``: an in-flight side effect may or may not have happened;
+      must be reconciled against reality before resuming.
+    """
+
+    INPUT = "input"
+    APPROVAL = "approval"
+    REQUIRES_USER_RESTART = "requires_user_restart"
+    RECONCILE = "reconcile"
+
+
 @dataclass(frozen=True)
 class WaitingCondition:
     """Why a Task paused and what it is waiting for (slice-086 §WaitingCondition).
@@ -434,10 +511,22 @@ class WaitingCondition:
     - ``incubating``: ``open_question`` AND ``preparation_snapshot_ref`` both
       required (architecture.md §默认态与孵化: "必须先有准备 snapshot 和明确未解
       问题"). Review/reframe is slice-098/099.
+
+    slice-087 adds ``subtype`` and ``episode_id``: when the wait is driven by
+    an Episode pending (suspend), ``subtype`` mirrors ``PendingDescriptor.kind``
+    (INPUT / APPROVAL) and ``episode_id`` points back at the Episode so a
+    095 matcher can route the answer. Pending-channel loss carries
+    ``REQUIRES_USER_RESTART`` / ``RECONCILE``. Both default to ``None`` so
+    pre-087 payloads and non-Episode waits stay legal.
     """
 
     kind: str
     cause: str
+    #: slice-087: finer grain of the wait; None for legacy / non-Episode waits.
+    subtype: WaitingSubtype | None = None
+    #: slice-087: the Episode whose pending this wait mirrors; None when the
+    #: wait is not driven by an Episode.
+    episode_id: str | None = None
     correlation_id: str | None = None
     deadline: str | None = None
     # waiting_event only
@@ -512,5 +601,204 @@ class Task:
     completion_evidence: CompletionEvidence | None
     error_record: ErrorRecord | None
     primary_work_item_id: str | None
+    created_at: str
+    updated_at: str
+
+
+# ----------------------------------------------------------------------- episode
+#
+# slice-087 introduces the Episode entity: one continuous focused work
+# segment, bound to a WorkItem (084) and optionally to a Task (086). See
+# slice-087 spec §概念定位 for the four-layer identity split. Episode state is
+# event-sourced (the reducer folds it); the ownership lease is live table
+# state read at snapshot time (same pattern as foreground_claim).
+
+
+class EpisodeStatus(str, Enum):
+    """Lifecycle of an Episode (slice-087 spec §EpisodeStatus 状态机).
+
+    Legal transitions (enforced by the command layer):
+
+    ::
+
+        starting → active → yield_requested → checkpointing → closed
+        active → suspended_waiting_input | suspended_waiting_approval
+        suspended_waiting_* → suspended_ready
+        suspended_ready → active
+        suspended_waiting_* | suspended_ready → reconcile_required
+        reconcile_required → checkpointing → closed   # recommended
+        reconcile_required → active                    # verified safe to resume
+        any → failed                                   # exec-layer failure
+        any → recovering                               # ownership lease taken over
+
+    ``closed`` / ``failed`` are terminal. ``reconcile_required`` is NOT
+    terminal (a non-active blocked state exited only by an explicit reconcile
+    command). ``recovering`` is transitional.
+    """
+
+    STARTING = "starting"
+    ACTIVE = "active"
+    YIELD_REQUESTED = "yield_requested"
+    CHECKPOINTING = "checkpointing"
+    SUSPENDED_WAITING_INPUT = "suspended_waiting_input"
+    SUSPENDED_WAITING_APPROVAL = "suspended_waiting_approval"
+    SUSPENDED_READY = "suspended_ready"
+    RECONCILE_REQUIRED = "reconcile_required"
+    RECOVERING = "recovering"
+    CLOSED = "closed"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        """True for closed / failed — states with no outgoing edge."""
+
+        return self in (EpisodeStatus.CLOSED, EpisodeStatus.FAILED)
+
+
+class SnapshotSource(str, Enum):
+    """How an EpisodeSnapshot was produced.
+
+    - ``COOPERATIVE``: the model yielded cooperatively; the snapshot was
+      written from the model's reported state.
+    - ``RECOVERY_PARTIAL``: built from the journal + previous snapshot after a
+      crash / timeout / shutdown, WITHOUT calling the model. Missing slots are
+      marked ``"unknown"``; only actions with machine result / evidence refs
+      survive as completed.
+    """
+
+    COOPERATIVE = "cooperative"
+    RECOVERY_PARTIAL = "recovery_partial"
+
+
+class ReconcileReason(str, Enum):
+    """Why an Episode entered ``reconcile_required``.
+
+    - ``REQUIRES_USER_RESTART``: pending control channel lost on runtime
+      restart (slice-083); the original pending request is no longer
+      deliverable and cannot be auto-resumed.
+    - ``UNKNOWN_SIDE_EFFECT``: a side effect may or may not have happened
+      (intent written, result not written back); reality must be checked
+      before any replay.
+    """
+
+    REQUIRES_USER_RESTART = "requires_user_restart"
+    UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
+
+
+@dataclass(frozen=True)
+class PendingDescriptor:
+    """A pending request that paused an Episode (slice-087 §PendingDescriptor).
+
+    ``kind`` is the authority; the owning Task's ``WaitingCondition.subtype``
+    mirrors it. The 095 matcher routes the answer by ``correlation_id``;
+    ``native_generation`` ties the pending to the native turn that posed it so
+    loss can be detected on runtime restart.
+    """
+
+    kind: WaitingSubtype
+    native_generation: str | None
+    correlation_id: str
+    cause: str
+    posed_at: str
+
+
+@dataclass(frozen=True)
+class SideEffectRecord:
+    """One external side effect an Episode issued, with its outcome.
+
+    ``outcome``: ``DONE`` carries an evidence ref (the result is confirmed);
+    ``UNKNOWN_REQUIRES_RECONCILE`` means the action may have happened but the
+    result was not written back (crash between call and ack). Replay is
+    forbidden until reality is checked — never auto-replayed.
+    """
+
+    action_ref: str
+    idempotency_key: str
+    outcome: str
+    evidence_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class ArtifactRef:
+    """A reference to an important work product (commit / file / report)."""
+
+    kind: str
+    ref: str
+
+
+@dataclass(frozen=True)
+class SnapshotRef:
+    """A precise pointer to a committed EpisodeSnapshot (slice-087 §SnapshotRef).
+
+    The reducer folds this (NOT the payload) into EpisodeState; the payload is
+    read from the ``episode_snapshots`` table by ``(episode_id, version)``.
+    ``committed_event_id`` + ``payload_hash`` let readers verify they got the
+    row the journal says was committed, not a forged / partial one.
+    """
+
+    episode_id: str
+    version: int
+    committed_event_id: str
+    payload_hash: str
+
+
+@dataclass(frozen=True)
+class EpisodeSnapshot:
+    """The work现场 of one Episode at checkpoint time (slice-087 §槽位).
+
+    Fixed slots — a later Episode resumes from this without re-reading the
+    full transcript. ``source`` / ``journal_through_seq`` /
+    ``base_snapshot_ref`` govern recovery: a ``RECOVERY_PARTIAL`` snapshot is
+    built from ``base_snapshot_ref`` + the journal up to
+    ``journal_through_seq`` only.
+
+    Invariants:
+    - External actions recorded as completed MUST carry an evidence ref; a
+      result-unknown action is recorded with outcome
+      ``UNKNOWN_REQUIRES_RECONCILE`` and never auto-replayed.
+    - The transcript is referenced, never copied into the payload.
+    - A recovery_partial snapshot fills unknown slots with the literal
+      ``"unknown"`` rather than inventing state.
+    """
+
+    work_item_goal: str
+    task_constraints_ref: str | None
+    current_judgment: str
+    completed_with_evidence: tuple[tuple[str, str], ...]
+    side_effects: tuple[SideEffectRecord, ...]
+    unknowns: tuple[str, ...]
+    waiting_condition: PendingDescriptor | None
+    next_steps: tuple[str, ...]
+    artifacts: tuple[ArtifactRef, ...]
+    native_transcript_ref: str | None
+    source: SnapshotSource
+    journal_through_seq: int
+    base_snapshot_ref: SnapshotRef | None = None
+
+
+@dataclass(frozen=True)
+class Episode:
+    """One continuous focused work segment (slice-087).
+
+    An Episode binds to exactly one WorkItem (084) and optionally to one Task
+    (086). It owns the execution现场 (snapshot, pending, reconcile); the
+    WorkItem owns scheduling state. The ownership lease (who may advance this
+    Episode) is live table state, read at snapshot time.
+
+    ``native_session_id`` is ``None`` until 090 binds a CC/Codex session;
+    until then the Episode is ``STARTING``. ``last_snapshot_ref`` is the
+    reducer's authority for "where this Episode got to"; the snapshot payload
+    is read separately from the ``episode_snapshots`` table.
+    """
+
+    episode_id: str
+    work_item_id: str
+    task_id: str | None
+    status: EpisodeStatus
+    native_session_id: str | None
+    ownership_lease_id: str | None
+    last_snapshot_ref: SnapshotRef | None
+    pending_descriptor: PendingDescriptor | None
+    reconcile_reason: ReconcileReason | None
     created_at: str
     updated_at: str
