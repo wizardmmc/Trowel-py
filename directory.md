@@ -37,6 +37,7 @@ trowel-py/
 │   ├── llm/               LLM 客户端 + prompts + filter
 │   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）；workflow_watcher.py 读 wf_<runId>.json 渲染 workflow 进度树（slice-036）；subagent_usage.py 从 subagent transcript 累加 token（slice-036 D 层）
 │   ├── agent_host/       host-neutral Session Hub（slice-072）：binding.py（SessionBinding/Runtime）+ store.py（json 持久化）+ hub.py（路由 CC/Codex、runtime 冻结、交叉 resume 拒绝）+ routes.py（/api/agent/*）+ schemas.py；cc_host 复用 open_cc_session / close_cc_session
+│   ├── model_os/         Model OS 内核骨干（M8 slice-084）：独立 SQLite+WAL Store + append-only 事件/决策日志 + 纯函数 reducer + payload 脱敏。types.py（枚举+frozen dataclass：WorkItem/EventEnvelope/DecisionRecord/Lease/Provenance 强度排序）+ redaction.py + reducer.py（Snapshot/reduce_event，provenance 不允许静默升级）+ store.py（事务/CAS lease/append/read_snapshot/replay）。后续 slice-085+ 在此之上建 Self/Task/Episode/Scheduler
 │   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up / cc_host）
 │
 ├── web/                   前端：React 19 + Vite + Zustand + framer-motion
