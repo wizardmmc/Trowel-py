@@ -230,6 +230,12 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         return _add_unknown_action(snap, event, "requires_user_restart")
     if event.kind == EventKind.NOTE:
         return snap
+    if event.kind == EventKind.SELF_CHANGE_PROPOSED:
+        # slice-085: a model's proposed Self change is recorded for audit but
+        # NEVER applied — Self is assembled from runtime facts
+        # (``self_assembler``), not derived from events. Structural anti-forgery
+        # (pass 4): no event, regardless of provenance, can alter Self state.
+        return snap
     # forward-compat: retain the kind, do not crash
     if event.kind not in snap.unrecognized_event_kinds:
         return replace(

@@ -365,6 +365,7 @@ def test_create_codex_four_mp_combinations_wire_injection_and_mcp(
             workdir,
             memory_enabled=memory_enabled,
             profile_enabled=profile_enabled,
+            self_enabled=False,
         ),
         request=None,
     )
@@ -404,13 +405,71 @@ def test_create_codex_empty_injection_maps_to_none_developer_instructions(
         lambda *a, **k: "",
     )
     binding = hub.create(
-        codex_req(workdir, memory_enabled=False, profile_enabled=False),
+        codex_req(
+            workdir, memory_enabled=False, profile_enabled=False, self_enabled=False
+        ),
         request=None,
     )
     session = codex_mgr.get_session(binding.session_id)
     assert session.config.developer_instructions is None
     assert session.config.trowel_memory_mcp is None
     assert binding.injection_hash == ""
+
+
+def test_create_codex_includes_self_section_when_enabled(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """slice-085 wiring: self_enabled=True (default) → Codex
+    developer_instructions carry the Self section, prepended to the memory
+    injection. The Self section (套壳) sits ahead of the memory content."""
+
+    monkeypatch.setattr(
+        "trowel_py.memory.injection.build_memory_injection",
+        lambda *a, **k: "MEMORY_MARKER",
+    )
+    binding = hub.create(
+        codex_req(workdir, memory_enabled=True, profile_enabled=True),
+        request=None,
+    )
+    session = codex_mgr.get_session(binding.session_id)
+    instr = session.config.developer_instructions
+    assert instr is not None
+    assert "# 关于你（Self" in instr
+    assert "Trowel" in instr
+    # Self section precedes the memory content
+    assert instr.index("Trowel") < instr.index("MEMORY_MARKER")
+    assert binding.self_enabled is True
+
+
+def test_create_codex_keeps_self_when_memory_fails(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """slice-085: a memory assembly failure must NOT drop the Self section —
+    the three switches are independent. Self still reaches
+    developer_instructions even when memory_text is empty due to a read error.
+    """
+
+    def boom(*a, **k):
+        raise RuntimeError("memory dir gone")
+
+    monkeypatch.setattr(
+        "trowel_py.memory.injection.build_memory_injection", boom
+    )
+    binding = hub.create(
+        codex_req(workdir, memory_enabled=True, profile_enabled=True),
+        request=None,
+    )
+    session = codex_mgr.get_session(binding.session_id)
+    instr = session.config.developer_instructions
+    assert instr is not None
+    assert "# 关于你（Self" in instr
+    assert "Trowel" in instr
 
 
 def test_create_codex_follow_does_not_invent_overrides(
@@ -688,6 +747,40 @@ def test_validate_resume_rejects_mp_mismatch_for_same_native_thread(
             "thr-frozen",
             memory_enabled=True,
             profile_enabled=False,
+        )
+
+
+def test_validate_resume_rejects_self_enabled_mismatch_for_same_native_thread(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """slice-085 (codex/opus review): a native thread frozen self-on cannot be
+    resumed as self-off — self_enabled is the third frozen switch, symmetric
+    with M/P (C-2). Without this, an A/B baseline (self_enabled=False) thread
+    could be silently resumed as self-on, swapping the experiment condition."""
+
+    hub._store.put(
+        make_binding(
+            session_id="orig-self-on",
+            runtime=Runtime.CODEX,
+            native_session_id="thr-self-frozen",
+            workdir=str(workdir),
+            model=None,
+            effort=None,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            self_enabled=True,
+            capabilities=("tools",),
+            name="proj",
+        )
+    )
+    with pytest.raises(ConditionMismatchError):
+        hub.validate_resume(
+            Runtime.CODEX,
+            "thr-self-frozen",
+            memory_enabled=True,
+            profile_enabled=True,
+            self_enabled=False,
         )
 
 

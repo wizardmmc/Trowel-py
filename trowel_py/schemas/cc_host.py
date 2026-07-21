@@ -36,6 +36,10 @@ class CreateSessionRequest(BaseModel):
             clean "no stored memory" baseline. Defaults True (C-1 zero-regression).
         profile_enabled: slice-060 A/B switch. False drops only the explicit
             ``# 用户画像`` section. Defaults True.
+        self_enabled: slice-085 switch. False drops the entire Self section
+            (the Trowel "你是谁/能做什么" shell-on-top of cc's default system
+            prompt), for an A/B baseline measuring the Self section's effect.
+            Defaults True.
     """
 
     workdir: str = Field(min_length=1)
@@ -47,6 +51,7 @@ class CreateSessionRequest(BaseModel):
     # like "yes"/"true" or numbers are NOT coerced, they 422. No truthiness.
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
+    self_enabled: bool = Field(default=True, strict=True)
 
 
 class SendMessageRequest(BaseModel):

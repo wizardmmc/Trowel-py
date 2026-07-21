@@ -154,6 +154,12 @@ class EventKind:
     SIDE_EFFECT_UNCONFIRMED = "side_effect.unconfirmed"
     PENDING_CHANNEL_LOST = "pending_channel.lost"
     NOTE = "note"
+    #: slice-085 — a model's proposed Self change. Recorded for audit but the
+    #: reducer NEVER applies it: Self is assembled from runtime facts in
+    #: ``self_assembler``, not derived from events. This is the structural
+    #: anti-forgery (pass 4): no event, regardless of provenance, can alter
+    #: Self state.
+    SELF_CHANGE_PROPOSED = "self.change_proposed"
 
 
 @dataclass(frozen=True)
@@ -228,3 +234,84 @@ class Lease:
     acquired_at: str
     expires_at: str
     idempotency_key: str | None = None
+
+
+# ----------------------------------------------------------------------- self manifest
+
+
+class SubsystemState(str, Enum):
+    """Whether a Trowel subsystem's content is injected into this session.
+
+    v0 only distinguishes INJECTED (content loaded into the prompt) from
+    OFF (the subsystem exists in the build but its content is not injected
+    this call). Later states — e.g. DEGRADED when a subsystem is failing —
+    can extend this without rewriting call sites. OFF must NOT be read as
+    "the subsystem does not exist": the system exists, only the content is
+    absent (slice-085 invariant: off leaks neither memory root nor profile
+    body).
+    """
+
+    INJECTED = "injected"
+    OFF = "off"
+
+
+@dataclass(frozen=True)
+class SelfManifest:
+    """Trowel's self-representation: stable identity + dynamic capability.
+
+    Two layers (architecture.md §Self 与身体图式):
+    - Stable identity (``identity`` / ``version`` / ``continuity_note``)
+      never changes within a version, so a prompt-cache prefix built on it
+      stays stable across sessions.
+    - Dynamic capability reflects THIS native session's effective runtime,
+      model, subsystem injection states and authorization scope — derived
+      from the Session Hub binding + runtime facts at assemble time.
+
+    The model can read a rendered Manifest but has no Store write-path to
+    alter it (slice-085 pass 4 — structural anti-forgery: no entry point
+    means no way to forge). ``task_id`` / ``episode_id`` /
+    ``native_session_id`` are location pointers only; they default to
+    ``None`` so a Manifest is legal before 090's EpisodeContext attaches
+    them.
+
+    ``model`` / ``effort`` are ``None`` when the host has not reported an
+    effective value — ``None`` is the explicit "unknown" marker and MUST
+    NOT be papered over with a stale cached value (slice-083 frozen
+    semantics: cc effective effort has no machine echo).
+
+    Attributes:
+        identity: stable name ("Trowel").
+        version: self-manifest version, bumped by humans on upgrade.
+        continuity_note: the continuous-subject prompt
+            ("本次行动是持续主体的一段活动").
+        runtime: which native host this session runs on ("cc" | "codex").
+        model: effective model once the host reports one; ``None`` = unknown.
+        effort: reasoning-effort override; ``None`` = unknown.
+        subsystems: Trowel-level subsystem tags present in this build
+            (memory / profile / model_os / dual_runtime / todo_loop). These
+            are Trowel's body schema, NOT the native runtime's tool/MCP
+            roster (that comes from cc/codex themselves).
+        memory_state: whether memory content is injected this call.
+        profile_state: whether profile content is injected this call.
+        native_tools_note: note that native tools/MCP come from cc/codex,
+            not duplicated at the Trowel layer.
+        authorization_scope: scope of actions needing approval.
+        task_id: optional Task pointer (location only, set by 090).
+        episode_id: optional Episode pointer (location only, set by 090).
+        native_session_id: optional native session pointer (location only).
+    """
+
+    identity: str
+    version: str
+    continuity_note: str
+    runtime: str
+    model: str | None
+    effort: str | None
+    subsystems: tuple[str, ...]
+    memory_state: SubsystemState
+    profile_state: SubsystemState
+    native_tools_note: str
+    authorization_scope: str
+    task_id: str | None = None
+    episode_id: str | None = None
+    native_session_id: str | None = None

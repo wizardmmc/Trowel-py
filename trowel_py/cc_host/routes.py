@@ -180,6 +180,7 @@ def open_cc_session(
         mcp_config=mcp_config,
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,
+        self_enabled=req.self_enabled,
     )
     registry[sid] = host
     # 注册多开状态（命名序号 + workdir 索引 + 设为活跃）

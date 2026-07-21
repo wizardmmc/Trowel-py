@@ -141,11 +141,14 @@ def _make_host(
     *,
     memory_enabled: bool = True,
     profile_enabled: bool = True,
+    self_enabled: bool = True,
 ) -> CCHost:
     """Build a CCHost wired to the capturing spawner + an explicit mcp path.
 
     mcp_config is ALWAYS passed here so the memory-off cases prove CCHost
     detaches it on its own (C-3), independent of whatever routes does.
+    self_enabled defaults True; the clean-baseline test passes False so the
+    Self section does not turn a no-memory spawn into a non-empty prompt.
     """
     return CCHost(
         "trowel-sid",
@@ -154,6 +157,7 @@ def _make_host(
         mcp_config=_MCP_CONFIG_PATH,
         memory_enabled=memory_enabled,
         profile_enabled=profile_enabled,
+        self_enabled=self_enabled,
     )
 
 
@@ -250,12 +254,47 @@ async def test_spawn_argv_memory_off_profile_off(
     )
     _seed_profile(tmp_path)
     spawner = _CapturingSpawner()
-    host = _make_host(spawner, tmp_path, memory_enabled=False, profile_enabled=False)
+    host = _make_host(
+        spawner,
+        tmp_path,
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=False,
+    )
     await host._spawn(None)
 
     args = spawner.captured_args
     assert "--append-system-prompt" not in args
     assert "--mcp-config" not in args
+
+
+async def test_spawn_includes_self_section_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """slice-085 wiring: self_enabled=True (default) prepends the Self section
+    to the memory injection in cc's --append-system-prompt.
+
+    The Self section (套壳) sits ahead of the memory content, so the model
+    sees its continuous-subject framing first. build_memory_injection is
+    mocked so the test pins wiring, not the memory kernel's own content.
+    """
+
+    import trowel_py.cc_host.service as svc
+
+    monkeypatch.setattr(
+        svc, "build_memory_injection", lambda *a, **k: "MEMORY_MARKER"
+    )
+    spawner = _CapturingSpawner()
+    host = _make_host(spawner, tmp_path)  # self_enabled defaults True
+    await host._spawn(None)
+
+    prompt = _prompt_of(spawner.captured_args)
+    assert prompt is not None
+    assert "# 关于你（Self" in prompt
+    assert "Trowel" in prompt
+    assert "持续主体" in prompt
+    # Self section precedes the memory content
+    assert prompt.index("Trowel") < prompt.index("MEMORY_MARKER")
 
 
 async def test_respawn_keeps_frozen_condition(

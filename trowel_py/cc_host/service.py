@@ -69,6 +69,7 @@ from trowel_py.schemas.cc_host import (
     TurnStartEvent,
 )
 from trowel_py.memory.injection import build_memory_injection
+from trowel_py.model_os.self_assembler import build_session_injection
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,7 @@ class CCHost:
         mcp_config: str | None = None,
         memory_enabled: bool = True,
         profile_enabled: bool = True,
+        self_enabled: bool = True,
     ) -> None:
         """Store session config and the injection hooks for tests.
 
@@ -248,6 +250,7 @@ class CCHost:
         # so respawns (/model, stall, interrupt) keep the same condition.
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
+        self._self_enabled = self_enabled
         # slice-040-c: path to an mcp-config JSON attaching the memory MCP
         # server (search/read/outcome). slice-060 C-3: when memory is off, the
         # MCP read-path is closed too — the config is dropped HERE (not only at
@@ -348,6 +351,11 @@ class CCHost:
         """slice-060: whether this session injects the ``# 用户画像`` section."""
         return self._profile_enabled
 
+    @property
+    def self_enabled(self) -> bool:
+        """slice-085: whether this session injects the Self section."""
+        return self._self_enabled
+
     # -- lifecycle ---------------------------------------------------------
 
     async def _spawn(self, resume_from: str | None) -> Any:
@@ -364,14 +372,34 @@ class CCHost:
         # read error must NEVER block a cc spawn (spike 2026-07-09: append lands
         # in the system tail, proxy identity-rewrite stays untouched).
         try:
-            injection = build_memory_injection(
+            memory_text = build_memory_injection(
                 date.today().isoformat(),
                 memory_enabled=self._memory_enabled,
                 profile_enabled=self._profile_enabled,
             )
         except Exception:
             logger.warning(
-                "memory injection failed; cc spawns without it", exc_info=True
+                "memory injection failed; cc spawns without the memory section",
+                exc_info=True,
+            )
+            memory_text = ""
+        # slice-085: Self assembly is isolated from memory failure — the three
+        # switches are independent, so a memory read error must NOT drop Self.
+        try:
+            injection = build_session_injection(
+                self_enabled=self._self_enabled,
+                memory_text=memory_text,
+                runtime="cc",
+                model=self._model,
+                effort=self.effort,
+                memory_enabled=self._memory_enabled,
+                profile_enabled=self._profile_enabled,
+                permission_preset=self.permission_mode,
+            )
+        except Exception:
+            logger.warning(
+                "self injection failed; cc spawns without it",
+                exc_info=True,
             )
             injection = ""
         args = build_args(

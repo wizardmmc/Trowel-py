@@ -62,6 +62,11 @@ class SessionBinding:
             configured are not visible here (their detection lives in
             ``codex_host.mcp_isolation``); a future slice may add a live-roster
             field populated from ``mcpServerStatus/list`` (C-7).
+        self_enabled: slice-085 — whether the Self section (the Trowel
+            "你是谁/能做什么" shell-on-top of cc/codex's default system prompt)
+            is injected this call. Default True; False drops the entire Self
+            section for an A/B baseline. Frozen at create so a resumed session
+            keeps its condition, like memory_enabled/profile_enabled.
     """
 
     session_id: str
@@ -86,6 +91,7 @@ class SessionBinding:
     network_access: bool | None = None
     injection_hash: str = ""
     declared_mcp_roster: tuple[str, ...] = ()
+    self_enabled: bool = True
 
     def to_dict(self) -> dict[str, object]:
         """JSON-serialisable view (runtime + capabilities unwrapped)."""
@@ -113,6 +119,7 @@ class SessionBinding:
             "network_access": self.network_access,
             "injection_hash": self.injection_hash,
             "declared_mcp_roster": list(self.declared_mcp_roster),
+            "self_enabled": self.self_enabled,
         }
 
 
@@ -138,6 +145,7 @@ def make_binding(
     network_access: bool | None = None,
     injection_hash: str = "",
     declared_mcp_roster: Iterable[str] = (),
+    self_enabled: bool = True,
 ) -> SessionBinding:
     """Construct a :class:`SessionBinding`, stamping both timestamps at now.
 
@@ -167,6 +175,7 @@ def make_binding(
         network_access=network_access,
         injection_hash=injection_hash,
         declared_mcp_roster=tuple(declared_mcp_roster),
+        self_enabled=self_enabled,
         created_at=now,
         updated_at=now,
     )
@@ -236,4 +245,5 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         declared_mcp_roster=tuple(
             str(s) for s in (data.get("declared_mcp_roster") or ())
         ),
+        self_enabled=bool(data.get("self_enabled", True)),
     )

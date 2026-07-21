@@ -211,6 +211,7 @@ class SessionHub:
             effort=req.effort,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
         )
         opened = self._cc_opener(cc_req, request, self._cc_registry)
         binding = make_binding(
@@ -223,6 +224,7 @@ class SessionHub:
             permission=req.permission_mode,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
             capabilities=CC_CAPABILITIES,
             name=opened.name,
         )
@@ -263,6 +265,7 @@ class SessionHub:
         from trowel_py.codex_host.session import build_default_trowel_memory_mcp
         from trowel_py.memory.injection import build_memory_injection
         from trowel_py.memory.paths import resolve_memory_root
+        from trowel_py.model_os.self_assembler import build_session_injection
 
         sid = uuid.uuid4().hex
         preset = req.permission_preset or "follow"
@@ -281,7 +284,7 @@ class SessionHub:
         # back to "" maps to developer_instructions=None (no injection) so the
         # Codex thread still starts, matching how the CC path degrades.
         try:
-            injection_text = build_memory_injection(
+            memory_text = build_memory_injection(
                 date.today().isoformat(),
                 memory_root,
                 memory_enabled=req.memory_enabled,
@@ -289,7 +292,27 @@ class SessionHub:
             )
         except Exception:
             _log.warning(
-                "memory injection failed; codex thread starts without it",
+                "memory injection failed; codex thread starts without memory "
+                "section",
+                exc_info=True,
+            )
+            memory_text = ""
+        # slice-085: Self assembly is isolated from memory failure — the three
+        # switches are independent, so a memory read error must NOT drop Self.
+        try:
+            injection_text = build_session_injection(
+                self_enabled=req.self_enabled,
+                memory_text=memory_text,
+                runtime="codex",
+                model=req.model,
+                effort=req.effort,
+                memory_enabled=req.memory_enabled,
+                profile_enabled=req.profile_enabled,
+                permission_preset=preset,
+            )
+        except Exception:
+            _log.warning(
+                "self injection failed; codex thread starts without it",
                 exc_info=True,
             )
             injection_text = ""
@@ -334,6 +357,7 @@ class SessionHub:
             permission=None,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
             capabilities=CODEX_CAPABILITIES,
             name=self._display_name(req.workdir),
             permission_preset=preset,
@@ -581,6 +605,7 @@ class SessionHub:
         *,
         memory_enabled: bool | None = None,
         profile_enabled: bool | None = None,
+        self_enabled: bool | None = None,
     ) -> None:
         """Forbid resuming a native id under a different runtime or M/P (C-2).
 
@@ -595,6 +620,8 @@ class SessionHub:
                 being silently swapped). ``None`` means "caller did not pin"
                 and skips the check (back-compat for pre-078 callers).
             profile_enabled: Same contract as ``memory_enabled`` for profile.
+            self_enabled: slice-085 — same contract as ``memory_enabled`` for
+                the Self section switch (the third frozen A/B switch).
 
         Raises:
             CrossRuntimeResumeError: if ``native_session_id`` is already bound
@@ -634,6 +661,15 @@ class SessionHub:
                     f"native session {native_session_id!r} is frozen with "
                     f"profile_enabled={binding.profile_enabled}; cannot "
                     f"resume as profile_enabled={profile_enabled} (C-2)"
+                )
+            if (
+                self_enabled is not None
+                and binding.self_enabled != self_enabled
+            ):
+                raise ConditionMismatchError(
+                    f"native session {native_session_id!r} is frozen with "
+                    f"self_enabled={binding.self_enabled}; cannot resume as "
+                    f"self_enabled={self_enabled} (C-2)"
                 )
 
     async def interrupt(self, session_id: str) -> None:

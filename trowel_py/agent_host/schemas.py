@@ -40,6 +40,9 @@ class CreateAgentSessionRequest(BaseModel):
         permission_preset: Host-neutral Codex permission intent. The backend
             maps it to native sandbox/approval fields.
         memory_enabled / profile_enabled: frozen A/B switches (default True).
+        self_enabled: slice-085 switch. False drops the entire Self section
+            (Trowel shell-on-top of the native default system prompt), for
+            an A/B baseline measuring its effect. Defaults True.
     """
 
     runtime: RuntimeWire
@@ -53,6 +56,7 @@ class CreateAgentSessionRequest(BaseModel):
     permission_preset: PermissionPreset | None = None
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
+    self_enabled: bool = Field(default=True, strict=True)
 
 
 class PatchAgentSessionRequest(BaseModel):

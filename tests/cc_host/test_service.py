@@ -974,7 +974,7 @@ class TestMemoryInjection:
         )
         proc = FakeProc([line(init_event()), line(result_ok())])
         spawner = FakeSpawner([proc])
-        host = CCHost("sid", tmp_path, spawner=spawner)
+        host = CCHost("sid", tmp_path, spawner=spawner, self_enabled=False)
         await collect(host.send("hi"))
         args = spawner.spawned[0][0]
         i = args.index("--append-system-prompt")
@@ -991,11 +991,35 @@ class TestMemoryInjection:
         monkeypatch.setattr(svc, "build_memory_injection", boom)
         proc = FakeProc([line(init_event()), line(result_ok())])
         spawner = FakeSpawner([proc])
-        host = CCHost("sid", tmp_path, spawner=spawner)
+        host = CCHost("sid", tmp_path, spawner=spawner, self_enabled=False)
         events = await collect(host.send("hi"))  # does not raise
         args = spawner.spawned[0][0]
         assert "--append-system-prompt" not in args  # degraded, no flag
         assert any(isinstance(e, FinishedEvent) for e in events)
+
+    async def test_spawn_keeps_self_when_memory_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """slice-085: a memory read failure must NOT take the Self section down
+        with it — the three switches are independent. Self assembles from
+        runtime facts; a memory error leaves memory_text empty but Self still
+        reaches --append-system-prompt."""
+
+        def boom(now: str, **kw) -> str:
+            raise RuntimeError("memory dir gone")
+
+        import trowel_py.cc_host.service as svc
+
+        monkeypatch.setattr(svc, "build_memory_injection", boom)
+        proc = FakeProc([line(init_event()), line(result_ok())])
+        spawner = FakeSpawner([proc])
+        host = CCHost("sid", tmp_path, spawner=spawner)  # self_enabled=True default
+        await collect(host.send("hi"))
+        args = spawner.spawned[0][0]
+        i = args.index("--append-system-prompt")
+        prompt = args[i + 1]
+        assert "# 关于你（Self" in prompt
+        assert "Trowel" in prompt
 
 
 class TestMcpConfig:

@@ -64,6 +64,7 @@ def create_session(
                 req.resume_from,
                 memory_enabled=req.memory_enabled,
                 profile_enabled=req.profile_enabled,
+                self_enabled=req.self_enabled,
             )
         except (CrossRuntimeResumeError, ConditionMismatchError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
