@@ -63,7 +63,6 @@ from trowel_py.schemas.cc_host import (
     StalledWarningEvent,
     StatusEvent,
     SubagentProgressEvent,
-    TextEvent,
     ToolCallEvent,
     TrowelEvent,
     TurnStartEvent,
@@ -773,12 +772,11 @@ class CCHost:
     def _update_bg_tracker(self, ev: dict[str, Any]) -> None:
         """slice-077-prefix: feed one raw CC event into the background tracker.
 
-        task_started registers a pending task; task_progress updates it;
-        task_notification terminates it (the event's arrival is the signal,
-        regardless of its status value — no guessing). Centralised so the live
-        send loop and the disconnect drain stay in lockstep: missing a task_*
-        subtype in one path would let a background task silently strand the
-        turn in the other.
+        task_started registers a pending task; task_progress updates it. A
+        task_notification terminates it regardless of status. Real CC 2.1.197
+        TaskOutput(block=true) recordings have a second terminal path with no
+        task_notification: task_updated.patch.status=completed. Centralised so
+        the live send loop and disconnect drain stay in lockstep.
         """
         if ev.get("type") != "system":
             return
@@ -791,6 +789,15 @@ class CCHost:
             )
         elif sub == "task_progress":
             self._bg_tracker.mark_progress(ev.get("task_id", ""))
+        elif sub == "task_updated":
+            patch = ev.get("patch")
+            if isinstance(patch, dict) and patch.get("status") == "completed":
+                # 2026-07-23 real CC 2.1.197 recording: when the assistant
+                # waits through TaskOutput(block=true), completion arrives as
+                # task_updated(completed) + the TaskOutput tool result, with no
+                # top-level task_notification. Only remove an already-known
+                # task_id; terminate() is a no-op for unrelated task updates.
+                self._bg_tracker.terminate(ev.get("task_id", ""))
         elif sub == "task_notification":
             self._bg_tracker.terminate(ev.get("task_id", ""))
 
@@ -798,7 +805,7 @@ class CCHost:
         """slice-077-prefix: whether the logical turn is still active.
 
         True when either a background task is pending (task_started seen
-        without a terminal task_notification) or a workflow is in flight. A
+        without a recorded terminal signal) or a workflow is in flight. A
         ``result`` arriving while this is True is a mid-turn boundary, not the
         terminal — the live loop and the disconnect drain share this check.
         """

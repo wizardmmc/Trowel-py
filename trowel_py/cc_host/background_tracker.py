@@ -13,15 +13,19 @@ mid-turn boundary: reset the native segment accumulator, keep reading stdout,
 keep ``running=True``, do not advance the completed offset.
 
 This module owns the state that distinguishes (1) from (2): the set of task_ids
-CC started in the background but has not yet reported terminal via
-``task_notification``. Workflow in-flight state stays on the existing
-``WorkflowWatcher`` (slice-036); this tracker only covers task_* events.
+CC started in the background but has not yet reported a recorded terminal
+signal. Usually that signal is ``task_notification``. CC 2.1.197 also emits
+``task_updated.patch.status=completed`` without a notification when the
+assistant waits through ``TaskOutput(block=true)``. Workflow in-flight state
+stays on the existing ``WorkflowWatcher`` (slice-036); this tracker only covers
+task_* events.
 
-Ground truth for the task_* signal: slice-077-prefix 隔离复现 C (real CC 2.1.197
-local_bash recording) + tests/cc_host/test_translator.py sample 030.
-``task_notification`` is itself the terminal signal (CC pushes it when the task
-ends, regardless of its ``status`` value), so termination does NOT depend on
-guessing the status enum — the event's arrival is enough.
+Ground truth for the task_* signals: slice-077-prefix 隔离复现 C, translator
+sample 030, and ``tests/cc_host/fixtures/bg_taskoutput_completed.jsonl`` (real
+CC 2.1.197 recordings). ``task_notification`` terminates regardless of its
+status value. The notification-free TaskOutput path terminates only on the
+recorded ``task_updated.patch.status=completed`` value; other update statuses
+remain pending until they are recorded and specified.
 """
 from __future__ import annotations
 
@@ -40,9 +44,8 @@ class PendingTask:
         task_type: CC's ``task_type`` (e.g. ``local_bash`` / ``local_agent``);
             carried for diagnosis/UI, not used for termination logic.
         last_status: the most recent non-terminal status while the task was
-            pending (``started`` / ``progress``). Terminal status lives on the
-            translator's SubagentProgressEvent; this entry is removed on
-            ``task_notification``.
+            pending (``started`` / ``progress``). The entry is removed when the
+            service validates a recorded terminal signal.
     """
 
     task_id: str
@@ -56,8 +59,8 @@ class BackgroundActivityTracker:
 
     A turn has background activity (and thus a mid-result is NOT terminal) when
     at least one task_id is pending — a ``task_started`` was seen without a
-    matching terminal ``task_notification``. Workflow in-flight state is owned
-    by ``WorkflowWatcher`` and OR'd in at the call site.
+    matching recorded terminal signal. Workflow in-flight state is owned by
+    ``WorkflowWatcher`` and OR'd in at the call site.
 
     Thread-safety: single-owner. CCHost's send() and the disconnect drain share
     one tracker, but send() awaits the drain at its entry, so the two never
@@ -106,11 +109,12 @@ class BackgroundActivityTracker:
         )
 
     def terminate(self, task_id: str) -> bool:
-        """Remove a pending task on terminal ``task_notification``.
+        """Remove a pending task after the caller validates a terminal signal.
 
-        The event's arrival is the terminal signal — the status value is NOT
-        needed here (the translator surfaces it to the UI; the tracker only
-        owns the pending-set that gates turn termination, slice-077-prefix §3).
+        The tracker owns identity and idempotency, not raw-event validation.
+        The service accepts any ``task_notification`` or the separately
+        recorded ``task_updated.patch.status=completed`` path before calling
+        this method.
 
         Idempotent: a duplicate notification for an already-removed task
         returns False (slice-077-prefix 失败测试 4: duplicate terminal

@@ -8,7 +8,6 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -227,7 +226,7 @@ class TestStartAndSend:
 class TestBackgroundTaskLogicalTurn:
     """slice-077-prefix: Bash/Agent 后台任务的第一个 result 只是 cc 的前台回复
     边界，不是 trowel 的逻辑 turn 终态。后台 task_started 注册 pending；
-    task_notification terminal 移除 pending；只有 pending 清空 + 无 workflow 在跑
+    已录制的 terminal 信号移除 pending；只有 pending 清空 + 无 workflow 在跑
     时的 result 才是终态 finished。
 
     Ground truth: slice-077-prefix 隔离复现 C（real CC 2.1.197 local_bash 录制）。
@@ -267,6 +266,44 @@ class TestBackgroundTaskLogicalTurn:
                   "total_cost_usd": 0.02, "usage": {"input_tokens": 15},
                   "num_turns": 2, "duration_ms": 14830}),
         ]
+
+    @staticmethod
+    def _bg_taskoutput_completed_lines() -> list[str]:
+        """Load the real CC 2.1.197 TaskOutput terminal-path recording."""
+
+        fixture = Path(__file__).parent / "fixtures" / "bg_taskoutput_completed.jsonl"
+        return fixture.read_text(encoding="utf-8").splitlines()
+
+    async def test_taskoutput_completed_without_notification_ends_turn(
+        self, tmp_path: Path
+    ):
+        """A completed TaskOutput path must clear pending without notification.
+
+        Real CC 2.1.197 can emit ``task_started`` and later finish the same
+        task through ``task_updated(patch.status=completed)`` plus a TaskOutput
+        tool result, with no top-level ``task_notification``. The final result
+        is the logical terminal, not another background-waiting boundary.
+        """
+
+        proc = FakeProc(self._bg_taskoutput_completed_lines())
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        events = await collect(host.send("run and wait with TaskOutput"))
+
+        assert "EXACT_DONE" in "".join(
+            event.text for event in events if isinstance(event, TextEvent)
+        )
+        finished = [event for event in events if isinstance(event, FinishedEvent)]
+        assert len(finished) == 1, (
+            "task_updated completed must clear pending before the final result"
+        )
+        assert not [event for event in events if isinstance(event, ErrorEvent)]
+        assert not [
+            event
+            for event in events
+            if isinstance(event, StatusEvent)
+            and event.stage == "background_waiting"
+        ], "the final result must not be reclassified as another waiting boundary"
 
     async def test_mid_result_does_not_end_turn(self, tmp_path: Path):
         """P0 (slice-077-prefix 失败测试 1): 第一个 result 出现在 task_started

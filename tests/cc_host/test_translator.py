@@ -485,7 +485,8 @@ class TestSubagentProgress:
         assert out[0].status == "unknown"
 
     def test_task_updated_yields_nothing(self):
-        # decision #5: no tool_use_id + duplicates task_notification; stay ignored
+        # task_updated remains an internal lifecycle signal. Rendering it would
+        # duplicate the following task_notification on the normal CC path.
         ev = cc(type="system", subtype="task_updated", task_id="t1",
                 patch={"status": "completed", "end_time": 1783036070663})
         assert Translator().translate(ev) == []
