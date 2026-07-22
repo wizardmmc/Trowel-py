@@ -15,6 +15,19 @@ from __future__ import annotations
 #: The three verification tiers (S4). Must stay in sync with schema/types.
 VERIFICATION_TIERS = ("verified", "event-data-supported", "inferred-untested")
 
+#: Hard bounds for one date in a newly distilled episode. The raw session JSONL
+#: remains the complete trace; the episode is the compact, human-readable event
+#: record that daily compression consumes.
+EPISODE_MAX_ITEMS_PER_DATE = 12
+EPISODE_MAX_ITEMS_PER_FIELD = 3
+# Models are unreliable at exact character counting.  The prompt asks for a
+# shorter target; the wider Python limit remains the hard no-write boundary.
+# Real 2026-07-21 data produced 182 chars when asked for 120, so 200 keeps that
+# compact result while still rejecting the original 272+ char enumerations.
+EPISODE_TARGET_ITEM_CHARS = 120
+EPISODE_MAX_ITEM_CHARS = 200
+EPISODE_MAX_TOTAL_CHARS = 1600
+
 #: The five note kinds (slice-040-a procedural memory). Must stay in sync with
 #: schema/types. Every distilled note gets a kind (default ``fact``); the
 #: procedural kind carries trigger/procedure/stop/anti-pattern in the body.
@@ -118,6 +131,9 @@ REFINE_PROMPT_TEMPLATE = """\
   - corrections：原判断/做法 -> 更正后的结论/做法（用户纠错、被证据推翻的旧判断）
   - open_loops：还没完成什么；下一步或阻塞是什么（仍有效的待办）
 - 经历轨硬规则：每项必须是完整、可独立理解的一句话；无信息的字段输出空列表，不写"无"。
+- 经历轨是摘要，不是逐轮记录。每个日期四类合计最多 {episode_max_items} 条、每类最多 {episode_max_items_per_field} 条；单条尽量控制在 {episode_target_item_chars} 字以内，硬上限 {episode_max_item_chars} 字，四类正文合计最多 {episode_max_total_chars} 字。
+- 长会话先合并同一工作主线，只留关键里程碑。commit hash、diff 行数、精确测试数、逐个文件名通常不写；只有它们本身影响后续判断时才保留。
+- outcomes 至少覆盖当天真正完成或推进的一件事；多个相邻实现合成一条“完成什么 + 验证到什么状态”。corrections 保留最重要的认知反转；open_loops 合并同一下一步，不拆成多个技术子项。
 - 经历轨禁 agent 自评：不写"认真检查/反复确认/表现不错/全程高价值"这类绩效复盘腔，也不写 agent 自己的情绪，除非它反映用户真实痛点且影响后续决策。工具调用顺序、逐轮尝试、常规测试流水不进经历轨。
 - 元话语（我想到 / 感悟 / 本质是 / 原理是 / 启示 / 教训 / 规律 / 方法论 / 告诉我们）→ 知识轨，不要漏进 diary。
 - 同一个坑两处都可能记：经历轨记"7/8 卡两小时在 X（open_loop 或 correction）"，笔记记"遇到 X 先查 Y"。
@@ -158,6 +174,20 @@ def build_refine_prompt(
     prompt = REFINE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path).replace(
         "{cost}", cost_text
     )
+    prompt = (
+        prompt
+        .replace("{episode_max_items}", str(EPISODE_MAX_ITEMS_PER_DATE))
+        .replace(
+            "{episode_max_items_per_field}",
+            str(EPISODE_MAX_ITEMS_PER_FIELD),
+        )
+        .replace(
+            "{episode_target_item_chars}",
+            str(EPISODE_TARGET_ITEM_CHARS),
+        )
+        .replace("{episode_max_item_chars}", str(EPISODE_MAX_ITEM_CHARS))
+        .replace("{episode_max_total_chars}", str(EPISODE_MAX_TOTAL_CHARS))
+    )
     if start_offset is not None or end_offset is not None:
         start = start_offset or 0
         end = "EOF" if end_offset is None else end_offset
@@ -172,7 +202,7 @@ def build_refine_prompt(
 # ---------- slice-062: daily compression (structured I/O) ----------
 #
 # Daily is a derived cache, not a fact source. The LLM does NOT emit the final
-# Markdown — it emits typed daily items (each citing a source segment id);
+# Markdown — it emits typed daily items (each citing a short source alias);
 # Python validates, dedupes, budget-selects and renders the fixed Markdown
 # (contract 4). This keeps the model from writing un-sourced content into the
 # daily and lets Python enforce the 800-char budget by dropping whole bullets.
@@ -187,7 +217,7 @@ DAILY_ITEMS_SCHEMA = """\
     {
       "type": "outcome | decision | correction | open_loop",
       "text": "完整、可独立理解的一句话",
-      "source": "<必须填上面某个 segment id>"
+      "source": "<必须填上面某个 S1/S2… alias>"
     }
   ]
 }
@@ -197,11 +227,11 @@ DAILY_COMPRESS_TEMPLATE = """\
 你是日记压缩器。把 {date} 当天的结构化经历，压缩成可回忆的当天摘要——像人第二天需要的记忆，不像 agent 的工作复盘。
 
 【输入】
-当天各 segment 的结构化经历（每个 segment 带 id，下面四类可空）：
+当天各 segment 的结构化经历（每个 segment 带短 alias，下面四类可空）：
 {sources_block}
 
 【任务】
-跨 segment 做语义合并、措辞压缩、重要性选择，产出 daily items。每个 item 必须带 source（填上面某个 segment id），Python 会校验来源是否真实存在——不要编造 source。
+跨 segment 做语义合并、措辞压缩、重要性选择，产出 daily items。每个 item 必须带 source（只填上面某个 S1/S2… alias，原样复制），Python 会校验并映射回真实 segment id——不要填写 UUID，不要编造 source。
 
 【三类映射】
 - outcome / decision → 进展（决定只在影响后续行为时保留）
@@ -212,7 +242,7 @@ DAILY_COMPRESS_TEMPLATE = """\
 - 同一件事在多 segment 重复出现：只保留一条最完整的，source 填其中任一即可（Python 会合并所有来源）。
 - 删 agent 自评（认真检查/反复确认/表现不错/全程高价值这类绩效腔）、agent 情绪（除非反映用户真实痛点且影响后续决策）、工具调用顺序、逐轮尝试、常规测试流水、同义重复、已解决的临时阻塞。
 - 每项完整、可独立理解的一句话。无信息就别产。
-- 正文预算 ≤ 800 字（含标题）。预算优先级：更正 / 未关闭待续 > 关键结果 / 决定。超预算时 Python 会按完整 item 删低优先级项，绝不会从一句话中间截断——所以你按重要性排序产出即可，不要为了凑短而写半句。
+- 正文预算 ≤ 800 字（含标题）。三个有内容的 section 都必须至少留一条；在此前提下，更正 / 未关闭待续优先于额外的结果 / 决定。超预算时 Python 会按完整 item 删减，绝不会从一句话中间截断——所以你按重要性排序产出即可，不要为了凑短而写半句。
 
 【输出】
 只输出 JSON，严格按此 schema：

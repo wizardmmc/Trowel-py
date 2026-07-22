@@ -17,7 +17,10 @@ def _valid_draft_json() -> str:
                     "tags": ["frontend"],
                 }
             ],
-            "diary": [{"date": "2026-07-09", "events": "卡两小时在浏览器缓存"}],
+            "diary": [{
+                "date": "2026-07-09",
+                "open_loops": ["浏览器缓存问题仍待处理"],
+            }],
             "reflection": "无绕弯",
             "escalate_to_human": [],
         }
@@ -93,6 +96,17 @@ def test_parse_legacy_events_still_readable() -> None:
     assert entry.outcomes == ()
 
 
+def test_validate_rejects_legacy_events_in_new_draft() -> None:
+    """Historical reads stay compatible, but live distill must use four lists."""
+    d = parse_draft(json.dumps({
+        "diary": [{"date": "2026-07-09", "events": "长" * 2000}]
+    }))
+
+    errors = validate_draft(d)
+
+    assert any("legacy events are not allowed" in error for error in errors)
+
+
 def test_diary_all_items_concatenates_four_lists() -> None:
     # dualtrack scans every structured item, not just events.
     d = parse_draft(_structured_diary_json())
@@ -111,6 +125,42 @@ def test_validate_accepts_structured_only_diary() -> None:
     assert validate_draft(d) == []
 
 
+def test_validate_rejects_episode_with_too_many_structured_items() -> None:
+    """One production 2026-07-20 episode emitted 23 diary bullets.
+
+    That output was structurally valid but too verbose to be useful memory.
+    The schema gate must reject it so the segment stays retryable instead of
+    permanently landing an oversized episode.
+    """
+    real_item = "完成当天关键实现并通过相关测试"
+    d = parse_draft(json.dumps({
+        "diary": [{
+            "date": "2026-07-20",
+            "outcomes": [real_item] * 5,
+            "decisions": [real_item] * 3,
+            "corrections": [real_item] * 3,
+            "open_loops": [real_item] * 2,
+        }]
+    }))
+
+    errors = validate_draft(d)
+
+    assert any("too many structured items" in error for error in errors)
+
+
+def test_validate_rejects_episode_item_that_is_too_long() -> None:
+    d = parse_draft(json.dumps({
+        "diary": [{
+            "date": "2026-07-20",
+            "outcomes": ["长" * 201],
+        }]
+    }))
+
+    errors = validate_draft(d)
+
+    assert any("item exceeds 200 chars" in error for error in errors)
+
+
 def test_validate_accepts_valid_draft() -> None:
     d = parse_draft(_valid_draft_json())
     assert validate_draft(d) == []
@@ -123,6 +173,23 @@ def test_validate_rejects_unknown_verification() -> None:
     assert any("unknown verification" in e for e in errors)
 
 
+def test_validate_rejects_feedback_note_kind_from_real_2026_07_22_draft() -> None:
+    # Production draft 69f59460-... used ``feedback`` for a TDD lesson.  The
+    # note schema has only five legal kinds, so this must be rejected before
+    # persist reaches MemoryStore.write_note and crashes the scheduler.
+    d = parse_draft(json.dumps({
+        "notes": [{
+            "title": "slice 实现要 TDD 先写钉核心行为的失败测试",
+            "kind": "feedback",
+            "verification": "event-data-supported",
+        }]
+    }))
+
+    errors = validate_draft(d)
+
+    assert any("unknown kind 'feedback'" in e for e in errors)
+
+
 def test_validate_rejects_missing_title() -> None:
     d = parse_draft(json.dumps({"notes": [{"title": "", "verification": "verified"}]}))
     errors = validate_draft(d)
@@ -130,7 +197,9 @@ def test_validate_rejects_missing_title() -> None:
 
 
 def test_validate_rejects_diary_missing_date() -> None:
-    d = parse_draft(json.dumps({"diary": [{"date": "", "events": "x"}]}))
+    d = parse_draft(json.dumps({
+        "diary": [{"date": "", "outcomes": ["完成了 X"]}]
+    }))
     errors = validate_draft(d)
     assert any("missing date" in e for e in errors)
 

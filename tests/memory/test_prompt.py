@@ -110,6 +110,21 @@ def test_refine_prompt_forbids_agent_self_eval_in_diary() -> None:
     assert "自评" in REFINE_PROMPT_TEMPLATE or "绩效" in REFINE_PROMPT_TEMPLATE
 
 
+def test_refine_prompt_keeps_item_target_below_hard_gate() -> None:
+    # Real 2026-07-21 diary compression overshot an exact 180-char request.
+    # Give the model a shorter writing target while Python keeps a wider gate.
+    from trowel_py.memory.prompt import (
+        EPISODE_MAX_ITEM_CHARS,
+        EPISODE_TARGET_ITEM_CHARS,
+    )
+
+    p = build_refine_prompt("/x/y.jsonl", "tokens=1 turns=1 errors=0")
+
+    assert EPISODE_TARGET_ITEM_CHARS < EPISODE_MAX_ITEM_CHARS
+    assert f"尽量控制在 {EPISODE_TARGET_ITEM_CHARS} 字以内" in p
+    assert f"硬上限 {EPISODE_MAX_ITEM_CHARS} 字" in p
+
+
 # ---------- slice-062: daily compression prompt (structured I/O) ----------
 
 

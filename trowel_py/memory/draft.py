@@ -4,6 +4,7 @@ The distillation agent emits ``draft.json``; Python parses + validates it
 BEFORE any ``write_note`` / ``write_diary`` (the schema gate, C-2/C-3).
 ``validate_draft`` rejects:
 - notes missing a title,
+- notes with an unknown kind,
 - notes with an unknown verification tier,
 - diary entries missing a date.
 
@@ -17,7 +18,14 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from trowel_py.memory.prompt import VERIFICATION_TIERS
+from trowel_py.memory.prompt import (
+    EPISODE_MAX_ITEM_CHARS,
+    EPISODE_MAX_ITEMS_PER_DATE,
+    EPISODE_MAX_ITEMS_PER_FIELD,
+    EPISODE_MAX_TOTAL_CHARS,
+    NOTE_KINDS,
+    VERIFICATION_TIERS,
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,11 @@ def validate_draft(draft: Draft) -> list[str]:
     for i, n in enumerate(draft.notes):
         if not n.title.strip():
             errors.append(f"notes[{i}]: missing title")
+        if n.kind not in NOTE_KINDS:
+            errors.append(
+                f"notes[{i}] {n.title!r}: unknown kind {n.kind!r}; "
+                f"expected one of {list(NOTE_KINDS)!r}"
+            )
         if n.verification not in VERIFICATION_TIERS:
             errors.append(
                 f"notes[{i}] {n.title!r}: unknown verification {n.verification!r}"
@@ -121,6 +134,38 @@ def validate_draft(draft: Draft) -> list[str]:
     for i, d in enumerate(draft.diary):
         if not d.date.strip():
             errors.append(f"diary[{i}]: missing date")
+        if d.events.strip():
+            errors.append(
+                f"diary[{i}]: legacy events are not allowed in a new draft; "
+                "use outcomes/decisions/corrections/open_loops"
+            )
+        structured = d.all_items()
+        if len(structured) > EPISODE_MAX_ITEMS_PER_DATE:
+            errors.append(
+                f"diary[{i}]: too many structured items "
+                f"({len(structured)} > {EPISODE_MAX_ITEMS_PER_DATE})"
+            )
+        for field_name in (
+            "outcomes", "decisions", "corrections", "open_loops"
+        ):
+            field_items = getattr(d, field_name)
+            if len(field_items) > EPISODE_MAX_ITEMS_PER_FIELD:
+                errors.append(
+                    f"diary[{i}].{field_name}: too many items "
+                    f"({len(field_items)} > {EPISODE_MAX_ITEMS_PER_FIELD})"
+                )
+            for item_index, item in enumerate(field_items):
+                if len(item) > EPISODE_MAX_ITEM_CHARS:
+                    errors.append(
+                        f"diary[{i}].{field_name}[{item_index}]: item exceeds "
+                        f"{EPISODE_MAX_ITEM_CHARS} chars"
+                    )
+        total_chars = sum(len(item) for item in structured)
+        if total_chars > EPISODE_MAX_TOTAL_CHARS:
+            errors.append(
+                f"diary[{i}]: structured text exceeds "
+                f"{EPISODE_MAX_TOTAL_CHARS} chars ({total_chars})"
+            )
     return errors
 
 

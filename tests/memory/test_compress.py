@@ -17,6 +17,7 @@ from trowel_py.memory.compress import (
     compress_daily,
     compress_monthly,
     compress_weekly,
+    daily_dates_needing_rebuild,
     write_fallback_daily,
 )
 from trowel_py.memory.draft import DraftDiary
@@ -174,6 +175,80 @@ def test_compress_daily_idempotent_skips_llm(tmp_path: Path) -> None:
     assert first_calls >= 1
 
 
+def test_daily_rebuild_scan_finds_missing_fallback_and_legacy_days(
+    tmp_path: Path,
+) -> None:
+    """The next review must retry bad old dailies even with no new segment."""
+    _structured_episode(
+        tmp_path, "missing", date="2026-07-01", outcomes=("结果一",)
+    )
+    _structured_episode(
+        tmp_path, "fallback", date="2026-07-02", outcomes=("结果二",)
+    )
+    _structured_episode(
+        tmp_path, "legacy", date="2026-07-03", outcomes=("结果三",)
+    )
+    write_fallback_daily(tmp_path, "2026-07-02")
+    _daily(tmp_path, "2026-07-03", "# 错写成前一天的旧版日记")
+    legacy_path = tmp_path / "episodes" / "oldest.md"
+    legacy_path.write_text(_dump_frontmatter({
+        "type": "episode",
+        "cc_session_id": "oldest",
+        "workdir": "/tmp",
+        "registered_at": "2026-07-04T10:00:00",
+        "review_date": "2026-07-04",
+        "source_jsonl": "/tmp/oldest.jsonl",
+        "segments": [],
+    }, "最老版本没有 activity_dates，也没有日期标题。"), encoding="utf-8")
+
+    assert daily_dates_needing_rebuild(tmp_path) == [
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+    ]
+
+
+def test_current_generation_version_is_not_rebuilt_when_sources_unchanged(
+    tmp_path: Path,
+) -> None:
+    _structured_episode(tmp_path, "s1", outcomes=("完成结果",))
+    provider = FakeProvider(_items_json(("outcome", "完成结果", "S1")))
+    compress_daily(tmp_path, "2026-07-01", provider)
+
+    fm = _daily_fm(tmp_path, "2026-07-01")
+    assert fm and isinstance(fm.get("generation_version"), int)
+    assert daily_dates_needing_rebuild(tmp_path) == []
+
+
+def test_failed_version_upgrade_keeps_previous_usable_daily(
+    tmp_path: Path,
+) -> None:
+    """A prompt/version migration must not replace good memory with fallback."""
+    _structured_episode(tmp_path, "s1", outcomes=("已经存在的进展",))
+    compress_daily(
+        tmp_path,
+        "2026-07-01",
+        FakeProvider(_items_json(("outcome", "已经存在的进展", "S1"))),
+    )
+    path = tmp_path / "diary" / "daily" / "2026-07-01.md"
+    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    assert fm
+    fm["generation_version"] = 1
+    path.write_text(_dump_frontmatter(fm, body), encoding="utf-8")
+
+    compress_daily(
+        tmp_path,
+        "2026-07-01",
+        FakeProvider(raise_on=RuntimeError("provider down during migration")),
+    )
+
+    fm_after, body_after = _split_frontmatter(path.read_text(encoding="utf-8"))
+    assert fm_after and fm_after["generation_status"] == "ok"
+    assert fm_after["generation_version"] == 1
+    assert body_after == body
+
+
 def test_compress_daily_rebuilds_when_source_changes(tmp_path: Path) -> None:
     _structured_episode(tmp_path, "s1", outcomes=("旧结果",))
     FakeProvider2 = FakeProvider(_items_json(("outcome", "旧结果", "s1:0:end")))
@@ -202,6 +277,54 @@ def test_compress_daily_retries_on_bad_source_then_succeeds(tmp_path: Path) -> N
     assert _daily_fm(tmp_path, "2026-07-01")["generation_status"] == "ok"
 
 
+def test_compress_daily_retries_when_model_omits_source_progress(
+    tmp_path: Path,
+) -> None:
+    """Structured outcomes require a 进展 item; omission is not a clean result."""
+    _structured_episode(
+        tmp_path,
+        "s1",
+        outcomes=("完成了真实实现",),
+        corrections=("原判断已被更正",),
+    )
+    provider = FakeProvider(responses=[
+        _items_json(("correction", "原判断已被更正", "S1")),
+        _items_json(
+            ("outcome", "完成了真实实现", "S1"),
+            ("correction", "原判断已被更正", "S1"),
+        ),
+    ])
+
+    compress_daily(tmp_path, "2026-07-01", provider)
+
+    body = MemoryStore(tmp_path).load_diary(layer="day")[0].body
+    assert len(provider.calls) == 2
+    assert "## 进展" in body
+    assert "## 更正" in body
+
+
+def test_compress_daily_uses_short_source_aliases_for_llm_output(
+    tmp_path: Path,
+) -> None:
+    """Production GLM repeatedly strips ``:start:end`` from long segment ids.
+
+    The prompt must expose a short opaque alias and Python must resolve it back
+    to the real segment id. This is based on the 2026-07-18 production fallback,
+    where two retries returned the right session UUID but lost the byte suffix.
+    """
+    _structured_episode(tmp_path, "real-session-id", outcomes=("完成真实结果",))
+    provider = FakeProvider(_items_json(
+        ("outcome", "完成真实结果", "S1"),
+    ))
+
+    compress_daily(tmp_path, "2026-07-01", provider)
+
+    body = MemoryStore(tmp_path).load_diary(layer="day")[0].body
+    assert "完成真实结果" in body
+    assert _daily_fm(tmp_path, "2026-07-01")["generation_status"] == "ok"
+    assert "【segment S1】" in provider.calls[0][1]
+
+
 def test_compress_daily_budget_drops_whole_items(tmp_path: Path) -> None:
     # contract 4 / C-3: over 800 chars -> drop WHOLE bullets, never mid-sentence.
     _structured_episode(tmp_path, "s1", outcomes=("a", "b"))
@@ -218,19 +341,46 @@ def test_compress_daily_budget_drops_whole_items(tmp_path: Path) -> None:
     assert "…" not in body  # never an ellipsis truncation marker
 
 
-def test_compress_daily_budget_keeps_correction_over_outcome(tmp_path: Path) -> None:
-    # priority: 更正/待续 > 结果/决定. When trimming, outcomes drop first.
+def test_compress_daily_budget_keeps_correction_and_one_outcome(tmp_path: Path) -> None:
+    # Extra progress is lower priority, but the section itself must survive.
     _structured_episode(tmp_path, "s1", outcomes=("r",), corrections=("c",))
-    big = "结果描述文本块" * 60  # ~420 chars each -> two sections exceed the budget
+    big = "结果描述文本块" * 40
     provider = FakeProvider(_items_json(
-        ("outcome", big + "OUTCOME_MARKER", "s1:0:end"),
+        ("outcome", big + "OUTCOME_ONE", "s1:0:end"),
+        ("outcome", big + "OUTCOME_TWO", "s1:0:end"),
         ("correction", big + "CORRECTION_MARKER", "s1:0:end"),
     ))
     compress_daily(tmp_path, "2026-07-01", provider)
     body = MemoryStore(tmp_path).load_diary(layer="day")[0].body
     assert len(body) <= 800
-    assert "CORRECTION_MARKER" in body   # high priority kept
-    assert "OUTCOME_MARKER" not in body  # low priority dropped
+    assert "CORRECTION_MARKER" in body
+    assert ("OUTCOME_ONE" in body) ^ ("OUTCOME_TWO" in body)
+
+
+def test_compress_daily_budget_does_not_starve_progress_section(
+    tmp_path: Path,
+) -> None:
+    """A busy day must keep one item from every represented daily section.
+
+    Real 2026-07-19/20 inputs contained outcomes, but the old priority loop
+    deleted every outcome before touching repeated corrections/open loops.
+    """
+    _structured_episode(tmp_path, "s1", outcomes=("r",))
+    long = "更正或待续的完整描述" * 28
+    provider = FakeProvider(_items_json(
+        ("outcome", "完成了当天关键实现并通过验证", "s1:0:end"),
+        ("correction", long + "更正一", "s1:0:end"),
+        ("correction", long + "更正二", "s1:0:end"),
+        ("open_loop", long + "待续一", "s1:0:end"),
+    ))
+
+    compress_daily(tmp_path, "2026-07-01", provider)
+
+    body = MemoryStore(tmp_path).load_diary(layer="day")[0].body
+    assert len(body) <= 800
+    assert "## 进展" in body
+    assert "## 更正" in body
+    assert "## 待续" in body
 
 
 def test_compress_daily_omits_empty_sections(tmp_path: Path) -> None:

@@ -62,6 +62,39 @@ def _cost_text(cost: SessionCost) -> str:
     return f"tokens={cost.total_tokens} turns={cost.num_turns} errors={cost.error_count}"
 
 
+async def _drive_host(host: Any, prompt: str) -> bool:
+    """Send one review turn and report whether it finished cleanly."""
+    finished = False
+    async for event in host.send(prompt):
+        # duck-typed: a real FinishedEvent carries type=="finished"; an
+        # ErrorEvent carries type=="error" (finished stays False).
+        if getattr(event, "type", None) == "finished":
+            finished = True
+    return finished
+
+
+def _read_draft(draft_path: Path) -> tuple[Draft | None, list[str]]:
+    """Read and validate one draft, returning concrete retry feedback."""
+    if not draft_path.exists():
+        return None, ["draft.json was not created"]
+    try:
+        draft = parse_draft(draft_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        return None, [f"draft.json is malformed: {exc}"]
+    return draft, validate_draft(draft)
+
+
+def _revision_prompt(errors: list[str]) -> str:
+    """Build the single in-session retry prompt from schema-gate errors."""
+    details = "\n".join(f"- {error}" for error in errors)
+    return (
+        "你刚写的 draft.json 被 Python 门禁拒绝。只修改当前工作目录的 "
+        "draft.json，按下面具体错误压缩、合并或补全；不要改 memory，不要写其他文件。\n\n"
+        f"【门禁错误】\n{details}\n\n"
+        "保持原有事实和四列表语义，修好后回复“draft 已修正”。"
+    )
+
+
 async def run_one_session(
     session: SessionRecord,
     date_str: str,
@@ -127,40 +160,30 @@ async def run_one_session(
             mcp_config=str(write_mcp_config()),
         )
 
-    finished = False
+    draft_path = workdir / "draft.json"
     try:
-        async for event in host.send(prompt):
-            # duck-typed: a real FinishedEvent carries type=="finished"; an
-            # ErrorEvent carries type=="error" (finished stays False).
-            if getattr(event, "type", None) == "finished":
-                finished = True
+        if not await _drive_host(host, prompt):
+            raise DistillError(
+                f"agent did not finish cleanly for {session.cc_session_id}"
+            )
+        errors: list[str] = []
+        for attempt in range(2):
+            draft, errors = _read_draft(draft_path)
+            if draft is not None and not errors:
+                return draft
+            if attempt == 0:
+                if not await _drive_host(host, _revision_prompt(errors)):
+                    raise DistillError(
+                        "agent did not finish draft revision cleanly for "
+                        f"{session.cc_session_id}"
+                    )
+        raise DistillError(
+            f"invalid draft for {session.cc_session_id}: {errors}"
+        )
     finally:
         close = getattr(host, "close", None)
         if close is not None:
             await close()
-
-    if not finished:
-        raise DistillError(
-            f"agent did not finish cleanly for {session.cc_session_id}"
-        )
-
-    draft_path = workdir / "draft.json"
-    if not draft_path.exists():
-        raise DistillError(
-            f"agent produced no draft.json for {session.cc_session_id}"
-        )
-    try:
-        draft = parse_draft(draft_path.read_text(encoding="utf-8"))
-        errors = validate_draft(draft)
-        if errors:
-            raise DistillError(f"invalid draft for {session.cc_session_id}: {errors}")
-    except DistillError:
-        raise
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        # malformed draft.json (bad JSON, non-int pain, …) → skip this session,
-        # not crash the whole daily review.
-        raise DistillError(f"invalid draft for {session.cc_session_id}: {exc}") from exc
-    return draft
 
 
 @contextlib.contextmanager
@@ -342,11 +365,14 @@ async def _run_daily_review_locked(
             )
             try:
                 report = persist_draft(store, draft, context)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 # C-7: a mid-landing failure leaves no manifest → the segment's
                 # extracted water mark is NOT advanced (it stays incremental) and
                 # is retried; the manifest + idempotence keep the re-run from
-                # duplicating anything that did land.
+                # duplicating anything that did land. ValueError is included as
+                # a defensive boundary for drift between the draft gate and the
+                # store schema; one bad model-produced note must not abort the
+                # scheduler's remaining sessions.
                 logger.warning(
                     "persist failed for %s (skipped, not advanced): %s",
                     session.cc_session_id,
@@ -383,6 +409,13 @@ async def _run_daily_review_locked(
         # selects + renders). compress_daily writes its own fallback notice on
         # failure (never the full aggregate); with no provider a fallback notice
         # is written directly (contract 5).
+        # A provider-backed run also repairs derived-cache gaps from older
+        # runs. Without this scan, fallback/legacy/missing dailies survive
+        # forever after their final episode segment has already been extracted.
+        if provider is not None:
+            from trowel_py.memory.compress import daily_dates_needing_rebuild
+
+            touched_dates.update(daily_dates_needing_rebuild(root))
         for review_date in sorted(touched_dates):
             _compress_or_aggregate(root, review_date, provider)
         # slice-064 §4: converge the dictionary to the note facts. A full

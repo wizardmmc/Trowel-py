@@ -23,12 +23,15 @@ except ImportError:
     fcntl = None  # type: ignore[assignment]
 
 from trowel_py.memory.review_job import DistillError, run_daily_review, run_one_session
+from trowel_py.memory.compress import write_fallback_daily
+from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
     create_sessions_repository,
     open_sessions_db,
 )
-from trowel_py.memory.store import MemoryStore
+from trowel_py.memory.store import MemoryStore, _split_frontmatter
+from trowel_py.memory.types import PersistContext
 
 FINISHED = SimpleNamespace(type="finished")
 ERROR = SimpleNamespace(type="error")
@@ -96,7 +99,7 @@ def _session(sid: str = "s1", workdir: str = "/proj") -> SessionRecord:
 _VALID_DRAFT = json.dumps(
     {
         "notes": [{"title": "结论", "verification": "verified"}],
-        "diary": [{"date": "2026-07-09", "events": "事件流"}],
+        "diary": [{"date": "2026-07-09", "outcomes": ["完成事件提炼"]}],
     }
 )
 
@@ -136,6 +139,112 @@ async def test_run_one_session_reads_draft(tmp_path: Path) -> None:
     )
     assert len(draft.notes) == 1
     assert draft.notes[0].verification == "verified"
+
+
+async def test_run_one_session_retries_oversized_episode_draft(
+    tmp_path: Path,
+) -> None:
+    """The episode gate returns concrete size errors for one in-session retry."""
+    day = "2026-07-09"
+    oversized = json.dumps({
+        "diary": [{
+            "date": day,
+            "outcomes": ["完成关键实现"] * 4,
+            "decisions": ["确定后续方案"] * 3,
+            "corrections": ["原判断被证据纠正"] * 3,
+            "open_loops": ["下一步待真实验证"] * 3,
+        }]
+    })
+    revised = json.dumps({
+        "diary": [{
+            "date": day,
+            "outcomes": ["完成关键实现并通过相关验证"],
+            "decisions": ["确定后续采用可追溯方案"],
+            "corrections": ["原判断被真实证据纠正"],
+            "open_loops": ["下一步补真实端到端验证"],
+        }]
+    })
+    holder: dict[str, object] = {}
+
+    class RevisingHost:
+        def __init__(self, workdir: Path) -> None:
+            self.workdir = workdir
+            self.prompts: list[str] = []
+
+        async def send(self, prompt: str):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 2:
+                (self.workdir / "draft.json").write_text(
+                    revised, encoding="utf-8"
+                )
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def factory(_session: SessionRecord, workdir: Path) -> RevisingHost:
+        (workdir / "draft.json").write_text(oversized, encoding="utf-8")
+        host = RevisingHost(workdir)
+        holder["host"] = host
+        return host
+
+    draft = await run_one_session(
+        _session(), day, tmp_path / "memory", host_factory=factory
+    )
+
+    host = holder["host"]
+    assert isinstance(host, RevisingHost)
+    assert len(host.prompts) == 2
+    assert "too many structured items" in host.prompts[1]
+    assert draft.diary[0].outcomes == ("完成关键实现并通过相关验证",)
+
+
+async def test_run_one_session_retries_feedback_kind_from_real_draft(
+    tmp_path: Path,
+) -> None:
+    """The 2026-07-22 production failure is corrected before persistence."""
+    invalid = json.dumps({
+        "notes": [{
+            "title": "slice 实现要 TDD 先写钉核心行为的失败测试",
+            "kind": "feedback",
+            "verification": "event-data-supported",
+        }]
+    })
+    revised = json.dumps({
+        "notes": [{
+            "title": "slice 实现要 TDD 先写钉核心行为的失败测试",
+            "kind": "procedure",
+            "verification": "event-data-supported",
+        }]
+    })
+    prompts: list[str] = []
+
+    class RevisingHost:
+        def __init__(self, workdir: Path) -> None:
+            self.workdir = workdir
+
+        async def send(self, prompt: str):
+            prompts.append(prompt)
+            if len(prompts) == 2:
+                (self.workdir / "draft.json").write_text(
+                    revised, encoding="utf-8"
+                )
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def factory(_session: SessionRecord, workdir: Path) -> RevisingHost:
+        (workdir / "draft.json").write_text(invalid, encoding="utf-8")
+        return RevisingHost(workdir)
+
+    draft = await run_one_session(
+        _session(), "2026-07-22", tmp_path / "memory", host_factory=factory
+    )
+
+    assert len(prompts) == 2
+    assert "unknown kind 'feedback'" in prompts[1]
+    assert draft.notes[0].kind == "procedure"
 
 
 async def test_review_job_uses_review_kind(
@@ -338,7 +447,10 @@ async def test_daily_review_daily_aggregates_all_sessions(tmp_path: Path) -> Non
                     {"title": f"结论 {session.cc_session_id}", "verification": "verified"}
                 ],
                 "diary": [
-                    {"date": "2026-07-09", "events": f"锚点 {session.cc_session_id}"}
+                    {
+                        "date": "2026-07-09",
+                        "outcomes": [f"锚点 {session.cc_session_id}"],
+                    }
                 ],
             }
         )
@@ -415,6 +527,37 @@ async def test_persist_failure_does_not_mark_extracted(
     assert [p.session.cc_session_id for p in pending] == ["s1"]
     # and no manifest was written (the failure aborted before it)
     assert not list((mem / "meta" / "persisted-segments").glob("*.json"))
+
+
+async def test_persist_schema_error_does_not_crash_scheduler_or_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store-schema ValueError is isolated like an I/O persist failure."""
+    mem = tmp_path / "memory"
+    conn = open_sessions_db(mem)
+    repo = create_sessions_repository(conn)
+    repo.register(_session("s1", "/proj1"))
+    repo.update_completed("s1", 4096)
+    conn.close()
+
+    def reject_schema(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("invalid note: kind=feedback")
+
+    monkeypatch.setattr(
+        "trowel_py.memory.review_job.persist_draft", reject_schema
+    )
+
+    await run_daily_review(
+        None,
+        memory_root=mem,
+        date_str="2026-07-09",
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+    )
+
+    conn2 = open_sessions_db(mem)
+    pending = create_sessions_repository(conn2).find_incremental()
+    conn2.close()
+    assert [p.session.cc_session_id for p in pending] == ["s1"]
 
 
 async def test_rerun_after_failure_lands_exactly_one(tmp_path: Path, monkeypatch) -> None:
@@ -544,6 +687,51 @@ async def test_half_turn_not_distilled(tmp_path: Path) -> None:
         None, memory_root=mem, date_str="2026-07-09", host_factory=factory
     )
     assert calls == []  # the half-turn session never entered the queue
+
+
+async def test_review_retries_fallback_daily_without_new_segments(
+    tmp_path: Path,
+) -> None:
+    """A failed derived daily must not need another session to become retryable."""
+    mem = tmp_path / "memory"
+    day = "2026-07-09"
+    context = PersistContext(
+        segment_id="existing:0:4096",
+        cc_session_id="existing",
+        workdir="/proj",
+        registered_at=f"{day}T10:00:00",
+        review_date=day,
+        source_jsonl="/tmp/existing.jsonl",
+        activity_dates=(day,),
+        date_basis="jsonl_timestamp",
+        processed_date=day,
+    )
+    MemoryStore(mem).write_episode(
+        context,
+        (DraftDiary(date=day, outcomes=("完成了已有工作的关键实现",)),),
+    )
+    write_fallback_daily(mem, day)
+
+    class Provider:
+        def complete(self, _system_prompt: str, _user_prompt: str) -> str:
+            return json.dumps({"items": [{
+                "type": "outcome",
+                "text": "完成了已有工作的关键实现",
+                "source": "S1",
+            }]})
+
+    await run_daily_review(
+        None,
+        memory_root=mem,
+        date_str=day,
+        host_factory=_factory([]),
+        provider=Provider(),
+    )
+
+    path = mem / "diary" / "daily" / f"{day}.md"
+    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    assert fm and fm["generation_status"] == "ok"
+    assert "## 进展" in body
 
 
 async def test_review_uses_date_str_not_session_date(tmp_path: Path) -> None:
@@ -728,7 +916,10 @@ async def test_daily_review_rejects_out_of_range_diary_date(tmp_path: Path) -> N
     draft — not persisted, water mark not advanced (segment stays retryable)."""
     mem = tmp_path / "memory"
     _seed_segment(mem, "s1", tmp_path / "s1.jsonl")
-    bad = json.dumps({"notes": [], "diary": [{"date": "2026-07-10", "events": "x"}]})
+    bad = json.dumps({
+        "notes": [],
+        "diary": [{"date": "2026-07-10", "outcomes": ["完成了 X"]}],
+    })
     await run_daily_review(
         None, memory_root=mem, date_str="2026-07-09",
         host_factory=_factory([FINISHED], bad),
@@ -744,7 +935,10 @@ async def test_daily_review_accepts_in_range_diary_date(tmp_path: Path) -> None:
     """the matching case: a diary date inside activity_dates lands + advances."""
     mem = tmp_path / "memory"
     _seed_segment(mem, "s1", tmp_path / "s1.jsonl")
-    good = json.dumps({"notes": [], "diary": [{"date": "2026-07-09", "events": "事件"}]})
+    good = json.dumps({
+        "notes": [],
+        "diary": [{"date": "2026-07-09", "outcomes": ["完成事件提炼"]}],
+    })
     await run_daily_review(
         None, memory_root=mem, date_str="2026-07-09",
         host_factory=_factory([FINISHED], good),
@@ -754,5 +948,3 @@ async def test_daily_review_accepts_in_range_diary_date(tmp_path: Path) -> None:
     conn.close()
     assert pending == []  # advanced
     assert (mem / "episodes" / "s1.md").exists()  # persisted
-
-

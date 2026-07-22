@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 #: excluding frontmatter. Enforced by whole-bullet selection — never a
 #: mid-sentence cut.
 _DAILY_BUDGET = 800
+#: Bump when prompt/selection semantics change so old ``ok`` dailies are not
+#: kept forever by source-hash idempotence. Version 2 adds short source aliases
+#: and guarantees one surviving item per represented section.
+_DAILY_GENERATION_VERSION = 2
 #: weekly/monthly raw-body cap fed to the LLM (chars). Daily does not cap input
 #: (the structured projection is already the compressed experience track).
 _INPUT_CAP = 8000
@@ -118,11 +122,43 @@ def _source_hash(sources: list[tuple[str, str, Any]]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _render_sources_block(sources: list[tuple[str, str, Any]]) -> str:
-    """Render the day's structured sources for the LLM (one block per segment)."""
+def _source_aliases(
+    sources: list[tuple[str, str, Any]],
+) -> dict[str, str]:
+    """Map short prompt aliases to real segment ids in source order.
+
+    Long ``<uuid>:<start>:<end>`` ids proved brittle in production: GLM copied
+    only the UUID on both attempts and a valid 2026-07-18 daily fell back. The
+    model only needs a citation handle, so the prompt exposes S1/S2 while
+    Python keeps the authoritative mapping.
+    """
+    return {
+        f"S{index}": seg_id
+        for index, (seg_id, _registered_at, _entry) in enumerate(sources, 1)
+    }
+
+
+def _required_sections(sources: list[tuple[str, str, Any]]) -> set[str]:
+    """Sections that structured source fields prove must appear in the daily."""
+    required: set[str] = set()
+    for _seg_id, _registered_at, entry in sources:
+        if entry.outcomes or entry.decisions:
+            required.add("进展")
+        if entry.corrections:
+            required.add("更正")
+        if entry.open_loops:
+            required.add("待续")
+    return required
+
+
+def _render_sources_block(
+    sources: list[tuple[str, str, Any]], aliases: dict[str, str]
+) -> str:
+    """Render structured sources with short, model-copyable aliases."""
     lines: list[str] = []
+    alias_for = {real_id: alias for alias, real_id in aliases.items()}
     for seg_id, _registered_at, entry in sources:
-        lines.append(f"【segment {seg_id}】")
+        lines.append(f"【segment {alias_for[seg_id]}】")
         wrote = False
         for field in ("outcomes", "decisions", "corrections", "open_loops"):
             items = getattr(entry, field)
@@ -141,7 +177,9 @@ def _render_sources_block(sources: list[tuple[str, str, Any]]) -> str:
 
 
 def _parse_and_validate(
-    raw: str, valid_ids: list[str]
+    raw: str,
+    source_aliases: dict[str, str],
+    required_sections: set[str],
 ) -> tuple[list[_DailyItem], list[str]]:
     """Parse one LLM response into validated items + per-item errors (contract 4).
 
@@ -161,7 +199,7 @@ def _parse_and_validate(
     raw_items = data.get("items")
     if not isinstance(raw_items, list):
         return [], ["'items' missing or not a list"]
-    valid_set = set(valid_ids)
+    valid_ids = set(source_aliases.values())
     items: list[_DailyItem] = []
     for i, it in enumerate(raw_items):
         if not isinstance(it, dict):
@@ -176,12 +214,26 @@ def _parse_and_validate(
         if not text:
             errors.append(f"items[{i}]: empty text")
             continue
-        if source not in valid_set:
+        resolved_source = source_aliases.get(source)
+        # Accept exact real ids for backward compatibility with recorded tests
+        # and older providers. New prompts expose aliases only.
+        if resolved_source is None and source in valid_ids:
+            resolved_source = source
+        if resolved_source is None:
             errors.append(
-                f"items[{i}]: source {source!r} not in provided segments"
+                f"items[{i}]: source {source!r} not in provided aliases "
+                f"{list(source_aliases)}"
             )
             continue
-        items.append(_DailyItem(type=typ, text=text, source=source))
+        items.append(_DailyItem(type=typ, text=text, source=resolved_source))
+    present_sections = {
+        section
+        for item in items
+        if (section := _SECTION_FOR_TYPE.get(item.type)) is not None
+    }
+    for section in _SECTION_ORDER:
+        if section in required_sections and section not in present_sections:
+            errors.append(f"missing required section {section!r}")
     return items, errors
 
 
@@ -189,7 +241,8 @@ def _generate_items(
     provider: LLMProvider,
     date_str: str,
     sources_block: str,
-    valid_ids: list[str],
+    source_aliases: dict[str, str],
+    required_sections: set[str],
 ) -> tuple[list[_DailyItem], str]:
     """Run the LLM (with one retry on validation failure) → (items, status).
 
@@ -211,7 +264,9 @@ def _generate_items(
     except Exception:  # noqa: BLE001 — provider failure is a fallback, not a crash
         logger.warning("daily %s: provider call failed", date_str, exc_info=True)
         return [], "fallback"
-    items1, errs1 = _parse_and_validate(raw1, valid_ids)
+    items1, errs1 = _parse_and_validate(
+        raw1, source_aliases, required_sections
+    )
     if not errs1:
         return items1, "ok"
     logger.info("daily %s: first response rejected (%s) — retrying", date_str, errs1[:3])
@@ -223,7 +278,9 @@ def _generate_items(
     except Exception:  # noqa: BLE001
         logger.warning("daily %s: provider retry failed", date_str, exc_info=True)
         return [], "fallback"
-    items2, errs2 = _parse_and_validate(raw2, valid_ids)
+    items2, errs2 = _parse_and_validate(
+        raw2, source_aliases, required_sections
+    )
     if errs2:
         logger.warning("daily %s: retry still rejected (%s) — fallback", date_str, errs2[:3])
         return [], "fallback"
@@ -267,38 +324,63 @@ def _select_within_budget(
 ) -> list[_DailyItem]:
     """Trim items to fit the body budget by dropping WHOLE bullets (C-3).
 
-    Low-priority items (outcome/decision) are dropped first, latest-first; only
-    when those are exhausted are corrections/open_loops dropped. The last
-    surviving item is never removed, so a single huge item is kept verbatim
-    rather than truncated or emptied (best effort, logged by the caller).
+    Keep at least one item from every represented section, then drop removable
+    low-priority items (outcome/decision) first, latest-first. This prevents a
+    busy day from losing its entire 进展 section when corrections/open loops are
+    numerous. If one item per section still exceeds the budget, the caller
+    writes a fallback rather than silently starving a section or truncating.
     """
     selected = list(items)
     while len(selected) > 1 and len(_render_daily_body(date_str, selected)) > budget:
-        low_priority = [
+        section_counts = {
+            section: sum(
+                _SECTION_FOR_TYPE.get(item.type) == section for item in selected
+            )
+            for section in _SECTION_ORDER
+        }
+        removable = [
             i for i, it in enumerate(selected)
-            if _TYPE_PRIORITY.get(it.type, 0) == 0
+            if section_counts.get(_SECTION_FOR_TYPE.get(it.type, ""), 0) > 1
         ]
-        drop = low_priority[-1] if low_priority else len(selected) - 1
+        if not removable:
+            break
+        low_priority = [
+            i for i in removable
+            if _TYPE_PRIORITY.get(selected[i].type, 0) == 0
+        ]
+        drop = low_priority[-1] if low_priority else removable[-1]
         selected.pop(drop)
     return selected
 
 
-def _existing_daily_ok(root_path: Path, date_str: str, shash: str) -> bool:
-    """Idempotence gate (contract 6): keep the daily when inputs unchanged.
-
-    True only when an ``ok`` daily exists with a matching ``source_hash`` whose
-    body still fits the budget. A missing or ``fallback`` daily rebuilds. Reads
-    the file once (frontmatter + body) — no TOCTOU window between the two.
-    """
+def _existing_daily_usable(root_path: Path, date_str: str, shash: str) -> bool:
+    """Whether an existing successful daily can survive a failed regeneration."""
     path = root_path / "diary" / "daily" / f"{date_str}.md"
     if not path.exists():
         return False
     fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    return bool(
+        fm
+        and fm.get("generation_status") == "ok"
+        and fm.get("source_hash") == shash
+        and len(body.strip()) <= _DAILY_BUDGET
+    )
+
+
+def _existing_daily_ok(root_path: Path, date_str: str, shash: str) -> bool:
+    """Idempotence gate (contract 6): keep a current-version daily unchanged.
+
+    True only when an ``ok`` daily exists with a matching ``source_hash`` whose
+    body still fits the budget and whose generation version is current. A
+    missing, stale, or ``fallback`` daily rebuilds.
+    """
+    path = root_path / "diary" / "daily" / f"{date_str}.md"
+    if not _existing_daily_usable(root_path, date_str, shash):
+        return False
+    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
     if not fm:
         return False
-    if fm.get("generation_status") != "ok":
-        return False
-    if fm.get("source_hash") != shash:
+    if fm.get("generation_version") != _DAILY_GENERATION_VERSION:
         return False
     return len(body.strip()) <= _DAILY_BUDGET
 
@@ -318,6 +400,7 @@ def _write_daily(
         "source_hash": shash,
         "generated_at": datetime.now().isoformat(),
         "generation_status": status,
+        "generation_version": _DAILY_GENERATION_VERSION,
         "__body": body,
     })
 
@@ -363,10 +446,17 @@ def compress_daily(
     shash = _source_hash(sources)
     if _existing_daily_ok(root_path, date_str, shash):
         return date_str
+    preserve_on_failure = _existing_daily_usable(root_path, date_str, shash)
 
-    valid_ids = [seg_id for seg_id, _reg, _entry in sources]
-    sources_block = _render_sources_block(sources)
-    items, status = _generate_items(provider, date_str, sources_block, valid_ids)
+    aliases = _source_aliases(sources)
+    sources_block = _render_sources_block(sources, aliases)
+    items, status = _generate_items(
+        provider,
+        date_str,
+        sources_block,
+        aliases,
+        _required_sections(sources),
+    )
     if status == "ok" and items:
         items = _dedup_items(items)
         items = _select_within_budget(date_str, items)
@@ -383,6 +473,14 @@ def compress_daily(
             "daily %s: body still %d chars after whole-bullet selection; fallback",
             date_str, len(body),
         )
+    # A version/prompt upgrade must not replace a still-usable old summary with
+    # a fallback notice. It remains stale and the rebuild scan retries later.
+    if preserve_on_failure:
+        logger.warning(
+            "daily %s: regeneration failed; preserving previous usable daily",
+            date_str,
+        )
+        return date_str
     # fallback (contract 5): compression failed, yielded nothing usable, or a
     # single oversized item could not fit the budget.
     _write_fallback_body(store, date_str, source_segments, shash)
@@ -406,6 +504,61 @@ def write_fallback_daily(root: Path | str, date_str: str) -> str:
     shash = _source_hash(sources)
     _write_fallback_body(store, date_str, source_segments, shash)
     return date_str
+
+
+def daily_dates_needing_rebuild(root: Path | str) -> list[str]:
+    """Return episode dates whose daily is missing, failed, stale, or changed.
+
+    The review loop previously compressed only dates touched by a newly
+    distilled segment. Consequently a fallback (2026-07-18), a legacy wrong
+    daily (2026-07-17), or a day with episodes but no daily (2026-07-12) could
+    survive forever once no new segment touched that date. This read-only scan
+    makes those derived caches retryable on the next provider-backed review.
+
+    Returns:
+        Sorted ISO date strings that ``compress_daily`` should revisit.
+    """
+    root_path = Path(root)
+    episodes_dir = root_path / "episodes"
+    dates: set[str] = set()
+    if episodes_dir.exists():
+        for path in sorted(episodes_dir.glob("*.md")):
+            fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if not fm:
+                continue
+            dates.update(
+                str(value)
+                for value in (fm.get("activity_dates") or [])
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value))
+            )
+            review_date = str(fm.get("review_date") or "")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", review_date):
+                dates.add(review_date)
+            for segment in fm.get("segments") or []:
+                if not isinstance(segment, dict):
+                    continue
+                dates.update(
+                    str(value)
+                    for value in (segment.get("activity_dates") or [])
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value))
+                )
+            dates.update(
+                match.group(1)
+                for match in re.finditer(
+                    r"^## (\d{4}-\d{2}-\d{2})\s*$", body, re.MULTILINE
+                )
+            )
+
+    store = MemoryStore(root_path)
+    needs: list[str] = []
+    for date_str in sorted(dates):
+        sources = store.project_daily_sources(date_str)
+        if not sources:
+            continue
+        shash = _source_hash(sources)
+        if not _existing_daily_ok(root_path, date_str, shash):
+            needs.append(date_str)
+    return needs
 
 
 # --------------------------- weekly/monthly (slice-041) ---------------------------
