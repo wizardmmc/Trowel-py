@@ -116,6 +116,10 @@ EVENT_TYPES = frozenset(
         # slice-074's envelope validation turned it into a hard reject that
         # would break CC /exit (row not dropped + spurious error turn).
         "session_exited",
+        # slice-088: the model's per-message token usage, emitted from a CC
+        # assistant envelope before it is split into text/thinking/tool_use
+        # (the split discards usage/model/message_id).
+        "context_usage",
     }
 )
 
@@ -324,9 +328,32 @@ class ModelChangedEvent(_Event):
 
 
 class CompactBoundaryEvent(_Event):
-    """CC finished an auto-compact pass on its context."""
+    """CC finished an auto-compact pass on its context.
+
+    slice-088: ``trigger`` ("auto" / "manual") comes from
+    ``compactMetadata.trigger`` so the context observer can tell a threshold
+    auto-compact from a user-run /compact (only the former evidence-pins where
+    auto-compact fires).
+    """
 
     type: Literal["compact_boundary"] = "compact_boundary"
+    trigger: str | None = None
+
+
+class ContextUsageEvent(_Event):
+    """The model's token usage for one assistant message (slice-088).
+
+    Emitted from a CC assistant envelope BEFORE it is split into text/thinking/
+    tool_use, so the context observer can read ``message.usage`` /
+    ``message.model`` / ``message.id`` — which the split events discard
+    (codex code review HIGH 6). Carries the raw usage mapping verbatim; the
+    context calculator interprets it.
+    """
+
+    type: Literal["context_usage"] = "context_usage"
+    message_id: str | None = None
+    model: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class LocalCommandEvent(_Event):

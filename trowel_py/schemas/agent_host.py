@@ -56,6 +56,10 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         "approval_request",
         # Account-level rate-limit snapshot (slice-077; account/rateLimits/updated).
         "rate_limit_updated",
+        # Codex contextCompaction item lifecycle (slice-088). Only the
+        # ``completed`` phase is emitted — it starts a new context generation;
+        # ``started`` is dropped (083 / codex review A5).
+        "compaction",
     }
 )
 

@@ -20,6 +20,7 @@ from trowel_py.cc_host.delta import DeltaAccumulator
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.schemas.cc_host import (
     CompactBoundaryEvent,
+    ContextUsageEvent,
     ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
@@ -181,7 +182,13 @@ class Translator:
             stage = ev.get("subtype2") or ev.get("stage") or "unknown"
             return [StatusEvent(stage=stage)]
         if sub == "compact_boundary":
-            return [CompactBoundaryEvent()]
+            meta = ev.get("compactMetadata") or {}
+            trigger = meta.get("trigger") if isinstance(meta, dict) else None
+            return [
+                CompactBoundaryEvent(
+                    trigger=trigger if isinstance(trigger, str) else None
+                )
+            ]
         if sub == "local_command_output":
             return [LocalCommandEvent(content=_as_text(ev.get("content")))]
         if sub == "thinking_tokens":
@@ -341,7 +348,20 @@ class Translator:
             one event per content block: TextEvent / ThinkingEvent / ToolCallEvent.
         """
         out: list[TrowelEvent] = []
-        for block in ev.get("message", {}).get("content", []) or []:
+        msg = ev.get("message", {}) or {}
+        # slice-088: emit the model usage BEFORE the content split — the split
+        # into text/thinking/tool_use discards message.usage/model/id, which
+        # the context observer needs (codex code review HIGH 6).
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            out.append(
+                ContextUsageEvent(
+                    message_id=msg.get("id") if isinstance(msg.get("id"), str) else None,
+                    model=msg.get("model") if isinstance(msg.get("model"), str) else None,
+                    usage=usage,
+                )
+            )
+        for block in msg.get("content", []) or []:
             if not isinstance(block, dict):
                 continue
             kind = block.get("type")

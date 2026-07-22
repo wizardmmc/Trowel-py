@@ -44,6 +44,10 @@ from trowel_py.model_os.types import (
     WorkItemKind,
     WorkItemStatus,
 )
+from trowel_py.model_os.context_observer import (
+    ContextSample,
+    context_sample_from_dict,
+)
 
 _SCHEMA_VERSION = 1
 _MAX_DESCRIPTION_LEN = 512
@@ -147,6 +151,34 @@ class UnknownAction:
 
 
 @dataclass(frozen=True)
+class ContextObservationState:
+    """Derived view of the latest context-occupancy observation for one
+    (episode, native_session) pair (slice-088).
+
+    One row per (episode_id, native_session_id): the latest ContextSample seen
+    for that pair, INCLUDING an unavailable one (codex review extra-HIGH 1: a
+    missing-usage observation must not be masked by an older trusted number).
+    ``observed_at`` is the envelope's ``occurred_at`` — the single event-time
+    authority (codex review M2; the ContextSample itself carries no time field).
+
+    Cross-session "latest" caveat (codex review A3): this state is keyed by
+    native_session, so WITHIN one session the latest is exact. Picking across
+    sessions of the same Episode by ``observed_at`` can in principle select a
+    late-arriving sample from an OLD session after a fresh relay. Resolving
+    "which native session is the current relay" needs the Episode→native_session
+    activation fact that slice-090 owns, so 088 does NOT promise cross-fresh
+    "current" correctness — callers needing the current session's sample filter
+    by ``native_session_id``.
+    """
+
+    episode_id: str | None
+    native_session_id: str
+    generation: int
+    latest_sample: ContextSample
+    observed_at: str
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """Derived journal state.
 
@@ -169,6 +201,7 @@ class Snapshot:
     foreground_task_id: str | None
     unknown_actions: tuple[UnknownAction, ...]
     unrecognized_event_kinds: tuple[str, ...]
+    context_observations: tuple[ContextObservationState, ...]
 
     def task_work_items(self) -> tuple[WorkItemState, ...]:
         """Return only Task-kind work items (excludes all system work)."""
@@ -220,6 +253,43 @@ class Snapshot:
             if e.work_item_id == work_item_id and not e.status.is_terminal
         )
 
+    def context_observation(
+        self, episode_id: str | None, native_session_id: str
+    ) -> ContextObservationState | None:
+        """The latest observation for one (episode, native_session), or None.
+
+        Exact within a session (A3): keyed by native_session_id.
+        """
+
+        return next(
+            (
+                s
+                for s in self.context_observations
+                if s.episode_id == episode_id
+                and s.native_session_id == native_session_id
+            ),
+            None,
+        )
+
+    def latest_context_sample(
+        self, episode_id: str | None
+    ) -> ContextObservationState | None:
+        """The latest observation across ALL native sessions of an Episode
+        (highest ``observed_at``; fold order breaks ties).
+
+        Cross-fresh caveat (A3): see :class:`ContextObservationState`. This may
+        select a late sample from an old session; callers that need the current
+        relay's sample should use :meth:`context_observation` with the current
+        native_session_id (bound by slice-090).
+        """
+
+        candidates = tuple(
+            s for s in self.context_observations if s.episode_id == episode_id
+        )
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.observed_at)
+
 
 def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
     """Return the empty snapshot every replay starts from."""
@@ -235,6 +305,7 @@ def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
         foreground_task_id=None,
         unknown_actions=(),
         unrecognized_event_kinds=(),
+        context_observations=(),
     )
 
 
@@ -957,6 +1028,46 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         # already adds an UnknownAction; a stale-write rejection changes no
         # derived state.
         return snap
+    # slice-088 — context observation projection. A sample updates the latest
+    # observation for its (episode, native_session), including an unavailable
+    # one (extra-HIGH 1). A generation boundary is audit-only: the ContextSample
+    # already carries its own generation (computed by the calculator), so the
+    # boundary does not derive state on its own.
+    if event.kind == EventKind.CONTEXT_SAMPLE_OBSERVED:
+        # codex review HIGH 5: envelope is the ownership authority — the payload
+        # does NOT carry native_session_id; inject it from the envelope.
+        native = event.native_session_id
+        if not native:
+            return snap  # no session to attribute — drop defensively
+        sample = context_sample_from_dict(event.payload, native)
+        episode_id = event.episode_id
+        existing = next(
+            (
+                s
+                for s in snap.context_observations
+                if s.episode_id == episode_id and s.native_session_id == native
+            ),
+            None,
+        )
+        # codex review MEDIUM 4: a late-arriving OLDER event must NOT overwrite a
+        # newer one — compare occurred_at, not fold order.
+        if existing is not None and event.occurred_at < existing.observed_at:
+            return snap
+        ctx_state = ContextObservationState(
+            episode_id=episode_id,
+            native_session_id=native,
+            generation=sample.generation,
+            latest_sample=sample,
+            observed_at=event.occurred_at,
+        )
+        rest = tuple(
+            s
+            for s in snap.context_observations
+            if not (s.episode_id == episode_id and s.native_session_id == native)
+        )
+        return replace(snap, context_observations=rest + (ctx_state,))
+    if event.kind == EventKind.CONTEXT_GENERATION_BOUNDARY:
+        return snap  # audit-only; generation lives on the ContextSample
     # forward-compat: retain the kind, do not crash
     if event.kind not in snap.unrecognized_event_kinds:
         return replace(

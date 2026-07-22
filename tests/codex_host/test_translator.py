@@ -792,10 +792,10 @@ def test_slice077_skeleton_methods_are_capability_false() -> None:
 
 
 def test_subagent_and_compaction_items_route_to_empty() -> None:
-    """subAgentActivity / contextCompaction items -> [] until activated.
-
-    Handlers (_subagent_item / _compaction_item) are ready; the item/started and
-    item/completed dispatch routes them to an explicit empty return for now.
+    """slice-088: item/completed(contextCompaction) now routes to a COMPACTION
+    item (the context observer consumes it to advance generation). item/started
+    is intentionally still empty — only completed closes a boundary (083 / A5).
+    subAgentActivity remains capability=false until its own slice.
     """
 
     translator = CodexTranslator()
@@ -810,9 +810,11 @@ def test_subagent_and_compaction_items_route_to_empty() -> None:
         )
         == []
     )
+    # A5: item/started(contextCompaction) is a no-op — thread/compact/start
+    # returning {} is not a boundary; only item/completed closes one.
     assert (
         translator.translate(
-            "item/completed",
+            "item/started",
             {
                 "threadId": "t",
                 "turnId": "x",
@@ -821,3 +823,16 @@ def test_subagent_and_compaction_items_route_to_empty() -> None:
         )
         == []
     )
+    completed = translator.translate(
+        "item/completed",
+        {
+            "threadId": "t",
+            "turnId": "x",
+            "item": {"type": "contextCompaction", "id": "c"},
+        },
+    )
+    assert len(completed) == 1
+    assert completed[0].type.value == "compaction"
+    assert completed[0].thread_id == "t"
+    assert completed[0].turn_id == "x"
+    assert completed[0].item_id == "c"

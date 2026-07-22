@@ -91,6 +91,7 @@ class CodexEventAdapter:
             CodexEventType.INTERRUPTED: self._interrupted,
             CodexEventType.ERROR: self._error,
             CodexEventType.HOST_STATUS: self._host_status,
+            CodexEventType.COMPACTION: self._compaction,
         }
 
     @property
@@ -310,6 +311,22 @@ class CodexEventAdapter:
         """usage_updated (extension) — passthrough token accounting."""
 
         return self._passthrough(e, type_="usage_updated")
+
+    def _compaction(self, e: CodexEvent) -> AgentEvent:
+        """compaction (extension) — a contextCompaction item, slice-088.
+
+        Only the ``completed`` phase reaches here: the translator routes
+        ``item/started(contextCompaction)`` to a no-op (083 / codex review A5 —
+        ``thread/compact/start`` returning {} does not close a boundary). The
+        payload stamps ``phase="completed"`` so a context observer can advance
+        its generation without guessing the item phase.
+        """
+
+        payload = dict(e.payload)
+        # hardcoded: only item/completed reaches here (started is a no-op in
+        # the translator, 083 A5), so phase is always "completed".
+        payload["phase"] = "completed"
+        return self._envelope(e, type_="compaction", payload=payload)
 
     def _rate_limit_updated(self, e: CodexEvent) -> AgentEvent:
         """rate_limit_updated (extension) — passthrough account-level snapshot.

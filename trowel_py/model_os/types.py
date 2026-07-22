@@ -284,6 +284,23 @@ class EventKind:
     #: slice-087 fencing audit: a write bearing a stale lease token was
     #: rejected. Retained for traceability; affects no derived state.
     LATE_WRITE_REJECTED = "episode.late_write_rejected"
+    #: slice-088 — one context-occupancy observation for an Episode's native
+    #: session. The payload is a ContextSample (used/window/ratio/confidence/
+    #: unavailable_reason). The reducer projects the latest observation per
+    #: (episode, native_session), INCLUDING unavailable ones (codex review
+    #: extra-HIGH 1: a missing-usage observation must not be masked by an older
+    #: trusted number). It does NOT trigger yield — the observer is passive
+    #: (slice-088 boundary). Owned fields (task/episode/native_session) live on
+    #: the envelope as the single source of truth (extra-HIGH 2); the payload
+    #: only mirrors native_session_id so a ContextSample is self-describing.
+    CONTEXT_SAMPLE_OBSERVED = "context.sample_observed"
+    #: slice-088 — a compact / fresh boundary that starts a new context
+    #: generation. Per 083: this boundary event MUST land in the journal BEFORE
+    #: later samples update the derived state, so a replay rebuilds the same
+    #: generation sequence. Audit-only in the reducer — a ContextSample already
+    #: carries its own generation (computed by the calculator), so the boundary
+    #: does not derive state on its own.
+    CONTEXT_GENERATION_BOUNDARY = "context.generation_boundary"
 
 
 @dataclass(frozen=True)

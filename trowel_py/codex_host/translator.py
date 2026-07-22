@@ -551,8 +551,9 @@ class CodexTranslator:
             # route once a real fixture is recorded.
             return []
         if item_type == _ITEM_COMPACT:
-            # capability=false (slice-077): _compaction_item is ready below;
-            # route once a compact client is added.
+            # slice-088 (083 / codex review A5): item/started(contextCompaction)
+            # is intentionally a no-op — only item/completed closes a context
+            # generation. thread/compact/start returning {} is not a boundary.
             return []
         return []
 
@@ -576,7 +577,9 @@ class CodexTranslator:
         if item_type == _ITEM_SUBAGENT:
             return []  # capability=false (slice-077): _subagent_item ready, not routed
         if item_type == _ITEM_COMPACT:
-            return []  # capability=false (slice-077): _compaction_item ready, not routed
+            # slice-088: activate the completed boundary (083 / codex review A5).
+            # Only item/completed(contextCompaction) closes a context generation.
+            return [self._compaction_item(params, item)]
         # reasoning completed: deltas already streamed; final summary is a
         # future slice. Other item kinds are capability-gated.
         return []
@@ -988,12 +991,12 @@ class CodexTranslator:
     def _compaction_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
-        """``item.type=contextCompaction`` -> COMPACTION (capability=false).
+        """``item.type=contextCompaction`` -> COMPACTION (slice-088 activated).
 
         Source: ``item.rs:388 ContextCompaction``. The item carries only ``id``;
-        pre/post token counts come from ``thread/tokenUsage/updated`` (decision
-        4). ``thread/compacted`` is deprecated (``thread.rs:1603``) and trowel
-        has no ``thread/compact/start`` client, so this never fires today.
+        pre/post token counts come from ``thread/tokenUsage/updated``. Only the
+        ``item/completed`` route calls this (slice-088 / 083 A5); ``item/started``
+        stays a no-op — ``thread/compact/start`` returning {} is not a boundary.
         """
 
         return TranslatedItem(

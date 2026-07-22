@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from trowel_py.schemas.cc_host import (
+    ContextUsageEvent,
     CreateSessionRequest,
     RevertRequest,
     SendMessageRequest,
@@ -122,6 +123,7 @@ class TestEventDiscriminators:
     @pytest.mark.parametrize(
         "model,etype",
         [
+            (ContextUsageEvent, "context_usage"),
             (SessionStartedEvent, "session_started"),
             (TurnStartEvent, "turn_start"),
             (UserEvent, "user"),
@@ -160,6 +162,7 @@ class TestEventDiscriminators:
             # documentation-only gap that slice-074's envelope validation made
             # into a hard reject, breaking CC /exit).
             "session_exited",
+            "context_usage",
         }
         assert etype in EVENT_TYPES
 

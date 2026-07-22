@@ -74,6 +74,10 @@ from trowel_py.model_os.types import (
     WorkItemKind,
     WorkItemStatus,
 )
+from trowel_py.model_os.context_observer import (
+    ContextSample,
+    context_sample_to_dict,
+)
 
 _SCHEMA_VERSION = 4  # v4 (slice-087 R3-H3): idx_leases_idem scoped to released_at IS NULL so a released lease's key does not block a new grant
 _DEFAULT_POLICY_VERSION = "v0"
@@ -1382,6 +1386,104 @@ class ModelOsStore:
         ).fetchone()
         assert row is not None
         return int(row["seq"])
+
+    # -------------------------------------------------------- slice-088 context
+    #
+    # Thin, idempotent append wrappers for context observations. The event
+    # kinds are NOT in _TASK_LIFECYCLE_KINDS / _EPISODE_LIFECYCLE_KINDS, so
+    # they go through the public append_event path (no structured-command gate
+    # needed — a context sample is a passive observation, not a lifecycle move).
+    #
+    # Idempotency (A4): a sample's event_id embeds the runtime event's stable
+    # ``occurred_at`` (NOT the write wall-clock), so a crash-retry that re-sends
+    # the SAME observation is idempotent, while an evolving usage (subagent same
+    # message.id with growing usage) lands as a DISTINCT event and the reducer
+    # keeps the last — mirroring 082's "keep last" dedup online.
+
+    def record_context_sample(
+        self,
+        sample: ContextSample,
+        *,
+        episode_id: str | None,
+        occurred_at: str,
+        task_id: str | None = None,
+        source: str = "observer",
+    ) -> int:
+        """Append one CONTEXT_SAMPLE_OBSERVED event; idempotent on identity.
+
+        Args:
+            sample: the observation (used/window/ratio/confidence/...). Its
+                ``native_session_id`` / ``request_identity`` / ``generation``
+                feed the event_id so retries of the same observation collide
+                idempotently.
+            episode_id: the Episode this observation belongs to (envelope-level
+                owner; the single source of truth — extra-HIGH 2).
+            occurred_at: the RUNTIME event's timestamp (stable across retries),
+                not the write wall-clock — this is what makes retry idempotent.
+            task_id: optional Task pointer.
+            source: provenance tag (default "observer").
+        """
+
+        # codex review HIGH 3: the event_id must NOT embed occurred_at — the
+        # AgentEvent stream carries no stable event time, so a write-clock time
+        # would make crash-replay non-idempotent. Instead, identity is
+        # (episode, native_session, request, generation). Evolving usage (same
+        # message.id streaming {0,0}→real) is collapsed by the batch
+        # calculator's "keep last" dedup, so one request → one sample → one
+        # stable id; replaying the same observation is idempotent.
+        event_id = (
+            f"ctx.sample.{episode_id or 'no-ep'}.{sample.native_session_id}."
+            f"{sample.request_identity}.{sample.generation}"
+        )
+        event = EventEnvelope(
+            event_id=event_id,
+            kind=EventKind.CONTEXT_SAMPLE_OBSERVED,
+            occurred_at=occurred_at,
+            source=source,
+            provenance=Provenance.MACHINE_OBSERVATION,
+            policy_version=self._policy_version,
+            payload=context_sample_to_dict(sample),
+            task_id=task_id,
+            episode_id=episode_id,
+            native_session_id=sample.native_session_id,
+        )
+        return self.append_event(event)
+
+    def record_context_boundary(
+        self,
+        native_session_id: str,
+        *,
+        episode_id: str | None,
+        generation: int,
+        occurred_at: str,
+        trigger: str | None = None,
+        task_id: str | None = None,
+        source: str = "observer",
+    ) -> int:
+        """Append one CONTEXT_GENERATION_BOUNDARY event (audit-only in reducer).
+
+        Per 083: the boundary event MUST land BEFORE the post-boundary samples,
+        so a replay rebuilds the same generation sequence. ``generation`` is
+        carried for audit; the derived generation on a ContextSample comes from
+        the calculator, not from this event.
+        """
+
+        event_id = (
+            f"ctx.boundary.{episode_id or 'no-ep'}.{native_session_id}.{generation}"
+        )
+        event = EventEnvelope(
+            event_id=event_id,
+            kind=EventKind.CONTEXT_GENERATION_BOUNDARY,
+            occurred_at=occurred_at,
+            source=source,
+            provenance=Provenance.MACHINE_OBSERVATION,
+            policy_version=self._policy_version,
+            payload={"generation": generation, "trigger": trigger},
+            task_id=task_id,
+            episode_id=episode_id,
+            native_session_id=native_session_id,
+        )
+        return self.append_event(event)
 
     def append_decision(self, decision: DecisionRecord) -> int:
         """Append a decision (idempotent on ``decision_id``); return its seq.
