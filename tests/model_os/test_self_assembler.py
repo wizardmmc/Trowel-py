@@ -150,6 +150,21 @@ def test_render_lists_subsystems():
     assert "画像" in text
 
 
+def test_render_dual_runtime_names_the_cross_runtime_boundary():
+    """The body distinguishes the host API from a runtime-native tool.
+
+    Model OS can start either CC or Codex, and a CC Episode can reach the other
+    host through Trowel's HTTP API.  Saying merely "能调用" caused a real CC turn
+    to mistake an unrelated Claude plugin for that bridge.
+    """
+
+    text = render_self_injection(_build(runtime="cc"))
+    assert "系统可分别启动 CC 与 Codex" in text
+    assert "跨 runtime 调用须走 Trowel Agent HTTP API" in text
+    assert "不是 runtime 自带能力" in text
+    assert "双 runtime：能调用 CC 和 Codex" not in text
+
+
 def test_render_has_native_tools_note():
     m = _build(runtime="cc")
     text = render_self_injection(m)

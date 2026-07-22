@@ -54,7 +54,10 @@ _SUBSYSTEM_LABELS: dict[str, str] = {
     "memory": "记忆系统：跨会话记忆",
     "profile": "用户画像：合作者的画像",
     "model_os": "Model OS 内核：跨会话持续身份",
-    "dual_runtime": "双 runtime：能调用 CC 和 Codex",
+    "dual_runtime": (
+        "双 runtime：系统可分别启动 CC 与 Codex；"
+        "跨 runtime 调用须走 Trowel Agent HTTP API，不是 runtime 自带能力"
+    ),
     "todo_loop": "todo loop：任务跟踪",
 }
 
