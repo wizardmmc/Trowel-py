@@ -40,6 +40,7 @@ export type Phase =
   | "tool"
   | "retrying"
   | "compacting"
+  | "background_waiting"
   | "awaiting_input"
   | "done"
   | "error"
@@ -942,6 +943,9 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       if (event.stage === "compacting") {
         return { ...prev, phase: "compacting" };
       }
+      if (event.stage === "background_waiting") {
+        return { ...prev, phase: "background_waiting" };
+      }
       return prev;
 
     case "compact_boundary":
@@ -1284,6 +1288,7 @@ const _ACTIVE_PHASES: ReadonlySet<Phase> = new Set([
   "tool",
   "retrying",
   "compacting",
+  "background_waiting",
 ]);
 
 /**

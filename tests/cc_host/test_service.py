@@ -25,6 +25,7 @@ from trowel_py.schemas.cc_host import (
     StalledWarningEvent,
     TurnStartEvent,
     SessionExitedEvent,
+    StatusEvent,
 )
 
 
@@ -289,6 +290,37 @@ class TestBackgroundTaskLogicalTurn:
         assert len(finished) == 1, "一个逻辑 turn 最多一个 finished (C-3)"
         assert finished[0].num_turns == 2, (
             "finished 必须是最终 result（num_turns=2），不是中间 result（num_turns=1）"
+        )
+
+    async def test_mid_result_surfaces_background_waiting_phase(
+        self, tmp_path: Path
+    ):
+        """A real mid-result is idle waiting, not assistant generation.
+
+        The logical turn must stay open for the eventual task_notification and
+        CC auto-continuation, but the UI needs an explicit phase transition so
+        the last assistant text does not leave the status stuck at ``生成中``.
+        """
+        proc = FakeProc(self._bg_local_bash_lines())
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        events = await collect(host.send("run sleep 6 in background"))
+
+        waiting = [
+            event
+            for event in events
+            if isinstance(event, StatusEvent)
+            and event.stage == "background_waiting"
+        ]
+        assert len(waiting) == 1
+        waiting_index = events.index(waiting[0])
+        done_text_index = next(
+            i
+            for i, event in enumerate(events)
+            if isinstance(event, TextEvent) and event.text == "DONE"
+        )
+        assert waiting_index < done_text_index, (
+            "等待态必须在后台完成触发的 CC 自动续跑之前到达前端"
         )
 
     async def test_second_sendtext_rejected_while_turn_active(

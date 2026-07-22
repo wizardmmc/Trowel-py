@@ -29,6 +29,7 @@ const PHASE_LABEL: Record<Phase, string> = {
   tool: "执行工具",
   retrying: "重试中",
   compacting: "压缩上下文中",
+  background_waiting: "等待后台任务",
   awaiting_input: "等你回答",
   done: "完成",
   error: "出错",

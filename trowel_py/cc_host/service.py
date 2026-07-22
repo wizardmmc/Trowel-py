@@ -1206,6 +1206,16 @@ class CCHost:
                         # translator's _on_result; CC's next assistant text
                         # starts a fresh native segment.
                         self._pending_terminal = None
+                        # The native foreground segment has finished.  The
+                        # logical turn deliberately remains open, but leaving
+                        # the last assistant TextEvent as the visible phase
+                        # makes the UI claim CC is still "generating" during a
+                        # potentially long, silent background wait.  Reuse the
+                        # existing host-neutral status event to expose the
+                        # background_waiting phase named by slice-077-prefix's
+                        # logical-turn state model.  A later assistant/tool
+                        # event naturally replaces it when CC auto-continues.
+                        yield StatusEvent(stage="background_waiting")
                         _wf_debug(
                             "  RESULT mid-turn (bg_pending="
                             f"{sorted(self._bg_tracker.pending_ids())}) — keep draining"

@@ -43,6 +43,8 @@ function statusText(s: PerSessionState): string {
         ? "思考中"
         : s.phase === "tool"
           ? "跑工具"
+          : s.phase === "background_waiting"
+            ? "等后台任务"
           : "生成中";
     return `${s.meta.model ?? "model"} · ${phase}`;
   }

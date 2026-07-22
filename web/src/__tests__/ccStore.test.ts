@@ -776,6 +776,15 @@ describe("reduceEvent — subagent_progress (slice-025-a A3)", () => {
       description: "sleep 6",
     });
     expect(state.phase).not.toBe("done");
+    // CC emitted a successful native result, but the background task is still
+    // pending. The logical turn stays open while its visible phase becomes an
+    // honest wait state (not the stale phase left by the last assistant text).
+    state = reduceEvent(state, {
+      type: "status",
+      stage: "background_waiting",
+    });
+    expect(state.phase).toBe("background_waiting");
+    expect(state.turns[0].status).toBe("active");
     // 后台任务完成通知（后端 mid-turn 继续 drain，不发 finished）
     state = reduceEvent(state, {
       type: "subagent_progress",

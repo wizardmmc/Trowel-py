@@ -132,6 +132,22 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
     expect(screen.getByText(/生成中/)).toBeInTheDocument();
   });
 
+  it("shows background waiting instead of generating while a task is pending", () => {
+    setSessions(
+      {
+        s1: makeSession({
+          name: "x",
+          abort: new AbortController(),
+          phase: "background_waiting",
+        }),
+      },
+      "s1",
+    );
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+    expect(screen.getByText(/等后台任务/)).toBeInTheDocument();
+    expect(screen.queryByText(/生成中/)).toBeNull();
+  });
+
   it("clicking a row calls activateSession(sid)", async () => {
     setSessions(
       { s1: makeSession({ name: "a" }), s2: makeSession({ name: "b" }) },
