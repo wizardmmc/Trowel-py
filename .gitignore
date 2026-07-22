@@ -1,27 +1,54 @@
-CLAUDE.md
-.venv/
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.venv/
+*.egg-info/
+
+# ── Build / packaging ───────────────────────────────────────────────────────
+build/
+dist/
+
+# ── Secrets & local config (carries API keys / machine paths) ───────────────
+config.toml
+CLAUDE.md
+AGENTS.md
+CLAUDE-archived.md
 Learn.md
-progress.txt
-spikes/
+
+# ── Local runtime data (DBs, logs, memory, output) ──────────────────────────
 *.db
 *.db-shm
 *.db-wal
-docs/
-config.toml
-*.egg-info/
-dist/
-build/
-trowel_py/static/
 logs/
-.playwright-mcp/
+output/
+/memory
+
+# ── Test fixtures that are LOCAL real recordings ────────────────────────────
+# These are captures from THIS machine's real cc/codex/GLM sessions (and the
+# live GLM quota probe) — they carry personal usage/session data, not shared
+# test inputs, so they stay local. Shared protocol/benchmark fixtures in
+# tests/codex_host|cc_host|memory/fixtures (model-list, schema-baseline,
+# eval-queries.yaml, …) are NOT ignored — tests depend on them.
+tests/quota/fixtures/
+tests/model_os/fixtures/
+# real cc init recording — carries local /Users/<home> paths (PII):
+tests/fixtures/cc-init-291.json
+
+# ── Spikes (scratch experiments, gitignored) ────────────────────────────────
+spikes/
+
+# ── Frontend / tooling ──────────────────────────────────────────────────────
+trowel_py/static/
 .vite/
+.playwright-mcp/
+.playwright-cli/
+.gstack/
+
+# ── Editor / OS ─────────────────────────────────────────────────────────────
 .claude/
 .DS_Store
-AGENTS.md
-CLAUDE-archived.md
-/memory
-.playwright-cli
-.gstack/
-output/
+
+# ── Private notes (training log etc.) ───────────────────────────────────────
+docs/
+progress.txt

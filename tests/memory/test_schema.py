@@ -5,16 +5,16 @@ prove the note schema is field-compatible with the existing 311-note corpus.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
-from trowel_py.memory import schema
 from trowel_py.memory.schema import validate_entry
 
-WIKI_PAGES = Path("/Users/hamxf/VirtualVolumn/ClaudeDesktop/wiki/pages")
-HAS_WIKI = WIKI_PAGES.exists()
+WIKI_PAGES = Path(os.environ.get("TROWEL_WIKI_PAGES", ""))
+HAS_WIKI = bool(os.environ.get("TROWEL_WIKI_PAGES")) and WIKI_PAGES.exists()
 
 
 def test_note_valid_minimal() -> None:

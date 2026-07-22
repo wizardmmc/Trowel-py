@@ -17,6 +17,7 @@ Run::
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -33,7 +34,9 @@ from trowel_py.memory.eval import (
 from trowel_py.memory.retrievers import LLMRetriever
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CORPUS_DIR = Path("/Users/hamxf/VirtualVolumn/ClaudeDesktop/wiki/pages")
+_CORPUS_DIR = Path(
+    os.environ.get("TROWEL_WIKI_PAGES", str(_REPO_ROOT / "wiki" / "pages"))
+)
 _DICTIONARY_L0 = _REPO_ROOT / "docs" / "milestones" / "spike-s1" / "dictionary-L0.md"
 _QUERY_SET = _REPO_ROOT / "tests" / "memory" / "fixtures" / "eval-queries.yaml"
 _REPORT = _REPO_ROOT / "docs" / "milestones" / "m6v2-eval-v0-baseline.md"
@@ -95,20 +98,20 @@ def _render(report: EvalReport, queries: list[EvalQuery],
             retrieved_by_query: dict[str, list[str]]) -> str:
     """format_report + a per-query miss detail section for analysis."""
     head = [
-        f"# milestone6-v2 离线检索 v0 baseline",
-        f"",
+        "# milestone6-v2 离线检索 v0 baseline",
+        "",
         f"> 日期: {date.today()} | 语料: wiki/pages (311 条) | dictionary: spike-s1 | "
         f"query 集: {len(queries)} 条（多相关，C-8 稳定基准）",
-        f"> 这是 recall/precision 的**首个数据点**，不是金标准。dictionary 每次重生成后"
-        f"重跑同一套基准，趋势才可比。",
-        f"",
+        "> 这是 recall/precision 的**首个数据点**，不是金标准。dictionary 每次重生成后"
+        "重跑同一套基准，趋势才可比。",
+        "",
         format_report(report),
-        f"",
-        f"## 失败明细（供归因分析）",
-        f"",
-        f"按机械失败类（none/partial/total-miss）列出 retrieved vs relevant；",
-        f"语义归因（跨域误路由/大领域稀释/冷门/概念）人工或反思 step 在此之上判断。",
-        f"",
+        "",
+        "## 失败明细（供归因分析）",
+        "",
+        "按机械失败类（none/partial/total-miss）列出 retrieved vs relevant；",
+        "语义归因（跨域误路由/大领域稀释/冷门/概念）人工或反思 step 在此之上判断。",
+        "",
     ]
     for r in report.results:
         if r.failure == "none":

@@ -2,8 +2,8 @@
 
 Borrows conductor's ``checkpointer.sh`` approach — private refs + parentless
 ``commit-tree``, HEAD never moves, working tree untouched by save — and
-extends the commit message with the CC jsonl cut point so a revert can also
-truncate the conversation log.
+records the CC session id + jsonl byte offset so a revert can also truncate
+the conversation log.
 
 A checkpoint lives at ``refs/trowel-checkpoints/<turn_id>`` and captures the
 full worktree (tracked + untracked, honoring .gitignore). ``revert`` restores
@@ -11,6 +11,14 @@ the worktree from that snapshot (HEAD intentionally NOT moved — reverting a
 turn must not rewrite the user's branch history) and truncates the recorded
 CC jsonl back to the byte offset captured at turn-start, so ``cc --resume``
 continues as if the turn never happened.
+
+**Privacy (slice-093-pre review)**: checkpointing is **default-disabled** — a
+snapshot of the whole worktree (including gitignored local files) plus a ref
+inside the product repo is a privacy footgun for a public repo. Enable
+explicitly via ``TROWEL_CHECKPOINT_ENABLE=1``. The commit message stores only
+the ``cc_session_id`` (a UUID) + offset + timestamp — NEVER an absolute
+``jsonl-path`` — so the message carries no machine/user path. ``revert``
+re-derives the jsonl path from ``(workdir, cc_session_id)`` at revert time.
 
 Metadata persists in the commit message (no DB, no sidecar): a process
 restart rebuilds the in-memory index via :func:`list_checkpoints`.
@@ -25,10 +33,17 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
+
 _REF_NAMESPACE = "refs/trowel-checkpoints"
 
 _IDENTITY_NAME = "Checkpointer"
 _IDENTITY_EMAIL = "checkpointer@noreply"
+
+#: env var that opts IN to checkpoint creation (default: disabled). Checkpoints
+#: snapshot the whole worktree into a ref in THIS repo — not safe to run by
+#: default once the repo is public.
+_ENABLE_ENV = "TROWEL_CHECKPOINT_ENABLE"
 
 
 class NotAGitRepoError(RuntimeError):
@@ -45,15 +60,18 @@ class CheckpointMeta:
 
     Attributes:
         turn_id: the trowel turn this snapshot was taken before.
-        jsonl_path: absolute path to the CC session jsonl, or None when the
-            turn had no resumable jsonl yet (fresh session, turn 1).
+        cc_session_id: the CC native session id (uuid stem of its jsonl), or
+            None when the turn had no resumable jsonl yet (fresh session). The
+            absolute jsonl path is NEVER stored — it is re-derived from
+            ``(workdir, cc_session_id)`` at revert time (privacy: no machine
+            path in git history).
         jsonl_offset: byte offset into the jsonl at turn-start; revert
-            truncates the file back to here. None alongside jsonl_path=None.
+            truncates the file back to here. None alongside cc_session_id=None.
         created_at: ISO-8601 UTC with microseconds; also drives gc ordering.
     """
 
     turn_id: str
-    jsonl_path: str | None
+    cc_session_id: str | None
     jsonl_offset: int | None
     created_at: str
 
@@ -61,8 +79,15 @@ class CheckpointMeta:
 # ── public API ─────────────────────────────────────────────────────────────
 
 
+def is_enabled() -> bool:
+    """True only when checkpointing is explicitly opted in via the env var."""
+
+    return os.environ.get(_ENABLE_ENV) == "1"
+
+
 def is_git_repo(workdir: str | os.PathLike) -> bool:
     """True when *workdir* is inside a git work tree."""
+
     proc = subprocess.run(
         ["git", "-C", str(workdir), "rev-parse", "--is-inside-work-tree"],
         capture_output=True,
@@ -79,6 +104,9 @@ def save(
 ) -> CheckpointMeta:
     """Snapshot the worktree as a private ref before a turn runs.
 
+    No-op (returns the meta without creating any ref) when checkpointing is
+    disabled — the default. See :func:`is_enabled`.
+
     Captures tracked + untracked files (honoring .gitignore) into a parentless
     commit under ``refs/trowel-checkpoints/<turn_id>``. HEAD, the index, and
     the working tree are NOT modified — ``git status`` looks identical before
@@ -89,7 +117,8 @@ def save(
             toplevel automatically and snapshots the whole repo).
         turn_id: the trowel turn id this checkpoint belongs to.
         cc_session_jsonl_path: absolute path to the CC session jsonl, recorded
-            so revert can truncate it. None for a fresh session's turn 1.
+            so revert can truncate it. Only the session-id stem is stored (the
+            absolute path is discarded). None for a fresh session's turn 1.
         jsonl_offset: byte offset into the jsonl captured now; revert
             truncates back to here.
 
@@ -101,14 +130,17 @@ def save(
     """
     root = _require_repo(workdir)
     created = _now_iso()
-    index_tree = _git(root, "write-tree").strip()
-    worktree_tree = _snapshot_worktree_tree(root, index_tree)
+    cc_session_id = _session_id_from_path(cc_session_jsonl_path)
     meta = CheckpointMeta(
         turn_id=turn_id,
-        jsonl_path=cc_session_jsonl_path,
+        cc_session_id=cc_session_id,
         jsonl_offset=jsonl_offset,
         created_at=created,
     )
+    if not is_enabled():
+        return meta  # default-disabled: create no ref, write no objects
+    index_tree = _git(root, "write-tree").strip()
+    worktree_tree = _snapshot_worktree_tree(root, index_tree)
     commit_oid = _commit_tree(root, worktree_tree, _encode_message(meta), created)
     _git(root, "update-ref", f"{_REF_NAMESPACE}/{turn_id}", commit_oid)
     return meta
@@ -120,7 +152,8 @@ def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
     Restores files (tracked + removes untracked created after the snapshot)
     from the checkpoint tree. HEAD is intentionally NOT moved — reverting a
     turn must not rewrite branch history. Then truncates the recorded CC jsonl
-    back to ``jsonl_offset`` so ``cc --resume`` reloads the shorter history.
+    (path re-derived from ``(workdir, cc_session_id)``) back to
+    ``jsonl_offset`` so ``cc --resume`` reloads the shorter history.
 
     Args:
         workdir: the CC workdir.
@@ -148,8 +181,9 @@ def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
     _git(root, "read-tree", "--reset", "-u", tree)
     # Drop untracked files/dirs created after the snapshot (gitignored kept).
     _git(root, "clean", "-fd")
-    if meta.jsonl_path and meta.jsonl_offset is not None:
-        _truncate_file(meta.jsonl_path, meta.jsonl_offset)
+    jsonl_path = _derive_jsonl_path(workdir, meta.cc_session_id)
+    if jsonl_path is not None and meta.jsonl_offset is not None:
+        _truncate_file(str(jsonl_path), meta.jsonl_offset)
     return meta
 
 
@@ -244,6 +278,35 @@ def _git(cwd: str | os.PathLike, *args: str, env: dict | None = None) -> str:
     return proc.stdout
 
 
+def _session_id_from_path(jsonl_path: str | None) -> str | None:
+    """Extract the CC session id (filename stem) from a jsonl path.
+
+    The absolute path is discarded — only the stem (a UUID) is kept, so no
+    machine/user path is ever stored in git.
+    """
+    if not jsonl_path:
+        return None
+    stem = Path(jsonl_path).stem
+    return stem or None
+
+
+def _derive_jsonl_path(
+    workdir: str | os.PathLike, cc_session_id: str | None
+) -> Path | None:
+    """Re-derive the CC session jsonl path from ``(workdir, cc_session_id)``.
+
+    Mirrors ``CCHost._jsonl_path``: ``<projects-root>/<workdir-slug>/<id>.jsonl``.
+    None when there is no session id.
+    """
+    if not cc_session_id:
+        return None
+    return (
+        cc_projects_root()
+        / workdir_to_slug(workdir)
+        / f"{cc_session_id}.jsonl"
+    )
+
+
 def _snapshot_worktree_tree(root: str, seed_tree: str) -> str:
     """Write a tree of the full worktree (tracked + untracked) via a temp index.
 
@@ -328,12 +391,16 @@ def _now_iso() -> str:
 
 
 def _encode_message(meta: CheckpointMeta) -> str:
-    """Serialize meta to the commit message body (conductor-style kv lines)."""
-    jsonl_path = meta.jsonl_path or ""
+    """Serialize meta to the commit message body (conductor-style kv lines).
+
+    Stores ``cc-session`` (the session id stem), NOT the absolute jsonl path —
+    no machine/user path in git history (slice-093-pre review P3).
+    """
+    cc_session_id = meta.cc_session_id or ""
     jsonl_offset = "" if meta.jsonl_offset is None else str(meta.jsonl_offset)
     return (
         f"checkpoint:{meta.turn_id}\n"
-        f"jsonl-path {jsonl_path}\n"
+        f"cc-session {cc_session_id}\n"
         f"jsonl-offset {jsonl_offset}\n"
         f"created {meta.created_at}\n"
     )
@@ -343,28 +410,30 @@ def _decode_message(body: str, turn_id: str) -> CheckpointMeta:
     """Parse a commit message body back into CheckpointMeta.
 
     Tolerant: missing fields default to None / empty. Unknown lines ignored.
+    Accepts the current ``cc-session`` key; legacy ``jsonl-path`` (pre
+    slice-093-pre, all such refs now purged) is ignored.
     """
-    jsonl_path: str | None = None
+    cc_session_id: str | None = None
     jsonl_offset: int | None = None
     created = ""
     for line in body.splitlines():
-        if line.startswith("jsonl-path "):
-            val = line[len("jsonl-path ") :].strip()
-            jsonl_path = val or None
+        if line.startswith("cc-session "):
+            val = line[len("cc-session ") :].strip()
+            cc_session_id = val or None
         elif line.startswith("jsonl-offset "):
-            val = line[len("jsonl-offset ") : ].strip()
+            val = line[len("jsonl-offset ") :].strip()
             if val:
                 try:
                     jsonl_offset = int(val)
                 except ValueError:
-                    # malformed offset (corrupt/edit commit message) — don't
-                    # crash list_checkpoints at startup; treat as unknown.
+                    # malformed offset — don't crash list_checkpoints; treat
+                    # as unknown.
                     jsonl_offset = None
         elif line.startswith("created "):
             created = line[len("created ") :].strip()
     return CheckpointMeta(
         turn_id=turn_id,
-        jsonl_path=jsonl_path,
+        cc_session_id=cc_session_id,
         jsonl_offset=jsonl_offset,
         created_at=created,
     )

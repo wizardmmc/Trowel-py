@@ -85,8 +85,17 @@ def test_save_message_encodes_meta(git_repo: Path, tmp_path: Path) -> None:
     checkpoint.save(str(git_repo), tid, cc_session_jsonl_path=str(jsonl), jsonl_offset=2)
     metas = checkpoint.list_checkpoints(str(git_repo))
     m = next(x for x in metas if x.turn_id == tid)
-    assert m.jsonl_path == str(jsonl)
+    assert m.cc_session_id == "sess"  # only the stem is kept, not the abs path
     assert m.jsonl_offset == 2
+    # privacy (slice-093-pre P3): the absolute jsonl path must NOT be in the
+    # commit message — only the session id stem is.
+    body = subprocess.run(
+        ["git", "-C", str(git_repo), "log", "-1", "--format=%B",
+         f"refs/trowel-checkpoints/{tid}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert str(jsonl) not in body
+    assert "/Users/" not in body
 
 
 # ── revert ──────────────────────────────────────────────────────────────────
@@ -119,11 +128,18 @@ def test_revert_removes_untracked_file_created_after_snapshot(git_repo: Path) ->
     assert not (git_repo / "newfile").exists()
 
 
-def test_revert_truncates_jsonl_to_offset(git_repo: Path, tmp_path: Path) -> None:
+def test_revert_truncates_jsonl_to_offset(
+    git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     jsonl = tmp_path / "sess.jsonl"
     jsonl.write_text("line1\nline2\n")  # complete entries before the turn
     offset = jsonl.stat().st_size
     tid = _tid()
+    # revert re-derives the jsonl path from (workdir, session id); point it at
+    # the test file so truncation is observable without a real CC projects dir.
+    monkeypatch.setattr(
+        checkpoint, "_derive_jsonl_path", lambda wd, sid: jsonl if sid else None
+    )
     checkpoint.save(str(git_repo), tid, cc_session_jsonl_path=str(jsonl), jsonl_offset=offset)
     with jsonl.open("a") as fh:  # the turn appends more
         fh.write("line3\nline4\n")
@@ -202,7 +218,7 @@ def test_is_git_repo(tmp_path: Path) -> None:
 def test_message_roundtrip_all_fields() -> None:
     m = CheckpointMeta(
         turn_id="abc",
-        jsonl_path="/path/to/sess.jsonl",
+        cc_session_id="sess",
         jsonl_offset=2048,
         created_at="2026-07-04T12:00:00.000000+00:00",
     )
@@ -211,10 +227,10 @@ def test_message_roundtrip_all_fields() -> None:
     assert parsed == m
 
 
-def test_message_roundtrip_minimal_no_jsonl() -> None:
+def test_message_roundtrip_minimal_no_session() -> None:
     m = CheckpointMeta(
         turn_id="xyz",
-        jsonl_path=None,
+        cc_session_id=None,
         jsonl_offset=None,
         created_at="2026-07-04T12:00:00.000000+00:00",
     )

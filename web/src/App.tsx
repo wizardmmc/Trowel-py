@@ -12,10 +12,9 @@ import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
 
-// slice-027: default workdir is ClaudeDesktop (loads its .claude/ hooks/memory/
-// skills), but the user can switch to any directory via WorkdirPicker. Recent
-// workdirs persist to localStorage so the chips reappear across reloads.
-const CC_WORKDIR_DEFAULT = "/Users/hamxf/VirtualVolumn/ClaudeDesktop";
+// slice-027: the CC workdir is user-selected. On load we default to the most
+// recently used workdir (persisted to localStorage); first run has none, so
+// the user picks via WorkdirPicker. No hardcoded machine path.
 const WORKDIR_STORAGE_KEY = "trowel.cc.workdirs.recent";
 
 function loadRecentWorkdirs(): string[] {
@@ -28,7 +27,7 @@ function loadRecentWorkdirs(): string[] {
   } catch {
     // fall through to default
   }
-  return [CC_WORKDIR_DEFAULT];
+  return [];
 }
 
 function saveRecentWorkdir(p: string): string[] {
@@ -67,7 +66,9 @@ function App() {
   const [activeTool, setActiveTool] = useState<Tool>("garden");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // slice-027: CC workdir is user-selectable; recent workdirs persist locally.
-  const [ccWorkdir, setCcWorkdir] = useState<string>(CC_WORKDIR_DEFAULT);
+  const [ccWorkdir, setCcWorkdir] = useState<string>(
+    () => loadRecentWorkdirs()[0] ?? "",
+  );
   const [showWorkdirPicker, setShowWorkdirPicker] = useState(false);
   const [recentWorkdirs, setRecentWorkdirs] = useState<string[]>(() =>
     loadRecentWorkdirs(),

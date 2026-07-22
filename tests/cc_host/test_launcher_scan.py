@@ -127,8 +127,8 @@ class TestSubprocessKwargs:
 
 class TestSlug:
     def test_slug_replaces_slashes_with_dashes(self):
-        assert workdir_to_slug("/Users/hamxf/ClaudeDesktop") == \
-            "-Users-hamxf-ClaudeDesktop"
+        assert workdir_to_slug("/Users/alice/ClaudeDesktop") == \
+            "-Users-alice-ClaudeDesktop"
 
 
 class TestListSessions:

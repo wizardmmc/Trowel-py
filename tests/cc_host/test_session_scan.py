@@ -33,32 +33,31 @@ class TestWorkdirToSlug:
 
     def test_slash_becomes_dash(self):
         assert (
-            session_scan.workdir_to_slug("/Users/hamxf/workdir")
-            == "-Users-hamxf-workdir"
+            session_scan.workdir_to_slug("/Users/alice/my-workdir")
+            == "-Users-alice-my-workdir"
         )
 
     def test_underscore_becomes_dash(self):
-        # real bug: telecom_empirical_research was hidden from history
+        # real bug: paths with underscores produced a slug CC never writes on
+        # disk, so the history dropdown scanned a non-existent dir (0 sessions).
         slug = session_scan.workdir_to_slug(
-            "/Users/hamxf/VirtualVolumn/ClaudeDesktop/works/telecom_empirical_research"
+            "/Users/alice/vol/projects/my_research_project"
         )
-        assert slug == (
-            "-Users-hamxf-VirtualVolumn-ClaudeDesktop-works-telecom-empirical-research"
-        )
+        assert slug == "-Users-alice-vol-projects-my-research-project"
 
     def test_dot_becomes_dash(self):
-        # /Users/hamxf/.claude -> -Users-hamxf--claude
+        # /Users/alice/.config -> -Users-alice--config
         # (the '.' and the boundary '/' each turn into '-', giving two in a row)
         assert (
-            session_scan.workdir_to_slug("/Users/hamxf/.claude")
-            == "-Users-hamxf--claude"
+            session_scan.workdir_to_slug("/Users/alice/.config")
+            == "-Users-alice--config"
         )
 
     def test_uppercase_and_digits_preserved(self):
-        # CC does not lowercase; GraduatePaper and realTimeDect stay, STS2 keeps its digit
+        # CC does not lowercase; Papers and Proj stay, Tool2 keeps its digit
         assert session_scan.workdir_to_slug(
-            "/Users/hamxf/GraduatePaper/realTimeDect/STS2-Agent"
-        ) == "-Users-hamxf-GraduatePaper-realTimeDect-STS2-Agent"
+            "/Users/alice/Papers/Proj/Tool2-Agent"
+        ) == "-Users-alice-Papers-Proj-Tool2-Agent"
 
     def test_pathlike_input_matches_str(self):
         # workdir may arrive as os.PathLike (Path); must behave the same as str

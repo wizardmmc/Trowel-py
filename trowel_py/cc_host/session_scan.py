@@ -68,7 +68,7 @@ def workdir_to_slug(workdir: str | os.PathLike) -> str:
     Mirrors CC's ``sanitizePath`` (leaked ``src/utils/sessionStoragePortable.ts``):
     every non-alphanumeric character becomes ``-``. So ``telecom_empirical_research``
     slugs to ``telecom-empirical-research``, ``reverse_cc`` to ``reverse-cc``,
-    and ``/Users/hamxf/.claude`` to ``-Users-hamxf--claude`` (the ``.`` also
+    and ``/Users/alice/.config`` to ``-Users-alice--config`` (the ``.`` also
     becomes ``-``). Uppercase and digits are kept — CC does not lowercase.
 
     The previous impl only replaced ``/``, leaving ``_`` and ``.`` intact. That

@@ -1,17 +1,18 @@
 /**
- * slice-042 P5: render the picker against the REAL cc init roster (cc 2.1.197,
- * 291 slash_commands) — not synthetic data. This is the scale case that
- * motivated the plugin-collapse feature: ~200 plugin skills must not drown the
- * list, and the picker must group/collapse/search them without choking.
+ * slice-042 P5: render the picker against a SYNTHETIC scale roster (real-shape,
+ * no PII) — 200+ plugin skills + ~80 bundled + mcp__/TUI noise. This is the
+ * scale case that motivated the plugin-collapse feature: 200+ plugin skills
+ * must not drown the list, and the picker must group/collapse/search them
+ * without choking.
  *
- * Fixture: a verbatim copy of the backend's recording
- * (repo tests/fixtures/cc-init-291.json) — re-copy if the backend re-records.
- * Loaded via vite's `?raw` so no node types are needed (the app tsconfig
- * deliberately keeps node types out of src/). We mirror the backend's
- * init-floor rules (filter mcp__ + TUI commands; ":" in name → plugin, else
- * bundled) to build SlashItems. Source classification for disk-present skills
- * is the backend's job and tested there — here we only prove the frontend
- * handles the real roster's shape and volume.
+ * Fixture: ./fixtures/cc-init-291.json holds a synthetic slash_commands roster
+ * (the real recording carried machine paths / plugin inventory and was replaced
+ * — see slice-093-pre P1). Loaded via vite's `?raw` so no node types are needed
+ * (the app tsconfig deliberately keeps node types out of src/). We mirror the
+ * backend's init-floor rules (filter mcp__ + TUI commands; ":" in name →
+ * plugin, else bundled) to build SlashItems. Source classification for
+ * disk-present skills is the backend's job and tested there — here we only
+ * prove the frontend handles the roster's shape and volume.
  */
 import { describe, it, expect } from "vitest";
 import rosterRaw from "./fixtures/cc-init-291.json?raw";
@@ -55,8 +56,8 @@ describe("SlashAutocomplete × real cc roster (slice-042 P5)", () => {
         onToggleGroup={() => {}}
       />,
     );
-    // 291 raw − mcp__ − TUI = 281 (cc 2.1.197). Asserting the exact filtered
-    // count ties the test to the real recording.
+    // every filtered roster item renders (assertion is relative to items.length,
+    // so it holds for the synthetic roster regardless of exact count).
     expect(screen.getAllByRole("option")).toHaveLength(items.length);
     cleanup();
   });
@@ -75,7 +76,7 @@ describe("SlashAutocomplete × real cc roster (slice-042 P5)", () => {
       />,
     );
     const pluginGroup = groups.find((g) => g.source === "plugin");
-    expect(pluginGroup?.items.length).toBeGreaterThan(150); // ~202 plugins
+    expect(pluginGroup?.items.length).toBeGreaterThan(150); // synthetic: 200+ plugins
     // header present, body hidden → only non-plugin options render
     expect(screen.getByRole("button", { name: /plugin 组/ })).toBeInTheDocument();
     expect(screen.getAllByRole("option")).toHaveLength(

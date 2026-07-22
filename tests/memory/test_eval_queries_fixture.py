@@ -1,6 +1,7 @@
 """quality guard for the multi-relevant eval query set (slice-038 T6, C-8)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,8 @@ import pytest
 from trowel_py.memory.eval import load_queries
 
 FIXTURE = Path(__file__).parent / "fixtures" / "eval-queries.yaml"
-WIKI_PAGES = Path("/Users/hamxf/VirtualVolumn/ClaudeDesktop/wiki/pages")
-HAS_WIKI = WIKI_PAGES.exists()
+WIKI_PAGES = Path(os.environ.get("TROWEL_WIKI_PAGES", ""))
+HAS_WIKI = bool(os.environ.get("TROWEL_WIKI_PAGES")) and WIKI_PAGES.exists()
 
 
 @pytest.fixture(scope="module")

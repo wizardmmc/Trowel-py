@@ -209,7 +209,8 @@ def create_session(
             "name": opened.name,
             # whether reverting turns is supported for this workdir
             # (non-git workdirs get the banner + no revert buttons in the UI).
-            "revert_enabled": checkpoint.is_git_repo(req.workdir),
+            "revert_enabled": checkpoint.is_enabled()
+            and checkpoint.is_git_repo(req.workdir),
             # slice-060: surface the frozen A/B condition so the frontend can
             # render it and reconcile on refresh (C-5/C-6).
             "memory_enabled": req.memory_enabled,
@@ -353,7 +354,7 @@ async def revert_turn(
         "success": True,
         "data": {
             "reverted_turn_id": body.turn_id,
-            "jsonl_path": meta.jsonl_path,
+            "cc_session_id": meta.cc_session_id,
             "jsonl_offset": meta.jsonl_offset,
         },
         "error": None,

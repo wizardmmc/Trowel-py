@@ -70,6 +70,9 @@ def _isolate_and_guard_memory_db(
     # Redirect to tmp so memory-on route tests don't write the real home
     # (PermissionError on read-only $HOME in CI; home pollution locally).
     monkeypatch.setenv("TROWEL_MCP_CONFIG", str(tmp_path / "memory-mcp-config.json"))
+    # slice-093-pre P3: checkpointing is default-disabled (privacy); enable it
+    # for the cc_host suite so the feature's tests exercise real ref creation.
+    monkeypatch.setenv("TROWEL_CHECKPOINT_ENABLE", "1")
     before = _snapshot_real_sessions_db()
     yield
     after = _snapshot_real_sessions_db()

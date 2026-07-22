@@ -236,7 +236,7 @@ export function WorkdirPicker({
               ref={inputRef}
               className="cc-wd__input"
               aria-label="工作目录"
-              placeholder="输入路径，如 /Users/hamxf/studiolo（~ 自动展开）"
+              placeholder="输入路径，如 ~/projects/my-app（~ 自动展开）"
               value={input}
               onChange={handleChange}
               onKeyDown={handleKeyDown}

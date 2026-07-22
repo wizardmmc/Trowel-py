@@ -13,28 +13,28 @@ describe("WorkdirPicker (slice-027 C4, 方案 A)", () => {
   it("renders recents as chips", () => {
     render(
       <WorkdirPicker
-        recents={["/works/trowel-py", "/works/reverse_cc"]}
-        favorites={["/Users/hamxf/studiolo"]}
+        recents={["/works/trowel-py", "/works/my-side-project"]}
+        favorites={["/Users/alice/my-app"]}
         onSelect={() => {}}
         onCancel={() => {}}
       />,
     );
     expect(screen.getByText("/works/trowel-py")).toBeInTheDocument();
-    expect(screen.getByText("/works/reverse_cc")).toBeInTheDocument();
-    expect(screen.getByText("/Users/hamxf/studiolo")).toBeInTheDocument();
+    expect(screen.getByText("/works/my-side-project")).toBeInTheDocument();
+    expect(screen.getByText("/Users/alice/my-app")).toBeInTheDocument();
   });
 
   it("clicking a recent fills the input", () => {
     render(
       <WorkdirPicker
-        recents={["/works/reverse_cc"]}
+        recents={["/works/my-side-project"]}
         onSelect={() => {}}
         onCancel={() => {}}
       />,
     );
     const input = screen.getByLabelText("工作目录") as HTMLInputElement;
-    fireEvent.click(screen.getByText("/works/reverse_cc"));
-    expect(input.value).toBe("/works/reverse_cc");
+    fireEvent.click(screen.getByText("/works/my-side-project"));
+    expect(input.value).toBe("/works/my-side-project");
   });
 
   it("manual path input + 确定 calls onSelect with the path", () => {
@@ -43,9 +43,9 @@ describe("WorkdirPicker (slice-027 C4, 方案 A)", () => {
       <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
     );
     const input = screen.getByLabelText("工作目录");
-    fireEvent.change(input, { target: { value: "/Users/hamxf/studiolo" } });
+    fireEvent.change(input, { target: { value: "/Users/alice/my-app" } });
     fireEvent.click(screen.getByRole("button", { name: "确定" }));
-    expect(onSelect).toHaveBeenCalledWith("/Users/hamxf/studiolo");
+    expect(onSelect).toHaveBeenCalledWith("/Users/alice/my-app");
   });
 
   it("Enter submits the input", () => {
@@ -256,8 +256,8 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
       <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,
     );
     const input = screen.getByLabelText("工作目录");
-    fireEvent.change(input, { target: { value: "~/studiolo" } });
+    fireEvent.change(input, { target: { value: "~/my-app" } });
     fireEvent.click(screen.getByRole("button", { name: "确定" }));
-    expect(onSelect).toHaveBeenCalledWith("~/studiolo");
+    expect(onSelect).toHaveBeenCalledWith("~/my-app");
   });
 });

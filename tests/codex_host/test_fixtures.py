@@ -27,7 +27,7 @@ from trowel_py.codex_host.protocol import (
 
 _SECRET_RE = re.compile(
     r"Bearer|sk-[A-Za-z0-9]{8}|authorization|api[_-]?key|access[_-]?token|"
-    r"/Users/hamxf|/var/folders",
+    r"/Users/[A-Za-z0-9._-]+|/var/folders",
     re.IGNORECASE,
 )
 
