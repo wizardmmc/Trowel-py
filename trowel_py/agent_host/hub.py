@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable
@@ -126,6 +126,7 @@ class SessionHub:
         cc_registry: dict[str, Any] | None = None,
         cc_opener: CcOpener | None = None,
         codex_config_home: str | Path | None = None,
+        event_observer: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         """Wire the Hub to its stores + native hosts.
 
@@ -154,6 +155,10 @@ class SessionHub:
         self._codex_config_home = (
             Path(codex_config_home) if codex_config_home is not None else None
         )
+        # slice-093-pre: optional sync hook fed every dumped envelope the hub
+        # yields (CC + Codex). The quota read model binds it to fold
+        # rate_limit_updated into its unified view; None = zero overhead.
+        self._event_observer = event_observer
         self._active_id: str | None = None
         # slice-074: per-session CC + Codex seq adapters (seq spans turns, so
         # each outlives one send). Both own a contiguous per-session counter so
@@ -800,7 +805,9 @@ class SessionHub:
                 self._cc_adapters[session_id] = cc_adapter
             async for event in host.send(text):
                 raw = dict(event) if isinstance(event, dict) else event.model_dump()
-                yield cc_adapter.wrap(raw).model_dump(by_alias=True)
+                envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
+                self._observe(envelope)
+                yield envelope
             self._writeback_cc_native(session_id, host)
             return
         if self._codex is None:
@@ -841,9 +848,27 @@ class SessionHub:
                 # advanced on emit, so no phantom gap is created.
                 continue
             payload = envelope.model_dump(by_alias=True)
+            self._observe(payload)
             yield payload
             if _is_terminal(payload):
                 break
+
+    def _observe(self, payload: Mapping[str, Any]) -> None:
+        """Forward a yielded envelope to the optional observer (slice-093-pre).
+
+        The quota read model binds this to fold ``rate_limit_updated`` into its
+        unified view. No-op when no observer is bound, so the hot stream path
+        is unchanged in sessions that do not wire one. An observer exception is
+        swallowed + logged: a read-model bug must NEVER kill a user's turn
+        (this runs inside ``stream``, on the SSE path).
+        """
+
+        if self._event_observer is None:
+            return
+        try:
+            self._event_observer(payload)
+        except Exception:
+            _log.warning("[hub] event observer raised; ignored", exc_info=True)
 
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
         """Build a terminal error envelope from the session's own seq space.

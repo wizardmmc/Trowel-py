@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from trowel_py.agent_host.routes import router as agent_router
+from trowel_py.quota.routes import router as quota_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
     TUI_SYSTEM_IDENTITY,
@@ -121,6 +122,46 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
         app.state.codex_host_manager = None
+    # slice-093-pre: cross-provider quota read model. GLM accounts are polled
+    # every 5 min; Codex/GPT ``rate_limit_updated`` pushes fold in via the hub
+    # observer. Failure is swallowed so a missing/bad config never blocks
+    # startup (same posture as the other schedulers).
+    app.state.quota_read_model = None
+    app.state.quota_scheduler = None
+    app.state.quota_http_client = None
+    quota_observer = None
+    try:
+        from trowel_py.quota.codex import make_codex_observer
+        from trowel_py.quota.glm import GlmQuotaClient, httpx_fetcher
+        from trowel_py.quota.read_model import QuotaReadModel
+        from trowel_py.quota.scheduler import QuotaScheduler, load_glm_accounts
+
+        quota_read_model = QuotaReadModel()
+        app.state.quota_read_model = quota_read_model
+        quota_observer = make_codex_observer(quota_read_model)
+        # GLM polling is opt-in (TROWEL_QUOTA_POLL=1): the poller hits the real
+        # provider immediately on start, so it must NOT run during tests / dev
+        # boots that only need the read model + Codex observer. Conservative v0
+        # posture — flip on to observe, matches the "先保守后放开" preference.
+        quota_poll_enabled = os.environ.get("TROWEL_QUOTA_POLL") == "1"
+        glm_accounts = load_glm_accounts() if quota_poll_enabled else []
+        if glm_accounts:
+            app.state.quota_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+            quota_client = GlmQuotaClient(
+                glm_accounts[0].host,
+                fetcher=httpx_fetcher(app.state.quota_http_client),
+            )
+            quota_scheduler = QuotaScheduler(
+                glm_accounts, quota_client, quota_read_model
+            )
+            await quota_scheduler.start()
+            app.state.quota_scheduler = quota_scheduler
+        elif quota_poll_enabled:
+            logger.info("[quota] TROWEL_QUOTA_POLL set but no GLM account; poller idle")
+        else:
+            logger.info("[quota] GLM poller off (set TROWEL_QUOTA_POLL=1 to enable)")
+    except Exception:
+        logger.warning("[quota] read model failed to start", exc_info=True)
     # slice-072: host-neutral Session Hub. Wires the binding store to the
     # shared Codex manager + cc_host's live _REGISTRY (the default cc_registry
     # / cc_opener point at cc_host.routes). Lazy like the codex manager —
@@ -136,6 +177,7 @@ async def lifespan(app: FastAPI):
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
+            event_observer=quota_observer,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
@@ -167,6 +209,18 @@ async def lifespan(app: FastAPI):
             await _codex_mgr.close()
         except Exception:
             logger.warning("[codex] host manager close failed", exc_info=True)
+    _quota_sched = getattr(app.state, "quota_scheduler", None)
+    if _quota_sched is not None:
+        try:
+            await _quota_sched.stop()
+        except Exception:
+            logger.warning("[quota] scheduler stop failed", exc_info=True)
+    _quota_http = getattr(app.state, "quota_http_client", None)
+    if _quota_http is not None:
+        try:
+            await _quota_http.aclose()
+        except Exception:
+            logger.warning("[quota] http client close failed", exc_info=True)
     await app.state.cc_http_client.aclose()
 
 
@@ -247,6 +301,7 @@ def create_app() -> FastAPI:
     app.include_router(proxy_router)
     app.include_router(cc_host_router, prefix="/api/cc")
     app.include_router(agent_router, prefix="/api/agent")
+    app.include_router(quota_router)
 
     # Serve the built frontend when present (release / `pip install` mode).
     # Skipped in dev — vite serves the frontend on :5173 and proxies /api here.
