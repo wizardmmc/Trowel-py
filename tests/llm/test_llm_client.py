@@ -9,10 +9,7 @@ from trowel_py.llm.client import LLMService, _extract_json
 from trowel_py.schemas.extracted_card import ExtractOutput
 
 
-# --- filter_secrets tests ---
-
 def test_filter_secrets_redacts_aws_key():
-    """AWS access key pattern should be replaced with [REDACTED]"""
     text = "my key is AKIAIOSFODNN7EXAMPLE please handle"
     result = filter_secrets(text)
     assert "[REDACTED]" in result
@@ -20,7 +17,6 @@ def test_filter_secrets_redacts_aws_key():
 
 
 def test_filter_secrets_redacts_github_token():
-    """GitHub token pattern should be replaced with [REDACTED]"""
     text = "token ghp_ABCdef123XYZ should be hidden"
     result = filter_secrets(text)
     assert "[REDACTED]" in result
@@ -28,7 +24,6 @@ def test_filter_secrets_redacts_github_token():
 
 
 def test_filter_secrets_redacts_openai_key():
-    """OpenAI API key pattern should be replaced with [REDACTED]"""
     text = "api_key=sk-abc123DEF456ghi789 end"
     result = filter_secrets(text)
     assert "[REDACTED]" in result
@@ -36,7 +31,6 @@ def test_filter_secrets_redacts_openai_key():
 
 
 def test_filter_secrets_redacts_password():
-    """Password assignment pattern should be replaced with [REDACTED]"""
     text = "password=S3cr3tP@ss here"
     result = filter_secrets(text)
     assert "[REDACTED]" in result
@@ -44,38 +38,35 @@ def test_filter_secrets_redacts_password():
 
 
 def test_filter_secrets_preserves_clean_text():
-    """Text without secrets should pass through unchanged"""
     text = "this is a normal diff with no secrets"
     assert filter_secrets(text) == text
 
 
-def test_filtter_secrets():
-    """Multiple secret patterns in one text should all be replaced"""
+def test_filter_secrets_redacts_multiple_values():
     user_prompt = "config has api_key=sk-Abc123XYZ and password=hunter2 inside"
     filtered = filter_secrets(user_prompt)
-    # secrets should be replaced
     assert "sk-Abc123XYZ" not in filtered
     assert "hunter2" not in filtered
-    # [REDACTED] should appear for each replaced secret
     assert filtered.count("[REDACTED]") == 2
 
 
-# --- structured_call tests ---
-
-def test_structured_call():
-    """Mock LLM should return valid ExtractOutput after Pydantic validation"""
+def test_structured_call_validates_provider_json():
     fake_provider = MagicMock()
-    fake_provider.complete.return_value = json.dumps({
-        "cards": [{
-            "title": "WAL mode",
-            "category": "SQLite",
-            "explanation": "Write-Ahead Logging allows concurrent reads during writes",
-            "tags": ["database", "concurrency"],
-            "source_type": "git_diff",
-            "confidence": 4,
-            "difficulty": 3,
-        }]
-    })
+    fake_provider.complete.return_value = json.dumps(
+        {
+            "cards": [
+                {
+                    "title": "WAL mode",
+                    "category": "SQLite",
+                    "explanation": "Write-Ahead Logging allows concurrent reads during writes",
+                    "tags": ["database", "concurrency"],
+                    "source_type": "git_diff",
+                    "confidence": 4,
+                    "difficulty": 3,
+                }
+            ]
+        }
+    )
 
     service = LLMService(fake_provider)
     user_prompt = "added WAL pragma to sqlite connection"
@@ -87,7 +78,6 @@ def test_structured_call():
 
 
 def test_structured_call_retries_on_failure():
-    """Should retry up to 3 times on failure and succeed on the last attempt"""
     fake_provider = MagicMock()
     fake_provider.complete.side_effect = [
         RuntimeError("API error"),
@@ -97,7 +87,7 @@ def test_structured_call_retries_on_failure():
 
     service = LLMService(fake_provider)
     user_prompt = "some diff content"
-    # mock time.sleep 避免真实等待 1+2=3 秒拖慢测试（前两次失败触发 backoff）
+    # 前两次失败会触发 1+2 秒退避，替换 sleep 以免测试真实等待。
     with patch("trowel_py.llm.client.time.sleep"):
         result = service.structured_call(user_prompt, ExtractOutput)
 
@@ -105,10 +95,7 @@ def test_structured_call_retries_on_failure():
     assert fake_provider.complete.call_count == 3
 
 
-# --- cost tracking tests ---
-
-def test_cost_tracking():
-    """Cost report should group calls by type and count correctly"""
+def test_cost_report_groups_calls_by_type():
     fake_provider = MagicMock()
     fake_provider.complete.return_value = '{"cards": []}'
     service = LLMService(fake_provider)
@@ -121,10 +108,7 @@ def test_cost_tracking():
     assert report.by_type["feynman-eval"]["calls"] == 1
 
 
-# --- retry exhausts & backoff tests (slice 017 补的 TEST-001 缺口) ---
-
 def test_structured_call_raises_after_all_retries():
-    """3 次都失败应该抛出异常（最后一次的实际错误），且确实调用了 3 次"""
     fake_provider = MagicMock()
     fake_provider.complete.side_effect = RuntimeError("API down")
 
@@ -137,7 +121,6 @@ def test_structured_call_raises_after_all_retries():
 
 
 def test_retry_uses_exponential_backoff():
-    """失败重试间隔应是指数退避：2^0=1, 2^1=2, 2^2=4 秒（共 3 次 sleep）"""
     fake_provider = MagicMock()
     fake_provider.complete.side_effect = RuntimeError("API down")
 
@@ -150,36 +133,26 @@ def test_retry_uses_exponential_backoff():
     assert sleep_args == [1, 2, 4]
 
 
-# --- _extract_json tests (slice 018b: 智谱 markdown 代码块兜底) ---
-#
-# 智谱 glm-5.1 习惯把 JSON 包在 ```json ... ``` 里，裸 json.loads 会挂在
-# 第一个反引号。_extract_json 负责把 JSON 对象主体抠出来，不赌 prompt 听话。
-
-def test_extract_json_plain():
-    """bare JSON (LM Studio style) should pass through unchanged."""
+def test_extract_json_keeps_plain_json():
     raw = '{"cards": [{"title": "x"}]}'
     assert _extract_json(raw) == raw
 
 
 def test_extract_json_markdown_fence():
-    """JSON wrapped in ```json ... ``` (Zhipu glm style) should be extracted."""
     raw = '```json\n{"cards": [{"title": "x"}]}\n```'
     assert _extract_json(raw) == '{"cards": [{"title": "x"}]}'
 
 
 def test_extract_json_with_surrounding_prose():
-    """JSON with prose before/after should yield just the JSON object."""
     raw = '好的，提取结果如下：\n{"cards": []}\n希望帮到你'
     assert _extract_json(raw) == '{"cards": []}'
 
 
 def test_extract_json_no_json_raises():
-    """response with no braces at all should raise ValueError (fail loud)."""
     with pytest.raises(ValueError):
         _extract_json("我不知道该提取什么")
 
 
 def test_extract_json_empty_raises():
-    """empty string should raise ValueError."""
     with pytest.raises(ValueError):
         _extract_json("")

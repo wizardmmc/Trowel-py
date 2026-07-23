@@ -1,10 +1,8 @@
 from fastapi.testclient import TestClient
 
-def test_health_return_ok(client: TestClient):  # 自动执行/注入 conftest.py 的 client() 函数
-    """
-    验证 /api/health 接口返回的内容符合预期
-    """
-    response = client.get("/api/health")    # 模拟get请求
+
+def test_health_returns_ok(client: TestClient):
+    response = client.get("/api/health")
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True

@@ -1,8 +1,3 @@
-"""Tests for feynman routes (slice 019).
-
-Top of the pyramid: fewer tests. TestClient hits real HTTP; _get_conn is
-overridden to a shared in-memory db (seeded), _get_llm_service to a fake LLM.
-"""
 import sqlite3
 from unittest.mock import MagicMock
 
@@ -16,12 +11,17 @@ from trowel_py.schemas.feynman import FeynmanEvaluationSchema, FeynmanQuestionSc
 
 
 def _seed_card(conn: sqlite3.Connection, card_id: str = "card-1") -> None:
-    """insert a card with content so generate has something to read."""
     conn.execute(
         "insert into cards (id, title, category, explanation, example, tags) "
         "values (?, ?, ?, ?, ?, ?)",
-        (card_id, "useEffect", "React", "runs side effects after render",
-         "useEffect(() => { ... }, [])", '["hooks"]'),
+        (
+            card_id,
+            "useEffect",
+            "React",
+            "runs side effects after render",
+            "useEffect(() => { ... }, [])",
+            '["hooks"]',
+        ),
     )
 
 
@@ -31,7 +31,6 @@ def _seed_session(
     card_id: str = "card-1",
     question: str = "why?",
 ) -> None:
-    """insert a question-stage session directly, bypassing the service."""
     conn.execute(
         "insert into feynman_sessions (id, card_id, question) values (?, ?, ?)",
         (session_id, card_id, question),
@@ -49,18 +48,17 @@ def _fake_question_llm() -> MagicMock:
 def _fake_eval_llm() -> MagicMock:
     llm = MagicMock()
     llm.structured_call.return_value = FeynmanEvaluationSchema(
-        accuracy=80, completeness=60,
-        feedback="missed unmount", missed_points=["unmount case"],
+        accuracy=80,
+        completeness=60,
+        feedback="missed unmount",
+        missed_points=["unmount case"],
     )
     return llm
 
 
 @pytest.fixture
 def feynman_app():
-    """app wired to an in-memory db seeded with a card; LLM overridden per-test."""
-    # check_same_thread=False: FastAPI runs sync routes in a threadpool, so the
-    # conn is touched from a different thread than the one that created it.
-    # safe here because TestClient requests are serial (no concurrent access).
+    # FastAPI 在线程池执行同步路由；TestClient 串行访问，因此允许内存连接跨线程复用。
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
@@ -77,8 +75,7 @@ def feynman_app():
     conn.close()
 
 
-def test_generate_happy_path(feynman_app):
-    """POST /generate -> 200 envelope with question + hint + session_id."""
+def test_generate_returns_question_envelope_and_session_id(feynman_app):
     app, _ = feynman_app
     app.dependency_overrides[_get_llm_service] = _fake_question_llm
     client = TestClient(app)
@@ -95,7 +92,6 @@ def test_generate_happy_path(feynman_app):
 
 
 def test_generate_422_on_empty_card_id(feynman_app):
-    """empty card_id rejected at schema layer (min_length=1) -> 422."""
     app, _ = feynman_app
     app.dependency_overrides[_get_llm_service] = _fake_question_llm
     client = TestClient(app)
@@ -107,7 +103,6 @@ def test_generate_422_on_empty_card_id(feynman_app):
 
 
 def test_generate_error_envelope_when_card_missing(feynman_app):
-    """non-existent card -> success=False error envelope (service returned None)."""
     app, _ = feynman_app
     app.dependency_overrides[_get_llm_service] = _fake_question_llm
     client = TestClient(app)
@@ -121,8 +116,7 @@ def test_generate_error_envelope_when_card_missing(feynman_app):
     assert body["error"] == "Card not found"
 
 
-def test_evaluate_happy_path(feynman_app):
-    """POST /evaluate -> 200 envelope with the scores."""
+def test_evaluate_returns_scores_and_missed_points(feynman_app):
     app, conn = feynman_app
     _seed_session(conn, "s-1", question="when does cleanup run?")
     app.dependency_overrides[_get_llm_service] = _fake_eval_llm
@@ -142,7 +136,6 @@ def test_evaluate_happy_path(feynman_app):
 
 
 def test_evaluate_error_envelope_when_session_missing(feynman_app):
-    """non-existent session -> success=False error envelope."""
     app, _ = feynman_app
     app.dependency_overrides[_get_llm_service] = _fake_eval_llm
     client = TestClient(app)
@@ -159,7 +152,6 @@ def test_evaluate_error_envelope_when_session_missing(feynman_app):
 
 
 def test_history_returns_sessions_newest_first(feynman_app):
-    """GET /history/{card_id} -> sessions ordered newest first; no LLM call."""
     app, conn = feynman_app
     _seed_session(conn, "s-1", question="old")
     conn.execute(
@@ -181,7 +173,6 @@ def test_history_returns_sessions_newest_first(feynman_app):
 
 
 def test_history_empty_for_card_with_no_sessions(feynman_app):
-    """GET /history -> [] when the card has no sessions."""
     app, _ = feynman_app
     client = TestClient(app)
 

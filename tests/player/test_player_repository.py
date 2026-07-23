@@ -12,7 +12,6 @@ def _seed_player(
     coins: int = 0,
     streak_days: int = 0,
 ) -> None:
-    """helper: insert the default player with a known state."""
     conn.execute(
         "insert into players (id, last_active, xp, coins, streak_days) "
         "values ('default', ?, ?, ?, ?)",
@@ -20,10 +19,7 @@ def _seed_player(
     )
 
 
-# ---- find_or_create ----
-
 def test_find_or_create_inserts_on_first_call(db_connection: sqlite3.Connection):
-    """empty DB -> find_or_create creates the default player with defaults."""
     run_migrations(db_connection)
     repo = create_player_repository(db_connection)
 
@@ -37,7 +33,6 @@ def test_find_or_create_inserts_on_first_call(db_connection: sqlite3.Connection)
 
 
 def test_find_or_create_is_idempotent(db_connection: sqlite3.Connection):
-    """calling twice must NOT create a second row."""
     run_migrations(db_connection)
     repo = create_player_repository(db_connection)
 
@@ -49,7 +44,6 @@ def test_find_or_create_is_idempotent(db_connection: sqlite3.Connection):
 
 
 def test_find_or_create_returns_existing(db_connection: sqlite3.Connection):
-    """if a player already exists, find_or_create returns it as-is."""
     run_migrations(db_connection)
     _seed_player(db_connection, xp=150, coins=200, streak_days=3)
 
@@ -61,8 +55,6 @@ def test_find_or_create_returns_existing(db_connection: sqlite3.Connection):
     assert player.streak_days == 3
 
 
-# ---- update_xp / update_coins (increment in DB) ----
-
 def test_update_xp_increments(db_connection: sqlite3.Connection):
     run_migrations(db_connection)
     _seed_player(db_connection, xp=100)
@@ -70,7 +62,9 @@ def test_update_xp_increments(db_connection: sqlite3.Connection):
 
     repo.update_xp(50)
 
-    xp = db_connection.execute("select xp from players where id='default'").fetchone()["xp"]
+    xp = db_connection.execute("select xp from players where id='default'").fetchone()[
+        "xp"
+    ]
     assert xp == 150
 
 
@@ -81,7 +75,9 @@ def test_update_xp_negative_subtracts(db_connection: sqlite3.Connection):
 
     repo.update_xp(-30)
 
-    xp = db_connection.execute("select xp from players where id='default'").fetchone()["xp"]
+    xp = db_connection.execute("select xp from players where id='default'").fetchone()[
+        "xp"
+    ]
     assert xp == 70
 
 
@@ -90,13 +86,13 @@ def test_update_coins_spend(db_connection: sqlite3.Connection):
     _seed_player(db_connection, coins=100)
     repo = create_player_repository(db_connection)
 
-    repo.update_coins(-40)   # spend
+    repo.update_coins(-40)
 
-    coins = db_connection.execute("select coins from players where id='default'").fetchone()["coins"]
+    coins = db_connection.execute(
+        "select coins from players where id='default'"
+    ).fetchone()["coins"]
     assert coins == 60
 
-
-# ---- update_streak (repo just persists what the service computed) ----
 
 def test_update_streak_persists(db_connection: sqlite3.Connection):
     run_migrations(db_connection)
@@ -111,8 +107,6 @@ def test_update_streak_persists(db_connection: sqlite3.Connection):
     assert row["streak_days"] == 5
     assert row["last_active"] == "2026-06-15T12:00:00"
 
-
-# ---- inventory ----
 
 def test_find_inventory_empty(db_connection: sqlite3.Connection):
     run_migrations(db_connection)

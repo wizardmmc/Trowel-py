@@ -1,10 +1,3 @@
-"""Tests for re-explain routes (slice 021).
-
-Top of the pyramid: TestClient hits real HTTP; _get_llm_service is overridden
-to a fake LLM. No DB involved — re-explain is a stateless generator (the caller
-writes the chosen explanation back via POST /{draft_id}/review).
-"""
-
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,7 +9,6 @@ from trowel_py.schemas.re_explain import ReExplainResultSchema
 
 
 def _fake_re_explain_llm() -> MagicMock:
-    """an LLMService mock that returns a fixed regenerated explanation."""
     llm = MagicMock()
     llm.structured_call.return_value = ReExplainResultSchema(
         explanation="a fresh explanation phrased from a different angle"
@@ -54,12 +46,11 @@ def test_re_explain_returns_new_explanation(re_explain_app):
 
 
 def test_re_explain_422_when_explanation_too_short(re_explain_app):
-    """FastAPI schema (min_length=10) rejects before the service runs."""
     client = TestClient(re_explain_app)
     resp = client.post(
         "/api/cards/re-explain",
         json={
-            "explanation": "short",  # < min_length=10
+            "explanation": "short",
             "title": "useEffect",
             "category": "React",
         },
