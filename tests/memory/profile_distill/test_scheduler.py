@@ -1,10 +1,3 @@
-"""tests for the in-app profile distill scheduler (slice-050).
-
-Mirrors test_memory_review_scheduler: dispatch_fn / now_fn / sleep_fn are
-injected so no real cc spawns and tests never sleep on the wall clock. The
-sleep fake records the wait then blocks forever (an unresolving Future), so
-the daily loop fires at most one dispatch before stop() cancels it.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from trowel_py.memory.profile_distill_scheduler import (
+from trowel_py.memory.profile_distill.scheduler import (
     DEFAULT_DISTILL_ENABLED,
     DEFAULT_DISTILL_TIME,
     DistillScheduleConfig,
@@ -23,14 +16,14 @@ from trowel_py.memory.profile_distill_scheduler import (
 
 
 class _BlockingSleep:
-    """Records each requested wait, then blocks forever (cancelled on stop)."""
+    """记录等待时间后挂起，让测试只观察一次调度并由 stop 取消。"""
 
     def __init__(self) -> None:
         self.waits: list[float] = []
 
     async def __call__(self, seconds: float) -> None:
         self.waits.append(seconds)
-        await asyncio.Future()  # never resolves → daily loop pauses here
+        await asyncio.Future()
 
 
 async def _poll(predicate, *, tries: int = 50, delay: float = 0.01) -> bool:
@@ -62,7 +55,6 @@ class TestLoadDistillConfig:
         assert load_distill_config(cfg).distill_time == DEFAULT_DISTILL_TIME
 
     def test_nonbool_enabled_falls_back(self, tmp_path: Path) -> None:
-        # bool("false") is True — a TOML string must not silently enable
         cfg = tmp_path / "config.toml"
         cfg.write_text('[memory]\ndistill_enabled = "false"\n')
         assert load_distill_config(cfg).distill_enabled is DEFAULT_DISTILL_ENABLED
@@ -107,7 +99,6 @@ class TestSchedulerDispatch:
         await sched.stop()
 
     async def test_daily_loop_waits_until_target(self, tmp_path: Path) -> None:
-        # now = 01:00, target = 02:50 → wait 1h50m = 6600s before the daily fire
         events: list[dict] = []
         cfg = DistillScheduleConfig(time(2, 50), True)
         sleep = _BlockingSleep()
@@ -122,13 +113,11 @@ class TestSchedulerDispatch:
         await sched.start()
         try:
             assert await _poll(lambda: bool(sleep.waits))
-            # the daily loop's first sleep is the gap to 02:50
             assert sleep.waits[0] == pytest.approx(6600, rel=0.01)
         finally:
             await sched.stop()
 
     async def test_failure_does_not_crash(self, tmp_path: Path) -> None:
-        # C-6: a dispatch exception is swallowed, not propagated (app stays up)
         cfg = DistillScheduleConfig(DEFAULT_DISTILL_TIME, True)
 
         def boom(_event: dict) -> None:
@@ -143,7 +132,6 @@ class TestSchedulerDispatch:
             sleep_fn=_BlockingSleep(),
         )
         await sched.start()
-        # catchup dispatched (and raised) without taking the scheduler down
         await asyncio.sleep(0.02)
         assert sched._started is True
         await sched.stop()

@@ -43,6 +43,8 @@
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
 | `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
+| `memory/profile_distill_job.py` | profile distill 的现有批处理入口与进程锁 |
+| `memory/profile_distill/` | profile distill 的 prompt、独立水位与应用内调度 |
 | `memory/dictionary.py` | dictionary 派生、校验和发布的稳定入口 |
 | `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
 

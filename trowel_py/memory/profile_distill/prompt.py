@@ -1,24 +1,6 @@
-"""the profile-calibration distill prompt (slice-050, v2 hard rules in 067).
+"""构造 profile distill agent 的画像建议提炼指令。
 
-Drives the distill cc agent through one session: read the jsonl (user messages
-+ AskUserQuestion ``other``), derive profile suggestions for the five dims,
-and write ``suggestions-draft.json``. Incremental dedup (C-8): the prompt
-embeds the live profile + the existing suggestion queue so the agent does not
-re-propose what's already there.
-
-slice-067 swaps the open-ended v1 instructions for ten HARD RULES (保守归因 /
-主体隔离 / 稳定性门槛 / 反证优先 / 使用价值 / 能力证据 / 目标时效 / 原子短句
-/ 数量上限 / 长度上限), validated by a fixed-condition A/B on seven real
-sessions (docs/experiments/profile-hard-rules-20260717/). The v1 prompt
-systematically over-attributed ability (a question → "研究级") and wrote long
-multi-claim bodies; v2 cut three main cases from 9 suggestions / 95.8 avg
-chars to 3 / 22.7. The Python parse layer (profile_distill_job) additionally
-ENFORCES the count/length/sources gates — the prompt is not the only line of
-defense.
-
-These are "prompt 固化" tests (test_profile_distill_prompt.py asserts the key
-promises are in the text) — they guard against prompt drift, not LLM behavior
-(mirrors prompt.py / test_prompt.py).
+模板属于机器契约；Python gate 另行强制数量、长度和来源约束。
 """
 from __future__ import annotations
 
@@ -27,9 +9,7 @@ from typing import Sequence
 from trowel_py.memory.profile import _FIELD_TO_TITLE
 from trowel_py.memory.types import Profile, Suggestion
 
-#: the draft schema the agent must emit (shown verbatim in the prompt). id /
-#: date / status / policy_version are NOT here — the job stamps them (uuid,
-#: today, pending, v2).
+# schema 只约束 agent 输出；id、date、status 和策略版本由 job 补齐。
 SUGGESTIONS_DRAFT_SCHEMA = """\
 {
   "suggestions": [
@@ -94,29 +74,7 @@ def build_distill_prompt(
     start_offset: int | None = None,
     end_offset: int | None = None,
 ) -> str:
-    """Fill the template with the session path + live profile + queue summary.
-
-    Uses ``str.replace`` (not ``.format``) so the JSON ``{}`` braces in the
-    embedded schema are not mistaken for format placeholders (mirrors
-    ``prompt.build_refine_prompt``).
-
-    Args:
-        jsonl_path: absolute path to the session jsonl for the agent to read.
-        existing_suggestions: the current-policy suggestion queue (any status)
-            — shown so the agent dedups against pending + already-accepted
-            proposals. slice-067: the caller passes ONLY same-policy items; v1
-            long bodies must not block a shorter, more conservative v2 proposal
-            on the same theme.
-        existing_profile: the live profile.md — shown so the agent does not
-            re-propose what the user already wrote.
-        start_offset / end_offset: an incremental byte range (a resumed
-            session's new turns). When given, a 【增量范围】 header is prepended
-            so the agent reads the full session for context but only proposes
-            for that slice.
-
-    Returns:
-        The fully filled prompt string.
-    """
+    """注入会话、画像与同策略建议；使用 replace 避免 JSON 花括号被解析。"""
     prompt = (
         DISTILL_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
         .replace("{profile_summary}", _format_profile_summary(existing_profile))
@@ -136,7 +94,6 @@ def build_distill_prompt(
 
 
 def _format_profile_summary(profile: Profile) -> str:
-    """Render the five dims as a bullet list; mark cold start when all empty."""
     has_any = any(str(getattr(profile, field)).strip() for field in _FIELD_TO_TITLE)
     if not has_any:
         return "- （画像为空，这是冷启动）"
@@ -148,7 +105,6 @@ def _format_profile_summary(profile: Profile) -> str:
 
 
 def _format_suggestions_summary(items: Sequence[Suggestion]) -> str:
-    """Render existing suggestions as bullets so the agent can dedup against them."""
     if not items:
         return "- （队列为空）"
     lines: list[str] = []

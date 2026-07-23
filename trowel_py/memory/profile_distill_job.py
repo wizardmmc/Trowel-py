@@ -35,8 +35,8 @@ except ImportError:  # pragma: no cover — non-Unix
     fcntl = None  # type: ignore[assignment]
 
 from trowel_py.memory.paths import resolve_memory_root
-from trowel_py.memory.profile_distill_prompt import build_distill_prompt
-from trowel_py.memory.profile_distill_state import load_processed, mark_processed
+from trowel_py.memory.profile_distill.prompt import build_distill_prompt
+from trowel_py.memory.profile_distill.state import load_processed, mark_processed
 from trowel_py.memory.profile_suggestions import (
     PROFILE_DISTILL_POLICY_VERSION,
     append_suggestions,

@@ -37,7 +37,7 @@ from trowel_py.memory.profile_distill_job import (
     GateStats,
     drive_and_gate,
 )
-from trowel_py.memory.profile_distill_prompt import build_distill_prompt
+from trowel_py.memory.profile_distill.prompt import build_distill_prompt
 from trowel_py.memory.profile_suggestions import (
     PROFILE_DISTILL_POLICY_VERSION,
     suggestion_to_dict,

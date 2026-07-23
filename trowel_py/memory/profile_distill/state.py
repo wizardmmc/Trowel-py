@@ -1,15 +1,4 @@
-"""profile distill watermark state (slice-050).
-
-Tracks which CC sessions the distill job has already distilled-for-profile.
-INDEPENDENT from review_job's memory watermark (C-7: never touches
-sessions.db) so the two daily jobs don't trip over each other — review
-advancing its ``last_extracted_offset`` must not hide a session from distill,
-and vice versa.
-
-Stored as ``meta/profile-distill-state.json`` (a ``processed`` list, deduped by
-cc_session_id on load). Bare ``write_text`` like the rest of the store; the
-distill job holds a flock so concurrent marks can't interleave.
-"""
+"""维护 profile distill 独立于 daily review 的处理水位。"""
 from __future__ import annotations
 
 import json
@@ -17,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("trowel_py.memory.profile_distill_state")
 
 _META_DIR = "meta"
 _STATE_FILE = "profile-distill-state.json"
@@ -25,34 +14,17 @@ _STATE_FILE = "profile-distill-state.json"
 
 @dataclass(frozen=True)
 class ProcessedSession:
-    """One session the distill job has finished processing.
-
-    Attributes:
-        cc_session_id: cc's session uuid (the jsonl filename stem).
-        end_offset: the completed byte offset up to which the session was
-            distilled (so a resumed session's new tail can be re-distilled).
-        at: ISO timestamp of when the session was marked processed.
-    """
-
     cc_session_id: str
     end_offset: int
     at: str
 
 
 def _state_path(root: Path) -> Path:
-    """Where the distill watermark lives under a memory root."""
     return root / _META_DIR / _STATE_FILE
 
 
 def load_processed(root: Path) -> dict[str, ProcessedSession]:
-    """Return ``{cc_session_id: ProcessedSession}``. Missing file → ``{}``.
-
-    Later records for the same cc_session_id win (the file is append-then-dedup
-    by key on load, so a hand-edited duplicate collapses cleanly).
-
-    Raises:
-        ValueError: the file exists but is corrupt JSON (loud, not silent).
-    """
+    """读取独立水位；文件缺失返回空映射，JSON 损坏时显式报错。"""
     path = _state_path(root)
     if not path.exists():
         return {}
@@ -65,9 +37,7 @@ def load_processed(root: Path) -> dict[str, ProcessedSession]:
     for item in raw:
         if not isinstance(item, dict) or "cc_session_id" not in item:
             continue
-        # a corrupt end_offset (null / non-numeric) must NOT crash the whole
-        # load → sticky batch failure (code-review [2]). Skip the bad row +
-        # warn so that session just gets re-distilled instead of blocking all.
+        # 单条坏水位不能阻塞整个批次；跳过后该 session 会被重新提炼。
         try:
             end_offset = int(item.get("end_offset", 0))  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -89,12 +59,7 @@ def load_processed(root: Path) -> dict[str, ProcessedSession]:
 def mark_processed(
     root: Path, cc_session_id: str, end_offset: int, *, at: str
 ) -> None:
-    """Record that a session was distilled-for-profile (idempotent overwrite).
-
-    Keyed by ``cc_session_id`` so reprocessing a resumed session replaces (not
-    duplicates) its record. Read-modify-rewrite the whole file; the caller
-    holds a flock so concurrent marks don't interleave.
-    """
+    """按 session 幂等覆盖水位；调用者必须持有 distill 进程锁。"""
     existing = load_processed(root)
     existing[cc_session_id] = ProcessedSession(
         cc_session_id=cc_session_id, end_offset=end_offset, at=at

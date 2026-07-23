@@ -19,7 +19,7 @@ from trowel_py.memory.profile_distill_job import (
     run_daily_distill,
     run_one_session,
 )
-from trowel_py.memory.profile_distill_state import (
+from trowel_py.memory.profile_distill.state import (
     load_processed,
     mark_processed,
 )

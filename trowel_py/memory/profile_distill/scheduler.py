@@ -1,24 +1,4 @@
-"""in-app daily profile distill scheduler (slice-050).
-
-The sister of review_scheduler: schedules ``profile_distill_job`` inside the
-app process. Two triggers through the same dispatch
-(``run_daily_distill_sync`` → ``run_daily_distill``):
-
-- **startup catchup**: fire once on ``start()`` so a missed run is made up.
-- **daily fixed-time**: every day at ``distill_time`` (default 02:50, off-phase
-  from review's 02:30 so the two cc-spawning jobs don't collide).
-
-Idempotency / safety are inherited from ``profile_distill_job`` (flock +
-watermark), NOT re-implemented. The dispatch runs in a worker thread
-(``asyncio.to_thread``) so a long distill never blocks the uvicorn event loop.
-Any exception is logged + swallowed — a distill failure must never take the app
-down (C-6).
-
-Diverges from review_scheduler: it carries ``proxy_base_url`` (C-4 — distill
-goes through the trowel proxy) into the dispatch event, so ``run_daily_distill``
-can hand it to the CCHost. ``seconds_until`` comes from the shared scheduling
-module.
-"""
+"""在应用生命周期内调度每日 profile distill。"""
 from __future__ import annotations
 
 import asyncio
@@ -32,15 +12,12 @@ from typing import Any, Awaitable, Callable
 from trowel_py.memory import paths
 from trowel_py.memory.scheduling import seconds_until
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("trowel_py.memory.profile_distill_scheduler")
 
-#: default daily distill time (02:50 — 20 min after review's 02:30 so the two
-#: cc-spawning jobs don't overlap on the GLM rate limit).
+# 默认比 daily review 晚 20 分钟，降低两个 CC 任务争抢额度的概率。
 DEFAULT_DISTILL_TIME: time = time(2, 50)
-#: default enabled state (scheduling on unless config opts out).
 DEFAULT_DISTILL_ENABLED: bool = True
 
-#: dispatch payload type + clock/sleep injectors (mirrors review_scheduler).
 DispatchFn = Callable[[dict[str, Any]], None]
 NowFn = Callable[[], datetime]
 SleepFn = Callable[[float], Awaitable[None]]
@@ -48,19 +25,11 @@ SleepFn = Callable[[float], Awaitable[None]]
 
 @dataclass(frozen=True)
 class DistillScheduleConfig:
-    """Resolved scheduling config for the daily profile distill.
-
-    Attributes:
-        distill_time: the wall-clock time the daily loop fires at.
-        distill_enabled: when False, ``start()`` schedules nothing.
-    """
-
     distill_time: time
     distill_enabled: bool
 
 
 def _parse_time(raw: str | None) -> time:
-    """Parse an ``HH:MM`` string; fall back to the default on failure (never raise)."""
     if not raw:
         return DEFAULT_DISTILL_TIME
     try:
@@ -76,7 +45,7 @@ def _parse_time(raw: str | None) -> time:
 
 
 def _parse_enabled(raw: Any, *, present: bool) -> bool:
-    """Coerce distill_enabled strictly (bool("false") is True — guard against it)."""
+    """只接受 TOML bool，避免字符串 ``"false"`` 被 Python 当成真值。"""
     if isinstance(raw, bool):
         return raw
     if present:
@@ -89,17 +58,7 @@ def _parse_enabled(raw: Any, *, present: bool) -> bool:
 
 
 def load_distill_config(config_path: Path | None = None) -> DistillScheduleConfig:
-    """Load the distill schedule from the ``[memory]`` section of config.toml.
-
-    Args:
-        config_path: explicit config location for testability; defaults to the
-            standard lookup (cwd then ``~/.trowel`` — mirrors ``paths``).
-
-    Returns:
-        A ``DistillScheduleConfig``. Missing file / section / keys fall back to
-        defaults (02:50, enabled). Invalid values fall back with a warning,
-        never raises.
-    """
+    """读取 ``[memory]`` 调度配置；缺失、损坏或非法值均回退默认值。"""
     path = config_path or paths.find_config_path()
     if not path.exists():
         return DistillScheduleConfig(DEFAULT_DISTILL_TIME, DEFAULT_DISTILL_ENABLED)
@@ -118,25 +77,14 @@ def load_distill_config(config_path: Path | None = None) -> DistillScheduleConfi
 
 
 def _default_dispatch(event: dict[str, Any]) -> None:
-    """Dispatch the distill job directly.
-
-    Unlike review_scheduler's hooks-registry dispatch, distill has no CLI twin,
-    so it calls ``run_daily_distill_sync`` straight (the flock + watermark
-    idempotency live inside the job, not the dispatch chain).
-    """
+    """直接调用 distill job；并发锁和水位幂等由 job 自身负责。"""
     from trowel_py.memory.profile_distill_job import run_daily_distill_sync
 
     run_daily_distill_sync(event)
 
 
 class ProfileDistillScheduler:
-    """Schedules the daily profile distill inside the app process.
-
-    Construct on app startup with ``proxy_base_url``, ``await start()`` to
-    launch the catchup + daily tasks, ``await stop()`` on shutdown to cancel.
-    The dispatch runs in a worker thread so a long distill never blocks the
-    event loop.
-    """
+    """在应用进程内维护启动补跑和每日定时提炼。"""
 
     def __init__(
         self,
@@ -161,16 +109,10 @@ class ProfileDistillScheduler:
 
     @property
     def tasks(self) -> tuple[asyncio.Task[None], ...]:
-        """Snapshot of live scheduler tasks (catchup + daily loop). Read-only."""
         return tuple(self._tasks)
 
     async def start(self) -> None:
-        """Launch catchup + daily-loop tasks (returns immediately).
-
-        No-op if disabled or already started. Safe under uvicorn ``--reload``:
-        a fresh instance runs catchup again, but flock + watermark keep two
-        instances from double-distilling.
-        """
+        """启动补跑和每日循环；禁用或已启动时保持幂等。"""
         if self._started or not self._config.distill_enabled:
             return
         self._started = True
@@ -187,11 +129,7 @@ class ProfileDistillScheduler:
         )
 
     async def stop(self) -> None:
-        """Cancel catchup + daily-loop tasks.
-
-        A distill already running is not force-killed — flock + watermark make
-        the next start resume safely.
-        """
+        """取消调度 task；线程中已开始的 distill 不会被强制终止。"""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -208,11 +146,10 @@ class ProfileDistillScheduler:
         self._started = False
 
     async def _catchup(self) -> None:
-        """Fire one distill immediately on start (the missed-run makeup)."""
         await self._run_once(label="catchup")
 
     async def _daily_loop(self) -> None:
-        """Sleep until ``distill_time``, fire, repeat. Stops cleanly on cancel."""
+        """等待目标时刻并循环派发；sleep 期间取消时正常退出。"""
         while True:
             try:
                 wait = seconds_until(self._config.distill_time, self._now())
@@ -223,10 +160,7 @@ class ProfileDistillScheduler:
             await self._run_once(label="daily")
 
     async def _run_once(self, *, label: str = "run") -> None:
-        """Dispatch one distill in a worker thread; swallow any failure (C-6).
-
-        The event carries ``proxy_base_url`` so the job can hand it to the CCHost.
-        """
+        """在线程中派发一次提炼；代理信息随事件传递，失败不影响应用。"""
         event = {
             "date": date.today().isoformat(),
             "root": str(self._memory_root),

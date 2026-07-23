@@ -68,12 +68,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] review scheduler failed to start", exc_info=True)
         app.state.memory_scheduler = None
-    # slice-050: in-app daily profile distill scheduler (sister of the review
-    # scheduler). Carries proxy_base_url so distill goes through the trowel proxy
-    # (C-4 — 529 prep). Any failure is swallowed (C-6) so the app still starts.
+    # 后台提炼启动失败不能阻断应用。
     try:
         from trowel_py.memory import paths as _distill_paths
-        from trowel_py.memory.profile_distill_scheduler import (
+        from trowel_py.memory.profile_distill.scheduler import (
             ProfileDistillScheduler,
             load_distill_config,
         )

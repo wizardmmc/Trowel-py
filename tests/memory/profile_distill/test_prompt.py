@@ -1,15 +1,8 @@
-"""slice-050 profile distill prompt tests (prompt 固化).
-
-Mirrors test_prompt.py's approach: assert the key promises are baked into the
-prompt text (guard against prompt drift), not LLM behavior. Covers the session
-path embed, the five-dim listing, the draft schema, the C-8 incremental-dedup
-rules, cold-start marker, and embedding of the live profile + queue.
-"""
 from __future__ import annotations
 
 import pytest
 
-from trowel_py.memory.profile_distill_prompt import (
+from trowel_py.memory.profile_distill.prompt import (
     SUGGESTIONS_DRAFT_SCHEMA,
     build_distill_prompt,
 )
@@ -26,7 +19,6 @@ def test_prompt_embeds_session_jsonl_path() -> None:
 
 
 def test_prompt_lists_five_dimensions() -> None:
-    # the five profile titles must all appear so the agent knows the buckets
     p = build_distill_prompt("/x.jsonl", [], _profile())
     for title in ("能力水平", "方法论偏好", "表达风格", "长程目标", "其他"):
         assert title in p
@@ -41,7 +33,6 @@ def test_prompt_embeds_draft_schema() -> None:
 
 
 def test_prompt_carries_incremental_dedup_rules() -> None:
-    # C-8: the agent must not re-propose what's already in the queue/profile
     p = build_distill_prompt("/x.jsonl", [], _profile())
     assert "不产重复" in p
     assert "宁缺毋滥" in p
@@ -89,8 +80,6 @@ def test_prompt_incremental_range_header() -> None:
 
 
 def test_schema_is_valid_json_shell() -> None:
-    # the verbatim schema shown to the agent is the JSON the agent should emit —
-    # it must be a parseable object with the suggestion fields.
     import json
 
     obj = json.loads(SUGGESTIONS_DRAFT_SCHEMA)
@@ -99,16 +88,6 @@ def test_schema_is_valid_json_shell() -> None:
     assert {"dimension", "body", "sources", "rationale"} <= keys
 
 
-# ---------- slice-067: v2 hard-rule 固化 ----------
-# Each rule has a representative phrase baked into the prompt text. These guard
-# against drift (someone editing the prompt must consciously drop the rule) —
-# they do NOT test LLM behavior (mirrors the rest of this file). The phrases
-# come from the A/B-validated hard-rules.txt.
-
-
-#: (rule name, a phrase that must appear iff the rule is present). Picked to be
-#: unique to one rule so a missing/rewritten rule fails its own line, not a
-#: neighbor's.
 _V2_RULE_PHRASES = [
     ("保守归因", "不能证明已经掌握"),
     ("保守归因-正在学习", "正在学习"),
@@ -136,27 +115,22 @@ def test_prompt_carries_v2_hard_rule(name: str, phrase: str) -> None:
 
 
 def test_prompt_v2_forbids_ability_from_questions() -> None:
-    # rule 6 spelled out: deep questioning must not substitute for ability
     p = build_distill_prompt("/x.jsonl", [], _profile())
     assert "追问得深入" in p
     assert "不能代替能力证据" in p
 
 
 def test_prompt_v2_forbids_overclaim_words() -> None:
-    # rule 1 names the over-claim words the v1 prompt produced ("研究级" etc.)
     p = build_distill_prompt("/x.jsonl", [], _profile())
     assert "研究级" in p
     assert "精通" in p
 
 
 def test_prompt_v2_schema_body_caps_at_60_chars() -> None:
-    # the verbatim schema the agent copies must state the 60-char cap
     assert "不超过 60 个 Unicode 字符" in SUGGESTIONS_DRAFT_SCHEMA
 
 
 def test_prompt_v2_self_check_block_present() -> None:
-    # the 【输出前自检】 block is the second line of defense against
-    # over-attribution — its four questions must all be present.
     p = build_distill_prompt("/x.jsonl", [], _profile())
     assert "输出前自检" in p
     for q in ("把 AI 的劳动算给了用户", "正在问", "偶然选择", "去掉例子和赞美后"):
