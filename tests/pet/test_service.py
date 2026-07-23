@@ -1,12 +1,3 @@
-"""pet service tests — orchestration over pet_repo + player_repo + brain.
-
-coverage focus:
-  - pure fns: resolve_mood (full table), _clamp_hunger (bounds)
-  - feed / equip_hat: every if-branch (missing / wrong type / unknown / happy path)
-  - equip_hat "one hat at a time" rule (the whole point of unequip_all_hats)
-  - interact: mood -> happy + brain returns a line
-  - tick_hunger: decay + clamp at 0
-"""
 from __future__ import annotations
 
 import random
@@ -40,7 +31,6 @@ class TestResolveMood:
         ],
     )
     def test_transition_table(self, trigger, mood):
-        # locks the whole mood table — one wrong value fails loud
         assert resolve_mood(trigger) == mood
 
 
@@ -56,16 +46,15 @@ class TestClampHunger:
 
 
 class TestFeed:
-    def test_restores_hunger_and_consumes_food(self, pet_repo, player_repo, stock):
-        food_id = stock("food_basic", "food")
-        pet_repo.update_hunger(50)  # make room so +20 is visible (not clamped)
+    def test_restores_hunger_and_consumes_food(self, pet_repo, player_repo, stock_item):
+        food_id = stock_item("food_basic", "food")
+        pet_repo.update_hunger(50)
         pet = feed(food_id, pet_repo, player_repo)
         assert pet.hunger == 70
-        assert player_repo.find_inventory() == []  # food consumed — atomic side effect
+        assert player_repo.find_inventory() == []
 
-    def test_clamps_at_max(self, pet_repo, player_repo, stock):
-        # default hunger 80 + food_premium 50 = 130 -> clamp 100
-        food_id = stock("food_premium", "food")
+    def test_clamps_at_max(self, pet_repo, player_repo, stock_item):
+        food_id = stock_item("food_premium", "food")
         pet = feed(food_id, pet_repo, player_repo)
         assert pet.hunger == HUNGER_MAX
 
@@ -73,29 +62,27 @@ class TestFeed:
         with pytest.raises(ValueError, match="not in inventory"):
             feed("does-not-exist", pet_repo, player_repo)
 
-    def test_non_food_raises(self, pet_repo, player_repo, stock):
-        hat_id = stock("hat_straw", "hat")
+    def test_non_food_raises(self, pet_repo, player_repo, stock_item):
+        hat_id = stock_item("hat_straw", "hat")
         with pytest.raises(ValueError, match="not food"):
             feed(hat_id, pet_repo, player_repo)
 
-    def test_unknown_food_catalog_raises(self, pet_repo, player_repo, stock):
-        # item_type=food but catalog not in _FOOD_RECOVERY -> junk food rejected
-        mystery_id = stock("food_mystery", "food")
+    def test_unknown_food_catalog_raises(self, pet_repo, player_repo, stock_item):
+        mystery_id = stock_item("food_mystery", "food")
         with pytest.raises(ValueError, match="unknown food"):
             feed(mystery_id, pet_repo, player_repo)
 
 
 class TestEquipHat:
-    def test_equips_and_syncs_pet(self, pet_repo, player_repo, stock):
-        hat_id = stock("hat_straw", "hat")
+    def test_equips_and_syncs_pet(self, pet_repo, player_repo, stock_item):
+        hat_id = stock_item("hat_straw", "hat")
         pet = equip_hat(hat_id, pet_repo, player_repo)
         assert pet.equipped_hat == hat_id
         assert player_repo.find_item_by_id(hat_id).equipped == 1
 
-    def test_second_hat_unequips_first(self, pet_repo, player_repo, stock):
-        # THE "one hat at a time" rule — the whole reason unequip_all_hats exists.
-        hat_a = stock("hat_straw", "hat")
-        hat_b = stock("hat_cap", "hat")
+    def test_second_hat_unequips_first(self, pet_repo, player_repo, stock_item):
+        hat_a = stock_item("hat_straw", "hat")
+        hat_b = stock_item("hat_cap", "hat")
         equip_hat(hat_a, pet_repo, player_repo)
         equip_hat(hat_b, pet_repo, player_repo)
 
@@ -107,8 +94,8 @@ class TestEquipHat:
         with pytest.raises(ValueError, match="not in inventory"):
             equip_hat("nope", pet_repo, player_repo)
 
-    def test_non_hat_raises(self, pet_repo, player_repo, stock):
-        food_id = stock("food_basic", "food")
+    def test_non_hat_raises(self, pet_repo, player_repo, stock_item):
+        food_id = stock_item("food_basic", "food")
         with pytest.raises(ValueError, match="not a hat"):
             equip_hat(food_id, pet_repo, player_repo)
 
@@ -119,20 +106,18 @@ class TestInteract:
         result = interact(pet_repo, TemplateBrain(), random.Random(0))
         response = result["response"]
         assert response.mood == "happy"
-        assert response.text  # non-empty line from the happy bucket
+        assert response.text
         assert result["pet"].mood == "happy"
 
 
 class TestTickHunger:
     def test_reduces_hunger_by_elapsed(self, pet_repo):
         pet_repo.update_hunger(80)
-        # 60 min at 2/hour = 2 points
         pet = tick_hunger(pet_repo, elapsed_minutes=60)
         assert pet.hunger == 78
 
     def test_clamps_at_zero(self, pet_repo):
         pet_repo.update_hunger(1)
-        # 60 min at 2/hour = 2 points off 1 -> -1 -> clamp 0
         pet = tick_hunger(pet_repo, elapsed_minutes=60)
         assert pet.hunger == 0
 

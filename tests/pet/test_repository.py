@@ -1,10 +1,8 @@
-"""pet repository unit tests — data layer in isolation (in-memory db)."""
 from __future__ import annotations
 
 
 class TestFindOrCreate:
     def test_first_access_creates_with_table_defaults(self, pet_repo):
-        # defaults come from migration 003: mood=normal, hunger=80, hat=None
         pet = pet_repo.find_or_create()
         assert pet.player_id == "default"
         assert pet.mood == "normal"
@@ -12,7 +10,6 @@ class TestFindOrCreate:
         assert pet.equipped_hat is None
 
     def test_repeated_call_is_idempotent(self, pet_repo):
-        # singleton — no duplicate pet row on second access
         a = pet_repo.find_or_create()
         b = pet_repo.find_or_create()
         assert a.player_id == b.player_id
