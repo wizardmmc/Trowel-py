@@ -19,7 +19,7 @@ def web_dist(tmp_path: Path, monkeypatch) -> Path:
 def _isolate_memory_root(tmp_path: Path, monkeypatch) -> None:
     # lifespan 会写真实 memory 并启动 review，这里同时隔离存储并禁用调度。
     import trowel_py.memory.paths as paths
-    from trowel_py.memory import review_scheduler
+    from trowel_py.memory.daily_review import scheduler as review_scheduler
 
     monkeypatch.setattr(paths, "resolve_memory_root", lambda: tmp_path / "mem")
     monkeypatch.setattr(

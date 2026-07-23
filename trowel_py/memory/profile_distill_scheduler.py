@@ -16,8 +16,8 @@ down (C-6).
 
 Diverges from review_scheduler: it carries ``proxy_base_url`` (C-4 — distill
 goes through the trowel proxy) into the dispatch event, so ``run_daily_distill``
-can hand it to the CCHost. ``seconds_until`` is reused from review_scheduler
-(it's pure).
+can hand it to the CCHost. ``seconds_until`` comes from the shared scheduling
+module.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from trowel_py.memory import paths
-from trowel_py.memory.review_scheduler import seconds_until
+from trowel_py.memory.scheduling import seconds_until
 
 logger = logging.getLogger(__name__)
 

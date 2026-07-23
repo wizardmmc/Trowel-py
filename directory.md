@@ -41,7 +41,8 @@
 | 路径 | 职责 |
 |---|---|
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
-| `memory/daily_review/` | 提炼 agent 生命周期与增量批处理编排 |
+| `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
+| `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
 | `memory/dictionary.py` | dictionary 派生、校验和发布的稳定入口 |
 | `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
 

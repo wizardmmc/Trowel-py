@@ -15,7 +15,7 @@ VALID_DRAFT = json.dumps(
     }
 )
 
-_default_jsonl_path = ""
+_jsonl_path = ""
 
 
 class FakeHost:
@@ -40,7 +40,7 @@ def factory(events: list, draft_text: str | None = None):
 
 
 def prepare_default_jsonl(path: Path) -> None:
-    global _default_jsonl_path
+    global _jsonl_path
 
     # 多个增量用例使用 4096 内的任意 offset，数据必须覆盖整个区间。
     path.write_text(
@@ -53,7 +53,7 @@ def prepare_default_jsonl(path: Path) -> None:
         * 100,
         encoding="utf-8",
     )
-    _default_jsonl_path = str(path)
+    _jsonl_path = str(path)
 
 
 def session(sid: str = "s1", workdir: str = "/proj") -> SessionRecord:
@@ -61,7 +61,7 @@ def session(sid: str = "s1", workdir: str = "/proj") -> SessionRecord:
         cc_session_id=sid,
         workdir=workdir,
         date="2026-07-09",
-        jsonl_path=_default_jsonl_path,
+        jsonl_path=_jsonl_path,
         registered_at="2026-07-09T10:00:00",
     )
 

@@ -9,7 +9,7 @@ from typing import Any
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
-from trowel_py.memory.review_workspace import ensure_review_workdir
+from trowel_py.memory.daily_review.workspace import ensure_review_workdir
 from trowel_py.memory.sessions_repo import SessionRecord
 
 HostFactory = Callable[[SessionRecord, Path], Any]

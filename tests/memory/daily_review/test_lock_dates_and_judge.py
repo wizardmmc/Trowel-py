@@ -11,7 +11,7 @@ try:
 except ImportError:
     fcntl = None  # type: ignore[assignment]
 
-from tests.memory.review_job.support import (
+from tests.memory.daily_review.support import (
     FINISHED,
     VALID_DRAFT,
     factory,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.review_job.support import (
+from tests.memory.daily_review.support import (
     ERROR,
     FINISHED,
     VALID_DRAFT,

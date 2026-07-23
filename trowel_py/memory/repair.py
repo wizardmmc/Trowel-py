@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from trowel_py.memory.draft import parse_draft
-from trowel_py.memory.review_workspace import review_workdir_root
+from trowel_py.memory.daily_review.workspace import review_workdir_root
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,

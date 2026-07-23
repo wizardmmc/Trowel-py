@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.memory.review_job.support import (
+from tests.memory.daily_review.support import (
     FINISHED,
     VALID_DRAFT,
     FakeHost,

@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     # (C-1, non-blocking).
     try:
         from trowel_py.memory import paths as _mem_paths
-        from trowel_py.memory.review_scheduler import (
+        from trowel_py.memory.daily_review.scheduler import (
             MemoryReviewScheduler,
             load_review_config,
         )

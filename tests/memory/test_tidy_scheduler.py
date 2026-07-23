@@ -28,9 +28,6 @@ from trowel_py.memory.tidy_scheduler import (
 from trowel_py.memory.tidy_state import TidyState, load_state, save_state
 
 
-# ---------- helpers (mirror test_memory_review_scheduler) ----------
-
-
 class _HangingSleep:
     """sleep_fn that hangs forever — keeps loops idle so start() tests don't
     fire any scheduled wake (only the startup catchup runs)."""
@@ -474,7 +471,7 @@ class TestLifespanIntegration:
         from trowel_py.app import create_app
         from trowel_py.memory import paths as mem_paths
         from trowel_py.memory import profile_distill_scheduler as ds_mod
-        from trowel_py.memory import review_scheduler as rs_mod
+        from trowel_py.memory.daily_review import scheduler as rs_mod
         from trowel_py.memory import tidy as tidy_mod
 
         monkeypatch.setattr(mem_paths, "resolve_memory_root", lambda: tmp_path)

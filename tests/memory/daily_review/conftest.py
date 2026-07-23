@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.review_job import support
+from tests.memory.daily_review import support
 
 
 @pytest.fixture(autouse=True)

@@ -1,11 +1,4 @@
-"""the daily-review cc workdir (slice-040 T10).
-
-The distillation cc agent runs in ``~/.trowel/review-daily-work/{date}/`` — a
-clean workdir with no project ``CLAUDE.md`` to pollute the agent, ``git init``'d
-to avoid cc's "not a repo" warning. It is a sibling of ``memory/`` (both under
-``~/.trowel/``). Persistent (dated) so ``draft.json`` history survives for
-debugging.
-"""
+"""管理 daily review 的持久化 CC 工作目录。"""
 from __future__ import annotations
 
 import logging
@@ -14,28 +7,19 @@ from pathlib import Path
 
 from trowel_py.memory.paths import resolve_memory_root
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("trowel_py.memory.review_workspace")
 
 _REVIEW_DIR_NAME = "review-daily-work"
 
 
 def review_workdir_root(memory_root: Path | None = None) -> Path:
-    """Return the review-daily-work root (sibling of memory/, under ~/.trowel)."""
+    """工作目录与 memory root 同级，避免继承用户项目的 agent 指令。"""
     root = memory_root if memory_root is not None else resolve_memory_root()
     return root.parent / _REVIEW_DIR_NAME
 
 
 def ensure_review_workdir(date_str: str, memory_root: Path | None = None) -> Path:
-    """Create (idempotently) the dated review workdir for ``date_str``.
-
-    Runs ``git init`` if the dir has no ``.git``, so cc does not warn "not a
-    repo" when the agent runs there. ``git init`` is best-effort: a failure
-    (git missing, etc.) is logged and swallowed — it only affects a cosmetic
-    cc warning, not correctness.
-
-    Returns:
-        The absolute workdir path.
-    """
+    """创建按日期持久化的工作目录，并 best-effort 初始化 Git 仓库。"""
     workdir = review_workdir_root(memory_root) / date_str
     workdir.mkdir(parents=True, exist_ok=True)
     if not (workdir / ".git").exists():
