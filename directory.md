@@ -1,57 +1,56 @@
-# 项目目录
+# 仓库地图
 
-全项目结构。标「(gitignored)」的是本地私有、不进 git。每个后端领域模块通常是同样三件套：`repository.py`（数据访问）+ `service.py`（业务逻辑）+ `routes.py`（HTTP 端点），有的加 `types.py` / `config.py`。
-tip：可修改，每完成一个slice后检查同步。
+这是一张源码导航图，不展开实现历史，也不逐文件复制目录树。
 
-```
-trowel-py/
-├── CLAUDE.md              项目宪法：原则 + 链接（gitignored）
-├── CLAUDE copy.md         过往教学协议，历史底稿（gitignored）
-├── AGENTS.md              fresh agent 上手速览 + gotcha（gitignored）
-├── directory.md           本文件
-├── ReadMe.md              仓库入口
-├── Learn.md               早期 slice 学习记录（gitignored）
-├── pyproject.toml         Python 依赖（uv）
-│
-├── docs/                  设计与开发文档，整体 gitignored、本地私有
-│   ├── foundation/        产品根基：prd.md（并非一成不变，核心作用是锚定大致方向）/ development.md / adr/
-│   ├── slices/            SDD 的 slice spec（如 021.md）
-│   ├── design/            前端设计稿（/plan-design-review 产出 + slice mockup）
-│   │   └── front-end/     slice 前端 mockup（{feature}-{date}.html，如 ask-user-question-20260704.html）+ review md
-│   ├── training-log-m1.md / m2.md / m3.md    各阶段训练日志（进度 + 知识点）
-│   └── training-log-status.md                进度状态
-│
-├── trowel_py/             后端：FastAPI + sqlite3 + Pydantic v2
-│   ├── app.py             FastAPI app factory（纯函数，无副作用）
-│   ├── server.py          入口，启动 uvicorn
-│   ├── config.py          配置加载
-│   ├── db/                数据库连接 + 迁移（connection.py / migrate.py / migrations/）
-│   ├── cards/             卡片领域：提取、存储、去重、re-explain
-│   ├── review/            复习领域 + 调度器（scheduler.py）
-│   ├── memory/            记忆领域：review_scheduler.py（app 内每日 review 调度，slice-046，替代已删的 launchd schedule.py）+ review_job（每日提炼，slice-040）+ judge/judgements/judge_prompt（判效 agent：会话笔记「用没用/有用没用/该用没用」+ 三指标，slice-053）+ sessions_repo/hooks/store/access_log/north_star 等（slice-038+）
-│   ├── garden/            花园领域
-│   ├── pet/               宠物领域（brain / mood）
-│   ├── events/            事件引擎 + 冷却 + 奖励
-│   ├── player/            玩家领域（level / xp / coins / streak）
-│   ├── feynman/           费曼模式
-│   ├── llm/               LLM 客户端 + prompts + filter
-│   ├── cc_host/           CC 子进程 host（slice022）；history.py 解析 jsonl→同构 trowel 事件（slice023-web）；workflow_watcher.py 读 wf_<runId>.json 渲染 workflow 进度树（slice-036）；subagent_usage.py 从 subagent transcript 累加 token（slice-036 D 层）
-│   ├── agent_host/       host-neutral Session Hub（slice-072）：binding.py（SessionBinding/Runtime）+ store.py（json 持久化）+ hub.py（路由 CC/Codex、runtime 冻结、交叉 resume 拒绝）+ routes.py（/api/agent/*）+ schemas.py；cc_host 复用 open_cc_session / close_cc_session
-│   ├── model_os/         Model OS 内核骨干（M8 slice-084）：独立 SQLite+WAL Store + append-only 事件/决策日志 + 纯函数 reducer + payload 脱敏。types.py（枚举+frozen dataclass：WorkItem/EventEnvelope/DecisionRecord/Lease/Provenance 强度排序）+ redaction.py + reducer.py（Snapshot/reduce_event，provenance 不允许静默升级）+ store.py（事务/CAS lease/append/read_snapshot/replay）+ self_assembler.py（slice-085 SelfManifest 组装 + 套壳注入渲染，不依赖 memory）+ context_observer.py（slice-088 生产上下文占用观察器）。slice-086 Task 池、slice-087 Episode ownership/fencing/suspend、slice-088 Context Observer 已落地；slice-093 work_broker.py（WorkBroker：foreground/default/maintenance 统一资源租约仲裁 + 预算闸门 + 账号 failover + 崩溃 fencing 回收 + usage 归因）
-│   ├── quota/            跨 provider 额度读模型（M8 slice-093-pre）：types.py（Provider/QuotaSnapshot/QuotaWindow）+ glm.py（GLM Coding Plan 额度抓取）+ codex.py（Codex usedPercent observer push）+ read_model.py（按账号去重 + staleness）+ scheduler.py（GLM 轮询，TROWEL_QUOTA_POLL=1 才开）+ routes.py（GET /api/quota）。WorkBroker（slice-093）只读消费 QuotaReadModel.get(provider, account)
-│   └── schemas/           Pydantic 数据模型（api / card / event / extracted_card / feynman / follow_up / cc_host）
-│
-├── web/                   前端：React 19 + Vite + Zustand + framer-motion
-│   └── src/
-│       ├── App.tsx        容器组件，订阅 store
-│       ├── api/           API 客户端（fetch 封装）；cc.ts/ccStream.ts/ccTypes.ts = CC 会话（slice023-web）；agent.ts = host-neutral /api/agent（slice-072）
-│       ├── components/    展示/容器组件，按领域分子目录（cards/ cc/ 等）
-│       ├── stores/        Zustand store；ccStore.ts = host-neutral 多 session 壳（CC+Codex，slice-072）；ccReducer.ts/codexReducer.ts = 事件 reducer（CC / Codex）
-│       └── styles/        样式
-│
-├── tests/                 pytest 测试：conftest.py + 按领域（events/ pet/）+ 跨领域 e2e
-│
-├── trowel.db              sqlite 数据文件（gitignored）
-├── config.toml            配置，含密钥（gitignored）
-└── logs/ .venv/ 等        运行时产物（gitignored）
-```
+## 根目录
+
+| 路径 | 职责 |
+|---|---|
+| `README.md` | 产品介绍与运行方式 |
+| `pyproject.toml` / `uv.lock` | Python 包、依赖和测试配置 |
+| `config.example.toml` | 不含真实凭据的配置样例 |
+| `trowel_py/` | FastAPI 后端与本地运行时 |
+| `web/` | React 前端 |
+| `tests/` | Python 测试与公开契约快照 |
+
+本地设计文档、agent 指令、真实配置、数据库、日志和录制数据均被 gitignore，不属于公开仓库内容。
+
+## 后端
+
+| 路径 | 职责 |
+|---|---|
+| `app.py` | 组装 FastAPI、生命周期与路由 |
+| `cli.py` | `trowel-py` 命令行入口 |
+| `config.py` | 模型服务配置读取 |
+| `db/` | 主数据库连接与 SQL 迁移 |
+| `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
+| `cc_host/` / `codex_host/` | 两种原生 runtime 的进程、协议和事件适配 |
+| `model_os/` | Task、Episode、租约、事件日志与模型资源仲裁 |
+| `memory/` / `profile/` | 长期记忆、检索、提炼与用户画像 |
+| `quota/` | provider 额度读取与归一化 |
+| `todo_loop/` | todo 展开与持续推进辅助 |
+| `cards/` / `review/` / `feynman/` | 卡片提取、复习和费曼学习 |
+| `garden/` / `player/` / `pet/` / `events/` | 花园、玩家状态、宠物和事件系统 |
+| `llm/` | 模型客户端、prompt 与输出过滤 |
+| `schemas/` | 跨领域 Pydantic 数据模型 |
+
+领域模块通常把 HTTP、业务逻辑和持久化分别放在 `routes.py`、`service.py` 与 `repository.py`；实际文件按领域需要增减。
+
+## 前端
+
+| 路径 | 职责 |
+|---|---|
+| `web/src/App.tsx` | 页面入口与顶层工具切换 |
+| `web/src/api/` | HTTP、SSE 与 wire types |
+| `web/src/stores/` | Zustand 状态与事件 reducer |
+| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的组件 |
+| `web/src/styles/` | 全局 token 与样式 |
+| `web/src/__tests__/` | Vitest 组件和状态测试 |
+
+## 测试
+
+- `tests/<domain>/` 对应后端领域；
+- `tests/contracts/` 冻结 OpenAPI、CLI、SSE event type 和 SQLite schema；
+- `tests/` 一级目录仍保留一批早期领域测试和跨领域 E2E，后续会在不改测试行为的前提下整理。
+
+生成目录、缓存、虚拟环境、真实 fixture 和运行时数据不进入这张地图。
