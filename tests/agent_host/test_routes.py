@@ -1,10 +1,4 @@
-"""slice-072: /api/agent/* routes — HTTP + SSE wrapper around SessionHub.
-
-Route tests inject a Hub wired to fakes via ``dependency_overrides[get_hub]``,
-so nothing here touches the real store or any native subprocess (spec C-7).
-The fakes are reused from test_hub.py (tests is a package, so cross-module
-import works).
-"""
+"""Agent 路由测试注入 fake Hub，不接触真实 store 或 native 进程。"""
 
 from __future__ import annotations
 
@@ -19,7 +13,7 @@ from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.hub import SessionHub
 from trowel_py.agent_host.routes import get_hub, router
 from trowel_py.agent_host.store import BindingStore
-from tests.agent_host.test_hub import FakeCodexManager, make_cc_opener
+from tests.agent_host.hub._support import FakeCodexManager, make_cc_opener
 
 
 @pytest.fixture
@@ -264,9 +258,7 @@ def test_post_answer_codex_request_routes_by_session(
 ):
     """slice-075 answer endpoint keeps session + request identity together."""
 
-    row = client.post(
-        "/api/agent/sessions", json=codex_payload(workdir)
-    ).json()["data"]
+    row = client.post("/api/agent/sessions", json=codex_payload(workdir)).json()["data"]
     response = client.post(
         f"/api/agent/sessions/{row['session_id']}/requests/7-0/answer",
         json={"decision": "cancel"},
@@ -282,14 +274,10 @@ def test_post_answer_codex_request_routes_by_session(
     ]
 
 
-def test_post_answer_request_rejects_cc_session(
-    client: TestClient, workdir: Path
-):
+def test_post_answer_request_rejects_cc_session(client: TestClient, workdir: Path):
     """CC AskUserQuestion keeps its existing /api/cc answer contract."""
 
-    row = client.post(
-        "/api/agent/sessions", json=cc_payload(workdir)
-    ).json()["data"]
+    row = client.post("/api/agent/sessions", json=cc_payload(workdir)).json()["data"]
     response = client.post(
         f"/api/agent/sessions/{row['session_id']}/requests/7-0/answer",
         json={"decision": "cancel"},
@@ -302,12 +290,8 @@ def test_get_codex_requests_supports_disconnect_recovery(
 ):
     """The host-neutral recovery endpoint is available only through a binding."""
 
-    row = client.post(
-        "/api/agent/sessions", json=codex_payload(workdir)
-    ).json()["data"]
-    response = client.get(
-        f"/api/agent/sessions/{row['session_id']}/requests"
-    )
+    row = client.post("/api/agent/sessions", json=codex_payload(workdir)).json()["data"]
+    response = client.get(f"/api/agent/sessions/{row['session_id']}/requests")
     assert response.status_code == 200
     assert response.json()["data"] == {"requests": []}
 

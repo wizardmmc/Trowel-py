@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+from trowel_py.agent_host.hub import (
+    SessionHub,
+)
+from tests.agent_host.hub._support import (
+    _is_envelope,
+    cc_req,
+)
+
+
+async def test_stream_unknown_session_404(hub: SessionHub):
+    with pytest.raises(HTTPException) as exc:
+        _ = [e async for e in hub.stream("nope", "hi")]
+    assert exc.value.status_code == 404
+
+
+async def test_stream_cc_yields_unified_envelope(hub: SessionHub, workdir: Path):
+
+    binding = hub.create(cc_req(workdir), request=None)
+    events = [e async for e in hub.stream(binding.session_id, "hello")]
+    assert events, "expected at least one event from the CC stream"
+    assert all(_is_envelope(e) for e in events), events
+    assert all(e["runtime"] == "claude_code" for e in events)
+    assert all(e["session_id"] == binding.session_id for e in events)
+
+    assert events[0]["type"] == "text"
+    assert events[0]["payload"]["text"] == "echo:hello"
+
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+
+
+async def test_stream_cc_seq_persists_across_turns(hub: SessionHub, workdir: Path):
+
+    binding = hub.create(cc_req(workdir), request=None)
+    first = [e async for e in hub.stream(binding.session_id, "one")]
+
+    # adapter 跨 turn 复用，seq 不能在每次 send 时重置。
+    second = [e async for e in hub.stream(binding.session_id, "two")]
+    assert first[-1]["seq"] >= 1
+    assert second[0]["seq"] == first[-1]["seq"] + 1, (
+        "seq must continue from the prior turn, not reset to 1"
+    )
