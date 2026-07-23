@@ -49,8 +49,10 @@
 
 ## 测试
 
-- `tests/<domain>/` 对应后端领域；
+- `tests/<domain>/` 对应后端领域，领域测试不平铺在一级目录；
+- `tests/integration/` 放跨领域端到端测试；
 - `tests/contracts/` 冻结 OpenAPI、CLI、SSE event type 和 SQLite schema；
-- `tests/` 一级目录仍保留一批早期领域测试和跨领域 E2E，后续会在不改测试行为的前提下整理。
+- `tests/fixtures/` 放跨领域共享 fixture；
+- `tests/` 一级只保留包入口与共享 `conftest.py`。
 
 生成目录、缓存、虚拟环境、真实 fixture 和运行时数据不进入这张地图。
