@@ -1,0 +1,3310 @@
+{
+  "cli_help": {
+    "root": "usage: trowel-py [-h] [--port PORT] [--host HOST] [--no-open]\n\ntrowel-py CLI entry point. Installed as the ``trowel-py`` script via\n``[project.scripts]`` in pyproject. Starts the FastAPI app (API + served\nfrontend) and opens a browser at it. Usage: trowel-py # default port 8000,\nauto-open browser trowel-py --no-open # skip the browser trowel-py --port 9000\nBackend deps (cc CLI, ~/.claude/) are NOT bundled — the user installs claude-\ncode separately. This command only starts trowel's own server.\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT  port to listen on (default 8000)\n  --host HOST  host to bind (default 127.0.0.1)\n  --no-open    don't open a browser window\n",
+    "memory": "usage: trowel-py memory [-h]\n                        {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate} ...\n\nmemory subsystem\n\npositional arguments:\n  {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate}\n    tidy                weekly/monthly tidy + rollback (041)\n    review              run the daily write loop: distill a day's cc sessions\n    repair              backfill per-session episodes from surviving drafts\n                        (P1 overwrite fix)\n    backfill-completed  stamp last_completed_offset for legacy rows from jsonl\n                        size (040-b)\n    dict-rebuild        regenerate dictionary L0/L1 from notes (040-c C-3)\n    dict-check          read-only dictionary consistency report vs notes (064)\n    migrate             backfill memory_id/status/valid_from on legacy notes\n                        (041 C-9)\n    core                layer-one promotion: nominate/approve/activate (041)\n    metrics             print memory metrics (065):\n                        identity/retrieval/effect/recall with coverage +\n                        quality labels + the policy in force\n    promotion           evaluate core-candidate promotion gaps (065); --apply\n                        writes candidates\n    profile-recalibrate\n                        re-distill history under v2 hard rules into isolated\n                        staging (067); default is a read-only plan, never\n                        touching live data\n\noptions:\n  -h, --help            show this help message and exit\n",
+    "memory tidy": "usage: trowel-py memory tidy [-h] [--weekly] [--monthly] [--iso-week ISO_WEEK]\n                             [--month MONTH] [--rollback ROLLBACK] [--status]\n                             [--catchup] [--from PERIOD]\n                             [--scope {weekly,monthly}] [--root ROOT]\n\noptions:\n  -h, --help            show this help message and exit\n  --weekly              run weekly tidy (compress + bypass + TidyPlan) for one\n                        ISO week\n  --monthly             run monthly tidy (compress + retire + promote +\n                        TidyPlan)\n  --iso-week ISO_WEEK   ISO week YYYY-Www (default: current week)\n  --month MONTH         YYYY-MM (default: current month)\n  --rollback ROLLBACK   rollback a tidy plan id (restore notes/)\n  --status              print the tidy watermark + pending periods (read-only,\n                        063)\n  --catchup             explicitly catch up a range; needs --from and --scope\n                        (063)\n  --from PERIOD         starting period for --catchup (YYYY-Www weekly, YYYY-\n                        MM monthly)\n  --scope {weekly,monthly}\n                        which scope --catchup runs\n  --root ROOT           memory root (default: resolved from config.toml)\n",
+    "memory review": "usage: trowel-py memory review [-h] [--date DATE] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE  target day YYYY-MM-DD (default: today)\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory repair": "usage: trowel-py memory repair [-h] --date DATE [--apply] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE  target day YYYY-MM-DD\n  --apply      apply (back up + write); default is a dry-run listing\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory backfill-completed": "usage: trowel-py memory backfill-completed [-h] --date DATE [--apply]\n                                           [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE  target day YYYY-MM-DD\n  --apply      apply (write); default is a dry-run listing\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory dict-rebuild": "usage: trowel-py memory dict-rebuild [-h] [--apply] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --apply      write; default is dry-run\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory dict-check": "usage: trowel-py memory dict-check [-h] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory migrate": "usage: trowel-py memory migrate [-h] [--apply] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --apply      write; default is dry-run\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory core": "usage: trowel-py memory core [-h] [--root ROOT]\n                             {nominate,approve,activate} ...\n\npositional arguments:\n  {nominate,approve,activate}\n    nominate            nominate a note as core candidate\n    approve             candidate → core.md (status=trial)\n    activate            core item trial → active\n\noptions:\n  -h, --help            show this help message and exit\n  --root ROOT           memory root (default: resolved from config.toml)\n",
+    "memory core nominate": "usage: trowel-py memory core nominate [-h] note_stem\n\npositional arguments:\n  note_stem   note filename stem\n\noptions:\n  -h, --help  show this help message and exit\n",
+    "memory core approve": "usage: trowel-py memory core approve [-h] candidate_id\n\npositional arguments:\n  candidate_id  candidate memory_id\n\noptions:\n  -h, --help    show this help message and exit\n",
+    "memory core activate": "usage: trowel-py memory core activate [-h] memory_id\n\npositional arguments:\n  memory_id   core item memory_id\n\noptions:\n  -h, --help  show this help message and exit\n",
+    "memory metrics": "usage: trowel-py memory metrics [-h] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --root ROOT  memory root (default: resolved from config.toml)\n",
+    "memory promotion": "usage: trowel-py memory promotion [-h] [--policy POLICY] [--apply]\n                                  [--root ROOT]\n\noptions:\n  -h, --help       show this help message and exit\n  --policy POLICY  path to a PromotionPolicy JSON override\n  --apply          write/refresh candidate files (default: dry-run gap report)\n  --root ROOT      memory root (default: resolved from config.toml)\n",
+    "memory profile-recalibrate": "usage: trowel-py memory profile-recalibrate [-h] [--all] [--from YYYY-MM-DD]\n                                            [--run]\n                                            [--proxy-base-url PROXY_BASE_URL]\n                                            [--root ROOT]\n\noptions:\n  -h, --help            show this help message and exit\n  --all                 replay every user completed session (exclusive with\n                        --from)\n  --from YYYY-MM-DD     replay sessions on/after this date (exclusive with\n                        --all)\n  --run                 run the shadow replay (default: read-only plan)\n  --proxy-base-url PROXY_BASE_URL\n                        trowel proxy URL (required for --run; never bypass\n                        slice-030)\n  --root ROOT           memory root (default: resolved from config.toml)\n"
+  },
+  "database_schemas": {
+    "main": [
+      {
+        "type": "index",
+        "name": "idx_cards_category",
+        "table": "cards",
+        "sql": "CREATE INDEX idx_cards_category ON cards(category)"
+      },
+      {
+        "type": "index",
+        "name": "idx_cards_status",
+        "table": "cards",
+        "sql": "CREATE INDEX idx_cards_status ON cards(status)"
+      },
+      {
+        "type": "index",
+        "name": "idx_event_log_type",
+        "table": "event_log",
+        "sql": "CREATE INDEX idx_event_log_type on event_log(event_type, triggered_at)"
+      },
+      {
+        "type": "index",
+        "name": "idx_fsrs_state_due",
+        "table": "fsrs_state",
+        "sql": "CREATE INDEX idx_fsrs_state_due on fsrs_state(due)"
+      },
+      {
+        "type": "index",
+        "name": "idx_review_log_card_id",
+        "table": "review_logs",
+        "sql": "CREATE INDEX idx_review_log_card_id on review_logs(card_id)"
+      },
+      {
+        "type": "table",
+        "name": "_migrations",
+        "table": "_migrations",
+        "sql": "CREATE TABLE _migrations( name TEXT PRIMARY KEY )"
+      },
+      {
+        "type": "table",
+        "name": "card_explanation_history",
+        "table": "card_explanation_history",
+        "sql": "CREATE TABLE card_explanation_history( id TEXT PRIMARY KEY, card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE, explanation TEXT NOT NULL, source TEXT DEFAULT 'original' CHECK(source in ('original', 'llm', 'user')), created_at TEXT DEFAULT (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "cards",
+        "table": "cards",
+        "sql": "CREATE TABLE cards( id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL, explanation TEXT NOT NULL, example TEXT, difficulty INTEGER DEFAULT 3 CHECK (difficulty BETWEEN 1 AND 5), source TEXT, tags TEXT, status TEXT DEFAULT 'active' CHECK (status IN ('active', 'archived', 'draft')), created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "cards_fts",
+        "table": "cards_fts",
+        "sql": "CREATE VIRTUAL TABLE cards_fts USING fts5( title, explanation, tags, content=cards, content_rowid=rowid )"
+      },
+      {
+        "type": "table",
+        "name": "cold_start_answers",
+        "table": "cold_start_answers",
+        "sql": "CREATE TABLE cold_start_answers( id text primary key, question text not null, answer text not null, created_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "event_cooldowns",
+        "table": "event_cooldowns",
+        "sql": "CREATE TABLE event_cooldowns( event_type text primary key, last_triggered text )"
+      },
+      {
+        "type": "table",
+        "name": "event_log",
+        "table": "event_log",
+        "sql": "CREATE TABLE event_log( id text primary key, player_id text not null references players(id) on delete cascade, event_type text not null, reward_xp integer default 0, reward_coin integer default 0, reward_item_id text, triggered_at text default (datetime('now')) , description text, card_id text)"
+      },
+      {
+        "type": "table",
+        "name": "feynman_sessions",
+        "table": "feynman_sessions",
+        "sql": "CREATE TABLE feynman_sessions( id text primary key, card_id text not null references cards(id) on delete cascade, question text not null, user_answer text, accuracy integer check(accuracy between 0 and 100), completeness integer check (completeness between 0 and 100), feedback text, missed_points text, created_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "follow_up_messages",
+        "table": "follow_up_messages",
+        "sql": "CREATE TABLE follow_up_messages( id text primary key, thread_id text not null references follow_up_threads(id) on delete cascade, role text not null check(role in ('user', 'assistant')), content text not null, created_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "follow_up_threads",
+        "table": "follow_up_threads",
+        "sql": "CREATE TABLE follow_up_threads( id text primary key, card_id text not null references cards(id) on delete cascade, created_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "fsrs_state",
+        "table": "fsrs_state",
+        "sql": "CREATE TABLE fsrs_state( card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE, stability REAL DEFAULT 0, difficulty REAL DEFAULT 0, elapsed_days INTEGER DEFAULT 0, scheduled_days INTEGER DEFAULT 0, reps INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0, state INTEGER DEFAULT 0 CHECK(state BETWEEN 0 and 3), due TEXT DEFAULT (datetime('now')), last_review TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "inventory",
+        "table": "inventory",
+        "sql": "CREATE TABLE inventory( id text primary key, player_id text not null references players(id) on delete cascade, item_id text not null, item_type text not null check(item_type in ('hat', 'food')), equipped integer default 0, obtained_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "pets",
+        "table": "pets",
+        "sql": "CREATE TABLE pets( player_id text primary key references players(id) on delete cascade, mood text default 'normal' check(mood in ('happy', 'excited', 'curious', 'normal')), hunger integer default 80 check(hunger between 0 and 100), equipped_hat text, updated_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "players",
+        "table": "players",
+        "sql": "CREATE TABLE players( id text primary key default 'default', level integer default 1, xp integer default 0, coins integer default 0, streak_days integer default 0, last_active text, created_at text default (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "review_logs",
+        "table": "review_logs",
+        "sql": "CREATE TABLE review_logs( id TEXT PRIMARY KEY, card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE, rating INTEGER NOT NULL CHECK(rating BETWEEN 1 and 4), state INTEGER not null, elapsed_days INTEGER DEFAULT 0, scheduled_days INTEGER DEFAULT 0, duration_ms INTEGER, created_at TEXT DEFAULT (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "user_preferences",
+        "table": "user_preferences",
+        "sql": "CREATE TABLE user_preferences( card_id text references cards(id) on delete cascade, liked integer default 0, created_at text default (datetime('now')), primary key (card_id) )"
+      },
+      {
+        "type": "trigger",
+        "name": "cards_fts_ad",
+        "table": "cards",
+        "sql": "CREATE TRIGGER cards_fts_ad AFTER DELETE ON cards BEGIN INSERT INTO cards_fts(cards_fts, rowid, title, explanation, tags) VALUES ('delete', old.rowid, old.title, old.explanation, old.tags); END"
+      },
+      {
+        "type": "trigger",
+        "name": "cards_fts_ai",
+        "table": "cards",
+        "sql": "CREATE TRIGGER cards_fts_ai AFTER INSERT ON cards BEGIN INSERT INTO cards_fts(rowid, title, explanation, tags) VALUES (new.rowid, new.title, new.explanation, new.tags); END"
+      },
+      {
+        "type": "trigger",
+        "name": "cards_fts_au",
+        "table": "cards",
+        "sql": "CREATE TRIGGER cards_fts_au AFTER UPDATE ON cards BEGIN INSERT INTO cards_fts(cards_fts, rowid, title, explanation, tags) VALUES ('delete', old.rowid, old.title, old.explanation, old.tags); INSERT INTO cards_fts(rowid, title, explanation, tags) VALUES (new.rowid, new.title, new.explanation, new.tags); END"
+      }
+    ],
+    "memory_sessions": [
+      {
+        "type": "index",
+        "name": "idx_bindings_cc",
+        "table": "session_bindings",
+        "sql": "CREATE INDEX idx_bindings_cc ON session_bindings(cc_session_id)"
+      },
+      {
+        "type": "index",
+        "name": "idx_sessions_date",
+        "table": "sessions",
+        "sql": "CREATE INDEX idx_sessions_date ON sessions(date)"
+      },
+      {
+        "type": "index",
+        "name": "idx_sessions_incremental",
+        "table": "sessions",
+        "sql": "CREATE INDEX idx_sessions_incremental ON sessions(last_completed_offset, last_extracted_offset)"
+      },
+      {
+        "type": "table",
+        "name": "session_bindings",
+        "table": "session_bindings",
+        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "sessions",
+        "table": "sessions",
+        "sql": "CREATE TABLE sessions ( cc_session_id TEXT PRIMARY KEY, workdir TEXT NOT NULL, date TEXT NOT NULL, jsonl_path TEXT, registered_at TEXT NOT NULL, extracted_at TEXT, session_kind TEXT DEFAULT 'user', last_completed_offset INTEGER, last_completed_at TEXT, last_extracted_offset INTEGER, last_extracted_at TEXT )"
+      }
+    ],
+    "model_os": [
+      {
+        "type": "index",
+        "name": "idx_leases_active",
+        "table": "leases",
+        "sql": "CREATE UNIQUE INDEX idx_leases_active ON leases(resource_type, resource_id) WHERE released_at IS NULL"
+      },
+      {
+        "type": "index",
+        "name": "idx_leases_idem",
+        "table": "leases",
+        "sql": "CREATE UNIQUE INDEX idx_leases_idem ON leases(resource_type, resource_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND released_at IS NULL"
+      },
+      {
+        "type": "table",
+        "name": "decisions",
+        "table": "decisions",
+        "sql": "CREATE TABLE decisions ( seq INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, decided_at TEXT NOT NULL, work_item_id TEXT, task_id TEXT, episode_id TEXT, cause_id TEXT, correlation_id TEXT, policy_version TEXT NOT NULL, signals TEXT NOT NULL, candidates TEXT NOT NULL, choice TEXT NOT NULL, reason TEXT NOT NULL, budget_before TEXT, budget_after TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "episode_create_keys",
+        "table": "episode_create_keys",
+        "sql": "CREATE TABLE episode_create_keys ( idempotency_key TEXT PRIMARY KEY NOT NULL CHECK (length(trim(idempotency_key)) > 0), episode_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "episode_snapshots",
+        "table": "episode_snapshots",
+        "sql": "CREATE TABLE episode_snapshots ( episode_id TEXT NOT NULL, version INTEGER NOT NULL, checkpoint_key TEXT NOT NULL UNIQUE, source TEXT NOT NULL, payload_json TEXT NOT NULL, payload_hash TEXT NOT NULL, base_episode_id TEXT, base_version INTEGER, journal_through_seq INTEGER NOT NULL, committed_event_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (episode_id, version) )"
+      },
+      {
+        "type": "table",
+        "name": "events",
+        "table": "events",
+        "sql": "CREATE TABLE events ( seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, occurred_at TEXT NOT NULL, source TEXT NOT NULL, provenance TEXT NOT NULL, policy_version TEXT NOT NULL, work_item_id TEXT, task_id TEXT, episode_id TEXT, native_session_id TEXT, cause_id TEXT, correlation_id TEXT, outcome TEXT, payload TEXT NOT NULL, payload_hash TEXT, lease_id TEXT, owner TEXT, fencing_token INTEGER )"
+      },
+      {
+        "type": "table",
+        "name": "foreground_claim",
+        "table": "foreground_claim",
+        "sql": "CREATE TABLE foreground_claim ( id INTEGER PRIMARY KEY CHECK (id = 1), task_id TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "lease_fence_counters",
+        "table": "lease_fence_counters",
+        "sql": "CREATE TABLE lease_fence_counters ( resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, last_token INTEGER NOT NULL, PRIMARY KEY (resource_type, resource_id) )"
+      },
+      {
+        "type": "table",
+        "name": "leases",
+        "table": "leases",
+        "sql": "CREATE TABLE leases ( lease_id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, owner TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, idempotency_key TEXT, released_at TEXT, fencing_token INTEGER NOT NULL DEFAULT 0 )"
+      },
+      {
+        "type": "table",
+        "name": "meta",
+        "table": "meta",
+        "sql": "CREATE TABLE meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "task_create_keys",
+        "table": "task_create_keys",
+        "sql": "CREATE TABLE task_create_keys ( idempotency_key TEXT PRIMARY KEY NOT NULL CHECK (length(trim(idempotency_key)) > 0), task_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      }
+    ]
+  },
+  "event_types": {
+    "agent": [
+      "approval_request",
+      "compact_boundary",
+      "compaction",
+      "context_usage",
+      "elicit_request",
+      "error",
+      "finished",
+      "hook",
+      "host_status",
+      "interrupted",
+      "local_command",
+      "model_changed",
+      "rate_limit_updated",
+      "retrying",
+      "session_exited",
+      "session_started",
+      "stalled_warning",
+      "status",
+      "subagent_progress",
+      "text",
+      "thinking",
+      "thinking_progress",
+      "tool_call",
+      "tool_progress",
+      "tool_result",
+      "turn_start",
+      "usage_updated",
+      "user",
+      "workflow_tree"
+    ],
+    "cc": [
+      "compact_boundary",
+      "context_usage",
+      "elicit_request",
+      "error",
+      "finished",
+      "hook",
+      "interrupted",
+      "local_command",
+      "model_changed",
+      "retrying",
+      "session_exited",
+      "session_started",
+      "stalled_warning",
+      "status",
+      "subagent_progress",
+      "text",
+      "thinking",
+      "thinking_progress",
+      "tool_call",
+      "tool_progress",
+      "tool_result",
+      "turn_start",
+      "user",
+      "workflow_tree"
+    ]
+  },
+  "openapi": {
+    "openapi": "3.1.0",
+    "info": {
+      "title": "FastAPI",
+      "version": "0.1.0"
+    },
+    "paths": {
+      "/api/health": {
+        "get": {
+          "summary": "Health",
+          "operationId": "health_api_health_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Health Api Health Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/extract": {
+        "post": {
+          "summary": "Extract",
+          "operationId": "extract_api_cards_extract_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Extract Api Cards Extract Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/extract-conversation": {
+        "post": {
+          "summary": "Extract Conversation",
+          "description": "extract card drafts from an uploaded CC JSONL conversation log",
+          "operationId": "extract_conversation_api_cards_extract_conversation_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Extract Conversation Api Cards Extract Conversation Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/re-explain": {
+        "post": {
+          "summary": "Re Explain Card",
+          "description": "regenerate a draft's explanation from a different angle (slice 021).\n\nStateless generator: no DB writes. The caller keeps candidate versions in\nfrontend state and writes the chosen one back via POST /{draft_id}/review.",
+          "operationId": "re_explain_card_api_cards_re_explain_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReExplainRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Re Explain Card Api Cards Re Explain Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/{draft_id}/review": {
+        "post": {
+          "summary": "Review",
+          "operationId": "review_api_cards__draft_id__review_post",
+          "parameters": [
+            {
+              "name": "draft_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Draft Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Review Api Cards  Draft Id  Review Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/{draft_id}/dedup": {
+        "get": {
+          "summary": "De Duplicate",
+          "description": "find duplicate cards for a draft (the draft is not persisted yet, so the\npath param is a draft id, not a card id)",
+          "operationId": "de_duplicate_api_cards__draft_id__dedup_get",
+          "parameters": [
+            {
+              "name": "draft_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Draft Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/search": {
+        "get": {
+          "summary": "Search Cards",
+          "description": "FTS5 full-text search for cards.",
+          "operationId": "search_cards_api_cards_search_get",
+          "parameters": [
+            {
+              "name": "q",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Q"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Search Cards Api Cards Search Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards/": {
+        "get": {
+          "summary": "Get All Cards",
+          "operationId": "get_all_cards_api_cards__get",
+          "parameters": [
+            {
+              "name": "page",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 1,
+                "title": "Page"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 20,
+                "title": "Limit"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get All Cards Api Cards  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cards": {
+        "get": {
+          "summary": "Get All Cards",
+          "operationId": "get_all_cards_api_cards_get",
+          "parameters": [
+            {
+              "name": "page",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 1,
+                "title": "Page"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 20,
+                "title": "Limit"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get All Cards Api Cards Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/review/due": {
+        "get": {
+          "summary": "Due",
+          "description": "Fetch all cards that are due for review, sorted by due date.",
+          "operationId": "due_api_review_due_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Due Api Review Due Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/review/submit": {
+        "post": {
+          "summary": "Submit",
+          "description": "Submit a review rating for a card (1=Again, 2=Hard, 3=Good, 4=Easy).",
+          "operationId": "submit_api_review_submit_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Submit Api Review Submit Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/review/session-stats": {
+        "get": {
+          "summary": "Session Stats",
+          "description": "Get aggregated review statistics since a given ISO timestamp.",
+          "operationId": "session_stats_api_review_session_stats_get",
+          "parameters": [
+            {
+              "name": "since",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Since"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Session Stats Api Review Session Stats Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/review/stats": {
+        "get": {
+          "summary": "Stats",
+          "description": "Get overall review statistics (all time).",
+          "operationId": "stats_api_review_stats_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Stats Api Review Stats Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/garden/plants": {
+        "get": {
+          "summary": "Plants",
+          "description": "return all plants with their card data and computed plant stage.",
+          "operationId": "plants_api_garden_plants_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/garden/stats": {
+        "get": {
+          "summary": "Stats",
+          "description": "return aggregated garden statistics",
+          "operationId": "stats_api_garden_stats_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/player/": {
+        "get": {
+          "summary": "Get Player",
+          "description": "return the default player's profile with the computed level fields.",
+          "operationId": "get_player_api_player__get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Player Api Player  Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/player": {
+        "get": {
+          "summary": "Get Player",
+          "description": "return the default player's profile with the computed level fields.",
+          "operationId": "get_player_api_player_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Player Api Player Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/player/inventory": {
+        "get": {
+          "summary": "Inventory",
+          "description": "return every item in the default player's inventory.",
+          "operationId": "inventory_api_player_inventory_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Inventory Api Player Inventory Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/player/buy": {
+        "post": {
+          "summary": "Buy",
+          "description": "buy an item: spend coins and grant it to the inventory.",
+          "operationId": "buy_api_player_buy_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuyItemRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Buy Api Player Buy Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/profile/": {
+        "get": {
+          "summary": "Get Profile",
+          "description": "return the user self-description profile (empty Profile on cold start).",
+          "operationId": "get_profile_api_profile__get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Profile Api Profile  Get"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Put Profile",
+          "description": "write the five dims back to profile.md via the store.",
+          "operationId": "put_profile_api_profile__put",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileUpdate"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Put Profile Api Profile  Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/profile": {
+        "get": {
+          "summary": "Get Profile",
+          "description": "return the user self-description profile (empty Profile on cold start).",
+          "operationId": "get_profile_api_profile_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Profile Api Profile Get"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Put Profile",
+          "description": "write the five dims back to profile.md via the store.",
+          "operationId": "put_profile_api_profile_put",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileUpdate"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Put Profile Api Profile Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/profile/suggestions": {
+        "get": {
+          "summary": "Get Suggestions",
+          "description": "return the pending AI profile suggestions for the user to review.",
+          "operationId": "get_suggestions_api_profile_suggestions_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Suggestions Api Profile Suggestions Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/profile/suggestions/{suggestion_id}": {
+        "patch": {
+          "summary": "Patch Suggestion",
+          "description": "accept / discard one suggestion by flipping its status.\n\nAccept does NOT itself write profile.md — the front-end reads the accepted\nsuggestion, merges it into the profile, and PUTs with\n``source=ai-calibration`` (C-1). This endpoint only records the user's\ndecision in the queue.",
+          "operationId": "patch_suggestion_api_profile_suggestions__suggestion_id__patch",
+          "parameters": [
+            {
+              "name": "suggestion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Suggestion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionStatusUpdate"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Patch Suggestion Api Profile Suggestions  Suggestion Id  Patch"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/events/trigger": {
+        "post": {
+          "summary": "Trigger",
+          "operationId": "trigger_api_events_trigger_post",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Trigger Api Events Trigger Post"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/events/history": {
+        "get": {
+          "summary": "History",
+          "operationId": "history_api_events_history_get",
+          "parameters": [
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 20,
+                "title": "Limit"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response History Api Events History Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/pet/": {
+        "get": {
+          "summary": "Get Pet Route",
+          "description": "return the pet's current state.",
+          "operationId": "get_pet_route_api_pet__get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Pet Route Api Pet  Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/pet": {
+        "get": {
+          "summary": "Get Pet Route",
+          "description": "return the pet's current state.",
+          "operationId": "get_pet_route_api_pet_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Pet Route Api Pet Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/pet/feed": {
+        "post": {
+          "summary": "Feed Route",
+          "description": "feed the pet one food item from the inventory.",
+          "operationId": "feed_route_api_pet_feed_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Feed Route Api Pet Feed Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/pet/interact": {
+        "post": {
+          "summary": "Interact Route",
+          "description": "pet the pet — mood goes happy and it says one line.",
+          "operationId": "interact_route_api_pet_interact_post",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Interact Route Api Pet Interact Post"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/pet/equip": {
+        "put": {
+          "summary": "Equip Route",
+          "description": "equip a hat from the inventory.",
+          "operationId": "equip_route_api_pet_equip_put",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Equip Route Api Pet Equip Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/feynman/generate": {
+        "post": {
+          "summary": "Generate",
+          "description": "generate a feynman question for a card",
+          "operationId": "generate_api_feynman_generate_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Generate Api Feynman Generate Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/feynman/evaluate": {
+        "post": {
+          "summary": "Evaluate",
+          "description": "evaluate a user's answer for a feynman session",
+          "operationId": "evaluate_api_feynman_evaluate_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluateRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Evaluate Api Feynman Evaluate Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/feynman/history/{card_id}": {
+        "get": {
+          "summary": "History",
+          "description": "return all feynman sessions for a card, newest first",
+          "operationId": "history_api_feynman_history__card_id__get",
+          "parameters": [
+            {
+              "name": "card_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Card Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response History Api Feynman History  Card Id  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/messages": {
+        "post": {
+          "summary": "Proxy Messages",
+          "description": "Rewrite the -p system identity to the TUI version (for 智谱) and\nstream-forward to the real endpoint. CC sees this endpoint as its\nANTHROPIC_BASE_URL; the rewrite is transparent to CC.",
+          "operationId": "proxy_messages_v1_messages_post",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/{rest}": {
+        "post": {
+          "summary": "Proxy Passthrough",
+          "description": "Passthrough for every other /v1/* path CC calls (count_tokens, etc.).\nShares the rewrite path with /v1/messages; the identity rewrite is a\nno-op on count_tokens bodies but keeps a single code path.",
+          "operationId": "proxy_passthrough_v1__rest__post",
+          "parameters": [
+            {
+              "name": "rest",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Rest"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions": {
+        "post": {
+          "summary": "Create Session",
+          "description": "Open a new session (optionally resuming a CC session id).",
+          "operationId": "create_session_api_cc_sessions_post",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Create Session Api Cc Sessions Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "get": {
+          "summary": "List History",
+          "description": "List the most recent resumable CC history sessions for a workdir.\n\nReturns the N most recent sessions (any age, not just trowel-created) for\nthe history dropdown — capped to keep the dropdown usable. ``meta.total``\nis the true on-disk count so the UI can show \"共 N · 最近 M\" instead of\nmisleadingly implying only N sessions exist.",
+          "operationId": "list_history_api_cc_sessions_get",
+          "parameters": [
+            {
+              "name": "workdir",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Workdir"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List History Api Cc Sessions Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/active": {
+        "get": {
+          "summary": "List Active Sessions",
+          "description": "列出当前 trowel 进程的活跃 session（_REGISTRY）。\n\n区别于 GET /sessions（磁盘历史）。前端多开栏用这个 + active_id 渲染统一列表。\n返回所有 _REGISTRY 条目（含从未发消息的 temp），每条带 connected 字段：\nTrue = 有活 cc 子进程（temp 为 False）。前端据此过滤多开栏，避免 temp 被误显示。",
+          "operationId": "list_active_sessions_api_cc_sessions_active_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Active Sessions Api Cc Sessions Active Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/activate": {
+        "post": {
+          "summary": "Activate Session",
+          "description": "切换当前活跃 session（多开切换，不销毁非活跃）。",
+          "operationId": "activate_session_api_cc_sessions__sid__activate_post",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Activate Session Api Cc Sessions  Sid  Activate Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/messages": {
+        "post": {
+          "summary": "Send Message",
+          "description": "Send one message and stream trowel events back as SSE.",
+          "operationId": "send_message_api_cc_sessions__sid__messages_post",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/interrupt": {
+        "post": {
+          "summary": "Interrupt",
+          "description": "SIGINT the current turn of a session.",
+          "operationId": "interrupt_api_cc_sessions__sid__interrupt_post",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Interrupt Api Cc Sessions  Sid  Interrupt Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/answer": {
+        "post": {
+          "summary": "Answer Elicit",
+          "description": "Answer (or cancel) the pending AskUserQuestion elicitation (slice-025-c).\n\nWrites control_response(allow + updatedInput.answers) or control_response\n(deny) to cc stdin so cc unblocks and continues the turn.",
+          "operationId": "answer_elicit_api_cc_sessions__sid__answer_post",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerElicitRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Answer Elicit Api Cc Sessions  Sid  Answer Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/revert": {
+        "post": {
+          "summary": "Revert Turn",
+          "description": "Revert a turn: git-restore the worktree + truncate the CC jsonl (slice-026 E1).\n\nLooks up the checkpoint for ``turn_id`` (dropping that turn and every later\none), restores the worktree from the snapshot, truncates the CC session\njsonl back to the recorded offset, then kills the live CC process so the\nnext send() re-resumes from the truncated history.\n\nRaises:\n    404: session or checkpoint not found.\n    400: workdir is not a git repo (revert unsupported).",
+          "operationId": "revert_turn_api_cc_sessions__sid__revert_post",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevertRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Revert Turn Api Cc Sessions  Sid  Revert Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}/history": {
+        "get": {
+          "summary": "Get History",
+          "description": "Replay a session's stored CC history as trowel events.\n\nReads the CC session jsonl for the session's cc_session_id + workdir and\nreturns normalized trowel events isomorphic to the live stream (plus a\nUserEvent per historical user turn), so the frontend renders history and\nlive with one reducer. Empty list when the session has no cc_session_id\nyet or the jsonl is absent.",
+          "operationId": "get_history_api_cc_sessions__sid__history_get",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get History Api Cc Sessions  Sid  History Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/models": {
+        "get": {
+          "summary": "List Models Endpoint",
+          "description": "List available model aliases from cc's settings.json env (slice-027 C2).\n\nReturns the alias -> real-model mapping for the /model picker. trowel does\nnot hardcode model ids; it surfaces cc's own aliases (opus/sonnet/haiku)\nwhich map to the configured backend via ANTHROPIC_DEFAULT_*_MODEL env.\nSwitching backends only requires editing settings.json, not trowel code.",
+          "operationId": "list_models_endpoint_api_cc_models_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Models Endpoint Api Cc Models Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/slash-items": {
+        "get": {
+          "summary": "List Slash Items Endpoint",
+          "description": "List slash commands + skills for the '/' autocomplete.\n\nslice-027 C1: scans <workdir>/.claude/{skills,commands} + ~/.claude/\n{skills,commands} (frontmatter) plus a hardcoded bundled-skill map.\nslice-042 P1: merges the active cc session's init slash_commands roster\nas the name floor (the part that keeps up with cc updates); this endpoint\nadds the descriptions cc init doesn't carry.",
+          "operationId": "list_slash_items_endpoint_api_cc_slash_items_get",
+          "parameters": [
+            {
+              "name": "workdir",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Workdir"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Slash Items Endpoint Api Cc Slash Items Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/list-dir": {
+        "get": {
+          "summary": "List Dir",
+          "description": "List immediate subdirectories of a path (slice-027 workdir tree browser).\n\nThe browser sandbox forbids enumerating local directories, so WorkdirPicker's\ntree fetches children here. Returns subdirectories only (files omitted — a\nworkdir must be a directory); dotted names (`.git`, `.venv`, ...) hidden to\ncut noise. `~` is expanded server-side. Non-directory / missing path → 400.",
+          "operationId": "list_dir_api_cc_list_dir_get",
+          "parameters": [
+            {
+              "name": "path",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Path"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Dir Api Cc List Dir Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc/sessions/{sid}": {
+        "delete": {
+          "summary": "Delete Session",
+          "description": "Kill the subprocess and remove the session from the registry.",
+          "operationId": "delete_session_api_cc_sessions__sid__delete",
+          "parameters": [
+            {
+              "name": "sid",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Sid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Delete Session Api Cc Sessions  Sid  Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions": {
+        "post": {
+          "summary": "Create Session",
+          "description": "Create a session under the chosen runtime (resume validated C-2).",
+          "operationId": "create_session_api_agent_sessions_post",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateAgentSessionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Create Session Api Agent Sessions Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "get": {
+          "summary": "List History",
+          "description": "Mixed history: CC jsonl rows + Codex bindings, each tagged by runtime.\n\nCC rows come from cc_host's on-disk scan; Codex rows come from this hub's\nbinding store (a trowel-created Codex thread trowel can resume). Each row\ncarries the runtime + native id so a resume request is routed correctly\n(spec pass-criterion: mixed history rows show runtime, resume carries it).",
+          "operationId": "list_history_api_agent_sessions_get",
+          "parameters": [
+            {
+              "name": "workdir",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Workdir"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List History Api Agent Sessions Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/active": {
+        "get": {
+          "summary": "List Active",
+          "description": "List every live session (mixed CC + Codex) + the active id.",
+          "operationId": "list_active_api_agent_sessions_active_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Active Api Agent Sessions Active Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/activate": {
+        "post": {
+          "summary": "Activate Session",
+          "description": "Switch the active (viewed) session — view state only (C-4).",
+          "operationId": "activate_session_api_agent_sessions__session_id__activate_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Activate Session Api Agent Sessions  Session Id  Activate Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}": {
+        "get": {
+          "summary": "Get Session",
+          "description": "Return one session's binding.",
+          "operationId": "get_session_api_agent_sessions__session_id__get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Session Api Agent Sessions  Session Id  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "patch": {
+          "summary": "Patch Session",
+          "description": "Partial update. slice-072: a runtime change → 422 (C-1).",
+          "operationId": "patch_session_api_agent_sessions__session_id__patch",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatchAgentSessionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Patch Session Api Agent Sessions  Session Id  Patch"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete Session",
+          "description": "Close the native host + drop the binding (idempotent).",
+          "operationId": "delete_session_api_agent_sessions__session_id__delete",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Delete Session Api Agent Sessions  Session Id  Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/interrupt": {
+        "post": {
+          "summary": "Interrupt Session",
+          "description": "Interrupt the running turn, routed by binding.",
+          "operationId": "interrupt_session_api_agent_sessions__session_id__interrupt_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Interrupt Session Api Agent Sessions  Session Id  Interrupt Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/requests": {
+        "get": {
+          "summary": "List Session Requests",
+          "description": "List retained request states so a short frontend disconnect can recover.",
+          "operationId": "list_session_requests_api_agent_sessions__session_id__requests_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Session Requests Api Agent Sessions  Session Id  Requests Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/requests/{request_id}/answer": {
+        "post": {
+          "summary": "Answer Session Request",
+          "description": "Validate and answer one connection-scoped Codex server request.",
+          "operationId": "answer_session_request_api_agent_sessions__session_id__requests__request_id__answer_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            },
+            {
+              "name": "request_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Request Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerAgentRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Answer Session Request Api Agent Sessions  Session Id  Requests  Request Id  Answer Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/messages": {
+        "post": {
+          "summary": "Send Message",
+          "description": "Send one message and stream host events back as SSE.\n\nAny error (unknown session, host down, turn-start failure) is converted to\na terminal ``error`` SSE frame so the client always gets a closing signal.",
+          "operationId": "send_message_api_agent_sessions__session_id__messages_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/runtimes": {
+        "get": {
+          "summary": "List Runtimes",
+          "description": "Return the two runtimes with capabilities + connection status.\n\nCodex ``connected`` reflects whether the shared manager is wired; the\ndeeper login/proxy diagnostics land in slice-080.",
+          "operationId": "list_runtimes_api_agent_runtimes_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Runtimes Api Agent Runtimes Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/models": {
+        "get": {
+          "summary": "List Models",
+          "description": "Return the visible native Codex model catalog without static fallback.",
+          "operationId": "list_models_api_agent_models_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Models Api Agent Models Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/history": {
+        "get": {
+          "summary": "Get Session History",
+          "description": "Replay a session's stored history as AgentEvent v1 envelopes (slice-074).\n\nCC history comes from cc_host's on-disk jsonl scan, wrapped through a fresh\n:class:`CcEventAdapter` (seq starts at 1 — history is a new stream from the\nreducer's view, not a continuation of a live one). The CC ``native_session_id``\nmust already be written back (i.e. the session completed at least one turn);\na fresh session with no native id returns an empty list.\n\nCodex thread history replay lands in slice-079; this slice returns a clear\n501 so the frontend can fall back to its existing skip-non-CC behaviour.\n\nRaises:\n    HTTPException: 404 unknown session; 501 Codex (slice-079).",
+          "operationId": "get_session_history_api_agent_sessions__session_id__history_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Session History Api Agent Sessions  Session Id  History Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/quota": {
+        "get": {
+          "summary": "List Quota",
+          "description": "Every known account's quota snapshot (staleness applied by the model).\n\n``async def`` (not sync ``def``) so the read stays in the event-loop thread\nalongside the scheduler/observer writers; a sync route would run in a\nthreadpool and race the writers (slice-093-pre review HIGH-2).",
+          "operationId": "list_quota_api_quota_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Quota Api Quota Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/{full_path}": {
+        "get": {
+          "summary": " Spa Fallback",
+          "operationId": "_spa_fallback__full_path__get",
+          "parameters": [
+            {
+              "name": "full_path",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Full Path"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response  Spa Fallback  Full Path  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "AnswerAgentRequest": {
+          "properties": {
+            "decision": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Decision"
+            }
+          },
+          "type": "object",
+          "required": [
+            "decision"
+          ],
+          "title": "AnswerAgentRequest",
+          "description": "Body for answering one Codex app-server server request.\n\nThe decision remains an open string at the HTTP boundary because native\nchoices are request-specific. The manager validates it against the exact\nrecorded ``availableDecisions`` for that pending request."
+        },
+        "AnswerElicitRequest": {
+          "properties": {
+            "answers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object",
+              "title": "Answers"
+            },
+            "cancel": {
+              "type": "boolean",
+              "title": "Cancel",
+              "default": false
+            }
+          },
+          "type": "object",
+          "title": "AnswerElicitRequest",
+          "description": "Body for POST /api/cc/sessions/{id}/answer (slice-025-c).\n\nThe frontend posts the user's AskUserQuestion selections here. `cancel`\ndeclines the question (writes control_response behavior=deny)."
+        },
+        "BuyItemRequest": {
+          "properties": {
+            "item_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Item Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "item_id"
+          ],
+          "title": "BuyItemRequest"
+        },
+        "CreateAgentSessionRequest": {
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "workdir": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Workdir"
+            },
+            "resume_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resume From"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            },
+            "permission_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Mode"
+            },
+            "approval_policy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Approval Policy"
+            },
+            "sandbox": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sandbox"
+            },
+            "permission_preset": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "follow",
+                    "read-only",
+                    "workspace-write",
+                    "danger-full-access"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Preset"
+            },
+            "memory_enabled": {
+              "type": "boolean",
+              "title": "Memory Enabled",
+              "default": true
+            },
+            "profile_enabled": {
+              "type": "boolean",
+              "title": "Profile Enabled",
+              "default": true
+            },
+            "self_enabled": {
+              "type": "boolean",
+              "title": "Self Enabled",
+              "default": true
+            }
+          },
+          "type": "object",
+          "required": [
+            "runtime",
+            "workdir"
+          ],
+          "title": "CreateAgentSessionRequest",
+          "description": "Body for POST ``/api/agent/sessions``.\n\n``runtime`` chooses the native host and is frozen at create (spec C-1).\nThe permission-shaped fields are runtime-specific (CC takes\n``permission_mode``; Codex takes ``approval_policy`` + ``sandbox``); the\nHub passes only the field the chosen runtime understands, so cross-runtime\nleakage in a request body is ignored rather than misrouted.\n\nAttributes:\n    runtime: ``claude_code`` or ``codex`` — frozen at create.\n    workdir: absolute working directory the session runs in.\n    resume_from: optional native session id to resume (CC ``cc_session_id``\n        or Codex ``thread_id``). Validated against runtime ownership (C-2).\n    model / effort: optional overrides; the host's effective value wins.\n    permission_mode: CC ``--permission-mode`` (defaults to bypass).\n    approval_policy: Codex ``approvalPolicy`` (defaults to ``never``).\n    sandbox: Codex ``sandbox`` mode (defaults to ``read-only``).\n    permission_preset: Host-neutral Codex permission intent. The backend\n        maps it to native sandbox/approval fields.\n    memory_enabled / profile_enabled: frozen A/B switches (default True).\n    self_enabled: slice-085 switch. False drops the entire Self section\n        (Trowel shell-on-top of the native default system prompt), for\n        an A/B baseline measuring its effect. Defaults True."
+        },
+        "CreateSessionRequest": {
+          "properties": {
+            "workdir": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Workdir"
+            },
+            "resume_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resume From"
+            },
+            "permission_mode": {
+              "type": "string",
+              "title": "Permission Mode",
+              "default": "bypassPermissions"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            },
+            "memory_enabled": {
+              "type": "boolean",
+              "title": "Memory Enabled",
+              "default": true
+            },
+            "profile_enabled": {
+              "type": "boolean",
+              "title": "Profile Enabled",
+              "default": true
+            },
+            "self_enabled": {
+              "type": "boolean",
+              "title": "Self Enabled",
+              "default": true
+            }
+          },
+          "type": "object",
+          "required": [
+            "workdir"
+          ],
+          "title": "CreateSessionRequest",
+          "description": "Body for POST /api/cc/sessions.\n\nAttributes:\n    workdir: working directory the CC subprocess runs in (its cwd), so CC\n        loads that project's .claude/ hooks/memory/skills.\n    resume_from: optional CC session id to resume (--resume <id>).\n    permission_mode: CC --permission-mode. Defaults to bypassPermissions\n        for a smooth, non-interrupting experience (v1 has no permission UI).\n    model: override --model (defaults handled by launcher).\n    effort: override --effort (defaults handled by launcher).\n    memory_enabled: slice-060 A/B switch. False drops every memory read-path\n        section (core/L0/diary/root) and detaches the memory MCP, for a\n        clean \"no stored memory\" baseline. Defaults True (C-1 zero-regression).\n    profile_enabled: slice-060 A/B switch. False drops only the explicit\n        ``# 用户画像`` section. Defaults True.\n    self_enabled: slice-085 switch. False drops the entire Self section\n        (the Trowel \"你是谁/能做什么\" shell-on-top of cc's default system\n        prompt), for an A/B baseline measuring the Self section's effect.\n        Defaults True."
+        },
+        "EquipRequest": {
+          "properties": {
+            "item_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Item Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "item_id"
+          ],
+          "title": "EquipRequest",
+          "description": "request body for PUT /api/pet/equip.\n\nAttributes:\n    item_id: inventory row id of the hat to wear (not the catalog id)."
+        },
+        "EvaluateRequest": {
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Session Id"
+            },
+            "answer": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Answer"
+            }
+          },
+          "type": "object",
+          "required": [
+            "session_id",
+            "answer"
+          ],
+          "title": "EvaluateRequest",
+          "description": "body for Post /evaluate"
+        },
+        "ExtractRequest": {
+          "properties": {
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Content"
+            }
+          },
+          "type": "object",
+          "required": [
+            "content"
+          ],
+          "title": "ExtractRequest",
+          "description": "pydantic model"
+        },
+        "FeedRequest": {
+          "properties": {
+            "item_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Item Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "item_id"
+          ],
+          "title": "FeedRequest",
+          "description": "request body for POST /api/pet/feed.\n\nAttributes:\n    item_id: inventory row id of the food to eat (not the catalog id)."
+        },
+        "GenerateRequest": {
+          "properties": {
+            "card_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Card Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "card_id"
+          ],
+          "title": "GenerateRequest",
+          "description": "body for Post /generate"
+        },
+        "HTTPValidationError": {
+          "properties": {
+            "detail": {
+              "items": {
+                "$ref": "#/components/schemas/ValidationError"
+              },
+              "type": "array",
+              "title": "Detail"
+            }
+          },
+          "type": "object",
+          "title": "HTTPValidationError"
+        },
+        "PatchAgentSessionRequest": {
+          "properties": {
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            }
+          },
+          "type": "object",
+          "title": "PatchAgentSessionRequest",
+          "description": "Body for PATCH ``/api/agent/sessions/{id}``.\n\nslice-072 only needs to reject a runtime change (spec C-1 → 422). Other\nfields are accepted by the model but the Hub ignores them this slice\n(model/effort changes follow each host's own contract, later slices)."
+        },
+        "ProfileUpdate": {
+          "properties": {
+            "ability": {
+              "type": "string",
+              "title": "Ability",
+              "default": ""
+            },
+            "methodology": {
+              "type": "string",
+              "title": "Methodology",
+              "default": ""
+            },
+            "expression": {
+              "type": "string",
+              "title": "Expression",
+              "default": ""
+            },
+            "goal": {
+              "type": "string",
+              "title": "Goal",
+              "default": ""
+            },
+            "other": {
+              "type": "string",
+              "title": "Other",
+              "default": ""
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "user-edit",
+                "ai-calibration"
+              ],
+              "title": "Source",
+              "default": "user-edit"
+            }
+          },
+          "type": "object",
+          "title": "ProfileUpdate",
+          "description": "PUT /api/profile body: the five editable dimensions + optional source.\n\nAll dims default to ``\"\"`` so a partial PUT (e.g. cold-start seeding one\ndim) is valid. ``updated`` is always server-stamped (today's ISO date).\n``source`` defaults to ``user-edit`` (a hand edit); the front-end passes\n``ai-calibration`` when merging accepted AI suggestions (slice-050)."
+        },
+        "ReExplainRequest": {
+          "properties": {
+            "explanation": {
+              "type": "string",
+              "minLength": 10,
+              "title": "Explanation"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Title"
+            },
+            "category": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Category"
+            },
+            "user_hint": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Hint"
+            }
+          },
+          "type": "object",
+          "required": [
+            "explanation",
+            "title",
+            "category"
+          ],
+          "title": "ReExplainRequest",
+          "description": "request body for POST /cards/re-explain (slice 021).\n\nThe endpoint is a stateless generator that runs during card *review*,\nbefore the card is persisted — so it takes the draft's content directly,\nnot a card_id (the draft has no id in the DB yet).\n\nAttributes:\n    explanation: the current explanation to improve (V0 or a prior candidate).\n    title: the card title, gives the LLM context.\n    category: the card category, gives the LLM context.\n    user_hint: optional direction/feeling from the user (\"make it more\n        concrete\", etc). None means \"regenerate freely\"."
+        },
+        "RevertRequest": {
+          "properties": {
+            "turn_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Turn Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "turn_id"
+          ],
+          "title": "RevertRequest",
+          "description": "Body for POST /api/cc/sessions/{id}/revert (slice-026 E1).\n\nturn_id identifies the checkpoint to revert to (drops that turn and every\nlater one). It comes from the TurnStartEvent emitted at the start of the\nturn the user is reverting to."
+        },
+        "ReviewRequest": {
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "edit",
+                "reject"
+              ],
+              "title": "Action"
+            },
+            "edits": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Edits"
+            }
+          },
+          "type": "object",
+          "required": [
+            "action"
+          ],
+          "title": "ReviewRequest",
+          "description": "pydantic model"
+        },
+        "SendMessageBody": {
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Text"
+            }
+          },
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "title": "SendMessageBody",
+          "description": "Body for POST ``/api/agent/sessions/{id}/messages``."
+        },
+        "SendMessageRequest": {
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Text"
+            }
+          },
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "title": "SendMessageRequest",
+          "description": "Body for POST /api/cc/sessions/{id}/messages."
+        },
+        "SubmitRequest": {
+          "properties": {
+            "card_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Card Id"
+            },
+            "rating": {
+              "type": "integer",
+              "maximum": 4.0,
+              "minimum": 1.0,
+              "title": "Rating"
+            }
+          },
+          "type": "object",
+          "required": [
+            "card_id",
+            "rating"
+          ],
+          "title": "SubmitRequest",
+          "description": "Request body for submitting a card review rating."
+        },
+        "SuggestionStatusUpdate": {
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "accepted",
+                "discarded"
+              ],
+              "title": "Status"
+            }
+          },
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "title": "SuggestionStatusUpdate",
+          "description": "PATCH /api/profile/suggestions/{id} body: accept / discard."
+        },
+        "ValidationError": {
+          "properties": {
+            "loc": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array",
+              "title": "Location"
+            },
+            "msg": {
+              "type": "string",
+              "title": "Message"
+            },
+            "type": {
+              "type": "string",
+              "title": "Error Type"
+            },
+            "input": {
+              "title": "Input"
+            },
+            "ctx": {
+              "type": "object",
+              "title": "Context"
+            }
+          },
+          "type": "object",
+          "required": [
+            "loc",
+            "msg",
+            "type"
+          ],
+          "title": "ValidationError"
+        }
+      }
+    }
+  }
+}
