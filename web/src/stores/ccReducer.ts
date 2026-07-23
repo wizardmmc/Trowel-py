@@ -1,16 +1,7 @@
 /**
- * ccReducer — CC session event reducer (pure, immutable).
- *
- * The ONLY place a TrowelEvent changes session state. Every case returns a new
- * ReducerState via spread (never mutates). Both live SSE events and history-
- * replay events flow through the same `reduceEvent` — the `user` event
- * (history-only) is what lets a replayed turn surface user text without a
- * second render path.
- *
- * Sibling file `ccStore.ts` wraps this reducer in a multi-session zustand shell
- * (sessions dict + activeSid + transport). This module has no zustand / API /
- * transport dependencies — it's pure data-in → state-out, which keeps the
- * reducer unit-testable in isolation (see ccStore.test.ts).
+ * CC 会话的纯事件 reducer，也是 TrowelEvent 改变会话状态的唯一入口。
+ * live SSE 与 history replay 共用 reduceEvent；Zustand 和 transport 留在 ccStore.ts。
+ * 单元契约按事件领域收在 ../__tests__/ccStore/。
  */
 import type {
   ApprovalDecision,
