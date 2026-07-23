@@ -1,4 +1,4 @@
-"""tests for dictionary L0/L1 regeneration (slice-040-c C-3)."""
+"""验证 dictionary L0/L1 的派生与公开重建入口。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,8 +11,6 @@ from trowel_py.memory.store import MemoryStore
 
 
 class _FakeProvider:
-    """Returns a canned cluster JSON."""
-
     def __init__(self, cluster_json: str) -> None:
         self._cluster = cluster_json
         self.calls = 0
@@ -52,7 +50,6 @@ def test_derive_full_clusters_into_domains(tmp_path: Path) -> None:
 def test_derive_full_orphans_go_to_misc(tmp_path: Path) -> None:
     _write_note(tmp_path, "Note A", "a", [])
     _write_note(tmp_path, "Note B", "b", [])
-    # LLM only assigns Note A; Note B is orphan
     cluster = '{"domains":[{"name":"d1","description":"x","triggers":"","note_ids":["Note-A"]}]}'
     out = derive_dictionary_full(tmp_path, _FakeProvider(cluster))
     assert "misc" in out["L1"]
@@ -60,7 +57,6 @@ def test_derive_full_orphans_go_to_misc(tmp_path: Path) -> None:
 
 
 def test_derive_full_excludes_inactive_notes(tmp_path: Path) -> None:
-    """slice-064 C-3: superseded/contradicted/retired never enter the index."""
     store = MemoryStore(tmp_path)
     live = _write_note(tmp_path, "Live", "active note", ["t"])
     dead = _write_note(tmp_path, "Dead", "superseded note", ["t"])
@@ -72,13 +68,12 @@ def test_derive_full_excludes_inactive_notes(tmp_path: Path) -> None:
     out = derive_dictionary_full(tmp_path, _FakeProvider(cluster))
     rendered = "\n".join(out["L1"].values())
     assert live in rendered
-    assert dead not in rendered  # superseded dropped from the default index
+    assert dead not in rendered
 
 
 def test_derive_full_llm_failure_fallback(tmp_path: Path) -> None:
     _write_note(tmp_path, "X", "x", [])
     out = derive_dictionary_full(tmp_path, _FakeProvider("not json at all"))
-    # fallback: all in misc, never crash
     assert "misc" in out["L1"]
     assert "X" in out["L1"]["misc"]
 
@@ -102,5 +97,4 @@ def test_rebuild_apply_writes_files(tmp_path: Path) -> None:
     l0 = (tmp_path / "dictionary-L0.md").read_text(encoding="utf-8")
     assert "### d" in l0
     assert "触发词：t" in l0
-
 

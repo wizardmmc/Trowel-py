@@ -1,9 +1,4 @@
-"""staging atomic rebuild (slice-064 §3/§4): validate-then-swap + rollback.
-
-Covers: consistent output, orphan-L1 clearing, dry-run no-write, provider
-failure, staging-check rejection, and byte-for-byte rollback on a mid-swap
-failure (C-4: L0/L1 must stay the same generation; the old set is preserved).
-"""
+"""验证 dictionary 的 staging 校验、原子替换与失败回滚。"""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from trowel_py.memory import dictionary as dmod
+from trowel_py.memory import _dictionary_publish, _dictionary_render
 from trowel_py.memory.dictionary import rebuild_dictionary
 from trowel_py.memory.dictionary_check import check_dictionary
 from trowel_py.memory.dictionary_state import load_state
@@ -39,7 +34,6 @@ def _note(root: Path, title: str) -> str:
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    """sha256 of every dictionary file, for byte-for-byte rollback checks."""
     out: dict[str, str] = {}
     l0 = root / "dictionary-L0.md"
     if l0.exists():
@@ -70,7 +64,6 @@ def test_rebuild_apply_yields_consistent_index_and_state(tmp_path: Path) -> None
 
 def test_rebuild_apply_clears_orphan_l1(tmp_path: Path) -> None:
     _note(tmp_path, "Alpha")
-    # seed an orphan L1 + stale L0 from a prior domain set
     l1d = tmp_path / "dictionary-L1"
     l1d.mkdir(parents=True)
     (l1d / "ghost.md").write_text("# ghost\n", encoding="utf-8")
@@ -80,7 +73,7 @@ def test_rebuild_apply_clears_orphan_l1(tmp_path: Path) -> None:
     cluster = '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["Alpha"]}]}'
     out = rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(cluster))
     assert out["apply"] is True
-    assert not (l1d / "ghost.md").exists()  # C-5: orphan from old domain set gone
+    assert not (l1d / "ghost.md").exists()
     assert (l1d / "d.md").exists()
     assert check_dictionary(tmp_path)["orphan_l1_files"] == []
 
@@ -93,7 +86,7 @@ def test_rebuild_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert out["check"]["status"] == "consistent"
     assert not (tmp_path / "dictionary-L0.md").exists()
     assert not (tmp_path / "dictionary-L1").exists()
-    assert load_state(tmp_path).status == "missing"  # no state written
+    assert load_state(tmp_path).status == "missing"
 
 
 def test_rebuild_provider_failure_keeps_old_index_and_marks_stale(
@@ -105,7 +98,7 @@ def test_rebuild_provider_failure_keeps_old_index_and_marks_stale(
     before = _snapshot(tmp_path)
     out = rebuild_dictionary(tmp_path, apply=True, provider=_BoomProvider())
     assert out.get("error") == "derive_failed"
-    assert _snapshot(tmp_path) == before  # byte-for-byte unchanged
+    assert _snapshot(tmp_path) == before
     assert load_state(tmp_path).status == "stale"
 
 
@@ -116,7 +109,6 @@ def test_rebuild_staging_inconsistent_keeps_old(
     cluster = '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["Alpha"]}]}'
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(cluster))
     before = _snapshot(tmp_path)
-    # force a render that puts the same stem in two domains → duplicate → stale
     def dup_cluster(notes_with_id, provider):  # noqa: ANN001
         stem = notes_with_id[0][0]
         return [
@@ -124,7 +116,7 @@ def test_rebuild_staging_inconsistent_keeps_old(
             {"name": "d2", "description": "x", "triggers": "", "note_ids": [stem]},
         ]
 
-    monkeypatch.setattr(dmod, "_cluster_notes", dup_cluster)
+    monkeypatch.setattr(_dictionary_render, "_cluster_notes", dup_cluster)
     out = rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(""))
     assert out.get("error") == "staging_inconsistent"
     assert _snapshot(tmp_path) == before
@@ -134,27 +126,28 @@ def test_rebuild_staging_inconsistent_keeps_old(
 def test_atomic_replace_midswap_failure_restores_old(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # old index on disk
     (tmp_path / "dictionary-L0.md").write_text("OLD L0", encoding="utf-8")
     l1d = tmp_path / "dictionary-L1"
     l1d.mkdir()
     (l1d / "old.md").write_text("OLD L1", encoding="utf-8")
     before = _snapshot(tmp_path)
 
-    # inject failure at the L0 os.replace step (AFTER the L1 dir was swapped),
-    # forcing the swapped-L1 rollback path so the index is never half-new.
+    # 在 L1 已换代后让 L0 replace 失败，必须恢复同一代旧索引。
     def boom(*a, **k):  # noqa: ANN002, ANN003
         raise OSError("injected at os.replace")
 
-    monkeypatch.setattr(dmod.os, "replace", boom)
+    monkeypatch.setattr(_dictionary_publish.os, "replace", boom)
     with pytest.raises(OSError):
-        dmod._atomic_replace(tmp_path, "NEW L0", {"new": "NEW L1\n"})
-    assert _snapshot(tmp_path) == before  # old L0 + old L1 restored byte-for-byte
+        _dictionary_publish.atomic_replace(
+            tmp_path,
+            "NEW L0",
+            {"new": "NEW L1\n"},
+        )
+    assert _snapshot(tmp_path) == before
 
 
 def test_rebuild_dry_run_failure_writes_no_state(tmp_path: Path) -> None:
-    """slice-064 F9: dry-run must have NO side effects, even on failure."""
     _note(tmp_path, "Alpha")
     out = rebuild_dictionary(tmp_path, apply=False, provider=_BoomProvider())
     assert out.get("error") == "derive_failed"
-    assert load_state(tmp_path).status == "missing"  # no state written
+    assert load_state(tmp_path).status == "missing"

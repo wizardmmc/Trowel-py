@@ -1,10 +1,4 @@
-"""slice-064 wiring: ensure after batch ops, tidy supersede, mcp stale warning.
-
-These exercise the connected behavior (not just the pure functions): that a
-daily/tidy batch converges the index, that supersede drops the old note from
-the default index (slice-064 user scenario), and that a stale index is served
-with an observable MCP warning instead of silent incomplete recall.
-"""
+"""验证 dictionary 与 tidy、MCP stale warning 的连接行为。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,8 +39,8 @@ _ONE = '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["Alp
 def test_ensure_rebuilds_when_index_is_stale(tmp_path: Path) -> None:
     _note(tmp_path, "Alpha")
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(_ONE))
-    _note(tmp_path, "Beta")  # new note the index does not know about
-    assert check_dictionary(tmp_path)["status"] == "stale"  # Beta missing
+    _note(tmp_path, "Beta")
+    assert check_dictionary(tmp_path)["status"] == "stale"
     two = ('{"domains":[{"name":"d","description":"x","triggers":"",'
            '"note_ids":["Alpha","Beta"]}]}')
     out = ensure_dictionary_consistent(tmp_path, _FakeProvider(two))
@@ -58,7 +52,6 @@ def test_ensure_rebuilds_when_index_is_stale(tmp_path: Path) -> None:
 def test_ensure_noop_when_already_consistent(tmp_path: Path) -> None:
     _note(tmp_path, "Alpha")
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(_ONE))
-    # boom provider would fail if ensure rebuilt — it must NOT (already consistent)
     out = ensure_dictionary_consistent(tmp_path, _BoomProvider())
     assert out["rebuilt"] is False
     assert out["dictionary_status"] == "consistent"
@@ -67,10 +60,9 @@ def test_ensure_noop_when_already_consistent(tmp_path: Path) -> None:
 def test_ensure_marks_stale_when_rebuild_fails(tmp_path: Path) -> None:
     _note(tmp_path, "Alpha")
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(_ONE))
-    _note(tmp_path, "Beta")  # makes it stale
+    _note(tmp_path, "Beta")
     out = ensure_dictionary_consistent(tmp_path, _BoomProvider())
     assert out["dictionary_status"] == "stale"
-    # note facts are NOT rolled back (C-7): both notes still on disk
     assert (tmp_path / "notes" / "Alpha.md").exists()
     assert (tmp_path / "notes" / "Beta.md").exists()
 
@@ -78,7 +70,6 @@ def test_ensure_marks_stale_when_rebuild_fails(tmp_path: Path) -> None:
 def test_tidy_supersede_drops_old_note_from_default_index(
     tmp_path: Path,
 ) -> None:
-    """slice-064 user scenario: supersede → old entry leaves the default L1."""
     from trowel_py.memory.tidy import TidyOperation, TidyPlan, apply_plan
 
     store = MemoryStore(tmp_path)
@@ -97,16 +88,15 @@ def test_tidy_supersede_drops_old_note_from_default_index(
             type="supersede", target="mid-old", by="mid-new", reason="r"
         ),),
     )
-    apply_plan(tmp_path, plan)  # old → superseded
+    apply_plan(tmp_path, plan)
 
-    # the index still references the now-superseded OldClaim → stale → rebuild
     after_supersede = ('{"domains":[{"name":"d","description":"x","triggers":"",'
                        '"note_ids":["NewClaim"]}]}')
     out = ensure_dictionary_consistent(tmp_path, _FakeProvider(after_supersede))
     assert out["dictionary_status"] == "consistent"
     l1 = (tmp_path / "dictionary-L1" / "d.md").read_text(encoding="utf-8")
     assert "NewClaim" in l1
-    assert "OldClaim" not in l1  # superseded dropped from the default index
+    assert "OldClaim" not in l1
 
 
 def test_search_warns_when_dictionary_stale(tmp_path: Path) -> None:
@@ -137,14 +127,12 @@ def test_search_no_warning_when_consistent(tmp_path: Path) -> None:
 
 
 def test_mark_stale_if_drifted_without_provider(tmp_path: Path) -> None:
-    """slice-064 F6: no provider → read-only check + mark stale on drift, so
-    the drift is observable (search warning) and retried when a provider returns."""
     from trowel_py.memory.dictionary import mark_dictionary_stale_if_drifted
     from trowel_py.memory.dictionary_state import load_state
 
     _note(tmp_path, "Alpha")
     rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(_ONE))
-    _note(tmp_path, "Beta")  # drift: Beta not indexed
+    _note(tmp_path, "Beta")
     out = mark_dictionary_stale_if_drifted(tmp_path)
     assert out["dictionary_status"] == "stale"
     assert load_state(tmp_path).status == "stale"
