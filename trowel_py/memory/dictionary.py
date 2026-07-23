@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.llm.client import LLMProvider
-from trowel_py.memory import _dictionary_publish, _dictionary_render
 from trowel_py.memory.dictionary_check import (
     _check_dictionary_locked,
     _evaluate,
@@ -16,6 +15,7 @@ from trowel_py.memory.dictionary_check import (
     compute_source_hash,
     derive_active_corpus,
 )
+from trowel_py.memory.dictionary_index import publish, render
 from trowel_py.memory.dictionary_lock import dictionary_lock
 from trowel_py.memory.dictionary_state import (
     DictionaryState,
@@ -32,7 +32,7 @@ def derive_dictionary_full(
 ) -> dict[str, Any]:
     """从 active notes 派生完整 L0/L1，不写文件或 state。"""
 
-    return _dictionary_render.derive_dictionary_full(root, provider)
+    return render.derive_dictionary_full(root, provider)
 
 
 def rebuild_dictionary(
@@ -65,7 +65,7 @@ def rebuild_dictionary(
 
     with dictionary_lock(root, exclusive=True):
         try:
-            _dictionary_publish.atomic_replace(
+            publish.atomic_replace(
                 root_path,
                 staged["l0_text"],
                 staged["l1_files"],
@@ -119,7 +119,7 @@ def ensure_dictionary_consistent(
 
     with dictionary_lock(root, exclusive=True):
         try:
-            _dictionary_publish.atomic_replace(
+            publish.atomic_replace(
                 root_path,
                 staged["l0_text"],
                 staged["l1_files"],

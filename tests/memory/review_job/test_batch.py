@@ -223,7 +223,7 @@ async def test_schema_error_does_not_abort_or_advance_batch(
         raise ValueError("invalid note: kind=feedback")
 
     monkeypatch.setattr(
-        "trowel_py.memory._review_batch.persist_draft",
+        "trowel_py.memory.daily_review.batch.persist_draft",
         reject_schema,
     )
 

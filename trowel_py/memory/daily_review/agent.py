@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft

@@ -1,4 +1,4 @@
-"""从 active notes 派生 dictionary L0/L1 文本，不写入磁盘。"""
+"""从 active notes 派生 dictionary 的 L0/L1 文本，不写入磁盘。"""
 
 from __future__ import annotations
 

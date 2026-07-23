@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from trowel_py.memory._review_agent import (
+from trowel_py.memory.daily_review.agent import (
     DistillError,
     HostFactory,
     run_one_session,

@@ -79,7 +79,7 @@ async def test_each_distilled_session_is_judged(
         judged.append(session_record.cc_session_id)
 
     monkeypatch.setattr(
-        "trowel_py.memory._review_batch.judge_session",
+        "trowel_py.memory.daily_review.batch.judge_session",
         fake_judge,
     )
     memory_root = tmp_path / "memory"
@@ -105,7 +105,7 @@ async def test_judge_failure_does_not_roll_back_review(
         raise RuntimeError("judge blew up")
 
     monkeypatch.setattr(
-        "trowel_py.memory._review_batch.judge_session",
+        "trowel_py.memory.daily_review.batch.judge_session",
         fail_judge,
     )
     memory_root = tmp_path / "memory"

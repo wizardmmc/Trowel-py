@@ -36,6 +36,15 @@
 
 领域模块通常把 HTTP、业务逻辑和持久化分别放在 `routes.py`、`service.py` 与 `repository.py`；实际文件按领域需要增减。
 
+### Memory 内部边界
+
+| 路径 | 职责 |
+|---|---|
+| `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
+| `memory/daily_review/` | 提炼 agent 生命周期与增量批处理编排 |
+| `memory/dictionary.py` | dictionary 派生、校验和发布的稳定入口 |
+| `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
+
 ## 前端
 
 | 路径 | 职责 |

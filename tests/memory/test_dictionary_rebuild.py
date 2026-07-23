@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from trowel_py.memory import _dictionary_publish, _dictionary_render
 from trowel_py.memory.dictionary import rebuild_dictionary
 from trowel_py.memory.dictionary_check import check_dictionary
+from trowel_py.memory.dictionary_index import publish, render
 from trowel_py.memory.dictionary_state import load_state
 from trowel_py.memory.store import MemoryStore
 
@@ -116,7 +116,7 @@ def test_rebuild_staging_inconsistent_keeps_old(
             {"name": "d2", "description": "x", "triggers": "", "note_ids": [stem]},
         ]
 
-    monkeypatch.setattr(_dictionary_render, "_cluster_notes", dup_cluster)
+    monkeypatch.setattr(render, "_cluster_notes", dup_cluster)
     out = rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(""))
     assert out.get("error") == "staging_inconsistent"
     assert _snapshot(tmp_path) == before
@@ -136,9 +136,9 @@ def test_atomic_replace_midswap_failure_restores_old(
     def boom(*a, **k):  # noqa: ANN002, ANN003
         raise OSError("injected at os.replace")
 
-    monkeypatch.setattr(_dictionary_publish.os, "replace", boom)
+    monkeypatch.setattr(publish.os, "replace", boom)
     with pytest.raises(OSError):
-        _dictionary_publish.atomic_replace(
+        publish.atomic_replace(
             tmp_path,
             "NEW L0",
             {"new": "NEW L1\n"},

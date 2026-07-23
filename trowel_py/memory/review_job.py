@@ -12,12 +12,12 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from trowel_py.memory._review_agent import (
+from trowel_py.memory.daily_review.agent import (
     DistillError as DistillError,
     HostFactory,
     run_one_session as run_one_session,
 )
-from trowel_py.memory._review_batch import (
+from trowel_py.memory.daily_review.batch import (
     run_daily_review_locked as _run_daily_review_locked,
 )
 from trowel_py.memory.paths import resolve_memory_root

@@ -1,4 +1,4 @@
-"""原子发布一代 dictionary L0/L1，并在失败时恢复旧索引。"""
+"""原子发布同一代 dictionary L0/L1，并在失败时恢复旧索引。"""
 
 from __future__ import annotations
 
