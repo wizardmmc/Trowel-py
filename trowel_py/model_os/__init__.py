@@ -18,6 +18,11 @@ cooperative/recovery_partial snapshots + 2-phase suspend/resume +
 reconcile_required blocked state. Fencing is enforced by event kind
 (_EPISODE_FENCED_KINDS); stale writers are rejected at the store layer.
 
+Scope of WorkBroker: foreground / default / maintenance 三类工作共享的模型资源
+仲裁器。按 provider / 预算 / 并发槽发 lease，带崩溃恢复 fencing、只对 default 生效的
+预算 + 外部额度闸门、foreground 对未开始 default 的抢占、以及用量归因。消费
+`quota.read_model.QuotaReadModel`；接入三个真实 scheduler 是后续工作。
+
 Out of scope: Episode driving / cooperative yield (089), fresh-session start
 (090), Scheduler (091), Router (094), UI (101).
 """
@@ -71,11 +76,31 @@ from trowel_py.model_os.types import (
     WorkItemKind,
     WorkItemStatus,
 )
+from trowel_py.model_os.work_broker import (
+    BrokerPolicy,
+    BudgetDimensions,
+    CatchupPolicy,
+    DenialReason,
+    IdempotencyConflict,
+    ModelTier,
+    StaleWorkLease,
+    UsageRecord,
+    UsageTotals,
+    WorkBroker,
+    WorkDenial,
+    WorkKind,
+    WorkLease,
+    WorkRequest,
+)
 
 __all__ = [
     "ArtifactRef",
+    "BrokerPolicy",
+    "BudgetDimensions",
+    "CatchupPolicy",
     "CompletionEvidence",
     "DecisionRecord",
+    "DenialReason",
     "Episode",
     "EpisodeCommandError",
     "EpisodeSnapshot",
@@ -85,9 +110,11 @@ __all__ = [
     "EventEnvelope",
     "EventKind",
     "ForegroundConflict",
+    "IdempotencyConflict",
     "Lease",
     "LeaseConflict",
     "MemoryEligibility",
+    "ModelTier",
     "ModelOsStore",
     "PendingDescriptor",
     "Provenance",
@@ -98,6 +125,7 @@ __all__ = [
     "Snapshot",
     "SnapshotRef",
     "SnapshotSource",
+    "StaleWorkLease",
     "StaleWriterRejected",
     "SubsystemState",
     "Task",
@@ -105,13 +133,20 @@ __all__ = [
     "TaskOrigin",
     "TaskState",
     "TaskStatus",
+    "UsageRecord",
+    "UsageTotals",
     "WaitingCondition",
     "WaitingSubtype",
     "WarmFull",
+    "WorkBroker",
+    "WorkDenial",
     "WorkItem",
     "WorkItemKind",
     "WorkItemStatus",
     "WorkItemState",
+    "WorkKind",
+    "WorkLease",
+    "WorkRequest",
     "initial_snapshot",
     "redact_payload",
     "reduce_decision",
