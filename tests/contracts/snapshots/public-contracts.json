@@ -1,6 +1,6 @@
 {
   "cli_help": {
-    "root": "usage: trowel-py [-h] [--port PORT] [--host HOST] [--no-open]\n\ntrowel-py CLI entry point. Installed as the ``trowel-py`` script via\n``[project.scripts]`` in pyproject. Starts the FastAPI app (API + served\nfrontend) and opens a browser at it. Usage: trowel-py # default port 8000,\nauto-open browser trowel-py --no-open # skip the browser trowel-py --port 9000\nBackend deps (cc CLI, ~/.claude/) are NOT bundled — the user installs claude-\ncode separately. This command only starts trowel's own server.\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT  port to listen on (default 8000)\n  --host HOST  host to bind (default 127.0.0.1)\n  --no-open    don't open a browser window\n",
+    "root": "usage: trowel-py [-h] [--port PORT] [--host HOST] [--no-open]\n\n启动 Trowel 服务，并分发 memory 子命令。\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT  port to listen on (default 8000)\n  --host HOST  host to bind (default 127.0.0.1)\n  --no-open    don't open a browser window\n",
     "memory": "usage: trowel-py memory [-h]\n                        {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate} ...\n\nmemory subsystem\n\npositional arguments:\n  {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate}\n    tidy                weekly/monthly tidy + rollback (041)\n    review              run the daily write loop: distill a day's cc sessions\n    repair              backfill per-session episodes from surviving drafts\n                        (P1 overwrite fix)\n    backfill-completed  stamp last_completed_offset for legacy rows from jsonl\n                        size (040-b)\n    dict-rebuild        regenerate dictionary L0/L1 from notes (040-c C-3)\n    dict-check          read-only dictionary consistency report vs notes (064)\n    migrate             backfill memory_id/status/valid_from on legacy notes\n                        (041 C-9)\n    core                layer-one promotion: nominate/approve/activate (041)\n    metrics             print memory metrics (065):\n                        identity/retrieval/effect/recall with coverage +\n                        quality labels + the policy in force\n    promotion           evaluate core-candidate promotion gaps (065); --apply\n                        writes candidates\n    profile-recalibrate\n                        re-distill history under v2 hard rules into isolated\n                        staging (067); default is a read-only plan, never\n                        touching live data\n\noptions:\n  -h, --help            show this help message and exit\n",
     "memory tidy": "usage: trowel-py memory tidy [-h] [--weekly] [--monthly] [--iso-week ISO_WEEK]\n                             [--month MONTH] [--rollback ROLLBACK] [--status]\n                             [--catchup] [--from PERIOD]\n                             [--scope {weekly,monthly}] [--root ROOT]\n\noptions:\n  -h, --help            show this help message and exit\n  --weekly              run weekly tidy (compress + bypass + TidyPlan) for one\n                        ISO week\n  --monthly             run monthly tidy (compress + retire + promote +\n                        TidyPlan)\n  --iso-week ISO_WEEK   ISO week YYYY-Www (default: current week)\n  --month MONTH         YYYY-MM (default: current month)\n  --rollback ROLLBACK   rollback a tidy plan id (restore notes/)\n  --status              print the tidy watermark + pending periods (read-only,\n                        063)\n  --catchup             explicitly catch up a range; needs --from and --scope\n                        (063)\n  --from PERIOD         starting period for --catchup (YYYY-Www weekly, YYYY-\n                        MM monthly)\n  --scope {weekly,monthly}\n                        which scope --catchup runs\n  --root ROOT           memory root (default: resolved from config.toml)\n",
     "memory review": "usage: trowel-py memory review [-h] [--date DATE] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE  target day YYYY-MM-DD (default: today)\n  --root ROOT  memory root (default: resolved from config.toml)\n",
@@ -394,7 +394,7 @@
       "/api/cards/extract-conversation": {
         "post": {
           "summary": "Extract Conversation",
-          "description": "extract card drafts from an uploaded CC JSONL conversation log",
+          "description": "从上传的 Claude Code JSONL 对话记录中提取卡片草稿。",
           "operationId": "extract_conversation_api_cards_extract_conversation_post",
           "requestBody": {
             "content": {
@@ -435,7 +435,7 @@
       "/api/cards/re-explain": {
         "post": {
           "summary": "Re Explain Card",
-          "description": "regenerate a draft's explanation from a different angle (slice 021).\n\nStateless generator: no DB writes. The caller keeps candidate versions in\nfrontend state and writes the chosen one back via POST /{draft_id}/review.",
+          "description": "换一个角度重新生成草稿解释，不写入数据库。候选版本由调用方保存。",
           "operationId": "re_explain_card_api_cards_re_explain_post",
           "requestBody": {
             "content": {
@@ -527,7 +527,7 @@
       "/api/cards/{draft_id}/dedup": {
         "get": {
           "summary": "De Duplicate",
-          "description": "find duplicate cards for a draft (the draft is not persisted yet, so the\npath param is a draft id, not a card id)",
+          "description": "为尚未持久化的草稿查找重复卡片；路径参数是草稿 ID，不是卡片 ID。",
           "operationId": "de_duplicate_api_cards__draft_id__dedup_get",
           "parameters": [
             {
@@ -565,7 +565,7 @@
       "/api/cards/search": {
         "get": {
           "summary": "Search Cards",
-          "description": "FTS5 full-text search for cards.",
+          "description": "使用 FTS5 全文检索卡片。",
           "operationId": "search_cards_api_cards_search_get",
           "parameters": [
             {
@@ -711,7 +711,7 @@
       "/api/review/due": {
         "get": {
           "summary": "Due",
-          "description": "Fetch all cards that are due for review, sorted by due date.",
+          "description": "返回所有到期复习卡片。",
           "operationId": "due_api_review_due_get",
           "responses": {
             "200": {
@@ -732,7 +732,7 @@
       "/api/review/submit": {
         "post": {
           "summary": "Submit",
-          "description": "Submit a review rating for a card (1=Again, 2=Hard, 3=Good, 4=Easy).",
+          "description": "提交卡片复习评分：1=重来，2=困难，3=良好，4=简单。",
           "operationId": "submit_api_review_submit_post",
           "requestBody": {
             "content": {
@@ -773,7 +773,7 @@
       "/api/review/session-stats": {
         "get": {
           "summary": "Session Stats",
-          "description": "Get aggregated review statistics since a given ISO timestamp.",
+          "description": "返回指定 ISO 时间之后的复习聚合统计。",
           "operationId": "session_stats_api_review_session_stats_get",
           "parameters": [
             {
@@ -815,7 +815,7 @@
       "/api/review/stats": {
         "get": {
           "summary": "Stats",
-          "description": "Get overall review statistics (all time).",
+          "description": "返回全部历史复习统计。",
           "operationId": "stats_api_review_stats_get",
           "responses": {
             "200": {
@@ -836,7 +836,7 @@
       "/api/garden/plants": {
         "get": {
           "summary": "Plants",
-          "description": "return all plants with their card data and computed plant stage.",
+          "description": "返回所有植物及其卡片数据和派生生长阶段。",
           "operationId": "plants_api_garden_plants_get",
           "responses": {
             "200": {
@@ -853,7 +853,7 @@
       "/api/garden/stats": {
         "get": {
           "summary": "Stats",
-          "description": "return aggregated garden statistics",
+          "description": "返回花园聚合统计。",
           "operationId": "stats_api_garden_stats_get",
           "responses": {
             "200": {
@@ -870,7 +870,7 @@
       "/api/player/": {
         "get": {
           "summary": "Get Player",
-          "description": "return the default player's profile with the computed level fields.",
+          "description": "返回默认玩家资料及派生等级字段。",
           "operationId": "get_player_api_player__get",
           "responses": {
             "200": {
@@ -891,7 +891,7 @@
       "/api/player": {
         "get": {
           "summary": "Get Player",
-          "description": "return the default player's profile with the computed level fields.",
+          "description": "返回默认玩家资料及派生等级字段。",
           "operationId": "get_player_api_player_get",
           "responses": {
             "200": {
@@ -912,7 +912,7 @@
       "/api/player/inventory": {
         "get": {
           "summary": "Inventory",
-          "description": "return every item in the default player's inventory.",
+          "description": "返回默认玩家的全部库存物品。",
           "operationId": "inventory_api_player_inventory_get",
           "responses": {
             "200": {
@@ -933,7 +933,7 @@
       "/api/player/buy": {
         "post": {
           "summary": "Buy",
-          "description": "buy an item: spend coins and grant it to the inventory.",
+          "description": "扣除金币购买商品并加入库存。",
           "operationId": "buy_api_player_buy_post",
           "requestBody": {
             "content": {
@@ -974,7 +974,7 @@
       "/api/profile/": {
         "get": {
           "summary": "Get Profile",
-          "description": "return the user self-description profile (empty Profile on cold start).",
+          "description": "返回用户画像；首次使用时返回空画像。",
           "operationId": "get_profile_api_profile__get",
           "responses": {
             "200": {
@@ -993,7 +993,7 @@
         },
         "put": {
           "summary": "Put Profile",
-          "description": "write the five dims back to profile.md via the store.",
+          "description": "通过 store 写入五个画像维度。",
           "operationId": "put_profile_api_profile__put",
           "requestBody": {
             "content": {
@@ -1034,7 +1034,7 @@
       "/api/profile": {
         "get": {
           "summary": "Get Profile",
-          "description": "return the user self-description profile (empty Profile on cold start).",
+          "description": "返回用户画像；首次使用时返回空画像。",
           "operationId": "get_profile_api_profile_get",
           "responses": {
             "200": {
@@ -1053,7 +1053,7 @@
         },
         "put": {
           "summary": "Put Profile",
-          "description": "write the five dims back to profile.md via the store.",
+          "description": "通过 store 写入五个画像维度。",
           "operationId": "put_profile_api_profile_put",
           "requestBody": {
             "content": {
@@ -1094,7 +1094,7 @@
       "/api/profile/suggestions": {
         "get": {
           "summary": "Get Suggestions",
-          "description": "return the pending AI profile suggestions for the user to review.",
+          "description": "返回等待用户审核的画像建议。",
           "operationId": "get_suggestions_api_profile_suggestions_get",
           "responses": {
             "200": {
@@ -1115,7 +1115,7 @@
       "/api/profile/suggestions/{suggestion_id}": {
         "patch": {
           "summary": "Patch Suggestion",
-          "description": "accept / discard one suggestion by flipping its status.\n\nAccept does NOT itself write profile.md — the front-end reads the accepted\nsuggestion, merges it into the profile, and PUTs with\n``source=ai-calibration`` (C-1). This endpoint only records the user's\ndecision in the queue.",
+          "description": "记录用户接受或丢弃建议的决定，但不直接写入 profile.md。",
           "operationId": "patch_suggestion_api_profile_suggestions__suggestion_id__patch",
           "parameters": [
             {
@@ -1229,7 +1229,7 @@
       "/api/pet/": {
         "get": {
           "summary": "Get Pet Route",
-          "description": "return the pet's current state.",
+          "description": "返回宠物当前状态。",
           "operationId": "get_pet_route_api_pet__get",
           "responses": {
             "200": {
@@ -1250,7 +1250,7 @@
       "/api/pet": {
         "get": {
           "summary": "Get Pet Route",
-          "description": "return the pet's current state.",
+          "description": "返回宠物当前状态。",
           "operationId": "get_pet_route_api_pet_get",
           "responses": {
             "200": {
@@ -1271,7 +1271,7 @@
       "/api/pet/feed": {
         "post": {
           "summary": "Feed Route",
-          "description": "feed the pet one food item from the inventory.",
+          "description": "消耗一件库存食物喂养宠物。",
           "operationId": "feed_route_api_pet_feed_post",
           "requestBody": {
             "content": {
@@ -1312,7 +1312,7 @@
       "/api/pet/interact": {
         "post": {
           "summary": "Interact Route",
-          "description": "pet the pet — mood goes happy and it says one line.",
+          "description": "与宠物互动，使其心情变好并返回一句回应。",
           "operationId": "interact_route_api_pet_interact_post",
           "responses": {
             "200": {
@@ -1333,7 +1333,7 @@
       "/api/pet/equip": {
         "put": {
           "summary": "Equip Route",
-          "description": "equip a hat from the inventory.",
+          "description": "为宠物装备一件库存帽子。",
           "operationId": "equip_route_api_pet_equip_put",
           "requestBody": {
             "content": {
@@ -1374,7 +1374,7 @@
       "/api/feynman/generate": {
         "post": {
           "summary": "Generate",
-          "description": "generate a feynman question for a card",
+          "description": "为指定卡片生成费曼问题并创建练习会话。",
           "operationId": "generate_api_feynman_generate_post",
           "requestBody": {
             "content": {
@@ -1415,7 +1415,7 @@
       "/api/feynman/evaluate": {
         "post": {
           "summary": "Evaluate",
-          "description": "evaluate a user's answer for a feynman session",
+          "description": "评估用户在费曼练习会话中的回答。",
           "operationId": "evaluate_api_feynman_evaluate_post",
           "requestBody": {
             "content": {
@@ -1456,7 +1456,7 @@
       "/api/feynman/history/{card_id}": {
         "get": {
           "summary": "History",
-          "description": "return all feynman sessions for a card, newest first",
+          "description": "按时间倒序返回指定卡片的费曼练习会话。",
           "operationId": "history_api_feynman_history__card_id__get",
           "parameters": [
             {
@@ -1498,7 +1498,7 @@
       "/v1/messages": {
         "post": {
           "summary": "Proxy Messages",
-          "description": "Rewrite the -p system identity to the TUI version (for 智谱) and\nstream-forward to the real endpoint. CC sees this endpoint as its\nANTHROPIC_BASE_URL; the rewrite is transparent to CC.",
+          "description": "按上游门禁重写 `-p` 的 system identity，并把响应流式转发到真实端点。\n\nCC 通过 `ANTHROPIC_BASE_URL` 调用本路由，重写过程对 CC 透明。",
           "operationId": "proxy_messages_v1_messages_post",
           "responses": {
             "200": {
@@ -1515,7 +1515,7 @@
       "/v1/{rest}": {
         "post": {
           "summary": "Proxy Passthrough",
-          "description": "Passthrough for every other /v1/* path CC calls (count_tokens, etc.).\nShares the rewrite path with /v1/messages; the identity rewrite is a\nno-op on count_tokens bodies but keeps a single code path.",
+          "description": "流式转发 CC 调用的其他 `/v1/*` 路径，例如 `count_tokens`。\n\n所有路径与 `/v1/messages` 共用请求重写和上游转发链路。",
           "operationId": "proxy_passthrough_v1__rest__post",
           "parameters": [
             {
@@ -1553,7 +1553,7 @@
       "/api/cc/sessions": {
         "post": {
           "summary": "Create Session",
-          "description": "Open a new session (optionally resuming a CC session id).",
+          "description": "创建新的 CC 会话，可通过原生会话 id 恢复已有会话。",
           "operationId": "create_session_api_cc_sessions_post",
           "requestBody": {
             "required": true,
@@ -1592,7 +1592,7 @@
         },
         "get": {
           "summary": "List History",
-          "description": "List the most recent resumable CC history sessions for a workdir.\n\nReturns the N most recent sessions (any age, not just trowel-created) for\nthe history dropdown — capped to keep the dropdown usable. ``meta.total``\nis the true on-disk count so the UI can show \"共 N · 最近 M\" instead of\nmisleadingly implying only N sessions exist.",
+          "description": "列出工作目录最近 10 个可恢复 CC 会话，并在 meta.total 返回磁盘总数。",
           "operationId": "list_history_api_cc_sessions_get",
           "parameters": [
             {
@@ -1635,7 +1635,7 @@
       "/api/cc/sessions/active": {
         "get": {
           "summary": "List Active Sessions",
-          "description": "列出当前 trowel 进程的活跃 session（_REGISTRY）。\n\n区别于 GET /sessions（磁盘历史）。前端多开栏用这个 + active_id 渲染统一列表。\n返回所有 _REGISTRY 条目（含从未发消息的 temp），每条带 connected 字段：\nTrue = 有活 cc 子进程（temp 为 False）。前端据此过滤多开栏，避免 temp 被误显示。",
+          "description": "列出当前进程注册的 CC 会话及 active id。\nconnected 表示是否仍有存活的 CC 子进程。",
           "operationId": "list_active_sessions_api_cc_sessions_active_get",
           "responses": {
             "200": {
@@ -1656,7 +1656,7 @@
       "/api/cc/sessions/{sid}/activate": {
         "post": {
           "summary": "Activate Session",
-          "description": "切换当前活跃 session（多开切换，不销毁非活跃）。",
+          "description": "切换当前选中的 CC 会话，不关闭其他会话。",
           "operationId": "activate_session_api_cc_sessions__sid__activate_post",
           "parameters": [
             {
@@ -1698,7 +1698,7 @@
       "/api/cc/sessions/{sid}/messages": {
         "post": {
           "summary": "Send Message",
-          "description": "Send one message and stream trowel events back as SSE.",
+          "description": "发送消息，并以 SSE 流返回 Trowel 事件。\n流内异常以终态 host_error 事件返回。",
           "operationId": "send_message_api_cc_sessions__sid__messages_post",
           "parameters": [
             {
@@ -1746,7 +1746,7 @@
       "/api/cc/sessions/{sid}/interrupt": {
         "post": {
           "summary": "Interrupt",
-          "description": "SIGINT the current turn of a session.",
+          "description": "中断当前 turn；会话仍保留供后续发送。",
           "operationId": "interrupt_api_cc_sessions__sid__interrupt_post",
           "parameters": [
             {
@@ -1788,7 +1788,7 @@
       "/api/cc/sessions/{sid}/answer": {
         "post": {
           "summary": "Answer Elicit",
-          "description": "Answer (or cancel) the pending AskUserQuestion elicitation (slice-025-c).\n\nWrites control_response(allow + updatedInput.answers) or control_response\n(deny) to cc stdin so cc unblocks and continues the turn.",
+          "description": "回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。",
           "operationId": "answer_elicit_api_cc_sessions__sid__answer_post",
           "parameters": [
             {
@@ -1840,7 +1840,7 @@
       "/api/cc/sessions/{sid}/revert": {
         "post": {
           "summary": "Revert Turn",
-          "description": "Revert a turn: git-restore the worktree + truncate the CC jsonl (slice-026 E1).\n\nLooks up the checkpoint for ``turn_id`` (dropping that turn and every later\none), restores the worktree from the snapshot, truncates the CC session\njsonl back to the recorded offset, then kills the live CC process so the\nnext send() re-resumes from the truncated history.\n\nRaises:\n    404: session or checkpoint not found.\n    400: workdir is not a git repo (revert unsupported).",
+          "description": "恢复指定 turn 前的工作树与 CC 历史，并结束当前进程以便后续恢复。\n未知 checkpoint 返回 404，非 Git 工作目录返回 400。",
           "operationId": "revert_turn_api_cc_sessions__sid__revert_post",
           "parameters": [
             {
@@ -1892,7 +1892,7 @@
       "/api/cc/sessions/{sid}/history": {
         "get": {
           "summary": "Get History",
-          "description": "Replay a session's stored CC history as trowel events.\n\nReads the CC session jsonl for the session's cc_session_id + workdir and\nreturns normalized trowel events isomorphic to the live stream (plus a\nUserEvent per historical user turn), so the frontend renders history and\nlive with one reducer. Empty list when the session has no cc_session_id\nyet or the jsonl is absent.",
+          "description": "将已保存的 CC 历史回放为 Trowel 事件。\n原生会话 id 缺失或历史文件不存在时返回空列表。",
           "operationId": "get_history_api_cc_sessions__sid__history_get",
           "parameters": [
             {
@@ -1934,7 +1934,7 @@
       "/api/cc/models": {
         "get": {
           "summary": "List Models Endpoint",
-          "description": "List available model aliases from cc's settings.json env (slice-027 C2).\n\nReturns the alias -> real-model mapping for the /model picker. trowel does\nnot hardcode model ids; it surfaces cc's own aliases (opus/sonnet/haiku)\nwhich map to the configured backend via ANTHROPIC_DEFAULT_*_MODEL env.\nSwitching backends only requires editing settings.json, not trowel code.",
+          "description": "返回 CC settings 中可用的模型别名及其实际模型。",
           "operationId": "list_models_endpoint_api_cc_models_get",
           "responses": {
             "200": {
@@ -1955,7 +1955,7 @@
       "/api/cc/slash-items": {
         "get": {
           "summary": "List Slash Items Endpoint",
-          "description": "List slash commands + skills for the '/' autocomplete.\n\nslice-027 C1: scans <workdir>/.claude/{skills,commands} + ~/.claude/\n{skills,commands} (frontmatter) plus a hardcoded bundled-skill map.\nslice-042 P1: merges the active cc session's init slash_commands roster\nas the name floor (the part that keeps up with cc updates); this endpoint\nadds the descriptions cc init doesn't carry.",
+          "description": "返回工作目录可用的 slash command 与 skill，并合并同目录会话的初始化名单。",
           "operationId": "list_slash_items_endpoint_api_cc_slash_items_get",
           "parameters": [
             {
@@ -1998,7 +1998,7 @@
       "/api/cc/list-dir": {
         "get": {
           "summary": "List Dir",
-          "description": "List immediate subdirectories of a path (slice-027 workdir tree browser).\n\nThe browser sandbox forbids enumerating local directories, so WorkdirPicker's\ntree fetches children here. Returns subdirectories only (files omitted — a\nworkdir must be a directory); dotted names (`.git`, `.venv`, ...) hidden to\ncut noise. `~` is expanded server-side. Non-directory / missing path → 400.",
+          "description": "列出指定目录的直接非隐藏子目录；路径无效时返回 400。",
           "operationId": "list_dir_api_cc_list_dir_get",
           "parameters": [
             {
@@ -2041,7 +2041,7 @@
       "/api/cc/sessions/{sid}": {
         "delete": {
           "summary": "Delete Session",
-          "description": "Kill the subprocess and remove the session from the registry.",
+          "description": "关闭并移除已注册的 CC 会话；未知 id 返回 404。",
           "operationId": "delete_session_api_cc_sessions__sid__delete",
           "parameters": [
             {
@@ -2083,7 +2083,7 @@
       "/api/agent/sessions": {
         "post": {
           "summary": "Create Session",
-          "description": "Create a session under the chosen runtime (resume validated C-2).",
+          "description": "创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。",
           "operationId": "create_session_api_agent_sessions_post",
           "requestBody": {
             "required": true,
@@ -2122,7 +2122,7 @@
         },
         "get": {
           "summary": "List History",
-          "description": "Mixed history: CC jsonl rows + Codex bindings, each tagged by runtime.\n\nCC rows come from cc_host's on-disk scan; Codex rows come from this hub's\nbinding store (a trowel-created Codex thread trowel can resume). Each row\ncarries the runtime + native id so a resume request is routed correctly\n(spec pass-criterion: mixed history rows show runtime, resume carries it).",
+          "description": "合并 CC 扫描记录与 Codex binding，并显式标记 runtime。\n\n每行都携带 ``native_session_id`` 字段；仅非空原生 id 可以用于恢复。",
           "operationId": "list_history_api_agent_sessions_get",
           "parameters": [
             {
@@ -2165,7 +2165,7 @@
       "/api/agent/sessions/active": {
         "get": {
           "summary": "List Active",
-          "description": "List every live session (mixed CC + Codex) + the active id.",
+          "description": "返回持久化会话、基于本地 registry/manager 的状态和当前视图 id。",
           "operationId": "list_active_api_agent_sessions_active_get",
           "responses": {
             "200": {
@@ -2186,7 +2186,7 @@
       "/api/agent/sessions/{session_id}/activate": {
         "post": {
           "summary": "Activate Session",
-          "description": "Switch the active (viewed) session — view state only (C-4).",
+          "description": "只切换当前视图，不关闭或中断任何会话。",
           "operationId": "activate_session_api_agent_sessions__session_id__activate_post",
           "parameters": [
             {
@@ -2228,7 +2228,7 @@
       "/api/agent/sessions/{session_id}": {
         "get": {
           "summary": "Get Session",
-          "description": "Return one session's binding.",
+          "description": "返回单个持久化 binding；未知 session id 返回 404。",
           "operationId": "get_session_api_agent_sessions__session_id__get",
           "parameters": [
             {
@@ -2268,7 +2268,7 @@
         },
         "patch": {
           "summary": "Patch Session",
-          "description": "Partial update. slice-072: a runtime change → 422 (C-1).",
+          "description": "拒绝修改 runtime；model/effort 仅为下一次 Codex turn 排队。",
           "operationId": "patch_session_api_agent_sessions__session_id__patch",
           "parameters": [
             {
@@ -2318,7 +2318,7 @@
         },
         "delete": {
           "summary": "Delete Session",
-          "description": "Close the native host + drop the binding (idempotent).",
+          "description": "注销原生会话并删除 binding；重复删除仍成功返回。",
           "operationId": "delete_session_api_agent_sessions__session_id__delete",
           "parameters": [
             {
@@ -2360,7 +2360,7 @@
       "/api/agent/sessions/{session_id}/interrupt": {
         "post": {
           "summary": "Interrupt Session",
-          "description": "Interrupt the running turn, routed by binding.",
+          "description": "根据 binding 中断所属 runtime 的当前 turn。",
           "operationId": "interrupt_session_api_agent_sessions__session_id__interrupt_post",
           "parameters": [
             {
@@ -2402,7 +2402,7 @@
       "/api/agent/sessions/{session_id}/requests": {
         "get": {
           "summary": "List Session Requests",
-          "description": "List retained request states so a short frontend disconnect can recover.",
+          "description": "返回保留中的 Codex request，使短暂断线后仍可恢复待决策状态。",
           "operationId": "list_session_requests_api_agent_sessions__session_id__requests_get",
           "parameters": [
             {
@@ -2444,7 +2444,7 @@
       "/api/agent/sessions/{session_id}/requests/{request_id}/answer": {
         "post": {
           "summary": "Answer Session Request",
-          "description": "Validate and answer one connection-scoped Codex server request.",
+          "description": "校验归属和 decision 后回答一个 connection-scoped Codex request。",
           "operationId": "answer_session_request_api_agent_sessions__session_id__requests__request_id__answer_post",
           "parameters": [
             {
@@ -2505,7 +2505,7 @@
       "/api/agent/sessions/{session_id}/messages": {
         "post": {
           "summary": "Send Message",
-          "description": "Send one message and stream host events back as SSE.\n\nAny error (unknown session, host down, turn-start failure) is converted to\na terminal ``error`` SSE frame so the client always gets a closing signal.",
+          "description": "发送一条消息并以 SSE 返回共享事件。\n\n未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有\n明确结束信号。",
           "operationId": "send_message_api_agent_sessions__session_id__messages_post",
           "parameters": [
             {
@@ -2553,7 +2553,7 @@
       "/api/agent/runtimes": {
         "get": {
           "summary": "List Runtimes",
-          "description": "Return the two runtimes with capabilities + connection status.\n\nCodex ``connected`` reflects whether the shared manager is wired; the\ndeeper login/proxy diagnostics land in slice-080.",
+          "description": "返回两种 runtime 的 capability 与 host 可用状态。\n\nCodex ``connected`` 只表示共享 manager 已装配，不代表登录或代理健康。",
           "operationId": "list_runtimes_api_agent_runtimes_get",
           "responses": {
             "200": {
@@ -2574,7 +2574,7 @@
       "/api/agent/models": {
         "get": {
           "summary": "List Models",
-          "description": "Return the visible native Codex model catalog without static fallback.",
+          "description": "返回原生 Codex model catalog，不维护静态回退名单。",
           "operationId": "list_models_api_agent_models_get",
           "responses": {
             "200": {
@@ -2595,7 +2595,7 @@
       "/api/agent/sessions/{session_id}/history": {
         "get": {
           "summary": "Get Session History",
-          "description": "Replay a session's stored history as AgentEvent v1 envelopes (slice-074).\n\nCC history comes from cc_host's on-disk jsonl scan, wrapped through a fresh\n:class:`CcEventAdapter` (seq starts at 1 — history is a new stream from the\nreducer's view, not a continuation of a live one). The CC ``native_session_id``\nmust already be written back (i.e. the session completed at least one turn);\na fresh session with no native id returns an empty list.\n\nCodex thread history replay lands in slice-079; this slice returns a clear\n501 so the frontend can fall back to its existing skip-non-CC behaviour.\n\nRaises:\n    HTTPException: 404 unknown session; 501 Codex (slice-079).",
+          "description": "将已落盘的 CC history 转为 AgentEvent v1 envelope。\n\nhistory 使用从 1 开始的独立序号，不延续 live adapter。尚无原生 id 的 CC 会话\n返回空列表；Codex history replay 尚未实现并返回 501。",
           "operationId": "get_session_history_api_agent_sessions__session_id__history_get",
           "parameters": [
             {
@@ -2637,7 +2637,7 @@
       "/api/quota": {
         "get": {
           "summary": "List Quota",
-          "description": "Every known account's quota snapshot (staleness applied by the model).\n\n``async def`` (not sync ``def``) so the read stays in the event-loop thread\nalongside the scheduler/observer writers; a sync route would run in a\nthreadpool and race the writers (slice-093-pre review HIGH-2).",
+          "description": "返回所有已知账户的额度快照。",
           "operationId": "list_quota_api_quota_get",
           "responses": {
             "200": {
@@ -2710,7 +2710,7 @@
             "decision"
           ],
           "title": "AnswerAgentRequest",
-          "description": "Body for answering one Codex app-server server request.\n\nThe decision remains an open string at the HTTP boundary because native\nchoices are request-specific. The manager validates it against the exact\nrecorded ``availableDecisions`` for that pending request."
+          "description": "回答一个 connection-scoped Codex server request。\n\nHTTP 边界保留原始 decision 字符串；manager 再根据该 pending request 记录的\n``availableDecisions`` 校验。"
         },
         "AnswerElicitRequest": {
           "properties": {
@@ -2729,7 +2729,7 @@
           },
           "type": "object",
           "title": "AnswerElicitRequest",
-          "description": "Body for POST /api/cc/sessions/{id}/answer (slice-025-c).\n\nThe frontend posts the user's AskUserQuestion selections here. `cancel`\ndeclines the question (writes control_response behavior=deny)."
+          "description": "回答待处理的 AskUserQuestion；`cancel` 会写入 deny control_response。"
         },
         "BuyItemRequest": {
           "properties": {
@@ -2865,7 +2865,7 @@
             "workdir"
           ],
           "title": "CreateAgentSessionRequest",
-          "description": "Body for POST ``/api/agent/sessions``.\n\n``runtime`` chooses the native host and is frozen at create (spec C-1).\nThe permission-shaped fields are runtime-specific (CC takes\n``permission_mode``; Codex takes ``approval_policy`` + ``sandbox``); the\nHub passes only the field the chosen runtime understands, so cross-runtime\nleakage in a request body is ignored rather than misrouted.\n\nAttributes:\n    runtime: ``claude_code`` or ``codex`` — frozen at create.\n    workdir: absolute working directory the session runs in.\n    resume_from: optional native session id to resume (CC ``cc_session_id``\n        or Codex ``thread_id``). Validated against runtime ownership (C-2).\n    model / effort: optional overrides; the host's effective value wins.\n    permission_mode: CC ``--permission-mode`` (defaults to bypass).\n    approval_policy: Codex ``approvalPolicy`` (defaults to ``never``).\n    sandbox: Codex ``sandbox`` mode (defaults to ``read-only``).\n    permission_preset: Host-neutral Codex permission intent. The backend\n        maps it to native sandbox/approval fields.\n    memory_enabled / profile_enabled: frozen A/B switches (default True).\n    self_enabled: slice-085 switch. False drops the entire Self section\n        (Trowel shell-on-top of the native default system prompt), for\n        an A/B baseline measuring its effect. Defaults True."
+          "description": "创建一种 runtime 的会话。\n\n``runtime`` 与三个注入开关在恢复同一原生会话时保持不变。CC 使用\n``permission_mode``；Codex 优先使用 ``permission_preset``，并继续接受旧调用方\n直接传入的 ``approval_policy`` 与 ``sandbox``。"
         },
         "CreateSessionRequest": {
           "properties": {
@@ -2933,7 +2933,7 @@
             "workdir"
           ],
           "title": "CreateSessionRequest",
-          "description": "Body for POST /api/cc/sessions.\n\nAttributes:\n    workdir: working directory the CC subprocess runs in (its cwd), so CC\n        loads that project's .claude/ hooks/memory/skills.\n    resume_from: optional CC session id to resume (--resume <id>).\n    permission_mode: CC --permission-mode. Defaults to bypassPermissions\n        for a smooth, non-interrupting experience (v1 has no permission UI).\n    model: override --model (defaults handled by launcher).\n    effort: override --effort (defaults handled by launcher).\n    memory_enabled: slice-060 A/B switch. False drops every memory read-path\n        section (core/L0/diary/root) and detaches the memory MCP, for a\n        clean \"no stored memory\" baseline. Defaults True (C-1 zero-regression).\n    profile_enabled: slice-060 A/B switch. False drops only the explicit\n        ``# 用户画像`` section. Defaults True.\n    self_enabled: slice-085 switch. False drops the entire Self section\n        (the Trowel \"你是谁/能做什么\" shell-on-top of cc's default system\n        prompt), for an A/B baseline measuring the Self section's effect.\n        Defaults True."
+          "description": "创建或恢复 CC 会话，并设置本次运行使用的模型、权限与注入开关。"
         },
         "EquipRequest": {
           "properties": {
@@ -2948,7 +2948,7 @@
             "item_id"
           ],
           "title": "EquipRequest",
-          "description": "request body for PUT /api/pet/equip.\n\nAttributes:\n    item_id: inventory row id of the hat to wear (not the catalog id)."
+          "description": "使用库存行 ID 指定要装备的帽子，而不是商品目录 ID。"
         },
         "EvaluateRequest": {
           "properties": {
@@ -2969,7 +2969,7 @@
             "answer"
           ],
           "title": "EvaluateRequest",
-          "description": "body for Post /evaluate"
+          "description": "提交待评估的练习会话与用户回答。"
         },
         "ExtractRequest": {
           "properties": {
@@ -2984,7 +2984,7 @@
             "content"
           ],
           "title": "ExtractRequest",
-          "description": "pydantic model"
+          "description": "提交给卡片提取流程的原始内容。"
         },
         "FeedRequest": {
           "properties": {
@@ -2999,7 +2999,7 @@
             "item_id"
           ],
           "title": "FeedRequest",
-          "description": "request body for POST /api/pet/feed.\n\nAttributes:\n    item_id: inventory row id of the food to eat (not the catalog id)."
+          "description": "使用库存行 ID 指定要消耗的食物，而不是商品目录 ID。"
         },
         "GenerateRequest": {
           "properties": {
@@ -3014,7 +3014,7 @@
             "card_id"
           ],
           "title": "GenerateRequest",
-          "description": "body for Post /generate"
+          "description": "指定需要生成费曼问题的卡片。"
         },
         "HTTPValidationError": {
           "properties": {
@@ -3067,7 +3067,7 @@
           },
           "type": "object",
           "title": "PatchAgentSessionRequest",
-          "description": "Body for PATCH ``/api/agent/sessions/{id}``.\n\nslice-072 only needs to reject a runtime change (spec C-1 → 422). Other\nfields are accepted by the model but the Hub ignores them this slice\n(model/effort changes follow each host's own contract, later slices)."
+          "description": "``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。"
         },
         "ProfileUpdate": {
           "properties": {
@@ -3108,7 +3108,7 @@
           },
           "type": "object",
           "title": "ProfileUpdate",
-          "description": "PUT /api/profile body: the five editable dimensions + optional source.\n\nAll dims default to ``\"\"`` so a partial PUT (e.g. cold-start seeding one\ndim) is valid. ``updated`` is always server-stamped (today's ISO date).\n``source`` defaults to ``user-edit`` (a hand edit); the front-end passes\n``ai-calibration`` when merging accepted AI suggestions (slice-050)."
+          "description": "五个可编辑画像维度及文件级来源；更新时间由服务端写入。"
         },
         "ReExplainRequest": {
           "properties": {
@@ -3146,7 +3146,7 @@
             "category"
           ],
           "title": "ReExplainRequest",
-          "description": "request body for POST /cards/re-explain (slice 021).\n\nThe endpoint is a stateless generator that runs during card *review*,\nbefore the card is persisted — so it takes the draft's content directly,\nnot a card_id (the draft has no id in the DB yet).\n\nAttributes:\n    explanation: the current explanation to improve (V0 or a prior candidate).\n    title: the card title, gives the LLM context.\n    category: the card category, gives the LLM context.\n    user_hint: optional direction/feeling from the user (\"make it more\n        concrete\", etc). None means \"regenerate freely\"."
+          "description": "草稿尚未持久化，因此直接携带内容；``user_hint`` 为空时自由生成。"
         },
         "RevertRequest": {
           "properties": {
@@ -3161,7 +3161,7 @@
             "turn_id"
           ],
           "title": "RevertRequest",
-          "description": "Body for POST /api/cc/sessions/{id}/revert (slice-026 E1).\n\nturn_id identifies the checkpoint to revert to (drops that turn and every\nlater one). It comes from the TurnStartEvent emitted at the start of the\nturn the user is reverting to."
+          "description": "恢复到 `turn_id` 对应 turn 之前，并丢弃该 turn 及后续内容。"
         },
         "ReviewRequest": {
           "properties": {
@@ -3192,7 +3192,7 @@
             "action"
           ],
           "title": "ReviewRequest",
-          "description": "pydantic model"
+          "description": "审核卡片草稿并携带可选字段修改。"
         },
         "SendMessageBody": {
           "properties": {
@@ -3206,8 +3206,7 @@
           "required": [
             "text"
           ],
-          "title": "SendMessageBody",
-          "description": "Body for POST ``/api/agent/sessions/{id}/messages``."
+          "title": "SendMessageBody"
         },
         "SendMessageRequest": {
           "properties": {
@@ -3222,7 +3221,7 @@
             "text"
           ],
           "title": "SendMessageRequest",
-          "description": "Body for POST /api/cc/sessions/{id}/messages."
+          "description": "向 CC 会话发送一条非空消息。"
         },
         "SubmitRequest": {
           "properties": {
@@ -3244,7 +3243,7 @@
             "rating"
           ],
           "title": "SubmitRequest",
-          "description": "Request body for submitting a card review rating."
+          "description": "提交卡片复习评分。"
         },
         "SuggestionStatusUpdate": {
           "properties": {
@@ -3262,7 +3261,7 @@
             "status"
           ],
           "title": "SuggestionStatusUpdate",
-          "description": "PATCH /api/profile/suggestions/{id} body: accept / discard."
+          "description": "用户对画像建议的接受或丢弃决定。"
         },
         "ValidationError": {
           "properties": {

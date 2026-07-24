@@ -1,7 +1,6 @@
 [project]
 name = "trowel-py"
-# 0.1.0 = first pip-installable build (slice-027-publish). Bump per semver:
-# the next user-visible behavior change → 0.2.0; a stable public API → 1.0.0.
+# 用户可见行为变化升级到 0.2.0；公开 API 稳定后升级到 1.0.0。
 version = "0.1.0"
 description = "Trowel-py — desktop toolkit (chat + cc host + review cards) with a FastAPI backend and React frontend."
 readme = "README.md"
@@ -13,19 +12,15 @@ dependencies = [
     "httpx>=0.27.0",
     "openai>=2.41.0",
     "pydantic>=2.13.4",
-    # "python-dotenv>=1.2.2",
     "uvicorn>=0.48.0",
-    # slice-038: memory store reads/writes YAML frontmatter (.md notes) and the
-    # wiki/pages corpus (real YAML). Hand-rolling a parser is a liability on
-    # real multi-line frontmatter, so use the battle-tested lib.
+    # memory 需要可靠解析多行 YAML frontmatter 和 wiki/pages 语料。
     "pyyaml>=6.0.2",
-    # slice-040-c: memory MCP server (search/read/outcome) — cc spawns it as a
-    # stdio subprocess via --mcp-config. Lowlevel Server + stdio transport.
+    # CC 通过 --mcp-config 拉起基于 stdio transport 的 memory MCP server。
     "mcp>=1.2.0",
 ]
 
 [project.scripts]
-# `pip install .` registers this console script: `trowel-py` starts the server.
+# 安装包注册 trowel-py 服务入口。
 trowel-py = "trowel_py.cli:main"
 
 [build-system]
@@ -36,10 +31,8 @@ build-backend = "setuptools.build_meta"
 include = ["trowel_py*"]
 
 [tool.setuptools.package-data]
-# Bundled frontend build (copied to trowel_py/static/ by the build step before
-# `pip install .` — see slice-027-publish). Served same-origin by app.py.
-# Also ship non-.py resources the runtime reads via __file__ (LLM prompts,
-# DB migrations) — pip would otherwise drop them and import would fail.
+# 打包前将前端产物复制到 trowel_py/static，由 app.py 同源托管。
+# 运行时按 __file__ 读取的 prompt 和迁移文件也必须显式纳入 wheel。
 trowel_py = [
   "static/**/*",
   "llm/prompts/*.txt",
@@ -49,22 +42,20 @@ trowel_py = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    # slice-047: typecheck/lint surfaced as missing (venv had neither; the
-    # .mypy_cache / .ruff_cache at the root were stale leftovers). dev-only.
     "mypy>=1.13",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.8",
-    # mypy stubs for third-party libs (yaml had no stubs → import-untyped).
+    # PyYAML 本身不附带 mypy stub。
     "types-PyYAML>=6.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# integration tests spawn a real `claude -p`; they deadlock inside an
-# interactive claude session (#46416). Deselect by default; run explicitly with
-# `CC_INTEGRATION=1 .venv/bin/python -m pytest -m integration tests/cc_host/test_integration.py`.
+# integration 测试会启动真实的 claude -p，在嵌套交互会话中可能死锁（#46416）。
+# 默认排除；需要时显式运行下列命令。
+# CC_INTEGRATION=1 .venv/bin/python -m pytest -m integration tests/cc_host/test_integration.py
 addopts = "-m 'not integration and not benchmark'"
 markers = [
     "integration: tests that spawn a real `claude -p` subprocess (skip in nested interactive sessions; #46416)",

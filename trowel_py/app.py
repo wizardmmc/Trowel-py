@@ -29,13 +29,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """slice-030: spin up the local reverse-proxy resources the CC subprocess
-    routes through. Built once on startup, torn down on shutdown.
-
-    - shared httpx.AsyncClient (timeout=None) for all /v1/* forwards
-    - real upstream base_url + settings_path read from ~/.claude/settings.json
-    - proxy_base_url = http://127.0.0.1:<TROWEL_SERVER_PORT> (CC targets this)
-    """
+    """在应用生命周期内持有 CC 反向代理与可选后台组件。"""
     settings_path = Path.home() / ".claude" / "settings.json"
     settings_env = load_settings_env(settings_path)
     real_base_url = settings_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -45,14 +39,12 @@ async def lifespan(app: FastAPI):
     app.state.proxy_base_url = f"http://127.0.0.1:{port}"
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
     logger.info("[cc-proxy] TUI system fingerprint: %s", TUI_SYSTEM_IDENTITY[:40])
-    logger.info("[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url)
-    # slice-039: ensure layer-one core.md exists before any cc session injects it.
+    logger.info(
+        "[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url
+    )
     if bootstrap_layer_one():
         logger.info("[memory] seeded layer-one core.md (试用期)")
-    # slice-046: in-app daily memory review scheduler (replaces launchd). Fires
-    # a startup catchup + a daily fixed-time run; any failure is swallowed
-    # (C-5) so the app still starts. start() only schedules background tasks
-    # (C-1, non-blocking).
+    # 可选后台组件必须隔离启动失败，避免局部配置或依赖问题阻断应用。
     try:
         from trowel_py.memory import paths as _mem_paths
         from trowel_py.memory.daily_review.scheduler import (
@@ -85,17 +77,15 @@ async def lifespan(app: FastAPI):
         await distill_scheduler.start()
         app.state.distill_scheduler = distill_scheduler
     except Exception:
-        logger.warning("[memory] profile distill scheduler failed to start", exc_info=True)
+        logger.warning(
+            "[memory] profile distill scheduler failed to start", exc_info=True
+        )
         app.state.distill_scheduler = None
-    # slice-052: weekly/monthly tidy scheduler. Unlike review/distill it does
-    # NOT spawn cc — Python calls the provider directly (C-4) — so it just needs
-    # a provider_factory. Fires weekly Mon 03:30 / monthly 1st 04:00 on
-    # completed intervals; any failure is swallowed (C-5, same as the others).
     try:
         from trowel_py.memory import paths as _tidy_paths
         from trowel_py.memory.tidy_scheduler import TidyScheduler
 
-        def _tidy_provider_factory():  # -> AnthropicProvider(load_llm_config())
+        def _tidy_provider_factory():
             from trowel_py.config import load_llm_config
             from trowel_py.llm.client import AnthropicProvider
 
@@ -109,10 +99,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
         app.state.tidy_scheduler = None
-    # slice-071: shared Codex app-server manager. Lazy — only spawns the
-    # app-server process on the first Codex send, so opening trowel without
-    # using Codex costs nothing. Shutdown always closes it. Failure is swallowed
-    # so a missing/old Codex install never blocks app startup.
+    # manager 延迟拉起 app-server；未使用 Codex 时不创建子进程。
     try:
         from trowel_py.codex_host import CodexHostManager
 
@@ -120,10 +107,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
         app.state.codex_host_manager = None
-    # slice-093-pre: cross-provider quota read model. GLM accounts are polled
-    # every 5 min; Codex/GPT ``rate_limit_updated`` pushes fold in via the hub
-    # observer. Failure is swallowed so a missing/bad config never blocks
-    # startup (same posture as the other schedulers).
     app.state.quota_read_model = None
     app.state.quota_scheduler = None
     app.state.quota_http_client = None
@@ -137,10 +120,7 @@ async def lifespan(app: FastAPI):
         quota_read_model = QuotaReadModel()
         app.state.quota_read_model = quota_read_model
         quota_observer = make_codex_observer(quota_read_model)
-        # GLM polling is opt-in (TROWEL_QUOTA_POLL=1): the poller hits the real
-        # provider immediately on start, so it must NOT run during tests / dev
-        # boots that only need the read model + Codex observer. Conservative v0
-        # posture — flip on to observe, matches the "先保守后放开" preference.
+        # poller 启动后会立即请求真实服务，因此只能通过 TROWEL_QUOTA_POLL=1 显式启用。
         quota_poll_enabled = os.environ.get("TROWEL_QUOTA_POLL") == "1"
         glm_accounts = load_glm_accounts() if quota_poll_enabled else []
         if glm_accounts:
@@ -160,11 +140,6 @@ async def lifespan(app: FastAPI):
             logger.info("[quota] GLM poller off (set TROWEL_QUOTA_POLL=1 to enable)")
     except Exception:
         logger.warning("[quota] read model failed to start", exc_info=True)
-    # slice-072: host-neutral Session Hub. Wires the binding store to the
-    # shared Codex manager + cc_host's live _REGISTRY (the default cc_registry
-    # / cc_opener point at cc_host.routes). Lazy like the codex manager —
-    # opening trowel costs nothing until a session is created. Failure is
-    # swallowed so a missing piece never blocks app startup.
     try:
         from trowel_py.agent_host import (
             BindingStore,
@@ -223,14 +198,7 @@ async def lifespan(app: FastAPI):
 
 
 def bootstrap_layer_one() -> bool:
-    """Ensure layer-one ``core.md`` exists at the memory root (slice-039).
-
-    Idempotent — ``seeds.bootstrap_core`` refuses to overwrite a reviewed
-    core.md (C-5: layer-one pollution = whole-system pollution). Called from
-    ``lifespan`` on startup so the first cc session has a layer-one to inject.
-    Returns False on any failure (never breaks startup) or when the seed
-    already existed.
-    """
+    """幂等创建 layer-one ``core.md``，且任何失败都不阻断应用启动。"""
     try:
         from trowel_py.memory import paths, seeds
 
@@ -240,14 +208,7 @@ def bootstrap_layer_one() -> bool:
         return False
 
 
-# fastapi 应用工厂
-
-
 def create_app() -> FastAPI:
-    """
-    构建并返回 FastAPI 实例，工厂模式
-    FastAPI 注册了相关函数，可以被外界调用
-    """
     app = FastAPI(lifespan=lifespan)
 
     from fastapi.middleware.cors import CORSMiddleware
@@ -257,25 +218,21 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://localhost:5173",
             "http://localhost:5174",
-        ],  # vite dev server
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    @app.get("/api/health")  # 装饰器 - 将装饰的函数注释给某个系统使用
+    @app.get("/api/health")
     def health() -> dict[str, object]:
         return {
             "success": True,
             "data": {"status": "ok"},
             "error": None,
-        }  # 默认 200 状态码
+        }
 
     @app.exception_handler(Exception)
     def global_error_handler(request: Request, exc: Exception) -> JSONResponse:
-        """
-        全局错误处理器（处理未被捕获的异常）
-        @param: exc - 异常实例的句柄
-        """
         logger.error(
             "Unhandled exception on %s %s: %s", request.method, request.url.path, exc
         )
@@ -284,7 +241,7 @@ def create_app() -> FastAPI:
             content={
                 "success": False,
                 "data": None,
-                "error": str(exc),  # 把异常信息转成字符串
+                "error": str(exc),
             },
         )
 
@@ -301,15 +258,12 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix="/api/agent")
     app.include_router(quota_router)
 
-    # Serve the built frontend when present (release / `pip install` mode).
-    # Skipped in dev — vite serves the frontend on :5173 and proxies /api here.
+    # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()
     if web_dist is not None:
         index_html = web_dist / "index.html"
 
-        # SPA fallback: any non-/api/* GET returns index.html so frontend
-        # routes (e.g. /cc) survive a browser refresh. API misses still 404.
-        # Registered after all /api routers so it never shadows a real route.
+        # 非 API 路径回退到 index.html，使前端路由刷新后仍能恢复。
         @app.get("/{full_path:path}")
         def _spa_fallback(full_path: str) -> object:
             if full_path.startswith("api/"):
@@ -317,9 +271,7 @@ def create_app() -> FastAPI:
                     status_code=404,
                     content={"success": False, "data": None, "error": "not found"},
                 )
-            # Confine to web_dist to block path traversal (GET /../secret.txt
-            # would otherwise read any file the backend user can). Escape →
-            # index.html so the SPA still renders.
+            # 候选文件必须留在 web_dist 内；越界路径回退到 SPA，不能读取宿主文件。
             root = web_dist.resolve()
             candidate = (web_dist / full_path).resolve()
             try:
@@ -340,18 +292,7 @@ def create_app() -> FastAPI:
 
 
 def _resolve_web_dist(here: Path) -> Path | None:
-    """Pick the built-frontend dir relative to ``here`` (the ``trowel_py/``
-    package dir). Source-tree ``web/dist`` wins over the packaged
-    ``trowel_py/static`` copy: ``web/dist`` is Vite's freshest output (what a
-    dev just rebuilt), while ``static`` is a ``pip install .`` snapshot that
-    goes stale in editable installs. When only one exists (a packaged
-    install ships no ``web/``; a source tree may lack ``static``), that one
-    is used; when neither exists, returns None (dev mode, no build yet).
-
-    The prior static-first order silently served a stale copy whenever an
-    editable install left an old ``trowel_py/static`` around — dev changes
-    appeared to "not take effect" until the static copy was manually resynced.
-    """
+    """优先使用源码树的新构建，避免 editable install 读取过期的 static 快照。"""
     for candidate in (here.parent / "web" / "dist", here / "static"):
         if (candidate / "index.html").is_file():
             return candidate
@@ -359,36 +300,11 @@ def _resolve_web_dist(here: Path) -> Path | None:
 
 
 def _find_web_dist() -> Path | None:
-    """Locate the built frontend for the running install (see
-    ``_resolve_web_dist`` for the priority order)."""
     return _resolve_web_dist(Path(__file__).resolve().parent)
 
 
 def _static_cache_headers(file_path: Path, root: Path) -> dict[str, str]:
-    """Cache-Control headers for a file served by the SPA fallback.
-
-    Without an explicit Cache-Control, FileResponse only sends Last-Modified /
-    ETag and the browser heuristic-caches the entry index.html — so after a
-    rebuild the browser keeps using the stale index.html (which still points
-    at the old hashed JS bundle) until the user force-refreshes. Setting
-    per-file Cache-Control fixes that.
-
-    - index.html and other non-hashed files -> ``no-cache``: revalidate every
-      request so a rebuild's new ``<script src="assets/index-NewHash.js">``
-      reaches the browser immediately.
-    - ``assets/*-<hash>.*`` -> ``public, max-age=31536000, immutable``: Vite
-      content-addresses these (content change => hash change => new filename),
-      so an old URL is never served new content — safe to cache for a year.
-
-    Args:
-        file_path: the file being served.
-        root: the web_dist root, used to compute the path relative to the
-            served directory.
-
-    Returns:
-        A single-entry ``{"cache-control": ...}`` dict for
-        ``FileResponse(headers=...)``.
-    """
+    """入口文件必须重新验证；带内容哈希的 Vite 资源可长期缓存。"""
     try:
         rel = file_path.resolve().relative_to(root.resolve())
     except ValueError:

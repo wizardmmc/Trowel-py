@@ -50,3 +50,25 @@ def test_review_log_rejects_invalid_rating():
 def test_fsrs_state_rejects_invalid_state():
     with pytest.raises(ValidationError):
         FSRSState(card_id="c1", state=4)
+
+
+def test_review_state_and_rating_json_schema_contract():
+    fsrs_properties = FSRSState.model_json_schema()["properties"]
+    review_properties = ReviewLog.model_json_schema()["properties"]
+
+    assert fsrs_properties["state"] == {
+        "default": 0,
+        "enum": [0, 1, 2, 3],
+        "title": "State",
+        "type": "integer",
+    }
+    assert review_properties["state"] == {
+        "enum": [0, 1, 2, 3],
+        "title": "State",
+        "type": "integer",
+    }
+    assert review_properties["rating"] == {
+        "enum": [1, 2, 3, 4],
+        "title": "Rating",
+        "type": "integer",
+    }

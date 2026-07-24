@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Build the frontend and stage it under trowel_py/static/ so the wheel picks
-# it up via [tool.setuptools.package-data]. Run before `pip install .` (the
-# non-editable release install). `pip install -e .` (dev) doesn't need this —
-# app.py falls back to web/dist/ directly.
+# 发布安装前将前端产物放入 trowel_py/static，供 wheel 的 package-data 收集。
+# editable install 会由 app.py 直接读取 web/dist，无需执行此脚本。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "→ building frontend (web/dist)…"
-# Fresh clones have no node_modules — bun install on first run.
+# 首次构建缺少 node_modules 时补装依赖。
 if [ ! -d web/node_modules ]; then
   echo "  (no web/node_modules — running bun install first)"
   ( cd web && bun install )
