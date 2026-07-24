@@ -1,8 +1,5 @@
-"""tests for memory frontmatter schema validation (slice-038 T2).
+"""Memory frontmatter schema 与旧文件兼容测试。"""
 
-The knowledge-note fixture uses REAL wiki/pages frontmatter (desensitized) to
-prove the note schema is field-compatible with the existing 311-note corpus.
-"""
 from __future__ import annotations
 
 import os
@@ -37,8 +34,13 @@ def test_note_valid_minimal() -> None:
 
 
 def test_note_missing_verification_rejected() -> None:
-    # C-3: knowledge entry without `verification` must be rejected.
-    fm = {"type": "note", "title": "x", "tags": [], "summary": "", "confidence": "draft"}
+    fm = {
+        "type": "note",
+        "title": "x",
+        "tags": [],
+        "summary": "",
+        "confidence": "draft",
+    }
     res = validate_entry("note", fm)
     assert not res.ok
     assert any("verification" in e for e in res.errors)
@@ -52,10 +54,13 @@ def test_note_bad_verification_rejected() -> None:
 
 
 def test_note_bad_confidence_silently_ignored() -> None:
-    # slice-041 (C-9): confidence field removed. A legacy file still carrying
-    # a confidence value must NOT be rejected — it is an unknown field now,
-    # silently ignored (verification is the only evidence axis).
-    fm = {"type": "note", "title": "x", "verification": "verified", "confidence": "wild"}
+    # 旧文件中的 confidence 已是未知字段，不能因此拒绝整条 note。
+    fm = {
+        "type": "note",
+        "title": "x",
+        "verification": "verified",
+        "confidence": "wild",
+    }
     res = validate_entry("note", fm)
     assert res.ok
 
@@ -81,8 +86,13 @@ def test_core_valid() -> None:
     fm = {
         "type": "core",
         "items": [
-            {"id": "lookup-first", "imperative": "先查 memory", "scope": "high-risk",
-             "status": "seed", "source": "CLAUDE.md"},
+            {
+                "id": "lookup-first",
+                "imperative": "先查 memory",
+                "scope": "high-risk",
+                "status": "seed",
+                "source": "CLAUDE.md",
+            },
         ],
     }
     assert validate_entry("core", fm).ok
@@ -109,11 +119,7 @@ def test_unknown_type_rejected() -> None:
     assert not validate_entry("mystery", {"type": "mystery"}).ok
 
 
-# ---------- slice-040-a: kind field on notes (procedural memory) ----------
-
-
 def test_note_kind_fact_accepted() -> None:
-    # kind is optional but, when present, must be one of the allowed kinds.
     fm = {"type": "note", "title": "x", "verification": "verified", "kind": "fact"}
     assert validate_entry("note", fm).ok
 
@@ -124,23 +130,27 @@ def test_note_kind_procedure_accepted() -> None:
 
 
 def test_note_bad_kind_rejected() -> None:
-    fm = {"type": "note", "title": "x", "verification": "verified", "kind": "rule-of-thumb"}
+    fm = {
+        "type": "note",
+        "title": "x",
+        "verification": "verified",
+        "kind": "rule-of-thumb",
+    }
     res = validate_entry("note", fm)
     assert not res.ok
     assert any("kind" in e for e in res.errors)
 
 
 def test_note_kind_absent_accepted() -> None:
-    # backward compat: the existing 45 notes carry no `kind` field; the schema
-    # must still accept them (defaults to `fact` at the read/persist layer).
+    # 旧 note 可缺少 kind，读取层按 fact 处理。
     fm = {"type": "note", "title": "x", "verification": "verified"}
     assert validate_entry("note", fm).ok
 
 
-@pytest.mark.skipif(not HAS_WIKI, reason="wiki/pages corpus not present on this machine")
+@pytest.mark.skipif(
+    not HAS_WIKI, reason="wiki/pages corpus not present on this machine"
+)
 def test_note_schema_accepts_real_wiki_frontmatter() -> None:
-    # C-2/compat: take real wiki frontmatter (the shared field subset) + add the
-    # memory-only extension (verification), and the note validator must accept.
     candidates = sorted(WIKI_PAGES.glob("*.md"))
     assert candidates, "wiki/pages unexpectedly empty"
     used = 0
@@ -160,7 +170,7 @@ def test_note_schema_accepts_real_wiki_frontmatter() -> None:
 
 
 def _read_frontmatter(path: Path) -> dict | None:
-    """Parse the leading ``---`` YAML block; None if absent/malformed."""
+    """读取开头的 YAML frontmatter；缺失或损坏时返回 None。"""
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---"):
         return None

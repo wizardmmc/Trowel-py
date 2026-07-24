@@ -1,12 +1,5 @@
-"""profile HTTP schemas (slice-049 + slice-050): pydantic DTOs for /api/profile.
+"""profile HTTP 接口的 Pydantic DTO。"""
 
-``ProfileUpdate`` is the PUT body. slice-050 adds an optional ``source``
-(default ``user-edit``): the front-end passes ``ai-calibration`` when the PUT
-merges accepted AI suggestions, so the file-level provenance stamp records the
-nature of the last commit (047 grill: source is file-level, not per-field).
-``ProfileDTO`` is the GET/PUT response. slice-050 adds ``SuggestionDTO`` (the
-candidate-queue item) + ``SuggestionStatusUpdate`` (accept / discard).
-"""
 from __future__ import annotations
 
 from typing import Literal
@@ -17,13 +10,7 @@ from trowel_py.memory.types import ProfileDimension, SuggestionStatus
 
 
 class ProfileUpdate(BaseModel):
-    """PUT /api/profile body: the five editable dimensions + optional source.
-
-    All dims default to ``""`` so a partial PUT (e.g. cold-start seeding one
-    dim) is valid. ``updated`` is always server-stamped (today's ISO date).
-    ``source`` defaults to ``user-edit`` (a hand edit); the front-end passes
-    ``ai-calibration`` when merging accepted AI suggestions (slice-050).
-    """
+    """五个可编辑画像维度及文件级来源；更新时间由服务端写入。"""
 
     ability: str = ""
     methodology: str = ""
@@ -34,7 +21,7 @@ class ProfileUpdate(BaseModel):
 
 
 class ProfileDTO(BaseModel):
-    """GET/PUT /api/profile response: five dims + provenance."""
+    """画像维度及来源信息。"""
 
     ability: str
     methodology: str
@@ -46,7 +33,7 @@ class ProfileDTO(BaseModel):
 
 
 class SuggestionDTO(BaseModel):
-    """one AI-proposed profile addition (slice-050 candidate-queue item)."""
+    """等待用户决策的画像建议。"""
 
     id: str
     dimension: ProfileDimension
@@ -57,6 +44,6 @@ class SuggestionDTO(BaseModel):
 
 
 class SuggestionStatusUpdate(BaseModel):
-    """PATCH /api/profile/suggestions/{id} body: accept / discard."""
+    """用户对画像建议的接受或丢弃决定。"""
 
     status: Literal["accepted", "discarded"]

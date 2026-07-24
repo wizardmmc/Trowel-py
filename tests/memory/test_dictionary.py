@@ -1,4 +1,5 @@
 """验证 dictionary L0/L1 的派生与公开重建入口。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,28 +23,37 @@ class _FakeProvider:
 
 def _write_note(root: Path, title: str, summary: str, tags=None, kind="fact") -> str:
     store = MemoryStore(root)
-    return store.write_note({
-        "type": "note", "title": title, "summary": summary,
-        "tags": tags or [], "kind": kind, "verification": "verified",
-        "confidence": "draft", "refs": 0, "last_ref": "", "retired": False,
-    })
+    return store.write_note(
+        {
+            "type": "note",
+            "title": title,
+            "summary": summary,
+            "tags": tags or [],
+            "kind": kind,
+            "verification": "verified",
+            "confidence": "draft",
+            "refs": 0,
+            "last_ref": "",
+            "retired": False,
+        }
+    )
 
 
 def test_derive_full_clusters_into_domains(tmp_path: Path) -> None:
-    _write_note(tmp_path, "猫池号码供应", "骗号用猫池", ["telecom", "硬件"])
-    _write_note(tmp_path, "接码平台", "接码平台供号", ["telecom"])
+    _write_note(tmp_path, "缓存失效窗口", "缓存切换存在短暂失效", ["cache", "一致性"])
+    _write_note(tmp_path, "一致性策略", "按业务选择一致性级别", ["cache"])
     _write_note(tmp_path, "Bun hash 坑", "Bun 算 hash 的坑", ["bun", "cc"])
     cluster = (
-        '{"domains": [{"name":"telecom-fraud","description":"电信诈骗黑产",'
-        '"triggers":"猫池,接码,骗号","note_ids":["猫池号码供应","接码平台"]},'
+        '{"domains": [{"name":"cache-consistency","description":"缓存一致性实践",'
+        '"triggers":"缓存,一致性","note_ids":["缓存失效窗口","一致性策略"]},'
         '{"name":"claude-code","description":"CC 套壳坑","triggers":"Bun,hash",'
         '"note_ids":["Bun-hash-坑"]}]}'
     )
     out = derive_dictionary_full(tmp_path, _FakeProvider(cluster))
-    assert "telecom-fraud" in out["L0"]
+    assert "cache-consistency" in out["L0"]
     assert "claude-code" in out["L0"]
     assert len(out["L1"]) == 2
-    assert "猫池号码供应" in out["L1"]["telecom-fraud"]
+    assert "缓存失效窗口" in out["L1"]["cache-consistency"]
     assert "Bun-hash-坑" in out["L1"]["claude-code"]
 
 
@@ -80,7 +90,9 @@ def test_derive_full_llm_failure_fallback(tmp_path: Path) -> None:
 
 def test_rebuild_dry_run_does_not_write(tmp_path: Path) -> None:
     _write_note(tmp_path, "N", "n", [])
-    cluster = '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["N"]}]}'
+    cluster = (
+        '{"domains":[{"name":"d","description":"x","triggers":"","note_ids":["N"]}]}'
+    )
     out = rebuild_dictionary(tmp_path, apply=False, provider=_FakeProvider(cluster))
     assert out["apply"] is False
     assert not (tmp_path / "dictionary-L0.md").exists()
@@ -89,7 +101,9 @@ def test_rebuild_dry_run_does_not_write(tmp_path: Path) -> None:
 
 def test_rebuild_apply_writes_files(tmp_path: Path) -> None:
     _write_note(tmp_path, "N", "n", ["t"])
-    cluster = '{"domains":[{"name":"d","description":"x","triggers":"t","note_ids":["N"]}]}'
+    cluster = (
+        '{"domains":[{"name":"d","description":"x","triggers":"t","note_ids":["N"]}]}'
+    )
     out = rebuild_dictionary(tmp_path, apply=True, provider=_FakeProvider(cluster))
     assert out["apply"] is True
     assert (tmp_path / "dictionary-L0.md").exists()
@@ -97,4 +111,3 @@ def test_rebuild_apply_writes_files(tmp_path: Path) -> None:
     l0 = (tmp_path / "dictionary-L0.md").read_text(encoding="utf-8")
     assert "### d" in l0
     assert "触发词：t" in l0
-

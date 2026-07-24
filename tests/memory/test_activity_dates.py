@@ -1,4 +1,5 @@
-"""tests for jsonl activity-date extraction (slice-061 block-3)."""
+"""JSONL 字节片段的活动日期归因测试。"""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from trowel_py.memory.activity_dates import extract_activity_dates
 
-CST = timezone(timedelta(hours=8))  # +08:00, to exercise tz conversion
+CST = timezone(timedelta(hours=8))
 
 
 def _line(**over: object) -> bytes:
@@ -17,7 +18,7 @@ def _line(**over: object) -> bytes:
 
 def test_single_day(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
-    p.write_bytes(_line(timestamp="2026-07-16T02:00:00Z"))  # 10:00 CST → 07-16
+    p.write_bytes(_line(timestamp="2026-07-16T02:00:00Z"))
     data = p.read_bytes()
     r = extract_activity_dates(p, 0, len(data), local_tz=CST)
     assert r.dates == ("2026-07-16",)
@@ -27,8 +28,8 @@ def test_single_day(tmp_path: Path) -> None:
 def test_cross_midnight_two_days(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
     p.write_bytes(
-        _line(timestamp="2026-07-16T15:00:00Z")   # 23:00 CST → 07-16
-        + _line(timestamp="2026-07-16T16:00:00Z")  # 00:00 CST → 07-17
+        _line(timestamp="2026-07-16T15:00:00Z")
+        + _line(timestamp="2026-07-16T16:00:00Z")
     )
     data = p.read_bytes()
     r = extract_activity_dates(p, 0, len(data), local_tz=CST)
@@ -41,9 +42,7 @@ def test_byte_range_slice(tmp_path: Path) -> None:
     line2 = _line(timestamp="2026-07-16T02:00:00Z")
     line3 = _line(timestamp="2026-07-17T02:00:00Z")
     p.write_bytes(line1 + line2 + line3)
-    r = extract_activity_dates(
-        p, len(line1), len(line1) + len(line2), local_tz=CST
-    )
+    r = extract_activity_dates(p, len(line1), len(line1) + len(line2), local_tz=CST)
     assert r.dates == ("2026-07-16",)
 
 
@@ -52,9 +51,30 @@ def test_start_midline_drops_partial_first_line(tmp_path: Path) -> None:
     line1 = _line(timestamp="2026-07-15T02:00:00Z")
     line2 = _line(timestamp="2026-07-16T02:00:00Z")
     p.write_bytes(line1 + line2)
-    # start inside line1 → line1 is partial and dropped; line2 is kept
     r = extract_activity_dates(p, 5, len(line1) + len(line2), local_tz=CST)
     assert r.dates == ("2026-07-16",)
+
+
+def test_end_midline_drops_partial_last_line(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    line1 = _line(timestamp="2026-07-15T02:00:00Z")
+    line2 = _line(timestamp="2026-07-16T02:00:00Z")
+    p.write_bytes(line1 + line2)
+
+    r = extract_activity_dates(p, 0, len(line1) + 5, local_tz=CST)
+
+    assert r.dates == ("2026-07-15",)
+
+
+def test_corrupt_line_does_not_hide_valid_events(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    before = _line(timestamp="2026-07-15T02:00:00Z")
+    after = _line(timestamp="2026-07-16T02:00:00Z")
+    p.write_bytes(before + b"{not-json}\n" + after)
+
+    r = extract_activity_dates(p, 0, p.stat().st_size, local_tz=CST)
+
+    assert r.dates == ("2026-07-15", "2026-07-16")
 
 
 def test_assistant_events_counted(tmp_path: Path) -> None:
@@ -97,7 +117,9 @@ def test_completed_at_preferred_over_registered(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
     p.write_bytes(b"")
     r = extract_activity_dates(
-        p, 0, 0,
+        p,
+        0,
+        0,
         last_completed_at="2026-07-16T10:00:00Z",
         registered_at="2026-07-15T10:00:00Z",
         local_tz=CST,
@@ -107,18 +129,19 @@ def test_completed_at_preferred_over_registered(tmp_path: Path) -> None:
 
 
 def test_missing_jsonl_with_path_falls_back(tmp_path: Path) -> None:
-    """C-1: a recorded-but-missing jsonl falls back to completed_at (not empty)."""
-    p = tmp_path / "gone.jsonl"  # never created → missing
+    p = tmp_path / "gone.jsonl"
     r = extract_activity_dates(
-        str(p), 0, 100,
-        last_completed_at="2026-07-16T10:00:00Z", local_tz=CST,
+        str(p),
+        0,
+        100,
+        last_completed_at="2026-07-16T10:00:00Z",
+        local_tz=CST,
     )
     assert r.dates == ("2026-07-16",)
     assert r.basis == "completed_at"
 
 
 def test_empty_path_returns_empty_no_fallback() -> None:
-    """no jsonl path at all → empty (no fallback), so the caller rejects diary."""
     r = extract_activity_dates(
         "", 0, 100, last_completed_at="2026-07-16T10:00:00Z", local_tz=CST
     )

@@ -1,17 +1,9 @@
-"""configurable promotion policy for layer-one core candidates (slice-065 §4).
+"""可序列化、可覆盖的晋升门禁与指标可信度策略。
 
-The promotion gate is an explicit, serializable, overridable config — NOT
-scattered code constants. ``default_policy()`` is the conservative baseline
-(helpful evidence from >=3 independent user sessions, >=2 distinct days, no
-harmful counter-evidence, tested provenance). CLI/report always print the
-policy in force so a reader never has to guess which thresholds produced a
-candidate — or the absence of one.
-
-The policy also carries the coverage/sample thresholds that label a metric
-``reliable | partial | insufficient`` (C-5 — a rate without coverage/sample
-size is never reported as reliable). ``quality_label`` is the single place
-that maps (coverage, sample) -> label, so the same rule labels every metric.
+候选记录生效策略，指标同时报告覆盖率和样本量；所有调用方共用
+``quality_label``，避免相同证据得到不同可信度标签。
 """
+
 from __future__ import annotations
 
 import json
@@ -24,30 +16,30 @@ logger = logging.getLogger(__name__)
 
 QualityLabel = Literal["reliable", "partial", "insufficient"]
 
-#: stamped on every candidate; bump when the default policy changes shape so an
-#: old candidate names the policy that produced it (C-7 replayability).
+# 默认策略形态变化时同步更新，使候选可以追溯生成时的策略。
 _POLICY_VERSION = "slice-065-2026-07-18"
+
+_TUPLE_FIELDS = frozenset({"allowed_kinds", "allowed_verification"})
+_INTEGER_FIELDS = frozenset(
+    {
+        "min_helpful_sessions",
+        "max_harmful_sessions",
+        "min_distinct_days",
+        "min_identity_sample_reliable",
+        "min_judgement_sample_reliable",
+    }
+)
+_COVERAGE_FIELDS = frozenset(
+    {"min_identity_coverage_reliable", "min_judgement_coverage_reliable"}
+)
 
 
 @dataclass(frozen=True)
 class PromotionPolicy:
-    """The promotion gate + metric quality thresholds (slice-065 §4).
+    """晋升门禁及身份、判断覆盖率的可信度阈值。
 
-    Attributes:
-        version: stamp recorded on candidates; a policy change is traceable.
-        allowed_kinds: note kinds eligible for layer one (gotcha + procedure).
-        allowed_verification: provenance that may promote. ``inferred-untested``
-            is NEVER allowed — a candidate must rest on tested evidence.
-        min_helpful_sessions: independent USER cc sessions with a helpful
-            session-level effect (C-2 — one session re-reading 10x counts once).
-        max_harmful_sessions: upper bound on harmful sessions; 0 means ANY
-            harmful counter-evidence blocks promotion (C-3).
-        min_distinct_days: helpful evidence must span >= N distinct calendar
-            days so a single day's traffic cannot promote a note.
-        min_identity_coverage_reliable / min_identity_sample_reliable:
-            coverage + sample an identity metric needs to be labelled reliable.
-        min_judgement_coverage_reliable / min_judgement_sample_reliable:
-            same for the judgement-coverage metric.
+    晋升证据按独立用户会话计数，并须跨越足够日期；未测试推断不能进入允许的
+    verification 集合。
     """
 
     version: str = _POLICY_VERSION
@@ -63,20 +55,19 @@ class PromotionPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        # dataclass -> dict turns tuples into tuples; JSON callers pass lists,
-        # so normalize to lists here for a stable on-disk shape.
+        # tuple 字段落盘为 list，保持 JSON shape 稳定。
         d["allowed_kinds"] = list(self.allowed_kinds)
         d["allowed_verification"] = list(self.allowed_verification)
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "PromotionPolicy":
-        """Build a policy, letting ``d`` override the defaults (partial ok).
-
-        Unknown keys are ignored (a stale config file must not crash a newer
-        code version); list values for the tuple fields are normalized.
-        """
+        """在默认值上应用合法的 partial override；忽略未知键。"""
         base = cls()
+        if d is None:
+            return base
+        if not isinstance(d, dict):
+            raise ValueError("promotion policy must be a JSON object")
         if not d:
             return base
         names = {f.name for f in fields(cls)}
@@ -85,23 +76,31 @@ class PromotionPolicy:
             if key not in names:
                 logger.debug("ignoring unknown policy key %r", key)
                 continue
-            if key in ("allowed_kinds", "allowed_verification"):
-                if isinstance(val, list):
-                    val = tuple(val)
-                # §4: inferred-untested must NEVER be allowed — a candidate
-                # rests on tested evidence. Override that tries to re-enable it
-                # is rejected loudly (load_policy then falls back to default).
+            if key == "version":
+                if not isinstance(val, str):
+                    raise ValueError("promotion policy version must be a string")
+            elif key in _TUPLE_FIELDS:
+                if not isinstance(val, (list, tuple)) or not all(
+                    isinstance(item, str) for item in val
+                ):
+                    raise ValueError(f"promotion policy {key} must be a string array")
+                val = tuple(val)
                 if key == "allowed_verification" and "inferred-untested" in val:
                     raise ValueError(
                         "inferred-untested must never be allowed_verification (C-7)"
                     )
+            elif key in _INTEGER_FIELDS:
+                if isinstance(val, bool) or not isinstance(val, int):
+                    raise ValueError(f"promotion policy {key} must be an integer")
+            elif key in _COVERAGE_FIELDS and (
+                isinstance(val, bool) or not isinstance(val, (int, float))
+            ):
+                raise ValueError(f"promotion policy {key} must be numeric")
             kwargs[key] = val
         return replace(base, **kwargs)
 
-    def identity_quality(
-        self, coverage: float | None, sample: int
-    ) -> QualityLabel:
-        """Label an identity metric reliable|partial|insufficient (C-5)."""
+    def identity_quality(self, coverage: float | None, sample: int) -> QualityLabel:
+        """按身份覆盖率阈值标记指标可信度。"""
         return quality_label(
             coverage,
             sample,
@@ -109,10 +108,8 @@ class PromotionPolicy:
             min_sample_reliable=self.min_identity_sample_reliable,
         )
 
-    def judgement_quality(
-        self, coverage: float | None, sample: int
-    ) -> QualityLabel:
-        """Label a judgement-coverage metric reliable|partial|insufficient."""
+    def judgement_quality(self, coverage: float | None, sample: int) -> QualityLabel:
+        """按判断覆盖率阈值标记指标可信度。"""
         return quality_label(
             coverage,
             sample,
@@ -128,13 +125,7 @@ def quality_label(
     min_coverage_reliable: float,
     min_sample_reliable: int,
 ) -> QualityLabel:
-    """Map (coverage, sample) -> reliable | partial | insufficient.
-
-    - insufficient: no samples at all (the metric has nothing to say).
-    - reliable: coverage AND sample both clear their thresholds.
-    - partial: there is data, but not enough coverage or sample to trust the
-      rate as a firm conclusion (C-5 — a trend number, flagged).
-    """
+    """无样本时 insufficient，覆盖率和样本均达标时 reliable，否则 partial。"""
     if sample <= 0:
         return "insufficient"
     if (
@@ -147,30 +138,27 @@ def quality_label(
 
 
 def default_policy() -> PromotionPolicy:
-    """The conservative baseline policy (slice-065 §4 initial values)."""
+    """返回默认晋升策略。"""
     return PromotionPolicy()
 
 
 def load_policy(path: Path | str) -> PromotionPolicy:
-    """Load a policy from JSON, falling back to the default when absent/unreadable.
-
-    A corrupt policy file must NOT crash the caller (a monthly run should keep
-    the default gate, not die) — the failure is logged and the default returned.
-    """
+    """读取 JSON 策略；文件缺失或内容无效时返回默认策略。"""
     p = Path(path)
     if not p.exists():
         return default_policy()
     try:
-        return PromotionPolicy.from_dict(
-            json.loads(p.read_text(encoding="utf-8"))
-        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("promotion policy must be a JSON object")
+        return PromotionPolicy.from_dict(raw)
     except (OSError, ValueError) as exc:
         logger.warning("policy %s unreadable (%s); using default", p, exc)
         return default_policy()
 
 
 def save_policy(policy: PromotionPolicy, path: Path | str) -> None:
-    """Persist a policy as JSON (for replay/override)."""
+    """持久化可重放的 JSON 策略。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(

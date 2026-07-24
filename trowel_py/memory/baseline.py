@@ -1,19 +1,10 @@
-"""offline v0 retrieval baseline runner (slice-038 T7).
+"""离线 retrieval baseline 的可执行入口。
 
-NOT a pytest test — a one-shot benchmark. Runs the fresh-context LLM retriever
-(GLM via trowel's anthropic-compatible provider) over:
-
-- corpus:   wiki/pages (311 real notes)
-- dictionary: docs/milestones/spike-s1/dictionary-L0.md (+ dictionary-L1/)
-- queries:  tests/memory/fixtures/eval-queries.yaml (multi-relevant ground truth)
-
-Writes a report to docs/milestones/m6v2-eval-v0-baseline.md. Re-run after every
-dictionary regeneration to track the recall/precision trend (C-8).
-
-Run::
+并发检索版本化 query 集并写出报告。运行方式：
 
     .venv/bin/python -m trowel_py.memory.baseline
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +14,12 @@ from datetime import date
 from pathlib import Path
 
 from trowel_py.config import load_llm_config
-from trowel_py.llm.client import AnthropicProvider, LLMConfig, LLMProvider, OpenAIProvider
+from trowel_py.llm.client import (
+    AnthropicProvider,
+    LLMConfig,
+    LLMProvider,
+    OpenAIProvider,
+)
 from trowel_py.memory.eval import (
     EvalQuery,
     EvalReport,
@@ -45,7 +41,6 @@ log = logging.getLogger(__name__)
 
 
 def build_provider(cfg: LLMConfig) -> LLMProvider:
-    """Construct the active LLM provider from config (mirrors create_llm_service)."""
     if cfg.provider == "openai":
         return OpenAIProvider(cfg)
     return AnthropicProvider(cfg)
@@ -58,23 +53,20 @@ def run_v0_baseline(
     report_path: Path = _REPORT,
     max_workers: int = 5,
 ) -> EvalReport:
-    """Run retrievals (concurrent), compute the report, write it to disk.
-
-    Returns the EvalReport (also used by an integration test).
-    """
+    """并发检索并写报告；单 query 失败按空结果计，不中止整批。"""
     provider = build_provider(load_llm_config())
     retriever = LLMRetriever(provider)
     queries = load_queries(query_set)
 
-    # Concurrent retrieval (one memoized result per query). Failures -> empty
-    # retrieval (counted as total-miss), so a transient 429 doesn't abort all.
     retrieved_by_query: dict[str, list[str]] = {}
 
     def _one(q: EvalQuery) -> tuple[str, list[str]]:
         try:
-            got = retriever(q.query, corpus_dir=corpus_dir, dictionary_path=dictionary_path)
+            got = retriever(
+                q.query, corpus_dir=corpus_dir, dictionary_path=dictionary_path
+            )
             return q.query, got
-        except Exception as exc:  # noqa: BLE001 — benchmark must not abort on one query
+        except Exception as exc:  # noqa: BLE001 - benchmark 需隔离单 query 失败
             log.warning("retrieval failed for %s: %s", q.query_id, exc)
             return q.query, []
 
@@ -89,14 +81,18 @@ def run_v0_baseline(
 
     report = run_eval(corpus_dir, dictionary_path, queries, _memo)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(_render(report, queries, retrieved_by_query), encoding="utf-8")
+    report_path.write_text(
+        _render(report, queries, retrieved_by_query), encoding="utf-8"
+    )
     log.info("baseline report written to %s", report_path)
     return report
 
 
-def _render(report: EvalReport, queries: list[EvalQuery],
-            retrieved_by_query: dict[str, list[str]]) -> str:
-    """format_report + a per-query miss detail section for analysis."""
+def _render(
+    report: EvalReport,
+    queries: list[EvalQuery],
+    retrieved_by_query: dict[str, list[str]],
+) -> str:
     head = [
         "# milestone6-v2 离线检索 v0 baseline",
         "",
@@ -119,7 +115,9 @@ def _render(report: EvalReport, queries: list[EvalQuery],
         rel = sorted(r.relevant)
         got = list(r.retrieved)
         missed = sorted(set(rel) - set(got))
-        head.append(f"### {r.query_id} — {r.failure} (P={r.precision:.2f} R={r.recall:.2f})")
+        head.append(
+            f"### {r.query_id} — {r.failure} (P={r.precision:.2f} R={r.recall:.2f})"
+        )
         head.append(f"- query: {r.query}")
         head.append(f"- retrieved: {got or '（空）'}")
         head.append(f"- relevant: {rel}")
@@ -130,9 +128,11 @@ def _render(report: EvalReport, queries: list[EvalQuery],
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(message)s",
-                        datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     rep = run_v0_baseline()
     print(f"\nmean precision = {rep.mean_precision:.3f}")
     print(f"mean recall    = {rep.mean_recall:.3f}")

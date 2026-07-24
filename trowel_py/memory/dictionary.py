@@ -70,7 +70,7 @@ def rebuild_dictionary(
                 staged["l0_text"],
                 staged["l1_files"],
             )
-        except Exception as exc:  # noqa: BLE001 -- IO failure is returned for retry
+        except Exception as exc:  # noqa: BLE001 - IO 失败需要返回给调用方重试。
             _mark_stale(root_path, f"replace failed: {exc}")
             logger.warning("dictionary replace failed (old index kept): %s", exc)
             return {
@@ -126,7 +126,7 @@ def ensure_dictionary_consistent(
             )
             _stamp_success_state(root_path, staged)
             after = _check_dictionary_locked(root)
-        except Exception as exc:  # noqa: BLE001 -- publish failure is retryable
+        except Exception as exc:  # noqa: BLE001 - 发布失败允许重试。
             _mark_stale(root_path, f"publish failed: {exc}")
             logger.warning("dictionary publish failed: %s", exc)
             return {
@@ -184,7 +184,7 @@ def _derive_and_stage(
     # provider 调用必须留在锁外，避免慢请求阻塞检索和一致性检查。
     try:
         result = derive_dictionary_full(root, provider)
-    except Exception as exc:  # noqa: BLE001 -- provider/network failure is retryable
+    except Exception as exc:  # noqa: BLE001 - provider 或网络失败允许重试。
         return {
             "apply": apply,
             "error": "derive_failed",
@@ -224,7 +224,7 @@ def _mark_stale(root: Path, reason: str) -> None:
     try:
         previous = load_state(root)
         save_state(root, previous.with_failure(reason, _now_iso()))
-    except Exception:  # noqa: BLE001 -- best-effort observability
+    except Exception:  # noqa: BLE001 - 可观察性写入仅作尽力尝试。
         logger.warning(
             "could not stamp dictionary stale: %s",
             reason,
@@ -246,7 +246,7 @@ def _stamp_success_state(
                 _now_iso(),
             ),
         )
-    except Exception as exc:  # noqa: BLE001 -- best-effort state stamp
+    except Exception as exc:  # noqa: BLE001 - state 标记仅作尽力尝试。
         logger.warning("dictionary state stamp failed (best-effort): %s", exc)
 
 

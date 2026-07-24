@@ -1,14 +1,5 @@
-"""layer-one cold-start seed (slice-038).
+"""Core 冷启动种子与幂等初始化。"""
 
-Bootstraps ``core.md`` from the existing hard disciplines (trowel-py CLAUDE.md
-「做事」+ milestone6-v2 read rules + spike verdicts). Every seed item is marked
-``status: seed`` (probation) — promotion to ``active`` requires human review in
-slice-041.
-
-This is the ONLY writer to layer one. It is idempotent and refuses to overwrite
-an existing/reviewed ``core.md`` (C-5: layer-one pollution = whole-system
-pollution; never auto-write layer one).
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -94,25 +85,20 @@ CORE_SEED_ITEMS: tuple[CoreItem, ...] = (
     ),
 )
 
-#: keywords the seed test asserts are present in core.md (one per item).
 SEED_KEYWORDS: tuple[str, ...] = (
-    "查 memory", "低风险", "根因假设", "退场", "知识轨", "spike", "第二次", "真实数据",
+    "查 memory",
+    "低风险",
+    "根因假设",
+    "退场",
+    "知识轨",
+    "spike",
+    "第二次",
+    "真实数据",
 )
 
 
 def bootstrap_core(root: Path | str, *, force: bool = False) -> bool:
-    """Write the seed ``core.md`` into ``root`` if it is absent.
-
-    Args:
-        root: the memory root directory.
-        force: if True, overwrite an existing core.md (for tests only).
-
-    Returns:
-        True if the file was written, False if it already existed (skipped).
-
-    C-5: never auto-overwrites a reviewed core. The default (``force=False``)
-    protects human edits — promotion seed→active is a human action in 041.
-    """
+    """初始化 ``core.md``；默认不覆盖已有的人工维护内容。"""
     path = Path(root) / "core.md"
     if path.exists() and not force:
         return False
@@ -122,7 +108,6 @@ def bootstrap_core(root: Path | str, *, force: bool = False) -> bool:
 
 
 def _render_core_md(items: tuple[CoreItem, ...]) -> str:
-    """Serialize core items to a core.md string (structured frontmatter + readable body)."""
     fm = {
         "type": "core",
         "items": [
@@ -136,8 +121,14 @@ def _render_core_md(items: tuple[CoreItem, ...]) -> str:
             for it in items
         ],
     }
-    body_lines = ["# 层一（core）— 试用期种子\n", "\n", "> 全部 status: seed，正式写入需人工 review（041）。\n\n"]
+    body_lines = [
+        "# 层一（core）— 试用期种子\n",
+        "\n",
+        "> 全部 status: seed，正式写入需人工 review（041）。\n\n",
+    ]
     for i, it in enumerate(items, 1):
         body_lines.append(f"{i}. {it.imperative}\n")
-    dumped = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    dumped = yaml.safe_dump(
+        fm, sort_keys=False, allow_unicode=True, default_flow_style=False
+    )
     return f"---\n{dumped}---\n{''.join(body_lines)}"

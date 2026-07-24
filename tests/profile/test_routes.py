@@ -1,12 +1,5 @@
-"""slice-049 profile routes tests (TDD RED -> GREEN).
+"""画像读写与建议审核路由测试。"""
 
-GET/PUT /api/profile: envelope shape, cold-start empty, PUT->GET round-trip,
-updated/source stamping, write-back through the store (C-5), snapshot
-insurance on overwrite (C-4 via store), and the 422 error branch.
-
-Isolation: ``dependency_overrides[get_profile_store]`` repoints the store at a
-``tmp_path`` memory root, so the real ``~/.trowel/memory`` is never touched.
-"""
 from __future__ import annotations
 
 from datetime import date
@@ -22,15 +15,12 @@ from trowel_py.profile.service import get_profile_store
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    """TestClient wired to an isolated tmp_path memory root."""
+    """把画像仓储替换到临时目录。"""
     store = MemoryStore(tmp_path)
     app = create_app()
     app.dependency_overrides[get_profile_store] = lambda: store
     yield TestClient(app)
     app.dependency_overrides.clear()
-
-
-# ---- envelope shape ----
 
 
 def test_get_envelope_shape(client: TestClient) -> None:
@@ -42,11 +32,7 @@ def test_get_envelope_shape(client: TestClient) -> None:
     assert body["error"] is None
 
 
-# ---- cold start: no profile.md ----
-
-
 def test_get_empty_when_no_file(client: TestClient) -> None:
-    """cold start: GET returns empty five dims, not an error (C-6 of 047)."""
     resp = client.get("/api/profile")
     data = resp.json()["data"]
     assert data["ability"] == ""
@@ -54,34 +40,31 @@ def test_get_empty_when_no_file(client: TestClient) -> None:
     assert data["expression"] == ""
     assert data["goal"] == ""
     assert data["other"] == ""
-    assert data["source"] == "user-edit"  # empty_profile default
-
-
-# ---- PUT -> GET round-trip ----
+    assert data["source"] == "user-edit"
 
 
 def test_put_then_get_roundtrip(client: TestClient) -> None:
     payload = {
-        "ability": "网安硕士 / 红队",
-        "methodology": "spec-first，spike 实测",
-        "expression": "大白话，禁翻译腔",
-        "goal": "反诈论文 + trowel",
-        "other": "在啃保形预测",
+        "ability": "熟悉 Python / 并发调试",
+        "methodology": "先写契约，再做小步验证",
+        "expression": "简洁直接",
+        "goal": "持续改进项目可靠性",
+        "other": "关注可观测性",
     }
     resp = client.put("/api/profile", json=payload)
     assert resp.status_code == 200
     assert resp.json()["success"] is True
 
     data = client.get("/api/profile").json()["data"]
-    assert data["ability"] == "网安硕士 / 红队"
-    assert data["methodology"] == "spec-first，spike 实测"
-    assert data["expression"] == "大白话，禁翻译腔"
-    assert data["goal"] == "反诈论文 + trowel"
-    assert data["other"] == "在啃保形预测"
+    assert data["ability"] == "熟悉 Python / 并发调试"
+    assert data["methodology"] == "先写契约，再做小步验证"
+    assert data["expression"] == "简洁直接"
+    assert data["goal"] == "持续改进项目可靠性"
+    assert data["other"] == "关注可观测性"
 
 
 def test_put_returns_dto_with_updated_and_source(client: TestClient) -> None:
-    """PUT response carries server-stamped updated + source (not from body)."""
+    """更新时间与来源由服务端写入。"""
     resp = client.put("/api/profile", json={"ability": "x"})
     data = resp.json()["data"]
     assert data["updated"] == date.today().isoformat()
@@ -89,16 +72,13 @@ def test_put_returns_dto_with_updated_and_source(client: TestClient) -> None:
 
 
 def test_put_writes_back_through_store(client: TestClient, tmp_path: Path) -> None:
-    """PUT must persist via store.write_profile (C-5), not bypass it."""
     client.put("/api/profile", json={"ability": "persisted"})
     assert (tmp_path / "profile.md").exists()
-    # a fresh store re-reads the same content the HTTP layer wrote
     fresh = MemoryStore(tmp_path).load_profile()
     assert fresh.ability == "persisted"
 
 
 def test_put_partial_dims_default_empty(client: TestClient) -> None:
-    """omitted dims default to empty string (ProfileUpdate defaults)."""
     resp = client.put("/api/profile", json={"ability": "only this"})
     data = resp.json()["data"]
     assert data["ability"] == "only this"
@@ -107,7 +87,6 @@ def test_put_partial_dims_default_empty(client: TestClient) -> None:
 
 
 def test_put_overwrite_snapshots_prior(client: TestClient, tmp_path: Path) -> None:
-    """second PUT overwrites; C-4 snapshot of the prior version lands on disk."""
     client.put("/api/profile", json={"ability": "v1"})
     client.put("/api/profile", json={"ability": "v2"})
     assert client.get("/api/profile").json()["data"]["ability"] == "v2"
@@ -116,16 +95,9 @@ def test_put_overwrite_snapshots_prior(client: TestClient, tmp_path: Path) -> No
     assert any("v1" in p.read_text(encoding="utf-8") for p in hist.glob("*.md"))
 
 
-# ---- error branch ----
-
-
 def test_put_invalid_type_rejected(client: TestClient) -> None:
-    """non-string dim -> FastAPI 422 before the handler runs."""
     resp = client.put("/api/profile", json={"ability": 123})
     assert resp.status_code == 422
-
-
-# ---- slice-050: suggestion candidate queue ----
 
 
 def _seed_suggestion(
@@ -167,7 +139,12 @@ def test_get_suggestions_returns_only_pending(
     client: TestClient, tmp_path: Path
 ) -> None:
     _seed_suggestion(tmp_path, "s1", body="会 FastAPI")
-    _seed_suggestion(tmp_path, "s2", body="求职字节", status="accepted")
+    _seed_suggestion(
+        tmp_path,
+        "s2",
+        body="提升服务可靠性",
+        status="accepted",
+    )
     data = client.get("/api/profile/suggestions").json()["data"]
     assert [s["id"] for s in data] == ["s1"]
     assert data[0]["body"] == "会 FastAPI"
@@ -179,7 +156,6 @@ def test_patch_suggestion_accept(client: TestClient, tmp_path: Path) -> None:
     _seed_suggestion(tmp_path, "s1")
     resp = client.patch("/api/profile/suggestions/s1", json={"status": "accepted"})
     assert resp.json()["success"] is True
-    # accepted → no longer in the pending list
     assert client.get("/api/profile/suggestions").json()["data"] == []
 
 
@@ -204,7 +180,6 @@ def test_patch_suggestion_bad_status_422(client: TestClient, tmp_path: Path) -> 
 
 
 def test_put_with_ai_calibration_source(client: TestClient) -> None:
-    """accept path: PUT carries source=ai-calibration (file-level provenance)."""
     resp = client.put(
         "/api/profile", json={"ability": "from AI", "source": "ai-calibration"}
     )

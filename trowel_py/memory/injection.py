@@ -1,14 +1,5 @@
-"""assemble the cc system injection string (slice-039).
+"""组装 CC 原生系统提示词追加内容。"""
 
-Reads layer-one (core items, filtering ``status == retired``) + dictionary L0
-+ recent diary layers, concatenates into one string that the launcher passes
-to cc's native ``--append-system-prompt`` at spawn. cc appends it to its
-default system tail.
-
-Architecture (spike 2026-07-09): injection goes through cc's native flag, NOT
-through the reverse proxy. The proxy's identity-rewrite (slice-030) stays
-untouched — verified: 智谱 returns 200, ``cache_read_input_tokens=39808``.
-"""
 from __future__ import annotations
 
 import logging
@@ -23,10 +14,7 @@ from trowel_py.memory.types import Diary
 
 logger = logging.getLogger(__name__)
 
-#: slice-041 progressive window: this week's dailies + this month's weeklies
-#: (minus this week) + last 6 months' monthlies (minus this month) + earlier.
-#: Each entry ≤800 chars (grill 2026-07-11). Total ~24K tokens — raised from
-#: 039's 8K soft budget (GLM 200K window absorbs it).
+# 软预算只驱动 diary 降级；core 与 profile 不截断。
 TOKEN_BUDGET = 30000
 
 
@@ -37,32 +25,7 @@ def build_memory_injection(
     memory_enabled: bool = True,
     profile_enabled: bool = True,
 ) -> str:
-    """Assemble the memory injection string (layer-one + L0 + recent diary).
-
-    Args:
-        now: ISO date (``YYYY-MM-DD``) anchoring the diary recency windows.
-        root: memory root; ``None`` resolves via ``paths.resolve_memory_root``.
-        memory_enabled: slice-060 A/B switch. When False, drop EVERY memory
-            read-path section — core imperatives, dictionary L0, recent diary,
-            and the memory-root + search→read pointer. The matching MCP server
-            is also detached upstream (CCHost), so a False here is a clean
-            "model cannot see stored memory" baseline, not just an empty prompt.
-        profile_enabled: slice-060 A/B switch. When False, drop ONLY the
-            ``# 用户画像`` section; every memory section is unaffected. This
-            isolates the effect of the explicit profile alone.
-
-    Returns:
-        The injection string; empty string when there is nothing to inject
-        (the launcher then adds no ``--append-system-prompt`` flag). Both
-        switches off, or memory off with no profile on disk, both yield ``""``.
-
-    Section ordering (memory on): core → profile → L0 → diary → memory-root.
-    Layer-one items with ``status == 'retired'`` are filtered out (C-1/C-2).
-    Notes bodies are never injected (C-5) — they are read on demand via the
-    dictionary L0 → L1 → body drill-down. Over ``TOKEN_BUDGET`` logs a warning
-    and does NOT truncate (C-6 soft budget); the truncation loop only runs when
-    memory is on (diary is the only layer it can shrink).
-    """
+    """按 core、profile、L0、diary、memory root 顺序组装注入。"""
     store = MemoryStore(root if root is not None else resolve_memory_root())
     sections: list[str] = []
     if memory_enabled:
@@ -77,20 +40,13 @@ def build_memory_injection(
         l0 = _render_l0(store)
         if l0:
             sections.append(l0)
-    # slice-060: both switches off → the clean no-personalization baseline.
     if not memory_enabled and not profile_enabled:
         return ""
-    # slice-060: memory off → no core/L0/diary, no memory-root read pointer.
-    # The body is at most the profile section ("" when profile is also absent),
-    # so cc spawns with profile-only or bare.
     if not memory_enabled:
         return "\n\n".join(sections)
-    # slice-040-c C-2: always carry the memory root + retrieval tool usage so
-    # the model knows where memory lives and how to query it (search→read).
+    # memory 开启时始终给出根路径与 search→read 指针。
     root_section = _render_memory_root(store.root)
-    # W4 (codex): progressive truncation — if core+L0+diary+root exceeds
-    # TOKEN_BUDGET, drop the lowest-priority diary layers first (earlier
-    # monthlies → half-year → month weeklies), keeping week dailies (gotcha-rich).
+    # 超预算时只逐层丢弃低优先级 diary，本周 daily 最后保留。
     body = "\n\n".join(sections + [root_section])
     for layers in (4, 3, 2, 1):
         diary = _render_diary(store, now, include_layers=layers)
@@ -110,7 +66,7 @@ def build_memory_injection(
 
 
 def _render_core(store: MemoryStore) -> str:
-    """Layer-one imperatives, excluding retired items (C-1/C-2)."""
+    """渲染未退休的 layer-one 规则。"""
     items = [it for it in store.load_core_items() if it.status != "retired"]
     if not items:
         return ""
@@ -121,20 +77,7 @@ def _render_core(store: MemoryStore) -> str:
 
 
 def _render_profile(store: MemoryStore) -> str:
-    """Render the user self-description profile section (slice-048).
-
-    Five dims (ability/methodology/expression/goal/other) in canonical order,
-    reusing ``profile._FIELD_TO_TITLE`` so the title mapping has a single source
-    of truth. Only dims whose body is non-empty (``val.strip()``) render, each
-    as ``## 标题\\n内容``. Returns ``""`` when the profile is empty (C-4) — the
-    section is then omitted, never an empty ``# 用户画像`` heading.
-
-    No try/except (C-2): failure semantics match ``_render_core``/``_render_l0``.
-    ``store.load_profile`` does not raise on normal paths (missing/empty file →
-    ``empty_profile()``; body parse is lenient). Any raw IO error propagates to
-    ``service._spawn``'s whole-string net, which drops the entire injection and
-    spawns cc bare — identical to how a core.md IO error behaves today.
-    """
+    """按标准字段顺序渲染非空画像维度。"""
     p = store.load_profile()
     blocks = [
         f"## {_FIELD_TO_TITLE[field]}\n{getattr(p, field)}"
@@ -147,7 +90,7 @@ def _render_profile(store: MemoryStore) -> str:
 
 
 def _render_l0(store: MemoryStore) -> str:
-    """Dictionary L0 root index (the model drills down L1/body on demand)."""
+    """渲染 dictionary L0 根索引。"""
     text = store.load_dictionary_L0().strip()
     if not text:
         return ""
@@ -155,11 +98,7 @@ def _render_l0(store: MemoryStore) -> str:
 
 
 def _render_memory_root(root: Path) -> str:
-    """Memory root absolute path + retrieval tool usage (slice-040-c C-2).
-
-    Always injected (even when core/L0/diary are empty) so the model knows
-    where memory lives and how to call the MCP tools.
-    """
+    """渲染 memory 根路径与检索工具用法。"""
     return (
         "# memory 根路径 + 检索\n"
         f"根：{root.resolve()}\n"
@@ -169,21 +108,7 @@ def _render_memory_root(root: Path) -> str:
 
 
 def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> str:
-    """Progressive recency window (slice-041 grill 2026-07-11).
-
-    ``include_layers`` controls which month tiers are included (W4 codex
-    truncation priority): 4=all, 3=drop earlier, 2=drop earlier+half-year,
-    1=only this week's dailies (gotcha-rich, always kept).
-
-    Four tiers, each ≤800 chars per entry, span越大越流水:
-    - this week's dailies (keep gotcha — span small)
-    - this month's weeklies minus this week (flow-ish)
-    - last 6 months' monthlies minus this month (flow)
-    - earlier monthlies (pure flow, if any)
-
-    A malformed ``now`` logs a warning and skips only the diary section —
-    layer-one and L0 are still injected.
-    """
+    """按近期层级渲染 diary；非法日期只跳过本节。"""
     try:
         today = date.fromisoformat(now)
     except ValueError:
@@ -195,24 +120,30 @@ def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> s
     six_months_ago = (today - timedelta(days=180)).strftime("%Y-%m")
 
     week_dailies = [
-        d for d in store.load_diary(layer="day")
+        d
+        for d in store.load_diary(layer="day")
         if _in_iso_week(d.date, iso_year, iso_week)
     ]
     month_weeklies = [
-        w for w in store.load_diary(layer="week")
+        w
+        for w in store.load_diary(layer="week")
         if _week_in_month(w.period or w.date, this_month)
         and (w.period or w.date) != this_week
     ]
     half_year_monthlies = [
-        m for m in store.load_diary(layer="month")
+        m
+        for m in store.load_diary(layer="month")
         if this_month > (m.period or m.date) >= six_months_ago
     ]
-    # W4 (codex): cap earlier monthlies to the 3 most recent — without this
-    # the injection grows without bound as months accumulate.
+    # 早期 monthly 只保留最近三条，避免随月份无限增长。
     earlier_monthlies = sorted(
-        [m for m in store.load_diary(layer="month")
-         if (m.period or m.date) < six_months_ago],
-        key=lambda m: m.period or m.date, reverse=True,
+        [
+            m
+            for m in store.load_diary(layer="month")
+            if (m.period or m.date) < six_months_ago
+        ],
+        key=lambda m: m.period or m.date,
+        reverse=True,
     )[:3]
 
     blocks: list[str] = []
@@ -221,7 +152,9 @@ def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> s
     if include_layers >= 2 and month_weeklies:
         blocks.append("## 本月除本周（weekly）\n" + _format_diary(month_weeklies))
     if include_layers >= 3 and half_year_monthlies:
-        blocks.append("## 近半年除本月（monthly）\n" + _format_diary(half_year_monthlies))
+        blocks.append(
+            "## 近半年除本月（monthly）\n" + _format_diary(half_year_monthlies)
+        )
     if include_layers >= 4 and earlier_monthlies:
         blocks.append("## 上半年及更早（monthly）\n" + _format_diary(earlier_monthlies))
     if not blocks:
@@ -230,7 +163,7 @@ def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> s
 
 
 def _format_diary(entries: list[Diary]) -> str:
-    """One bullet per entry, newest first: ``- [date] body``."""
+    """按日期倒序渲染 diary 条目。"""
     lines: list[str] = []
     for d in sorted(entries, key=lambda e: e.date, reverse=True):
         body = d.body.strip()
@@ -239,6 +172,6 @@ def _format_diary(entries: list[Diary]) -> str:
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: CJK chars ~2 tokens, others ~4 chars/token."""
+    """粗估 token：CJK 每字约 2 个，其余约每 4 字符 1 个。"""
     cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
     return cjk * 2 + (len(text) - cjk) // 4

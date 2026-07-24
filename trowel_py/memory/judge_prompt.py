@@ -1,27 +1,13 @@
-"""the judge (判效) prompt for the memory-effectiveness loop (slice-053).
+"""判效 agent 的结构化输出 schema 与提示词模板。"""
 
-The judge agent reads one judged cc session and asks three questions about how
-trowel's memory was (or was not) used: did the model USE a hit note, was that
-use helpful/harmful, and was there a relevant note it SHOULD have used but did
-not (a recall-miss, attributed to retrieval vs awareness)? Every judgement
-carries a reason + the session step that backs it (C-4), and every memory_id
-must be a real note (C-6 — fabricated ids are dropped by the Python backstop).
-
-This is the prompt side of what reflection.py only sketched: reflection pinned
-the recall-miss question + the two-miss attribution; 053 runs it as an
-independent agent that ALSO covers "used / useful" and emits structured JSON.
-"""
 from __future__ import annotations
 
-#: the two recall-miss attributions (C-7). "novelty" (no relevant note existed)
-#: is deliberately NOT here — it points to write, not to retrieval/injection.
+# novelty 代表需要写入新知识，不属于检索或意识漏召回。
 MISS_ATTRIBUTIONS = ("retrieval_miss", "awareness_miss")
 
-#: the four hit outcomes (mirrors access_log.Outcome so judgements and the
-#: outcome-log share one vocabulary).
+# 与 access_log.Outcome 共用词表，避免结构化日志和判效结果出现分叉。
 HIT_OUTCOMES = ("helpful", "harmful", "unused", "unknown")
 
-#: The judgement-draft.json schema the agent must emit (shown verbatim).
 JUDGE_SCHEMA = """\
 {
   "hits": [
@@ -45,7 +31,8 @@ JUDGE_SCHEMA = """\
 }
 """
 
-JUDGE_PROMPT_TEMPLATE = """\
+JUDGE_PROMPT_TEMPLATE = (
+    """\
 你是 trowel 的「判效」agent。任务：读一个 cc 会话，判断这个会话里 trowel 的笔记**用了没用、用了有没有用、有没有该用却没用**。
 
 你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记 + memory 根路径）。判断「该用没用」时，可以主动用 memory.search 验证某条笔记当时能不能搜到——但**你判断的是被评判会话当时的情况，不是你现在搜出来的情况**。
@@ -80,9 +67,12 @@ JUDGE_PROMPT_TEMPLATE = """\
 
 【输出】
 把结果写到当前工作目录的 judgement-draft.json，严格按此 schema：
-""" + JUDGE_SCHEMA + """
+"""
+    + JUDGE_SCHEMA
+    + """
 只写 judgement-draft.json 这一个文件，不要改 memory 目录。完成后回复「判效已写」。
 """
+)
 
 
 def build_judge_prompt(
@@ -90,23 +80,7 @@ def build_judge_prompt(
     access_log_summary: str,
     dictionary_index: str,
 ) -> str:
-    """Fill the judge template with the judged session's path + hard evidence.
-
-    Args:
-        jsonl_path: absolute path to the judged session jsonl (the agent reads
-            it itself — raw material, not pre-digested).
-        access_log_summary: Python-pre-extracted retrieval summary for THIS
-            session (filtered by its cc_session_id — C-3 isolation). What it
-            searched for and which notes it opened, so the judge has hard
-            evidence without pawing the log files itself.
-        dictionary_index: the L0 dictionary (existing notes index) to ground
-            memory_ids and to let the judge verify recall-miss candidates.
-
-    Returns:
-        The filled prompt. Uses str.replace (not ``.format``) so the JSON
-        ``{}`` braces in the embedded JUDGE_SCHEMA are not mistaken for format
-        placeholders.
-    """
+    """注入路径、检索证据和索引；逐项替换避免 JSON 花括号被解析为占位符。"""
     return (
         JUDGE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
         .replace("{access_log_summary}", access_log_summary)

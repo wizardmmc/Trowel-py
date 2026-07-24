@@ -45,10 +45,12 @@ def test_prompt_cold_start_marker_when_profile_empty() -> None:
 
 def test_prompt_embeds_existing_profile_content() -> None:
     p = build_distill_prompt(
-        "/x.jsonl", [], _profile(ability="网安硕士", goal="反诈论文")
+        "/x.jsonl",
+        [],
+        _profile(ability="熟悉缓存一致性", goal="完善性能基线"),
     )
-    assert "网安硕士" in p
-    assert "反诈论文" in p
+    assert "熟悉缓存一致性" in p
+    assert "完善性能基线" in p
 
 
 def test_prompt_embeds_existing_suggestions() -> None:

@@ -1,8 +1,7 @@
-"""tests for raw access/outcome logging (slice-038 T4, C-9)."""
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
 
 from trowel_py.memory import logging
@@ -18,19 +17,32 @@ def test_access_log_appends_in_order(tmp_path: Path) -> None:
 
 
 def test_outcome_log_appends(tmp_path: Path) -> None:
-    logging.log_session_outcome(tmp_path, "sess-A", "t1", retry_count=3,
-                                corrections=1, transcript_ref="/path/x.jsonl")
+    logging.log_session_outcome(
+        tmp_path,
+        "sess-A",
+        "t1",
+        retry_count=3,
+        corrections=1,
+        transcript_ref="/path/x.jsonl",
+    )
     [rec] = logging.read_outcome_log(tmp_path)
     assert rec.session_ref == "sess-A"
     assert rec.retry_count == 3 and rec.corrections == 1
 
 
 def test_outcome_record_has_no_classification_field() -> None:
-    # C-9: the outcome record carries RAW ingredients only — no pre-classification.
     names = {f.name for f in fields(OutcomeRecord)}
     forbidden = {"is_miss", "label", "classification", "verdict", "kind", "miss"}
-    assert not (names & forbidden), f"outcome record leaked a classification field: {names & forbidden}"
-    assert names == {"session_ref", "when", "retry_count", "corrections", "transcript_ref"}
+    assert not (names & forbidden), (
+        f"outcome record leaked a classification field: {names & forbidden}"
+    )
+    assert names == {
+        "session_ref",
+        "when",
+        "retry_count",
+        "corrections",
+        "transcript_ref",
+    }
 
 
 def test_outcome_serialized_line_has_no_label_keys(tmp_path: Path) -> None:
@@ -54,15 +66,14 @@ def test_read_when_absent_is_empty(tmp_path: Path) -> None:
 
 
 def test_corrupt_line_skipped_not_crashed(tmp_path: Path, caplog) -> None:
-    # W1: one bad append line must not make the whole log unreadable.
     import logging as stdlog
+
     logging.log_note_access(tmp_path, "good-1", "t1")
-    # append a corrupt line directly
     (tmp_path / "meta" / "access-log.jsonl").open("a", encoding="utf-8").write(
         "{not valid json\n"
     )
     logging.log_note_access(tmp_path, "good-2", "t2")
     with caplog.at_level(stdlog.WARNING):
         recs = logging.read_access_log(tmp_path)
-    assert [r.note_id for r in recs] == ["good-1", "good-2"]  # corrupt line skipped
+    assert [r.note_id for r in recs] == ["good-1", "good-2"]
     assert any("access-log" in r.message for r in caplog.records)

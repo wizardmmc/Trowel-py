@@ -1,18 +1,9 @@
-"""slice-040-a historical repair: backfill episodes from surviving drafts.
+"""从幸存 draft 回填 episode，并重建历史 daily。
 
-The P1 overwrite bug left each day's ``diary/daily/<date>.md`` with only the
-LAST session's experience — the other sessions' raw events were lost from the
-daily (though their distillation drafts survive in
-``review-daily-work/<date>/<sid>/draft.json``).
-
-This module replays those drafts into per-session ``episodes/<sid>.md`` files
-and rebuilds the derived daily — WITHOUT re-running the distillation agent
-(spec: 只读已有 draft，不重新跑 agent). It never touches notes (they already
-landed during 040; repair only restores the experience track).
-
-Safety: dry-run is the default; ``--apply`` backs up the memory root to a
-timestamped sibling directory first (trowel CLAUDE.md 铁律: 动 memory 前先备份).
+修复只读取已有 draft，不重新运行 agent，也不触碰已写入的 notes。默认 dry-run；
+``--apply`` 必须先把整个 memory root 备份到相邻目录。
 """
+
 from __future__ import annotations
 
 import shutil
@@ -32,8 +23,6 @@ from trowel_py.memory.types import PersistContext
 
 @dataclass(frozen=True)
 class RepairPlan:
-    """One session's repair plan (dry-run row)."""
-
     cc_session_id: str
     has_draft: bool
     has_session_record: bool
@@ -42,8 +31,6 @@ class RepairPlan:
 
 @dataclass(frozen=True)
 class RepairReport:
-    """Outcome of a repair (dry-run or apply)."""
-
     date: str
     applied: bool
     backup_dir: str | None
@@ -55,18 +42,12 @@ class RepairReport:
 
     @property
     def ok(self) -> bool:
-        """apply-side verification: episodes created == drafts that had a session."""
         if not self.applied:
             return True
         return self.episodes_created == sum(1 for p in self.planned if p.has_draft)
 
 
 def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str], dict]:
-    """Discover drafts + sessions for ``date_str``.
-
-    Returns:
-        (plans, missing_draft_sids, sessions_by_id).
-    """
     review_root = review_workdir_root(memory_root) / date_str
     conn = open_sessions_db(memory_root)
     try:
@@ -93,9 +74,7 @@ def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str]
                     )
                 )
             except (ValueError, OSError, AttributeError, TypeError):
-                # unreadable / malformed draft (bad JSON, wrong-shaped notes, …)
-                # → record as "no usable draft" for this sid; repair never
-                # re-runs the agent, it just skips this one.
+                # 无法解析的 draft 只记录为不可用，禁止重新运行 agent 补写。
                 plans.append(
                     RepairPlan(
                         cc_session_id=sid,
@@ -109,12 +88,7 @@ def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str]
 
 
 def _unique_backup_path(memory_root: Path, date_str: str) -> Path:
-    """Return a non-clashing backup dir (uniqued on collision).
-
-    A same-second re-run must not crash on ``FileExistsError`` — the backup is
-    the safety net for touching memory, so its creation can never fail. Appends
-    ``-2``, ``-3``, … when the timestamped name already exists.
-    """
+    """同秒重复执行时追加序号，不能覆盖或跳过备份。"""
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     base = memory_root.parent / f"memory.bak-repair-{date_str}-{ts}"
     n = 2
@@ -127,16 +101,7 @@ def _unique_backup_path(memory_root: Path, date_str: str) -> Path:
 def repair_memory(
     memory_root: Path, date_str: str, *, apply: bool = False
 ) -> RepairReport:
-    """Backfill episodes + rebuild the daily from surviving drafts.
-
-    Args:
-        memory_root: the memory root (``~/.trowel/memory``).
-        date_str: target day ``YYYY-MM-DD``.
-        apply: False (default) = dry-run (no writes); True = backup then write.
-
-    Returns:
-        RepairReport. ``report.ok`` verifies episodes_created == draft count.
-    """
+    """默认只生成修复计划；``apply`` 时先备份再回填。"""
     plans, missing, sessions = _scan(memory_root, date_str)
     notes_before = (
         len(list((memory_root / "notes").glob("*.md")))
@@ -156,9 +121,7 @@ def repair_memory(
             notes_before=notes_before,
         )
 
-    # back up the memory root (铁律: 动 memory 前先备份). The backup path is
-    # uniqued so a same-second re-run can't crash on FileExistsError — every
-    # apply gets its own snapshot.
+    # 每次 apply 都要有独立快照，同秒重复执行也不能复用备份目录。
     backup = _unique_backup_path(memory_root, date_str)
     if memory_root.exists():
         shutil.copytree(memory_root, backup)
@@ -191,7 +154,7 @@ def repair_memory(
         if (memory_root / "notes").exists()
         else 0
     )
-    # repair must NEVER touch notes (they already landed during 040).
+    # repair 只恢复 experience 轨道，绝不能改动已经落盘的 notes。
     assert notes_after == notes_before, "repair mutated notes — aborting"
 
     return RepairReport(

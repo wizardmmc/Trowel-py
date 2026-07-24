@@ -1,15 +1,5 @@
-"""fresh-context LLM retriever for the offline eval (slice-038 T7).
+"""两层 dictionary 的 LLM 检索适配器，不接触评估答案。"""
 
-Navigates the two-layer dictionary the way S1's spike agents did: read L0 ->
-pick 1-2 domain L1 files -> read them -> pick note stems. Anti-cheat (S1): the
-retriever only sees the dictionary and the corpus file list, never the
-ground-truth relevant set. Anything it hallucinates that is not a real file is
-dropped (correctly counted as not-retrieved).
-
-The deterministic parts (parsing L0 domain keys, parsing L1 note stems, filtering)
-are unit-tested with a fake provider; the real run plugs in trowel's GLM-backed
-``AnthropicProvider`` via ``baseline.py``.
-"""
 from __future__ import annotations
 
 import re
@@ -20,12 +10,8 @@ from trowel_py.llm.client import LLMProvider
 from trowel_py.memory.eval import Retriever
 
 _L0_DOMAIN_RE = re.compile(r"dictionary-L1/([^\s.)]+)\.md")
-# slice-040-c: accept both `pages/<stem>.md` (S1 wiki corpus) and
-# `notes/<stem>.md` (040-c memory notes) so the generated L1 is parseable.
+# 兼容旧 wiki 的 `pages/` 与当前 memory 的 `notes/`。
 _L1_STEM_RE = re.compile(r"(?:pages|notes)/([^`]+?)\.md")
-# slice-064: content-independent stem anchor (see dictionary._l1_entry). Prefers
-# this over the backtick extractor so a stem that itself contains a backtick
-# (which would close the `notes/{stem}.md` code span early) is still retrievable.
 _L1_STEM_ANCHOR_RE = re.compile(r"<!-- @stem (\S+) -->")
 _MAX_DOMAINS = 2
 
@@ -40,26 +26,28 @@ _NOTE_SYS = (
 
 
 class LLMRetriever(Retriever):
-    """A two-step fresh-context retriever over a two-layer dictionary."""
-
     def __init__(self, provider: LLMProvider, *, retries: int = 2) -> None:
         self._provider = provider
         self._retries = retries
 
     def _complete(self, system_prompt: str, user_prompt: str) -> str:
-        """provider.complete with light retry (GLM偶发 429/网络抖动)."""
         last_exc: Exception | None = None
         for attempt in range(self._retries + 1):
             try:
                 return self._provider.complete(system_prompt, user_prompt)
-            except Exception as exc:  # noqa: BLE001 — retry any provider error
+            except Exception as exc:  # noqa: BLE001 - provider 失败统一重试
                 last_exc = exc
                 time.sleep(2 * (attempt + 1))
         assert last_exc is not None
         raise last_exc
 
-    def __call__(self, query: str, *, corpus_dir: Path | str,
-                 dictionary_path: Path | str) -> list[str]:
+    def __call__(
+        self,
+        query: str,
+        *,
+        corpus_dir: Path | str,
+        dictionary_path: Path | str,
+    ) -> list[str]:
         l0_path = Path(dictionary_path)
         l0_text = l0_path.read_text(encoding="utf-8")
         l1_dir = l0_path.parent / "dictionary-L1"
@@ -83,27 +71,29 @@ class LLMRetriever(Retriever):
 
         picked = self._pick_notes(query, "\n\n".join(l1_blobs), candidate_stems)
         real = {p.stem for p in Path(corpus_dir).glob("*.md")}
-        # drop hallucinated stems that are not real files
+        # `_pick_notes` 先过滤候选集；此处再过滤已从实际语料删除的 stem。
         ordered: list[str] = []
         for stem in picked:
             if stem in real and stem not in ordered:
                 ordered.append(stem)
         return ordered
 
-    def _pick_domains(self, query: str, l0_text: str,
-                      all_domains: list[str], l1_dir: Path) -> list[str]:
+    def _pick_domains(
+        self, query: str, l0_text: str, all_domains: list[str], l1_dir: Path
+    ) -> list[str]:
         user = (
             f"问题：{query}\n\n可用领域：{', '.join(all_domains)}\n\n"
             f"根索引(L0)：\n{l0_text}"
         )
         raw = self._complete(_DOMAIN_SYS, user)
         chosen = [d.strip() for d in _split_list(raw) if d.strip()]
-        # keep only valid domains (those with an L1 file), cap at 2
-        valid = [d for d in chosen if d in all_domains and (l1_dir / f"{d}.md").exists()]
+        # 只接受有 L1 文件的已知领域，并限制为两个。
+        valid = [
+            d for d in chosen if d in all_domains and (l1_dir / f"{d}.md").exists()
+        ]
         return _dedupe(valid)[:_MAX_DOMAINS]
 
-    def _pick_notes(self, query: str, l1_blob: str,
-                    candidates: set[str]) -> list[str]:
+    def _pick_notes(self, query: str, l1_blob: str, candidates: set[str]) -> list[str]:
         user = (
             f"问题：{query}\n\n候选笔记文件名：{', '.join(sorted(candidates))}\n\n"
             f"领域索引(L1)：\n{l1_blob}"
@@ -114,17 +104,11 @@ class LLMRetriever(Retriever):
 
 
 def _parse_l0_domains(l0_text: str) -> list[str]:
-    """Extract domain keys referenced as ``dictionary-L1/<key>.md`` in L0."""
     return _dedupe(_L0_DOMAIN_RE.findall(l0_text))
 
 
 def _parse_l1_stems(l1_text: str) -> set[str]:
-    """Extract indexed note stems from an L1 file.
-
-    Prefers the ``<!-- @stem ... -->`` anchor (robust to stems containing a
-    backtick, slice-064); falls back to the legacy ``notes/<stem>.md`` code-span
-    extractor for L1 files rendered before the anchor existed.
-    """
+    """优先读 stem anchor，避免 stem 内的反引号截断 Markdown code span。"""
     anchored = _L1_STEM_ANCHOR_RE.findall(l1_text)
     if anchored:
         return set(anchored)
@@ -132,12 +116,11 @@ def _parse_l1_stems(l1_text: str) -> set[str]:
 
 
 def _split_list(raw: str) -> list[str]:
-    """Parse an LLM's comma/newline list response into trimmed items."""
     items = re.split(r"[,\n、；;]", raw)
     cleaned = []
     for it in items:
         it = it.strip().strip("`\"' ").strip()
-        # the model sometimes echoes "pages/X.md" — reduce to stem
+        # 兼容模型偶尔回显的 `pages/` 路径。
         it = re.sub(r"^pages/", "", it)
         it = re.sub(r"\.md$", "", it)
         if it:

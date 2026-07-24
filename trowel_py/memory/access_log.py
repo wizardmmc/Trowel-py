@@ -1,27 +1,11 @@
-"""access-log / outcome-log for the online read path (slice-040-c).
+"""在线读取链路的追加式访问与结果日志。
 
-Append-only JSONL of retrieval actions (search/read) and model feedback
-(outcome). The logs are the source of truth for north-star metrics
-(``pre_failure_recall``, ``memory_helpfulness``); Note.refs/helpful/harmful
-are rebuildable caches from these.
-
-C-9: per-call identity uses ``toolUseId`` (cc's ``_meta.claudecode/toolUseId``,
-reverse-verified to reach the server) + ``trowel_session_id`` + ``ts``.
-``turn_id``/``generation`` are NOT carried — cc does not send them.
-
-slice-078: identity is host-neutral. ``host_kind`` (``cc`` / ``codex``) +
-``native_session_id`` (cc_session_id / Codex thread_id) are the new canonical
-pair; ``cc_session_id`` is kept for back-compat reads of pre-078 logs (it
-mirrors ``native_session_id`` on the CC path). Codex has no per-call toolUseId
-(MCP carries only name+arguments), so ``toolUseId`` is empty there and
-uniqueness falls back to ``trowel_session_id + native_session_id + ts +
-server-generated search_id/read_id``.
-
-Append uses O_APPEND (single-line write); one corrupt line is skipped so it
-never makes the whole history unreadable (038 W1). Multiple per-session MCP
-servers append concurrently; single-line JSON writes under PIPE_BUF are atomic
-on POSIX, which suffices at the current scale.
+日志是 north-star 指标的事实源。CC 写入时保留 ``cc_session_id`` 和
+``toolUseId``，Codex 没有对应的逐调用标识；跨 host 身份由 ``host_kind`` 与
+``native_session_id`` 表达。读取会跳过损坏或字段不兼容的行，避免单行故障
+使其余历史不可用。
 """
+
 from __future__ import annotations
 
 import json
@@ -42,30 +26,10 @@ Outcome = Literal["helpful", "harmful", "unused", "unknown"]
 
 @dataclass(frozen=True)
 class AccessRecord:
-    """One retrieval action (a search returning candidates, or a read opening a body).
+    """一次搜索或正文读取；读取记录以 ``search_id`` 关联来源搜索。
 
-    Attributes:
-        ts: ISO timestamp of the action.
-        trowel_session_id: trowel's session id (injected via env).
-        cc_session_id: cc's session id (empty for fresh sessions until init).
-            Kept for back-compat reads of pre-078 logs; on new writes it
-            mirrors ``native_session_id`` on the CC path (and is empty on the
-            Codex path, which has no cc session).
-        toolUseId: cc's per-call tool-use id (from _meta.claudecode/toolUseId).
-            Empty on the Codex path — MCP carries only name+arguments, so the
-            server cannot recover a per-call id there.
-        action: "search" (candidates returned) or "read" (body opened, retrieved).
-        search_id: server-generated id for this search (read records carry the
-            originating search_id to link candidate→open).
-        read_id: server-generated id for this read (empty for search records).
-        query: the search query (empty for read records).
-        memory_id: the note id (empty for search records; for read, the opened note).
-        rank: rank of this candidate in the search result (None for read records).
-        host_kind: slice-078 host-neutral identity — ``cc`` or ``codex``. Empty
-            on pre-078 log lines (back-compat).
-        native_session_id: slice-078 host-neutral identity — the native host's
-            session id (cc_session_id on CC, thread_id on Codex). Empty on
-            pre-078 log lines.
+    ``toolUseId`` 沿用 CC 协议字段名。Codex 记录的 CC 专属字段为空；旧记录
+    缺少跨 host 身份字段时由默认空值兼容。
     """
 
     ts: str
@@ -84,12 +48,7 @@ class AccessRecord:
 
 @dataclass(frozen=True)
 class OutcomeRecord:
-    """Model feedback after reading a note (C-6: helpful/harmful both recorded).
-
-    The ``host_kind`` / ``native_session_id`` fields mirror
-    :class:`AccessRecord` (slice-078 host-neutral identity); both default to
-    empty for back-compat with pre-078 outcome logs.
-    """
+    """一次正文读取后的模型反馈，身份字段与 :class:`AccessRecord` 一致。"""
 
     ts: str
     trowel_session_id: str
@@ -104,22 +63,22 @@ class OutcomeRecord:
 
 
 def log_access(root: Path | str, rec: AccessRecord) -> None:
-    """Append one access record to ``meta/access-log.jsonl``."""
+    """向 ``meta/access-log.jsonl`` 追加一条访问记录。"""
     _append(Path(root) / _META_DIR / _ACCESS_LOG, asdict(rec))
 
 
 def log_outcome(root: Path | str, rec: OutcomeRecord) -> None:
-    """Append one outcome record to ``meta/outcome-log.jsonl``."""
+    """向 ``meta/outcome-log.jsonl`` 追加一条结果记录。"""
     _append(Path(root) / _META_DIR / _OUTCOME_LOG, asdict(rec))
 
 
 def read_access_log(root: Path | str) -> list[AccessRecord]:
-    """Return all access records in append order (empty list if absent)."""
+    """按追加顺序读取访问记录；文件不存在时返回空列表。"""
     return _read(Path(root) / _META_DIR / _ACCESS_LOG, AccessRecord)
 
 
 def read_outcome_log(root: Path | str) -> list[OutcomeRecord]:
-    """Return all outcome records in append order (empty list if absent)."""
+    """按追加顺序读取结果记录；文件不存在时返回空列表。"""
     return _read(Path(root) / _META_DIR / _OUTCOME_LOG, OutcomeRecord)
 
 
@@ -130,7 +89,7 @@ def _append(path: Path, obj: dict) -> None:
 
 
 def _read(path: Path, cls: type) -> list:
-    """Read all records in append order, skipping corrupt lines (038 W1)."""
+    """按追加顺序返回可解码且字段兼容的记录。"""
     if not path.exists():
         return []
     out: list = []

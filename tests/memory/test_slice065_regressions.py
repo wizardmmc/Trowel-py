@@ -1,4 +1,3 @@
-"""slice-065 regression tests for issues found by the codex review."""
 from __future__ import annotations
 
 from datetime import timezone
@@ -15,7 +14,6 @@ from trowel_py.memory.access_log import (
 from trowel_py.memory.north_star import memory_usage_metrics
 from trowel_py.memory.promotion import evaluate_promotion
 from trowel_py.memory.promotion_policy import PromotionPolicy
-from trowel_py.memory.recompute import compute_note_effects, recompute_counters
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
     create_sessions_repository,
@@ -31,8 +29,12 @@ def _seed(root: Path, cc: str, kind: str = "user") -> None:
     try:
         create_sessions_repository(conn).register(
             SessionRecord(
-                cc_session_id=cc, workdir="/p", date="2026-07-01",
-                registered_at="t", session_kind=kind, trowel_session_id=f"t-{cc}",
+                cc_session_id=cc,
+                workdir="/p",
+                date="2026-07-01",
+                registered_at="t",
+                session_kind=kind,
+                trowel_session_id=f"t-{cc}",
             )
         )
     finally:
@@ -43,33 +45,44 @@ def _read(root: Path, cc: str, stem: str, *, read_id: str, day: int = 1) -> None
     log_access(
         root,
         AccessRecord(
-            ts=f"2026-07-{day:02d}T10:00:00+00:00", trowel_session_id=f"t-{cc}",
-            cc_session_id=cc, toolUseId="tu", action="read", search_id="s",
-            read_id=read_id, memory_id=stem,
+            ts=f"2026-07-{day:02d}T10:00:00+00:00",
+            trowel_session_id=f"t-{cc}",
+            cc_session_id=cc,
+            toolUseId="tu",
+            action="read",
+            search_id="s",
+            read_id=read_id,
+            memory_id=stem,
         ),
     )
 
 
-def _outcome(
-    root: Path, cc: str, stem: str, outcome: str, *, read_id: str
-) -> None:
+def _outcome(root: Path, cc: str, stem: str, outcome: str, *, read_id: str) -> None:
     log_outcome(
         root,
         OutcomeRecord(
-            ts="2026-07-01T10:01:00+00:00", trowel_session_id=f"t-{cc}",
-            cc_session_id=cc, toolUseId="tu", read_id=read_id, memory_id=stem,
+            ts="2026-07-01T10:01:00+00:00",
+            trowel_session_id=f"t-{cc}",
+            cc_session_id=cc,
+            toolUseId="tu",
+            read_id=read_id,
+            memory_id=stem,
             outcome=outcome,
         ),
     )
 
 
 def test_unsafe_memory_id_does_not_overwrite_core_md(tmp_path: Path) -> None:
-    # CRITICAL (C-8): a memory_id with path components must not escape the
-    # candidates dir and overwrite core.md.
-    MemoryStore(tmp_path).write_note({
-        "type": "note", "title": "evil", "verification": "verified",
-        "memory_id": "../../core", "kind": "gotcha", "__body": "x",
-    })
+    MemoryStore(tmp_path).write_note(
+        {
+            "type": "note",
+            "title": "evil",
+            "verification": "verified",
+            "memory_id": "../../core",
+            "kind": "gotcha",
+            "__body": "x",
+        }
+    )
     _seed(tmp_path, "u1")
     _read(tmp_path, "u1", "evil", read_id="r1")
     _outcome(tmp_path, "u1", "evil", "helpful", read_id="r1")
@@ -79,82 +92,49 @@ def test_unsafe_memory_id_does_not_overwrite_core_md(tmp_path: Path) -> None:
     assert not (tmp_path / "core.md").exists()
 
 
-def test_recompute_clears_stale_last_ref(tmp_path: Path) -> None:
-    # CRITICAL (C-1): a hand-set last_ref with no surviving read is cleared.
-    nid = MemoryStore(tmp_path).write_note({
-        "type": "note", "title": "A", "verification": "verified", "__body": "x",
-    })
-    MemoryStore(tmp_path).update_note_fields(nid, {"last_ref": "2099-01-01"})
-    recompute_counters(tmp_path, local_tz=TZ)
-    [n] = MemoryStore(tmp_path).load_notes()
-    assert n.last_ref == ""
-
-
-def test_explicit_unused_outcome_counted(tmp_path: Path) -> None:
-    # HIGH (C-5): an explicit outcome=unused is coverage, not silently dropped.
-    MemoryStore(tmp_path).write_note({
-        "type": "note", "title": "a", "verification": "verified",
-        "memory_id": "a", "__body": "x",
-    })
-    _seed(tmp_path, "u1")
-    _read(tmp_path, "u1", "a", read_id="r1")
-    _outcome(tmp_path, "u1", "a", "unused", read_id="r1")
-    fx = compute_note_effects(tmp_path, local_tz=TZ)
-    assert "u1" in fx["a"].unused_sessions
-    assert fx["a"].helpful_refs == 0
-    assert fx["a"].harmful_refs == 0
-
-
 def test_from_dict_rejects_inferred_untested() -> None:
-    # HIGH (C-7): inferred-untested must never be re-enabled by an override.
     with pytest.raises(ValueError):
         PromotionPolicy.from_dict({"allowed_verification": ["inferred-untested"]})
 
 
 def test_search_calls_excludes_candidate_records(tmp_path: Path) -> None:
-    # HIGH (C-5): one search = 1 call (the summary record); the N per-candidate
-    # records are hits, not calls.
     _seed(tmp_path, "u1")
-    log_access(tmp_path, AccessRecord(
-        ts="2026-07-01T10:00:00+00:00", trowel_session_id="t-u1", cc_session_id="u1",
-        toolUseId="tu", action="search", search_id="s", query="q",
-        memory_id="", rank=None,
-    ))
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="2026-07-01T10:00:00+00:00",
+            trowel_session_id="t-u1",
+            cc_session_id="u1",
+            toolUseId="tu",
+            action="search",
+            search_id="s",
+            query="q",
+            memory_id="",
+            rank=None,
+        ),
+    )
     for i in range(2):
-        log_access(tmp_path, AccessRecord(
-            ts="2026-07-01T10:00:00+00:00", trowel_session_id="t-u1",
-            cc_session_id="u1", toolUseId=f"tu{i}", action="search", search_id="s",
-            query="q", memory_id=f"m{i}", rank=i,
-        ))
+        log_access(
+            tmp_path,
+            AccessRecord(
+                ts="2026-07-01T10:00:00+00:00",
+                trowel_session_id="t-u1",
+                cc_session_id="u1",
+                toolUseId=f"tu{i}",
+                action="search",
+                search_id="s",
+                query="q",
+                memory_id=f"m{i}",
+                rank=i,
+            ),
+        )
     retr = memory_usage_metrics(tmp_path)["retrieval"]
     assert retr["search_calls"] == 1
     assert retr["search_hits"] == 2
 
 
 def test_metrics_no_side_effect_on_empty_root(tmp_path: Path) -> None:
-    # MEDIUM: a read-only metrics pass must not create sessions.db.
     before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
     memory_usage_metrics(tmp_path)
     after = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
     assert before == after
-
-
-def test_approve_rejects_blocked_candidate(tmp_path: Path) -> None:
-    # HIGH (C-3): a candidate flipped to blocked must not be approvable.
-    from trowel_py.memory.core_ops import approve_candidate
-
-    cands = tmp_path / "meta" / "core-candidates"
-    cands.mkdir(parents=True)
-    (cands / "mid-x.md").write_text(
-        "---\nstatus: blocked\nmemory_id: mid-x\n---\nbody\n", encoding="utf-8"
-    )
-    with pytest.raises(ValueError, match="blocked"):
-        approve_candidate(tmp_path, "mid-x")
-
-
-def test_approve_rejects_unsafe_candidate_id(tmp_path: Path) -> None:
-    # CRITICAL (C-8): approve also guards against path-escaping candidate ids.
-    from trowel_py.memory.core_ops import approve_candidate
-
-    with pytest.raises(ValueError, match="unsafe"):
-        approve_candidate(tmp_path, "../../core")

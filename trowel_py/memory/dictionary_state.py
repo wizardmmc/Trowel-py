@@ -1,19 +1,5 @@
-"""dictionary consistency state (slice-064 §5: observability).
+"""Dictionary 派生索引的一致性状态与最近构建结果。"""
 
-The dictionary is a *derived* index over ``notes/``. Its state file records
-whether the on-disk L0/L1 currently matches the note facts, plus the last
-success/failure provenance. Mirrors ``tidy_state`` (slice-063): lives at
-``<root>/meta/dictionary-state.json``, written atomically (temp + os.replace),
-and a missing/corrupt file is NEVER read as "consistent" — it bootstraps to
-``missing`` so the next check rebuilds instead of trusting a stale index
-(C-7). The success watermark (``source_hash`` / ``last_success_at``) survives a
-later failure so the operator can see what the index last agreed with.
-
-``status`` is the four-state contract from slice-064 §2/§5:
-    consistent — index agrees with the current active notes;
-    stale      — index exists but is known to disagree (or a rebuild failed);
-    missing    — no index on disk (cold start, or wiped after corrupt state).
-"""
 from __future__ import annotations
 
 import json
@@ -31,17 +17,7 @@ DictStatus = Literal["consistent", "stale", "missing"]
 
 @dataclass(frozen=True)
 class DictionaryState:
-    """Snapshot of dictionary agreement with the note facts.
-
-    Attributes:
-        status: consistent | stale | missing.
-        source_hash: the source_hash of the active-note corpus the index was
-            last successfully built from. Preserved across a later failure so
-            the operator can see the last-good hash. None until first success.
-        last_success_at: ISO timestamp of the last successful build/check.
-        last_failure_at: ISO timestamp of the last failed build/sync.
-        last_failure_reason: short reason for the last failure.
-    """
+    """后续失败保留最后成功的 hash 与时间，便于判断索引曾与哪些事实一致。"""
 
     status: DictStatus = "missing"
     source_hash: str | None = None
@@ -79,8 +55,6 @@ class DictionaryState:
     def with_success(
         self, source_hash: str, rendered_hash: str, at: str
     ) -> "DictionaryState":
-        """Immutable copy: index just agreed with ``source_hash`` (the note
-        facts) and ``rendered_hash`` (the on-disk L0+L1 content) at ``at``."""
         return replace(
             self,
             status="consistent",
@@ -92,7 +66,7 @@ class DictionaryState:
         )
 
     def with_failure(self, reason: str, at: str) -> "DictionaryState":
-        """Immutable copy: a rebuild/sync failed; keep the last-good hash (C-7)."""
+        """标记索引 stale，同时保留 last-good 水位。"""
         return replace(
             self,
             status="stale",
@@ -108,16 +82,11 @@ def _opt_str(v: object) -> str | None:
 
 
 def state_path(root: Path | str) -> Path:
-    """Absolute path of the state file under ``root``."""
     return Path(root) / _STATE_REL
 
 
 def load_state(root: Path | str) -> DictionaryState:
-    """Load the state. Missing/corrupt → ``DictionaryState()`` (missing).
-
-    A corrupt file is never read as "consistent": we log and return the empty
-    state so the next check treats the index as untrusted (C-7).
-    """
+    """缺失或损坏的状态不得使现有索引受信，统一降级为 missing。"""
     path = state_path(root)
     if not path.exists():
         return DictionaryState()
@@ -132,12 +101,7 @@ def load_state(root: Path | str) -> DictionaryState:
 
 
 def save_state(root: Path | str, state: DictionaryState) -> None:
-    """Atomically replace the state file (temp + ``os.replace``, C-6).
-
-    State is written LAST — the L0/L1 are already on disk by the time we stamp
-    ``consistent``, so a crash here at most causes a safe re-check on the next
-    run (never a false "consistent" after a half-written index).
-    """
+    """原子替换状态；调用方只能在 L0/L1 发布后盖下 consistent 水位。"""
     path = state_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)

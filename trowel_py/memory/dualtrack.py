@@ -1,11 +1,5 @@
-"""dual-track audit (slice-040 T8).
+"""Daily review draft 的知识/经历轨泄漏审计，只报告而不迁移内容。"""
 
-After the agent splits the draft into notes (knowledge) + diary (events),
-Python audits the diary entries for knowledge signal words that leaked into
-the experience track. This is a safety net — the agent does the primary split
-(grill §8); Python only flags suspected leaks. It does NOT auto-migrate
-(migration needs judgment; the report is for the persist layer / human review).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,20 +7,12 @@ from dataclasses import dataclass
 from trowel_py.memory.draft import Draft
 from trowel_py.memory.prompt import DUALTRACK_SIGNAL_WORDS
 
-#: how many context chars to show around a matched signal word.
+# 命中词两侧保留的上下文字符数。
 _SNIPPET_RADIUS = 15
 
 
 @dataclass(frozen=True)
 class DiaryLeak:
-    """One diary entry suspected of holding knowledge-track content.
-
-    Attributes:
-        date: the diary entry's date.
-        signal: the signal word that matched.
-        snippet: surrounding text for a human to judge.
-    """
-
     date: str
     signal: str
     snippet: str
@@ -34,26 +20,17 @@ class DiaryLeak:
 
 @dataclass(frozen=True)
 class DualtrackReport:
-    """Result of auditing a draft for cross-track leaks."""
-
     leaks: tuple[DiaryLeak, ...] = ()
 
     @property
     def clean(self) -> bool:
-        """True when no diary entry tripped a knowledge signal word."""
         return not self.leaks
 
 
 def audit_draft(draft: Draft) -> DualtrackReport:
-    """Scan diary entries for knowledge signal words (C-1 backstop).
+    """只扫描经历轨的结构化项与 legacy events，每条最多报告首个 signal。
 
-    Notes are NOT scanned — they are the knowledge track, so signal words there
-    are expected and correct. Only diary entries (the experience track) are
-    audited.
-
-    slice-062: the experience track is structured into four lists, so the scan
-    covers ``all_items()`` plus legacy ``events`` — a knowledge conclusion that
-    slipped into ``corrections`` is still a leak.
+    notes 属于知识轨，其中出现 signal 是合法内容，不参与审计。
     """
     leaks: list[DiaryLeak] = []
     for d in draft.diary:
@@ -66,5 +43,5 @@ def audit_draft(draft: Draft) -> DualtrackReport:
                 leaks.append(
                     DiaryLeak(date=d.date, signal=sig, snippet=text[start:end])
                 )
-                break  # one signal per entry is enough to flag it
+                break
     return DualtrackReport(leaks=tuple(leaks))

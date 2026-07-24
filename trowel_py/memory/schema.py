@@ -1,13 +1,5 @@
-"""frontmatter schema validation for memory entries (slice-038).
+"""Memory frontmatter 写入校验；未知字段有意忽略以兼容扩展字段。"""
 
-``validate_entry`` is the write-side pollution guard (C-2): every entry is
-validated before it touches disk. It enforces C-3 (knowledge entries must carry
-a ``verification`` field) and the allowed-value sets for every enum-ish field.
-
-Unknown fields are ignored on purpose — the knowledge-note schema reuses the
-wiki-compatible subset and wiki pages carry extra fields (sources/related/…)
-that must not trip the validator.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -18,28 +10,16 @@ from trowel_py.memory.types import ValidationResult
 _ENTRY_TYPES = ("core", "note", "diary", "dictionary")
 
 _VERIFICATION = {"verified", "inferred-untested", "event-data-supported"}
-#: single source of truth — NOTE_KINDS lives in prompt (the agent-facing menu)
-#: and the schema validator reuses it so the two can never drift.
+# 复用 agent prompt 的种类集合，避免生成约束与写入校验漂移。
 _NOTE_KIND = set(NOTE_KINDS)
 _DIARY_LAYER = {"day", "week", "month"}
 _DICT_LAYER = {"L0", "L1"}
 _SCOPE = {"high-risk", "low-risk"}
-#: slice-041: layer-one gains `trial` (monthly promote → approve → trial).
 _CORE_STATUS = {"seed", "trial", "active", "retired"}
-#: slice-041 note lifecycle (C-9). `candidate` removed (grill 2026-07-11).
 _NOTE_STATUS = {"active", "contradicted", "superseded", "retired"}
 
 
 def validate_entry(entry_type: str, fm: dict[str, Any]) -> ValidationResult:
-    """Validate a parsed frontmatter payload against the schema for its type.
-
-    Args:
-        entry_type: one of core | note | diary | dictionary.
-        fm: the frontmatter mapping (parsed YAML).
-
-    Returns:
-        ValidationResult; ``ok`` is True iff every applicable rule passes.
-    """
     if entry_type not in _ENTRY_TYPES:
         return ValidationResult(False, (f"unknown entry type: {entry_type!r}",))
     if not isinstance(fm, dict):
@@ -61,7 +41,6 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     title = fm.get("title")
     if not isinstance(title, str) or not title.strip():
         errors.append("note: 'title' is required and must be a non-empty string")
-    # C-3: verification is mandatory on knowledge entries.
     verification = fm.get("verification")
     if not verification:
         errors.append("note: 'verification' is required (C-3)")
@@ -70,11 +49,9 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
             f"note: 'verification' must be one of {sorted(_VERIFICATION)}, "
             f"got {verification!r}"
         )
-    # slice-040-a: kind is optional (defaults to `fact` at the read/persist
-    # layer) but, when present, must be one of the allowed procedural kinds.
+    # 缺失 kind 由读取或持久化层按 fact 处理。
     _enum(fm, "kind", _NOTE_KIND, errors, prefix="note")
-    # slice-041: status replaces retired:bool (C-9). Optional at write time
-    # (defaults to `active`); when present, must be a known lifecycle state.
+    # 旧 note 缺失 status 时，读取层先解释 retired，否则按 active 处理。
     _enum(fm, "status", _NOTE_STATUS, errors, prefix="note")
     _int_field(fm, "refs", errors, prefix="note")
     _int_field(fm, "read_sessions", errors, prefix="note")
@@ -87,7 +64,6 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     conflicts = fm.get("conflicts_with")
     if conflicts is not None and not isinstance(conflicts, list):
         errors.append("note: 'conflicts_with' must be a list when present")
-    # slice-041 correction-chain + provenance list fields.
     for key in ("supersedes", "sources", "source_sessions"):
         val = fm.get(key)
         if val is not None and not isinstance(val, list):
@@ -118,7 +94,10 @@ def _validate_core(fm: dict[str, Any], errors: list[str]) -> None:
             continue
         if not isinstance(item.get("id"), str) or not item["id"].strip():
             errors.append(f"core: item[{i}] missing 'id'")
-        if not isinstance(item.get("imperative"), str) or not item["imperative"].strip():
+        if (
+            not isinstance(item.get("imperative"), str)
+            or not item["imperative"].strip()
+        ):
             errors.append(f"core: item[{i}] missing 'imperative'")
         _enum(item, "scope", _SCOPE, errors, prefix=f"core item[{i}]")
         _enum(item, "status", _CORE_STATUS, errors, prefix=f"core item[{i}]")
@@ -128,21 +107,26 @@ def _validate_dictionary(fm: dict[str, Any], errors: list[str]) -> None:
     _require_enum(fm, "layer", _DICT_LAYER, errors, prefix="dictionary")
 
 
-def _enum(fm: dict[str, Any], key: str, allowed: set[str],
-          errors: list[str], *, prefix: str) -> None:
-    """If ``key`` is present and non-empty, it must be in ``allowed``."""
+def _enum(
+    fm: dict[str, Any], key: str, allowed: set[str], errors: list[str], *, prefix: str
+) -> None:
     val = fm.get(key)
     if val and val not in allowed:
-        errors.append(f"{prefix}: '{key}' must be one of {sorted(allowed)}, got {val!r}")
+        errors.append(
+            f"{prefix}: '{key}' must be one of {sorted(allowed)}, got {val!r}"
+        )
 
 
-def _require_enum(fm: dict[str, Any], key: str, allowed: set[str],
-                  errors: list[str], *, prefix: str) -> None:
+def _require_enum(
+    fm: dict[str, Any], key: str, allowed: set[str], errors: list[str], *, prefix: str
+) -> None:
     val = fm.get(key)
     if not val:
         errors.append(f"{prefix}: '{key}' is required")
     elif val not in allowed:
-        errors.append(f"{prefix}: '{key}' must be one of {sorted(allowed)}, got {val!r}")
+        errors.append(
+            f"{prefix}: '{key}' must be one of {sorted(allowed)}, got {val!r}"
+        )
 
 
 def _int_field(fm: dict[str, Any], key: str, errors: list[str], *, prefix: str) -> None:
@@ -150,11 +134,13 @@ def _int_field(fm: dict[str, Any], key: str, errors: list[str], *, prefix: str) 
     if val is None:
         return
     if isinstance(val, bool) or not isinstance(val, int):
-        # bool is a subclass of int — reject it explicitly.
+        # bool 是 int 的子类，必须显式排除。
         errors.append(f"{prefix}: '{key}' must be an integer, got {val!r}")
 
 
-def _bool_field(fm: dict[str, Any], key: str, errors: list[str], *, prefix: str) -> None:
+def _bool_field(
+    fm: dict[str, Any], key: str, errors: list[str], *, prefix: str
+) -> None:
     val = fm.get(key)
     if val is None:
         return

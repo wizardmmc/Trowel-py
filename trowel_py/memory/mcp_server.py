@@ -1,93 +1,68 @@
-"""memory MCP server (slice-040-c): search/read/outcome over the memory tree.
+"""memory MCP 的稳定模块入口与 stdio 运行边界。"""
 
-Per-session stdio subprocess spawned by cc via ``--mcp-config``. Identity
-(trowel/cc_session_id/MEMORY_ROOT) is read from env (injected by CCHost);
-per-call toolUseId from ``_meta.claudecode/toolUseId`` (reverse-verified,
-spike 2026-07-11).
-
-Uses the lowlevel ``Server`` with ``request_handlers[CallToolRequest]``
-overridden — the ``@server.call_tool()`` convenience decorator drops
-``_meta`` (only passes name/arguments). See docs/design/memory/mcp-read-path-spike.md.
-
-The pure-logic handlers (``handle_search`` / ``handle_read`` / ``handle_outcome``)
-take identity + toolUseId as parameters so they are unit-testable without env.
-"""
 from __future__ import annotations
 
 import json
 import logging
 import os
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 
-from trowel_py.memory.access_log import (
-    AccessRecord,
-    OutcomeRecord,
-    log_access,
-    log_outcome,
-    read_access_log,
+from trowel_py.memory.access_log import log_access, log_outcome, read_access_log
+from trowel_py.memory.mcp.handlers import (
+    _DICT_L0,
+    _REQUIRES_READ_KINDS,
+    _TOOL_OUTCOME,
+    _TOOL_READ,
+    _TOOL_SEARCH,
+    _URI_PREFIX,
+    _hit as _handler_hit,
+    _now,
+    _today,
+    handle_outcome as _handle_outcome,
+    handle_read as _handle_read,
+    handle_search as _handle_search,
+    parse_memory_uri,
+    requires_read,
 )
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
 
+__all__ = [
+    "_DICT_L0",
+    "_REQUIRES_READ_KINDS",
+    "_SEARCH_DESC",
+    "_TOOL_OUTCOME",
+    "_TOOL_READ",
+    "_TOOL_SEARCH",
+    "_URI_PREFIX",
+    "_build_server",
+    "_hit",
+    "_identity_from_env",
+    "_now",
+    "_today",
+    "_tooluse_id",
+    "handle_outcome",
+    "handle_read",
+    "handle_search",
+    "main",
+    "parse_memory_uri",
+    "requires_read",
+]
+
 logger = logging.getLogger(__name__)
-
-_TOOL_SEARCH = "search"
-_TOOL_READ = "read"
-_TOOL_OUTCOME = "outcome"
-_DICT_L0 = "dictionary-L0.md"
-_REQUIRES_READ_KINDS = {"gotcha", "procedure", "hypothesis"}
-_URI_PREFIX = "memory://notes/"
-
-
-def parse_memory_uri(uri: str) -> str:
-    """Validate a ``memory://notes/<id>`` URI and return the note id (C-7).
-
-    Raises ValueError on non-memory URI, absolute paths, ``..``, leading dot,
-    or embedded slash (symlink/path-traversal escape).
-    """
-    if not uri.startswith(_URI_PREFIX):
-        raise ValueError(f"not a memory URI: {uri!r}")
-    note_id = uri[len(_URI_PREFIX):]
-    if not note_id or "/" in note_id or ".." in note_id or note_id.startswith("."):
-        raise ValueError(f"illegal note id: {note_id!r}")
-    return note_id
-
-
-def requires_read(note: Note) -> bool:
-    """Candidate-level requires_read (C-4): gotcha/procedure/hypothesis or inferred-untested."""
-    return note.kind in _REQUIRES_READ_KINDS or note.verification == "inferred-untested"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
 
 
 def _identity_from_env() -> dict[str, str]:
-    """Read host-neutral identity from env (slice-078).
-
-    The canonical pair is ``TROWEL_HOST_KIND`` (``cc`` / ``codex``) +
-    ``TROWEL_NATIVE_SESSION_ID`` (cc_session_id / Codex thread_id). The legacy
-    ``CC_SESSION_ID`` env (set by the CC host pre-078) is still read so a CC
-    spawn that has not been updated to set the new vars keeps working: when
-    ``host_kind`` is empty but ``CC_SESSION_ID`` is set, we back-fill
-    ``host_kind="cc"`` and ``native_session_id=cc_session_id``.
-    """
+    """读取宿主无关身份，并兼容旧版 CC 环境变量。"""
     cc_session_id = os.environ.get("CC_SESSION_ID", "")
     host_kind = os.environ.get("TROWEL_HOST_KIND", "")
     native_session_id = os.environ.get("TROWEL_NATIVE_SESSION_ID", "")
     if not host_kind and cc_session_id:
-        # Back-compat: a CC spawn predating slice-078 sets only CC_SESSION_ID.
         host_kind = "cc"
         native_session_id = native_session_id or cc_session_id
     return {
@@ -101,24 +76,16 @@ def _identity_from_env() -> dict[str, str]:
 def _tooluse_id(meta: object) -> str:
     if meta is None:
         return ""
-    dump = meta.model_dump(exclude_none=True) if hasattr(meta, "model_dump") else dict(meta)
+    dump = (
+        meta.model_dump(exclude_none=True)
+        if hasattr(meta, "model_dump")
+        else dict(cast(Any, meta))
+    )
     return str(dump.get("claudecode/toolUseId", ""))
 
 
 def _hit(note_id: str, note: Note, rank: int) -> dict[str, Any]:
-    """Build one search result entry from a note."""
-    return {
-        "memory_id": note_id,
-        "title": note.title,
-        "summary": note.summary,
-        "uri": f"memory://notes/{note_id}",
-        "score": 1.0 / (rank + 1),
-        "kind": note.kind,
-        "verification": note.verification,
-        # slice-041: real status enum (was retired-bool mirror in 040-c).
-        "status": note.status,
-        "requires_read": requires_read(note),
-    }
+    return _handler_hit(note_id, note, rank, requires_read_fn=requires_read)
 
 
 def handle_search(
@@ -131,87 +98,19 @@ def handle_search(
     toolUseId: str = "",
     retriever: Any = None,
 ) -> dict[str, Any]:
-    """Search notes via the two-layer dictionary (L0→L1, S1 protocol).
-
-    If the dictionary is absent, returns an empty result with a hint (does NOT
-    lazy-build — search must not block on clustering, C-3).
-    """
-    search_id = uuid.uuid4().hex
-    log_access(
-        store.root,
-        AccessRecord(
-            ts=_now(),
-            trowel_session_id=identity["trowel_session_id"],
-            cc_session_id=identity["cc_session_id"],
-            host_kind=identity["host_kind"],
-            native_session_id=identity["native_session_id"],
-            toolUseId=toolUseId,
-            action="search",
-            search_id=search_id,
-            query=query,
-        ),
+    return _handle_search(
+        query,
+        top_k,
+        include_inactive,
+        store,
+        dictionary_path,
+        identity,
+        toolUseId,
+        retriever,
+        now_fn=_now,
+        hit_fn=_hit,
+        log_access_fn=log_access,
     )
-    if not dictionary_path.exists():
-        return {
-            "search_id": search_id,
-            "results": [],
-            "error": "dictionary_empty",
-            "hint": "run: trowel memory dict-rebuild --apply",
-        }
-    if retriever is None:
-        from trowel_py.config import load_llm_config
-        from trowel_py.llm.client import AnthropicProvider
-        from trowel_py.memory.retrievers import LLMRetriever
-
-        retriever = LLMRetriever(AnthropicProvider(load_llm_config()))
-    # slice-064 C-2/F11: take a shared dictionary lock around the L0/L1 read
-    # AND the state read, so a concurrent rebuild cannot delete/swap an L1 file
-    # mid-retrieval (two LLM round-trips happen inside the retriever) and the
-    # stale warning describes the generation actually being served. The notes/
-    # read below is off the index and needs no lock. Search never rebuilds (C-8).
-    from trowel_py.memory.dictionary_lock import dictionary_lock
-    from trowel_py.memory.dictionary_state import load_state
-
-    with dictionary_lock(store.root, exclusive=False):
-        # warn on ANY non-consistent state (stale / missing / corrupt-loaded-as
-        # -missing), not just stale — slice-064 F6/codex: drift must be visible.
-        stale_warning = (
-            "dictionary index is stale; results may be incomplete. "
-            "run: trowel memory dict-rebuild --apply"
-            if load_state(store.root).status != "consistent" else None
-        )
-        stems = retriever(
-            query,
-            corpus_dir=str(store.root / "notes"),
-            dictionary_path=dictionary_path,
-        )
-    hits: list[dict[str, Any]] = []
-    for rank, stem in enumerate(stems[:top_k]):
-        note = store.load_note(stem)
-        if note is None:
-            continue
-        if not include_inactive and note.status != "active":
-            continue
-        hits.append(_hit(stem, note, rank))
-        log_access(
-            store.root,
-            AccessRecord(
-                ts=_now(),
-                trowel_session_id=identity["trowel_session_id"],
-                cc_session_id=identity["cc_session_id"],
-                host_kind=identity["host_kind"],
-                native_session_id=identity["native_session_id"],
-                toolUseId=toolUseId,
-                action="search",
-                search_id=search_id,
-                memory_id=stem,
-                rank=rank,
-            ),
-        )
-    out: dict[str, Any] = {"search_id": search_id, "results": hits}
-    if stale_warning:
-        out["warning"] = stale_warning
-    return out
 
 
 def handle_read(
@@ -221,41 +120,17 @@ def handle_read(
     identity: dict[str, str],
     toolUseId: str = "",
 ) -> dict[str, Any]:
-    """Read a note body by URI (C-7 closed). Side effect: record_ref + access-log."""
-    try:
-        note_id = parse_memory_uri(uri)
-    except ValueError as exc:
-        return {"error": str(exc)}
-    note = store.load_note(note_id)
-    if note is None:
-        return {"error": "not_found", "uri": uri}
-    store.record_ref(note_id, _today())
-    read_id = uuid.uuid4().hex
-    log_access(
-        store.root,
-        AccessRecord(
-            ts=_now(),
-            trowel_session_id=identity["trowel_session_id"],
-            cc_session_id=identity["cc_session_id"],
-            host_kind=identity["host_kind"],
-            native_session_id=identity["native_session_id"],
-            toolUseId=toolUseId,
-            action="read",
-            search_id=search_id,
-            read_id=read_id,
-            memory_id=note_id,
-        ),
+    return _handle_read(
+        uri,
+        search_id,
+        store,
+        identity,
+        toolUseId,
+        parse_uri_fn=parse_memory_uri,
+        now_fn=_now,
+        today_fn=_today,
+        log_access_fn=log_access,
     )
-    return {
-        "read_id": read_id,
-        "title": note.title,
-        "body": note.body,
-        "kind": note.kind,
-        "verification": note.verification,
-        # slice-041: real status enum (was retired-bool mirror in 040-c).
-        "status": note.status,
-        "tags": list(note.tags),
-    }
 
 
 def handle_outcome(
@@ -266,38 +141,19 @@ def handle_outcome(
     identity: dict[str, str],
     toolUseId: str = "",
 ) -> dict[str, Any]:
-    """Record model feedback for a read (C-6). read_id must exist in access-log."""
-    if outcome not in ("helpful", "harmful", "unused", "unknown"):
-        return {"error": f"invalid outcome: {outcome!r}"}
-    records = read_access_log(root)
-    match = next((r for r in records if r.read_id == read_id and r.action == "read"), None)
-    if match is None:
-        return {"error": "unknown_read_id", "read_id": read_id}
-    log_outcome(
+    return _handle_outcome(
+        read_id,
+        outcome,
+        reason,
         root,
-        OutcomeRecord(
-            ts=_now(),
-            trowel_session_id=identity["trowel_session_id"],
-            cc_session_id=identity["cc_session_id"],
-            host_kind=identity["host_kind"],
-            native_session_id=identity["native_session_id"],
-            toolUseId=toolUseId,
-            read_id=read_id,
-            memory_id=match.memory_id,
-            outcome=outcome,
-            reason=reason,
-        ),
+        identity,
+        toolUseId,
+        now_fn=_now,
+        read_access_log_fn=read_access_log,
+        log_outcome_fn=log_outcome,
     )
-    return {"ok": True, "read_id": read_id, "outcome": outcome}
 
 
-# --------------------------------------------------------------------------- MCP run
-
-#: slice-052 温和版: search tool description nudges the model to memory.read
-#: requires_read=true hits instead of summary-scanning them. The signal was
-#: always returned (``_hit``), just never emphasized — audit found 304 search
-#: / 13 read. The aggressive variant (drop summary when requires_read=true) is
-#: a slice-053 spike; this keeps the search contract intact (C-6).
 _SEARCH_DESC = (
     "Search memory notes by query. Returns candidates (title+summary+uri). "
     "Hits with requires_read=true must be opened with memory.read — don't "
@@ -306,7 +162,7 @@ _SEARCH_DESC = (
 
 
 def _build_server(root: Path) -> Server:
-    """Build the lowlevel Server with the three memory tools."""
+    """构造保留请求元数据的三个 memory 工具。"""
     server = Server("memory")
     store = MemoryStore(root)
     dictionary_path = root / _DICT_L0
@@ -346,7 +202,10 @@ def _build_server(root: Path) -> Server:
                     "type": "object",
                     "properties": {
                         "read_id": {"type": "string"},
-                        "outcome": {"type": "string", "enum": ["helpful", "harmful", "unused", "unknown"]},
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["helpful", "harmful", "unused", "unknown"],
+                        },
                         "reason": {"type": "string"},
                     },
                     "required": ["read_id", "outcome"],
@@ -396,18 +255,23 @@ def _build_server(root: Path) -> Server:
         is_error = isinstance(result, dict) and "error" in result
         return types.ServerResult(
             types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=json.dumps(result, ensure_ascii=False),
+                    )
+                ],
                 isError=is_error,
             )
         )
 
-    # bypass @server.call_tool() (drops _meta); register directly
+    # 装饰器会丢弃 _meta，必须直接注册底层请求处理器。
     server.request_handlers[types.CallToolRequest] = _handle_call_tool
     return server
 
 
 async def main() -> None:
-    """Run the stdio MCP server. MEMORY_ROOT env selects the memory tree."""
+    """按 MEMORY_ROOT 启动 stdio MCP server。"""
     root_env = os.environ.get("MEMORY_ROOT", "").strip()
     if root_env:
         root = Path(root_env).expanduser()
@@ -415,7 +279,9 @@ async def main() -> None:
         from trowel_py.memory.paths import resolve_memory_root
 
         root = resolve_memory_root()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     server = _build_server(root)
     init_options = server.create_initialization_options(
         notification_options=NotificationOptions(),

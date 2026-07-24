@@ -1,25 +1,18 @@
-"""fcntl lock coordinating dictionary readers vs the rebuild publisher.
+"""协调字典读取与重建发布的 ``fcntl`` 文件锁。
 
-slice-064 C-2: the rebuild publish path takes an exclusive lock; the MCP search
-path (and the read-only check) take a shared lock. This prevents a concurrent
-rebuild from swapping/deleting an L1 file while a reader is mid-retrieval, and
-prevents two rebuilds from racing on the same ``dictionary-L1`` dir.
-
-Lives in its own module so both ``dictionary`` (which imports the check) and
-``dictionary_check`` (which the check's own SH lock needs) can import it without
-a cycle. Off-Unix (``fcntl`` is None) the lock is a no-op — mutual exclusion
-then relies on the caller (review_lock / tidy_lock) being single-instance in
-practice, and on the next check rebuilding after any torn write.
+发布路径持有排他锁，搜索与只读检查持有共享锁，避免读取期间替换 L1 文件或多个
+重建同时发布。非 Unix 平台没有 ``flock``，此锁会降级为空操作。
 """
+
 from __future__ import annotations
 
 import contextlib
 import os
 from pathlib import Path
 
-try:  # Unix-only; Windows has no flock → the lock becomes a no-op there.
+try:
     import fcntl
-except ImportError:  # pragma: no cover — non-Unix
+except ImportError:  # pragma: no cover - 非 Unix 平台
     fcntl = None  # type: ignore[assignment]
 
 _DICT_LOCK_REL = "meta/.dictionary.lock"
@@ -27,7 +20,7 @@ _DICT_LOCK_REL = "meta/.dictionary.lock"
 
 @contextlib.contextmanager
 def dictionary_lock(root: Path | str, *, exclusive: bool):
-    """``exclusive=True`` → LOCK_EX (rebuild publish); ``False`` → LOCK_SH (read)."""
+    """发布使用 ``LOCK_EX``，读取使用 ``LOCK_SH``。"""
     if fcntl is None:
         yield
         return

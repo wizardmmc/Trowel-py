@@ -1,4 +1,3 @@
-"""tests for the online-read-path access/outcome logs (slice-040-c)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +13,6 @@ from trowel_py.memory.access_log import (
 
 
 def test_log_access_roundtrip(tmp_path: Path) -> None:
-    """log_access writes one JSONL line; read_access_log returns it parsed."""
     rec = AccessRecord(
         ts="2026-07-11T10:00:00",
         trowel_session_id="trowel-1",
@@ -54,21 +52,35 @@ def test_log_outcome_roundtrip(tmp_path: Path) -> None:
 
 
 def test_corrupt_line_skipped(tmp_path: Path) -> None:
-    """A single corrupt line must not break reading the rest (038 W1)."""
     rec = AccessRecord(
-        ts="t", trowel_session_id="s", cc_session_id="c", toolUseId="u",
-        action="read", search_id="s1", read_id="r1", memory_id="m1",
+        ts="t",
+        trowel_session_id="s",
+        cc_session_id="c",
+        toolUseId="u",
+        action="read",
+        search_id="s1",
+        read_id="r1",
+        memory_id="m1",
     )
     log_access(tmp_path, rec)
     bad = tmp_path / "meta" / "access-log.jsonl"
     with bad.open("a", encoding="utf-8") as f:
         f.write("{not valid json\n")
-    log_access(tmp_path, AccessRecord(
-        ts="t2", trowel_session_id="s", cc_session_id="c", toolUseId="u2",
-        action="read", search_id="s2", read_id="r2", memory_id="m2",
-    ))
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="t2",
+            trowel_session_id="s",
+            cc_session_id="c",
+            toolUseId="u2",
+            action="read",
+            search_id="s2",
+            read_id="r2",
+            memory_id="m2",
+        ),
+    )
     out = read_access_log(tmp_path)
-    assert len(out) == 2  # corrupt line skipped, both good lines kept
+    assert len(out) == 2
 
 
 def test_read_empty_when_absent(tmp_path: Path) -> None:
@@ -77,12 +89,6 @@ def test_read_empty_when_absent(tmp_path: Path) -> None:
 
 
 def test_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
-    """slice-078: host_kind + native_session_id persist and read back.
-
-    A Codex-origin record carries host_kind='codex' + the thread_id as
-    native_session_id, and leaves cc_session_id empty (Codex has no cc
-    session). The legacy cc_session_id field still works for CC-origin rows.
-    """
     codex_rec = AccessRecord(
         ts="2026-07-20T10:00:00",
         trowel_session_id="trowel-codex-1",
@@ -113,17 +119,15 @@ def test_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
     codex, cc = out
     assert codex.host_kind == "codex"
     assert codex.native_session_id == "codex-thread-abc"
-    assert codex.cc_session_id == ""  # Codex path has no cc session
+    assert codex.cc_session_id == ""
     assert cc.host_kind == "cc"
     assert cc.native_session_id == "cc-sid-1"
-    assert cc.cc_session_id == "cc-sid-1"  # legacy field mirrors native
+    assert cc.cc_session_id == "cc-sid-1"
 
 
 def test_pre078_log_line_reads_back_with_empty_host_fields(
     tmp_path: Path,
 ) -> None:
-    """A pre-078 log line lacks host_kind/native_session_id — reading it back
-    must not crash, and the new fields default to empty (back-compat)."""
     access = tmp_path / "meta" / "access-log.jsonl"
     access.parent.mkdir(parents=True)
     access.write_text(
@@ -139,9 +143,6 @@ def test_pre078_log_line_reads_back_with_empty_host_fields(
 
 
 def test_outcome_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
-    """slice-078: OutcomeRecord carries the same host-neutral pair as
-    AccessRecord. A Codex-origin outcome has host_kind='codex' + the
-    thread/trowel id; a CC-origin outcome mirrors cc_session_id."""
     codex_rec = OutcomeRecord(
         ts="2026-07-20T10:00:02",
         trowel_session_id="trowel-codex-1",
@@ -178,8 +179,6 @@ def test_outcome_host_neutral_identity_roundtrip(tmp_path: Path) -> None:
 def test_pre078_outcome_line_reads_back_with_empty_host_fields(
     tmp_path: Path,
 ) -> None:
-    """A pre-078 outcome log line lacks the new fields — reading it back must
-    not crash (same _read helper as AccessRecord, but pinned independently)."""
     outcome = tmp_path / "meta" / "outcome-log.jsonl"
     outcome.parent.mkdir(parents=True)
     outcome.write_text(

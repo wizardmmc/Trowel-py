@@ -1,16 +1,5 @@
-"""profile HTTP routes (slice-049 GET/PUT + slice-050 suggestion queue).
+"""profile 与建议队列的 HTTP 路由，所有读写都经过 memory store。"""
 
-The envelope ``{success, data, error}`` is inlined as literal dicts (mirrors
-player routes — the repo has no shared envelope helper). Reads/writes go
-through the store (slice-047), never bypassing it.
-
-slice-050 adds the suggestion candidate-queue endpoints:
-- ``GET /api/profile/suggestions``: the pending AI suggestions for the user.
-- ``PATCH /api/profile/suggestions/{id}``: accept (→ the front-end then merges
-  it into the profile via PUT) or discard. The agent never writes profile.md —
-  accept is the user's explicit action, and even then it lands through the
-  normal PUT path with ``source=ai-calibration`` (C-1 structural provenance).
-"""
 from __future__ import annotations
 
 import logging
@@ -37,7 +26,6 @@ router = APIRouter()
 
 
 def _to_dto(p: Profile) -> ProfileDTO:
-    """Project the domain Profile into the response DTO."""
     return ProfileDTO(
         ability=p.ability,
         methodology=p.methodology,
@@ -50,7 +38,6 @@ def _to_dto(p: Profile) -> ProfileDTO:
 
 
 def _to_suggestion_dto(s: Suggestion) -> SuggestionDTO:
-    """Project a domain Suggestion into the response DTO (sources tuple → list)."""
     return SuggestionDTO(
         id=s.id,
         dimension=s.dimension,
@@ -64,7 +51,7 @@ def _to_suggestion_dto(s: Suggestion) -> SuggestionDTO:
 @router.get("")
 @router.get("/")
 def get_profile(store: MemoryStore = Depends(get_profile_store)) -> dict:
-    """return the user self-description profile (empty Profile on cold start)."""
+    """返回用户画像；首次使用时返回空画像。"""
     logger.info("get /api/profile")
     profile = store.load_profile()
     return {"success": True, "data": _to_dto(profile).model_dump(), "error": None}
@@ -76,7 +63,7 @@ def put_profile(
     update: ProfileUpdate,
     store: MemoryStore = Depends(get_profile_store),
 ) -> dict:
-    """write the five dims back to profile.md via the store."""
+    """通过 store 写入五个画像维度。"""
     logger.info("put /api/profile (source=%s)", update.source)
     try:
         fresh = write_profile(store, update)
@@ -88,13 +75,12 @@ def put_profile(
 
 @router.get("/suggestions")
 def get_suggestions(store: MemoryStore = Depends(get_profile_store)) -> dict:
-    """return the pending AI profile suggestions for the user to review."""
+    """返回等待用户审核的画像建议。"""
     logger.info("get /api/profile/suggestions")
     try:
         items = pending_suggestions(store.root)
     except ValueError as e:
-        # a corrupt queue file (bad JSON / unknown enum) → report a friendly
-        # error instead of leaking the internal path through the 500 handler.
+        # 队列损坏时返回稳定错误，不能通过全局 500 响应泄露内部路径。
         logger.warning("get /api/profile/suggestions: corrupt queue: %s", e)
         return {"success": False, "data": None, "error": "建议队列读取失败"}
     return {
@@ -110,16 +96,8 @@ def patch_suggestion(
     update: SuggestionStatusUpdate,
     store: MemoryStore = Depends(get_profile_store),
 ) -> dict:
-    """accept / discard one suggestion by flipping its status.
-
-    Accept does NOT itself write profile.md — the front-end reads the accepted
-    suggestion, merges it into the profile, and PUTs with
-    ``source=ai-calibration`` (C-1). This endpoint only records the user's
-    decision in the queue.
-    """
-    logger.info(
-        "patch /api/profile/suggestions/%s -> %s", suggestion_id, update.status
-    )
+    """记录用户接受或丢弃建议的决定，但不直接写入 profile.md。"""
+    logger.info("patch /api/profile/suggestions/%s -> %s", suggestion_id, update.status)
     try:
         update_suggestion_status(store.root, suggestion_id, update.status)
     except KeyError:

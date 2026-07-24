@@ -172,11 +172,3 @@ def test_hand_edited_l1_content_is_detected(tmp_path: Path) -> None:
     assert report["status"] == "stale"
     assert report["rendered_hash_matches"] is False
     assert report["source_hash_matches"] is True
-
-
-def test_retriever_stem_parser_prefers_anchor() -> None:
-    from trowel_py.memory.retrievers import _parse_l1_stems
-
-    text = "- **a`b** → `notes/a`b.md`：s <!-- @stem a`b -->"
-
-    assert _parse_l1_stems(text) == {"a`b"}

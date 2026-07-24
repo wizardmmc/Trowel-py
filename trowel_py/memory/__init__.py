@@ -1,12 +1,5 @@
-"""milestone6-v2 memory system (slice-038 foundation).
+"""memory 双轨存储、layer-one core 与三个闭环的稳定公开入口。
 
-Dual-track store (knowledge notes + experience diary) + layer-one core,
-frontmatter schema + validator, trigger framework (inject/write/tidy hooks,
-all空跑), and observability groundwork (raw access/outcome logging,
-precision/recall metrics, an offline retrieval eval harness, and the
-review-reflection prompt template).
-
-This package only lays the container + contracts. The three closed loops
-(extract-write / tidy-compress / read-inject) fill their business logic in
-slices 040 / 041 / 039 respectively.
+knowledge notes 与 experience diary 分轨保存；frontmatter 校验、访问与效果日志、
+检索评估和反思 prompt 为写入、整理、注入闭环提供共同契约。
 """

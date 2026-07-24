@@ -73,8 +73,7 @@ def read_l1_files(root: Path) -> dict[str, str]:
     if not directory.exists():
         return {}
     return {
-        path.stem: path.read_text(encoding="utf-8")
-        for path in directory.glob("*.md")
+        path.stem: path.read_text(encoding="utf-8") for path in directory.glob("*.md")
     }
 
 

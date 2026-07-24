@@ -1,15 +1,10 @@
-"""raw access/outcome logging — the observability insurance substrate (slice-038).
+"""早期原始访问与会话结果日志的兼容接口。
 
-Append-only JSONL of RAW ingredients only. Per C-9 this layer NEVER
-pre-classifies (no is_miss / verdict / novel-vs-miss labels): online judgment is
-done by the review-reflection (``reflection.py``) over these logs. If a
-reflection ever looks wrong, the raw log is the recomputeable insurance.
-
-- access-log: which note bodies were opened during a lookup (also feeds
-  ``record_ref`` retirement stats).
-- outcome-log: raw session outcome ingredients (retry count, corrections,
-  transcript ref) — the negative signals that *might* indicate a recall miss.
+该接口只记录原始事实，不预先分类。它与 :mod:`trowel_py.memory.access_log`
+复用文件名但使用不同 schema，调用方不得在同一 Memory 根目录混用两套写入
+接口。
 """
+
 from __future__ import annotations
 
 import json
@@ -27,13 +22,7 @@ _OUTCOME_LOG = "outcome-log.jsonl"
 
 @dataclass(frozen=True)
 class AccessRecord:
-    """One note-open event.
-
-    Attributes:
-        note_id: the note filename stem that was opened.
-        when: ISO timestamp / turn id of the open.
-        context_ref: session or turn that triggered the open.
-    """
+    """一次笔记正文打开事件。"""
 
     note_id: str
     when: str
@@ -42,15 +31,7 @@ class AccessRecord:
 
 @dataclass(frozen=True)
 class OutcomeRecord:
-    """Raw session outcome ingredients (NO classification — C-9).
-
-    Attributes:
-        session_ref: the session this outcome belongs to.
-        when: ISO timestamp.
-        retry_count: how many retries happened (a possible miss signal).
-        corrections: how many times the human corrected the model.
-        transcript_ref: where the full transcript lives for recompute.
-    """
+    """未分类的会话结果事实。"""
 
     session_ref: str
     when: str
@@ -59,30 +40,47 @@ class OutcomeRecord:
     transcript_ref: str = ""
 
 
-def log_note_access(root: Path | str, note_id: str, when: str,
-                    context_ref: str = "") -> None:
-    """Append a note-open record to access-log.jsonl."""
-    _append(Path(root) / _META_DIR / _ACCESS_LOG,
-            asdict(AccessRecord(note_id=note_id, when=when, context_ref=context_ref)))
+def log_note_access(
+    root: Path | str, note_id: str, when: str, context_ref: str = ""
+) -> None:
+    """追加一条笔记打开记录。"""
+    _append(
+        Path(root) / _META_DIR / _ACCESS_LOG,
+        asdict(AccessRecord(note_id=note_id, when=when, context_ref=context_ref)),
+    )
 
 
-def log_session_outcome(root: Path | str, session_ref: str, when: str, *,
-                        retry_count: int = 0, corrections: int = 0,
-                        transcript_ref: str = "") -> None:
-    """Append a raw session-outcome record to outcome-log.jsonl (no label, C-9)."""
-    _append(Path(root) / _META_DIR / _OUTCOME_LOG,
-            asdict(OutcomeRecord(session_ref=session_ref, when=when,
-                                 retry_count=retry_count, corrections=corrections,
-                                 transcript_ref=transcript_ref)))
+def log_session_outcome(
+    root: Path | str,
+    session_ref: str,
+    when: str,
+    *,
+    retry_count: int = 0,
+    corrections: int = 0,
+    transcript_ref: str = "",
+) -> None:
+    """追加一条不含分类标签的会话结果记录。"""
+    _append(
+        Path(root) / _META_DIR / _OUTCOME_LOG,
+        asdict(
+            OutcomeRecord(
+                session_ref=session_ref,
+                when=when,
+                retry_count=retry_count,
+                corrections=corrections,
+                transcript_ref=transcript_ref,
+            )
+        ),
+    )
 
 
 def read_access_log(root: Path | str) -> list[AccessRecord]:
-    """Return all access records in append order (empty list if absent)."""
+    """按追加顺序读取访问记录；文件不存在时返回空列表。"""
     return _read(Path(root) / _META_DIR / _ACCESS_LOG, AccessRecord)
 
 
 def read_outcome_log(root: Path | str) -> list[OutcomeRecord]:
-    """Return all outcome records in append order (empty list if absent)."""
+    """按追加顺序读取结果记录；文件不存在时返回空列表。"""
     return _read(Path(root) / _META_DIR / _OUTCOME_LOG, OutcomeRecord)
 
 
@@ -93,13 +91,7 @@ def _append(path: Path, obj: dict[str, Any]) -> None:
 
 
 def _read(path: Path, cls: type) -> list[Any]:
-    """Read all records in append order, skipping corrupt lines (W1).
-
-    The logs are append-only insurance written by concurrent writers (review
-    jobs, retries); one bad line must not make the whole history unreadable —
-    that would defeat the "recomputeable insurance" role. Bad lines are skipped
-    with a warning (file + line number + head of the line).
-    """
+    """按追加顺序返回可解码且字段兼容的记录。"""
     if not path.exists():
         return []
     out: list[Any] = []

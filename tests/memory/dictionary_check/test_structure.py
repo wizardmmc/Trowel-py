@@ -80,10 +80,7 @@ def test_duplicate_entry_marks_stale(tmp_path: Path) -> None:
     report = check_dictionary(tmp_path)
 
     assert report["status"] == "stale"
-    assert alpha in {
-        duplicate["stem"]
-        for duplicate in report["duplicate_entries"]
-    }
+    assert alpha in {duplicate["stem"] for duplicate in report["duplicate_entries"]}
 
 
 def test_missing_l1_file_marks_stale(tmp_path: Path) -> None:

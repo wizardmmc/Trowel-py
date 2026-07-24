@@ -1,56 +1,36 @@
-"""trigger framework for the three closed loops (slice-038).
+"""Memory 的进程内同步 hook registry。"""
 
-Three registration slots, all empty/空跑 in 038 — business logic registers later:
-
-- ``inject`` (event-driven, 039): fires at cc session start; the real system
-  injection mounts on the reverse-proxy layer.
-- ``write_job`` (batch, 040): the daily review that extracts knowledge AND runs
-  the review-reflection. NOT per-turn.
-- ``tidy_job`` (batch, 041): weekly/monthly compress + promote + dictionary
-  regen + retire. Triggered via ``trowel memory tidy``.
-
-Dispatching in 038 only calls the registered callables and appends to
-``dispatch_log``; with nothing registered, it is a no-op trace (C-6).
-"""
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Lock
 from typing import Any
 
 HookFn = Callable[[Any], None]
 
 
 class HookRegistry:
-    """A registry + dispatcher for one set of memory triggers.
-
-    ``dispatch_log`` records every dispatch (kind + event) so the空跑 framework
-    is observable in tests and CLI smoke runs.
-    """
-
     def __init__(self) -> None:
         self._inject: list[HookFn] = []
         self._write: list[HookFn] = []
         self._tidy: list[HookFn] = []
+        self._registration_lock = Lock()
         self.dispatch_log: list[str] = []
 
     def register_inject_hook(self, fn: HookFn) -> HookFn:
-        # dedup: slice-046 — register is called from multiple paths (CLI +
-        # in-app scheduler) and from worker threads; a duplicate would fire the
-        # hook twice per dispatch. Idempotent append keeps every caller safe.
-        if fn not in self._inject:
-            self._inject.append(fn)
-        return fn
+        return self._register(self._inject, fn)
 
     def register_write_job(self, fn: HookFn) -> HookFn:
-        # dedup: see register_inject_hook (slice-046).
-        if fn not in self._write:
-            self._write.append(fn)
-        return fn
+        return self._register(self._write, fn)
 
     def register_tidy_job(self, fn: HookFn) -> HookFn:
-        # dedup: see register_inject_hook (slice-046).
-        if fn not in self._tidy:
-            self._tidy.append(fn)
+        return self._register(self._tidy, fn)
+
+    def _register(self, fns: list[HookFn], fn: HookFn) -> HookFn:
+        # scheduler worker threads 可同时注册，检查与追加必须处于同一临界区。
+        with self._registration_lock:
+            if fn not in fns:
+                fns.append(fn)
         return fn
 
     def dispatch_inject(self, event: Any = None) -> None:
@@ -68,8 +48,7 @@ class HookRegistry:
             fn(event)
 
 
-#: Process-wide default registry (CLI / wiring convenience). Tests use a fresh
-#: ``HookRegistry()`` for isolation.
+# 进程级默认 registry；CLI 和测试可注入独立实例。
 default = HookRegistry()
 
 register_inject_hook = default.register_inject_hook

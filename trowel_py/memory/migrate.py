@@ -1,21 +1,5 @@
-"""one-shot schema migration for legacy notes (slice-041).
+"""为旧 note 补齐稳定身份和生命周期字段的一次性迁移。"""
 
-Backfills the slice-041 fields onto notes written before this slice:
-- ``memory_id``: fresh UUIDv7 (D1) — the stable identity that survives slug
-  edits and threads the supersedes chain.
-- ``status``: ``active`` by default; ``retired`` when the legacy file carried
-  ``retired:true`` (C-9 — status subsumes the removed retired:bool).
-- ``valid_from``: copied from ``created`` (when the conclusion became true).
-
-Strips the removed fields (C-9): ``retired:bool`` and ``confidence`` (the
-latter was a derived mirror of ``verification``).
-
-Default is dry-run (reports what would change, writes nothing). ``--apply``
-backs up the memory root to a timestamped sibling before writing. Idempotent:
-notes already carrying ``memory_id`` are skipped. The filename (slug) is NEVER
-renamed — memory_id is a frontmatter field, the slug stays the human-readable
-index (D1, grill 2026-07-11).
-"""
 from __future__ import annotations
 
 import shutil
@@ -26,23 +10,12 @@ from trowel_py.memory.ids import uuid7
 from trowel_py.memory.store import _dump_frontmatter, _split_frontmatter
 
 _NOTES_DIR = "notes"
-# fields removed by slice-041 (C-9): status subsumes retired; verification
-# subsumes confidence. They are dropped from the frontmatter on migrate.
+# status 取代 retired，verification 取代 confidence。
 _REMOVED_FIELDS = ("retired", "confidence")
 
 
 @dataclass(frozen=True)
 class MigrateReport:
-    """Outcome of one migrate pass.
-
-    Attributes:
-        scanned: total note files inspected.
-        migrated: notes that needed (and, under apply, received) the backfill.
-        skipped: notes already carrying ``memory_id`` (idempotent re-run).
-        backed_up: backup directory path when ``apply=True`` and at least one
-            note was migrated; None otherwise (no write → no backup needed).
-    """
-
     scanned: int
     migrated: int
     skipped: int
@@ -50,23 +23,14 @@ class MigrateReport:
 
 
 def migrate_memory(root: Path | str, *, apply: bool) -> MigrateReport:
-    """Backfill slice-041 fields onto legacy notes (idempotent).
-
-    Args:
-        root: the memory root directory.
-        apply: False = dry-run (report only, no writes); True = back up the
-            root then write the migrated notes in place.
-
-    Returns:
-        MigrateReport with scanned/migrated/skipped counts and the backup path.
-    """
+    """dry-run 只报告计划；apply 在原地写入前备份整个 memory root。"""
     root_path = Path(root)
     notes_dir = root_path / _NOTES_DIR
     if not notes_dir.exists():
         return MigrateReport(scanned=0, migrated=0, skipped=0, backed_up=None)
 
-    # Plan first (no writes), so dry-run and apply share one read path.
-    plans: list[tuple[Path, dict, str]] = []  # (path, new_fm, body)
+    # 先完成无写入计划，使 dry-run 与 apply 共用读取和计数路径。
+    plans: list[tuple[Path, dict, str]] = []
     scanned = 0
     skipped = 0
     for p in sorted(notes_dir.glob("*.md")):
@@ -74,13 +38,13 @@ def migrate_memory(root: Path | str, *, apply: bool) -> MigrateReport:
         text = p.read_text(encoding="utf-8")
         fm, body = _split_frontmatter(text)
         if fm is None or fm.get("type") != "note":
-            continue  # not a note (hand-corrupted or non-note) — leave alone
+            continue  # 损坏或非 note 文件不由本迁移修复。
         if fm.get("memory_id"):
-            skipped += 1  # already migrated
+            skipped += 1
             continue
         new_fm = {k: v for k, v in fm.items() if k not in _REMOVED_FIELDS}
         new_fm["memory_id"] = str(uuid7())
-        # legacy retired:true → status=retired; else active (C-8/C-9).
+        # 旧 retired 字段必须先于字段删除解释。
         if fm.get("retired"):
             new_fm["status"] = "retired"
         else:
@@ -93,14 +57,10 @@ def migrate_memory(root: Path | str, *, apply: bool) -> MigrateReport:
             scanned=scanned, migrated=len(plans), skipped=skipped, backed_up=None
         )
 
-    # apply: back up once, then write every planned note in place.
-    # W6 (auto-cr): uniqued backup path — same-second re-runs won't crash on
-    # FileExistsError (040-a repair.py hit this).
+    # 同秒已有备份时递增后缀，既不覆盖旧备份也不中断本次迁移。
     import time
 
-    base = root_path.with_name(
-        root_path.name + f".bak-migrate-{int(time.time())}"
-    )
+    base = root_path.with_name(root_path.name + f".bak-migrate-{int(time.time())}")
     backup = base
     i = 2
     while backup.exists():
