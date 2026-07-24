@@ -1,25 +1,7 @@
-"""Self Manifest assembler (slice-085).
+"""根据 runtime 事实组装 Self Manifest，并渲染到 memory 注入之前。
 
-Builds a frozen :class:`SelfManifest` from runtime facts + M/P switches,
-and renders it into the 套壳 (shell-on-top) injection text that is
-prepended to the memory injection.
-
-Layering (slice-085 spec §套壳而非替换): cc / codex already declare "you
-help users with software engineering" and "you have tools / permissions"
-in their default system prompt. This section does NOT repeat that — it
-only adds the Trowel layer: you are invoked by Trowel, Trowel is a
-continuous subject, this action is one episode of it, and here are
-Trowel's subsystems with which are injected this call.
-
-Cache friendliness (slice-085 invariant): the stable identity head
-(identity / version / continuity note) is rendered as the verbatim prefix
-of the section and never changes within a version, so a prompt-cache prefix
-stays warm while the dynamic tail (本次调用 / 身体) shifts with
-runtime / model / switches. No precise timestamp is embedded in the text.
-
-M/P off non-leak (pass 5): the section only states the switch state
-("未注入"); it never carries the memory root path, the search→read pointer
-or any profile body — those belong to ``memory/injection.py``.
+稳定身份头在同一版本内保持字节不变且不含时间戳，动态调用信息放在尾部。未注入
+的 memory/profile 只暴露开关状态，不携带路径、检索指针或正文。
 """
 
 from __future__ import annotations
@@ -30,16 +12,12 @@ from trowel_py.model_os.types import SelfManifest, SubsystemState
 
 logger = logging.getLogger(__name__)
 
-#: Stable identity. Bumped by humans on upgrade; never by the model.
+# 身份版本只能随系统升级调整，不能由模型自行修改。
 IDENTITY = "Trowel"
 VERSION = "trowel-os-v0"
 CONTINUITY_NOTE = "本次行动是持续主体的一段活动"
 
-#: Trowel-level subsystems that constitute its body schema. These are the
-#: capabilities Trowel-as-a-system provides — NOT the native runtime's
-#: tool/MCP roster (cc/codex carry those themselves). Pure product features
-#: (garden / pet / cards / feynman) are deliberately excluded: the model
-#: does not need to know about them to do its work.
+# 这里只声明 Trowel 系统能力；runtime 自带的工具/MCP 不重复进入身体图式。
 TROWEL_SUBSYSTEMS: tuple[str, ...] = (
     "memory",
     "profile",
@@ -48,8 +26,6 @@ TROWEL_SUBSYSTEMS: tuple[str, ...] = (
     "todo_loop",
 )
 
-#: Human-readable labels for each subsystem, used in the 身体 (body) section.
-#: Order follows TROWEL_SUBSYSTEMS.
 _SUBSYSTEM_LABELS: dict[str, str] = {
     "memory": "记忆系统：跨会话记忆",
     "profile": "用户画像：合作者的画像",
@@ -61,11 +37,7 @@ _SUBSYSTEM_LABELS: dict[str, str] = {
     "todo_loop": "todo loop：任务跟踪",
 }
 
-#: The reserved namespace marker for the Self section heading. Memory content
-#: (diary / dictionary L0 — model-writable) must not carry this marker;
-#: :func:`build_session_injection` watches for smuggling and warns. The prefix
-#: form (no closing paren) matches regardless of the appended version suffix,
-#: so the guard survives a version bump.
+# 不含右括号的前缀可跨版本识别 Memory 对 Self 命名空间的冒用。
 _SELF_NAMESPACE_MARKER = "# 关于你（Self"
 
 
@@ -81,23 +53,10 @@ def build_self_manifest(
     episode_id: str | None = None,
     native_session_id: str | None = None,
 ) -> SelfManifest:
-    """Assemble a :class:`SelfManifest` from runtime facts + switches.
+    """组装非持久化的 Self Manifest。
 
-    Args:
-        runtime: which native host this session runs on ("cc" | "codex").
-        model: effective model the host reported; ``None`` means unknown
-            (host has not echoed yet). Never paper over None with a cache.
-        effort: reasoning-effort override; ``None`` means unknown (cc has
-            no machine echo per slice-083).
-        memory_enabled: whether memory content is injected this call.
-        profile_enabled: whether profile content is injected this call.
-        permission_preset: runtime permission preset, or ``None``.
-        task_id / episode_id / native_session_id: optional location
-            pointers; left ``None`` when no Task/Episode is bound yet.
-
-    Returns:
-        A frozen :class:`SelfManifest`. Not persisted; the caller renders
-        on demand via :func:`render_self_injection`.
+    ``model`` 和 ``effort`` 为 ``None`` 表示 runtime 尚未提供事实，不能用缓存值
+    掩盖；未绑定 Task/Episode 时，对应位置指针保持 ``None``。
     """
 
     return SelfManifest(
@@ -123,18 +82,11 @@ def build_self_manifest(
 
 
 def _native_tools_note(runtime: str) -> str:
-    """Note that native tools/MCP come from the runtime, not duplicated here."""
-
     return f"本次 runtime 的工具与 MCP 由 {runtime} 自带，不在 trowel 层重复"
 
 
 def _authorization_scope(permission_preset: str | None) -> str:
-    """Render the authorization scope from the permission preset.
-
-    v0 is a plain carry of the preset token; richer derivation (which
-    concrete actions need approval) is left to slice-087 (Episode
-    ownership / suspend).
-    """
+    """当前只透传 runtime 的授权模式，不推导具体动作权限。"""
 
     if permission_preset is None:
         return "授权模式：未定"
@@ -142,27 +94,13 @@ def _authorization_scope(permission_preset: str | None) -> str:
 
 
 def _state_line(state: SubsystemState) -> str:
-    """Render a subsystem's injection state without leaking content."""
-
     if state == SubsystemState.INJECTED:
         return "本次内容已注入"
     return "本次内容未注入"
 
 
 def render_self_injection(manifest: SelfManifest) -> str:
-    """Render the Self section (套壳) prepended to the memory injection.
-
-    Structure (cache-friendly):
-    - **Stable head** (verbatim, never changes within a version): the
-      ``# 关于你（Self）`` heading + identity + continuity note. Everything
-      up to ``## 本次调用`` is static, so the prompt-cache prefix stays warm.
-    - **Dynamic tail**: 本次调用 (runtime / model / native note / auth) and
-      Trowel 的身体 (subsystem list with injection states).
-
-    The model sees its continuous-subject framing, the Trowel body schema,
-    and which subsystems are injected this call — without any memory root
-    path or profile body leaking through (pass 5).
-    """
+    """渲染 Self 注入；稳定身份头在动态调用信息之前，以复用 prompt cache。"""
 
     runtime = manifest.runtime
     model_line = manifest.model if manifest.model is not None else "未定"
@@ -209,26 +147,10 @@ def build_session_injection(
     profile_enabled: bool,
     permission_preset: str | None = None,
 ) -> str:
-    """Build the full session injection: Self section prepended to memory text.
+    """按 Self 在前、Memory 在后的顺序组装会话注入。
 
-    This is the single compose point both spawn sites (``cc_host`` and the
-    Codex hub path) call, so they produce identical ordering for identical
-    switches (mirrors slice-078 C-4). The memory text is built by the caller
-    via ``memory/injection.py`` and passed in — this module never imports
-    memory, keeping ``model_os`` free of any ``memory`` dependency.
-
-    Args:
-        self_enabled: slice-085 switch. False drops the entire Self section
-            (A/B baseline); ``memory_text`` is returned unchanged.
-        memory_text: the already-built memory injection (may be ``""``).
-        runtime: friendly runtime name ("cc" | "codex").
-        model / effort / memory_enabled / profile_enabled / permission_preset:
-            forwarded to :func:`build_self_manifest` for the dynamic tail.
-
-    Returns:
-        The composed injection text. Empty when ``self_enabled`` is False AND
-        ``memory_text`` is empty — the caller maps ``""`` to ``None`` so the
-        native host omits its injection flag entirely.
+    CC 与 Codex 共用此入口；本模块接收已经生成的 ``memory_text``，不依赖 Memory
+    领域。关闭 Self 时原样返回 ``memory_text``，空字符串由调用方解释为不注入。
     """
 
     if not self_enabled:
@@ -242,11 +164,7 @@ def build_session_injection(
         permission_preset=permission_preset,
     )
     self_text = render_self_injection(manifest)
-    # slice-085 anti-forgery guard: Memory content (diary / dictionary L0,
-    # model-writable) must not smuggle a second Self section. Detect the
-    # reserved namespace marker and warn; the canonical Self stays first so
-    # the real identity wins the prefix. Memory-write-layer enforcement
-    # (stripping the smuggled block at source) is deferred to a later slice.
+    # 这里只告警，不改写 Memory；规范 Self 保持在前，源头过滤由 Memory 领域负责。
     if _SELF_NAMESPACE_MARKER in memory_text:
         logger.warning(
             "memory injection carries the reserved Self namespace marker "

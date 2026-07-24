@@ -1,9 +1,4 @@
-"""Codex rate-limit -> quota mapping (slice-093-pre, criterion 4).
-
-Fixture is the real Codex 0.144.0 ``account/rateLimits/updated`` notification
-(``tests/codex_host/fixtures/notifications.jsonl`` L10), unfolded to the
-slice-077 translator's AgentEvent payload shape.
-"""
+"""基于真实 Codex 录制验证 rate-limit 映射。"""
 
 from __future__ import annotations
 
@@ -42,7 +37,6 @@ def test_real_payload_maps_rate_limit_window_and_converts_seconds_to_ms() -> Non
     window = snap.windows[0]
     assert window.kind is QuotaWindowKind.RATE_LIMIT
     assert window.used_percent == 20
-    # resetsAt was epoch SECONDS (1784949908) -> milliseconds.
     assert window.resets_at == 1784949908000
 
 

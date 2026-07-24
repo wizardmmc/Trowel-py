@@ -1,23 +1,4 @@
-"""Lease 共表修复 + fencing counter tests (slice-087 pass criteria 14, 15).
-
-slice-087 reuses the 084 ``leases`` table for Episode ownership, and codex's
-grill caught two pre-existing bugs in that table:
-
-1. ``idx_leases_idem`` was globally unique on ``idempotency_key`` alone, so the
-   same key could not be reused across an ``episode_ownership`` lease and a
-   ``work_lease`` — one would silently return the OTHER resource's lease.
-   Fix (spec line 200, pass 14): scope the index to
-   ``(resource_type, resource_id, idempotency_key)`` and have ``acquire_lease``
-   verify the resource when a key hit fires.
-
-2. ``fencing_token`` used to be ``MAX(token)+1`` over the live rows, so garbage-
-   collecting old lease rows would roll the token BACK. Fix (spec line 228,
-   pass 15): a separate ``lease_fence_counters`` table holds the monotonic
-   counter; GC of lease rows cannot touch it.
-
-These tests assert both fixes hold. ``FakeClock`` drives TTL expiry so no real
-wall-clock sleep is needed.
-"""
+"""Episode ownership lease 的资源域幂等、接管历史与 fencing 高水位测试。"""
 
 from __future__ import annotations
 
@@ -28,17 +9,9 @@ from trowel_py.model_os.store import LeaseConflict, ModelOsStore
 from tests.model_os._episode_helpers import FakeClock
 
 
-# ---------------------------------------------- idempotency key resource scope ---
-
-
 def test_same_idempotency_key_across_different_resource_types_does_not_clash(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """pass 14: idempotency_key is scoped to the RESOURCE. The same key on an
-    episode_ownership lease and a work_lease must BOTH succeed and return the
-    correct resource each — the v1 global-unique index returned the wrong
-    resource's lease here."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -54,7 +27,7 @@ def test_same_idempotency_key_across_different_resource_types_does_not_clash(
         resource_id="wl-1",
         owner="runner-A",
         ttl_seconds=60,
-        idempotency_key="retry-key-1",  # SAME key, DIFFERENT resource
+        idempotency_key="retry-key-1",  # 相同键用于不同资源
     )
     assert ep_lease.resource_type == "episode_ownership"
     assert ep_lease.resource_id == "ep-1"
@@ -64,9 +37,6 @@ def test_same_idempotency_key_across_different_resource_types_does_not_clash(
 
 
 def test_same_key_same_resource_returns_original_lease(store: ModelOsStore) -> None:
-    """Idempotent retry: same (resource, key, owner) returns the first lease,
-    not a second row."""
-
     first = store.acquire_lease(
         resource_type="episode_ownership",
         resource_id="ep-1",
@@ -85,10 +55,9 @@ def test_same_key_same_resource_returns_original_lease(store: ModelOsStore) -> N
     assert first.fencing_token == second.fencing_token
 
 
-def test_same_key_same_resource_different_owner_is_conflict(store: ModelOsStore) -> None:
-    """A second owner trying the same (resource, key) is a conflict, NOT a
-    silent transfer — the key is the first owner's retry identity."""
-
+def test_same_key_same_resource_different_owner_is_conflict(
+    store: ModelOsStore,
+) -> None:
     store.acquire_lease(
         resource_type="episode_ownership",
         resource_id="ep-1",
@@ -100,16 +69,15 @@ def test_same_key_same_resource_different_owner_is_conflict(store: ModelOsStore)
         store.acquire_lease(
             resource_type="episode_ownership",
             resource_id="ep-1",
-            owner="runner-B",  # different owner
+            owner="runner-B",  # 不同 owner
             ttl_seconds=60,
             idempotency_key="retry-key-1",
         )
 
 
-def test_same_key_different_resource_id_same_type_is_separate(store: ModelOsStore) -> None:
-    """Two distinct episodes, same key, must each get their own lease — a key
-    reused across two episode_ownership resources does not alias."""
-
+def test_same_key_different_resource_id_same_type_is_separate(
+    store: ModelOsStore,
+) -> None:
     a = store.acquire_lease(
         resource_type="episode_ownership",
         resource_id="ep-A",
@@ -129,17 +97,9 @@ def test_same_key_different_resource_id_same_type_is_separate(store: ModelOsStor
     assert a.lease_id != b.lease_id
 
 
-# ---------------------------------------------- takeover keeps history ---
-
-
 def test_expired_takeover_marks_old_released_and_inserts_new_row(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """pass 14: takeover preserves history. The expired grant is marked
-    released (not UPDATEd in place, not deleted), and a fresh row is inserted
-    for the new owner. The v1 in-place UPDATE lost the old grant's audit trail
-    and its idempotency key."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -150,7 +110,7 @@ def test_expired_takeover_marks_old_released_and_inserts_new_row(
         ttl_seconds=60,
         idempotency_key="old-key",
     )
-    clock.advance(61)  # past TTL
+    clock.advance(61)  # 超过 TTL
 
     new = store.acquire_lease(
         resource_type="episode_ownership",
@@ -160,7 +120,7 @@ def test_expired_takeover_marks_old_released_and_inserts_new_row(
         idempotency_key="new-key",
     )
 
-    # old grant still exists, now released
+    # 旧授权仍保留，但已释放。
     row = store._conn.execute(
         "SELECT * FROM leases WHERE lease_id=?", (old.lease_id,)
     ).fetchone()
@@ -168,7 +128,7 @@ def test_expired_takeover_marks_old_released_and_inserts_new_row(
     assert row["released_at"] is not None, "expired grant must be marked released"
     assert row["owner"] == "runner-A"
 
-    # new grant is a separate, active row
+    # 新授权使用独立的活跃行。
     assert new.lease_id != old.lease_id
     assert new.owner == "runner-B"
     new_row = store._conn.execute(
@@ -180,10 +140,6 @@ def test_expired_takeover_marks_old_released_and_inserts_new_row(
 def test_takeover_mints_strictly_higher_fencing_token(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """Every new grant on a resource gets a strictly higher token than the
-    previous grant — the fencing invariant (Kleppmann). The old holder's token
-    must not pass a fenced write after takeover."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -203,16 +159,9 @@ def test_takeover_mints_strictly_higher_fencing_token(
     assert second.fencing_token > first.fencing_token
 
 
-# ---------------------------------------------- fence counter does not regress ---
-
-
 def test_fence_counter_does_not_regress_when_old_lease_rows_gc(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """pass 15: ``lease_fence_counters`` is a separate table. Deleting old
-    lease rows (GC) must NOT roll the token back — the next grant still gets a
-    higher token than every prior grant on that resource."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -232,10 +181,10 @@ def test_fence_counter_does_not_regress_when_old_lease_rows_gc(
     token_after_two = second.fencing_token
     assert token_after_two >= 2
 
-    # Simulate GC: physically delete the released (old) lease row.
+    # 模拟清理：物理删除已释放的旧 lease 行。
     store._conn.execute("DELETE FROM leases WHERE released_at IS NOT NULL")
 
-    # the counter table must still remember the high-watermark
+    # 独立计数器仍须保留 token 高水位。
     counter_row = store._conn.execute(
         "SELECT last_token FROM lease_fence_counters "
         "WHERE resource_type='episode_ownership' AND resource_id='ep-1'"
@@ -244,7 +193,7 @@ def test_fence_counter_does_not_regress_when_old_lease_rows_gc(
         "GC of old lease rows must not change the fence counter"
     )
 
-    # force the active lease to expire and grant again — token keeps climbing
+    # 强制活跃 lease 到期后再次授权，token 仍须递增。
     clock.advance(61)
     third = store.acquire_lease(
         resource_type="episode_ownership",
@@ -257,12 +206,7 @@ def test_fence_counter_does_not_regress_when_old_lease_rows_gc(
     )
 
 
-def test_fence_counter_is_per_resource(
-    store: ModelOsStore, monkeypatch
-) -> None:
-    """The counter is scoped to (resource_type, resource_id). Two different
-    resources each start at token 1; they do not share a global counter."""
-
+def test_fence_counter_is_per_resource(store: ModelOsStore, monkeypatch) -> None:
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -279,4 +223,4 @@ def test_fence_counter_is_per_resource(
         ttl_seconds=60,
     )
     assert ep1.fencing_token == 1
-    assert ep2.fencing_token == 1  # independent counter per resource_id
+    assert ep2.fencing_token == 1  # 每个资源使用独立计数器

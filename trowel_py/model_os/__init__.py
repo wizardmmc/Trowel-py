@@ -1,30 +1,11 @@
-"""Model OS kernel backbone (Milestone 8).
+"""Model OS 的稳定公开入口。
 
-This package is the single durable source of truth for the Model OS: a
-transactional SQLite store, an append-only event/decision journal, a pure
-reducer that derives snapshots, payload redaction (slice-084), a Self manifest
-assembled from runtime facts (slice-085), a Task pool with warm/foreground
-constraints (slice-086), and an Episode lifecycle with fencing, suspend/resume
-and recovery (slice-087). Later slices (Episode driving, Scheduler, Router)
-build on top of this spine.
+事务 Store 与 append-only journal 保存 Task、WorkItem、Episode、lease 和决策事实；
+纯 reducer 从日志派生快照，写入前统一脱敏。Self Manifest 只由 runtime 事实组装。
+WorkBroker 仲裁 foreground/default/maintenance 的 provider、预算和并发资源，并以
+lease/fencing 约束崩溃恢复和用量归因。
 
-Scope of slice-084: Store + WorkItem + journal + reducer + redaction.
-Scope of slice-085: Self Manifest + anti-forgery (no Store write-path).
-Scope of slice-086: Task entity + primary WorkItem + warm pool + durable
-foreground claim + structured command gate (no MODEL_HYPOTHESIS creation;
-USER_REQUEST completion requires USER_DECISION).
-Scope of slice-087: Episode entity + ownership lease with fencing tokens +
-cooperative/recovery_partial snapshots + 2-phase suspend/resume +
-reconcile_required blocked state. Fencing is enforced by event kind
-(_EPISODE_FENCED_KINDS); stale writers are rejected at the store layer.
-
-Scope of WorkBroker: foreground / default / maintenance 三类工作共享的模型资源
-仲裁器。按 provider / 预算 / 并发槽发 lease，带崩溃恢复 fencing、只对 default 生效的
-预算 + 外部额度闸门、foreground 对未开始 default 的抢占、以及用量归因。消费
-`quota.read_model.QuotaReadModel`；接入三个真实 scheduler 是后续工作。
-
-Out of scope: Episode driving / cooperative yield (089), fresh-session start
-(090), Scheduler (091), Router (094), UI (101).
+Scheduler、Router、Episode Runner 及 memory scheduler 接入不属于本包当前实现。
 """
 
 from trowel_py.model_os.redaction import redact_payload

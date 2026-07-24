@@ -1,10 +1,4 @@
-"""Concurrency / CAS lease tests (slice-084 pass criterion 2).
-
-Two concurrent claims on the same resource must result in exactly one lease
-owner. The store enforces this at the SQLite level via a partial unique index
-on active leases, so the test uses two separate connections (real WAL write
-serialization) rather than mocking.
-"""
+"""lease CAS 并发测试；用两个真实连接覆盖 SQLite WAL 文件锁边界。"""
 
 from __future__ import annotations
 
@@ -18,15 +12,7 @@ from trowel_py.model_os.store import LeaseConflict, ModelOsStore
 
 
 def test_concurrent_claims_only_one_winner(db_path) -> None:  # noqa: ANN001
-    """Two threads race to claim the same resource; only one wins.
-
-    Each racer opens its own connection to the same WAL file, so write
-    serialization happens at the SQLite file-lock level — the real
-    production concurrency path.
-    """
-
-    # bootstrap the schema once before the race so racers only contend on
-    # the INSERT, not on CREATE TABLE.
+    # 竞争前先初始化 schema，使线程只在 INSERT 上竞争，不混入 DDL 文件锁。
     bootstrapper = ModelOsStore(db_path)
     bootstrapper.open()
     bootstrapper.close()
@@ -63,8 +49,6 @@ def test_concurrent_claims_only_one_winner(db_path) -> None:  # noqa: ANN001
 
 
 def test_second_acquire_on_held_resource_conflicts(store: ModelOsStore) -> None:
-    """A second claim on an already-held resource raises LeaseConflict."""
-
     store.acquire_lease(
         resource_type="work_item",
         resource_id="wi-held",
@@ -81,8 +65,6 @@ def test_second_acquire_on_held_resource_conflicts(store: ModelOsStore) -> None:
 
 
 def test_release_allows_next_owner(store: ModelOsStore) -> None:
-    """After the holder releases, the resource is claimable again."""
-
     lease = store.acquire_lease(
         resource_type="work_item",
         resource_id="wi-rel",
@@ -101,16 +83,13 @@ def test_release_allows_next_owner(store: ModelOsStore) -> None:
 
 
 def test_expired_lease_can_be_taken_over(store: ModelOsStore) -> None:
-    """A lease past its expiry can be claimed by a new owner (TTL enforced)."""
-
     store.acquire_lease(
         resource_type="work_item",
         resource_id="wi-exp",
         owner="alice",
-        ttl_seconds=0,  # expires immediately
+        ttl_seconds=0,  # 立即到期
     )
-    # busy-wait is blocked in this harness; sleep via time.time loop is fine
-    # for a sub-second TTL — give the expiry a moment to elapse.
+    # 测试环境禁止忙等；短暂轮询等待到期边界生效。
     deadline = time.time() + 2
     while time.time() < deadline:
         try:
@@ -128,8 +107,6 @@ def test_expired_lease_can_be_taken_over(store: ModelOsStore) -> None:
 
 
 def test_idempotency_key_reclaims_same_lease(store: ModelOsStore) -> None:
-    """Re-claiming with the same idempotency key returns the original lease."""
-
     first = store.acquire_lease(
         resource_type="work_item",
         resource_id="wi-idem",
@@ -150,10 +127,6 @@ def test_idempotency_key_reclaims_same_lease(store: ModelOsStore) -> None:
 def test_idempotency_key_with_different_owner_conflicts(
     store: ModelOsStore,
 ) -> None:
-    """The same idempotency key under a different owner is a conflict — the
-    key is the original owner's retry identity, not a transferable handle,
-    so a stranger must not reclaim or release another owner's lease."""
-
     store.acquire_lease(
         resource_type="work_item",
         resource_id="wi-xfer",
@@ -165,7 +138,7 @@ def test_idempotency_key_with_different_owner_conflicts(
         store.acquire_lease(
             resource_type="work_item",
             resource_id="wi-xfer",
-            owner="bob",  # different owner, same key
+            owner="bob",  # 不同 owner 复用同一键
             ttl_seconds=60,
             idempotency_key="op-456",
         )

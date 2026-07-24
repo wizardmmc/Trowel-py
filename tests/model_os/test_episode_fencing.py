@@ -1,27 +1,3 @@
-"""Fencing tests for slice-087 (pass criteria 2, 3, 4, 19; codex C1 + L2).
-
-Fencing = the store rejects a write that does not carry the caller's CURRENT
-ownership lease triple ``(lease_id, owner, fencing_token)``. The point (per
-Kleppmann) is that an old runner whose lease expired or was taken over cannot
-silently overwrite the new runner's state.
-
-codex findings covered here:
-- C1: ``resolve_episode_wait`` / ``mark_pending_channel_lost`` /
-  ``resolve_reconcile`` are EXTERNALLY driven (the answer arrives, the host
-  generation closed, the human decided). Their event kinds must NOT be in the
-  fenced set: the caller has no lease to present (the lease may be long gone,
-  e.g. on runtime restart). The gate that remains is "only the structured
-  command may write these kinds" (``_EPISODE_LIFECYCLE_KINDS`` blocks a bare
-  ``append_event``).
-- L2: the fencing check rejects at ``expires_at <= now`` but takeover only
-  fired at ``expires_at < now`` — at the exact expiry instant the old owner
-  had already lost power yet the new owner could not take over. Unify to ``<=``.
-
-The externally-driven commands' OWN behaviour (suspend→resolve→activate etc.)
-is exercised in ``test_episode_suspend.py``; this file is only about the
-fencing primitive itself.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -31,9 +7,16 @@ from trowel_py.model_os.store import (
     ModelOsStore,
     StaleWriterRejected,
     _EPISODE_FENCED_KINDS,
-    _EPISODE_LIFECYCLE_KINDS,
 )
-from trowel_py.model_os.types import EventEnvelope, EventKind, Provenance
+from trowel_py.model_os.types import (
+    Episode,
+    EpisodeStatus,
+    EventEnvelope,
+    EventKind,
+    Lease,
+    Provenance,
+    WorkItemStatus,
+)
 
 from tests.model_os._episode_helpers import (
     FakeClock,
@@ -42,16 +25,8 @@ from tests.model_os._episode_helpers import (
 )
 
 
-# ---------------------------------------------------- C1: externally-driven kinds ---
-
-
 def test_externally_driven_episode_kinds_are_not_fenced() -> None:
-    """C1: resolve_wait / reconcile_required / reconcile_resolved are driven by
-    an arriving answer, a closed host generation, or a human decision — none of
-    those callers holds an ownership lease. They must NOT be in the fenced set,
-    or the commands could never fire (mark_pending_channel_lost runs precisely
-    when the lease has expired on restart)."""
-
+    # 外部答案、宿主重启或人工决定到达时，调用者可能已经没有有效 lease。
     assert EventKind.EPISODE_WAIT_RESOLVED not in _EPISODE_FENCED_KINDS
     assert EventKind.EPISODE_RECONCILE_REQUIRED not in _EPISODE_FENCED_KINDS
     assert EventKind.EPISODE_RECONCILE_RESOLVED not in _EPISODE_FENCED_KINDS
@@ -60,19 +35,11 @@ def test_externally_driven_episode_kinds_are_not_fenced() -> None:
 def test_externally_driven_kinds_still_gated_against_bare_append(
     store: ModelOsStore,
 ) -> None:
-    """Removing these kinds from the FENCED set must NOT open a forge path: a
-    bare ``append_event`` still refuses them (they stay in
-    ``_EPISODE_LIFECYCLE_KINDS``). The gate is 'only the structured command may
-    write', not 'must present a lease'."""
-
     for kind in (
         EventKind.EPISODE_WAIT_RESOLVED,
         EventKind.EPISODE_RECONCILE_REQUIRED,
         EventKind.EPISODE_RECONCILE_RESOLVED,
     ):
-        assert kind in _EPISODE_LIFECYCLE_KINDS, (
-            f"{kind} must stay lifecycle-gated even after leaving the fenced set"
-        )
         bad = EventEnvelope(
             event_id=f"forge.{kind}.{kind}",
             kind=kind,
@@ -83,66 +50,33 @@ def test_externally_driven_kinds_still_gated_against_bare_append(
             payload={"new_status": "active"},
             episode_id="ep-x",
         )
-        with pytest.raises((EpisodeCommandError, ValueError)):
+        with pytest.raises(EpisodeCommandError):
             store.append_event(bad)
 
 
-def test_gated_kinds_block_forges_but_real_commands_succeed(
-    store: ModelOsStore, monkeypatch
+def test_fenced_event_cannot_bypass_gates_by_omitting_triple(
+    store: ModelOsStore,
 ) -> None:
-    """Sanity: a fenced kind still in the set (YIELD_REQUESTED) cannot be
-    forged via append_event, and the real command path still works for a
-    legitimate lease holder."""
-
     assert EventKind.EPISODE_YIELD_REQUESTED in _EPISODE_FENCED_KINDS
-    forged = EventEnvelope(
-        event_id="forge.yield.1",
-        kind=EventKind.EPISODE_YIELD_REQUESTED,
-        occurred_at="2026-07-21T00:00:00Z",
-        source="attacker",
-        provenance=Provenance.MACHINE_OBSERVATION,
-        policy_version="v0",
-        payload={"new_status": "yield_requested", "reason": "x"},
-        episode_id="ep-x",
-        lease_id="L",
-        owner="A",
-        fencing_token=1,
-    )
-    with pytest.raises((EpisodeCommandError, ValueError)):
-        store.append_event(forged)
-
-
-# ---------------------------------------------- omission bypass (pass 3) ---
-
-
-def test_fenced_event_missing_triple_is_rejected(store: ModelOsStore) -> None:
-    """pass 3: a fenced kind written without the caller-held triple must be
-    rejected — omission is not a bypass. The internal helper is the choke
-    point; exercising it directly proves the check does not depend on a
-    command remembering to pass the triple."""
-
     episode, _, _ = make_running_system_episode(store)
+    event = store._make_episode_event(
+        EventKind.EPISODE_YIELD_REQUESTED,
+        episode.episode_id,
+        {"new_status": "yield_requested", "reason": "x"},
+    )
+    with pytest.raises(EpisodeCommandError):
+        store.append_event(event)
     with store._tx():
-        with pytest.raises(EpisodeCommandError):
-            store._append_fenced_event_in_tx(
-                store._make_episode_event(
-                    EventKind.EPISODE_YIELD_REQUESTED,
-                    episode.episode_id,
-                    {"new_status": "yield_requested", "reason": "x"},
-                    # no lease_id / owner / fencing_token
-                )
-            )
-
-
-# ----------------------------------------- caller-held triple check (pass 4) ---
+        with pytest.raises(EpisodeCommandError, match="must carry"):
+            store._append_fenced_event_in_tx(event)
 
 
 def _active_system_episode(
-    store: ModelOsStore, monkeypatch, *, ttl: int = 300
-):
-    """Start a system WorkItem Episode, bring it to ACTIVE, return
-    (episode, lease)."""
-
+    store: ModelOsStore,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ttl: int = 300,
+) -> tuple[Episode, Lease]:
     clock = FakeClock()
     clock.install(monkeypatch)
     episode, lease, _ = make_running_system_episode(store, ttl_seconds=ttl)
@@ -150,59 +84,40 @@ def _active_system_episode(
     return episode, lease
 
 
-def test_wrong_lease_id_is_rejected(store: ModelOsStore, monkeypatch) -> None:
+@pytest.mark.parametrize("mismatch", ["lease_id", "owner", "token"])
+def test_mismatched_ownership_triple_is_rejected(
+    store: ModelOsStore,
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch: str,
+) -> None:
     episode, lease = _active_system_episode(store, monkeypatch)
     with pytest.raises(StaleWriterRejected):
         store.request_yield(
             episode.episode_id,
-            expected_lease_id="wrong-lease-id",
-            expected_owner=lease.owner,
-            expected_token=lease.fencing_token,
+            expected_lease_id=(
+                "wrong-lease-id" if mismatch == "lease_id" else lease.lease_id
+            ),
+            expected_owner="impostor" if mismatch == "owner" else lease.owner,
+            expected_token=(
+                lease.fencing_token + 999
+                if mismatch == "token"
+                else lease.fencing_token
+            ),
             reason="r",
         )
-    # state unchanged
-    assert store.read_snapshot().episode_by_id(episode.episode_id).status.value == "active"
-
-
-def test_wrong_owner_is_rejected(store: ModelOsStore, monkeypatch) -> None:
-    episode, lease = _active_system_episode(store, monkeypatch)
-    with pytest.raises(StaleWriterRejected):
-        store.request_yield(
-            episode.episode_id,
-            expected_lease_id=lease.lease_id,
-            expected_owner="impostor",
-            expected_token=lease.fencing_token,
-            reason="r",
-        )
-
-
-def test_wrong_fencing_token_is_rejected(store: ModelOsStore, monkeypatch) -> None:
-    """pass 2: a stale (lower) token is rejected. This is the core Kleppmann
-    invariant — an old holder waking up after takeover cannot overwrite."""
-
-    episode, lease = _active_system_episode(store, monkeypatch)
-    with pytest.raises(StaleWriterRejected):
-        store.request_yield(
-            episode.episode_id,
-            expected_lease_id=lease.lease_id,
-            expected_owner=lease.owner,
-            expected_token=lease.fencing_token + 999,  # wrong token
-            reason="r",
-        )
+    state = store.read_snapshot().episode_by_id(episode.episode_id)
+    assert state is not None
+    assert state.status == EpisodeStatus.ACTIVE
 
 
 def test_expired_lease_without_takeover_is_rejected(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """pass 4: authority ends the moment the lease expires, BEFORE any takeover.
-    The original holder's token stops working at expiry even if no new owner has
-    arrived."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
     episode, lease, _ = make_running_system_episode(store, ttl_seconds=60)
     activate_episode(store, episode.episode_id, lease)
-    clock.advance(61)  # past TTL, no takeover
+    clock.advance(61)
 
     with pytest.raises(StaleWriterRejected):
         store.request_yield(
@@ -214,13 +129,9 @@ def test_expired_lease_without_takeover_is_rejected(
         )
 
 
-def test_old_token_after_takeover_is_rejected(
+def test_stale_owner_after_takeover_is_rejected_but_new_owner_can_write(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """pass 2 end-to-end: lease expires, a new runner takes over (higher token),
-    then the OLD runner wakes up and tries to write — rejected. A
-    ``late_write_rejected`` audit trail is left."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
     episode, old_lease, _ = make_running_system_episode(store, ttl_seconds=60)
@@ -233,7 +144,7 @@ def test_old_token_after_takeover_is_rejected(
     assert new_lease.fencing_token > old_lease.fencing_token
 
     with pytest.raises(StaleWriterRejected):
-        store.request_yield(  # old runner wakes up
+        store.request_yield(
             episode.episode_id,
             expected_lease_id=old_lease.lease_id,
             expected_owner=old_lease.owner,
@@ -241,7 +152,6 @@ def test_old_token_after_takeover_is_rejected(
             reason="stale",
         )
 
-    # the new owner CAN still write
     store.request_yield(
         episode.episode_id,
         expected_lease_id=new_lease.lease_id,
@@ -249,48 +159,36 @@ def test_old_token_after_takeover_is_rejected(
         expected_token=new_lease.fencing_token,
         reason="fresh",
     )
-    assert (
-        store.read_snapshot().episode_by_id(episode.episode_id).status.value
-        == "yield_requested"
-    )
+    state = store.read_snapshot().episode_by_id(episode.episode_id)
+    assert state is not None
+    assert state.status == EpisodeStatus.YIELD_REQUESTED
 
 
-# ------------------------- task / work_item events are never fenced (pass 19) ---
-
-
-def test_task_event_carrying_episode_id_is_not_fencing_checked(
+def test_work_item_event_carrying_episode_id_is_not_fencing_checked(
     store: ModelOsStore,
 ) -> None:
-    """pass 19: a task.* or work_item.* event may carry ``episode_id`` as a
-    CAUSAL reference (this happened during that Episode) without being fencing-
-    checked. Fencing is only for events that change Episode authoritative
-    state."""
-
-    # A plain note tagged with an episode_id must append fine without any lease.
-    note = EventEnvelope(
-        event_id="note.with-ep-ref",
-        kind=EventKind.NOTE,
+    episode, _, work_item_id = make_running_system_episode(store)
+    event = EventEnvelope(
+        event_id="work-item.with-ep-ref",
+        kind=EventKind.WORK_ITEM_STATUS_CHANGED,
         occurred_at="2026-07-21T00:00:00Z",
         source="test",
         provenance=Provenance.MACHINE_OBSERVATION,
         policy_version="v0",
-        payload={"msg": "happened during ep-X"},
-        episode_id="ep-X",  # causal reference only — no lease triple
+        payload={"new_status": WorkItemStatus.SUSPENDED.value},
+        work_item_id=work_item_id,
+        # 非 Episode 事件可用 episode_id 表示因果关联，不因此进入 fencing。
+        episode_id=episode.episode_id,
     )
-    store.append_event(note)  # must not raise
-
-
-# ------------------------------------------- L2: expiry boundary consistency ---
+    store.append_event(event)
+    assert any(
+        persisted.event_id == event.event_id for _, persisted in store.list_events()
+    )
 
 
 def test_takeover_succeeds_at_exact_expiry_instant(
     store: ModelOsStore, monkeypatch
 ) -> None:
-    """L2: fencing rejects at ``expires_at <= now``, so takeover must ALSO grant
-    at ``expires_at <= now``. At the exact expiry tick the old owner has already
-    lost power; the new owner must be able to take over immediately, with no
-    unwritable gap."""
-
     clock = FakeClock()
     clock.install(monkeypatch)
 
@@ -301,15 +199,14 @@ def test_takeover_succeeds_at_exact_expiry_instant(
         ttl_seconds=60,
     )
     expires_at = first.expires_at
-    # pin the clock to the EXACT expiry instant
     clock.set(expires_at)
 
-    # fencing already rejects the old owner here (<= now)
-    with pytest.raises(StaleWriterRejected):
-        store._check_ownership_in_tx(
-            "ep-1", first.lease_id, first.owner, first.fencing_token
-        )
-    # takeover must succeed at the same instant — no gap
+    # 到期瞬间旧 owner 失权且新 owner 可接管，二者必须共用 <= 边界。
+    with store._tx():
+        with pytest.raises(StaleWriterRejected):
+            store._check_ownership_in_tx(
+                "ep-1", first.lease_id, first.owner, first.fencing_token
+            )
     second = store.acquire_lease(
         resource_type="episode_ownership",
         resource_id="ep-1",

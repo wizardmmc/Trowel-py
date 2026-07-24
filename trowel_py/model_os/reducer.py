@@ -1,23 +1,13 @@
-"""Pure reducer for the Model OS journal (slice-084).
+"""Model OS journal 的纯 reducer。
 
-The reducer folds ``EventEnvelope`` and ``DecisionRecord`` values into a
-derived ``Snapshot``. It is a pure function: same inputs → same snapshot,
-no I/O, no mutation. That purity is what makes replay idempotent (spec pass
-criterion 1) and lets a snapshot be deleted and rebuilt from the journal.
+事件以确定性规则派生 ``Snapshot``；决策当前只保留在审计日志，不派生状态。
+reducer 无 I/O 且不修改输入，相同输入总会得到相同输出。
 
-Provenance rule (the concrete "no silent upgrade" invariant): a status claim
-from a weaker source cannot overwrite one already held from a stronger
-source. See ``Provenance.strength``. Weaker events are still in the journal
-(audit) but do not flip derived state.
+WorkItem 的弱来源状态不能覆盖强来源状态；未知事件类型只记入
+``unrecognized_event_kinds``，不阻断旧版本回放。
 
-Forward compatibility: an event kind the reducer does not recognise is
-appended to ``Snapshot.unrecognized_event_kinds`` rather than raising. A new
-policy version that introduces new kinds therefore cannot break an old
-reducer (spec: "未知新事件可保留但不能破坏旧 reducer").
-
-``last_seq`` / ``last_decision_seq`` are NOT bumped here — they are position
-markers owned by whoever drives the fold (the store stamps them from the
-real SQLite seq during replay). The pure reducer leaves them untouched.
+``last_seq`` 与 ``last_decision_seq`` 是回放位置，由 store 按真实 SQLite
+序号写入，reducer 不推进它们。
 """
 
 from __future__ import annotations
@@ -48,21 +38,55 @@ from trowel_py.model_os.context_observer import (
     ContextSample,
     context_sample_from_dict,
 )
+from trowel_py.model_os.context_fold import (
+    ContextFoldRuntime,
+    apply_context_sample as _run_apply_context_sample,
+)
+from trowel_py.model_os.episode_fold import (
+    EpisodeFoldRuntime,
+    _apply_episode_checkpoint as _run_apply_episode_checkpoint,
+    _apply_episode_reconcile_required as _run_apply_episode_reconcile_required,
+    _apply_episode_reconcile_resolved as _run_apply_episode_reconcile_resolved,
+    _apply_episode_status_change as _run_apply_episode_status_change,
+    _apply_episode_suspended as _run_apply_episode_suspended,
+    _apply_episode_wait_resolved as _run_apply_episode_wait_resolved,
+    _find_episode as _run_find_episode,
+    _pending_from_payload as _run_pending_from_payload,
+    _replace_episode as _run_replace_episode,
+    episode_from_created as _run_episode_from_created,
+)
+from trowel_py.model_os.task_fold import (
+    _apply_task_authorization_changed,
+    _apply_task_cancelled,
+    _apply_task_completed,
+    _apply_task_constraint_appended,
+    _apply_task_error_recorded,
+    _apply_task_status_change,
+    _apply_task_waiting_cleared,
+    _apply_task_waiting_set,
+    _apply_task_warm_changed,
+    _apply_task_warm_rank_set,
+    _find_task as _find_task,
+    _replace_task as _replace_task,
+    _waiting_from_payload as _waiting_from_payload,
+    task_from_created as _run_task_from_created,
+)
+from trowel_py.model_os.work_item_fold import (
+    WorkItemFoldRuntime,
+    _apply_status_change as _run_apply_status_change,
+    _replace_work_item as _run_replace_work_item,
+    _work_item_from_created as _run_work_item_from_created,
+)
 
 _SCHEMA_VERSION = 1
 _MAX_DESCRIPTION_LEN = 512
 
 
-# ----------------------------------------------------------- derived state ---
-
-
 @dataclass(frozen=True)
 class WorkItemState:
-    """Derived view of a WorkItem as folded from the event log.
+    """WorkItem 的派生状态。
 
-    ``status_provenance`` records which provenance level set the current
-    status, so the reducer can apply the no-silent-upgrade rule on the next
-    status event.
+    ``status_provenance`` 记录当前状态的来源强度，供下一次状态更新执行来源门禁。
     """
 
     work_item_id: str
@@ -77,17 +101,10 @@ class WorkItemState:
 
 @dataclass(frozen=True)
 class TaskState:
-    """Derived view of a Task folded from the event log (slice-086).
+    """Task 的派生状态。
 
-    Mirrors ``WorkItemState`` but for the Task entity. Key difference from
-    WorkItem: the Task status fold does NOT apply the no-silent-upgrade
-    provenance rule (slice-086 grill decision 6). For WorkItem that rule
-    prevents a stale observation silently flipping PENDING→DONE; for Task it
-    would lock a user-created task (USER_DECISION) out of later
-    machine-observed running/done transitions. Task transition authority is
-    enforced at the command layer (structured entry points), not by
-    provenance strength. ``status_provenance`` is retained here for audit
-    only.
+    Task 不使用 WorkItem 的来源强度门禁，否则用户创建的 Task 将无法接受后续机器状态。
+    Task 转移权限由结构化命令入口约束，``status_provenance`` 只用于审计。
     """
 
     task_id: str
@@ -110,15 +127,10 @@ class TaskState:
 
 @dataclass(frozen=True)
 class EpisodeState:
-    """Derived view of an Episode folded from the event log (slice-087).
+    """Episode 的派生状态。
 
-    Mirrors ``TaskState`` / ``WorkItemState`` but for the Episode entity. The
-    live ownership lease is NOT folded here — it is live table state read at
-    snapshot time (same pattern as ``foreground_task_id`` /
-    ``active_leases``). ``last_snapshot_ref`` IS folded: it is the reducer's
-    authority for "where this Episode got to"; the snapshot payload itself is
-    read separately from the ``episode_snapshots`` table by
-    ``(episode_id, version)``.
+    实时 ownership lease 来自独立表，不由 journal 归约。reducer 只保存
+    ``last_snapshot_ref``；快照正文按 ``(episode_id, version)`` 从独立表读取。
     """
 
     episode_id: str
@@ -136,12 +148,10 @@ class EpisodeState:
 
 @dataclass(frozen=True)
 class UnknownAction:
-    """A recorded action whose outcome is not confirmed.
+    """结果尚未确认的动作。
 
-    Per spike-083: a side effect that may have happened but whose result was
-    not written back is ``requires_reconcile``; a pending control channel
-    lost on restart is ``requires_user_restart``. Both must be reconciled by
-    reading reality — replay never auto-reissues them.
+    ``requires_reconcile`` 需要先核对现实，``requires_user_restart`` 要求人为
+    重启；journal 回放均不自动重发动作。
     """
 
     event_id: str
@@ -152,23 +162,13 @@ class UnknownAction:
 
 @dataclass(frozen=True)
 class ContextObservationState:
-    """Derived view of the latest context-occupancy observation for one
-    (episode, native_session) pair (slice-088).
+    """一个 ``(episode, native_session)`` 的最新上下文观测。
 
-    One row per (episode_id, native_session_id): the latest ContextSample seen
-    for that pair, INCLUDING an unavailable one (codex review extra-HIGH 1: a
-    missing-usage observation must not be masked by an older trusted number).
-    ``observed_at`` is the envelope's ``occurred_at`` — the single event-time
-    authority (codex review M2; the ContextSample itself carries no time field).
+    不可用样本也会覆盖旧的可信数值，避免把缺失信号隐藏起来。``observed_at``
+    以事件 envelope 的 ``occurred_at`` 为准，因为 ``ContextSample`` 不带时间。
 
-    Cross-session "latest" caveat (codex review A3): this state is keyed by
-    native_session, so WITHIN one session the latest is exact. Picking across
-    sessions of the same Episode by ``observed_at`` can in principle select a
-    late-arriving sample from an OLD session after a fresh relay. Resolving
-    "which native session is the current relay" needs the Episode→native_session
-    activation fact that slice-090 owns, so 088 does NOT promise cross-fresh
-    "current" correctness — callers needing the current session's sample filter
-    by ``native_session_id``.
+    session 内的最新值是精确的；跨 session 按时间选择可能命中旧 relay 的晚到样本。
+    需要当前 relay 时，调用方必须按 ``native_session_id`` 查询。
     """
 
     episode_id: str | None
@@ -180,15 +180,11 @@ class ContextObservationState:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Derived journal state.
+    """journal 与实时表共同组成的派生状态。
 
-    ``work_items``, ``tasks`` and ``unknown_actions`` are event-sourced
-    (rebuildable from the log). ``active_leases`` and ``foreground_task_id``
-    are table-sourced and filled by the store at read time — they are live
-    operational state (who currently holds a resource / which task is
-    foreground), not audit. Foreground follows the same pattern as leases:
-    FOREGROUND_CLAIMED/RELEASED events are audit-only; the live owner lives
-    in the foreground_claim table (slice-086).
+    WorkItem、Task、Episode、未知动作和上下文观测可从 journal 重建。
+    ``active_leases`` 与 ``foreground_task_id`` 由 store 在读取时从实时表填充；
+    对应的 ownership 与 foreground 事件只保留审计轨迹。
     """
 
     schema_version: int
@@ -204,16 +200,12 @@ class Snapshot:
     context_observations: tuple[ContextObservationState, ...]
 
     def task_work_items(self) -> tuple[WorkItemState, ...]:
-        """Return only Task-kind work items (excludes all system work)."""
-
         return tuple(w for w in self.work_items if w.kind == WorkItemKind.TASK)
 
     def warm_tasks(self) -> tuple[TaskState, ...]:
-        """Return warm Tasks (warm=True, not terminal), ordered by warm_rank
-        (None sorts after set ranks, by created_at) — slice-086 §warm 集合.
+        """返回未终止的 warm Task。
 
-        User-set ``warm_rank`` takes precedence; unset (None) tasks fall back
-        to creation order and sort after explicitly-ranked ones.
+        排序键先取 ``warm_rank``，未设置时使用 ``10**9``，再按创建时间排序。
         """
 
         warm = tuple(t for t in self.tasks if t.warm and not t.status.is_terminal)
@@ -228,25 +220,13 @@ class Snapshot:
         )
 
     def episode_by_id(self, episode_id: str | None) -> EpisodeState | None:
-        """Return the EpisodeState with the given id, or None."""
-
         if episode_id is None:
             return None
-        return next(
-            (e for e in self.episodes if e.episode_id == episode_id), None
-        )
+        return next((e for e in self.episodes if e.episode_id == episode_id), None)
 
     def non_terminal_episodes_for_work_item(
         self, work_item_id: str
     ) -> tuple[EpisodeState, ...]:
-        """Return non-terminal Episodes bound to a WorkItem.
-
-        slice-087 spec invariant: a WorkItem has at most one non-terminal
-        Episode at a time. Enforcement lands in 090 (接力 / fresh start); 087
-        exposes this read so tests can assert the expectation and so 090 has
-        the guard already shaped.
-        """
-
         return tuple(
             e
             for e in self.episodes
@@ -256,11 +236,6 @@ class Snapshot:
     def context_observation(
         self, episode_id: str | None, native_session_id: str
     ) -> ContextObservationState | None:
-        """The latest observation for one (episode, native_session), or None.
-
-        Exact within a session (A3): keyed by native_session_id.
-        """
-
         return next(
             (
                 s
@@ -274,13 +249,10 @@ class Snapshot:
     def latest_context_sample(
         self, episode_id: str | None
     ) -> ContextObservationState | None:
-        """The latest observation across ALL native sessions of an Episode
-        (highest ``observed_at``; fold order breaks ties).
+        """按 ``observed_at`` 返回 Episode 跨 session 的最新观测。
 
-        Cross-fresh caveat (A3): see :class:`ContextObservationState`. This may
-        select a late sample from an old session; callers that need the current
-        relay's sample should use :meth:`context_observation` with the current
-        native_session_id (bound by slice-090).
+        该结果不保证来自当前 relay；需要当前 session 时应调用
+        :meth:`context_observation`。
         """
 
         candidates = tuple(
@@ -292,8 +264,6 @@ class Snapshot:
 
 
 def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
-    """Return the empty snapshot every replay starts from."""
-
     return Snapshot(
         schema_version=schema_version,
         last_seq=0,
@@ -309,85 +279,48 @@ def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
     )
 
 
-# --------------------------------------------------------------- internals ---
-
-
 def _work_item_from_created(event: EventEnvelope) -> WorkItemState:
-    """Build a ``WorkItemState`` from a ``work_item.created`` payload.
-
-    ``status_provenance`` starts at ``STALE`` (the weakest level): the
-    creation event's provenance attests to the work item's EXISTENCE, not to
-    a confident claim about its status. The PENDING status is a placeholder,
-    so the first real status observation — at any provenance level — may
-    override it. This keeps the no-silent-upgrade rule from accidentally
-    locking a user-created work item out of all later machine/model
-    observations.
-    """
-
-    payload = event.payload
-    return WorkItemState(
-        work_item_id=payload["work_item_id"],
-        kind=WorkItemKind(payload["kind"]),
-        owner_ref=payload["owner_ref"],
-        task_id=payload.get("task_id"),
-        status=WorkItemStatus(payload["status"]),
-        status_provenance=Provenance.STALE,
-        session_purpose=SessionPurpose(payload["session_purpose"]),
-        memory_eligibility=MemoryEligibility(payload["memory_eligibility"]),
+    return _run_work_item_from_created(
+        event,
+        work_item_state_factory=WorkItemState,
+        work_item_kind=WorkItemKind,
+        work_item_status=WorkItemStatus,
+        provenance=Provenance,
+        session_purpose=SessionPurpose,
+        memory_eligibility=MemoryEligibility,
     )
 
 
 def _replace_work_item(
     snap: Snapshot, work_item_id: str, new_state: WorkItemState
 ) -> Snapshot:
-    """Return a snapshot with the given work item replaced (immutable)."""
-
-    updated = tuple(
-        new_state if w.work_item_id == work_item_id else w for w in snap.work_items
+    return _run_replace_work_item(
+        snap,
+        work_item_id,
+        new_state,
+        snapshot_replace=replace,
     )
-    return replace(snap, work_items=updated)
+
+
+def _work_item_fold_runtime() -> WorkItemFoldRuntime:
+    return WorkItemFoldRuntime(
+        replace_work_item=_replace_work_item,
+        provenance=Provenance,
+        work_item_status=WorkItemStatus,
+        state_replace=replace,
+    )
 
 
 def _apply_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Apply a status change honouring the no-silent-upgrade rule.
-
-    Two guards:
-    - STALE cannot positively assert any status (it may only mark an existing
-      claim as possibly outdated). So a stale status event never flips the
-      derived status — not even over the STALE placeholder that ``created``
-      leaves behind. This blocks the "stale observation silently turns
-      PENDING into DONE" failure mode.
-    - A weaker provenance cannot overwrite a stronger source's claim.
-    """
-
-    work_item_id = event.work_item_id
-    if work_item_id is None:
-        return snap
-    current = next(
-        (w for w in snap.work_items if w.work_item_id == work_item_id), None
+    return _run_apply_status_change(
+        snap,
+        event,
+        runtime=_work_item_fold_runtime(),
     )
-    if current is None:
-        # status change for an unknown work item — retain as audit, no state
-        return snap
-    if event.provenance == Provenance.STALE:
-        return snap
-    if event.provenance.strength < current.status_provenance.strength:
-        # weaker source cannot overwrite a stronger claim — no silent upgrade
-        return snap
-    new_state = replace(
-        current,
-        status=WorkItemStatus(event.payload["new_status"]),
-        status_provenance=event.provenance,
-    )
-    return _replace_work_item(snap, work_item_id, new_state)
 
 
 def _add_unknown_action(snap: Snapshot, event: EventEnvelope, kind: str) -> Snapshot:
-    """Record an unknown-outcome action that awaits reconciliation.
-
-    ``description`` is capped so a pathological payload cannot bloat the
-    snapshot; the full payload is already in the journal for audit.
-    """
+    """记录待核对动作；描述会截断，完整 payload 仍保留在 journal。"""
 
     description = str(event.payload.get("description", ""))[:_MAX_DESCRIPTION_LEN]
     action = UnknownAction(
@@ -399,540 +332,106 @@ def _add_unknown_action(snap: Snapshot, event: EventEnvelope, kind: str) -> Snap
     return replace(snap, unknown_actions=snap.unknown_actions + (action,))
 
 
-# ------------------------------------------------------------------- task fold
-
-
 def _task_from_created(event: EventEnvelope) -> TaskState:
-    """Build a TaskState from a task.created payload.
-
-    status starts at BACKLOG, warm=False; primary_work_item_id is set when
-    provided. ``status_provenance`` follows the event's provenance (audit
-    only — the no-silent-upgrade rule does NOT apply to Task status; see
-    ``TaskState`` docstring and slice-086 grill decision 6).
-    """
-
-    p = event.payload
-    return TaskState(
-        task_id=p["task_id"],
-        origin=TaskOrigin(p["origin"]),
-        original_goal=p["original_goal"],
-        appended_constraints=tuple(p.get("appended_constraints", ())),
-        status=TaskStatus(p.get("status", TaskStatus.BACKLOG.value)),
-        status_provenance=event.provenance,
-        priority=int(p.get("priority", 0)),
-        warm=bool(p.get("warm", False)),
-        warm_rank=p.get("warm_rank"),
-        authorization_scope=p.get("authorization_scope", ""),
-        waiting_condition=None,
-        completion_evidence=None,
-        error_record=None,
-        primary_work_item_id=p.get("primary_work_item_id"),
-        created_at=event.occurred_at,
-        updated_at=event.occurred_at,
+    return _run_task_from_created(
+        event,
+        task_state_factory=TaskState,
     )
-
-
-def _find_task(snap: Snapshot, task_id: str | None) -> TaskState | None:
-    """Return the TaskState with the given id, or None."""
-
-    if task_id is None:
-        return None
-    return next((t for t in snap.tasks if t.task_id == task_id), None)
-
-
-def _replace_task(
-    snap: Snapshot, task_id: str | None, new_state: TaskState
-) -> Snapshot:
-    """Return a snapshot with the given Task replaced (immutable).
-
-    ``task_id`` is ``str | None`` because callers pass ``event.task_id``
-    (nullable on the envelope). ``None`` could only reach here for an event
-    that did not match a known task, but the caller has already short-circuited
-    via ``_find_task``; the None-guard is defence in depth.
-    """
-
-    if task_id is None:
-        return snap
-    return replace(
-        snap,
-        tasks=tuple(new_state if t.task_id == task_id else t for t in snap.tasks),
-    )
-
-
-def _waiting_from_payload(p: dict[str, Any]) -> WaitingCondition:
-    """Reconstruct a WaitingCondition from a task.waiting_set payload.
-
-    slice-087: ``subtype`` and ``episode_id`` are optional (absent in pre-087
-    payloads). ``subtype`` is stored as its enum value; an unknown value (a
-    future policy invents a new subtype) falls back to ``None`` rather than
-    raising, preserving the reducer's forward-compat rule.
-    """
-
-    raw_subtype = p.get("subtype")
-    try:
-        subtype = WaitingSubtype(raw_subtype) if raw_subtype else None
-    except ValueError:
-        subtype = None
-    return WaitingCondition(
-        kind=p["kind"],
-        cause=p.get("cause", ""),
-        subtype=subtype,
-        episode_id=p.get("episode_id"),
-        correlation_id=p.get("correlation_id"),
-        deadline=p.get("deadline"),
-        condition_kind=p.get("condition_kind"),
-        target_ref=p.get("target_ref"),
-        match_params=p.get("match_params"),
-        open_question=p.get("open_question"),
-        preparation_snapshot_ref=p.get("preparation_snapshot_ref"),
-        earliest_review_at=p.get("earliest_review_at"),
-    )
-
-
-def _apply_task_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Change a Task's status. No provenance-strength gate (slice-086 grill
-    decision 6) — authority is enforced at the command layer, not here.
-
-    When the new status leaves the waiting family (e.g. demote to backlog),
-    ``waiting_condition`` is cleared — a non-waiting state must not carry
-    stale waiting data (codex review M1)."""
-
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    new_status = TaskStatus(event.payload["new_status"])
-    updates: dict[str, Any] = {
-        "status": new_status,
-        "status_provenance": event.provenance,
-        "updated_at": event.occurred_at,
-    }
-    if new_status not in (
-        TaskStatus.WAITING_USER,
-        TaskStatus.WAITING_EVENT,
-        TaskStatus.INCUBATING,
-    ):
-        updates["waiting_condition"] = None
-    return _replace_task(snap, event.task_id, replace(current, **updates))
-
-
-def _apply_task_constraint_appended(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    constraint = event.payload.get("constraint", "")
-    if constraint in current.appended_constraints:
-        return snap  # idempotent
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            appended_constraints=current.appended_constraints + (constraint,),
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_warm_changed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            warm=bool(event.payload["warm"]),
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_warm_rank_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            warm_rank=event.payload.get("warm_rank"),
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_waiting_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Set waiting_condition AND move status to the waiting kind. One semantic
-    event carries both (no paired status_changed)."""
-
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    waiting = _waiting_from_payload(event.payload)
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            status=TaskStatus(waiting.kind),  # kind == "waiting_user" etc.
-            status_provenance=event.provenance,
-            waiting_condition=waiting,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_waiting_cleared(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            status=TaskStatus.READY,
-            status_provenance=event.provenance,
-            waiting_condition=None,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_authorization_changed(
-    snap: Snapshot, event: EventEnvelope
-) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            authorization_scope=event.payload["authorization_scope"],
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_completed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    p = event.payload
-    evidence = CompletionEvidence(
-        confirmed_by=p["confirmed_by"],
-        confirmation_provenance=Provenance(p["confirmation_provenance"]),
-        evidence_refs=tuple(p.get("evidence_refs", ())),
-    )
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            status=TaskStatus.DONE,
-            status_provenance=event.provenance,
-            completion_evidence=evidence,
-            warm=False,  # terminal → leaves warm
-            waiting_condition=None,  # terminal → no pending wait
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_cancelled(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            status=TaskStatus.CANCELLED,
-            status_provenance=event.provenance,
-            warm=False,
-            waiting_condition=None,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_task_error_recorded(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    current = _find_task(snap, event.task_id)
-    if current is None:
-        return snap
-    p = event.payload
-    error = ErrorRecord(
-        origin=TaskOrigin(p["origin"]),
-        failure_reason=p.get("failure_reason", ""),
-        last_episode_ref=p.get("last_episode_ref"),
-        last_snapshot_ref=p.get("last_snapshot_ref"),
-        recovery_hint=p.get("recovery_hint"),
-    )
-    return _replace_task(
-        snap,
-        event.task_id,
-        replace(
-            current,
-            status=TaskStatus.ERROR,
-            status_provenance=event.provenance,
-            error_record=error,
-            warm=False,
-            waiting_condition=None,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-# --------------------------------------------------------------- episode fold
-#
-# slice-087 — Episode fold mirrors the Task fold. Episode status is NOT gated
-# by the no-silent-upgrade rule (same rationale as Task: authority comes from
-# the structured command boundary + fencing, not provenance strength). The
-# live ownership lease is read from the leases table at snapshot time; these
-# folds only derive Episode state.
 
 
 def _episode_from_created(event: EventEnvelope) -> EpisodeState:
-    """Build an EpisodeState from an episode.created payload.
-
-    ``status`` starts at STARTING with ``native_session_id=None`` (090 binds
-    the native session later). ``status_provenance`` follows the event for
-    audit only.
-    """
-
-    p = event.payload
-    return EpisodeState(
-        episode_id=p["episode_id"],
-        work_item_id=p["work_item_id"],
-        task_id=p.get("task_id"),
-        status=EpisodeStatus(p.get("status", EpisodeStatus.STARTING.value)),
-        status_provenance=event.provenance,
-        native_session_id=p.get("native_session_id"),
-        pending_descriptor=None,
-        reconcile_reason=None,
-        last_snapshot_ref=None,
-        created_at=event.occurred_at,
-        updated_at=event.occurred_at,
+    return _run_episode_from_created(
+        event,
+        episode_state_factory=EpisodeState,
+        episode_status=EpisodeStatus,
     )
 
 
 def _find_episode(snap: Snapshot, episode_id: str | None) -> EpisodeState | None:
-    """Return the EpisodeState with the given id, or None."""
-
-    if episode_id is None:
-        return None
-    return next((e for e in snap.episodes if e.episode_id == episode_id), None)
+    return _run_find_episode(snap, episode_id)
 
 
 def _replace_episode(
     snap: Snapshot, episode_id: str | None, new_state: EpisodeState
 ) -> Snapshot:
-    """Return a snapshot with the given Episode replaced (immutable)."""
-
-    if episode_id is None:
-        return snap
-    return replace(
+    return _run_replace_episode(
         snap,
-        episodes=tuple(
-            new_state if e.episode_id == episode_id else e for e in snap.episodes
-        ),
+        episode_id,
+        new_state,
+        snapshot_replace=replace,
     )
 
 
 def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
-    """Reconstruct a PendingDescriptor from an episode.suspended payload."""
-
-    return PendingDescriptor(
-        kind=WaitingSubtype(p["kind"]),
-        native_generation=p.get("native_generation"),
-        correlation_id=p["correlation_id"],
-        cause=p.get("cause", ""),
-        posed_at=p["posed_at"],
+    return _run_pending_from_payload(
+        p,
+        pending_descriptor_factory=PendingDescriptor,
+        waiting_subtype=WaitingSubtype,
     )
 
 
-def _apply_episode_status_change(
-    snap: Snapshot, event: EventEnvelope
-) -> Snapshot:
-    """Change an Episode's status.
+def _episode_fold_runtime() -> EpisodeFoldRuntime:
+    return EpisodeFoldRuntime(
+        find_episode=_find_episode,
+        replace_episode=_replace_episode,
+        pending_from_payload=_pending_from_payload,
+        episode_status=EpisodeStatus,
+        reconcile_reason=ReconcileReason,
+        snapshot_ref=SnapshotRef,
+        state_replace=replace,
+    )
 
-    Covers EPISODE_STATUS_CHANGED plus the discrete lifecycle kinds
-    (yield_requested / closed / failed / activated / recovering). The
-    payload's ``new_status`` is authoritative; provenance is audit-only.
-    """
 
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    return _replace_episode(
-        snap,
-        event.episode_id,
-        replace(
-            current,
-            status=EpisodeStatus(event.payload["new_status"]),
-            status_provenance=event.provenance,
-            updated_at=event.occurred_at,
-        ),
+def _apply_episode_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_episode_status_change(
+        snap, event, runtime=_episode_fold_runtime()
     )
 
 
 def _apply_episode_checkpoint(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Set the Episode's last_snapshot_ref from a checkpoint_committed event.
-
-    The reducer folds ONLY the SnapshotRef (episode_id / version /
-    committed_event_id / payload_hash); the payload itself lives in the
-    ``episode_snapshots`` table. ``journal_through_seq`` rides in the event
-    payload for 090 / recovery readers but is not needed to fold state. The
-    event may also carry ``new_status`` (checkpointing → closed); applied if
-    present.
-    """
-
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    p = event.payload
-    ref = SnapshotRef(
-        episode_id=current.episode_id,
-        version=int(p["version"]),
-        committed_event_id=p.get("committed_event_id", event.event_id),
-        payload_hash=p["payload_hash"],
-    )
-    updates: dict[str, Any] = {
-        "last_snapshot_ref": ref,
-        "updated_at": event.occurred_at,
-    }
-    new_status = p.get("new_status")
-    if new_status is not None:
-        updates["status"] = EpisodeStatus(new_status)
-        updates["status_provenance"] = event.provenance
-    return _replace_episode(snap, event.episode_id, replace(current, **updates))
+    return _run_apply_episode_checkpoint(snap, event, runtime=_episode_fold_runtime())
 
 
 def _apply_episode_suspended(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Set status to suspended_waiting_* and store the pending descriptor."""
+    return _run_apply_episode_suspended(snap, event, runtime=_episode_fold_runtime())
 
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    pending = _pending_from_payload(event.payload)
-    return _replace_episode(
+
+def _apply_episode_wait_resolved(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_episode_wait_resolved(
+        snap, event, runtime=_episode_fold_runtime()
+    )
+
+
+def _apply_episode_reconcile_required(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_episode_reconcile_required(
+        snap, event, runtime=_episode_fold_runtime()
+    )
+
+
+def _apply_episode_reconcile_resolved(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_episode_reconcile_resolved(
+        snap, event, runtime=_episode_fold_runtime()
+    )
+
+
+def _apply_context_sample(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_context_sample(
         snap,
-        event.episode_id,
-        replace(
-            current,
-            status=EpisodeStatus(event.payload["new_status"]),
-            status_provenance=event.provenance,
-            pending_descriptor=pending,
-            updated_at=event.occurred_at,
+        event,
+        runtime=ContextFoldRuntime(
+            decode_sample=context_sample_from_dict,
+            context_state_factory=ContextObservationState,
+            snapshot_replace=replace,
         ),
     )
-
-
-def _apply_episode_wait_resolved(
-    snap: Snapshot, event: EventEnvelope
-) -> Snapshot:
-    """suspended_waiting_* → suspended_ready; clear pending_descriptor.
-
-    The answer has arrived — the Episode is no longer pending, only queued for
-    foreground. activate_suspended_episode later moves it to ACTIVE.
-    """
-
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    return _replace_episode(
-        snap,
-        event.episode_id,
-        replace(
-            current,
-            status=EpisodeStatus.SUSPENDED_READY,
-            status_provenance=event.provenance,
-            pending_descriptor=None,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_episode_reconcile_required(
-    snap: Snapshot, event: EventEnvelope
-) -> Snapshot:
-    """Set status to reconcile_required + store the reason.
-
-    Non-terminal: a later reconcile_resolved event exits it.
-    """
-
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    reason = ReconcileReason(event.payload["reason"])
-    return _replace_episode(
-        snap,
-        event.episode_id,
-        replace(
-            current,
-            status=EpisodeStatus.RECONCILE_REQUIRED,
-            status_provenance=event.provenance,
-            reconcile_reason=reason,
-            updated_at=event.occurred_at,
-        ),
-    )
-
-
-def _apply_episode_reconcile_resolved(
-    snap: Snapshot, event: EventEnvelope
-) -> Snapshot:
-    """Exit reconcile_required: clear reason, move to the resolved status.
-
-    slice-087 H3: the ``close`` decision carries the recovery_partial
-    snapshot identity (version / payload_hash / committed_event_id) on THIS
-    event — the close path no longer emits a separate ``checkpoint_committed``
-    (that would be a fenced kind written unfenced by an external decision). When
-    those fields are present, fold the SnapshotRef so ``last_snapshot_ref``
-    points at the recovery snapshot 090 will resume from.
-    """
-
-    current = _find_episode(snap, event.episode_id)
-    if current is None:
-        return snap
-    p = event.payload
-    updates: dict[str, Any] = {
-        "status": EpisodeStatus(p["new_status"]),
-        "status_provenance": event.provenance,
-        "reconcile_reason": None,
-        "updated_at": event.occurred_at,
-    }
-    if p.get("version") is not None and p.get("payload_hash"):
-        updates["last_snapshot_ref"] = SnapshotRef(
-            episode_id=current.episode_id,
-            version=int(p["version"]),
-            committed_event_id=p.get("committed_event_id", event.event_id),
-            payload_hash=p["payload_hash"],
-        )
-    return _replace_episode(
-        snap, event.episode_id, replace(current, **updates)
-    )
-
-
-# --------------------------------------------------------------- public API ---
 
 
 def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
-    """Fold a single event into ``snap`` and return the new snapshot.
-
-    Unknown event kinds are retained in ``unrecognized_event_kinds`` rather
-    than raising, so a future policy version cannot break this reducer.
-    """
+    """归约单个事件；未知类型只记录到 ``unrecognized_event_kinds``。"""
 
     if event.kind == EventKind.WORK_ITEM_CREATED:
         work_item_id = event.payload.get("work_item_id")
         if any(w.work_item_id == work_item_id for w in snap.work_items):
-            # idempotent fold: a replay that re-sees the same created event
-            # must not append a ghost duplicate.
             return snap
         state = _work_item_from_created(event)
         return replace(snap, work_items=snap.work_items + (state,))
@@ -945,16 +444,12 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
     if event.kind == EventKind.NOTE:
         return snap
     if event.kind == EventKind.SELF_CHANGE_PROPOSED:
-        # slice-085: a model's proposed Self change is recorded for audit but
-        # NEVER applied — Self is assembled from runtime facts
-        # (``self_assembler``), not derived from events. Structural anti-forgery
-        # (pass 4): no event, regardless of provenance, can alter Self state.
+        # Self 只由运行时事实组装；模型提案只审计，不能改变派生状态。
         return snap
-    # slice-086 — Task fold. Tasks are event-sourced like work_items.
     if event.kind == EventKind.TASK_CREATED:
         task_id = event.payload.get("task_id")
         if any(t.task_id == task_id for t in snap.tasks):
-            return snap  # idempotent replay
+            return snap
         return replace(snap, tasks=snap.tasks + (_task_from_created(event),))
     if event.kind == EventKind.TASK_STATUS_CHANGED:
         return _apply_task_status_change(snap, event)
@@ -981,23 +476,13 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.FOREGROUND_CLAIMED,
         EventKind.FOREGROUND_RELEASED,
     ):
-        # audit-only. FOREGROUND_CLAIMED/RELEASED never derive state: the
-        # live foreground owner lives in the foreground_claim table (read at
-        # snapshot time, same pattern as active_leases). TASK_CREATION_DENIED
-        # records that a MODEL_HYPOTHESIS creation attempt was refused —
-        # retained for traceability, affects no derived state.
+        # 前台归属来自实时表；拒绝创建与前台变更事件只保留审计轨迹。
         return snap
-    # slice-087 — Episode fold. Episodes are event-sourced like work_items /
-    # tasks. The live ownership lease is NOT derived here (read from the
-    # leases table at snapshot time, like foreground_task_id); only Episode
-    # state is folded.
     if event.kind == EventKind.EPISODE_CREATED:
         episode_id = event.payload.get("episode_id")
         if any(e.episode_id == episode_id for e in snap.episodes):
-            return snap  # idempotent replay
-        return replace(
-            snap, episodes=snap.episodes + (_episode_from_created(event),)
-        )
+            return snap
+        return replace(snap, episodes=snap.episodes + (_episode_from_created(event),))
     if event.kind in (
         EventKind.EPISODE_STATUS_CHANGED,
         EventKind.EPISODE_YIELD_REQUESTED,
@@ -1023,52 +508,13 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.EPISODE_SIDE_EFFECT_RECORDED,
         EventKind.LATE_WRITE_REJECTED,
     ):
-        # audit-only: the live ownership lease is read from the leases table;
-        # side effects are folded via SIDE_EFFECT_UNCONFIRMED (084) which
-        # already adds an UnknownAction; a stale-write rejection changes no
-        # derived state.
+        # ownership 来自实时表；副作用事实与 stale-write 拒绝在此只用于审计。
         return snap
-    # slice-088 — context observation projection. A sample updates the latest
-    # observation for its (episode, native_session), including an unavailable
-    # one (extra-HIGH 1). A generation boundary is audit-only: the ContextSample
-    # already carries its own generation (computed by the calculator), so the
-    # boundary does not derive state on its own.
     if event.kind == EventKind.CONTEXT_SAMPLE_OBSERVED:
-        # codex review HIGH 5: envelope is the ownership authority — the payload
-        # does NOT carry native_session_id; inject it from the envelope.
-        native = event.native_session_id
-        if not native:
-            return snap  # no session to attribute — drop defensively
-        sample = context_sample_from_dict(event.payload, native)
-        episode_id = event.episode_id
-        existing = next(
-            (
-                s
-                for s in snap.context_observations
-                if s.episode_id == episode_id and s.native_session_id == native
-            ),
-            None,
-        )
-        # codex review MEDIUM 4: a late-arriving OLDER event must NOT overwrite a
-        # newer one — compare occurred_at, not fold order.
-        if existing is not None and event.occurred_at < existing.observed_at:
-            return snap
-        ctx_state = ContextObservationState(
-            episode_id=episode_id,
-            native_session_id=native,
-            generation=sample.generation,
-            latest_sample=sample,
-            observed_at=event.occurred_at,
-        )
-        rest = tuple(
-            s
-            for s in snap.context_observations
-            if not (s.episode_id == episode_id and s.native_session_id == native)
-        )
-        return replace(snap, context_observations=rest + (ctx_state,))
+        return _apply_context_sample(snap, event)
     if event.kind == EventKind.CONTEXT_GENERATION_BOUNDARY:
-        return snap  # audit-only; generation lives on the ContextSample
-    # forward-compat: retain the kind, do not crash
+        # generation 已在 ContextSample 上，边界事件只保留审计轨迹。
+        return snap
     if event.kind not in snap.unrecognized_event_kinds:
         return replace(
             snap,
@@ -1078,8 +524,7 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def reduce_decision(snap: Snapshot, decision: Any) -> Snapshot:
-    """Fold a decision record. Decisions are primarily audit; the reducer
-    records that it has seen them without deriving opinionated state."""
+    """决策当前只进入审计日志，不派生 Snapshot 状态。"""
 
-    _ = decision  # audit-only for now; later slices may derive routing state
+    _ = decision
     return snap

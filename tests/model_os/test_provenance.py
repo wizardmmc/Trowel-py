@@ -1,10 +1,4 @@
-"""Independent provenance tests (slice-084 pass criterion 4).
-
-The spec demands that ``machine_observation``, ``user_decision``,
-``model_hypothesis``, ``unknown`` and ``stale`` each have independent tests,
-and that none can silently upgrade into another. We drive the reducer
-directly so the provenance rules are pinned without going through SQLite.
-"""
+"""直接驱动 reducer，验证 provenance 强度与禁止静默升级的规则。"""
 
 from __future__ import annotations
 
@@ -62,9 +56,6 @@ def _status(
     )
 
 
-# --------------------------- each provenance type is independently representable ---
-
-
 @pytest.mark.parametrize(
     "provenance",
     [
@@ -75,13 +66,6 @@ def _status(
     ],
 )
 def test_each_provenance_is_recorded_on_first_claim(provenance: Provenance) -> None:
-    """When a non-stale provenance is the first to assert a status, it is the
-    recorded provenance of that derived status.
-
-    STALE is excluded: a stale observation cannot positively assert a status
-    (see ``test_stale_cannot_assert_status``).
-    """
-
     snap = reduce_event(initial_snapshot(), _created())
     snap = reduce_event(
         snap,
@@ -97,10 +81,6 @@ def test_each_provenance_is_recorded_on_first_claim(provenance: Provenance) -> N
 
 
 def test_stale_cannot_assert_status() -> None:
-    """A stale status event never flips the derived status — not even over
-    the STALE placeholder left by creation. This blocks "stale observation
-    silently turns PENDING into DONE"."""
-
     snap = reduce_event(initial_snapshot(), _created())
     assert snap.work_items[0].status_provenance == Provenance.STALE
     snap = reduce_event(
@@ -114,9 +94,6 @@ def test_stale_cannot_assert_status() -> None:
     )
     assert snap.work_items[0].status == WorkItemStatus.PENDING
     assert snap.work_items[0].status_provenance == Provenance.STALE
-
-
-# ----------------------------------------------- no-silent-upgrade matrix ---
 
 
 @pytest.mark.parametrize(
@@ -137,10 +114,6 @@ def test_stale_cannot_assert_status() -> None:
 def test_weaker_provenance_cannot_override_stronger(
     strong: Provenance, weak: Provenance
 ) -> None:
-    """For every (strong, weak) pair, the weak source cannot overwrite the
-    status the strong source set. This is the explicit no-silent-upgrade
-    matrix required by pass criterion 4."""
-
     snap = reduce_event(initial_snapshot(), _created())
     snap = reduce_event(
         snap,
@@ -165,9 +138,6 @@ def test_weaker_provenance_cannot_override_stronger(
 
 
 def test_equal_provenance_can_update_status() -> None:
-    """Same-strength provenance may update the status value (e.g. machine
-    observes RUNNING, then machine observes DONE)."""
-
     snap = reduce_event(initial_snapshot(), _created())
     snap = reduce_event(
         snap,
@@ -191,13 +161,7 @@ def test_equal_provenance_can_update_status() -> None:
     assert snap.work_items[0].status_provenance == Provenance.MACHINE_OBSERVATION
 
 
-# ----------------------------------------------- stale & unknown isolation ---
-
-
 def test_stale_event_is_recorded_but_cannot_promote() -> None:
-    """A stale observation lands in the journal yet cannot assert a positive
-    status over a prior machine observation."""
-
     snap = reduce_event(initial_snapshot(), _created())
     snap = reduce_event(
         snap,
@@ -221,9 +185,6 @@ def test_stale_event_is_recorded_but_cannot_promote() -> None:
 
 
 def test_unknown_event_is_recorded_but_cannot_promote() -> None:
-    """An unknown observation lands in the journal yet cannot assert a
-    positive status over a prior machine observation."""
-
     snap = reduce_event(initial_snapshot(), _created())
     snap = reduce_event(
         snap,
@@ -247,9 +208,9 @@ def test_unknown_event_is_recorded_but_cannot_promote() -> None:
 
 
 def test_provenance_strength_ordering() -> None:
-    """The frozen strength ordering: user > machine > model > unknown > stale."""
-
     assert Provenance.USER_DECISION.strength > Provenance.MACHINE_OBSERVATION.strength
-    assert Provenance.MACHINE_OBSERVATION.strength > Provenance.MODEL_HYPOTHESIS.strength
+    assert (
+        Provenance.MACHINE_OBSERVATION.strength > Provenance.MODEL_HYPOTHESIS.strength
+    )
     assert Provenance.MODEL_HYPOTHESIS.strength > Provenance.UNKNOWN.strength
     assert Provenance.UNKNOWN.strength > Provenance.STALE.strength

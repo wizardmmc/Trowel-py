@@ -1,14 +1,4 @@
-"""Pure-function reducer tests (slice-084).
-
-The reducer folds journal events + decisions into a derived Snapshot. These
-tests drive it directly (no SQLite) so the logic is exercised independently
-of the store. Covers:
-- work_item.created → derived WorkItemState
-- work_item.status_changed under provenance upgrade rules
-- lease lifecycle
-- forward-compat: unknown event kinds are retained, never crash the reducer
-- fold is order-deterministic and replaying twice is a no-op
-"""
+"""直接验证 reducer 的来源门禁、前向兼容、幂等和确定性。"""
 
 from __future__ import annotations
 
@@ -71,9 +61,6 @@ def _status_event(
     )
 
 
-# ----------------------------------------------------------- created event ---
-
-
 def test_created_event_produces_work_item_state() -> None:
     snap = reduce_event(initial_snapshot(), _created_event(event_id="e1"))
     assert len(snap.work_items) == 1
@@ -81,12 +68,8 @@ def test_created_event_produces_work_item_state() -> None:
     assert state.work_item_id == "wi-1"
     assert state.kind == WorkItemKind.TASK
     assert state.status == WorkItemStatus.PENDING
-    # creation attests existence, not status — status_provenance is the
-    # weakest placeholder until a real observation arrives
+    # 创建只证明对象存在，状态来源保持最弱占位，等待真实观测。
     assert state.status_provenance == Provenance.STALE
-
-
-# --------------------------------------------------- provenance upgrade rules ---
 
 
 def test_machine_observation_status_change_applies() -> None:
@@ -104,12 +87,6 @@ def test_machine_observation_status_change_applies() -> None:
 
 
 def test_model_hypothesis_cannot_override_machine_observation() -> None:
-    """A weak source must NOT silently upgrade over a stronger observed fact.
-
-    This is the core "no silent upgrade" invariant: machine_observation set
-    RUNNING; a later model_hypothesis claiming DONE must NOT flip derived state.
-    """
-
     snap = reduce_event(initial_snapshot(), _created_event(event_id="e1"))
     snap = reduce_event(
         snap,
@@ -129,14 +106,12 @@ def test_model_hypothesis_cannot_override_machine_observation() -> None:
             provenance=Provenance.MODEL_HYPOTHESIS,
         ),
     )
-    # weaker provenance → derived status unchanged, stays RUNNING
+    # 较弱来源不能改变派生状态。
     assert snap.work_items[0].status == WorkItemStatus.RUNNING
     assert snap.work_items[0].status_provenance == Provenance.MACHINE_OBSERVATION
 
 
 def test_user_decision_overrides_model_hypothesis() -> None:
-    """A strong source CAN override a weaker one."""
-
     snap = reduce_event(initial_snapshot(), _created_event(event_id="e1"))
     snap = reduce_event(
         snap,
@@ -161,8 +136,6 @@ def test_user_decision_overrides_model_hypothesis() -> None:
 
 
 def test_unknown_cannot_assert_anything() -> None:
-    """Provenance=unknown is too weak to flip a previously observed status."""
-
     snap = reduce_event(initial_snapshot(), _created_event(event_id="e1"))
     snap = reduce_event(
         snap,
@@ -185,17 +158,11 @@ def test_unknown_cannot_assert_anything() -> None:
     assert snap.work_items[0].status == WorkItemStatus.RUNNING
 
 
-# ----------------------------------------------------- unknown event kinds ---
-
-
 def test_unknown_event_kind_does_not_crash_and_is_retained() -> None:
-    """Spec invariant: unknown new events may be retained but must not break
-    the old reducer (forward compatibility)."""
-
     snap = initial_snapshot()
     unknown = EventEnvelope(
         event_id="e-future",
-        kind="some.future.kind.v2",  # not known to this reducer version
+        kind="some.future.kind.v2",  # 当前 reducer 版本未知的事件
         occurred_at="2026-07-21T00:00:00Z",
         source="future",
         provenance=Provenance.MACHINE_OBSERVATION,
@@ -204,25 +171,17 @@ def test_unknown_event_kind_does_not_crash_and_is_retained() -> None:
     )
     snap = reduce_event(snap, unknown)
     assert "some.future.kind.v2" in snap.unrecognized_event_kinds
-    # reducer did not crash and produced a valid snapshot
+    # reducer 未崩溃，且仍返回有效快照。
     assert snap.last_seq >= 0
 
 
 def test_duplicate_created_event_is_idempotent() -> None:
-    """Folding the same work_item.created event twice must not append a
-    ghost duplicate into the work_items tuple (replay robustness)."""
-
     snap = reduce_event(initial_snapshot(), _created_event(event_id="e1"))
     snap = reduce_event(snap, _created_event(event_id="e1-again"))
     assert len(snap.work_items) == 1
 
 
-# ----------------------------------------------------- fold determinism ---
-
-
 def test_fold_is_deterministic_across_runs() -> None:
-    """Folding the same event list twice yields equal snapshots."""
-
     events = [
         _created_event(event_id="e1"),
         _status_event(

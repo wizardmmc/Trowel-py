@@ -1,22 +1,8 @@
-"""Shared fixtures and builders for slice-087 Episode tests.
+"""Episode 测试共享的时钟、snapshot 与运行态 builder。
 
-These helpers are deliberately bug-agnostic: they construct inputs (a running
-Task+Episode, a snapshot, a fake clock) the way the SPEC says they should look,
-so a test that fails is a real spec violation, not an artefact of the helper.
-
-Design notes:
-- ``FakeClock`` controls BOTH ``store._now_iso`` (used by the expiry check
-  ``expires_at <= now_str``) and ``store.datetime`` (used by ``acquire_lease``
-  to compute ``expires_at = datetime.now(...) + ttl``). Patching only one would
-  let the other leak real wall-clock time and make TTL assertions flaky.
-- The running-Task helper drives the real public command path
-  (``create_task_from_user_request`` → ``promote_to_warm`` →
-  ``claim_foreground``) so the Episode is suspended/resumed against a Task that
-  genuinely holds foreground, exactly as 090 will.
-- ``make_running_system_episode`` exercises the no-Task (system WorkItem)
-  branch. WORK_ITEM_STATUS_CHANGED is not a gated kind, so a system WorkItem is
-  moved to RUNNING via a plain ``append_event`` (there is no public command for
-  a Task-less WorkItem lifecycle yet).
+``FakeClock`` 同时替换 Store 的 ISO 时钟和 ``datetime``，避免 lease 计算读取真实
+时间。Task builder 走公开 foreground 命令；Task-less WorkItem 当前没有公开生命
+周期命令，由专用测试 seam 写入状态事件。
 """
 
 from __future__ import annotations
@@ -45,18 +31,12 @@ from trowel_py.model_os.types import (
     WorkItemStatus,
 )
 
-# A fixed, memorable epoch. Tests advance from here so TTL arithmetic is
-# deterministic and never depends on real wall-clock time.
+# 固定 epoch 让 TTL 计算完全独立于真实时间。
 _BASE_NOW = _dt.datetime(2026, 7, 21, 0, 0, 0, tzinfo=_dt.timezone.utc)
 
 
 class FakeClock:
-    """Controllable clock that replaces both time sources the store reads.
-
-    ``install`` patches the store module so every ``_now_iso()`` call and every
-    ``datetime.now(...)`` call inside the store returns the clock's current
-    value. ``advance`` moves it forward; ``set`` jumps to an ISO literal.
-    """
+    """同时控制 Store 两种时间来源的测试时钟。"""
 
     def __init__(self, start: _dt.datetime = _BASE_NOW) -> None:
         self._now = start
@@ -75,19 +55,9 @@ class FakeClock:
         return self._now.isoformat()
 
     def install(self, monkeypatch: Any) -> None:
-        """Patch ``store._now_iso`` and ``store.datetime`` to this clock."""
-
         captured = self
 
         class _FakeDateTime(_dt.datetime):
-            """datetime subclass whose ``now()`` returns the fake clock.
-
-            Arithmetic (``+ timedelta``) returns a base ``datetime`` instance,
-            which is fine — callers only invoke ``.isoformat()`` on the result.
-            Never instantiated directly, so datetime's strict ``__new__`` never
-            bites.
-            """
-
             @classmethod
             def now(cls, tz: Any = None) -> _dt.datetime:  # type: ignore[override]
                 moment = captured._now
@@ -99,9 +69,6 @@ class FakeClock:
         monkeypatch.setattr(_store_mod, "datetime", _FakeDateTime)
 
 
-# --------------------------------------------------------------- builders ---
-
-
 def make_pending(
     *,
     kind: WaitingSubtype = WaitingSubtype.INPUT,
@@ -110,8 +77,6 @@ def make_pending(
     posed_at: str = "2026-07-21T00:00:05Z",
     native_generation: str | None = "gen-1",
 ) -> PendingDescriptor:
-    """Build a PendingDescriptor with spec-valid defaults."""
-
     return PendingDescriptor(
         kind=kind,
         native_generation=native_generation,
@@ -139,19 +104,10 @@ def make_cooperative_snapshot(
     ),
     unknowns: tuple[str, ...] = ("不确定边界的另一侧状态",),
     next_steps: tuple[str, ...] = ("核查外部动作结果",),
-    artifacts: tuple[ArtifactRef, ...] = (
-        ArtifactRef(kind="commit", ref="abc123"),
-    ),
+    artifacts: tuple[ArtifactRef, ...] = (ArtifactRef(kind="commit", ref="abc123"),),
     native_transcript_ref: str | None = "transcript://ep-1",
     journal_through_seq: int = 0,
 ) -> EpisodeSnapshot:
-    """Build a COOPERATIVE snapshot with sensible, content-rich defaults.
-
-    Defaults are deliberately non-code-jargon (生活/调研 language) per the spec
-    testing method: snapshot slots must not read as if they depend on source
-    identifiers. Tests that need specific slots override them.
-    """
-
     return EpisodeSnapshot(
         work_item_goal=work_item_goal,
         task_constraints_ref=task_constraints_ref,
@@ -169,24 +125,16 @@ def make_cooperative_snapshot(
     )
 
 
-# ----------------------------------------------------- running-task episode ---
-
-
 def make_running_task_episode(
     store: ModelOsStore,
     *,
     owner: str = "runner-A",
     ttl_seconds: int = 300,
-    goal: str = "调研一个反诈检测方案",
+    goal: str = "调研一个缓存失效检测方案",
     idempotency_key: str = "ep-key-task-1",
     previous_snapshot_ref: Any = None,
 ) -> tuple[Episode, Lease, Task, str]:
-    """Create a Task, drive it to RUNNING + foreground, start its Episode.
-
-    Returns ``(episode, lease, task, work_item_id)``. The Episode is STARTING
-    (090 binds native session + flips to ACTIVE); tests that need ACTIVE use
-    ``activate_episode`` below.
-    """
+    """走公开命令创建持有 foreground 的 Task 及 STARTING Episode。"""
 
     task = store.create_task_from_user_request(
         original_goal=goal, idempotency_key=f"task-{idempotency_key}"
@@ -212,12 +160,7 @@ def make_running_system_episode(
     kind: WorkItemKind = WorkItemKind.DEFAULT,
     idempotency_key: str = "ep-key-sys-1",
 ) -> tuple[Episode, Lease, str]:
-    """Create a system WorkItem (no Task), move it to RUNNING, start an Episode.
-
-    The system WorkItem has no Task, so its Episode exercises the no-Task
-    branch of suspend/activate. WORK_ITEM_STATUS_CHANGED is not gated, so the
-    WorkItem is moved to RUNNING via a plain status event.
-    """
+    """通过测试 seam 创建 RUNNING 的 Task-less WorkItem 及 Episode。"""
 
     work_item = store.create_work_item(
         kind=kind,
@@ -226,8 +169,7 @@ def make_running_system_episode(
         session_purpose=SessionPurpose.DEFAULT,
         memory_eligibility=MemoryEligibility.INELIGIBLE,
     )
-    # Drive the system WorkItem to RUNNING. There is no public command for a
-    # Task-less WorkItem lifecycle yet, so append the status event directly.
+    # Task-less WorkItem 尚无公开生命周期命令，只能在测试中直接追加状态事件。
     store.append_event(
         EventEnvelope(
             event_id=f"wi.run.{work_item.work_item_id}",
@@ -250,17 +192,8 @@ def make_running_system_episode(
     return episode, lease, work_item.work_item_id
 
 
-def activate_episode(
-    store: ModelOsStore, episode_id: str, lease: Lease
-) -> None:
-    """Move a STARTING Episode to ACTIVE via the fenced status_changed path.
-
-    090 normally binds the native session and flips STARTING → ACTIVE. There is
-    no public command for that yet (it is 090's job), so tests flip it directly
-    through the fenced append path to exercise downstream commands that require
-    ACTIVE. The fenced event is constructed exactly the way the real commands
-    build one (caller-held lease triple).
-    """
+def activate_episode(store: ModelOsStore, episode_id: str, lease: Lease) -> None:
+    """在缺少公开绑定命令时，经 fenced 测试 seam 把 Episode 激活。"""
 
     with store._tx():
         store._append_fenced_event_in_tx(

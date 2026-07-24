@@ -1,5 +1,3 @@
-"""GET /api/quota + wire serialization (slice-093-pre, criterion 6 + 7)."""
-
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -58,13 +56,12 @@ def test_list_quota_returns_normalized_snapshots_without_raw() -> None:
     assert window["kind"] == "weekly"
     assert window["used_percent"] == 90.0
     assert window["resets_at"] == 1784858417972
-    # criterion 7: verbatim provider raw is NOT exposed at the wire boundary
     assert "raw" not in window
 
 
 def test_list_quota_empty_when_read_model_absent() -> None:
     app = FastAPI()
-    app.include_router(quota_routes.router)  # no app.state.quota_read_model
+    app.include_router(quota_routes.router)
     client = TestClient(app)
 
     resp = client.get("/api/quota")

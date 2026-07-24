@@ -1,28 +1,11 @@
-"""Transactional Store for the Model OS (slice-084).
+"""Model OS 的事务式 Store。
 
-Owns its own SQLite database (independent of ``trowel.db``, per the spec's
-"首选独立 SQLite + WAL"). Provides the six operations the spec mandates:
-transactions, CAS/lease, append event, append decision, read snapshot, and
-replay by seq.
+Store 使用独立 SQLite WAL。结构化命令在 ``RLock`` 内通过 ``_tx`` 显式开启
+``BEGIN IMMEDIATE``，使状态回放、门禁、journal 和 live table 更新保持原子；
+``_read_tx`` 则保证派生状态与 live lease/foreground 读取来自同一快照。
 
-Concurrency / threading:
-``check_same_thread=False`` is set from the start. FastAPI TestClient's anyio
-portal runs async endpoints on a separate worker thread (see the verified
-memory note on sqlite + anyio), so a connection bound to the creating thread
-would explode the moment a later slice wires routes around this store. WAL +
-``busy_timeout`` lets separate connections on the same file serialise writes
-without immediate "database is locked" failures — the real path the
-concurrency tests exercise.
-
-Atomicity:
-multi-statement appends (``append_decision_with_intent``) run inside a single
-``with conn:`` block, so a crash mid-transaction rolls back every statement
-(spec: "写入中断不会留下半个决定或重复 seq").
-
-Idempotency:
-``event_id`` / ``decision_id`` have UNIQUE constraints; re-appending the same
-id returns the original seq instead of duplicating. ``idempotency_key`` on
-leases does the same for controllable commands.
+``event_id``、``decision_id`` 和可控命令的 ``idempotency_key`` 提供幂等身份；
+lease fencing 在持久化层拒绝陈旧写入。
 """
 
 from __future__ import annotations
@@ -40,6 +23,24 @@ from uuid import uuid4
 from contextlib import contextmanager
 from dataclasses import replace
 
+from trowel_py.model_os.episode_snapshot_codec import (
+    pending_from_payload as _run_pending_from_payload,
+)
+from trowel_py.model_os.episode_snapshot_codec import (
+    pending_to_payload as _run_pending_to_payload,
+)
+from trowel_py.model_os.episode_snapshot_codec import (
+    snapshot_from_payload as _run_snapshot_from_payload,
+)
+from trowel_py.model_os.episode_snapshot_codec import (
+    snapshot_to_payload as _run_snapshot_to_payload,
+)
+from trowel_py.model_os.episode_snapshot_codec import (
+    validate_snapshot as _run_validate_snapshot,
+)
+from trowel_py.model_os.episode_recovery import (
+    build_recovery_partial as _run_build_recovery_partial,
+)
 from trowel_py.model_os.redaction import redact_payload
 from trowel_py.model_os.reducer import (
     EpisodeState,
@@ -48,6 +49,47 @@ from trowel_py.model_os.reducer import (
     initial_snapshot,
     reduce_event,
 )
+from trowel_py.model_os.store_journal_codec import (
+    decision_from_row as _run_decision_from_row,
+)
+from trowel_py.model_os.store_journal_codec import (
+    decision_params as _run_decision_params,
+)
+from trowel_py.model_os.store_journal_codec import dumps as _run_dumps
+from trowel_py.model_os.store_journal_codec import (
+    event_from_row as _run_event_from_row,
+)
+from trowel_py.model_os.store_journal_codec import (
+    event_identity as _run_event_identity,
+)
+from trowel_py.model_os.store_journal_codec import (
+    event_params as _run_event_params,
+)
+from trowel_py.model_os.store_journal_codec import (
+    event_row_identity as _run_event_row_identity,
+)
+from trowel_py.model_os.store_journal_codec import (
+    lease_from_row as _run_lease_from_row,
+)
+from trowel_py.model_os.store_journal_codec import (
+    payload_json as _run_payload_json,
+)
+from trowel_py.model_os.store_event_factory import (
+    make_episode_event as _run_make_episode_event,
+)
+from trowel_py.model_os.store_event_factory import (
+    make_task_event as _run_make_task_event,
+)
+from trowel_py.model_os.store_event_factory import (
+    make_work_item_event as _run_make_work_item_event,
+)
+from trowel_py.model_os.store_projection import (
+    project_episode_state as _run_project_episode_state,
+)
+from trowel_py.model_os.store_projection import (
+    project_task_state as _run_project_task_state,
+)
+from trowel_py.model_os.store_schema import SCHEMA_SQL as _SCHEMA_SQL
 from trowel_py.model_os.types import (
     ArtifactRef,
     DecisionRecord,
@@ -79,24 +121,17 @@ from trowel_py.model_os.context_observer import (
     context_sample_to_dict,
 )
 
-_SCHEMA_VERSION = 4  # v4 (slice-087 R3-H3): idx_leases_idem scoped to released_at IS NULL so a released lease's key does not block a new grant
+_SCHEMA_VERSION = 4  # 活跃 lease 才占用幂等 key，释放后允许新 grant。
 _DEFAULT_POLICY_VERSION = "v0"
 
 _LOGGER = logging.getLogger(__name__)
 
-# slice-087 M2: upper bound on a serialized EpisodeSnapshot payload (spec
-# §设计约束 line 224 mandates a size cap; the exact threshold is a spec gap,
-# 256 KiB is generous for a work现场 snapshot that references — never copies —
-# transcripts). Keeps a pathological payload from bloating the journal.
+# Snapshot 只引用 transcript 而不复制正文；上限避免异常 payload 膨胀 journal。
 _MAX_SNAPSHOT_PAYLOAD_BYTES = 256 * 1024
 
-# slice-086: Task lifecycle event kinds that must ONLY be appended by the
-# structured Task commands (create_task_from_user_request / claim_foreground /
-# complete_task / ...). The public ``append_event`` refuses these so a caller
-# that somehow obtains a Store handle cannot bypass the command gates and forge
-# a Task, resurrect a terminal Task, or fake ``running`` without a foreground
-# claim. ``TASK_CREATION_DENIED`` is audit-only (reducer no-op) and stays open.
-# Codex review HIGH 1.
+# Task 生命周期事件只能由结构化命令写入，避免调用方绕过状态门禁伪造 Task、
+# 复活终态 Task，或在没有 foreground claim 时写入 running。
+# ``TASK_CREATION_DENIED`` 只用于审计，reducer 不派生状态，因此保持开放。
 _TASK_LIFECYCLE_KINDS = frozenset(
     {
         EventKind.TASK_CREATED,
@@ -115,12 +150,9 @@ _TASK_LIFECYCLE_KINDS = frozenset(
     }
 )
 
-# slice-087: Episode lifecycle event kinds that must ONLY be appended by the
-# structured Episode commands. The public ``append_event`` refuses these so a
-# caller holding a Store handle cannot forge an Episode, fake a checkpoint,
-# or write a stale ownership transition. ``LATE_WRITE_REJECTED`` is audit-only
-# but is also gated: only the fencing path writes it (via the internal
-# ``_insert_event_in_tx``), never a bare ``append_event``.
+# Episode 生命周期事件只能由结构化命令写入，避免调用方伪造 Episode、checkpoint
+# 或陈旧 ownership 转移。``LATE_WRITE_REJECTED`` 虽只用于审计，也只能由
+# fencing 路径通过 ``_insert_event_in_tx`` 写入。
 _EPISODE_LIFECYCLE_KINDS = frozenset(
     {
         EventKind.EPISODE_CREATED,
@@ -142,27 +174,16 @@ _EPISODE_LIFECYCLE_KINDS = frozenset(
     }
 )
 
-# slice-087: event kinds that change Episode authoritative state while an
-# ownership lease is held. These MUST carry the caller-held
-# ``(lease_id, owner, fencing_token)``; the store validates them against the
-# live lease before persisting. Created / ownership-acquired / ownership-
-# released are excluded: they are the lease-lifecycle bookends (no lease held
-# yet, or the act of acquiring/releasing itself), not fenced progress writes.
-# ``LATE_WRITE_REJECTED`` is audit and never fenced. ``task.*`` / ``work_item.*``
-# events that happen to carry ``episode_id`` as a causal reference are NOT in
-# this set and are never fencing-checked.
+# 持有 ownership lease 时会改变 Episode 权威状态的事件必须携带调用方持有的
+# ``(lease_id, owner, fencing_token)``，Store 在持久化前据实时 lease 校验。
+# 创建、取得所有权和释放所有权是 lease 生命周期边界，不属于受 fencing 保护的
+# 进度写入；``LATE_WRITE_REJECTED`` 只供审计，也不受 fencing 保护。仅把
+# ``episode_id`` 用作因果引用的 ``task.*``、``work_item.*`` 事件不进入该集合。
 #
-# codex C1 (2026-07-21): EXTERNALLY-driven kinds are NOT in this set.
-# ``EPISODE_WAIT_RESOLVED`` (an answer arrived via the 095 matcher),
-# ``EPISODE_RECONCILE_REQUIRED`` (the kernel detected a lost pending channel on
-# restart — the lease is gone by definition) and ``EPISODE_RECONCILE_RESOLVED``
-# (a human/kernel decision to close or resume) are driven by something OTHER
-# than the lease holder's progress, so the caller has no lease triple to
-# present. Requiring fencing here would make ``mark_pending_channel_lost``
-# uncallable: it runs precisely when the lease has expired on restart. The gate
-# that remains is structural — these kinds stay in ``_EPISODE_LIFECYCLE_KINDS``,
-# so a bare ``append_event`` still refuses them; only the structured command
-# may write them.
+# 外部回答、重启时检测通道丢失以及人工或内核的 reconcile 决策都不由 lease
+# 持有者推进，因此调用方没有可提交的 lease 三元组。若要求 fencing，恰好在 lease
+# 已失效时运行的 ``mark_pending_channel_lost`` 将无法调用。这些事件仍属于
+# ``_EPISODE_LIFECYCLE_KINDS``，裸 ``append_event`` 会拒绝，只能由结构化命令写入。
 _EPISODE_FENCED_KINDS = frozenset(
     {
         EventKind.EPISODE_STATUS_CHANGED,
@@ -177,159 +198,9 @@ _EPISODE_FENCED_KINDS = frozenset(
     }
 )
 
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL,
-    occurred_at TEXT NOT NULL,
-    source TEXT NOT NULL,
-    provenance TEXT NOT NULL,
-    policy_version TEXT NOT NULL,
-    work_item_id TEXT,
-    task_id TEXT,
-    episode_id TEXT,
-    native_session_id TEXT,
-    cause_id TEXT,
-    correlation_id TEXT,
-    outcome TEXT,
-    payload TEXT NOT NULL,
-    payload_hash TEXT,
-    -- slice-087 M6: the ownership lease triple that authorised this write.
-    -- NULL for non-fenced events (task.*/work_item.*/notes); for fenced
-    -- Episode events it records WHICH lease/token committed the authoritative
-    -- state change — durable audit (which grant wrote this?) and the basis for
-    -- the full idempotent-retry fingerprint (codex H7).
-    lease_id TEXT,
-    owner TEXT,
-    fencing_token INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS decisions (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    decision_id TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL,
-    decided_at TEXT NOT NULL,
-    work_item_id TEXT,
-    task_id TEXT,
-    episode_id TEXT,
-    cause_id TEXT,
-    correlation_id TEXT,
-    policy_version TEXT NOT NULL,
-    signals TEXT NOT NULL,
-    candidates TEXT NOT NULL,
-    choice TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    budget_before TEXT,
-    budget_after TEXT
-);
-
-CREATE TABLE IF NOT EXISTS leases (
-    lease_id TEXT PRIMARY KEY,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    owner TEXT NOT NULL,
-    acquired_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    idempotency_key TEXT,
-    released_at TEXT,
-    -- slice-087: strictly monotonic per (resource_type, resource_id). The
-    -- live counter lives in lease_fence_counters; this column caches the
-    -- token the holder must present on fenced writes. DEFAULT 0 so an
-    -- episode_ownership / work_lease that does not need fencing still works.
-    fencing_token INTEGER NOT NULL DEFAULT 0
-);
-
--- at most one ACTIVE lease per resource (CAS primitive)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_active
-    ON leases(resource_type, resource_id) WHERE released_at IS NULL;
-
--- slice-087: idempotency is scoped to the RESOURCE, not global. codex review
--- of slice-087 caught that a global-unique key would let the same owner reuse
--- one key across an episode_ownership lease and a work_lease and silently get
--- back the wrong resource's lease. The partial index now requires
--- (resource_type, resource_id, idempotency_key) to be unique together.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_idem
-    ON leases(resource_type, resource_id, idempotency_key)
-    WHERE idempotency_key IS NOT NULL AND released_at IS NULL;
-
--- slice-087: monotonic fencing counter per resource. Kept in its own table so
--- garbage-collecting old lease rows cannot roll the token back. Incremented
--- inside the same IMMEDIATE transaction that grants a new lease.
-CREATE TABLE IF NOT EXISTS lease_fence_counters (
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    last_token INTEGER NOT NULL,
-    PRIMARY KEY (resource_type, resource_id)
-);
-
--- slice-087: Episode snapshot store. Each checkpoint is a new version row;
--- the reducer folds only the SnapshotRef (episode_id, version,
--- committed_event_id, payload_hash) into EpisodeState, never the payload.
--- checkpoint_key UNIQUE gives idempotent checkpoint on crash retry (version
--- alone cannot: a crash between COMMIT and response-return would else mint a
--- second version for the same checkpoint command). journal_through_seq pins
--- how far the journal was folded into this snapshot, so recovery_partial does
--- not re-fold events already represented in base_snapshot_ref.
-CREATE TABLE IF NOT EXISTS episode_snapshots (
-    episode_id TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    checkpoint_key TEXT NOT NULL UNIQUE,
-    source TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    -- base_snapshot_ref split: a SnapshotRef is (episode_id, version, ...);
-    -- the base's episode/version are stored flat for SQL.
-    base_episode_id TEXT,
-    base_version INTEGER,
-    journal_through_seq INTEGER NOT NULL,
-    committed_event_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (episode_id, version)
-);
-
--- slice-086: foreground attention record. Single row (CHECK id=1); the
--- task_id is whoever Trowel is currently pushing forward, or NULL. Unlike
--- leases this row has NO expiry: foreground is "current fact", not a
--- resource that can be stolen by a timeout (Kleppmann: persistent lock vs
--- lease). Restart reads this row back as-is.
-CREATE TABLE IF NOT EXISTS foreground_claim (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    task_id TEXT
-);
-
--- slice-086: idempotency for Task creation. The CreateTaskFromUserRequest
--- command carries a caller-supplied key; a retry returns the original
--- task_id instead of producing a second Task + primary WorkItem. The CHECK
--- guards against NULL/blank keys at the storage layer too (SQLite accepts
--- NULL in a non-integer PRIMARY KEY, which would silently break the lookup).
-CREATE TABLE IF NOT EXISTS task_create_keys (
-    idempotency_key TEXT PRIMARY KEY NOT NULL
-        CHECK (length(trim(idempotency_key)) > 0),
-    task_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
--- slice-087: idempotency for Episode creation. start_episode carries a
--- caller-supplied key; a retry returns the original (episode_id, lease)
--- instead of producing a second Episode + lease. Same CHECK shape as
--- task_create_keys.
-CREATE TABLE IF NOT EXISTS episode_create_keys (
-    idempotency_key TEXT PRIMARY KEY NOT NULL
-        CHECK (length(trim(idempotency_key)) > 0),
-    episode_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-"""
-
 
 class LeaseConflict(Exception):
-    """Raised when a CAS lease claim loses to another active owner."""
+    """CAS lease 抢占败给其他活跃 owner 时抛出。"""
 
     def __init__(self, resource_type: str, resource_id: str) -> None:
         self.resource_type = resource_type
@@ -340,27 +211,22 @@ class LeaseConflict(Exception):
 
 
 class ForegroundConflict(Exception):
-    """Raised when a ClaimForeground loses to another Task already foreground.
+    """抢占 foreground 败给另一个 Task 时抛出。
 
-    The foreground claim is a single-row persistent record (no TTL); only one
-    Task may hold it at a time. Idempotent re-claim by the same owner returns
-    silently; a different owner raises this (slice-086 §foreground claim).
+    foreground 是没有 TTL 的单行持久化记录，同一时刻只能由一个 Task 持有。
+    同一 owner 重试会静默返回，不同 owner 则抛出本异常。
     """
 
     def __init__(self, current_owner: str | None) -> None:
         self.current_owner = current_owner
-        super().__init__(
-            f"foreground already held by task_id={current_owner!r}"
-        )
+        super().__init__(f"foreground already held by task_id={current_owner!r}")
 
 
 class WarmFull(Exception):
-    """Raised when a PromoteToWarm would exceed ``warm_limit``.
+    """提升 Task 会超过 ``warm_limit`` 时抛出。
 
-    Per slice-086 grill decision 7 (warm is a fixed-capacity cache, explicit
-    replacement on overflow): the caller must demote an existing warm Task to
-    backlog before promoting a new one. The exception carries the current
-    warm Task ids so the caller / UI can surface the choice to the user.
+    warm 是固定容量缓存，溢出时必须显式替换：调用方先把已有 warm Task 降到
+    backlog，再提升新 Task。异常携带当前 warm Task ID，供调用方或界面展示选择。
     """
 
     def __init__(self, limit: int, warm_task_ids: tuple[str, ...]) -> None:
@@ -372,10 +238,7 @@ class WarmFull(Exception):
 
 
 class TaskCommandError(Exception):
-    """Raised when a Task command violates an invariant: illegal transition,
-    unknown task, terminal state, or a provenance/authority gate refusal
-    (e.g. MODEL_HYPOTHESIS attempting to create a Task or confirm a user
-    task's completion)."""
+    """Task 命令违反状态转换、对象存在性或来源权限不变量时抛出。"""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -383,9 +246,7 @@ class TaskCommandError(Exception):
 
 
 class EpisodeCommandError(Exception):
-    """Raised when an Episode command violates an invariant: illegal
-    transition, unknown episode, terminal state, ownership-token mismatch, or
-    a checkpoint / snapshot contract violation (slice-087)."""
+    """Episode 命令违反状态、所有权或 checkpoint/snapshot 契约时抛出。"""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -393,18 +254,11 @@ class EpisodeCommandError(Exception):
 
 
 class StaleWriterRejected(Exception):
-    """Raised when a fenced Episode write bears a stale ownership token.
+    """受 fencing 保护的 Episode 写入携带陈旧所有权 token 时抛出。
 
-    The writer's ``(lease_id, owner, fencing_token)`` did not match the live
-    ownership lease: the lease was taken over (a higher token now exists),
-    the caller is not the current owner, or the lease is expired / released.
-    The attempted write is rejected and a ``late_write_rejected`` audit event
-    is recorded. This is the concrete enforcement of the slice-087 fencing
-    invariant (Kleppmann: storage-layer rejection of stale writers).
-
-    NOT raised for the idempotent-retry case: if the exact same ``event_id``
-    was already persisted, ``append_event`` returns the original seq without
-    consulting fencing (a read-only retry that changed nothing).
+    写入者的 ``(lease_id, owner, fencing_token)`` 与实时 ownership lease 不符时，
+    先拒绝权威状态变更，再记录 ``late_write_rejected`` 审计事件。同一 ``event_id``
+    已持久化的幂等重试不抛出；``append_event`` 直接返回原 seq，不再校验 fencing。
     """
 
     def __init__(
@@ -424,42 +278,33 @@ class StaleWriterRejected(Exception):
         )
 
 
-# ----------------------------------------------------------------- helpers ---
-
-
 def _now_iso() -> str:
-    """Current UTC time as ISO-8601 (lexicographically sortable)."""
+    """返回按字典序可排序的 UTC ISO-8601 时间。"""
 
     return datetime.now(timezone.utc).isoformat()
 
 
 def _payload_json(payload: dict[str, Any]) -> tuple[str, str]:
-    """Redact, then serialise a payload and its short hash for audit."""
-
-    redacted = redact_payload(payload)
-    text = json.dumps(redacted, ensure_ascii=False, sort_keys=True, default=str)
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    return text, f"sha256:{digest}"
-
-
-def _dumps(value: Any) -> str:
-    """Redact then serialise any decision field (dict/list/str/None).
-
-    Decisions carry free-form ``signals``/``candidates``/``reason``/
-    ``budget_*``; they must NOT bypass redaction (spec: "默认日志不保存完整
-    prompt、thinking 或私聊"). ``reason`` is a scalar — ``redact_payload``
-    only scrubs it if the whole string matches a secret shape, so normal
-    human-readable reason text survives intact.
-    """
-
-    return json.dumps(
-        redact_payload(value), ensure_ascii=False, sort_keys=True, default=str
+    return _run_payload_json(
+        payload,
+        redact_fn=redact_payload,
+        json_dumps=json.dumps,
+        sha256_fn=hashlib.sha256,
+        str_type=str,
     )
 
 
-# Shared INSERT statements + param builders. Kept module-level so every
-# append path (event, decision, atomic pair) serialises the same way and
-# applies the same redaction — no per-method copy can drift out of sync.
+def _dumps(value: Any) -> str:
+    return _run_dumps(
+        value,
+        redact_fn=redact_payload,
+        json_dumps=json.dumps,
+        str_type=str,
+    )
+
+
+# INSERT 语句与参数构造器集中在模块级，确保事件、决策及其原子组合使用同一序列化
+# 和脱敏规则，避免各方法的副本逐渐分歧。
 
 _EVENT_INSERT_SQL = (
     "INSERT INTO events (event_id, kind, occurred_at, source, provenance, "
@@ -477,202 +322,62 @@ _DECISION_INSERT_SQL = (
 )
 
 
-def _event_params(
-    event: EventEnvelope, payload_text: str, payload_hash: str
-) -> tuple:
-    """Build redacted INSERT params for an event row."""
-
-    return (
-        event.event_id,
-        event.kind,
-        event.occurred_at,
-        event.source,
-        event.provenance.value,
-        event.policy_version,
-        event.work_item_id,
-        event.task_id,
-        event.episode_id,
-        event.native_session_id,
-        event.cause_id,
-        event.correlation_id,
-        event.outcome,
+def _event_params(event: EventEnvelope, payload_text: str, payload_hash: str) -> tuple:
+    return _run_event_params(
+        event,
         payload_text,
         payload_hash,
-        # slice-087 M6: persist the lease triple (NULL for non-fenced events).
-        event.lease_id,
-        event.owner,
-        event.fencing_token,
     )
 
 
 def _event_identity(event: EventEnvelope, payload_hash: str) -> tuple:
-    """The identity tuple of an event for idempotent-retry comparison.
-
-    Two events sharing an ``event_id`` are the SAME event iff every field here
-    matches. codex H7: the previous check compared only ``payload_hash``, so
-    the same id + same payload but a different kind / entity ref / lease triple
-    was silently treated as idempotent — the second event simply vanished.
-    ``occurred_at`` is intentionally excluded: two retries at different wall-
-    clock times are still the same logical event."""
-
-    return (
-        event.kind,
-        event.source,
-        event.provenance.value,
-        event.policy_version,
-        event.work_item_id,
-        event.task_id,
-        event.episode_id,
-        event.native_session_id,
-        event.cause_id,
-        event.correlation_id,
-        event.outcome,
-        payload_hash,
-        event.lease_id,
-        event.owner,
-        event.fencing_token,
-    )
+    return _run_event_identity(event, payload_hash)
 
 
 def _event_row_identity(row: sqlite3.Row, payload_hash: str) -> tuple:
-    """Read the identity tuple back from a stored events row (``SELECT *``).
-
-    Mirrors ``_event_identity`` so a stored row and a live envelope compare
-    field-for-field. ``fencing_token`` is normalised NULL→None on both sides."""
-
-    ft = row["fencing_token"]
-    return (
-        row["kind"],
-        row["source"],
-        row["provenance"],
-        row["policy_version"],
-        row["work_item_id"],
-        row["task_id"],
-        row["episode_id"],
-        row["native_session_id"],
-        row["cause_id"],
-        row["correlation_id"],
-        row["outcome"],
-        row["payload_hash"],
-        row["lease_id"],
-        row["owner"],
-        int(ft) if ft is not None else None,
-    )
+    return _run_event_row_identity(row, payload_hash, int_fn=int)
 
 
 def _decision_params(decision: DecisionRecord) -> tuple:
-    """Build redacted INSERT params for a decision row.
-
-    ``signals``/``candidates``/``budget_*`` are JSON-serialised after
-    redaction; ``reason`` is stored as a plain (redacted) string so the
-    column stays human-readable; ``choice`` is a short structural value and
-    is not redacted.
-    """
-
-    return (
-        decision.decision_id,
-        decision.kind,
-        decision.decided_at,
-        decision.work_item_id,
-        decision.task_id,
-        decision.episode_id,
-        decision.cause_id,
-        decision.correlation_id,
-        decision.policy_version,
-        _dumps(decision.signals),
-        _dumps(decision.candidates),
-        decision.choice,
-        redact_payload(decision.reason),
-        _dumps(decision.budget_before)
-        if decision.budget_before is not None
-        else None,
-        _dumps(decision.budget_after)
-        if decision.budget_after is not None
-        else None,
+    return _run_decision_params(
+        decision,
+        dumps_fn=_dumps,
+        redact_fn=redact_payload,
     )
 
 
 def _lease_from_row(row: sqlite3.Row) -> Lease:
-    """Reconstruct a ``Lease`` from a leases table row."""
-
-    return Lease(
-        lease_id=row["lease_id"],
-        resource_type=row["resource_type"],
-        resource_id=row["resource_id"],
-        owner=row["owner"],
-        acquired_at=row["acquired_at"],
-        expires_at=row["expires_at"],
-        idempotency_key=row["idempotency_key"],
-        fencing_token=int(row["fencing_token"]),
-    )
+    return _run_lease_from_row(row, lease_type=Lease, int_fn=int)
 
 
 def _event_from_row(row: sqlite3.Row) -> EventEnvelope:
-    """Reconstruct an ``EventEnvelope`` from an events table row.
-
-    The stored payload is already redacted (the store redacts on insert), so
-    no further scrubbing happens on read.
-    """
-
-    return EventEnvelope(
-        event_id=row["event_id"],
-        kind=row["kind"],
-        occurred_at=row["occurred_at"],
-        source=row["source"],
-        provenance=Provenance(row["provenance"]),
-        policy_version=row["policy_version"],
-        payload=json.loads(row["payload"]),
-        work_item_id=row["work_item_id"],
-        task_id=row["task_id"],
-        episode_id=row["episode_id"],
-        native_session_id=row["native_session_id"],
-        cause_id=row["cause_id"],
-        correlation_id=row["correlation_id"],
-        outcome=row["outcome"],
-        # slice-087 M6: restore the persisted lease triple.
-        lease_id=row["lease_id"],
-        owner=row["owner"],
-        fencing_token=int(row["fencing_token"])
-        if row["fencing_token"] is not None
-        else None,
+    return _run_event_from_row(
+        row,
+        event_type=EventEnvelope,
+        provenance_type=Provenance,
+        json_loads=json.loads,
+        int_fn=int,
     )
 
 
 def _decision_from_row(row: sqlite3.Row) -> DecisionRecord:
-    """Reconstruct a ``DecisionRecord`` from a decisions table row."""
-
-    return DecisionRecord(
-        decision_id=row["decision_id"],
-        kind=row["kind"],
-        decided_at=row["decided_at"],
-        signals=json.loads(row["signals"]),
-        candidates=json.loads(row["candidates"]),
-        choice=row["choice"],
-        reason=row["reason"],
-        policy_version=row["policy_version"],
-        budget_before=json.loads(row["budget_before"]) if row["budget_before"] else None,
-        budget_after=json.loads(row["budget_after"]) if row["budget_after"] else None,
-        work_item_id=row["work_item_id"],
-        task_id=row["task_id"],
-        episode_id=row["episode_id"],
-        cause_id=row["cause_id"],
-        correlation_id=row["correlation_id"],
+    return _run_decision_from_row(
+        row,
+        decision_type=DecisionRecord,
+        json_loads=json.loads,
     )
 
 
 def _validate_work_item(kind: WorkItemKind, task_id: str | None) -> None:
-    """Enforce the WorkItem structural invariant (spec interface contract).
+    """校验 WorkItem 的结构不变量。
 
-    Task and incubation work must reference a Task; default/maintenance/
-    experiment must NOT — they are system work and must never masquerade as
-    task work.
+    Task 与 incubation 工作必须引用 Task；default、maintenance 和 experiment
+    属于系统工作，不得携带 Task 引用。
     """
 
     if kind in (WorkItemKind.TASK, WorkItemKind.INCUBATION):
         if not task_id:
-            raise ValueError(
-                f"{kind.value} work item requires a task_id (got None)"
-            )
+            raise ValueError(f"{kind.value} work item requires a task_id (got None)")
     else:
         if task_id is not None:
             raise ValueError(
@@ -681,163 +386,48 @@ def _validate_work_item(kind: WorkItemKind, task_id: str | None) -> None:
             )
 
 
-# -------------------------------------------------- episode snapshot codecs ---
-#
-# slice-087: (de)serialise EpisodeSnapshot <-> JSON-safe dict for the
-# ``episode_snapshots`` table. Kept at module level (like _lease_from_row /
-# _event_from_row) because they are pure functions over value objects.
-
-
 def _pending_to_payload(p: PendingDescriptor) -> dict[str, Any]:
-    """Serialise a PendingDescriptor to a JSON-safe dict (event payload)."""
-
-    return {
-        "kind": p.kind.value,
-        "native_generation": p.native_generation,
-        "correlation_id": p.correlation_id,
-        "cause": p.cause,
-        "posed_at": p.posed_at,
-    }
+    return _run_pending_to_payload(p)
 
 
 def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
-    """Reconstruct a PendingDescriptor from its stored dict."""
-
-    return PendingDescriptor(
-        kind=WaitingSubtype(p["kind"]),
-        native_generation=p.get("native_generation"),
-        correlation_id=p["correlation_id"],
-        cause=p.get("cause", ""),
-        posed_at=p["posed_at"],
+    return _run_pending_from_payload(
+        p,
+        pending_type=PendingDescriptor,
+        waiting_subtype=WaitingSubtype,
     )
 
 
 def _snapshot_to_payload(s: EpisodeSnapshot) -> dict[str, Any]:
-    """Serialise an EpisodeSnapshot to a JSON-safe dict for storage.
-
-    Nested records (side effects, artifacts, pending, base ref) are
-    flattened; the reverse is ``_snapshot_from_payload``.
-    """
-
-    return {
-        "work_item_goal": s.work_item_goal,
-        "task_constraints_ref": s.task_constraints_ref,
-        "current_judgment": s.current_judgment,
-        "completed_with_evidence": [list(pair) for pair in s.completed_with_evidence],
-        "side_effects": [
-            {
-                "action_ref": se.action_ref,
-                "idempotency_key": se.idempotency_key,
-                "outcome": se.outcome,
-                "evidence_ref": se.evidence_ref,
-            }
-            for se in s.side_effects
-        ],
-        "unknowns": list(s.unknowns),
-        "waiting_condition": (
-            _pending_to_payload(s.waiting_condition) if s.waiting_condition else None
-        ),
-        "next_steps": list(s.next_steps),
-        "artifacts": [{"kind": a.kind, "ref": a.ref} for a in s.artifacts],
-        "native_transcript_ref": s.native_transcript_ref,
-        "source": s.source.value,
-        "journal_through_seq": s.journal_through_seq,
-        "base_snapshot_ref": (
-            {
-                "episode_id": s.base_snapshot_ref.episode_id,
-                "version": s.base_snapshot_ref.version,
-                "committed_event_id": s.base_snapshot_ref.committed_event_id,
-                "payload_hash": s.base_snapshot_ref.payload_hash,
-            }
-            if s.base_snapshot_ref
-            else None
-        ),
-    }
-
-
-def _validate_episode_snapshot(
-    snapshot: EpisodeSnapshot, payload_text: str
-) -> None:
-    """Boundary validation for a snapshot about to be persisted (codex M2).
-
-    Spec §设计约束 mandates: a byte cap on the payload (line 224), ``next_steps``
-    at most 3 (line 107), completed actions carry evidence (line 102), and a
-    done side effect carries an evidence ref (line 170 / pass 7). The dataclass
-    cannot enforce counts/emptiness, so the store checks at the write boundary.
-    """
-
-    if len(payload_text.encode("utf-8")) > _MAX_SNAPSHOT_PAYLOAD_BYTES:
-        raise EpisodeCommandError(
-            f"snapshot payload exceeds {_MAX_SNAPSHOT_PAYLOAD_BYTES} bytes "
-            f"(got {len(payload_text.encode('utf-8'))}); reduce content or "
-            f"reference instead of copying"
-        )
-    if len(snapshot.next_steps) > 3:
-        raise EpisodeCommandError(
-            f"next_steps must have at most 3 items (got {len(snapshot.next_steps)})"
-        )
-    for action_ref, evidence_ref in snapshot.completed_with_evidence:
-        if not action_ref or not evidence_ref:
-            raise EpisodeCommandError(
-                "completed_with_evidence entries must be non-empty "
-                "(action_ref, evidence_ref)"
-            )
-    for se in snapshot.side_effects:
-        if se.outcome == "done" and not se.evidence_ref:
-            raise EpisodeCommandError(
-                f"side effect {se.action_ref!r} marked done without an "
-                f"evidence_ref; record it unknown_requires_reconcile instead"
-            )
-
-
-def _snapshot_from_payload(p: dict[str, Any]) -> EpisodeSnapshot:
-    """Reconstruct an EpisodeSnapshot from its stored payload dict."""
-
-    waiting = p.get("waiting_condition")
-    base = p.get("base_snapshot_ref")
-    return EpisodeSnapshot(
-        work_item_goal=p.get("work_item_goal", ""),
-        task_constraints_ref=p.get("task_constraints_ref"),
-        current_judgment=p.get("current_judgment", "unknown"),
-        completed_with_evidence=tuple(
-            tuple(pair) for pair in p.get("completed_with_evidence", [])
-        ),
-        side_effects=tuple(
-            SideEffectRecord(
-                action_ref=se["action_ref"],
-                idempotency_key=se["idempotency_key"],
-                outcome=se["outcome"],
-                evidence_ref=se.get("evidence_ref"),
-            )
-            for se in p.get("side_effects", [])
-        ),
-        unknowns=tuple(p.get("unknowns", [])),
-        waiting_condition=_pending_from_payload(waiting) if waiting else None,
-        next_steps=tuple(p.get("next_steps", [])),
-        artifacts=tuple(
-            ArtifactRef(kind=a["kind"], ref=a["ref"]) for a in p.get("artifacts", [])
-        ),
-        native_transcript_ref=p.get("native_transcript_ref"),
-        source=SnapshotSource(p.get("source", "cooperative")),
-        journal_through_seq=int(p.get("journal_through_seq", 0)),
-        base_snapshot_ref=(
-            SnapshotRef(
-                episode_id=base["episode_id"],
-                version=int(base["version"]),
-                committed_event_id=base["committed_event_id"],
-                payload_hash=base["payload_hash"],
-            )
-            if base
-            else None
-        ),
+    return _run_snapshot_to_payload(
+        s,
+        encode_pending=_pending_to_payload,
     )
 
 
-# ----------------------------------------------------------------- the store ---
+def _validate_episode_snapshot(snapshot: EpisodeSnapshot, payload_text: str) -> None:
+    _run_validate_snapshot(
+        snapshot,
+        payload_text,
+        max_payload_bytes=_MAX_SNAPSHOT_PAYLOAD_BYTES,
+        error_type=EpisodeCommandError,
+    )
+
+
+def _snapshot_from_payload(p: dict[str, Any]) -> EpisodeSnapshot:
+    return _run_snapshot_from_payload(
+        p,
+        decode_pending=_pending_from_payload,
+        snapshot_type=EpisodeSnapshot,
+        side_effect_type=SideEffectRecord,
+        artifact_type=ArtifactRef,
+        snapshot_ref_type=SnapshotRef,
+        snapshot_source=SnapshotSource,
+    )
 
 
 class ModelOsStore:
-    """Transactional SQLite store backing the Model OS journal."""
+    """为 Model OS journal 提供事务式 SQLite 持久化。"""
 
     def __init__(
         self,
@@ -846,61 +436,46 @@ class ModelOsStore:
         policy_version: str = _DEFAULT_POLICY_VERSION,
         warm_limit: int = 3,
     ) -> None:
-        """Remember the db path and policy version; call ``open()`` to connect.
+        """保存数据库路径与策略配置；调用 ``open()`` 后才建立连接。
 
-        Args:
-            db_path: path to the model_os.db file (created on first open).
-            policy_version: recorded on every event/decision so replay can
-                explain why a new policy would decide differently.
-            warm_limit: max number of warm Tasks (slice-086 grill decision 7;
-                default 3, user-overridable policy). The foreground Task counts
-                against this limit.
+        ``policy_version`` 会写入每条事件和决策，供回放解释策略差异。
+        ``warm_limit`` 限制 warm Task 数量，foreground Task 也计入该上限。
         """
 
         self._path = Path(db_path)
         self._policy_version = policy_version
         self._warm_limit = warm_limit
         self._conn: sqlite3.Connection | None = None
-        # slice-086: serialise commands that share this connection. SQLite's
-        # ``in_transaction`` is connection-scoped, not thread-scoped, so
-        # without this lock two request handlers sharing one store would
-        # interleave inside the same transaction (codex review HIGH 3).
+        # SQLite 的事务状态属于连接而非线程；该锁串行化共享连接的命令，避免两个
+        # 请求处理器交错进入同一事务。
         self._lock = threading.RLock()
 
     @property
     def path(self) -> Path:
-        """The backing db file path."""
+        """返回底层数据库文件路径。"""
 
         return self._path
 
-    # --------------------------------------------------- lifecycle / bootstrap
-
     def open(self) -> None:
-        """Open the connection and bootstrap the schema if absent."""
+        """打开连接，并在需要时初始化 schema。"""
 
         self._conn = self._create_connection()
         self._bootstrap()
 
     def close(self) -> None:
-        """Close the connection (idempotent)."""
+        """关闭连接；重复调用不产生影响。"""
 
         if self._conn is not None:
             self._conn.close()
             self._conn = None
 
     def _create_connection(self) -> sqlite3.Connection:
-        """Create a WAL connection with the threading-safe flags set.
+        """创建可跨 FastAPI worker 线程使用的 WAL connection。
 
-        ``check_same_thread=False`` is mandatory: later slices expose this
-        store through FastAPI routes, whose TestClient runs async endpoints
-        on an anyio portal thread (verified memory gotcha).
-
-        ``isolation_level="IMMEDIATE"`` (slice-086): every ``with conn:``
-        block opens an IMMEDIATE transaction, acquiring the reserved write
-        lock up front so concurrent writers serialise rather than racing on
-        a count-then-write window (the warm-pool capacity check relies on
-        this). Lease CAS still works — the partial unique index is the
-        arbiter, not the isolation level — so 084 behaviour is preserved.
+        ``check_same_thread=False`` 允许 TestClient 的 anyio portal 线程访问；
+        结构化命令的原子性由 ``_tx`` 显式 ``BEGIN IMMEDIATE`` 保证。
+        ``isolation_level="IMMEDIATE"`` 仍覆盖直接使用 connection context 的
+        bootstrap/兼容路径，lease CAS 的最终仲裁由 partial unique index 完成。
         """
 
         conn = sqlite3.connect(str(self._path), timeout=10, check_same_thread=False)
@@ -912,43 +487,33 @@ class ModelOsStore:
         return conn
 
     def _bootstrap(self) -> None:
-        """Create tables/indexes if missing and stamp the schema version.
+        """创建缺失的表和索引，并写入 schema 版本。
 
-        DDL runs via ``executescript`` (idempotent ``IF NOT EXISTS``); the
-        schema-version stamp is a separate parameterised ``execute`` so the
-        version never enters SQL via string substitution. Forward migrations
-        (``_migrate_schema``) run after, for databases whose stamped version
-        is behind ``_SCHEMA_VERSION`` — ``CREATE ... IF NOT EXISTS`` cannot
-        add a column to an existing table or rebuild an index, so those land
-        here as explicit ALTER / DROP + CREATE.
+        DDL 通过带 ``IF NOT EXISTS`` 的 ``executescript`` 幂等执行；版本用参数化
+        ``execute`` 单独写入。旧库随后由 ``_migrate_schema`` 显式添加列或重建索引。
         """
 
         assert self._conn is not None
-        # _bootstrap uses ``with self._conn`` (not ``_tx``) because
-        # ``executescript`` manages its own transaction and would fight the
-        # explicit BEGIN that ``_tx`` issues.
+        # ``executescript`` 自行管理事务，因此 bootstrap 直接使用连接上下文，不能与
+        # ``_tx`` 发出的显式 ``BEGIN`` 叠加。
         with self._conn:
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                 ("schema_version", str(_SCHEMA_VERSION)),
             )
-            # slice-086: foreground_claim is a single-row table; seed row id=1
-            # with NULL task_id (no foreground) so UPDATE-based CAS works and
-            # restart always finds exactly one row to read.
+            # foreground_claim 固定为单行；预置 ``id=1`` 和空 ``task_id``，使基于
+            # UPDATE 的 CAS 可用，并保证重启后始终有且仅有一行可读。
             self._conn.execute(
                 "INSERT OR IGNORE INTO foreground_claim (id, task_id) VALUES (1, NULL)"
             )
             self._migrate_schema()
 
     def _migrate_schema(self) -> None:
-        """Run forward migrations the executing engine is behind on.
+        """按 ``meta.schema_version`` 对旧库执行前向迁移。
 
-        ``meta.schema_version`` is read AFTER ``executescript`` seeded it. On a
-        fresh database the seed wrote the current ``_SCHEMA_VERSION`` and this
-        is a no-op. On an older database the row already held a smaller
-        version and ``CREATE ... IF NOT EXISTS`` left the old shapes in place,
-        so the ALTER / DROP + CREATE work happens here.
+        新库已由 ``executescript`` 写入当前版本，此处不操作；旧库保留较小版本号，
+        需要在这里显式执行 ``ALTER`` 或重建索引。
         """
 
         assert self._conn is not None
@@ -957,11 +522,8 @@ class ModelOsStore:
         ).fetchone()
         current = int(row["value"]) if row is not None else _SCHEMA_VERSION
         if current < 2:
-            # v1 → v2 (slice-087): add leases.fencing_token and rebuild
-            # idx_leases_idem as resource-scoped. CREATE ... IF NOT EXISTS in
-            # _SCHEMA_SQL added the column for fresh databases; for old ones
-            # the column must be ALTER-added. SQLite has no CREATE OR REPLACE
-            # INDEX, so the renamed index is dropped and recreated.
+            # v1 → v2：旧库补充 ``leases.fencing_token``，并把
+            # ``idx_leases_idem`` 改为资源域唯一。SQLite 不能直接替换索引，只能删除重建。
             cols = [
                 r["name"]
                 for r in self._conn.execute("PRAGMA table_info(leases)").fetchall()
@@ -976,19 +538,16 @@ class ModelOsStore:
                 "ON leases(resource_type, resource_id, idempotency_key) "
                 "WHERE idempotency_key IS NOT NULL"
             )
-            # stamp INSIDE the branch. Setting ``current = 2`` and then testing
-            # ``current != _SCHEMA_VERSION`` would be False (2 == 2), silently
-            # no-op the stamp, and every reopen would re-migrate forever.
+            # 版本必须在迁移分支内落盘；若先把 ``current`` 改为 2 再和当前版本比较，
+            # 写入会被跳过，导致每次重开都重复迁移。
             self._conn.execute(
                 "UPDATE meta SET value=? WHERE key='schema_version'",
                 ("2",),
             )
             current = 2
         if current < 3:
-            # v2 → v3 (slice-087 M6): persist the fenced-event lease triple on
-            # the events row. CREATE ... IF NOT EXISTS added the columns for
-            # fresh databases; old v2 databases need ALTER ADD COLUMN. All
-            # three are nullable (NULL for non-fenced events).
+            # v2 → v3：在事件行持久化 fencing lease 三元组。旧库逐列补齐；非 fencing
+            # 事件允许三列均为空。
             ev_cols = [
                 r["name"]
                 for r in self._conn.execute("PRAGMA table_info(events)").fetchall()
@@ -1005,13 +564,8 @@ class ModelOsStore:
             )
             current = 3
         if current < 4:
-            # v3 → v4 (slice-087 R3-H3): scope idx_leases_idem to
-            # ``released_at IS NULL`` so a released lease's idempotency_key does
-            # not block a new grant (the takeover redesign marks the old row
-            # released + INSERTs a fresh row, preserving history). The old
-            # index spanned released rows too, so reusing a key across a
-            # takeover raised a raw sqlite3.IntegrityError that leaked past the
-            # command layer. SQLite has no CREATE OR REPLACE INDEX.
+            # v3 → v4：``idx_leases_idem`` 只约束未释放 lease，使旧 lease 的幂等键不
+            # 阻塞新授权。接管会保留并释放旧行，再插入新行保存授权历史。
             self._conn.execute("DROP INDEX IF EXISTS idx_leases_idem")
             self._conn.execute(
                 "CREATE UNIQUE INDEX idx_leases_idem "
@@ -1024,15 +578,13 @@ class ModelOsStore:
             )
 
     def _schema_version(self) -> int:
-        """Return the schema version stamped in ``meta``."""
+        """返回 ``meta`` 中记录的 schema 版本。"""
 
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
         return int(row["value"]) if row is not None else _SCHEMA_VERSION
-
-    # ------------------------------------------------------------ work items
 
     def create_work_item(
         self,
@@ -1043,18 +595,11 @@ class ModelOsStore:
         session_purpose: SessionPurpose,
         memory_eligibility: MemoryEligibility,
     ) -> WorkItem:
-        """Create a WorkItem of any legal kind and journal it.
+        """创建合法的非 Task WorkItem，并把事实写入 journal。
 
-        Validates the kind/task_id invariant, then appends a
-        ``work_item.created`` event. The WorkItem starts PENDING; later
-        slices drive its lifecycle.
-
-        slice-086: ``kind=TASK`` is refused here. A Task's primary WorkItem
-        must come from ``create_task_from_user_request`` (which creates both
-        atomically and enforces the 1:1 mapping). Allowing ``create_work_item``
-        to mint TASK WorkItems would let a caller give one Task multiple
-        primary WorkItems, or attach one to a non-existent task_id (codex
-        review HIGH 4).
+        WorkItem 从 PENDING 开始，由结构化命令推进生命周期。本入口拒绝 ``TASK``；
+        Task 与主 WorkItem 必须由 ``create_task_from_user_request`` 原子创建并保持一对一，
+        不能让调用方为同一 Task 创建多个主 WorkItem 或绑定不存在的 Task。
         """
 
         if kind == WorkItemKind.TASK:
@@ -1098,8 +643,6 @@ class ModelOsStore:
         self.append_event(event)
         return work_item
 
-    # ------------------------------------------------------------ lease / CAS
-
     def acquire_lease(
         self,
         *,
@@ -1109,21 +652,12 @@ class ModelOsStore:
         ttl_seconds: int,
         idempotency_key: str | None = None,
     ) -> Lease:
-        """Atomically claim a lease (compare-and-set) with a fencing token.
+        """以 CAS 原子取得携带 fencing token 的 lease。
 
-        Returns the held lease on success. Raises ``LeaseConflict`` if another
-        active, unexpired lease already owns the resource. An expired lease is
-        taken over atomically. Re-claiming with the same ``idempotency_key``
-        AND the same owner returns the original lease; the same key under a
-        different owner, or the same key already used on a DIFFERENT
-        resource, is a conflict — the key is the caller's retry identity for
-        ONE resource, not a transferable handle (slice-087 codex review: the
-        v1 global-unique index let one key silently cross resources).
-
-        slice-087: every grant mints a strictly-higher fencing token for the
-        ``(resource_type, resource_id)`` pair (from ``lease_fence_counters``),
-        so a stale holder that wakes up after takeover cannot pass its old
-        token past a fenced write.
+        其他活跃 lease 已占用资源时抛出 ``LeaseConflict``，过期 lease 则原子接管。
+        ``idempotency_key`` 以 ``(resource_type, resource_id)`` 为作用域：同 owner
+        返回原 lease，不同 owner 冲突，其他资源可独立复用该键。每次授权从
+        ``lease_fence_counters`` 取得严格递增的 token，使接管前的持有者无法继续写入。
         """
 
         assert self._conn is not None
@@ -1141,9 +675,8 @@ class ModelOsStore:
             if existing is not None:
                 if existing["owner"] != owner:
                     raise LeaseConflict(resource_type, resource_id)
-                # codex R3-M3: do not return an already-expired lease — a retry
-                # that lands after TTL is a conflict; the caller must re-acquire
-                # fresh (otherwise the first fenced write fails on expiry).
+                # 幂等重试不得返回已过期 lease；TTL 后到达视为冲突，调用方必须重新取得，
+                # 否则第一次受 fencing 保护的写入必然失败。
                 if existing["expires_at"] <= now_str:
                     raise LeaseConflict(resource_type, resource_id)
                 return _lease_from_row(existing)
@@ -1187,18 +720,12 @@ class ModelOsStore:
                 idempotency_key,
             )
 
-    def _next_fence_token_in_tx(
-        self, resource_type: str, resource_id: str
-    ) -> int:
-        """Return the next fencing token for a resource, incrementing the
-        counter inside the caller's open transaction.
+    def _next_fence_token_in_tx(self, resource_type: str, resource_id: str) -> int:
+        """在调用方事务内递增并返回资源的下一个 fencing token。
 
-        ``lease_fence_counters`` lives outside the ``leases`` rows so that
-        releasing or garbage-collecting old lease rows never rolls the token
-        back. The UPSERT and the lease INSERT share one IMMEDIATE
-        transaction, so concurrent grants serialise and each gets a distinct
-        token. A grant that fails (lease INSERT IntegrityError) rolls the
-        whole transaction back, including this increment — no token is wasted.
+        计数器独立于 ``leases`` 行，释放或清理旧 lease 不会令 token 回退。计数器
+        UPSERT 与 lease INSERT 共享一个 IMMEDIATE 事务，并发授权因而严格串行；
+        授权失败会连同递增一起回滚，不消耗 token。
         """
 
         assert self._conn is not None
@@ -1226,15 +753,10 @@ class ModelOsStore:
         expires_str: str,
         idempotency_key: str | None,
     ) -> Lease:
-        """Handle an INSERT conflict: reclaim by idempotency, take over an
-        expired lease, or raise ``LeaseConflict``.
+        """处理 INSERT 冲突：幂等取回、接管过期 lease 或抛出 ``LeaseConflict``。
 
-        slice-087: takeover no longer UPDATEs the old row in place. It marks
-        the expired row released (so the old grant's audit trail and its
-        idempotency key are retained) and INSERTs a fresh lease row with a
-        new, higher fencing token. An in-place UPDATE would lose the old
-        grant's history, drop the old key, and could not hand the new owner a
-        higher token than the old one.
+        接管不会原地更新旧行，而是先标记释放，再以更高 fencing token 插入新行，
+        从而保留旧授权及其幂等键的审计历史。
         """
 
         assert self._conn is not None
@@ -1255,14 +777,9 @@ class ModelOsStore:
         ).fetchone()
         if existing is not None and existing["expires_at"] <= now_str:
             with self._tx():
-                # Mark the expired grant released, then INSERT a fresh row.
-                # The partial unique index idx_leases_active (WHERE
-                # released_at IS NULL) frees up exactly when the UPDATE
-                # commits, so the INSERT cannot collide with the old row.
-                # codex L2: the boundary is ``<=`` (not ``<``) to match the
-                # fencing check ``expires_at <= now`` — at the exact expiry
-                # tick the old owner has already lost power, so the new owner
-                # must take over immediately with no unwritable gap.
+                # 先释放过期授权，再插入新行。部分唯一索引 ``idx_leases_active`` 在
+                # UPDATE 生效时释放占位，新行不会与旧行冲突。到期边界使用 ``<=``，
+                # 与 fencing 校验一致：旧 owner 在精确到期时刻失权，新 owner 可立即接管。
                 cur = self._conn.execute(
                     "UPDATE leases SET released_at=? "
                     "WHERE resource_type=? AND resource_id=? AND released_at IS NULL "
@@ -1289,10 +806,8 @@ class ModelOsStore:
                             ),
                         )
                     except sqlite3.IntegrityError as exc:
-                        # codex R3-H3: a collision here is a key-scope or
-                        # active-lease conflict (another writer raced us, or the
-                        # idempotency_key is still in use). Surface it as a
-                        # LeaseConflict, never a raw sqlite3 error.
+                        # 幂等键仍被占用或其他写入者赢得竞争时，统一暴露
+                        # ``LeaseConflict``，不泄漏底层 sqlite3 异常。
                         raise LeaseConflict(resource_type, resource_id) from exc
                     return Lease(
                         lease_id=new_lease_id,
@@ -1307,7 +822,7 @@ class ModelOsStore:
         raise LeaseConflict(resource_type, resource_id)
 
     def release_lease(self, lease_id: str) -> bool:
-        """Release a lease by id. Returns ``True`` if it was active."""
+        """按 ID 释放 lease；仅实际释放活跃 lease 时返回 ``True``。"""
 
         assert self._conn is not None
         with self._tx():
@@ -1318,8 +833,6 @@ class ModelOsStore:
             return cur.rowcount == 1
 
     def _read_active_leases(self) -> tuple[Lease, ...]:
-        """Return all currently-active (unreleased, unexpired) leases."""
-
         assert self._conn is not None
         now_str = _now_iso()
         rows = self._conn.execute(
@@ -1329,21 +842,12 @@ class ModelOsStore:
         ).fetchall()
         return tuple(_lease_from_row(r) for r in rows)
 
-    # --------------------------------------------------------- append events
-
     def append_event(self, event: EventEnvelope) -> int:
-        """Append an event (idempotent on ``event_id``); return its seq.
+        """按 ``event_id`` 幂等追加事件并返回 seq。
 
-        The payload is redacted before it touches SQLite. Re-appending the
-        same ``event_id`` with the SAME content returns the original seq
-        (idempotent replay); re-appending the same ``event_id`` with DIFFERENT
-        content raises ``ValueError`` — the caller reused an id across
-        distinct events, which must not silently alias them (slice-087 codex
-        review: the v1 path swallowed every duplicate as idempotent).
-
-        slice-086 / slice-087: Task and Episode lifecycle kinds are refused —
-        those must go through the structured commands so the gates cannot be
-        bypassed by a caller that happens to hold a Store handle.
+        payload 在接触 SQLite 前先脱敏。同 ID 且完整身份一致时返回原 seq；同 ID
+        但内容不同则抛出 ``ValueError``。Task 与 Episode 生命周期事件必须经过
+        结构化命令，持有 Store 的调用方不能绕过状态和 fencing 门禁。
         """
 
         assert self._conn is not None
@@ -1366,10 +870,8 @@ class ModelOsStore:
                     _event_params(event, payload_text, payload_hash),
                 )
         except sqlite3.IntegrityError:
-            # duplicate event_id: idempotent only if the FULL identity matches.
-            # codex H7: comparing payload_hash alone let a reused id with a
-            # different kind / entity / lease triple silently alias to the
-            # first event. Compare every identity field now.
+            # 重复 event_id 只有完整身份一致时才幂等；若只比较 ``payload_hash``，
+            # 不同 kind、实体或 lease 三元组会错误指向首条事件。
             existing = self._conn.execute(
                 "SELECT * FROM events WHERE event_id=?",
                 (event.event_id,),
@@ -1387,19 +889,8 @@ class ModelOsStore:
         assert row is not None
         return int(row["seq"])
 
-    # -------------------------------------------------------- slice-088 context
-    #
-    # Thin, idempotent append wrappers for context observations. The event
-    # kinds are NOT in _TASK_LIFECYCLE_KINDS / _EPISODE_LIFECYCLE_KINDS, so
-    # they go through the public append_event path (no structured-command gate
-    # needed — a context sample is a passive observation, not a lifecycle move).
-    #
-    # Idempotency (A4): a sample's event_id embeds the runtime event's stable
-    # ``occurred_at`` (NOT the write wall-clock), so a crash-retry that re-sends
-    # the SAME observation is idempotent, while an evolving usage (subagent same
-    # message.id with growing usage) lands as a DISTINCT event and the reducer
-    # keeps the last — mirroring 082's "keep last" dedup online.
-
+    # Context 样本是被动观测而非生命周期变更，因此通过 ``append_event`` 写入，并
+    # 依赖 ``event_id`` 幂等，无需结构化命令门禁。
     def record_context_sample(
         self,
         sample: ContextSample,
@@ -1409,28 +900,14 @@ class ModelOsStore:
         task_id: str | None = None,
         source: str = "observer",
     ) -> int:
-        """Append one CONTEXT_SAMPLE_OBSERVED event; idempotent on identity.
+        """按观测身份幂等追加 ``CONTEXT_SAMPLE_OBSERVED`` 事件。
 
-        Args:
-            sample: the observation (used/window/ratio/confidence/...). Its
-                ``native_session_id`` / ``request_identity`` / ``generation``
-                feed the event_id so retries of the same observation collide
-                idempotently.
-            episode_id: the Episode this observation belongs to (envelope-level
-                owner; the single source of truth — extra-HIGH 2).
-            occurred_at: the RUNTIME event's timestamp (stable across retries),
-                not the write wall-clock — this is what makes retry idempotent.
-            task_id: optional Task pointer.
-            source: provenance tag (default "observer").
+        ``event_id`` 由 Episode、原生 session、请求身份和 generation 构成；
+        ``occurred_at`` 仅持久化，不参与身份。Episode 归属只信任 envelope。
         """
 
-        # codex review HIGH 3: the event_id must NOT embed occurred_at — the
-        # AgentEvent stream carries no stable event time, so a write-clock time
-        # would make crash-replay non-idempotent. Instead, identity is
-        # (episode, native_session, request, generation). Evolving usage (same
-        # message.id streaming {0,0}→real) is collapsed by the batch
-        # calculator's "keep last" dedup, so one request → one sample → one
-        # stable id; replaying the same observation is idempotent.
+        # ``occurred_at`` 不得进入 event_id。同一消息的流式 usage 由批量计算器保留
+        # 最后一条，使一次请求对应一个样本和稳定 ID；幂等重试必须保持完整 envelope 一致。
         event_id = (
             f"ctx.sample.{episode_id or 'no-ep'}.{sample.native_session_id}."
             f"{sample.request_identity}.{sample.generation}"
@@ -1460,12 +937,10 @@ class ModelOsStore:
         task_id: str | None = None,
         source: str = "observer",
     ) -> int:
-        """Append one CONTEXT_GENERATION_BOUNDARY event (audit-only in reducer).
+        """追加只供 reducer 审计的 ``CONTEXT_GENERATION_BOUNDARY`` 事件。
 
-        Per 083: the boundary event MUST land BEFORE the post-boundary samples,
-        so a replay rebuilds the same generation sequence. ``generation`` is
-        carried for audit; the derived generation on a ContextSample comes from
-        the calculator, not from this event.
+        边界事件必须先于边界后的样本落盘，确保回放重建相同 generation 顺序。
+        ``generation`` 在此只供审计，ContextSample 的派生值来自计算器。
         """
 
         event_id = (
@@ -1486,11 +961,10 @@ class ModelOsStore:
         return self.append_event(event)
 
     def append_decision(self, decision: DecisionRecord) -> int:
-        """Append a decision (idempotent on ``decision_id``); return its seq.
+        """按 ``decision_id`` 幂等追加决策并返回 seq。
 
-        ``signals``/``candidates``/``reason``/``budget_*`` are redacted before
-        persisting — decisions must not bypass redaction (spec: no full
-        prompt/thinking/private chat in the log).
+        ``signals``、``candidates``、``reason`` 和 ``budget_*`` 在持久化前脱敏，
+        决策不能绕过事件日志的隐私边界。
         """
 
         assert self._conn is not None
@@ -1509,24 +983,15 @@ class ModelOsStore:
     def append_decision_with_intent(
         self, decision: DecisionRecord, intent_event: EventEnvelope
     ) -> tuple[int, int]:
-        """Atomically append a decision and its triggering intent event.
+        """原子追加决策及其触发的 intent 事件。
 
-        Honours the spec ordering "先记录决定，再执行命令，再记录 result": the
-        decision and the intent event land in one transaction, so a crash
-        leaves neither (no half decision, no duplicated seq).
-
-        Idempotent on retry: if BOTH ``decision_id`` and ``event_id`` already
-        exist, the call returns their original seqs. If only one exists the
-        pair was split (crash mid-commit, or the caller reused an id from
-        another context) — that partial state is surfaced, not swallowed.
+        二者在同一事务内按“决策先于命令”顺序落盘，崩溃不会留下单边记录。两个 ID
+        都存在时返回原 seq；只存在一侧说明原子对已分裂，必须显式报错。
         """
 
         assert self._conn is not None
-        # codex N1 (round 2): this public entry point must apply the SAME
-        # lifecycle gate as ``append_event``. Without it a caller could forge
-        # an ``episode.status_changed`` / ``task.created`` intent here and
-        # bypass every structured-command + fencing gate — the journal would
-        # fold the forged event into authoritative state on the next replay.
+        # 此公开入口必须复用 ``append_event`` 的生命周期门禁，否则调用方可伪造
+        # 生命周期 intent，绕过结构化命令和 fencing，并在回放时污染权威状态。
         if intent_event.kind in _TASK_LIFECYCLE_KINDS:
             raise TaskCommandError(
                 f"intent event kind {intent_event.kind!r} is a Task lifecycle "
@@ -1561,11 +1026,7 @@ class ModelOsStore:
         assert d_row is not None and e_row is not None
         return int(d_row["seq"]), int(e_row["seq"])
 
-    def _pair_already_present(
-        self, decision_id: str, event_id: str
-    ) -> bool:
-        """True only when BOTH ids already exist (an idempotent retry)."""
-
+    def _pair_already_present(self, decision_id: str, event_id: str) -> bool:
         assert self._conn is not None
         d = self._conn.execute(
             "SELECT 1 FROM decisions WHERE decision_id=?", (decision_id,)
@@ -1575,10 +1036,8 @@ class ModelOsStore:
         ).fetchone()
         return d is not None and e is not None
 
-    # ------------------------------------------------------------- read API
-
     def list_events(self, from_seq: int = 0) -> list[tuple[int, EventEnvelope]]:
-        """Return ``(seq, event)`` pairs with ``seq > from_seq`` in order."""
+        """按序返回满足 ``seq > from_seq`` 的 ``(seq, event)``。"""
 
         assert self._conn is not None
         rows = self._conn.execute(
@@ -1588,7 +1047,7 @@ class ModelOsStore:
         return [(int(row["seq"]), _event_from_row(row)) for row in rows]
 
     def list_decisions(self, from_seq: int = 0) -> list[tuple[int, DecisionRecord]]:
-        """Return ``(seq, decision)`` pairs with ``seq > from_seq`` in order."""
+        """按序返回满足 ``seq > from_seq`` 的 ``(seq, decision)``。"""
 
         assert self._conn is not None
         rows = self._conn.execute(
@@ -1598,12 +1057,10 @@ class ModelOsStore:
         return [(int(row["seq"]), _decision_from_row(row)) for row in rows]
 
     def replay(self, from_seq: int = 0) -> Snapshot:
-        """Replay the event log past ``from_seq`` and return the derived
-        snapshot.
+        """归约 ``from_seq`` 之后的事件并返回派生快照。
 
-        ``from_seq`` is the last seq already folded (default 0 → full
-        replay). ``active_leases`` is intentionally empty here — it is live
-        table state; ``read_snapshot`` fills it.
+        ``from_seq`` 表示已经归约的最后一个 seq，默认为 0，即完整回放。实时表中的
+        ``active_leases`` 不在此装载，由 ``read_snapshot`` 合并。
         """
 
         snap = initial_snapshot(schema_version=self._schema_version())
@@ -1612,39 +1069,18 @@ class ModelOsStore:
             snap = replace(snap, last_seq=seq)
         return snap
 
-    # ---------------------------------------------------------- task commands
-    #
-    # slice-086 structured command entry points for the Task pool. Each
-    # command runs in a single IMMEDIATE transaction: replay current state,
-    # validate, append journal events, and (where relevant) mutate the
-    # foreground_claim table — all atomic. Provenance is NOT the gate (grill
-    # decision 5): the command identity is. MODEL_HYPOTHESIS never reaches
-    # create_task; user-task completion requires USER_DECISION.
-    #
-    # Retry semantics: event_ids are random uuids, so a crash-mid-commit
-    # retry may append duplicate status events. The reducer is idempotent for
-    # these (setting READY twice leaves the Task READY), so derived state is
-    # correct; only the audit log carries the duplicate. Task creation itself
-    # is fully idempotent via task_create_keys.
+    # Task 结构化命令在一个 IMMEDIATE 事务内完成回放、校验、journal 追加以及必要的
+    # foreground_claim 更新。门禁依据命令身份而非 provenance。随机 event_id 使崩溃
+    # 重试可能留下重复状态审计事件，但 reducer 对状态赋值幂等；Task 创建另由
+    # ``task_create_keys`` 保证完全幂等。
 
     @contextmanager
     def _tx(self):
-        """IMMEDIATE transaction that puts the replay SELECT inside the snapshot.
+        """显式开启 IMMEDIATE 事务，使回放读取与后续写入共享同一快照。
 
-        ``isolation_level="IMMEDIATE"`` only auto-BEGINs before DML, so a
-        ``replay()`` (SELECT) at the top of a command reads in autocommit mode
-        — its count can be stale by the time the writes BEGIN, opening a
-        count-then-write race (the warm-pool overflow that this slice's
-        concurrent-promote test catches). This helper BEGINs explicitly so the
-        read and the write share one snapshot; IMMEDIATE also serialises
-        writers on the reserved lock.
-
-        The ``RLock`` serialises commands that share this connection: SQLite's
-        ``in_transaction`` is connection-scoped not thread-scoped, so without
-        it two request handlers sharing one store would interleave inside the
-        same transaction (codex review HIGH 3). Same-thread re-entry (a command
-        calling a helper that also opens ``_tx``) is allowed by the RLock and
-        short-circuits via the ``in_transaction`` check.
+        仅设置 ``isolation_level`` 会到首次 DML 才自动开始事务，命令开头的回放可能
+        读到随后失效的计数。显式 ``BEGIN IMMEDIATE`` 同时串行化写入者。``RLock``
+        防止共享连接的请求跨线程交错，并允许同线程 helper 重入已有事务。
         """
 
         assert self._conn is not None
@@ -1659,12 +1095,8 @@ class ModelOsStore:
             except BaseException as exc:
                 if self._conn.in_transaction:
                     self._conn.execute("ROLLBACK")
-                # codex M1: a StaleWriterRejected must still leave a DURABLE
-                # ``late_write_rejected`` audit trail. The fenced write was just
-                # rolled back above; record the audit in its OWN transaction so
-                # it survives. The attempted event is attached by
-                # ``_append_fenced_event_in_tx``. Best-effort: an audit failure
-                # must never mask the original rejection.
+                # 陈旧写入事务回滚后，仍须在独立事务中持久化
+                # ``late_write_rejected``；审计失败不能掩盖原始拒绝异常。
                 if isinstance(exc, StaleWriterRejected):
                     attempted = getattr(exc, "attempted_event", None)
                     if attempted is not None:
@@ -1673,9 +1105,7 @@ class ModelOsStore:
                             self._reject_stale_write_in_tx(attempted, exc)
                             self._conn.execute("COMMIT")
                         except BaseException:
-                            # codex R3-M7: never silently swallow — log so an
-                            # audit-store failure is observable. The original
-                            # StaleWriterRejected is still re-raised below.
+                            # 审计存储失败会写日志以保持可观测性，最终仍抛出原始 ``StaleWriterRejected``。
                             _LOGGER.warning(
                                 "late_write_rejected audit failed; the "
                                 "original StaleWriterRejected is preserved",
@@ -1687,14 +1117,10 @@ class ModelOsStore:
 
     @contextmanager
     def _read_tx(self):
-        """Read transaction: BEGIN DEFERRED so replay + lease + foreground reads
-        share one snapshot (codex review HIGH 5).
+        """用 DEFERRED 事务让 replay、lease 和 foreground 读取共享同一快照。
 
-        Without this, ``read_snapshot``'s three SELECTs run in autocommit and
-        a concurrent claim/release commit between them can return inconsistent
-        state (e.g. Task=RUNNING but foreground_task_id=None). DEFERRED takes
-        only a shared lock — WAL writers are not blocked — but the three reads
-        cannot be split by a commit.
+        若三次 SELECT 分别自动提交，并发 claim 或 release 可返回割裂状态。DEFERRED
+        只取得共享锁，不阻塞 WAL 写入者，但并发提交不能再切开这组读取。
         """
 
         assert self._conn is not None
@@ -1712,8 +1138,6 @@ class ModelOsStore:
                 raise
 
     def _read_foreground_task_id(self) -> str | None:
-        """Return the current foreground task_id, or None (no foreground)."""
-
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT task_id FROM foreground_claim WHERE id=1"
@@ -1721,22 +1145,15 @@ class ModelOsStore:
         return None if row is None else row["task_id"]
 
     def read_foreground_task_id(self) -> str | None:
-        """Public read of the current foreground task_id (or None).
-
-        slice-086 references this as the public check (e.g. before demoting a
-        Task). The private ``_read_foreground_task_id`` is the in-tx helper;
-        this wrapper is the outside-tx read for callers/tests that do not hold
-        a transaction."""
+        """读取当前 foreground ``task_id``；未占用时返回 ``None``。"""
 
         return self._read_foreground_task_id()
 
     def _insert_event_in_tx(self, event: EventEnvelope) -> int | None:
-        """Append an event inside the caller's open transaction.
+        """在调用方事务中追加事件。
 
-        Returns the assigned seq, or ``None`` on duplicate event_id (idempotent
-        skip). The caller already holds ``with self._tx():``, so this MUST NOT
-        open its own transaction — a nested ``with conn`` would commit the
-        outer work prematurely.
+        返回新 seq；重复 event_id 的幂等跳过返回 ``None``。此方法不能另开连接事务，
+        否则嵌套连接上下文会提前提交外层工作。
         """
 
         assert self._conn is not None
@@ -1747,9 +1164,7 @@ class ModelOsStore:
                 _event_params(event, payload_text, payload_hash),
             )
         except sqlite3.IntegrityError:
-            # codex H7: duplicate event_id is idempotent ONLY if the full
-            # identity matches; a reused id on a different event must surface
-            # rather than vanish.
+            # 重复 event_id 只有完整身份一致时才幂等；不同事件复用 ID 必须显式报错。
             existing = self._conn.execute(
                 "SELECT * FROM events WHERE event_id=?", (event.event_id,)
             ).fetchone()
@@ -1760,7 +1175,7 @@ class ModelOsStore:
                     f"event_id {event.event_id!r} already exists with "
                     f"different content (identity mismatch)"
                 )
-            return None  # idempotent duplicate
+            return None
         row = self._conn.execute(
             "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
         ).fetchone()
@@ -1768,29 +1183,18 @@ class ModelOsStore:
         return int(row["seq"])
 
     def _require_task(self, snap: Snapshot, task_id: str) -> TaskState:
-        """Return the TaskState for task_id or raise TaskCommandError."""
-
         task = next((t for t in snap.tasks if t.task_id == task_id), None)
         if task is None:
             raise TaskCommandError(f"unknown task_id={task_id!r}")
         return task
 
     def _require_non_terminal(self, task: TaskState) -> None:
-        """Raise TaskCommandError if the Task is already terminal."""
-
         if task.status.is_terminal:
             raise TaskCommandError(
                 f"task {task.task_id!r} is terminal ({task.status.value})"
             )
 
-    def _require_status(
-        self, task: TaskState, allowed: set[TaskStatus]
-    ) -> None:
-        """Raise TaskCommandError unless the Task is in one of ``allowed``
-        source states (codex review HIGH 2). Commands check ``non_terminal``
-        first, then this — so the frozen state graph (backlog→ready→running,
-        running→{waiting,done,...}) is enforced, not just "not terminal"."""
-
+    def _require_status(self, task: TaskState, allowed: set[TaskStatus]) -> None:
         if task.status not in allowed:
             allowed_str = sorted(s.value for s in allowed)
             raise TaskCommandError(
@@ -1800,26 +1204,10 @@ class ModelOsStore:
 
     @staticmethod
     def _task_state_to_task(state: TaskState) -> Task:
-        """Project a reducer TaskState into the public Task value object
-        (drops ``status_provenance``, which is audit-only)."""
+        """把 reducer 的 ``TaskState`` 投影为公开 ``Task``，忽略审计来源。"""
 
-        return Task(
-            task_id=state.task_id,
-            origin=state.origin,
-            original_goal=state.original_goal,
-            appended_constraints=state.appended_constraints,
-            status=state.status,
-            priority=state.priority,
-            warm=state.warm,
-            warm_rank=state.warm_rank,
-            authorization_scope=state.authorization_scope,
-            waiting_condition=state.waiting_condition,
-            completion_evidence=state.completion_evidence,
-            error_record=state.error_record,
-            primary_work_item_id=state.primary_work_item_id,
-            created_at=state.created_at,
-            updated_at=state.updated_at,
-        )
+        task_type = Task
+        return _run_project_task_state(state, task_type=task_type)
 
     def _make_task_event(
         self,
@@ -1829,18 +1217,19 @@ class ModelOsStore:
         provenance: Provenance = Provenance.MACHINE_OBSERVATION,
         work_item_id: str | None = None,
     ) -> EventEnvelope:
-        """Build a kernel-originated task event with a fresh event_id."""
-
-        return EventEnvelope(
-            event_id=f"{kind}.{uuid4().hex}",
-            kind=kind,
-            occurred_at=_now_iso(),
-            source="kernel",
+        event_type = EventEnvelope
+        event_id = f"{kind}.{uuid4().hex}"
+        occurred_at = _now_iso()
+        return _run_make_task_event(
+            kind,
+            task_id,
+            payload,
+            event_id=event_id,
+            occurred_at=occurred_at,
             provenance=provenance,
-            policy_version=self._policy_version,
-            payload=payload,
-            task_id=task_id,
             work_item_id=work_item_id,
+            policy_version=self._policy_version,
+            event_type=event_type,
         )
 
     def _work_item_status_event(
@@ -1850,33 +1239,29 @@ class ModelOsStore:
         task_id: str | None,
         now: str,
     ) -> EventEnvelope:
-        """Build a work_item.status_changed event that keeps the primary
-        WorkItem in lockstep with its Task (slice-086 §映射表)."""
+        """构造同步主 WorkItem 与 Task 状态的变更事件。"""
 
-        return EventEnvelope(
-            event_id=f"wi.status.{work_item_id}.{uuid4().hex}",
-            kind=EventKind.WORK_ITEM_STATUS_CHANGED,
-            occurred_at=now,
-            source="kernel",
-            provenance=Provenance.MACHINE_OBSERVATION,
+        event_type = EventEnvelope
+        event_id = f"wi.status.{work_item_id}.{uuid4().hex}"
+        event_kind = EventKind.WORK_ITEM_STATUS_CHANGED
+        provenance = Provenance.MACHINE_OBSERVATION
+        return _run_make_work_item_event(
+            work_item_id,
+            new_status,
+            task_id,
+            now,
+            event_id=event_id,
+            event_kind=event_kind,
+            provenance=provenance,
             policy_version=self._policy_version,
-            payload={"new_status": new_status.value},
-            work_item_id=work_item_id,
-            task_id=task_id,
+            event_type=event_type,
         )
 
     def _release_foreground_in_tx(self, task_id: str) -> None:
-        """Clear foreground_claim (if held by ``task_id``) + emit
-        FOREGROUND_RELEASED audit event.
+        """以 CAS 清除 ``task_id`` 持有的 foreground，并写入释放审计事件。
 
-        Caller holds the transaction. CAS: the UPDATE only fires when the
-        current foreground IS ``task_id``, and the release event is emitted
-        only when a row was actually cleared. slice-087 codex review caught
-        that the old unconditional ``WHERE id=1`` UPDATE would silently clear
-        ANOTHER task's claim the moment this helper is reused by compound
-        Episode commands (suspend) that pass a task_id without pre-checking.
-        Existing 086 callers pre-check ``read_foreground_task_id() == task_id``
-        first, so this CAS is transparent for them and defensive for 087.
+        调用方持有事务。只有当前 owner 匹配时才更新并发出事件，避免复合 Episode
+        命令在未预检时错误清除其他 Task 的 foreground。
         """
 
         assert self._conn is not None
@@ -1889,8 +1274,6 @@ class ModelOsStore:
                 self._make_task_event(EventKind.FOREGROUND_RELEASED, task_id, {})
             )
 
-    # ------------------------------------------------------------- creation
-
     def create_task_from_user_request(
         self,
         *,
@@ -1899,26 +1282,19 @@ class ModelOsStore:
         authorization_scope: str = "",
         priority: int = 0,
     ) -> Task:
-        """Create a Task + its primary WorkItem atomically and idempotently.
+        """原子且幂等地创建 Task 及其主 WorkItem。
 
-        ``provenance=USER_DECISION`` is written by this trusted boundary;
-        callers cannot forge it. Retrying the same ``idempotency_key`` returns
-        the original Task without creating a second primary WorkItem (pass 7).
-        A retry that passes different ``original_goal`` /
-        ``authorization_scope`` / ``priority`` ignores those fields — the first
-        write is authoritative (idempotent retry is crash recovery, not
-        update; to revise a Task use ``append_constraint`` /
-        ``change_authorization``).
+        此可信边界固定写入 ``USER_DECISION``，调用方不能伪造。相同幂等键重试返回
+        首次创建的 Task，不新增主 WorkItem，也不覆盖首次参数；修改已有 Task 应调用
+        ``append_constraint`` 或 ``change_authorization``。
         """
 
         assert self._conn is not None
         if not original_goal:
             raise TaskCommandError("original_goal must be non-empty")
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-            # SQLite accepts NULL in a non-integer PRIMARY KEY, and
-            # ``WHERE idempotency_key = NULL`` never matches — so a None/blank
-            # key would defeat the idempotency check and let retries create
-            # duplicate Tasks (codex review HIGH 6).
+            # SQLite 允许非整数 PRIMARY KEY 为 NULL，且等值查询永不命中 NULL；放行
+            # ``None`` 或空白键会绕过幂等检查并产生重复 Task。
             raise TaskCommandError("idempotency_key must be a non-empty string")
         with self._tx():
             existing = self._conn.execute(
@@ -1986,11 +1362,11 @@ class ModelOsStore:
         snap = self.replay()
         return self._task_state_to_task(self._require_task(snap, task_id))
 
-    # ----------------------------------------------------- warm / foreground
-
     def promote_to_warm(self, task_id: str) -> None:
-        """backlog → warm ready. Raises WarmFull if warm_limit reached (grill
-        decision 7: explicit replacement, not auto-overflow)."""
+        """把 BACKLOG Task 提升为 warm READY。
+
+        warm 池满时抛出 ``WarmFull``，不会自动替换已有 Task；已是 warm 时幂等返回。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -1998,7 +1374,7 @@ class ModelOsStore:
             task = self._require_task(snap, task_id)
             self._require_non_terminal(task)
             if task.warm:
-                return  # idempotent
+                return
             warm_count = len(snap.warm_tasks())
             if warm_count >= self._warm_limit:
                 raise WarmFull(
@@ -2030,8 +1406,7 @@ class ModelOsStore:
             )
 
     def demote_to_backlog(self, task_id: str) -> None:
-        """warm → backlog (warm=False, status=backlog). Foreground task cannot
-        be demoted — release foreground first."""
+        """把 warm Task 降为 BACKLOG；持有 foreground 时必须先释放。"""
 
         assert self._conn is not None
         with self._tx():
@@ -2069,10 +1444,11 @@ class ModelOsStore:
                     )
 
     def claim_foreground(self, task_id: str) -> None:
-        """Atomically claim foreground: Task ready→running, WorkItem→RUNNING,
-        foreground_claim.task_id = this task. Raises ForegroundConflict if
-        another task already holds it (pass 1). Requires warm (foreground ⇒
-        warm, pass 3)."""
+        """原子占用 foreground，并将 Task 与主 WorkItem 置为运行态。
+
+        Task 必须已 warm；其他 Task 持有时抛出 ``ForegroundConflict``，同一 Task
+        重复占用时幂等返回。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -2083,25 +1459,18 @@ class ModelOsStore:
                 raise TaskCommandError(
                     f"task {task_id!r} must be warm before claiming foreground"
                 )
-            # Source state: READY (normal ready→running) or RUNNING (idempotent
-            # re-claim below). BACKLOG/waiting/incubating cannot leap straight
-            # to running (codex review HIGH 2).
+            # 只允许 READY → RUNNING；RUNNING 仅供同一 Task 幂等重占，其他状态不能跳转。
             self._require_status(task, {TaskStatus.READY, TaskStatus.RUNNING})
             current = self._read_foreground_task_id()
             if current == task_id:
-                return  # idempotent
+                return
             if current is not None:
                 raise ForegroundConflict(current)
             now = _now_iso()
-            # Take the foreground slot. IMMEDIATE has already serialised us
-            # against other writers, and the ``current`` checks above ruled
-            # out "already mine" (idempotent return) and "someone else holds
-            # it" (ForegroundConflict) — so reaching here means the slot is
-            # empty. The ``task_id IS NULL`` WHERE + rowcount check is a
-            # defensive backstop in case a future caller bypasses the read.
+            # IMMEDIATE 已串行化写入，前置读取也排除了当前 Task 或其他 Task 持有；
+            # ``task_id IS NULL`` 与 rowcount 仍作为未来调用绕过读取检查时的最后 CAS。
             cur = self._conn.execute(
-                "UPDATE foreground_claim SET task_id=? WHERE id=1 "
-                "AND task_id IS NULL",
+                "UPDATE foreground_claim SET task_id=? WHERE id=1 AND task_id IS NULL",
                 (task_id,),
             )
             if cur.rowcount == 0:
@@ -2129,8 +1498,10 @@ class ModelOsStore:
             )
 
     def release_foreground(self) -> None:
-        """Release foreground: Task running→ready, WorkItem→READY, claim
-        cleared. Idempotent if no foreground is held."""
+        """原子释放 foreground，并把非终态 Task 与主 WorkItem 恢复为 READY。
+
+        未占用 foreground 时幂等返回。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -2139,13 +1510,9 @@ class ModelOsStore:
                 return
             snap = self.replay()
             now = _now_iso()
-            self._conn.execute(
-                "UPDATE foreground_claim SET task_id=NULL WHERE id=1"
-            )
+            self._conn.execute("UPDATE foreground_claim SET task_id=NULL WHERE id=1")
             self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.FOREGROUND_RELEASED, current, {}
-                )
+                self._make_task_event(EventKind.FOREGROUND_RELEASED, current, {})
             )
             task = next((t for t in snap.tasks if t.task_id == current), None)
             if task is not None and not task.status.is_terminal:
@@ -2166,14 +1533,7 @@ class ModelOsStore:
                         )
                     )
 
-    # --------------------------------------------------------------- waiting
-
     def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
-        """Shared body for set_waiting_user / _event / _incubating (opens tx).
-
-        Source state must be RUNNING (the frozen graph is running→waiting_*);
-        a backlog/ready Task cannot leap into waiting (codex review HIGH 2)."""
-
         with self._tx():
             self._set_waiting_in_tx(task_id, waiting)
 
@@ -2183,19 +1543,12 @@ class ModelOsStore:
         waiting: WaitingCondition,
         snap: Snapshot | None = None,
     ) -> None:
-        """Body of ``_set_waiting``; caller holds the transaction.
+        """在调用方事务内把 Task 置为等待态。
 
-        slice-087: ``suspend_episode`` calls this inside its own composite tx
-        so the Episode suspend + Task waiting + foreground CAS + WorkItem
-        SUSPENDED are atomic. The TASK_WAITING_SET payload now carries
-        ``subtype`` + ``episode_id`` so the reducer's WaitingCondition
-        projection mirrors the owning Episode's pending (grill decision 1,
-        14). Pre-087 callers leave them None (back-compat).
-
-        ``snap`` (codex R3-L2): an already-replayed snapshot the caller holds.
-        ``suspend_episode`` has just replayed; passing it avoids a second full
-        replay+reduction over the journal inside this helper (a measurable
-        cost under long journals, and the replay holds the IMMEDIATE lock).
+        ``suspend_episode`` 借此原子提交 Episode 暂停、Task 等待、foreground CAS
+        与 WorkItem SUSPENDED。事件中的 ``subtype``、``episode_id`` 必须与所属
+        Episode 的 pending 一致，其他入口可传 ``None``。传入已回放的 ``snap`` 可
+        避免在 IMMEDIATE 锁内重复归约长 journal。
         """
 
         assert self._conn is not None
@@ -2245,11 +1598,10 @@ class ModelOsStore:
         correlation_id: str,
         deadline: str | None = None,
     ) -> None:
-        """running → waiting_user (releases foreground). Matcher (user reply)
-        is slice-095; slice-086 only stores the structure.
+        """把运行中 Task 置为 WAITING_USER 并释放 foreground。
 
-        ``correlation_id`` is mandatory — it links the waiting Task to the
-        user reply that will resume it (codex review M3)."""
+        ``correlation_id`` 必填，用于关联唤醒该 Task 的用户回复。
+        """
 
         if not cause:
             raise TaskCommandError("waiting_user cause must be non-empty")
@@ -2275,8 +1627,7 @@ class ModelOsStore:
         match_params: dict[str, Any] | None = None,
         deadline: str | None = None,
     ) -> None:
-        """running → waiting_event. Requires condition_kind + target_ref
-        (the external predicate); matcher is slice-095."""
+        """把运行中 Task 置为 WAITING_EVENT；外部条件的种类和目标均必填。"""
 
         if not cause:
             raise TaskCommandError("waiting_event cause must be non-empty")
@@ -2304,9 +1655,7 @@ class ModelOsStore:
         preparation_snapshot_ref: str,
         earliest_review_at: str | None = None,
     ) -> None:
-        """running → incubating. Requires open_question + preparation_snapshot
-        (architecture.md: "必须先有准备 snapshot 和明确未解问题"). Review/reframe
-        is slice-098/099."""
+        """把运行中 Task 置为 INCUBATING；必须提供未解问题和准备快照引用。"""
 
         if not open_question or not preparation_snapshot_ref:
             raise TaskCommandError(
@@ -2324,8 +1673,7 @@ class ModelOsStore:
         )
 
     def clear_waiting(self, task_id: str) -> None:
-        """waiting_* → ready. The waiting condition is cleared; matcher
-        satisfaction is slice-095/098."""
+        """清除等待条件，并把 WAITING_* Task 恢复为 READY。"""
 
         assert self._conn is not None
         with self._tx():
@@ -2351,12 +1699,8 @@ class ModelOsStore:
                     )
                 )
             self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_WAITING_CLEARED, task_id, {}
-                )
+                self._make_task_event(EventKind.TASK_WAITING_CLEARED, task_id, {})
             )
-
-    # ------------------------------------------------------------- terminals
 
     def complete_task(
         self,
@@ -2366,9 +1710,11 @@ class ModelOsStore:
         evidence_refs: tuple[str, ...] = (),
         confirmation_provenance: Provenance = Provenance.USER_DECISION,
     ) -> None:
-        """Mark a Task done. Records confirmer + evidence + provenance (pass
-        10). USER_REQUEST tasks require USER_DECISION — a model self-report
-        cannot close a human task. Foreground is released in the same tx."""
+        """把运行中 Task 标记为 DONE，并记录确认者、证据和来源。
+
+        ``USER_REQUEST`` 只能由 ``USER_DECISION`` 确认；模型自报不能关闭用户 Task。
+        foreground 在同一事务内释放。
+        """
 
         assert self._conn is not None
         if not confirmed_by:
@@ -2390,8 +1736,6 @@ class ModelOsStore:
                     f"user-requested task {task_id!r} completion requires "
                     f"USER_DECISION (got {confirmation_provenance.value})"
                 )
-            # Source state: RUNNING (frozen graph running→done). A waiting or
-            # backlog Task cannot be completed directly (codex review HIGH 2).
             self._require_status(task, {TaskStatus.RUNNING})
             if self._read_foreground_task_id() == task_id:
                 self._release_foreground_in_tx(task_id)
@@ -2419,8 +1763,7 @@ class ModelOsStore:
             )
 
     def cancel_task(self, task_id: str, *, reason: str) -> None:
-        """Cancel a Task (terminal). Foreground released in the same tx; no
-        orphan claim (pass 6)."""
+        """在同一事务内取消 Task、更新主 WorkItem 并释放 foreground。"""
 
         assert self._conn is not None
         with self._tx():
@@ -2456,10 +1799,11 @@ class ModelOsStore:
         last_episode_ref: str | None = None,
         recovery_hint: str | None = None,
     ) -> None:
-        """Record a task-level failure (terminal). WorkItem → FAILED (pass 13);
-        ``last_snapshot_ref`` preserved for later reopen (pass 11). Foreground
-        released in the same tx. Transient Episode/tool failures do NOT come
-        here — those return the Task to ready (Temporal activity-retry)."""
+        """记录 Task 级终态失败，并把主 WorkItem 置为 FAILED。
+
+        保留 ``last_snapshot_ref`` 供后续重新打开，并在同一事务释放 foreground。
+        Episode 或工具的瞬时失败不走此入口，而应把 Task 恢复为 READY 后重试。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -2492,11 +1836,8 @@ class ModelOsStore:
                 )
             )
 
-    # ----------------------------------------------------- non-state updates
-
     def append_constraint(self, task_id: str, constraint: str) -> None:
-        """Append a user-clarified constraint. original_goal is never
-        overwritten (pass: original_goal immutable)."""
+        """追加用户澄清的约束，不修改 ``original_goal``。"""
 
         assert self._conn is not None
         if not constraint:
@@ -2514,9 +1855,6 @@ class ModelOsStore:
             )
 
     def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
-        """Set / clear the user-controlled warm ordering (pass: warm order
-        by created_at, user can reorder)."""
-
         assert self._conn is not None
         with self._tx():
             snap = self.replay()
@@ -2537,17 +1875,10 @@ class ModelOsStore:
         authorization_scope: str,
         confirmed_by: str,
     ) -> None:
-        """Update a Task's authorization scope.
+        """修改 Task 的授权范围，并把 ``confirmed_by`` 写入审计事件。
 
-        Records ``confirmed_by`` so audit can distinguish user-driven from
-        kernel-driven scope changes — mirrors ``complete_task``'s confirmer
-        discipline (a scope change is a security-sensitive act: it controls
-        which tools/resources the Task may touch). Refused on terminal tasks
-        (a cancelled/done/errored Task must not be silently re-authorised).
-        Authority comes from the command boundary (only the kernel calls this
-        in response to a user decision channel), not from provenance — which
-        is why ``confirmed_by`` is an explicit parameter rather than a
-        provenance the caller could self-assign.
+        仅可信内核可在用户决策后调用；权限来自命令边界，不依赖调用方可自报的
+        provenance。终态 Task 拒绝修改。
         """
 
         assert self._conn is not None
@@ -2569,21 +1900,13 @@ class ModelOsStore:
                 )
             )
 
-    # ---------------------------------------------------------- episode commands
-    #
-    # slice-087 structured command entry points for the Episode lifecycle.
-    # Each fenced command runs inside one IMMEDIATE tx: replay state, validate,
-    # check caller-held ownership (lease_id/owner/token), append a fenced
-    # journal event, and (where relevant) mutate the snapshot row / lease — all
-    # atomic. Fencing is enforced by KIND (_EPISODE_FENCED_KINDS), not by
-    # field-presence: a stale writer cannot omit the token to bypass the check
-    # (codex review of slice-087 overturned the original "optional field" plan).
+    # Episode 的受 fencing 保护命令在同一 IMMEDIATE 事务内完成状态回放、ownership
+    # 三元组校验、journal 追加以及快照行或 lease 更新。保护范围由事件 kind 强制，
+    # 陈旧写入者不能通过省略 token 绕过。
 
     _EPISODE_OWNERSHIP_RESOURCE_TYPE = "episode_ownership"
 
     def _read_episode_lease_row(self, episode_id: str) -> sqlite3.Row | None:
-        """Return the active ownership lease row for episode_id, or None."""
-
         assert self._conn is not None
         return self._conn.execute(
             "SELECT * FROM leases WHERE resource_type='episode_ownership' "
@@ -2598,14 +1921,10 @@ class ModelOsStore:
         expected_owner: str,
         expected_token: int,
     ) -> None:
-        """Validate the caller really holds this Episode's ownership lease.
+        """校验调用方确实持有 Episode 的实时 ownership lease。
 
-        All of (lease_id, owner, fencing_token) must match the live lease; it
-        must be unreleased and not expired. Mismatch → ``StaleWriterRejected``;
-        the fenced command catches it and records ``late_write_rejected``.
-
-        Expiry uses wall-clock now: an expired-but-not-taken-over lease is also
-        rejected — authority ends the moment it expires, before any takeover.
+        ``lease_id``、``owner``、``fencing_token`` 必须全部匹配，且 lease 未释放、
+        未过期，否则抛出 ``StaleWriterRejected``。权限在到期瞬间终止，无需等待接管。
         """
 
         assert self._conn is not None
@@ -2639,9 +1958,7 @@ class ModelOsStore:
     def _reject_stale_write_in_tx(
         self, event: EventEnvelope, exc: StaleWriterRejected
     ) -> None:
-        """Record a ``late_write_rejected`` audit event for a rejected stale
-        write. Attempted kind / token / reason stored; no authoritative state
-        change. Caller holds the transaction."""
+        """在调用方事务内记录陈旧写入拒绝事实，不改变权威状态。"""
 
         assert self._conn is not None
         audit = EventEnvelope(
@@ -2667,22 +1984,17 @@ class ModelOsStore:
         )
 
     def _append_fenced_event_in_tx(self, event: EventEnvelope) -> int:
-        """Append a fenced Episode event, validating ownership first.
+        """追加受 fencing 保护的 Episode 事件。
 
-        Idempotent on ``event_id``: if the same event is already persisted
-        (same id AND payload hash) the original seq is returned WITHOUT
-        consulting fencing — a read-only retry by a possibly-stale caller must
-        not error. Same id / different content → ``ValueError``. Otherwise the
-        ownership lease is checked before the write; on stale-writer rejection
-        a ``late_write_rejected`` audit event is recorded and the exception
-        re-raised.
+        若 ``event_id`` 对应的完整事件身份已存在，直接返回原 seq，不再校验实时
+        lease，使过期调用方也能只读重试；同 ID 不同内容抛出 ``ValueError``。新事件
+        必须先通过 ownership 校验，陈旧写入由外层事务回滚后另记拒绝审计。
         """
 
         assert self._conn is not None
         if event.kind not in _EPISODE_FENCED_KINDS:
             raise EpisodeCommandError(
-                f"_append_fenced_event_in_tx called with non-fenced kind "
-                f"{event.kind!r}"
+                f"_append_fenced_event_in_tx called with non-fenced kind {event.kind!r}"
             )
         if (
             event.episode_id is None
@@ -2700,8 +2012,7 @@ class ModelOsStore:
             (event.event_id,),
         ).fetchone()
         if existing is not None:
-            # codex H7: idempotent only if the FULL identity matches (kind /
-            # entity / lease triple / payload_hash), not payload_hash alone.
+            # 只有 kind、实体关联、lease 三元组和 payload_hash 全部一致才是幂等重试。
             if _event_row_identity(existing, payload_hash) != _event_identity(
                 event, payload_hash
             ):
@@ -2715,10 +2026,8 @@ class ModelOsStore:
                 event.episode_id, event.lease_id, event.owner, event.fencing_token
             )
         except StaleWriterRejected as exc:
-            # codex M1: do NOT write the audit inline — this tx is about to
-            # roll back (the caller's ``_tx`` re-raises), which would undo the
-            # audit row. Attach the attempted event so the outermost ``_tx``
-            # can record it in a FRESH transaction after rollback.
+            # 当前事务即将回滚，不能在这里写审计；把尝试事件附到异常，由最外层
+            # ``_tx`` 回滚后在新事务中记录。
             exc.attempted_event = event  # type: ignore[attr-defined]
             raise
         self._conn.execute(
@@ -2744,32 +2053,32 @@ class ModelOsStore:
         fencing_token: int | None = None,
         event_id: str | None = None,
     ) -> EventEnvelope:
-        """Build an Episode event. Fenced kinds pass lease_id/owner/token.
+        """构造 Episode 事件；受 fencing 保护的 kind 必须携带 lease 三元组。
 
-        ``event_id`` lets a caller that pre-generated a stable id (e.g. the
-        snapshot row's ``committed_event_id``) use it as the event's primary
-        key, so the snapshot↔event link is real and a read can verify it
-        (codex M2 / spec line 222)."""
+        调用方可传预生成 ``event_id``，例如快照行的 ``committed_event_id``，从而
+        建立可验证的快照与 journal 关联。
+        """
 
-        return EventEnvelope(
-            event_id=event_id or f"{kind}.{uuid4().hex}",
-            kind=kind,
-            occurred_at=_now_iso(),
-            source="kernel",
-            provenance=provenance,
-            policy_version=self._policy_version,
-            payload=payload,
+        event_type = EventEnvelope
+        resolved_event_id = event_id or f"{kind}.{uuid4().hex}"
+        occurred_at = _now_iso()
+        return _run_make_episode_event(
+            kind,
+            episode_id,
+            payload,
+            event_id=resolved_event_id,
+            occurred_at=occurred_at,
             work_item_id=work_item_id,
             task_id=task_id,
-            episode_id=episode_id,
+            provenance=provenance,
             lease_id=lease_id,
             owner=owner,
             fencing_token=fencing_token,
+            policy_version=self._policy_version,
+            event_type=event_type,
         )
 
     def _require_episode(self, snap: Snapshot, episode_id: str) -> EpisodeState:
-        """Return the EpisodeState or raise EpisodeCommandError."""
-
         ep = snap.episode_by_id(episode_id)
         if ep is None:
             raise EpisodeCommandError(f"unknown episode_id={episode_id!r}")
@@ -2778,27 +2087,19 @@ class ModelOsStore:
     def _episode_state_to_episode(
         self, state: EpisodeState, ownership_lease_id: str | None = None
     ) -> Episode:
-        """Project a reducer EpisodeState into the public Episode value object
-        (drops status_provenance). ``ownership_lease_id`` is filled from the
-        live lease table by the caller (live state, not folded)."""
+        """把 ``EpisodeState`` 投影为公开 Episode，不暴露审计来源。
 
-        return Episode(
-            episode_id=state.episode_id,
-            work_item_id=state.work_item_id,
-            task_id=state.task_id,
-            status=state.status,
-            native_session_id=state.native_session_id,
-            ownership_lease_id=ownership_lease_id,
-            last_snapshot_ref=state.last_snapshot_ref,
-            pending_descriptor=state.pending_descriptor,
-            reconcile_reason=state.reconcile_reason,
-            created_at=state.created_at,
-            updated_at=state.updated_at,
+        ``ownership_lease_id`` 由调用方从实时 lease 表补入，不从 journal 归约。
+        """
+
+        episode_type = Episode
+        return _run_project_episode_state(
+            state,
+            ownership_lease_id,
+            episode_type=episode_type,
         )
 
     def _next_snapshot_version_in_tx(self, episode_id: str) -> int:
-        """Next version number for a new snapshot of this Episode."""
-
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT COALESCE(MAX(version), 0) AS v FROM episode_snapshots "
@@ -2806,8 +2107,6 @@ class ModelOsStore:
             (episode_id,),
         ).fetchone()
         return int(row["v"]) + 1
-
-    # --------------------------------------------------------------- ownership
 
     def acquire_episode_ownership(
         self,
@@ -2817,13 +2116,10 @@ class ModelOsStore:
         ttl_seconds: int,
         idempotency_key: str | None = None,
     ) -> Lease:
-        """Acquire (or reclaim) the ownership lease for an Episode.
+        """取得或重新取得 Episode 的 ownership lease。
 
-        Thin wrapper over ``acquire_lease`` with resource_type =
-        ``episode_ownership``. Returns the lease carrying the fencing token the
-        caller must present on subsequent fenced writes. Idempotent on
-        ``idempotency_key`` AND same owner (caller's retry identity for THIS
-        episode).
+        返回后续受 fencing 保护写入所需的 token；相同 Episode、幂等键与 owner 的
+        重试返回原 lease。
         """
 
         return self.acquire_lease(
@@ -2835,11 +2131,10 @@ class ModelOsStore:
         )
 
     def release_episode_ownership(self, episode_id: str) -> bool:
-        """Release the active ownership lease for an Episode.
+        """释放 Episode 的有效 ownership lease。
 
-        Returns True if a lease was active. Used by takeover / shutdown paths;
-        normal Episode flow releases via close/fail/suspend which also write
-        the lifecycle event atomically.
+        实际存在有效 lease 时返回 ``True``。关闭和失败会与生命周期事件一并释放；
+        暂停则保留 lease，供后续继续执行。
         """
 
         assert self._conn is not None
@@ -2855,12 +2150,10 @@ class ModelOsStore:
         ttl_seconds: int,
         idempotency_key: str | None,
     ) -> Lease:
-        """Grant the ownership lease INSIDE the caller's open transaction.
+        """在调用方事务内授予 Episode ownership lease。
 
-        Used by ``start_episode`` so the Episode row + lease + idempotency key
-        land atomically. Does not run ``acquire_lease`` (which opens its own
-        tx); mirrors its grant path: idempotent re-claim, fence-counter bump,
-        lease INSERT, ownership_acquired audit event.
+        ``start_episode`` 借此原子写入 Episode、lease 与幂等键，不能调用另开事务的
+        ``acquire_lease``。本路径递增 fencing 计数器、插入 lease 并记录所有权审计。
         """
 
         assert self._conn is not None
@@ -2877,9 +2170,7 @@ class ModelOsStore:
             if existing is not None:
                 if existing["owner"] != owner:
                     raise LeaseConflict("episode_ownership", episode_id)
-                # codex R3-M3: do not hand back an already-expired lease — the
-                # caller would fail the first fenced write. A retry that lands
-                # after TTL is a conflict (the caller must re-acquire fresh).
+                # 幂等重试不得返回已过期 lease；TTL 后到达视为冲突，调用方须重新取得。
                 if existing["expires_at"] <= now_str:
                     raise LeaseConflict("episode_ownership", episode_id)
                 return _lease_from_row(existing)
@@ -2904,9 +2195,7 @@ class ModelOsStore:
                 ),
             )
         except sqlite3.IntegrityError as exc:
-            # codex R3-H3: surface a collision as LeaseConflict, never a raw
-            # sqlite3 error (idempotency_key still in use, or another writer
-            # raced the grant/takeover).
+            # 幂等键占用或并发授权造成的碰撞统一转换为 ``LeaseConflict``。
             raise LeaseConflict("episode_ownership", episode_id) from exc
         self._insert_event_in_tx(
             EventEnvelope(
@@ -2936,8 +2225,6 @@ class ModelOsStore:
             fencing_token=token,
         )
 
-    # --------------------------------------------------------------- lifecycle
-
     def start_episode(
         self,
         *,
@@ -2948,25 +2235,13 @@ class ModelOsStore:
         task_id: str | None = None,
         previous_snapshot_ref: SnapshotRef | None = None,
     ) -> tuple[Episode, Lease]:
-        """Create an Episode in STARTING + acquire its ownership lease, atomically.
+        """原子创建 STARTING Episode 并取得 ownership lease。
 
-        ``previous_snapshot_ref`` is the接力 base (None for a first Episode);
-        recorded for 090 / recovery but no fenced check is made yet — the
-        Episode is STARTING, no fenced progress write happens until 090 moves
-        it to ACTIVE. ``native_session_id`` is left None (090 binds it).
-
-        STARTING has no public →ACTIVE command in 087 (spec line 56: 090 binds
-        the native session and flips STARTING → ACTIVE). 087 tests use the
-        internal ``_append_fenced_event_in_tx`` helper to reach ACTIVE; 090
-        MUST add the public command.
-
-        Idempotent on ``idempotency_key``: a retry returns the original
-        (Episode, Lease) ONLY IF its ownership lease is still active AND still
-        owned by the same caller. If the lease expired and a new runner took
-        over (recover_episode), the retry raises ``LeaseConflict`` rather than
-        handing back someone else's lease (codex R3-H4 / R3-M6). If the lease
-        was released (Episode closed/failed), the retry raises
-        ``EpisodeCommandError``.
+        ``previous_snapshot_ref`` 记录接力基线，首次可为 ``None``。绑定 session 并
+        受 fencing 保护地转为 ACTIVE 前不允许进度写入，``native_session_id`` 保持
+        ``None``。当前没有公开的 STARTING → ACTIVE 命令，后续入口须校验当前 lease
+        三元组。幂等重试仅在原 lease 仍有效且 owner 相同时返回原对象；lease 已接管
+        或释放时分别抛出 ``LeaseConflict`` 或 ``EpisodeCommandError``。
         """
 
         assert self._conn is not None
@@ -2991,18 +2266,11 @@ class ModelOsStore:
                         f"idempotent replay: episode {episode_id!r} has no active "
                         f"ownership lease (lease expired before retry)"
                     )
-                # codex R3-H4: the active lease must still belong to THIS owner.
-                # If the original owner's lease expired and a new runner took
-                # over (recover_episode), the active lease is now the new
-                # owner's — silently returning it would hand the retrier someone
-                # else's lease. Mirror _recover_ownership_in_tx's owner check.
+                # 幂等重试只能返回同一 owner 的有效 lease；接管后返回新 owner 的 lease
+                # 会把写权限错误交给旧调用方。
                 if lease.owner != owner:
-                    raise LeaseConflict(
-                        "episode_ownership", episode_id
-                    )
-                # codex R3-L5 / R3-M3: do not return an already-expired lease —
-                # the public Episode.ownership_lease_id must not point at a
-                # dead lease (and the caller's first fenced write would fail).
+                    raise LeaseConflict("episode_ownership", episode_id)
+                # 已过期 lease 不能写入，也不能暴露为公开 Episode 的 ownership 引用。
                 if lease.expires_at <= _now_iso():
                     raise LeaseConflict("episode_ownership", episode_id)
                 return (
@@ -3014,12 +2282,8 @@ class ModelOsStore:
 
             episode_id = uuid4().hex
             now = _now_iso()
-            # codex H2: verify the binding BEFORE creating the Episode, so a
-            # dangling work_item_id / task_id cannot produce an Episode whose
-            # suspend path would later silently skip the missing half. The
-            # WorkItem must exist; if a task_id is given it must match the
-            # WorkItem's task_id (a Task Episode binds to that Task's primary
-            # WorkItem).
+            # 创建前先验证 WorkItem 与 Task 绑定，避免留下无法安全暂停的 Episode。
+            # WorkItem 必须存在；若传入 task_id，它也必须存在并与 WorkItem 一致。
             snap = self.replay()
             work_item = next(
                 (w for w in snap.work_items if w.work_item_id == work_item_id),
@@ -3038,16 +2302,10 @@ class ModelOsStore:
                         f"{work_item.task_id!r})"
                     )
                 if not any(t.task_id == task_id for t in snap.tasks):
-                    raise EpisodeCommandError(
-                        f"task_id {task_id!r} does not exist"
-                    )
+                    raise EpisodeCommandError(f"task_id {task_id!r} does not exist")
             elif work_item.task_id is not None:
-                # codex N8 (round 2): a WorkItem that already carries a task_id
-                # (TASK OR INCUBATION) must be bound to that Task explicitly.
-                # The previous check only caught kind==TASK, letting an
-                # INCUBATION WorkItem (which also has a task_id) be started as a
-                # task-less system Episode — its suspend/activate would then
-                # wrongly take the no-Task branch.
+                # 带 task_id 的 WorkItem 必须显式绑定同一 Task，否则暂停或激活会错误
+                # 进入无 Task 的系统分支。
                 raise EpisodeCommandError(
                     f"WorkItem {work_item_id!r} (kind={work_item.kind.value}) "
                     f"is bound to task {work_item.task_id!r}; pass that "
@@ -3112,9 +2370,6 @@ class ModelOsStore:
         work_item_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
-        """Shared body for fenced pure-status transitions (yield / close / fail
-        / activate / recovering). Caller holds the tx."""
-
         payload: dict[str, Any] = {"new_status": new_status.value}
         if extra_payload:
             payload.update(extra_payload)
@@ -3140,8 +2395,10 @@ class ModelOsStore:
         expected_token: int,
         reason: str,
     ) -> None:
-        """active → yield_requested (fenced). Allows in-flight tools to finish;
-        089 then drives checkpoint → close."""
+        """受 fencing 保护地请求 ACTIVE Episode 让出执行权。
+
+        进入 YIELD_REQUESTED 后，可在提交 checkpoint 和关闭前完成在途工具调用。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -3174,20 +2431,12 @@ class ModelOsStore:
         snapshot: EpisodeSnapshot,
         checkpoint_key: str,
     ) -> SnapshotRef:
-        """Commit a cooperative snapshot for the Episode (fenced), atomically.
+        """原子提交受 fencing 保护的协作式快照。
 
-        snapshot row (version N+1) + fenced ``episode.checkpoint_committed``
-        event land in one tx. The Episode always moves to ``checkpointing``
-        (the command fixes the target — a caller cannot pick another state).
-        Idempotent on ``checkpoint_key``: a crash retry with the same key
-        returns the original SnapshotRef without minting a second version.
-        ``snapshot.source`` must be COOPERATIVE; ``recovery_partial`` goes
-        through ``checkpoint_recovery_partial``.
-
-        Source states: ``active`` (a cooperative checkpoint mid-work) or
-        ``yield_requested`` (the normal wind-down after request_yield). Blocked
-        states (suspended / reconcile_required / recovering) cannot checkpoint
-        here — they have their own exit commands.
+        新快照版本与 ``EPISODE_CHECKPOINT_COMMITTED`` 在同一事务落地，Episode 固定
+        转为 CHECKPOINTING。相同 ``checkpoint_key`` 的崩溃重试返回原引用，不新增
+        版本。快照来源只能是 COOPERATIVE；仅 ACTIVE 或 YIELD_REQUESTED 可走此入口，
+        暂停、待调和或恢复中的 Episode 必须使用各自退出命令。
         """
 
         assert self._conn is not None
@@ -3201,22 +2450,15 @@ class ModelOsStore:
         with self._tx():
             snap = self.replay()
             ep = self._require_episode(snap, episode_id)
-            # codex N2 (round 2): resolve an idempotent retry BEFORE the status
-            # gate. A crash after COMMIT but before the response leaves the
-            # Episode in CHECKPOINTING; the retry would then fail the
-            # ACTIVE/YIELD_REQUESTED check below, breaking the checkpoint_key
-            # idempotency contract (pass 6). Same-episode key hit → return the
-            # original ref; cross-episode hit → M3 conflict; both regardless of
-            # the current status.
+            # 必须先解析幂等重试再检查状态；若 COMMIT 后响应前崩溃，Episode 已变为
+            # CHECKPOINTING，先做状态门禁会破坏 checkpoint_key 的重试契约。
             existing = self._conn.execute(
                 "SELECT episode_id, version, payload_hash, committed_event_id "
                 "FROM episode_snapshots WHERE checkpoint_key=?",
                 (checkpoint_key,),
             ).fetchone()
             if existing is not None:
-                # codex M3: checkpoint_key is globally UNIQUE. A hit belonging
-                # to a DIFFERENT Episode is a key-scope conflict (the caller
-                # reused a key across episodes) — NOT an idempotent retry.
+                # checkpoint_key 全局唯一；命中其他 Episode 属于作用域冲突，不是重试。
                 if existing["episode_id"] != episode_id:
                     raise EpisodeCommandError(
                         f"checkpoint_key {checkpoint_key!r} already used by "
@@ -3237,11 +2479,8 @@ class ModelOsStore:
                     f"episode {episode_id!r} must be ACTIVE or YIELD_REQUESTED "
                     f"to commit a cooperative checkpoint (got {ep.status.value})"
                 )
-            # codex R3-M2: journal_through_seq is the high-watermark this
-            # snapshot covers; it must not look past the live journal end. A
-            # too-high value would silently make _collect_recovery_events skip
-            # events in (real_last_seq, claimed] on the next recovery. Reject
-            # rather than clamp, so a caller bug surfaces.
+            # ``journal_through_seq`` 是快照覆盖的日志高水位，不能超过当前末尾；虚高
+            # 会使下次恢复跳过实际未覆盖的事件，因此拒绝而非截断。
             if snapshot.journal_through_seq > snap.last_seq:
                 raise EpisodeCommandError(
                     f"snapshot.journal_through_seq ({snapshot.journal_through_seq}) "
@@ -3249,9 +2488,7 @@ class ModelOsStore:
                     f"cannot cover events that have not happened yet"
                 )
             version = self._next_snapshot_version_in_tx(episode_id)
-            payload_text, payload_hash = _payload_json(
-                _snapshot_to_payload(snapshot)
-            )
+            payload_text, payload_hash = _payload_json(_snapshot_to_payload(snapshot))
             _validate_episode_snapshot(snapshot, payload_text)
             committed_event_id = (
                 f"episode.checkpoint.{episode_id}.{version}.{uuid4().hex}"
@@ -3308,9 +2545,7 @@ class ModelOsStore:
             )
 
     def read_episode_snapshot(self, ref: SnapshotRef) -> EpisodeSnapshot:
-        """Read a snapshot payload by precise ref. Fail-closed if the row is
-        missing, its hash does not match the ref, or its committed event is
-        absent from the journal (corruption / forgery, codex M2)."""
+        """按精确引用读取快照；行缺失、摘要不符或提交事件缺失时均拒绝。"""
 
         assert self._conn is not None
         row = self._conn.execute(
@@ -3329,11 +2564,8 @@ class ModelOsStore:
                 f"snapshot {ref.episode_id}#{ref.version} payload_hash mismatch "
                 f"(row={row['payload_hash']}, ref={ref.payload_hash})"
             )
-        # codex N7 (round 2): the ref, the row and the journal event must agree
-        # PRECISELY. The ref's committed_event_id (folded by the reducer) must
-        # equal the row's (stored at write time), and that event must exist and
-        # point back at this episode. A mere "event_id exists somewhere in the
-        # journal" check let a forged ref aimed at an unrelated NOTE pass.
+        # SnapshotRef、快照行和 journal 事件必须严格一致：committed_event_id 相等，
+        # 且事件属于本 Episode。只检查事件存在会放过指向无关 NOTE 的伪造引用。
         committed_event_id = row["committed_event_id"]
         if ref.committed_event_id != committed_event_id:
             raise EpisodeCommandError(
@@ -3375,12 +2607,11 @@ class ModelOsStore:
         expected_owner: str,
         expected_token: int,
     ) -> None:
-        """→ closed (fenced, terminal). Only legal from ``checkpointing``.
+        """受 fencing 保护地把 CHECKPOINTING Episode 关闭为终态。
 
-        The normal wind-down is ``request_yield → commit_checkpoint (→
-        checkpointing) → close_episode (→ closed)``. Closing from any other
-        state is refused — those states have their own exit path (suspend →
-        resolve/activate, reconcile_required → resolve_reconcile)."""
+        正常顺序为 ``request_yield → commit_checkpoint → close_episode``；其他状态
+        必须使用各自的退出命令。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -3402,7 +2633,7 @@ class ModelOsStore:
                 work_item_id=ep.work_item_id,
                 task_id=ep.task_id,
             )
-            # release the ownership lease in the same tx (no orphan lease)
+            # ownership lease 必须与关闭事件在同一事务释放，避免遗留孤立 lease。
             row = self._read_episode_lease_row(episode_id)
             if row is not None and row["lease_id"] == expected_lease_id:
                 self._conn.execute(
@@ -3419,14 +2650,11 @@ class ModelOsStore:
         expected_token: int,
         reason: str,
     ) -> None:
-        """→ failed (fenced, terminal). Exec-layer failure; the owning Task
-        returns to READY (087 does not flip Task to error — that is Task-level
-        and decided elsewhere).
+        """把 Episode 置为 FAILED，并在同一事务释放相关占用。
 
-        codex H4: the composite restores the Task / WorkItem to a retryable
-        state and releases the foreground + ownership lease in the same tx.
-        The previous code flipped only the Episode, leaving a Task RUNNING with
-        the foreground held — an unrecoverable contradiction."""
+        执行层失败后，所属 Task 和 WorkItem 恢复为可重试状态；是否把 Task 置为错误
+        终态由 Task 层另行决定。foreground 与 ownership lease 一并释放。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -3453,12 +2681,8 @@ class ModelOsStore:
                 None,
             )
             if ep.task_id is not None:
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is not None and not task.status.is_terminal:
-                    # release foreground if this Task holds it (CAS), then
-                    # return the Task to READY (retryable, not error).
                     if self._read_foreground_task_id() == task.task_id:
                         self._release_foreground_in_tx(task.task_id)
                     if task.status != TaskStatus.READY:
@@ -3469,10 +2693,9 @@ class ModelOsStore:
                                 {"new_status": TaskStatus.READY.value},
                             )
                         )
-            if (
-                work_item is not None
-                and work_item.status
-                in (WorkItemStatus.RUNNING, WorkItemStatus.SUSPENDED)
+            if work_item is not None and work_item.status in (
+                WorkItemStatus.RUNNING,
+                WorkItemStatus.SUSPENDED,
             ):
                 self._insert_event_in_tx(
                     self._work_item_status_event(
@@ -3489,8 +2712,6 @@ class ModelOsStore:
                     (_now_iso(), expected_lease_id),
                 )
 
-    # --------------------------------------------------- suspend / resume (2-phase)
-
     def suspend_episode(
         self,
         episode_id: str,
@@ -3500,12 +2721,11 @@ class ModelOsStore:
         expected_token: int,
         pending: PendingDescriptor,
     ) -> None:
-        """active → suspended_waiting_* (fenced, composite).
+        """原子地把 ACTIVE Episode 转为 SUSPENDED_WAITING_*。
 
-        Atomic same-tx: fenced EPISODE_SUSPENDED + (Task-bound) Task
-        running→waiting_user with subtype/episode_id + foreground CAS release
-        + WorkItem SUSPENDED. system WorkItem (no Task) skips the Task half;
-        WorkLease release is 093's job (it subscribes to episode.suspended).
+        同一事务写入受 fencing 保护的暂停事件；有 Task 时还将 Task 置为
+        WAITING_USER、CAS 释放 foreground，并暂停 WorkItem。系统 WorkItem 跳过
+        Task 操作。这里只释放 foreground，外层 Runner 仍须释放资源级 WorkLease。
         """
 
         assert self._conn is not None
@@ -3524,11 +2744,8 @@ class ModelOsStore:
                     f"episode {episode_id!r} must be ACTIVE to suspend "
                     f"(got {ep.status.value})"
                 )
-            # codex H2: validate the WorkItem (+ Task, when bound) BEFORE any
-            # write. The previous code silently skipped a missing or wrong-state
-            # WorkItem/Task, so an Episode could enter suspended_waiting_* while
-            # its Task stayed RUNNING and kept the foreground — breaking
-            # foreground⇔running. Any mismatch now rejects the whole composite.
+            # 在任何写入前校验 WorkItem 及其 Task，避免 Episode 已暂停，Task 却仍
+            # 占用 foreground 并保持 RUNNING；任一状态不匹配都回绝整个复合操作。
             work_item = next(
                 (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
                 None,
@@ -3545,9 +2762,7 @@ class ModelOsStore:
                 )
             task = None
             if ep.task_id is not None:
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is None:
                     raise EpisodeCommandError(
                         f"episode {episode_id!r} bound task {ep.task_id!r} "
@@ -3582,12 +2797,9 @@ class ModelOsStore:
                     fencing_token=expected_token,
                 )
             )
-            # codex L1: exactly ONE owner of the WorkItem→SUSPENDED transition.
-            # Task-bound: ``_set_waiting_in_tx`` emits it for the primary
-            # WorkItem (== ep.work_item_id for a Task Episode) AND releases
-            # foreground AND moves the Task to waiting_user. system WorkItem
-            # (no Task): emit SUSPENDED here, and there is no foreground/Task
-            # to touch (foreground is task-scoped).
+            # WorkItem → SUSPENDED 只能由一个分支写入。有 Task 时由
+            # ``_set_waiting_in_tx`` 同步主 WorkItem、Task 和 foreground；系统
+            # WorkItem 在此直接写入，且不涉及 Task 级 foreground。
             if task is not None:
                 self._set_waiting_in_tx(
                     task.task_id,
@@ -3616,13 +2828,11 @@ class ModelOsStore:
         *,
         answer_correlation_id: str,
     ) -> None:
-        """suspended_waiting_* → suspended_ready (NOT fenced).
+        """收到外部回答后，把 SUSPENDED_WAITING_* 置为 SUSPENDED_READY。
 
-        The answer has arrived but foreground is NOT claimed here: another Task
-        may hold it. ``activate_suspended_episode`` later moves the Episode to
-        ACTIVE once foreground is won. Not fenced because this is driven by an
-        external answer arriving (095 matcher), not by the lease holder's
-        progress write; the Episode is already suspended (no in-flight work).
+        此处不抢占 foreground；后续 ``activate_suspended_episode`` 抢占成功后再置为
+        ACTIVE。该操作由外部回答驱动，且 Episode 已无在途工作，因此不受 ownership
+        fencing 约束。
         """
 
         assert self._conn is not None
@@ -3639,9 +2849,6 @@ class ModelOsStore:
                     f"episode {episode_id!r} must be suspended_waiting_* to "
                     f"resolve wait (got {ep.status.value})"
                 )
-            # codex H1: the answer's correlation_id must match the pending
-            # descriptor — an unrelated or late answer must not clear the real
-            # pending.
             if (
                 ep.pending_descriptor is None
                 or ep.pending_descriptor.correlation_id != answer_correlation_id
@@ -3650,11 +2857,8 @@ class ModelOsStore:
                     f"answer_correlation_id {answer_correlation_id!r} does not "
                     f"match episode {episode_id!r} pending correlation_id"
                 )
-            # codex N4 (round 2): validate the bound WorkItem (+ Task) BEFORE any
-            # write. The previous code silently skipped a missing or wrong-state
-            # WorkItem/Task, so the Episode could enter suspended_ready while
-            # its Task/WorkItem stayed in an incompatible state — activate would
-            # then fail forever. Any mismatch now rejects the whole composite.
+            # 在任何写入前校验绑定的 WorkItem 和 Task，避免 Episode 已恢复就绪，父对象
+            # 却仍处于不兼容状态；任一状态不匹配都回绝整个复合操作。
             work_item = next(
                 (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
                 None,
@@ -3671,9 +2875,7 @@ class ModelOsStore:
                 )
             task = None
             if ep.task_id is not None:
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is None:
                     raise EpisodeCommandError(
                         f"episode {episode_id!r} bound task {ep.task_id!r} "
@@ -3693,10 +2895,6 @@ class ModelOsStore:
                     task_id=ep.task_id,
                 )
             )
-            # codex H1: bring the Task (waiting_user → ready) and the WorkItem
-            # (SUSPENDED → READY) back to a schedulable state, so the later
-            # activate can run. Foreground is NOT claimed here (pass 10) — that
-            # is activate's job.
             now = _now_iso()
             if task is not None:
                 self._insert_event_in_tx(
@@ -3723,11 +2921,10 @@ class ModelOsStore:
         expected_owner: str,
         expected_token: int,
     ) -> None:
-        """suspended_ready → active (fenced). Composite: claim foreground +
-        Task ready→running + WorkItem READY→RUNNING + fenced EPISODE_ACTIVATED.
+        """原子地把 SUSPENDED_READY Episode 激活为 ACTIVE。
 
-        The caller (scheduler / 091) must have decided this Episode wins
-        foreground. Raises ForegroundConflict if another Task holds it.
+        抢占 foreground，将 Task 与 WorkItem 置为 RUNNING，再写入受 fencing 保护的
+        激活事件。调用方必须已选择该 Episode；其他 Task 占用时抛出冲突。
         """
 
         assert self._conn is not None
@@ -3743,13 +2940,10 @@ class ModelOsStore:
                 current_fg = self._read_foreground_task_id()
                 if current_fg is not None and current_fg != ep.task_id:
                     raise ForegroundConflict(current_fg)
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is None:
                     raise EpisodeCommandError(
-                        f"episode {episode_id!r} references unknown task "
-                        f"{ep.task_id!r}"
+                        f"episode {episode_id!r} references unknown task {ep.task_id!r}"
                     )
                 if task.status != TaskStatus.READY:
                     raise EpisodeCommandError(
@@ -3787,10 +2981,8 @@ class ModelOsStore:
                     )
                 )
             else:
-                # codex M5: system WorkItem (no Task) — restore the WorkItem
-                # READY → RUNNING so the Episode is not left ACTIVE with a
-                # SUSPENDED/READY WorkItem. There is no foreground to claim
-                # (foreground is task-scoped).
+                # 系统 WorkItem 没有 Task，需在此恢复为 RUNNING，避免 Episode 已
+                # ACTIVE 而 WorkItem 仍未运行；foreground 仅属于 Task，无需抢占。
                 work_item = next(
                     (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
                     None,
@@ -3818,20 +3010,16 @@ class ModelOsStore:
                 task_id=ep.task_id,
             )
 
-    # --------------------------------------------------------------- reconcile
-
     def mark_pending_channel_lost(
         self,
         episode_id: str,
         *,
         reason: ReconcileReason,
     ) -> None:
-        """suspended_* | suspended_ready → reconcile_required (system-detected).
+        """内核检测到待处理通道丢失后进入 RECONCILE_REQUIRED。
 
-        NOT fenced: this is kernel detection (host generation closed / startup
-        scan, slice-083), called when the ownership lease may already be gone.
-        The caller is the kernel, not a lease holder. ``reconcile_required``
-        is a non-terminal blocked state exited only by ``resolve_reconcile``.
+        此路径可能发生在 ownership lease 消失后，因此不受 fencing 保护。
+        RECONCILE_REQUIRED 是阻塞的非终态，只能由 ``resolve_reconcile`` 退出。
         """
 
         assert self._conn is not None
@@ -3859,40 +3047,27 @@ class ModelOsStore:
                     task_id=ep.task_id,
                 )
             )
-            # codex H3.1 + N5 + R3-H2: mirror the loss into the bound Task so
-            # the 095 matcher + scheduler can tell this wait is no longer
-            # auto-resumable, AND keep the Task non-schedulable while the Episode
-            # is blocked. R3-H2: do NOT silently skip when the Task/WorkItem
-            # state is not what we expected (a TOCTOU — the scheduler may have
-            # claimed the Task between resolve and mark_lost, leaving it
-            # RUNNING). Force any non-terminal Task into the reconcile-wait
-            # (releasing foreground if it was claimed) and any non-terminal
-            # WorkItem to SUSPENDED.
+            # 同步阻塞绑定的 Task 和 WorkItem，避免 matcher 或 scheduler 自动恢复。
+            # 不能静默跳过状态漂移：resolve 后 scheduler 可能已抢占 Task；非终态 Task
+            # 必须进入 reconcile wait，非终态 WorkItem 必须置为 SUSPENDED。
             subtype = (
                 WaitingSubtype.REQUIRES_USER_RESTART
                 if reason == ReconcileReason.REQUIRES_USER_RESTART
                 else WaitingSubtype.RECONCILE
             )
             if ep.task_id is not None:
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is not None and not task.status.is_terminal:
-                    # TOCTOU: scheduler claimed the Task (RUNNING + foreground)
-                    # between resolve and mark_lost. Release the foreground so
-                    # the Task can be pulled back to a non-schedulable wait.
+                    # resolve 与通道丢失标记之间 scheduler 可能已抢占 Task；先释放
+                    # foreground，才能把 Task 拉回不可调度的等待态。
                     if (
                         task.status == TaskStatus.RUNNING
                         and self._read_foreground_task_id() == task.task_id
                     ):
                         self._release_foreground_in_tx(task.task_id)
                     wc = task.waiting_condition
-                    if (
-                        task.status == TaskStatus.WAITING_USER
-                        and wc is not None
-                    ):
-                        # suspended_waiting_*: preserve the original
-                        # correlation/cause, just flip the subtype.
+                    if task.status == TaskStatus.WAITING_USER and wc is not None:
+                        # 原等待仍存在时保留 correlation_id 与 cause，只切换 subtype。
                         waiting_payload = {
                             "kind": TaskStatus.WAITING_USER.value,
                             "cause": wc.cause,
@@ -3908,9 +3083,8 @@ class ModelOsStore:
                             "earliest_review_at": wc.earliest_review_at,
                         }
                     else:
-                        # suspended_ready (resolve cleared the waiting) or a
-                        # RUNNING Task that lost its channel: synthetic cause,
-                        # correlation_id gone.
+                        # 等待已清除或 RUNNING Task 丢失通道时，构造不带
+                        # correlation_id 的合成等待原因。
                         waiting_payload = {
                             "kind": TaskStatus.WAITING_USER.value,
                             "cause": (
@@ -3942,11 +3116,7 @@ class ModelOsStore:
                             )
                         )
             work_item = next(
-                (
-                    w
-                    for w in snap.work_items
-                    if w.work_item_id == ep.work_item_id
-                ),
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
                 None,
             )
             if (
@@ -3972,20 +3142,13 @@ class ModelOsStore:
         recovery_snapshot: EpisodeSnapshot | None = None,
         recovery_checkpoint_key: str | None = None,
     ) -> None:
-        """Exit reconcile_required (human/kernel decision). NOT fenced.
+        """根据用户或内核确认退出 RECONCILE_REQUIRED，不受 fencing 保护。
 
-        - ``decision='close'``: ALWAYS leave a recovery_partial snapshot (built
-          internally from the last snapshot + journal when the caller does not
-          pass one) and move to CLOSED. The snapshot identity rides on THIS
-          event — the close path no longer emits a separate
-          ``checkpoint_committed`` (that fenced kind cannot be written unfenced
-          by an external decision; codex C1 corollary).
-        - ``decision='resume_safe'``: land in ``suspended_ready`` (decision 4A)
-          with the Task/WorkItem restored to READY. Foreground is NOT claimed
-          here — the caller runs ``activate_suspended_episode`` next.
-
-        Provenance is ``USER_DECISION`` (codex H3.4): this is a human attestation
-        that reality was checked, distinct from a kernel self-report.
+        ``close`` 必须留下 recovery_partial 快照；调用方未提供时由最后快照与 journal
+        构造。外部 reconcile 决策没有 ownership lease，不能另发受 fencing 保护的
+        checkpoint 事件，因此快照身份随本次 resolve 事件记录。``resume_safe`` 把
+        Episode 置为 SUSPENDED_READY，并恢复 Task、WorkItem，随后由调用方另行激活。
+        事件来源为 ``USER_DECISION``，表示现实状态已经人工确认。
         """
 
         assert self._conn is not None
@@ -4011,7 +3174,7 @@ class ModelOsStore:
                 "decision": decision,
                 "confirmed_by": confirmed_by,
             }
-            close_lease_row = None  # set by the close branch (R3-M5 audit)
+            close_lease_row = None  # close 分支读取，用于 release 审计归因。
             if decision == "close":
                 snapshot_to_write, ck_key = self._reconcile_close_snapshot(
                     snap, ep, recovery_snapshot, recovery_checkpoint_key
@@ -4048,13 +3211,8 @@ class ModelOsStore:
                         _now_iso(),
                     ),
                 )
-                # codex R3-H1: the bound Task/WorkItem were left in a reconcile-
-                # wait state by mark_pending_channel_lost (Task waiting_user with
-                # a reconcile subtype, WorkItem SUSPENDED). Closing the Episode
-                # without restoring them would leave them stuck — no later
-                # command accepts an Episode that is already terminal. Mirror
-                # fail_episode: return the Task/WorkItem to a retryable READY so
-                # 090 can start fresh.
+                # 通道丢失会把 Task、WorkItem 留在 reconcile wait 与 SUSPENDED；关闭后
+                # 已无命令可修复终态 Episode，因此恢复为 READY，供新 Episode 继续。
                 close_now = _now_iso()
                 if ep.task_id is not None:
                     close_task = next(
@@ -4072,10 +3230,9 @@ class ModelOsStore:
                                 {"new_status": TaskStatus.READY.value},
                             )
                         )
-                if (
-                    work_item is not None
-                    and work_item.status
-                    in (WorkItemStatus.SUSPENDED, WorkItemStatus.RUNNING)
+                if work_item is not None and work_item.status in (
+                    WorkItemStatus.SUSPENDED,
+                    WorkItemStatus.RUNNING,
                 ):
                     self._insert_event_in_tx(
                         self._work_item_status_event(
@@ -4092,23 +3249,17 @@ class ModelOsStore:
                     snapshot_to_write.journal_through_seq
                 )
                 resolve_payload["committed_event_id"] = committed_event_id
-                # codex R3-M5: record the lease this close releases so audit can
-                # attribute the release (the original owner, not just "user
-                # decided to close"). resolve_reconcile has no expected_lease
-                # param (it is a human decision), so this is the audit trail.
+                # 记录 close 释放的原 lease 身份，供审计归因。人工决策没有
+                # expected_lease 参数，只能在事件 payload 留下该证据。
                 close_lease_row = self._read_episode_lease_row(episode_id)
                 if close_lease_row is not None:
-                    resolve_payload["released_lease_id"] = close_lease_row[
-                        "lease_id"
-                    ]
-                    resolve_payload["released_lease_owner"] = close_lease_row[
-                        "owner"
-                    ]
+                    resolve_payload["released_lease_id"] = close_lease_row["lease_id"]
+                    resolve_payload["released_lease_owner"] = close_lease_row["owner"]
                 else:
                     close_lease_row = None
                 resolve_payload["new_status"] = EpisodeStatus.CLOSED.value
                 new_status = EpisodeStatus.CLOSED
-            else:  # resume_safe — decision 4A: land in suspended_ready
+            else:
                 now = _now_iso()
                 if ep.task_id is not None:
                     task = next(
@@ -4126,10 +3277,9 @@ class ModelOsStore:
                                 {"new_status": TaskStatus.READY.value},
                             )
                         )
-                if (
-                    work_item is not None
-                    and work_item.status
-                    in (WorkItemStatus.SUSPENDED, WorkItemStatus.RUNNING)
+                if work_item is not None and work_item.status in (
+                    WorkItemStatus.SUSPENDED,
+                    WorkItemStatus.RUNNING,
                 ):
                     self._insert_event_in_tx(
                         self._work_item_status_event(
@@ -4149,15 +3299,13 @@ class ModelOsStore:
                     work_item_id=ep.work_item_id,
                     task_id=ep.task_id,
                     provenance=Provenance.USER_DECISION,
-                    # close path pre-generated committed_event_id to link the
-                    # snapshot row to this event (codex M2). resume_safe has
-                    # no snapshot → None → default id.
+                    # close 预生成 committed_event_id 以关联快照行；resume_safe 无快照，
+                    # 传入 None 生成默认事件 ID。
                     event_id=resolve_payload.get("committed_event_id"),
                 )
             )
             if new_status == EpisodeStatus.CLOSED:
-                # release the lingering ownership lease (read in the close
-                # branch for the audit payload, R3-M5).
+                # 释放 close 分支为审计 payload 读取的残留 ownership lease。
                 if close_lease_row is not None:
                     self._conn.execute(
                         "UPDATE leases SET released_at=? WHERE lease_id=?",
@@ -4171,12 +3319,10 @@ class ModelOsStore:
         recovery_snapshot: EpisodeSnapshot | None,
         recovery_checkpoint_key: str | None,
     ) -> tuple[EpisodeSnapshot, str]:
-        """Pick the recovery_partial snapshot for a reconcile-close.
+        """选择 reconcile close 使用的 recovery_partial 快照。
 
-        H3.2: if the caller supplied one, use it (must be recovery_partial);
-        otherwise build one from the last snapshot + journal high-watermark so
-        close never silently drops the work现场. Returns the snapshot and the
-        checkpoint_key to use.
+        调用方未提供时，从最后快照和 journal 高水位构造，避免关闭时丢失工作现场。
+        返回快照及所用 checkpoint_key。
         """
 
         if recovery_snapshot is not None:
@@ -4194,9 +3340,7 @@ class ModelOsStore:
             prev_snapshot = self.read_episode_snapshot(ep.last_snapshot_ref)
         task_goal: str | None = None
         if ep.task_id is not None:
-            tstate = next(
-                (t for t in snap.tasks if t.task_id == ep.task_id), None
-            )
+            tstate = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
             task_goal = tstate.original_goal if tstate is not None else None
         built = self.build_recovery_partial(
             work_item_goal=task_goal or f"work_item:{ep.work_item_id}",
@@ -4213,8 +3357,6 @@ class ModelOsStore:
         )
         return built, ck
 
-    # ----------------------------------------------------------------- recovery
-
     @staticmethod
     def build_recovery_partial(
         *,
@@ -4225,122 +3367,17 @@ class ModelOsStore:
         prev_ref: SnapshotRef | None = None,
         events: tuple[EventEnvelope, ...] = (),
     ) -> EpisodeSnapshot:
-        """Build a recovery_partial snapshot from prev + journal high-watermark.
-
-        Pure function: no I/O, no model call. Missing slots → ``"unknown"``;
-        only prev's confirmed completed (with evidence) and done side effects
-        survive, PLUS done side effects recorded in the journal range
-        (``events``) — so a crash between the last checkpoint and the failure
-        does not lose a confirmed action (codex H6). An explicit "unverified"
-        marker is added so a reader cannot mistake this for a fully-confirmed
-        cooperative snapshot.
-
-        Args:
-            prev: the previous snapshot payload (None for a first recovery).
-            journal_through_seq: the high-watermark the calling command fixed;
-              stored on the snapshot so the next recovery does not re-fold.
-            prev_ref: the SnapshotRef of ``prev`` (codex M4). The recovery's
-              ``base_snapshot_ref`` points here — NOT at prev's own base or a
-              fabricated dummy — so the recovery lineage stays accurate.
-            events: the journal slice ``(prev.journal_through_seq, high]`` for
-              this Episode. Only ``episode.side_effect_recorded`` events with
-              ``outcome=done`` AND an evidence_ref are folded; unconfirmed
-              actions stay unknown (never auto-replayed).
-        """
-
-        # codex N6 (round 2): preserve BOTH done and unknown side effects. A
-        # done side effect is confirmed (survives into completed_with_evidence);
-        # an unknown_requires_reconcile side effect MUST survive too — as
-        # unknown, carrying its action_ref / idempotency_key so the resuming
-        # runner knows WHICH action to check against reality before replay.
-        # Dropping it (the previous behaviour) hid the action from the recovery,
-        # so the runner might believe it never happened. Unknown NEVER becomes
-        # done and NEVER enters completed_with_evidence.
-        done_side_effects: list[SideEffectRecord] = [
-            se
-            for se in (prev.side_effects if prev else ())
-            if se.outcome == "done"
-        ]
-        unknown_side_effects: list[SideEffectRecord] = [
-            se
-            for se in (prev.side_effects if prev else ())
-            if se.outcome == "unknown_requires_reconcile"
-        ]
-        completed: list[tuple[str, str]] = (
-            list(prev.completed_with_evidence) if prev else []
-        )
-        done_refs = {se.action_ref for se in done_side_effects}
-        unknown_refs = {se.action_ref for se in unknown_side_effects}
-        # codex H6: fold side_effect_recorded events from the journal range
-        # (prev.journal_through_seq, high]. Done ones join completed; unknown
-        # ones are preserved as unknown. Dedup by action_ref (done wins).
-        for ev in events:
-            if ev.kind != EventKind.EPISODE_SIDE_EFFECT_RECORDED:
-                continue
-            p = ev.payload
-            action_ref = p.get("action_ref")
-            if not action_ref or action_ref in done_refs:
-                continue
-            outcome = p.get("outcome")
-            if outcome == "done":
-                evidence_ref = p.get("evidence_ref")
-                if not evidence_ref:
-                    continue
-                done_refs.add(action_ref)
-                unknown_refs.discard(action_ref)
-                unknown_side_effects = [
-                    se for se in unknown_side_effects if se.action_ref != action_ref
-                ]
-                done_side_effects.append(
-                    SideEffectRecord(
-                        action_ref=action_ref,
-                        idempotency_key=p.get("idempotency_key", ""),
-                        outcome="done",
-                        evidence_ref=evidence_ref,
-                    )
-                )
-                completed.append((action_ref, evidence_ref))
-            elif outcome == "unknown_requires_reconcile":
-                if action_ref in unknown_refs:
-                    continue
-                unknown_refs.add(action_ref)
-                unknown_side_effects.append(
-                    SideEffectRecord(
-                        action_ref=action_ref,
-                        idempotency_key=p.get("idempotency_key", ""),
-                        outcome="unknown_requires_reconcile",
-                    )
-                )
-        side_effects = done_side_effects + unknown_side_effects
-        if prev is not None:
-            unknowns = prev.unknowns + (
-                "recovery_partial: progress after base snapshot unverified",
-            )
-            artifacts = prev.artifacts
-            transcript = prev.native_transcript_ref
-            # codex M4: base points at prev's own ref, not prev's base or a
-            # dummy. prev_ref may be None when the caller could not supply it
-            # (kept honest rather than fabricated).
-            base_ref = prev_ref
-        else:
-            unknowns = ("recovery_partial: no base snapshot; full state unverified",)
-            artifacts = ()
-            transcript = None
-            base_ref = None
-        return EpisodeSnapshot(
+        return _run_build_recovery_partial(
             work_item_goal=work_item_goal,
             task_constraints_ref=task_constraints_ref,
-            current_judgment="unknown",
-            completed_with_evidence=tuple(completed),
-            side_effects=tuple(side_effects),
-            unknowns=unknowns,
-            waiting_condition=None,
-            next_steps=(),
-            artifacts=artifacts,
-            native_transcript_ref=transcript,
-            source=SnapshotSource.RECOVERY_PARTIAL,
+            prev=prev,
             journal_through_seq=journal_through_seq,
-            base_snapshot_ref=base_ref,
+            prev_ref=prev_ref,
+            events=events,
+            snapshot_type=EpisodeSnapshot,
+            side_effect_type=SideEffectRecord,
+            recovery_source=SnapshotSource.RECOVERY_PARTIAL,
+            side_effect_event_kind=EventKind.EPISODE_SIDE_EFFECT_RECORDED,
         )
 
     def _collect_recovery_events(
@@ -4349,11 +3386,9 @@ class ModelOsStore:
         prev_snapshot: EpisodeSnapshot | None,
         high_seq: int,
     ) -> tuple[EventEnvelope, ...]:
-        """Return the ``episode.side_effect_recorded`` events in the journal
-        range ``(prev.journal_through_seq, high_seq]`` for this Episode.
+        """返回 ``(prev.journal_through_seq, high_seq]`` 内本 Episode 的副作用事件。
 
-        This is the slice ``build_recovery_partial`` folds (codex H6). Caller
-        holds the transaction; ``list_events`` reads from the same connection.
+        调用方持有事务，``list_events`` 使用同一连接读取。
         """
 
         from_seq = prev_snapshot.journal_through_seq if prev_snapshot else 0
@@ -4378,12 +3413,10 @@ class ModelOsStore:
         reason: str,
         checkpoint_key: str,
     ) -> SnapshotRef:
-        """Build + commit a recovery_partial snapshot (fenced).
+        """构造并提交受 fencing 保护的 recovery_partial 快照。
 
-        Fixes the journal high-watermark, reads the previous snapshot, calls
-        ``build_recovery_partial``, commits the snapshot row + fenced
-        checkpoint event. Used by 089 (timeout/shutdown/hard-budget) and by
-        ``recover_episode``.
+        在同一事务固定 journal 高水位、读取前序快照，并提交快照行与 checkpoint
+        事件；供超时、关机、硬预算和 ``recover_episode`` 恢复路径使用。
         """
 
         assert self._conn is not None
@@ -4402,8 +3435,7 @@ class ModelOsStore:
                 (checkpoint_key,),
             ).fetchone()
             if existing is not None:
-                # codex M3: a globally-unique key hit on a DIFFERENT Episode is
-                # a key-scope conflict, not an idempotent retry.
+                # 全局唯一 checkpoint_key 命中其他 Episode 属于作用域冲突，不是重试。
                 if existing["episode_id"] != episode_id:
                     raise EpisodeCommandError(
                         f"checkpoint_key {checkpoint_key!r} already used by "
@@ -4436,9 +3468,7 @@ class ModelOsStore:
                 ),
             )
             version = self._next_snapshot_version_in_tx(episode_id)
-            payload_text, payload_hash = _payload_json(
-                _snapshot_to_payload(recovery)
-            )
+            payload_text, payload_hash = _payload_json(_snapshot_to_payload(recovery))
             _validate_episode_snapshot(recovery, payload_text)
             committed_event_id = (
                 f"episode.checkpoint.{episode_id}.{version}.{uuid4().hex}"
@@ -4502,14 +3532,12 @@ class ModelOsStore:
         ttl_seconds: int,
         idempotency_key: str | None,
     ) -> Lease:
-        """Take over an Episode's ownership lease INSIDE the caller's tx.
+        """在调用方事务内接管 Episode 的 ownership lease。
 
-        codex H5: recovering a live Episode is a ``LeaseConflict`` — the
-        existing active lease MUST be expired (or absent). Mirrors
-        ``_grant_episode_ownership_in_tx`` but takes over an expired grant:
-        mark the old row released (history preserved), bump the fence counter,
-        INSERT a fresh row with a higher token. The new owner can then write a
-        fenced RECOVERING transition in the same transaction."""
+        活跃 lease 必须已过期或不存在，否则抛出 ``LeaseConflict``。旧行保留并标记
+        释放，fencing token 递增后插入新 lease，使新 owner 能在同一事务写入受保护的
+        RECOVERING 转换。
+        """
 
         assert self._conn is not None
         now_str = _now_iso()
@@ -4525,9 +3553,7 @@ class ModelOsStore:
             if existing is not None:
                 if existing["owner"] != owner:
                     raise LeaseConflict("episode_ownership", episode_id)
-                # codex R3-M3: do not hand back an already-expired lease — the
-                # caller would fail the first fenced write. A retry that lands
-                # after TTL is a conflict (the caller must re-acquire fresh).
+                # 不返回已过期 lease；TTL 后到达的重试视为冲突，调用方必须重新申请。
                 if existing["expires_at"] <= now_str:
                     raise LeaseConflict("episode_ownership", episode_id)
                 return _lease_from_row(existing)
@@ -4564,9 +3590,7 @@ class ModelOsStore:
                 ),
             )
         except sqlite3.IntegrityError as exc:
-            # codex R3-H3: surface a collision as LeaseConflict, never a raw
-            # sqlite3 error (idempotency_key still in use, or another writer
-            # raced the grant/takeover).
+            # 唯一键占用或并发接管造成的碰撞统一转换为 ``LeaseConflict``。
             raise LeaseConflict("episode_ownership", episode_id) from exc
         self._insert_event_in_tx(
             EventEnvelope(
@@ -4606,19 +3630,11 @@ class ModelOsStore:
         idempotency_key: str,
         reason: str,
     ) -> Lease:
-        """Take over an Episode whose ownership lease expired.
+        """接管 ownership lease 已过期的 Episode。
 
-        Atomic in ONE transaction (codex H5): verify the Episode exists and is
-        non-terminal, take over the expired lease (higher fencing token), then
-        write a fenced EPISODE_RECOVERING transition with the fresh token. The
-        caller then decides whether to ``checkpoint_recovery_partial`` + close,
-        or to resume.
-
-        The previous implementation split this across two transactions
-        (``acquire_episode_ownership`` committed, then a second tx wrote
-        RECOVERING); a crash between them left an orphan lease on a missing or
-        terminal Episode. Everything now shares one IMMEDIATE tx, so any
-        failure rolls the lease back too.
+        一个 IMMEDIATE 事务内验证 Episode 非终态，以更高 fencing token 接管 lease，
+        再写入 RECOVERING；失败时 lease 一并回滚，避免崩溃留下孤立 lease。调用方随后
+        选择提交恢复快照后关闭，或恢复执行。
         """
 
         assert self._conn is not None
@@ -4659,22 +3675,12 @@ class ModelOsStore:
         expected_owner: str,
         expected_token: int,
     ) -> None:
-        """RECOVERING → ACTIVE (fenced). The new owner resumes the recovered
-        Episode in place.
+        """把 RECOVERING Episode 原地恢复为 ACTIVE。
 
-        codex N3 (round 2): previously ``RECOVERING`` had no exit command, so a
-        recovered Episode was stuck (``close_episode`` only accepts
-        CHECKPOINTING, ``activate_suspended_episode`` only accepts
-        SUSPENDED_READY). This command is the "新 owner 继续" branch of spec
-        line 165. It runs AFTER ``checkpoint_recovery_partial`` has committed a
-        recovery snapshot.
-
-        Composite (Task-bound): claim foreground (CAS, ``ForegroundConflict``
-        if another Task holds it), ensure the Task is RUNNING and the WorkItem
-        is RUNNING. system WorkItem: ensure the WorkItem is RUNNING. Then the
-        fenced RECOVERING → ACTIVE transition. What survived the crash (Task
-        RUNNING, foreground already claimed) is left as-is; only inconsistencies
-        are fixed up."""
+        调用前必须已提交 recovery_partial 快照，本方法不重复校验该顺序。有 Task 时
+        以 CAS 抢占 foreground，并确保 Task、WorkItem 为 RUNNING；系统 WorkItem
+        只恢复 WorkItem。崩溃后仍一致的状态保持不变，最后写入受 fencing 保护的转换。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -4691,19 +3697,13 @@ class ModelOsStore:
             )
             now = _now_iso()
             if ep.task_id is not None:
-                task = next(
-                    (t for t in snap.tasks if t.task_id == ep.task_id), None
-                )
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is None:
                     raise EpisodeCommandError(
-                        f"episode {episode_id!r} references unknown task "
-                        f"{ep.task_id!r}"
+                        f"episode {episode_id!r} references unknown task {ep.task_id!r}"
                     )
-                # codex R3-M1: gate the Task source state. RUNNING (survived
-                # the crash, foreground still claimed) and READY are the legit
-                # resume sources; anything else (e.g. waiting_user from a
-                # pre-crash reconcile) must be resolved first, not silently
-                # cleared by an unconditional move to RUNNING.
+                # 仅允许从 READY 或崩溃后仍存活的 RUNNING 恢复；其他状态必须先显式
+                # 解决，不能被无条件改为 RUNNING。
                 if task.status not in (
                     TaskStatus.READY,
                     TaskStatus.RUNNING,
@@ -4734,7 +3734,6 @@ class ModelOsStore:
                         )
                     )
                 if task.status == TaskStatus.READY:
-                    # READY → RUNNING (RUNNING survived the crash; no event)
                     self._insert_event_in_tx(
                         self._make_task_event(
                             EventKind.TASK_STATUS_CHANGED,
@@ -4742,14 +3741,12 @@ class ModelOsStore:
                             {"new_status": TaskStatus.RUNNING.value},
                         )
                     )
-            if (
-                work_item is not None
-                and work_item.status
-                in (WorkItemStatus.READY, WorkItemStatus.SUSPENDED)
+            if work_item is not None and work_item.status in (
+                WorkItemStatus.READY,
+                WorkItemStatus.SUSPENDED,
             ):
-                # codex R3-L3: whitelist the resumable WorkItem source states
-                # (mirror activate_suspended_episode) rather than moving a
-                # WorkItem in any odd state to RUNNING.
+                # 仅接受暂停激活路径允许的 WorkItem 源状态，不能把任意异常状态改为
+                # 最终目标为 RUNNING。
                 self._insert_event_in_tx(
                     self._work_item_status_event(
                         work_item.work_item_id,
@@ -4778,15 +3775,11 @@ class ModelOsStore:
         expected_owner: str,
         expected_token: int,
     ) -> None:
-        """RECOVERING → CLOSED (fenced, terminal). The "close after recovery"
-        branch of spec line 165.
+        """把 RECOVERING Episode 置为 CLOSED 终态。
 
-        codex N3 (round 2): ``close_episode`` only accepts CHECKPOINTING, so a
-        recovered Episode could not be closed even after
-        ``checkpoint_recovery_partial`` committed its recovery snapshot. This
-        command closes from RECOVERING, requiring that a recovery snapshot was
-        committed (``last_snapshot_ref`` is set) so 090 can start fresh from it.
-        Releases the ownership lease in the same tx."""
+        必须已有 ``last_snapshot_ref``，供下一个 Episode 继续恢复；ownership lease
+        在同一事务内释放。
+        """
 
         assert self._conn is not None
         with self._tx():
@@ -4820,8 +3813,6 @@ class ModelOsStore:
                     (_now_iso(), expected_lease_id),
                 )
 
-    # ------------------------------------------------------------- side effects
-
     def record_side_effect(
         self,
         episode_id: str,
@@ -4835,19 +3826,11 @@ class ModelOsStore:
         evidence_ref: str | None = None,
         description: str = "",
     ) -> None:
-        """Record an external side effect (fenced).
+        """记录受 fencing 保护的外部副作用。
 
-        ``outcome='done'`` requires ``evidence_ref`` (confirmed result).
-        ``outcome='unknown_requires_reconcile'`` means the action may have
-        happened but the result was not written back; an 084
-        ``SIDE_EFFECT_UNCONFIRMED`` event is also appended so the reducer
-        tracks it as an ``UnknownAction`` awaiting reconciliation. Replay is
-        forbidden until reality is checked.
-
-        Idempotent on ``(action_ref, idempotency_key)`` (codex R3-M4): the
-        ``idempotency_key`` parameter is the caller's retry identity for THIS
-        action; a crash-retry that already landed returns without appending a
-        second ``side_effect_recorded`` event or a duplicate UnknownAction.
+        ``done`` 必须提供 ``evidence_ref``；``unknown_requires_reconcile`` 会同时写入
+        未确认事件，禁止在核实现实状态前重放。以 ``(action_ref, idempotency_key)``
+        幂等，已落盘的崩溃重试不追加重复事件或 UnknownAction。
         """
 
         assert self._conn is not None
@@ -4865,9 +3848,6 @@ class ModelOsStore:
                 raise EpisodeCommandError(
                     f"episode {episode_id!r} is terminal ({ep.status.value})"
                 )
-            # codex R3-M4: idempotent on (action_ref, idempotency_key). A retry
-            # that already persisted this action is a no-op (do not append a
-            # second side_effect_recorded event or a duplicate UnknownAction).
             already = self._conn.execute(
                 "SELECT 1 FROM events "
                 "WHERE kind='episode.side_effect_recorded' AND episode_id=? "
@@ -4915,17 +3895,11 @@ class ModelOsStore:
                 )
 
     def read_snapshot(self) -> Snapshot:
-        """Return the current derived snapshot (replay + live leases + foreground).
+        """返回派生快照，并合并实时 lease 与 foreground。
 
-        ``schema_version`` is already populated by ``replay`` (via
-        ``initial_snapshot``); ``active_leases`` and ``foreground_task_id``
-        are merged in from live tables here — both are operational state, not
-        audit (slice-086: foreground owner lives in foreground_claim, not
-        derived from FOREGROUND_CLAIMED events).
-
-        All three reads run inside one DEFERRED read transaction (``_read_tx``)
-        so a concurrent claim/release commit cannot split them and return an
-        inconsistent snapshot (codex review HIGH 5).
+        schema 版本由 replay 填充；活跃 lease 和 foreground 来自实时表，不由审计
+        事件派生。三次读取共享一个 DEFERRED 事务，避免并发 claim 或 release 产生
+        割裂快照。
         """
 
         with self._read_tx():

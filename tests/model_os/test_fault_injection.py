@@ -1,13 +1,7 @@
-"""Fault-injection tests (slice-084 pass criterion 3 + testing method).
+"""决策与 intent 原子写入的故障注入测试。
 
-"写入中断不会留下半个决定或重复 seq": a crash mid-transaction must not leave a
-half-written decision/event pair or a duplicated seq.
-
-We trigger real mid-transaction failures via SQLite's own UNIQUE constraints
-(pre-seeding a duplicate event_id) rather than monkeypatching the C-level
-``sqlite3.Connection.execute`` (which is read-only). This exercises the
-actual atomicity path: the store's ``with conn:`` transaction block must
-roll back every statement when any one of them fails.
+通过 SQLite UNIQUE 约束制造真实的事务中断，验证任一语句失败都会回滚整个原子对，
+不会留下半条记录、重复 seq 或提前消耗序号。
 """
 
 from __future__ import annotations
@@ -51,22 +45,14 @@ def _decision(decision_id: str) -> DecisionRecord:
 
 
 def test_crash_during_atomic_pair_leaves_nothing(store: ModelOsStore) -> None:
-    """append_decision_with_intent is atomic: if the event insert fails after
-    the decision insert ran, neither row must survive (no half decision).
-
-    The event insert is forced to fail by pre-seeding its event_id; the
-    decision insert runs first inside the same ``with conn:`` block, then the
-    duplicate event insert raises, and the whole transaction rolls back.
-    """
-
-    store.append_event(_note("evt-crash"))  # occupy the event_id in its own txn
+    store.append_event(_note("evt-crash"))  # 在独立事务预占 event_id
     baseline_events = len(store.list_events())
     baseline_decisions = len(store.list_decisions())
 
     with pytest.raises(sqlite3.IntegrityError):
         store.append_decision_with_intent(
             _decision("dec-crash"),
-            _note("evt-crash"),  # duplicate event_id → IntegrityError
+            _note("evt-crash"),  # 重复 event_id 触发 IntegrityError
         )
 
     assert len(store.list_events()) == baseline_events
@@ -74,17 +60,14 @@ def test_crash_during_atomic_pair_leaves_nothing(store: ModelOsStore) -> None:
 
 
 def test_crash_does_not_advance_seq(store: ModelOsStore) -> None:
-    """A rolled-back transaction must not consume a seq (no gap, no duplicate)."""
-
-    store.append_event(_note("evt-crash"))  # seq 1
+    store.append_event(_note("evt-crash"))  # 事件 seq 为 1
     with pytest.raises(sqlite3.IntegrityError):
         store.append_decision_with_intent(
             _decision("dec-crash"),
-            _note("evt-crash"),  # duplicate → rollback, dec-crash lost
+            _note("evt-crash"),  # 重复事件触发回滚，决策不会落盘。
         )
 
-    # dec-crash was rolled back, so the next committed decision is seq 1
-    # (not 2). The next event after evt-crash is seq 2.
+    # 回滚没有消耗决策序号；下一条决策仍为 1，下一条事件则为 2。
     d_seq, e_seq = store.append_decision_with_intent(
         _decision("dec-ok"), _note("evt-ok")
     )
@@ -93,8 +76,6 @@ def test_crash_does_not_advance_seq(store: ModelOsStore) -> None:
 
 
 def test_successful_atomic_pair_commits_both(store: ModelOsStore) -> None:
-    """The happy path: decision + intent event land together."""
-
     d_seq, e_seq = store.append_decision_with_intent(
         _decision("dec-ok"), _note("evt-ok")
     )

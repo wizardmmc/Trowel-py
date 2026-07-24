@@ -1,9 +1,3 @@
-"""QuotaScheduler cadence / stagger / fault tolerance (slice-093-pre).
-
-Fake-clock only: injected ``sleep_fn`` + a fake client. No network. Mirrors
-the memory-scheduler fake-sleep pattern (``tests/memory/test_tidy_scheduler``).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -40,8 +34,6 @@ def _ok(account_id: str) -> QuotaSnapshot:
 
 
 class _FakeClient:
-    """Records fetches; returns a snapshot per account, or raises on cue."""
-
     def __init__(self, *, fail_on: str | None = None) -> None:
         self.fetches: list[str] = []
         self._fail_on = fail_on
@@ -54,8 +46,6 @@ class _FakeClient:
 
 
 class _BudgetSleep:
-    """Records durations; returns for the first ``budget`` calls then hangs."""
-
     def __init__(self, budget: int) -> None:
         self._budget = budget
         self.durations: list[float] = []
@@ -63,7 +53,7 @@ class _BudgetSleep:
     async def __call__(self, seconds: float) -> None:
         self.durations.append(seconds)
         if len(self.durations) > self._budget:
-            await asyncio.Event().wait()  # hang forever
+            await asyncio.Event().wait()
 
 
 def _hang_on_big(threshold: float):
@@ -87,15 +77,13 @@ async def test_start_is_idempotent() -> None:
     )
     await sched.start()
     first = sched.tasks
-    await sched.start()  # no-op
+    await sched.start()
     assert sched.tasks == first
     await sched.stop()
     assert sched.tasks == ()
 
 
 async def test_first_cycle_polls_every_account_and_feeds_read_model() -> None:
-    """First cycle runs immediately (stagger returns, interval hangs)."""
-
     client = _FakeClient()
     rm = QuotaReadModel(now_ms=lambda: 0, stale_after_ms=10**9)
     sched = QuotaScheduler(
@@ -107,7 +95,7 @@ async def test_first_cycle_polls_every_account_and_feeds_read_model() -> None:
         sleep_fn=_hang_on_big(300.0),
     )
     await sched.start()
-    await asyncio.sleep(0.02)  # let the first cycle run
+    await asyncio.sleep(0.02)
 
     assert client.fetches == ["a", "b"]
     assert rm.get(Provider.GLM, "a") is not None
@@ -116,10 +104,7 @@ async def test_first_cycle_polls_every_account_and_feeds_read_model() -> None:
 
 
 async def test_loop_repeats_at_interval_with_stagger_between_accounts() -> None:
-    """Two cycles: polls repeat [a,b,a,b]; recorded sleeps include both the
-    inter-account stagger and the inter-cycle interval."""
-
-    sleep = _BudgetSleep(budget=3)  # 3 sleeps return; 4th hangs
+    sleep = _BudgetSleep(budget=3)
     client = _FakeClient()
     sched = QuotaScheduler(
         _accounts("a", "b"),
@@ -132,17 +117,14 @@ async def test_loop_repeats_at_interval_with_stagger_between_accounts() -> None:
     await sched.start()
     await asyncio.sleep(0.02)
 
-    assert client.fetches == ["a", "b", "a", "b"]  # two full cycles
-    # stagger (0.5) sits between accounts, interval (300) between cycles
+    assert client.fetches == ["a", "b", "a", "b"]
     assert 0.5 in sleep.durations
     assert 300.0 in sleep.durations
     await sched.stop()
 
 
 async def test_single_account_has_no_stagger_sleep() -> None:
-    """One account -> no inter-account stagger, only the interval pacing."""
-
-    sleep = _BudgetSleep(budget=0)  # first sleep (interval) hangs
+    sleep = _BudgetSleep(budget=0)
     client = _FakeClient()
     sched = QuotaScheduler(
         _accounts("solo"),
@@ -156,14 +138,11 @@ async def test_single_account_has_no_stagger_sleep() -> None:
     await asyncio.sleep(0.02)
 
     assert client.fetches == ["solo"]
-    assert sleep.durations == [300.0]  # only the interval, no stagger
+    assert sleep.durations == [300.0]
     await sched.stop()
 
 
 async def test_poll_failure_does_not_kill_loop() -> None:
-    """An account whose fetch raises is skipped; the loop survives and the
-    healthy account keeps being polled."""
-
     sleep = _BudgetSleep(budget=3)
     client = _FakeClient(fail_on="b")
     rm = QuotaReadModel(now_ms=lambda: 0, stale_after_ms=10**9)
@@ -178,21 +157,16 @@ async def test_poll_failure_does_not_kill_loop() -> None:
     await sched.start()
     await asyncio.sleep(0.02)
 
-    # "a" polled twice (two cycles); "b" raised both times but loop survived
     assert client.fetches == ["a", "b", "a", "b"]
-    assert rm.get(Provider.GLM, "a") is not None  # healthy account recorded
-    assert rm.get(Provider.GLM, "b") is None  # failing account never recorded
+    assert rm.get(Provider.GLM, "a") is not None
+    assert rm.get(Provider.GLM, "b") is None
     await sched.stop()
 
 
 async def test_zero_accounts_does_nothing() -> None:
-    """No accounts -> start/stop cleanly, no fetches."""
-
     client = _FakeClient()
     sleep = _BudgetSleep(budget=0)
-    sched = QuotaScheduler(
-        (), client, QuotaReadModel(now_ms=lambda: 0), sleep_fn=sleep
-    )
+    sched = QuotaScheduler((), client, QuotaReadModel(now_ms=lambda: 0), sleep_fn=sleep)
     await sched.start()
     await asyncio.sleep(0.01)
     assert client.fetches == []
@@ -201,8 +175,6 @@ async def test_zero_accounts_does_nothing() -> None:
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 async def test_stop_cancels_running_loop() -> None:
-    """stop() cancels a loop hung on the interval sleep."""
-
     sched = QuotaScheduler(
         _accounts("a"),
         _FakeClient(),
@@ -211,5 +183,5 @@ async def test_stop_cancels_running_loop() -> None:
     )
     await sched.start()
     await asyncio.sleep(0.01)
-    await sched.stop()  # must return, not hang
+    await sched.stop()
     assert sched.tasks == ()

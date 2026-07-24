@@ -1,10 +1,4 @@
-"""HTTP surface for the quota read model (slice-093-pre, criterion 6).
-
-``GET /api/quota`` returns the unified snapshots so the frontend can render
-account quota without bouncing to bigmodel.cn. Only the normalized fields are
-exposed; the verbatim provider ``raw`` is dropped at the wire boundary (leaner
-payload, and nothing provider-specific leaks to the client).
-"""
+"""额度只读模型的 HTTP 接口；wire 层不会暴露 provider 原始字段。"""
 
 from __future__ import annotations
 
@@ -19,8 +13,6 @@ router = APIRouter()
 
 
 def snapshot_to_wire(snapshot: QuotaSnapshot) -> dict[str, Any]:
-    """Normalized, JSON-friendly view of a snapshot (no raw provider fields)."""
-
     return {
         "provider": snapshot.provider.value,
         "account_id": snapshot.account_id,
@@ -39,20 +31,13 @@ def snapshot_to_wire(snapshot: QuotaSnapshot) -> dict[str, Any]:
 
 
 def _read_model(request: Request) -> QuotaReadModel | None:
-    """The app-level quota read model, or None when startup did not wire one."""
-
     return getattr(request.app.state, "quota_read_model", None)
 
 
 @router.get("/api/quota")
 async def list_quota(request: Request) -> dict[str, Any]:
-    """Every known account's quota snapshot (staleness applied by the model).
-
-    ``async def`` (not sync ``def``) so the read stays in the event-loop thread
-    alongside the scheduler/observer writers; a sync route would run in a
-    threadpool and race the writers (slice-093-pre review HIGH-2).
-    """
-
+    """返回所有已知账户的额度快照。"""
+    # 保持 async route，使读取与 scheduler/observer 写入都留在事件循环线程。
     model = _read_model(request)
     snapshots = model.all() if model is not None else ()
     return {
