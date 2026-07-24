@@ -24,6 +24,7 @@
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
+| `agent_host/events.py` | 两种 runtime 共用的 AgentEvent wire contract |
 | `agent_host/codex_settings.py` | Codex model 与 reasoning effort 的无 I/O 选择规则 |
 | `agent_host/codex_launch.py` | Codex session 启动配置与注入装配，不注册 manager 或持久化 binding |
 | `cc_host/` / `codex_host/` | 两种原生 runtime 的进程、协议和事件适配 |
@@ -32,11 +33,13 @@
 | `cc_host/history/` | CC 会话时间线回放、Workflow 快照与消息事件翻译 |
 | `cc_host/checkpoint/` | CC 私有 Git checkpoint 的稳定 facade 与底层 plumbing |
 | `cc_host/frontmatter.py` | CC skill 与 slash command 的轻量 frontmatter 解析 |
+| `cc_host/schemas.py` | CC HTTP 请求与原生事件 wire contract |
 | `cc_host/workflow_tree.py` | CC workflow 磁盘快照到 wire tree 的纯转换 |
 | `codex_host/file_change_codec.py` | Codex fileChange 到前端 diff shape 的纯转换 |
 | `model_os/` | Task、Episode、租约、事件日志与模型资源仲裁 |
 | `model_os/episode_fold.py` / `work_item_fold.py` / `context_fold.py` | Reducer 的无 I/O 事件折叠策略 |
 | `model_os/store_event_factory.py` / `store_projection.py` | Store 事件构造与公开状态投影 |
+| `model_os/task_commands.py` | Task 创建、warm/foreground、等待与终态命令编排 |
 | `model_os/episode_snapshot_codec.py` | EpisodeSnapshot payload codec 与写入前校验 |
 | `model_os/episode_recovery.py` | Episode 恢复快照的纯事实折叠策略 |
 | `model_os/context_codec.py` / `context_adapters.py` | Context journal codec 与 AgentEvent 标准化 |
@@ -49,7 +52,8 @@
 | `cards/` / `review/` / `feynman/` | 卡片提取、复习和费曼学习 |
 | `garden/` / `player/` / `pet/` / `events/` | 花园、玩家状态、宠物和事件系统 |
 | `llm/` | 模型客户端、prompt 与输出过滤 |
-| `schemas/` | 跨领域 Pydantic 数据模型 |
+| 各领域的 `models.py` / `schemas.py` | 领域值对象与 HTTP/LLM 数据边界 |
+| `schemas/` | 旧 Python import 路径的兼容 re-export，不拥有模型定义 |
 
 领域模块通常把 HTTP、业务逻辑和持久化分别放在 `routes.py`、`service.py` 与 `repository.py`；实际文件按领域需要增减。
 

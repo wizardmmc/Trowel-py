@@ -1,25 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Literal
-from datetime import datetime as datetime
-from trowel_py.schemas.card import Card as Card
+"""兼容旧 garden schema import；定义归 garden 所有。"""
 
+from trowel_py.garden.schemas import Card, GardenStats, PlantInfo
 
-class PlantInfo(BaseModel):
-    card_id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    category: str = Field(min_length=1)
-    explanation: str = Field(min_length=10)
-    plant_stage: Literal["seed", "sprout", "tree", "wilting"] = "seed"
-    fsrs_state: Literal[0, 1, 2, 3] | None = (
-        None  # FSRS 状态：0=New，1=Learning，2=Review，3=Relearning
-    )
-    due: str | None = None
-    reps: int = Field(default=0)
-
-
-class GardenStats(BaseModel):
-    """花园聚合统计。"""
-
-    total_plants: int = 0
-    due_count: int = 0
-    flowering_rate: float = 0.0
+__all__ = ["Card", "GardenStats", "PlantInfo"]

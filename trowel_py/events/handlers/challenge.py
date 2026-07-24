@@ -6,8 +6,8 @@ from trowel_py.events.handlers.types import (
     EventHandler as EventHandler,
     EventResult,
 )
-from trowel_py.schemas.card import Card
-from trowel_py.schemas.review import FSRSState
+from trowel_py.cards.models import Card
+from trowel_py.review.models import FSRSState
 import random
 
 _RECENT_EXCLUDE_COUNT = 5

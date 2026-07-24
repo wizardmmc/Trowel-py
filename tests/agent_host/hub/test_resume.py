@@ -18,7 +18,7 @@ from tests.agent_host.hub._support import (
 
 
 def test_create_cc_with_resume_carries_native_id(hub: SessionHub, workdir: Path):
-    binding = hub.create(cc_req(workdir, resume_from="cc-jsonl-9"), request=None)
+    binding = hub.create(cc_req(workdir, resume_from="cc-jsonl-9"))
     assert binding.native_session_id == "cc-jsonl-9"
 
 
@@ -27,7 +27,7 @@ def test_create_codex_with_resume_seeds_thread_binding(
 ):
 
     binding = hub.create(
-        codex_req(workdir, resume_from="codex-thread-abc"), request=None
+        codex_req(workdir, resume_from="codex-thread-abc")
     )
     session = codex_mgr.get_session(binding.session_id)
     assert session is not None

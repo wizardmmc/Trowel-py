@@ -4,7 +4,7 @@ from datetime import datetime
 
 from trowel_py.events.cooldown import Cooldowns
 from trowel_py.events.types import EventType
-from trowel_py.schemas.event import EventLog
+from trowel_py.events.models import EventLog
 
 
 def _event_log(

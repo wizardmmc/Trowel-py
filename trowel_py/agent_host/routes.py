@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -13,10 +14,15 @@ from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
-    ConditionMismatchError,
-    CrossRuntimeResumeError,
-    RuntimeFrozenError,
+    InvalidSessionRequestError,
+    RuntimeTurnError,
+    RuntimeUnavailableError,
+    SessionAccessError,
+    SessionConflictError,
     SessionHub,
+    SessionHubError,
+    SessionNotFoundError,
+    SessionOperationError,
 )
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
@@ -26,6 +32,42 @@ from trowel_py.agent_host.schemas import (
 )
 
 router = APIRouter()
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+_HUB_ERROR_STATUS: tuple[tuple[type[SessionHubError], int], ...] = (
+    (InvalidSessionRequestError, 400),
+    (SessionAccessError, 403),
+    (SessionNotFoundError, 404),
+    (SessionConflictError, 409),
+    (SessionOperationError, 422),
+    (RuntimeTurnError, 502),
+    (RuntimeUnavailableError, 503),
+)
+
+
+def _http_exception(exc: SessionHubError) -> HTTPException:
+    for error_type, status_code in _HUB_ERROR_STATUS:
+        if isinstance(exc, error_type):
+            return HTTPException(status_code=status_code, detail=str(exc))
+    raise TypeError(f"unmapped SessionHubError: {type(exc).__name__}")
+
+
+def _call_hub(operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    try:
+        return operation(*args, **kwargs)
+    except SessionHubError as exc:
+        raise _http_exception(exc) from exc
+
+
+async def _await_hub(
+    operation: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    try:
+        return await operation(*args, **kwargs)
+    except SessionHubError as exc:
+        raise _http_exception(exc) from exc
 
 
 def get_hub(request: Request) -> SessionHub:
@@ -42,23 +84,20 @@ def _sse(event: dict[str, Any]) -> bytes:
 @router.post("/sessions")
 def create_session(
     req: CreateAgentSessionRequest,
-    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
     if req.resume_from is not None:
-        try:
-            hub.validate_resume(
-                Runtime(req.runtime),
-                req.resume_from,
-                memory_enabled=req.memory_enabled,
-                profile_enabled=req.profile_enabled,
-                self_enabled=req.self_enabled,
-            )
-        except (CrossRuntimeResumeError, ConditionMismatchError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-    binding = hub.create(req, request)
+        _call_hub(
+            hub.validate_resume,
+            Runtime(req.runtime),
+            req.resume_from,
+            memory_enabled=req.memory_enabled,
+            profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
+        )
+    binding = _call_hub(hub.create, req)
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
@@ -83,7 +122,7 @@ def activate_session(
 ) -> dict:
     """只切换当前视图，不关闭或中断任何会话。"""
 
-    active = hub.activate(session_id)
+    active = _call_hub(hub.activate, session_id)
     return {"success": True, "data": {"active_id": active}, "error": None}
 
 
@@ -108,16 +147,20 @@ async def patch_session(
 ) -> dict:
     """拒绝修改 runtime；model/effort 仅为下一次 Codex turn 排队。"""
 
-    try:
-        hub.patch(
-            session_id, runtime=body.runtime, model=body.model, effort=body.effort
-        )
-    except RuntimeFrozenError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _call_hub(
+        hub.patch,
+        session_id,
+        runtime=body.runtime,
+        model=body.model,
+        effort=body.effort,
+    )
     data = None
     if body.model is not None or body.effort is not None:
-        data = await hub.update_codex_settings(
-            session_id, model=body.model, effort=body.effort
+        data = await _await_hub(
+            hub.update_codex_settings,
+            session_id,
+            model=body.model,
+            effort=body.effort,
         )
     return {"success": True, "data": data, "error": None}
 
@@ -140,7 +183,7 @@ async def interrupt_session(
 ) -> dict:
     """根据 binding 中断所属 runtime 的当前 turn。"""
 
-    await hub.interrupt(session_id)
+    await _await_hub(hub.interrupt, session_id)
     return {"success": True, "data": {"interrupted": True}, "error": None}
 
 
@@ -151,7 +194,7 @@ async def list_session_requests(
 ) -> dict:
     """返回保留中的 Codex request，使短暂断线后仍可恢复待决策状态。"""
 
-    requests = hub.list_requests(session_id)
+    requests = _call_hub(hub.list_requests, session_id)
     return {"success": True, "data": {"requests": requests}, "error": None}
 
 
@@ -164,7 +207,7 @@ async def answer_session_request(
 ) -> dict:
     """校验归属和 decision 后回答一个 connection-scoped Codex request。"""
 
-    request = hub.answer_request(session_id, request_id, body.decision)
+    request = _call_hub(hub.answer_request, session_id, request_id, body.decision)
     return {
         "success": True,
         "data": {"answered": True, "request": request},
@@ -188,8 +231,8 @@ async def send_message(
         try:
             async for event in hub.stream(session_id, body.text):
                 yield _sse(event)
-        except HTTPException as exc:
-            yield _sse(hub.error_envelope(session_id, exc.detail))
+        except SessionHubError as exc:
+            yield _sse(hub.error_envelope(session_id, str(exc)))
         except Exception as exc:  # noqa: BLE001 - 转为终止 error frame
             yield _sse(hub.error_envelope(session_id, str(exc)))
 
@@ -230,7 +273,7 @@ async def list_models(
 ) -> dict:
     """返回原生 Codex model catalog，不维护静态回退名单。"""
 
-    models = await hub.list_codex_models()
+    models = await _await_hub(hub.list_codex_models)
     return {"success": True, "data": {"models": models}, "error": None}
 
 

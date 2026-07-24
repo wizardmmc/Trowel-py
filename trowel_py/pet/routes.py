@@ -9,7 +9,7 @@ from trowel_py.pet.brain import PetBrain, TemplateBrain
 from trowel_py.pet.repository import PetRepository, create_pet_repository
 from trowel_py.player.repository import PlayerRepository, create_player_repository
 from trowel_py.pet.service import get_pet, feed, interact, equip_hat
-from trowel_py.schemas.pet import FeedRequest, EquipRequest
+from trowel_py.pet.schemas import FeedRequest, EquipRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

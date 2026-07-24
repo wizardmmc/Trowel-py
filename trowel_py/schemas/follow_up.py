@@ -1,10 +1,5 @@
-from __future__ import annotations
-from typing import Literal
-from pydantic import BaseModel, Field
+"""兼容旧卡片追问 schema import；定义归 cards 所有。"""
 
+from trowel_py.cards.schemas import FollowUpMessageSchema
 
-class FollowUpMessageSchema(BaseModel):
-    """单条追问消息的结构化输出；``role`` 值域必须与数据库约束一致。"""
-
-    role: Literal["user", "assistant"]
-    content: str = Field(min_length=1)
+__all__ = ["FollowUpMessageSchema"]

@@ -20,7 +20,7 @@ from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
 from trowel_py.cc_host.slash_items import list_slash_items
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     AnswerElicitRequest,
     CreateSessionRequest,
     ErrorEvent,
@@ -94,11 +94,34 @@ def open_cc_session(
     传入 None。校验或 host 构造失败时不会写入 registry 与派生索引。
     """
 
+    try:
+        return open_cc_session_configured(
+            req,
+            registry,
+            proxy_base_url=getattr(request.app.state, "proxy_base_url", None),
+            settings_path=getattr(request.app.state, "cc_settings_path", None),
+        )
+    except session_lifecycle.CcWorkdirNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except session_lifecycle.CcCapacityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def open_cc_session_configured(
+    req: CreateSessionRequest,
+    registry: dict[str, CCHost] | None = None,
+    *,
+    proxy_base_url: str | None = None,
+    settings_path: str | Path | None = None,
+) -> OpenedCcSession:
+    """用显式启动配置创建 CC 会话，供非 HTTP 编排层调用。"""
+
     target_registry = _REGISTRY if registry is None else registry
     sid, host, name = session_lifecycle.open_session(
         req,
-        request,
         target_registry,
+        proxy_base_url=proxy_base_url,
+        settings_path=settings_path,
         workdir_index=_WORKDIR_INDEX,
         session_names=_SESSION_NAMES,
         max_connections=MAX_CONNECTIONS,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trowel_py.schemas.cc_host import DiffHunk, WriteDiff
+from trowel_py.cc_host.schemas import DiffHunk, WriteDiff
 
 
 def _convert_hunks(patch: Any) -> tuple[DiffHunk, ...]:

@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 from trowel_py.agent_host.hub import (
     RuntimeFrozenError,
     SessionHub,
+    SessionOperationError,
 )
 from tests.agent_host.hub._support import (
     FakeCodexManager,
@@ -17,13 +17,13 @@ from tests.agent_host.hub._support import (
 
 
 def test_patch_runtime_change_rejected(hub: SessionHub, workdir: Path):
-    binding = hub.create(cc_req(workdir), request=None)
+    binding = hub.create(cc_req(workdir))
     with pytest.raises(RuntimeFrozenError):
         hub.patch(binding.session_id, runtime="codex")
 
 
 def test_patch_same_runtime_ok(hub: SessionHub, workdir: Path):
-    binding = hub.create(cc_req(workdir), request=None)
+    binding = hub.create(cc_req(workdir))
     hub.patch(binding.session_id, runtime="claude_code")
 
 
@@ -32,7 +32,7 @@ async def test_codex_model_switch_queues_valid_pair_and_auto_falls_back(
 ):
 
     binding = hub.create(
-        codex_req(workdir, model="gpt-5.6-sol", effort="ultra"), request=None
+        codex_req(workdir, model="gpt-5.6-sol", effort="ultra")
     )
     selected = await hub.update_codex_settings(
         binding.session_id, model="gpt-5.6-luna", effort="ultra"
@@ -51,13 +51,12 @@ async def test_codex_model_switch_queues_valid_pair_and_auto_falls_back(
 
 async def test_codex_model_switch_rejects_unknown_model(hub: SessionHub, workdir: Path):
 
-    binding = hub.create(codex_req(workdir), request=None)
-    with pytest.raises(HTTPException) as exc:
+    binding = hub.create(codex_req(workdir))
+    with pytest.raises(SessionOperationError) as exc:
         await hub.update_codex_settings(
             binding.session_id, model="not-in-catalog", effort="low"
         )
-    assert exc.value.status_code == 422
-    assert exc.value.detail == "model 'not-in-catalog' is not in the native catalog"
+    assert str(exc.value) == "model 'not-in-catalog' is not in the native catalog"
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
 
@@ -66,7 +65,7 @@ async def test_codex_effort_only_uses_native_default_model_for_fresh_session(
     hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
 ):
 
-    binding = hub.create(codex_req(workdir, model=None, effort=None), request=None)
+    binding = hub.create(codex_req(workdir, model=None, effort=None))
     selected = await hub.update_codex_settings(
         binding.session_id, model=None, effort="ultra"
     )

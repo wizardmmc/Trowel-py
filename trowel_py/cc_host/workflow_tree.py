@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     WorkflowAgentInfo,
     WorkflowPhaseInfo,
     WorkflowTreeEvent,

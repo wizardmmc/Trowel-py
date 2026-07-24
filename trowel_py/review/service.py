@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-from trowel_py.schemas.review import FSRSState as FSRSState
+from trowel_py.review.models import FSRSState as FSRSState
 from trowel_py.review.repository import ReviewRepository
 from trowel_py.cards.repository import CardRepository
 from trowel_py.review.scheduler import get_plant_stage, schedule_review

@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime
 
-from trowel_py.schemas.pet import Pet
+from trowel_py.pet.models import Pet
 
 
 def create_pet_repository(conn: sqlite3.Connection):

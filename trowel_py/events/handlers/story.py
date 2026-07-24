@@ -8,7 +8,7 @@ from trowel_py.events.handlers.types import (
 )
 
 if TYPE_CHECKING:
-    from trowel_py.schemas.card import Card
+    from trowel_py.cards.models import Card
 
 
 class StoryHandler:

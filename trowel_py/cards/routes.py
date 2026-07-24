@@ -10,9 +10,9 @@ from trowel_py.cards.service import (
 from trowel_py.cards.jsonl_parser import parse_jsonl
 from trowel_py.llm.client import LLMService, create_llm_service
 from trowel_py.review.repository import ReviewRepository, create_review_repository
-from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
-from trowel_py.schemas.re_explain import ReExplainRequest
-from trowel_py.schemas.card import Card as Card
+from trowel_py.cards.schemas import CardDraft, ExtractRequest, ReviewRequest
+from trowel_py.cards.schemas import ReExplainRequest
+from trowel_py.cards.models import Card as Card
 from trowel_py.db.connection import create_db
 import sqlite3
 import logging

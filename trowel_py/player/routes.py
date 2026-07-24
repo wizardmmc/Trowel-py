@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from trowel_py.player.service import get_profile, get_inventory, spend_coins
 from trowel_py.db.connection import create_db
 from trowel_py.player.repository import PlayerRepository, create_player_repository
-from trowel_py.schemas.player import BuyItemRequest
+from trowel_py.player.schemas import BuyItemRequest
 import logging
 import sqlite3
 

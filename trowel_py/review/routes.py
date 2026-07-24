@@ -8,7 +8,7 @@ from trowel_py.review.service import (
 from trowel_py.db.connection import create_db
 from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.review.repository import ReviewRepository, create_review_repository
-from trowel_py.schemas.api import SubmitRequest
+from trowel_py.review.schemas import SubmitRequest
 import logging
 import sqlite3
 

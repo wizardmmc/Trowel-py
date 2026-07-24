@@ -150,6 +150,8 @@ async def lifespan(app: FastAPI):
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
+            cc_proxy_base_url=app.state.proxy_base_url,
+            cc_settings_path=app.state.cc_settings_path,
             event_observer=quota_observer,
         )
     except Exception:

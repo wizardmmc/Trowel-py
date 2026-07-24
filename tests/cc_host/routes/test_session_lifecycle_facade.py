@@ -50,13 +50,11 @@ def test_open_facade_reads_current_route_state(
 
     def fake_open(
         req: CreateSessionRequest,
-        request: Request,
         target_registry: dict[str, Any],
         **dependencies: Any,
     ) -> tuple[str, Any, str]:
         observed.update(
             req=req,
-            request=request,
             registry=target_registry,
             **dependencies,
         )
@@ -69,7 +67,17 @@ def test_open_facade_reads_current_route_state(
     monkeypatch.setattr(routes, "MAX_CONNECTIONS", 7)
     monkeypatch.setattr(routes, "CCHost", host_factory)
     monkeypatch.setattr(session_lifecycle, "open_session", fake_open)
-    request = cast(Request, object())
+    request = cast(
+        Request,
+        SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    proxy_base_url="http://127.0.0.1:8123",
+                    cc_settings_path=tmp_path / "settings.json",
+                )
+            )
+        ),
+    )
     req = CreateSessionRequest(workdir=str(tmp_path), memory_enabled=False)
 
     result = routes.open_cc_session(req, request)
@@ -81,8 +89,9 @@ def test_open_facade_reads_current_route_state(
     )
     assert observed == {
         "req": req,
-        "request": request,
         "registry": registry,
+        "proxy_base_url": "http://127.0.0.1:8123",
+        "settings_path": tmp_path / "settings.json",
         "workdir_index": workdir_index,
         "session_names": session_names,
         "max_connections": 7,

@@ -6,7 +6,7 @@ from typing import Any, Literal, Mapping
 
 from trowel_py.agent_host.codex_event_mapping import map_codex_event
 from trowel_py.codex_host.events import CodexEvent
-from trowel_py.schemas.agent_host import AgentEvent
+from trowel_py.agent_host.events import AgentEvent
 
 _CODEX_RUNTIME: Literal["codex"] = "codex"
 

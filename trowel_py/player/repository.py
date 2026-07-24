@@ -2,7 +2,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 
-from trowel_py.schemas.player import InventoryItem, Player
+from trowel_py.player.models import InventoryItem, Player
 
 
 def _player_from_row(row: sqlite3.Row) -> Player:

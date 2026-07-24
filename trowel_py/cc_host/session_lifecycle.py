@@ -9,10 +9,16 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import HTTPException, Request
-
 from trowel_py.cc_host.service import CCHost
-from trowel_py.schemas.cc_host import CreateSessionRequest
+from trowel_py.cc_host.schemas import CreateSessionRequest
+
+
+class CcWorkdirNotFoundError(Exception):
+    """CC 会话的工作目录不存在。"""
+
+
+class CcCapacityError(Exception):
+    """CC registry 已达到连接上限。"""
 
 
 def _display_name(workdir: str, workdir_index: dict[str, set[str]]) -> str:
@@ -23,9 +29,10 @@ def _display_name(workdir: str, workdir_index: dict[str, set[str]]) -> str:
 
 def open_session(
     req: CreateSessionRequest,
-    request: Request,
     registry: dict[str, CCHost],
     *,
+    proxy_base_url: str | None,
+    settings_path: str | Path | None,
     workdir_index: dict[str, set[str]],
     session_names: dict[str, str],
     max_connections: int,
@@ -34,11 +41,10 @@ def open_session(
     """创建主机并写入调用方持有的会话状态。"""
 
     if not Path(req.workdir).is_dir():
-        raise HTTPException(status_code=400, detail="workdir does not exist")
+        raise CcWorkdirNotFoundError("workdir does not exist")
     if len(registry) >= max_connections:
-        raise HTTPException(
-            status_code=409,
-            detail=f"连接数已达上限（{max_connections}），请先关闭一些 session",
+        raise CcCapacityError(
+            f"连接数已达上限（{max_connections}），请先关闭一些 session"
         )
     sid = uuid.uuid4().hex
 
@@ -52,8 +58,8 @@ def open_session(
         effort=req.effort,
         permission_mode=req.permission_mode,
         resume_from=req.resume_from,
-        proxy_base_url=getattr(request.app.state, "proxy_base_url", None),
-        settings_path=getattr(request.app.state, "cc_settings_path", None),
+        proxy_base_url=proxy_base_url,
+        settings_path=settings_path,
         mcp_config=mcp_config,
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,

@@ -6,7 +6,7 @@ from typing import Any
 from trowel_py.cc_host.delta import DeltaAccumulator
 from trowel_py.cc_host.system_events import translate_system_event
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     ContextUsageEvent,
     ElicitationRequestEvent,
     ErrorEvent,

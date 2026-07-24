@@ -27,7 +27,7 @@ from trowel_py.cc_host.workflow_tree import (
 )
 from trowel_py.cc_host.workflow_tree import status_from_cc as _run_status_from_cc
 from trowel_py.cc_host.workflow_tree import str_or_none as _run_str_or_none
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     WorkflowAgentInfo,
     WorkflowPhaseInfo,
     WorkflowTreeEvent,

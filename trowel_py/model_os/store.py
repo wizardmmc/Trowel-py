@@ -90,6 +90,7 @@ from trowel_py.model_os.store_projection import (
     project_task_state as _run_project_task_state,
 )
 from trowel_py.model_os.store_schema import SCHEMA_SQL as _SCHEMA_SQL
+from trowel_py.model_os.task_commands import TaskCommands
 from trowel_py.model_os.types import (
     ArtifactRef,
     DecisionRecord,
@@ -108,7 +109,6 @@ from trowel_py.model_os.types import (
     SnapshotRef,
     SnapshotSource,
     Task,
-    TaskOrigin,
     TaskStatus,
     WaitingCondition,
     WaitingSubtype,
@@ -449,6 +449,15 @@ class ModelOsStore:
         # SQLite 的事务状态属于连接而非线程；该锁串行化共享连接的命令，避免两个
         # 请求处理器交错进入同一事务。
         self._lock = threading.RLock()
+        self._task_commands = TaskCommands(
+            self,
+            now=lambda: _now_iso(),
+            new_id=lambda: uuid4().hex,
+            event_type=lambda **kwargs: EventEnvelope(**kwargs),
+            task_error=lambda reason: TaskCommandError(reason),
+            warm_full=lambda limit, task_ids: WarmFull(limit, task_ids),
+            foreground_conflict=lambda owner: ForegroundConflict(owner),
+        )
 
     @property
     def path(self) -> Path:
@@ -1289,78 +1298,12 @@ class ModelOsStore:
         ``append_constraint`` 或 ``change_authorization``。
         """
 
-        assert self._conn is not None
-        if not original_goal:
-            raise TaskCommandError("original_goal must be non-empty")
-        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-            # SQLite 允许非整数 PRIMARY KEY 为 NULL，且等值查询永不命中 NULL；放行
-            # ``None`` 或空白键会绕过幂等检查并产生重复 Task。
-            raise TaskCommandError("idempotency_key must be a non-empty string")
-        with self._tx():
-            existing = self._conn.execute(
-                "SELECT task_id FROM task_create_keys WHERE idempotency_key=?",
-                (idempotency_key,),
-            ).fetchone()
-            if existing is not None:
-                snap_pre = self.replay()
-                return self._task_state_to_task(
-                    self._require_task(snap_pre, existing["task_id"])
-                )
-
-            task_id = uuid4().hex
-            work_item_id = uuid4().hex
-            now = _now_iso()
-            self._insert_event_in_tx(
-                EventEnvelope(
-                    event_id=f"wi.create.{work_item_id}",
-                    kind=EventKind.WORK_ITEM_CREATED,
-                    occurred_at=now,
-                    source="kernel",
-                    provenance=Provenance.MACHINE_OBSERVATION,
-                    policy_version=self._policy_version,
-                    payload={
-                        "work_item_id": work_item_id,
-                        "kind": WorkItemKind.TASK.value,
-                        "owner_ref": "user",
-                        "task_id": task_id,
-                        "status": WorkItemStatus.PENDING.value,
-                        "session_purpose": SessionPurpose.FOREGROUND.value,
-                        "memory_eligibility": MemoryEligibility.ELIGIBLE.value,
-                    },
-                    work_item_id=work_item_id,
-                    task_id=task_id,
-                )
-            )
-            self._insert_event_in_tx(
-                EventEnvelope(
-                    event_id=f"task.create.{task_id}",
-                    kind=EventKind.TASK_CREATED,
-                    occurred_at=now,
-                    source="kernel",
-                    provenance=Provenance.USER_DECISION,
-                    policy_version=self._policy_version,
-                    payload={
-                        "task_id": task_id,
-                        "origin": TaskOrigin.USER_REQUEST.value,
-                        "original_goal": original_goal,
-                        "appended_constraints": [],
-                        "status": TaskStatus.BACKLOG.value,
-                        "priority": priority,
-                        "warm": False,
-                        "warm_rank": None,
-                        "authorization_scope": authorization_scope,
-                        "primary_work_item_id": work_item_id,
-                    },
-                    task_id=task_id,
-                )
-            )
-            self._conn.execute(
-                "INSERT INTO task_create_keys (idempotency_key, task_id, created_at) "
-                "VALUES (?, ?, ?)",
-                (idempotency_key, task_id, now),
-            )
-        snap = self.replay()
-        return self._task_state_to_task(self._require_task(snap, task_id))
+        return self._task_commands.create_task_from_user_request(
+            original_goal=original_goal,
+            idempotency_key=idempotency_key,
+            authorization_scope=authorization_scope,
+            priority=priority,
+        )
 
     def promote_to_warm(self, task_id: str) -> None:
         """把 BACKLOG Task 提升为 warm READY。
@@ -1368,80 +1311,12 @@ class ModelOsStore:
         warm 池满时抛出 ``WarmFull``，不会自动替换已有 Task；已是 warm 时幂等返回。
         """
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if task.warm:
-                return
-            warm_count = len(snap.warm_tasks())
-            if warm_count >= self._warm_limit:
-                raise WarmFull(
-                    self._warm_limit,
-                    tuple(t.task_id for t in snap.warm_tasks()),
-                )
-            now = _now_iso()
-            if task.status == TaskStatus.BACKLOG:
-                self._insert_event_in_tx(
-                    self._make_task_event(
-                        EventKind.TASK_STATUS_CHANGED,
-                        task_id,
-                        {"new_status": TaskStatus.READY.value},
-                    )
-                )
-                if task.primary_work_item_id:
-                    self._insert_event_in_tx(
-                        self._work_item_status_event(
-                            task.primary_work_item_id,
-                            WorkItemStatus.READY,
-                            task_id,
-                            now,
-                        )
-                    )
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_WARM_CHANGED, task_id, {"warm": True}
-                )
-            )
+        self._task_commands.promote_to_warm(task_id)
 
     def demote_to_backlog(self, task_id: str) -> None:
         """把 warm Task 降为 BACKLOG；持有 foreground 时必须先释放。"""
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if self._read_foreground_task_id() == task_id:
-                raise TaskCommandError(
-                    f"cannot demote foreground task {task_id!r}; "
-                    f"release foreground first"
-                )
-            now = _now_iso()
-            if task.warm:
-                self._insert_event_in_tx(
-                    self._make_task_event(
-                        EventKind.TASK_WARM_CHANGED, task_id, {"warm": False}
-                    )
-                )
-            if task.status != TaskStatus.BACKLOG:
-                self._insert_event_in_tx(
-                    self._make_task_event(
-                        EventKind.TASK_STATUS_CHANGED,
-                        task_id,
-                        {"new_status": TaskStatus.BACKLOG.value},
-                    )
-                )
-                if task.primary_work_item_id:
-                    self._insert_event_in_tx(
-                        self._work_item_status_event(
-                            task.primary_work_item_id,
-                            WorkItemStatus.PENDING,
-                            task_id,
-                            now,
-                        )
-                    )
+        self._task_commands.demote_to_backlog(task_id)
 
     def claim_foreground(self, task_id: str) -> None:
         """原子占用 foreground，并将 Task 与主 WorkItem 置为运行态。
@@ -1450,52 +1325,7 @@ class ModelOsStore:
         重复占用时幂等返回。
         """
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if not task.warm:
-                raise TaskCommandError(
-                    f"task {task_id!r} must be warm before claiming foreground"
-                )
-            # 只允许 READY → RUNNING；RUNNING 仅供同一 Task 幂等重占，其他状态不能跳转。
-            self._require_status(task, {TaskStatus.READY, TaskStatus.RUNNING})
-            current = self._read_foreground_task_id()
-            if current == task_id:
-                return
-            if current is not None:
-                raise ForegroundConflict(current)
-            now = _now_iso()
-            # IMMEDIATE 已串行化写入，前置读取也排除了当前 Task 或其他 Task 持有；
-            # ``task_id IS NULL`` 与 rowcount 仍作为未来调用绕过读取检查时的最后 CAS。
-            cur = self._conn.execute(
-                "UPDATE foreground_claim SET task_id=? WHERE id=1 AND task_id IS NULL",
-                (task_id,),
-            )
-            if cur.rowcount == 0:
-                raise ForegroundConflict(self._read_foreground_task_id())
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_STATUS_CHANGED,
-                    task_id,
-                    {"new_status": TaskStatus.RUNNING.value},
-                )
-            )
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.RUNNING,
-                        task_id,
-                        now,
-                    )
-                )
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.FOREGROUND_CLAIMED, task_id, {"task_id": task_id}
-                )
-            )
+        self._task_commands.claim_foreground(task_id)
 
     def release_foreground(self) -> None:
         """原子释放 foreground，并把非终态 Task 与主 WorkItem 恢复为 READY。
@@ -1503,35 +1333,7 @@ class ModelOsStore:
         未占用 foreground 时幂等返回。
         """
 
-        assert self._conn is not None
-        with self._tx():
-            current = self._read_foreground_task_id()
-            if current is None:
-                return
-            snap = self.replay()
-            now = _now_iso()
-            self._conn.execute("UPDATE foreground_claim SET task_id=NULL WHERE id=1")
-            self._insert_event_in_tx(
-                self._make_task_event(EventKind.FOREGROUND_RELEASED, current, {})
-            )
-            task = next((t for t in snap.tasks if t.task_id == current), None)
-            if task is not None and not task.status.is_terminal:
-                self._insert_event_in_tx(
-                    self._make_task_event(
-                        EventKind.TASK_STATUS_CHANGED,
-                        current,
-                        {"new_status": TaskStatus.READY.value},
-                    )
-                )
-                if task.primary_work_item_id:
-                    self._insert_event_in_tx(
-                        self._work_item_status_event(
-                            task.primary_work_item_id,
-                            WorkItemStatus.READY,
-                            current,
-                            now,
-                        )
-                    )
+        self._task_commands.release_foreground()
 
     def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
         with self._tx():
@@ -1603,18 +1405,11 @@ class ModelOsStore:
         ``correlation_id`` 必填，用于关联唤醒该 Task 的用户回复。
         """
 
-        if not cause:
-            raise TaskCommandError("waiting_user cause must be non-empty")
-        if not correlation_id:
-            raise TaskCommandError("waiting_user requires correlation_id")
-        self._set_waiting(
+        self._task_commands.set_waiting_user(
             task_id,
-            WaitingCondition(
-                kind=TaskStatus.WAITING_USER.value,
-                cause=cause,
-                correlation_id=correlation_id,
-                deadline=deadline,
-            ),
+            cause=cause,
+            correlation_id=correlation_id,
+            deadline=deadline,
         )
 
     def set_waiting_event(
@@ -1629,22 +1424,13 @@ class ModelOsStore:
     ) -> None:
         """把运行中 Task 置为 WAITING_EVENT；外部条件的种类和目标均必填。"""
 
-        if not cause:
-            raise TaskCommandError("waiting_event cause must be non-empty")
-        if not condition_kind or not target_ref:
-            raise TaskCommandError(
-                "waiting_event requires condition_kind and target_ref"
-            )
-        self._set_waiting(
+        self._task_commands.set_waiting_event(
             task_id,
-            WaitingCondition(
-                kind=TaskStatus.WAITING_EVENT.value,
-                cause=cause,
-                condition_kind=condition_kind,
-                target_ref=target_ref,
-                match_params=match_params,
-                deadline=deadline,
-            ),
+            cause=cause,
+            condition_kind=condition_kind,
+            target_ref=target_ref,
+            match_params=match_params,
+            deadline=deadline,
         )
 
     def set_incubating(
@@ -1657,50 +1443,17 @@ class ModelOsStore:
     ) -> None:
         """把运行中 Task 置为 INCUBATING；必须提供未解问题和准备快照引用。"""
 
-        if not open_question or not preparation_snapshot_ref:
-            raise TaskCommandError(
-                "incubating requires open_question and preparation_snapshot_ref"
-            )
-        self._set_waiting(
+        self._task_commands.set_incubating(
             task_id,
-            WaitingCondition(
-                kind=TaskStatus.INCUBATING.value,
-                cause=open_question,
-                open_question=open_question,
-                preparation_snapshot_ref=preparation_snapshot_ref,
-                earliest_review_at=earliest_review_at,
-            ),
+            open_question=open_question,
+            preparation_snapshot_ref=preparation_snapshot_ref,
+            earliest_review_at=earliest_review_at,
         )
 
     def clear_waiting(self, task_id: str) -> None:
         """清除等待条件，并把 WAITING_* Task 恢复为 READY。"""
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if task.status not in (
-                TaskStatus.WAITING_USER,
-                TaskStatus.WAITING_EVENT,
-                TaskStatus.INCUBATING,
-            ):
-                raise TaskCommandError(
-                    f"task {task_id!r} is not waiting (status={task.status.value})"
-                )
-            now = _now_iso()
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.READY,
-                        task_id,
-                        now,
-                    )
-                )
-            self._insert_event_in_tx(
-                self._make_task_event(EventKind.TASK_WAITING_CLEARED, task_id, {})
-            )
+        self._task_commands.clear_waiting(task_id)
 
     def complete_task(
         self,
@@ -1716,79 +1469,17 @@ class ModelOsStore:
         foreground 在同一事务内释放。
         """
 
-        assert self._conn is not None
-        if not confirmed_by:
-            raise TaskCommandError("confirmed_by must be non-empty")
-        if not evidence_refs:
-            raise TaskCommandError(
-                "evidence_refs must be non-empty (model self-report is not "
-                "sufficient — codex review M2)"
-            )
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if (
-                task.origin == TaskOrigin.USER_REQUEST
-                and confirmation_provenance != Provenance.USER_DECISION
-            ):
-                raise TaskCommandError(
-                    f"user-requested task {task_id!r} completion requires "
-                    f"USER_DECISION (got {confirmation_provenance.value})"
-                )
-            self._require_status(task, {TaskStatus.RUNNING})
-            if self._read_foreground_task_id() == task_id:
-                self._release_foreground_in_tx(task_id)
-            now = _now_iso()
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.DONE,
-                        task_id,
-                        now,
-                    )
-                )
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_COMPLETED,
-                    task_id,
-                    {
-                        "confirmed_by": confirmed_by,
-                        "confirmation_provenance": confirmation_provenance.value,
-                        "evidence_refs": list(evidence_refs),
-                    },
-                    confirmation_provenance,
-                )
-            )
+        self._task_commands.complete_task(
+            task_id,
+            confirmed_by=confirmed_by,
+            evidence_refs=evidence_refs,
+            confirmation_provenance=confirmation_provenance,
+        )
 
     def cancel_task(self, task_id: str, *, reason: str) -> None:
         """在同一事务内取消 Task、更新主 WorkItem 并释放 foreground。"""
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if self._read_foreground_task_id() == task_id:
-                self._release_foreground_in_tx(task_id)
-            now = _now_iso()
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.CANCELLED,
-                        task_id,
-                        now,
-                    )
-                )
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_CANCELLED,
-                    task_id,
-                    {"reason": reason},
-                )
-            )
+        self._task_commands.cancel_task(task_id, reason=reason)
 
     def record_task_error(
         self,
@@ -1805,68 +1496,21 @@ class ModelOsStore:
         Episode 或工具的瞬时失败不走此入口，而应把 Task 恢复为 READY 后重试。
         """
 
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            if self._read_foreground_task_id() == task_id:
-                self._release_foreground_in_tx(task_id)
-            now = _now_iso()
-            if task.primary_work_item_id:
-                self._insert_event_in_tx(
-                    self._work_item_status_event(
-                        task.primary_work_item_id,
-                        WorkItemStatus.FAILED,
-                        task_id,
-                        now,
-                    )
-                )
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_ERROR_RECORDED,
-                    task_id,
-                    {
-                        "origin": task.origin.value,
-                        "failure_reason": reason,
-                        "last_snapshot_ref": last_snapshot_ref,
-                        "last_episode_ref": last_episode_ref,
-                        "recovery_hint": recovery_hint,
-                    },
-                )
-            )
+        self._task_commands.record_task_error(
+            task_id,
+            reason=reason,
+            last_snapshot_ref=last_snapshot_ref,
+            last_episode_ref=last_episode_ref,
+            recovery_hint=recovery_hint,
+        )
 
     def append_constraint(self, task_id: str, constraint: str) -> None:
         """追加用户澄清的约束，不修改 ``original_goal``。"""
 
-        assert self._conn is not None
-        if not constraint:
-            raise TaskCommandError("constraint must be non-empty")
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_CONSTRAINT_APPENDED,
-                    task_id,
-                    {"constraint": constraint},
-                )
-            )
+        self._task_commands.append_constraint(task_id, constraint)
 
     def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
-        assert self._conn is not None
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_WARM_RANK_SET,
-                    task_id,
-                    {"warm_rank": warm_rank},
-                )
-            )
+        self._task_commands.set_warm_rank(task_id, warm_rank)
 
     def change_authorization(
         self,
@@ -1881,26 +1525,13 @@ class ModelOsStore:
         provenance。终态 Task 拒绝修改。
         """
 
-        assert self._conn is not None
-        if not authorization_scope:
-            raise TaskCommandError("authorization_scope must be non-empty")
-        with self._tx():
-            snap = self.replay()
-            task = self._require_task(snap, task_id)
-            self._require_non_terminal(task)
-            self._insert_event_in_tx(
-                self._make_task_event(
-                    EventKind.TASK_AUTHORIZATION_CHANGED,
-                    task_id,
-                    {
-                        "authorization_scope": authorization_scope,
-                        "confirmed_by": confirmed_by,
-                    },
-                    Provenance.USER_DECISION,
-                )
-            )
+        self._task_commands.change_authorization(
+            task_id,
+            authorization_scope=authorization_scope,
+            confirmed_by=confirmed_by,
+        )
 
-    # Episode 的受 fencing 保护命令在同一 IMMEDIATE 事务内完成状态回放、ownership
+   # Episode 的受 fencing 保护命令在同一 IMMEDIATE 事务内完成状态回放、ownership
     # 三元组校验、journal 追加以及快照行或 lease 更新。保护范围由事件 kind 强制，
     # 陈旧写入者不能通过省略 token 绕过。
 

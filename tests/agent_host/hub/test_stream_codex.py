@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.hub import (
+    RuntimeTurnError,
     SessionHub,
 )
 from trowel_py.codex_host.events import (
@@ -91,7 +91,7 @@ async def test_stream_codex_persists_binding_when_turn_start_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
 
-    binding = hub.create(codex_req(workdir), request=None)
+    binding = hub.create(codex_req(workdir))
     session = FakeCodexSession(
         binding.session_id,
         [],
@@ -114,9 +114,8 @@ async def test_stream_codex_persists_binding_when_turn_start_fails(
 
     monkeypatch.setattr(codex_mgr, "send", fail_after_thread_attached)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(RuntimeTurnError):
         _ = [e async for e in hub.stream(binding.session_id, "hello")]
-    assert exc.value.status_code == 502
     persisted = hub.get(binding.session_id)
     assert persisted is not None
     assert persisted.native_session_id == "thr-created-before-turn-failure"
@@ -129,7 +128,7 @@ async def test_stream_codex_surfaces_writeback_failure_before_native_turn(
     monkeypatch: pytest.MonkeyPatch,
 ):
 
-    binding = hub.create(codex_req(workdir), request=None)
+    binding = hub.create(codex_req(workdir))
     codex_mgr.sessions[binding.session_id] = FakeCodexSession(
         binding.session_id,
         [],
@@ -144,10 +143,9 @@ async def test_stream_codex_surfaces_writeback_failure_before_native_turn(
 
     monkeypatch.setattr(hub.store, "update_native", fail_writeback)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(RuntimeTurnError) as exc:
         _ = [e async for e in hub.stream(binding.session_id, "hello")]
-    assert exc.value.status_code == 502
-    assert "binding store unavailable" in str(exc.value.detail)
+    assert "binding store unavailable" in str(exc.value)
 
 
 async def test_stream_codex_stops_when_binding_becomes_unreadable_before_native_turn(
@@ -156,7 +154,7 @@ async def test_stream_codex_stops_when_binding_becomes_unreadable_before_native_
     codex_mgr: FakeCodexManager,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    binding = hub.create(codex_req(workdir), request=None)
+    binding = hub.create(codex_req(workdir))
     session = FakeCodexSession(
         binding.session_id,
         [],
@@ -181,10 +179,8 @@ async def test_stream_codex_stops_when_binding_becomes_unreadable_before_native_
 
     monkeypatch.setattr(codex_mgr, "send", corrupt_binding_before_turn)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(RuntimeTurnError):
         _ = [e async for e in hub.stream(binding.session_id, "hello")]
-
-    assert exc.value.status_code == 502
     assert native_turn_started is False
 
 
@@ -194,7 +190,7 @@ async def test_stream_codex_stops_when_writeback_temporarily_reads_empty_binding
     codex_mgr: FakeCodexManager,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    binding = hub.create(codex_req(workdir), request=None)
+    binding = hub.create(codex_req(workdir))
     session = FakeCodexSession(
         binding.session_id,
         [],
@@ -228,10 +224,8 @@ async def test_stream_codex_stops_when_writeback_temporarily_reads_empty_binding
 
     monkeypatch.setattr(codex_mgr, "send", start_after_callback)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(RuntimeTurnError):
         _ = [e async for e in hub.stream(binding.session_id, "hello")]
-
-    assert exc.value.status_code == 502
     assert native_turn_started is False
 
 

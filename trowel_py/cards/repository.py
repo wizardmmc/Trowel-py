@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from trowel_py.schemas.card import Card
+from trowel_py.cards.models import Card
 
 
 def _card_record(card: Card) -> dict[str, object]:

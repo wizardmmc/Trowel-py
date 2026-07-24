@@ -13,7 +13,7 @@ from trowel_py.events.handlers import HANDLERS
 from trowel_py.events.handlers.types import EventDependencies
 from trowel_py.events.rewards import distribute
 from trowel_py.events.types import GameState
-from trowel_py.schemas.event import EventLog
+from trowel_py.events.models import EventLog
 
 logger = logging.getLogger(__name__)
 

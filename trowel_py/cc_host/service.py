@@ -42,7 +42,7 @@ from trowel_py.cc_host.subagent_usage import (
 from trowel_py.cc_host.translator import Translator
 from trowel_py.cc_host.workflow_watcher import WorkflowWatcher
 
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,

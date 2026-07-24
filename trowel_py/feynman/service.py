@@ -9,8 +9,8 @@ from typing import cast
 from trowel_py.cards.repository import CardRepository
 from trowel_py.feynman.repository import FeynmanRepository, FeynmanSession
 from trowel_py.llm.client import LLMService
-from trowel_py.schemas.card import Card
-from trowel_py.schemas.feynman import FeynmanEvaluationSchema, FeynmanQuestionSchema
+from trowel_py.cards.models import Card
+from trowel_py.feynman.schemas import FeynmanEvaluationSchema, FeynmanQuestionSchema
 
 
 @dataclass(frozen=True)

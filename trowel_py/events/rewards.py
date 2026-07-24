@@ -4,7 +4,7 @@ from datetime import datetime
 from trowel_py.player.repository import PlayerRepository
 from trowel_py.events.repository import EventRepository
 from trowel_py.events.handlers.types import EventResult
-from trowel_py.schemas.event import EventLog
+from trowel_py.events.models import EventLog
 
 logger = logging.getLogger(__name__)
 

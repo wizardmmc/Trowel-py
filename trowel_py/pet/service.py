@@ -6,8 +6,8 @@ from trowel_py.pet.brain import PetBrain, PetBrainInput
 from trowel_py.pet.repository import PetRepository
 from trowel_py.pet.types import MoodTrigger, PetMood
 from trowel_py.player.repository import PlayerRepository
-from trowel_py.schemas.pet import Pet
-from trowel_py.schemas.player import InventoryItem
+from trowel_py.pet.models import Pet
+from trowel_py.player.models import InventoryItem
 
 logger = logging.getLogger(__name__)
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 from trowel_py.agent_host.hub import (
     SessionHub,
+    SessionNotFoundError,
 )
 from tests.agent_host.hub._support import (
     _is_envelope,
@@ -15,14 +15,13 @@ from tests.agent_host.hub._support import (
 
 
 async def test_stream_unknown_session_404(hub: SessionHub):
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(SessionNotFoundError, match="session nope not found"):
         _ = [e async for e in hub.stream("nope", "hi")]
-    assert exc.value.status_code == 404
 
 
 async def test_stream_cc_yields_unified_envelope(hub: SessionHub, workdir: Path):
 
-    binding = hub.create(cc_req(workdir), request=None)
+    binding = hub.create(cc_req(workdir))
     events = [e async for e in hub.stream(binding.session_id, "hello")]
     assert events, "expected at least one event from the CC stream"
     assert all(_is_envelope(e) for e in events), events
@@ -37,7 +36,7 @@ async def test_stream_cc_yields_unified_envelope(hub: SessionHub, workdir: Path)
 
 async def test_stream_cc_seq_persists_across_turns(hub: SessionHub, workdir: Path):
 
-    binding = hub.create(cc_req(workdir), request=None)
+    binding = hub.create(cc_req(workdir))
     first = [e async for e in hub.stream(binding.session_id, "one")]
 
     # adapter 跨 turn 复用，seq 不能在每次 send 时重置。

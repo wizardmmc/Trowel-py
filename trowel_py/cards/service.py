@@ -5,11 +5,11 @@ from trowel_py.cards.jsonl_parser import ChatMessage
 from trowel_py.cards.repository import CardRepository
 from trowel_py.llm.client import LLMService
 from trowel_py.review.repository import ReviewRepository
-from trowel_py.schemas.api import CardDraft, ReviewRequest
-from trowel_py.schemas.card import Card
-from trowel_py.schemas.extracted_card import ExtractedCard, ExtractOutput
-from trowel_py.schemas.re_explain import ReExplainResultSchema
-from trowel_py.schemas.review import FSRSState
+from trowel_py.cards.schemas import CardDraft, ReviewRequest
+from trowel_py.cards.models import Card
+from trowel_py.cards.schemas import ExtractedCard, ExtractOutput
+from trowel_py.cards.schemas import ReExplainResultSchema
+from trowel_py.review.models import FSRSState
 
 
 def _draft_from_extracted(extracted: ExtractedCard) -> CardDraft:

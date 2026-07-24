@@ -6,7 +6,7 @@ from collections.abc import Callable
 from re import Pattern
 from typing import Any
 
-from trowel_py.schemas.cc_host import TrowelEvent
+from trowel_py.cc_host.schemas import TrowelEvent
 
 
 def clean_user_text(

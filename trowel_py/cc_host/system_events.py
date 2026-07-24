@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     CompactBoundaryEvent,
     HookEvent,
     LocalCommandEvent,

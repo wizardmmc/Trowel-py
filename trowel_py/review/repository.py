@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime
 
-from trowel_py.schemas.review import FSRSState, ReviewLog
+from trowel_py.review.models import FSRSState, ReviewLog
 
 
 def _review_log_record(log: ReviewLog) -> dict[str, object]:

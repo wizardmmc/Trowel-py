@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trowel_py.schemas.agent_host import AgentEvent
+from trowel_py.agent_host.events import AgentEvent
 
 # ``tool_use_id`` 提升为 item_id 供生命周期关联，同时保留在 payload 中兼容 reducer。
 _ITEM_ID_FIELDS: tuple[str, ...] = ("tool_use_id",)

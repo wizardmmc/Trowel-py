@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 
-from trowel_py.schemas.player import PlayerProfile, InventoryItem
+from trowel_py.player.models import PlayerProfile, InventoryItem
 from trowel_py.player.repository import PlayerRepository
 
 logger = logging.getLogger(__name__)

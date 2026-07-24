@@ -11,8 +11,6 @@ from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import HTTPException, Request
-
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
 from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.codex_adapter import CodexEventAdapter
@@ -33,8 +31,12 @@ from trowel_py.codex_host.pending_requests import (
     PendingRequestNotFoundError,
     PendingRequestOwnershipError,
 )
+from trowel_py.cc_host.session_lifecycle import (
+    CcCapacityError,
+    CcWorkdirNotFoundError,
+)
 from trowel_py.agent_host.store import BindingStore
-from trowel_py.schemas.agent_host import AgentEvent
+from trowel_py.agent_host.events import AgentEvent
 
 _log = logging.getLogger(__name__)
 
@@ -50,15 +52,47 @@ MAX_RUNNING = 5
 _TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
 
-class RuntimeFrozenError(Exception):
+class SessionHubError(Exception):
+    """SessionHub 拒绝命令或无法完成 runtime 操作。"""
+
+
+class InvalidSessionRequestError(SessionHubError):
+    """创建或操作请求不满足基本输入条件。"""
+
+
+class SessionNotFoundError(SessionHubError):
+    """binding 或对应的原生会话不存在。"""
+
+
+class SessionAccessError(SessionHubError):
+    """调用方试图操作不属于当前会话的资源。"""
+
+
+class SessionConflictError(SessionHubError):
+    """命令与当前会话、容量或并发状态冲突。"""
+
+
+class SessionOperationError(SessionHubError):
+    """命令不适用于当前 runtime 或参数组合。"""
+
+
+class RuntimeUnavailableError(SessionHubError):
+    """目标 runtime host 当前不可用。"""
+
+
+class RuntimeTurnError(SessionHubError):
+    """runtime 未能启动或持久化当前 turn。"""
+
+
+class RuntimeFrozenError(SessionOperationError):
     """runtime 已成为路由身份，创建后不能修改。"""
 
 
-class CrossRuntimeResumeError(Exception):
+class CrossRuntimeResumeError(SessionConflictError):
     """同一原生会话 id 不能跨 runtime 恢复。"""
 
 
-class ConditionMismatchError(Exception):
+class ConditionMismatchError(SessionConflictError):
     """恢复同一原生会话时不能改变已冻结的注入条件。"""
 
 
@@ -75,7 +109,7 @@ def _default_cc_registry() -> dict[str, Any]:
 def _default_cc_opener() -> CcOpener:
     from trowel_py.cc_host import routes as cc_routes
 
-    return cc_routes.open_cc_session
+    return cc_routes.open_cc_session_configured
 
 
 class SessionHub:
@@ -88,6 +122,8 @@ class SessionHub:
         *,
         cc_registry: dict[str, Any] | None = None,
         cc_opener: CcOpener | None = None,
+        cc_proxy_base_url: str | None = None,
+        cc_settings_path: str | Path | None = None,
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
@@ -97,6 +133,8 @@ class SessionHub:
             cc_registry if cc_registry is not None else _default_cc_registry()
         )
         self._cc_opener = cc_opener if cc_opener is not None else _default_cc_opener()
+        self._cc_proxy_base_url = cc_proxy_base_url
+        self._cc_settings_path = cc_settings_path
         self._codex_config_home = (
             Path(codex_config_home) if codex_config_home is not None else None
         )
@@ -114,24 +152,19 @@ class SessionHub:
     def codex_available(self) -> bool:
         return self._codex is not None
 
-    def create(
-        self, req: CreateAgentSessionRequest, request: Request | None
-    ) -> SessionBinding:
+    def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
         if not Path(req.workdir).is_dir():
-            raise HTTPException(status_code=400, detail="workdir does not exist")
+            raise InvalidSessionRequestError("workdir does not exist")
         if self._live_connection_count() >= MAX_CONNECTIONS:
-            raise HTTPException(
-                status_code=409,
-                detail=f"连接数已达上限（{MAX_CONNECTIONS}），请先关闭一些 session",
+            raise SessionConflictError(
+                f"连接数已达上限（{MAX_CONNECTIONS}），请先关闭一些 session"
             )
         if req.runtime == "claude_code":
-            return self._create_cc(req, request)
+            return self._create_cc(req)
         return self._create_codex(req)
 
-    def _create_cc(
-        self, req: CreateAgentSessionRequest, request: Request | None
-    ) -> SessionBinding:
-        from trowel_py.schemas.cc_host import CreateSessionRequest
+    def _create_cc(self, req: CreateAgentSessionRequest) -> SessionBinding:
+        from trowel_py.cc_host.schemas import CreateSessionRequest
 
         cc_req = CreateSessionRequest(
             workdir=req.workdir,
@@ -143,7 +176,17 @@ class SessionHub:
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
         )
-        opened = self._cc_opener(cc_req, request, self._cc_registry)
+        try:
+            opened = self._cc_opener(
+                cc_req,
+                self._cc_registry,
+                proxy_base_url=self._cc_proxy_base_url,
+                settings_path=self._cc_settings_path,
+            )
+        except CcWorkdirNotFoundError as exc:
+            raise InvalidSessionRequestError(str(exc)) from exc
+        except CcCapacityError as exc:
+            raise SessionConflictError(str(exc)) from exc
         binding = make_binding(
             session_id=opened.sid,
             runtime=Runtime.CLAUDE_CODE,
@@ -166,7 +209,7 @@ class SessionHub:
         """``resume_from`` 只登记原生 thread，首次 turn 才执行恢复。"""
 
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         self._refuse_on_memory_mcp_collision(req.workdir)
         prepared = prepare_codex_session(
             req,
@@ -208,14 +251,11 @@ class SessionHub:
             workdir=workdir,
         )
         if conflict is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"a Codex MCP server named {conflict.server_name!r} is "
-                    f"already declared in {conflict.config_path}; trowel "
-                    f"cannot guarantee memory-off isolation. Rename or remove "
-                    f"that entry and retry."
-                ),
+            raise SessionConflictError(
+                f"a Codex MCP server named {conflict.server_name!r} is "
+                f"already declared in {conflict.config_path}; trowel "
+                f"cannot guarantee memory-off isolation. Rename or remove "
+                f"that entry and retry."
             )
 
     def _display_name(self, workdir: str) -> str:
@@ -228,15 +268,13 @@ class SessionHub:
 
     async def list_codex_models(self) -> list[dict[str, Any]]:
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         return await self._codex.list_models()
 
     def _require(self, session_id: str) -> SessionBinding:
         binding = self._store.get(session_id)
         if binding is None:
-            raise HTTPException(
-                status_code=404, detail=f"session {session_id} not found"
-            )
+            raise SessionNotFoundError(f"session {session_id} not found")
         return binding
 
     def list_active(self) -> tuple[list[dict[str, Any]], str | None]:
@@ -299,16 +337,12 @@ class SessionHub:
 
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
-            raise HTTPException(
-                status_code=422, detail="model/effort PATCH is Codex-only"
-            )
+            raise SessionOperationError("model/effort PATCH is Codex-only")
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         session = self._codex.get_session(session_id)
         if session is None:
-            raise HTTPException(
-                status_code=404, detail=f"codex session {session_id} not live"
-            )
+            raise SessionNotFoundError(f"codex session {session_id} not live")
         catalog = await self._codex.list_models()
         current_native = getattr(session, "binding", None)
         selection_error: str | None = None
@@ -327,16 +361,13 @@ class SessionHub:
         except (UnknownModelError, NoUsableEffortError) as exc:
             selection_error = str(exc)
         if selection_error is not None:
-            raise HTTPException(
-                status_code=422,
-                detail=selection_error,
-            )
+            raise SessionOperationError(selection_error)
         from trowel_py.codex_host import TurnConflictError
 
         try:
             session.queue_turn_settings(selected.model, selected.effort)
         except TurnConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise SessionConflictError(str(exc)) from exc
         return {
             "model": selected.model,
             "effort": selected.effort,
@@ -395,18 +426,14 @@ class SessionHub:
         if binding.runtime is Runtime.CLAUDE_CODE:
             host = self._cc_registry.get(session_id)
             if host is None:
-                raise HTTPException(
-                    status_code=404, detail=f"cc session {session_id} not live"
-                )
+                raise SessionNotFoundError(f"cc session {session_id} not live")
             await host.interrupt()
             return
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         session = self._codex.get_session(session_id)
         if session is None:
-            raise HTTPException(
-                status_code=404, detail=f"codex session {session_id} not live"
-            )
+            raise SessionNotFoundError(f"codex session {session_id} not live")
         await self._codex.interrupt(session)
 
     def answer_request(
@@ -414,22 +441,21 @@ class SessionHub:
     ) -> dict[str, Any]:
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
-            raise HTTPException(
-                status_code=422,
-                detail="Codex pending-request answers cannot use the CC contract",
+            raise SessionOperationError(
+                "Codex pending-request answers cannot use the CC contract"
             )
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         try:
             request = self._codex.answer_request(session_id, request_id, decision)
         except PendingRequestNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise SessionNotFoundError(str(exc)) from exc
         except PendingRequestOwnershipError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise SessionAccessError(str(exc)) from exc
         except PendingRequestDecisionError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise SessionOperationError(str(exc)) from exc
         except PendingRequestConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise SessionConflictError(str(exc)) from exc
         return request.to_payload()
 
     def list_requests(self, session_id: str) -> list[dict[str, Any]]:
@@ -439,7 +465,7 @@ class SessionHub:
         if binding.runtime is not Runtime.CODEX:
             return []
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         return [
             request.to_payload() for request in self._codex.list_requests(session_id)
         ]
@@ -472,9 +498,7 @@ class SessionHub:
         if binding.runtime is Runtime.CLAUDE_CODE:
             host = self._cc_registry.get(session_id)
             if host is None:
-                raise HTTPException(
-                    status_code=404, detail=f"cc session {session_id} not live"
-                )
+                raise SessionNotFoundError(f"cc session {session_id} not live")
             cc_adapter = self._cc_adapters.get(session_id)
             if cc_adapter is None:
                 cc_adapter = CcEventAdapter(session_id)
@@ -487,12 +511,10 @@ class SessionHub:
             self._writeback_cc_native(session_id, host)
             return
         if self._codex is None:
-            raise HTTPException(status_code=503, detail="codex host unavailable")
+            raise RuntimeUnavailableError("codex host unavailable")
         session = self._codex.get_session(session_id)
         if session is None:
-            raise HTTPException(
-                status_code=404, detail=f"codex session {session_id} not live"
-            )
+            raise SessionNotFoundError(f"codex session {session_id} not live")
         try:
             await self._codex.send(
                 session,
@@ -503,13 +525,11 @@ class SessionHub:
             )
             # turn 接受后再写回已提交的有效设置。
             self._writeback_codex_native(session_id, session)
-        except HTTPException:
+        except SessionHubError:
             raise
         except Exception as exc:  # noqa: BLE001 - 统一映射为 502，不能落入 500。
             _log.warning("codex turn start failed for %s: %s", session_id, exc)
-            raise HTTPException(
-                status_code=502, detail=f"codex turn failed: {exc}"
-            ) from exc
+            raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
         codex_adapter = self._codex_adapters.get(session_id)
         if codex_adapter is None:
             codex_adapter = CodexEventAdapter(session_id)

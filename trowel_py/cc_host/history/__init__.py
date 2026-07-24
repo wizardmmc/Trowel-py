@@ -21,7 +21,7 @@ from trowel_py.cc_host.history.messages import (
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.cc_host.workflow_watcher import parse_workflow_tree
-from trowel_py.schemas.cc_host import (
+from trowel_py.cc_host.schemas import (
     ElicitationRequestEvent,
     FinishedEvent,
     SessionStartedEvent,

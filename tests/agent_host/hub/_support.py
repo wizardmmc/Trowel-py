@@ -150,9 +150,13 @@ class FakeCodexSession:
 def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int]):
 
     def opener(
-        req: CreateAgentSessionRequest, request: Any, reg: dict[str, Any] | None = None
+        req: CreateAgentSessionRequest,
+        reg: dict[str, Any] | None = None,
+        *,
+        proxy_base_url: str | None = None,
+        settings_path: str | Path | None = None,
     ) -> OpenedCcSession:
-        del request
+        del proxy_base_url, settings_path
         sid = "cc-" + uuid.uuid4().hex[:8]
         host = FakeCcHost(req.workdir, model=req.model or "glm-5.2")
         target = reg if reg is not None else registry

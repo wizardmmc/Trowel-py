@@ -5,7 +5,7 @@ from typing import cast
 
 import fsrs
 
-from trowel_py.schemas.review import (
+from trowel_py.review.models import (
     FSRSState,
     FSRSStateCode,
     ReviewLog,

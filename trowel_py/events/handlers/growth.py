@@ -9,8 +9,8 @@ from trowel_py.events.handlers.types import (
 from trowel_py.review.scheduler import get_plant_stage
 
 if TYPE_CHECKING:
-    from trowel_py.schemas.card import Card
-    from trowel_py.schemas.review import FSRSState
+    from trowel_py.cards.models import Card
+    from trowel_py.review.models import FSRSState
 
 
 class GrowthHandler:
