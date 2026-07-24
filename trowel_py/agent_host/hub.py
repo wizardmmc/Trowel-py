@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -270,6 +271,73 @@ class SessionHub:
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
         return await self._codex.list_models()
+
+    async def list_history(
+        self,
+        workdir: str,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """合并两个 runtime 的最新摘要，并使用 Trowel 自有 offset 游标。"""
+
+        from trowel_py.agent_host.history import (
+            HistoryCursorError,
+            decode_history_cursor,
+            merge_history_page,
+            scan_cc_history,
+        )
+
+        if limit < 1 or limit > 100:
+            raise InvalidSessionRequestError("history limit must be between 1 and 100")
+        try:
+            offset = decode_history_cursor(cursor) if cursor is not None else 0
+        except HistoryCursorError as exc:
+            raise InvalidSessionRequestError(str(exc)) from exc
+        required = offset + limit + 1
+        cc_summaries = await asyncio.to_thread(
+            scan_cc_history, workdir, limit=required
+        )
+        codex_threads: list[dict[str, Any]] = []
+        if self._codex is not None:
+            codex_threads = await self._codex.list_threads(cwd=workdir, limit=required)
+        return merge_history_page(
+            cc_summaries,
+            codex_threads,
+            offset=offset,
+            limit=limit,
+        )
+
+    async def history(self, session_id: str) -> list[dict[str, Any]]:
+        """按 binding runtime 回放公开的原生历史，并从序号 1 重新封装。"""
+
+        binding = self._require(session_id)
+        native_session_id = binding.native_session_id
+        if not native_session_id:
+            return []
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            from trowel_py.cc_host.history import parse_history
+
+            events = await asyncio.to_thread(
+                parse_history, binding.workdir, native_session_id
+            )
+            adapter = CcEventAdapter(session_id)
+            return [
+                adapter.wrap(event.model_dump()).model_dump(by_alias=True)
+                for event in events
+            ]
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        from trowel_py.codex_host.history import events_from_thread
+
+        thread = await self._codex.read_thread(native_session_id)
+        adapter = CodexEventAdapter(session_id)
+        envelopes = []
+        for event in events_from_thread(session_id, thread):
+            envelope = adapter.wrap(event)
+            if envelope is not None:
+                envelopes.append(envelope.model_dump(by_alias=True))
+        return envelopes
 
     def _require(self, session_id: str) -> SessionBinding:
         binding = self._store.get(session_id)

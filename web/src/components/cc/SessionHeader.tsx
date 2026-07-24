@@ -29,11 +29,15 @@ interface SessionHeaderProps {
   readonly streaming: boolean;
   readonly models: readonly ModelOption[];
   readonly history: readonly AgentHistoryRow[];
-  readonly historyTotal: number;
   readonly loadingHistory: boolean;
+  readonly loadingMoreHistory: boolean;
+  readonly historyHasMore: boolean;
+  readonly historyError: string | null;
   readonly workdir: string;
   readonly onInterrupt: () => void;
   readonly onPickHistory: (row: AgentHistoryRow) => void;
+  readonly onLoadMoreHistory: () => void;
+  readonly onRetryHistory: () => void;
   readonly onNew: () => void;
   readonly onRequestChangeWorkdir?: () => void;
 }
@@ -44,11 +48,15 @@ export function SessionHeader({
   streaming,
   models,
   history,
-  historyTotal,
   loadingHistory,
+  loadingMoreHistory,
+  historyHasMore,
+  historyError,
   workdir,
   onInterrupt,
   onPickHistory,
+  onLoadMoreHistory,
+  onRetryHistory,
   onNew,
   onRequestChangeWorkdir,
 }: SessionHeaderProps) {
@@ -74,8 +82,12 @@ export function SessionHeader({
       />
       <SessionSwitcher
         history={history}
-        total={historyTotal}
         loading={loadingHistory}
+        loadingMore={loadingMoreHistory}
+        hasMore={historyHasMore}
+        error={historyError}
+        onLoadMore={onLoadMoreHistory}
+        onRetry={onRetryHistory}
         onPick={onPickHistory}
         onNew={onNew}
       />

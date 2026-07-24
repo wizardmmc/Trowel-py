@@ -2122,7 +2122,7 @@
         },
         "get": {
           "summary": "List History",
-          "description": "合并 CC 扫描记录与 Codex binding，并显式标记 runtime。\n\n每行都携带 ``native_session_id`` 字段；仅非空原生 id 可以用于恢复。",
+          "description": "返回两个 runtime 全局排序后的历史分页。",
           "operationId": "list_history_api_agent_sessions_get",
           "parameters": [
             {
@@ -2133,6 +2133,34 @@
                 "type": "string",
                 "minLength": 1,
                 "title": "Workdir"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 1,
+                "default": 20,
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
               }
             }
           ],
@@ -2595,7 +2623,7 @@
       "/api/agent/sessions/{session_id}/history": {
         "get": {
           "summary": "Get Session History",
-          "description": "将已落盘的 CC history 转为 AgentEvent v1 envelope。\n\nhistory 使用从 1 开始的独立序号，不延续 live adapter。尚无原生 id 的 CC 会话\n返回空列表；Codex history replay 尚未实现并返回 501。",
+          "description": "按 binding runtime 回放原生 history；序号独立从 1 开始。",
           "operationId": "get_session_history_api_agent_sessions__session_id__history_get",
           "parameters": [
             {

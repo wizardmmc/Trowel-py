@@ -16,9 +16,9 @@ import {
   updateAgentSessionSettings,
 } from "../api/agent";
 
-function mockEnvelope(data: unknown, ok = true): Response {
+function mockEnvelope(data: unknown, ok = true, meta?: unknown): Response {
   return new Response(
-    JSON.stringify({ success: ok, data, error: ok ? null : "boom" }),
+    JSON.stringify({ success: ok, data, meta, error: ok ? null : "boom" }),
   );
 }
 
@@ -167,16 +167,27 @@ describe("api/agent", () => {
     });
   });
 
-  it("listAgentHistory encodes the workdir", async () => {
+  it("listAgentHistory encodes workdir, limit and opaque cursor", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
-        mockEnvelope([{ runtime: "codex", native_session_id: "t1" }]),
+        mockEnvelope(
+          [{ runtime: "codex", native_session_id: "t1" }],
+          true,
+          { limit: 20, next_cursor: "opaque-next" },
+        ),
       );
-    await listAgentHistory("/tmp/a b");
+    const page = await listAgentHistory("/tmp/a b", {
+      limit: 20,
+      cursor: "opaque-current",
+    });
     expect((spy.mock.calls[0][0] as string)).toBe(
-      "/api/agent/sessions?workdir=" + encodeURIComponent("/tmp/a b"),
+      "/api/agent/sessions?workdir=" +
+        encodeURIComponent("/tmp/a b") +
+        "&limit=20&cursor=opaque-current",
     );
+    expect(page.rows).toHaveLength(1);
+    expect(page.nextCursor).toBe("opaque-next");
   });
 
   it("agentMessagesUrl builds the SSE endpoint", () => {

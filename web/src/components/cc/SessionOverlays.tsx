@@ -20,6 +20,7 @@ interface SessionOverlaysProps {
   } | null;
   readonly newSession: {
     readonly workdir: string;
+    readonly initialConfig: NewSessionConfig | null;
     readonly runtimesState: RuntimesState;
     readonly onRetryRuntimes: () => void;
     readonly creating: boolean;
@@ -62,6 +63,7 @@ export function SessionOverlays({
       {newSession && (
         <NewSessionDialog
           workdir={newSession.workdir}
+          initialConfig={newSession.initialConfig}
           runtimesState={newSession.runtimesState}
           onRetryRuntimes={newSession.onRetryRuntimes}
           creating={newSession.creating}

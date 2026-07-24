@@ -56,12 +56,18 @@ interface CcState {
   /** 磁盘中的真实总数，用于显示“共 N · 最近 M”。 */
   readonly historyTotal: number;
   readonly loadingHistory: boolean;
+  readonly loadingMoreHistory: boolean;
+  readonly historyCursor: string | null;
+  readonly historyHasMore: boolean;
+  readonly historyWorkdir: string | null;
+  readonly historyError: string | null;
 
   startSession: (params: StartSessionParams) => Promise<AgentSession>;
   activateSession: (sid: string) => Promise<void>;
   closeSession: (sid: string) => Promise<void>;
   refreshActiveSessions: () => Promise<void>;
   refreshHistory: (workdir: string) => Promise<void>;
+  loadMoreHistory: () => Promise<void>;
   updateSessionSettings: (model: string, effort: string) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
   send: (text: string) => Promise<void>;
@@ -75,6 +81,10 @@ interface CcState {
 
 export function createCcStore() {
   return create<CcState>((set, get) => {
+    let historyGeneration = 0;
+    let historyLoadMorePromise: Promise<void> | null = null;
+    let historyLoadMoreToken: symbol | null = null;
+
     function applyTo(sid: string, event: AgentEvent): void {
       set((state) => {
         const cur = state.sessions[sid];
@@ -164,6 +174,11 @@ export function createCcStore() {
       history: [],
       historyTotal: 0,
       loadingHistory: false,
+      loadingMoreHistory: false,
+      historyCursor: null,
+      historyHasMore: false,
+      historyWorkdir: null,
+      historyError: null,
 
       startSession: async (params) => {
         // 未连接的临时会话不计入并发上限，切换前直接丢弃。
@@ -243,18 +258,105 @@ export function createCcStore() {
       },
 
       refreshHistory: async (workdir) => {
-        set({ loadingHistory: true });
+        const generation = ++historyGeneration;
+        historyLoadMorePromise = null;
+        historyLoadMoreToken = null;
+        set((state) => {
+          const changedWorkdir = state.historyWorkdir !== workdir;
+          return {
+            loadingHistory: true,
+            loadingMoreHistory: false,
+            history: changedWorkdir ? [] : state.history,
+            historyTotal: changedWorkdir ? 0 : state.historyTotal,
+            historyWorkdir: workdir,
+            historyCursor: null,
+            historyHasMore: false,
+            historyError: null,
+          };
+        });
         try {
-          const rows = await listSessions(workdir);
+          const page = await listSessions(workdir, { limit: 20 });
+          if (generation !== historyGeneration) return;
           set({
-            history: rows,
-            historyTotal: rows.length,
+            history: page.rows,
+            historyTotal: page.rows.length,
             loadingHistory: false,
+            historyCursor: page.nextCursor,
+            historyHasMore: page.nextCursor !== null,
           });
         } catch (err) {
-          set({ loadingHistory: false });
+          if (generation !== historyGeneration) return;
+          set({
+            loadingHistory: false,
+            historyError: (err as Error).message,
+          });
           patchActive(() => ({ transportError: (err as Error).message }));
         }
+      },
+
+      loadMoreHistory: () => {
+        if (historyLoadMorePromise) return historyLoadMorePromise;
+        const snapshot = get();
+        if (
+          !snapshot.historyHasMore ||
+          !snapshot.historyCursor ||
+          !snapshot.historyWorkdir
+        ) {
+          return Promise.resolve();
+        }
+        const generation = historyGeneration;
+        const cursor = snapshot.historyCursor;
+        const workdir = snapshot.historyWorkdir;
+        const token = Symbol("history-load-more");
+        historyLoadMoreToken = token;
+        set({ loadingMoreHistory: true, historyError: null });
+        const pending = (async () => {
+          try {
+            const page = await listSessions(workdir, { limit: 20, cursor });
+            if (generation !== historyGeneration) return;
+            set((state) => {
+              if (
+                state.historyWorkdir !== workdir ||
+                state.historyCursor !== cursor
+              ) {
+                return state;
+              }
+              const seen = new Set(
+                state.history.map(
+                  (row) => `${row.runtime}:${row.native_session_id ?? ""}`,
+                ),
+              );
+              const added = page.rows.filter((row) => {
+                const key = `${row.runtime}:${row.native_session_id ?? ""}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
+              const history = [...state.history, ...added];
+              return {
+                ...state,
+                history,
+                historyTotal: history.length,
+                historyCursor: page.nextCursor,
+                historyHasMore: page.nextCursor !== null,
+                loadingMoreHistory: false,
+              };
+            });
+          } catch (err) {
+            if (generation !== historyGeneration) return;
+            set({
+              loadingMoreHistory: false,
+              historyError: (err as Error).message,
+            });
+          } finally {
+            if (historyLoadMoreToken === token) {
+              historyLoadMorePromise = null;
+              historyLoadMoreToken = null;
+            }
+          }
+        })();
+        historyLoadMorePromise = pending;
+        return historyLoadMorePromise;
       },
 
       updateSessionSettings: async (model, effort) => {
@@ -293,7 +395,6 @@ export function createCcStore() {
         if (!sid) return;
         const cur = get().sessions[sid];
         if (!cur) return;
-        if (cur.runtime !== "claude_code") return;
         let envelopes: readonly AgentEventLike[] = [];
         try {
           envelopes = await getAgentHistory(sid);
@@ -481,6 +582,11 @@ export function createCcStore() {
           history: [],
           historyTotal: 0,
           loadingHistory: false,
+          loadingMoreHistory: false,
+          historyCursor: null,
+          historyHasMore: false,
+          historyWorkdir: null,
+          historyError: null,
         });
       },
     };

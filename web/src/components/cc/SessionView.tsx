@@ -7,6 +7,10 @@ import {
 } from "../../stores/ccStore";
 import type { AgentHistoryRow } from "../../api/agent";
 import type { NewSessionConfig } from "./NewSessionDialog";
+import {
+  loadNewSessionPreferences,
+  saveNewSessionPreferences,
+} from "./newSessionPreferences";
 import { MessageList } from "./MessageList";
 import { MultiSessionBar } from "./MultiSessionBar";
 import { SessionBanners } from "./SessionBanners";
@@ -49,15 +53,20 @@ export function SessionView({
   const revertTurn = useCcStore((s) => s.revertTurn);
   const activeSid = useCcStore((s) => s.activeSid);
   const history = useCcStore((s) => s.history);
-  const historyTotal = useCcStore((s) => s.historyTotal);
   const loadingHistory = useCcStore((s) => s.loadingHistory);
+  const loadingMoreHistory = useCcStore((s) => s.loadingMoreHistory);
+  const historyHasMore = useCcStore((s) => s.historyHasMore);
+  const historyError = useCcStore((s) => s.historyError);
   const refreshHistory = useCcStore((s) => s.refreshHistory);
+  const loadMoreHistory = useCcStore((s) => s.loadMoreHistory);
   const updateSessionSettings = useCcStore((s) => s.updateSessionSettings);
 
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [newSessionInitialConfig, setNewSessionInitialConfig] =
+    useState<NewSessionConfig | null>(null);
   const {
     slashItems,
     models,
@@ -110,6 +119,7 @@ export function SessionView({
 
   function handleNewSameWorkdir() {
     setCreateError(null);
+    setNewSessionInitialConfig(loadNewSessionPreferences());
     setShowNewDialog(true);
   }
 
@@ -118,6 +128,8 @@ export function SessionView({
     setCreateError(null);
     try {
       await startSession({ workdir, ...config });
+      saveNewSessionPreferences(config);
+      setNewSessionInitialConfig(config);
       setShowNewDialog(false);
     } catch (err) {
       setCreateError((err as Error).message);
@@ -163,11 +175,15 @@ export function SessionView({
           streaming={streaming}
           models={models}
           history={history}
-          historyTotal={historyTotal}
           loadingHistory={loadingHistory}
+          loadingMoreHistory={loadingMoreHistory}
+          historyHasMore={historyHasMore}
+          historyError={historyError}
           workdir={active?.workdir ?? workdir}
           onInterrupt={() => void interrupt()}
           onPickHistory={(row) => void handlePick(row)}
+          onLoadMoreHistory={() => void loadMoreHistory()}
+          onRetryHistory={() => void refreshHistory(active?.workdir ?? workdir)}
           onNew={handleNewSameWorkdir}
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
@@ -263,6 +279,7 @@ export function SessionView({
             showNewDialog
               ? {
                   workdir,
+                  initialConfig: newSessionInitialConfig,
                   runtimesState,
                   onRetryRuntimes: loadRuntimes,
                   creating,

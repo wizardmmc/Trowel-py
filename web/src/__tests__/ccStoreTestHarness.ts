@@ -7,7 +7,7 @@ vi.mock("../api/agent", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
   listActiveAgentSessions: vi.fn(),
-  listAgentHistory: vi.fn().mockResolvedValue([]),
+  listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
@@ -41,6 +41,7 @@ import {
   createAgentSession,
   deleteAgentSession,
   listActiveAgentSessions,
+  listAgentHistory,
   updateAgentSessionSettings,
 } from "../api/agent";
 
@@ -48,6 +49,7 @@ export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
 export const apiCreateSession = vi.mocked(createAgentSession);
 export const apiDeleteSession = vi.mocked(deleteAgentSession);
 export const listActiveSessions = vi.mocked(listActiveAgentSessions);
+export const listHistory = vi.mocked(listAgentHistory);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
 
 let seqCounter = 0;

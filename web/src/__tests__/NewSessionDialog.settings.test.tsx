@@ -5,7 +5,7 @@ import { NewSessionDialog } from "../components/cc/NewSessionDialog";
 import { CODEX_MODELS, createButton } from "./newSessionDialogFixtures";
 
 describe("NewSessionDialog settings", () => {
-  it("defaults to runtime=claude_code + both switches ON + empty model/effort/permission", () => {
+  it("defaults to Claude + both switches ON + visible bypass permission", () => {
     render(
       <NewSessionDialog
         workdir="/wd"
@@ -19,6 +19,9 @@ describe("NewSessionDialog settings", () => {
     const switches = screen.getAllByRole("switch");
     expect(switches[0]).toHaveAttribute("aria-checked", "true");
     expect(switches[1]).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: /跟随 CC/ })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
   });
 
   it("create fires onCreate with runtime + M/P + model/effort/permission", () => {
@@ -143,6 +146,74 @@ describe("NewSessionDialog settings", () => {
     expect(onCreate.mock.calls[0][0].permission_preset).toBe(
       "danger-full-access",
     );
+  });
+
+  it("restores the last Codex config but requires Full access confirmation again", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        initialConfig={{
+          runtime: "codex",
+          model: "gpt-5.6-sol",
+          effort: "ultra",
+          permission_mode: "",
+          permission_preset: "danger-full-access",
+          memory_enabled: false,
+          profile_enabled: true,
+        }}
+        codexModels={CODEX_MODELS}
+        onCreate={onCreate}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Full access" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("关闭 sandbox");
+    expect(createButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "确认 Full access" }));
+    fireEvent.click(createButton());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      runtime: "codex",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      permission_preset: "danger-full-access",
+      memory_enabled: false,
+    });
+  });
+
+  it("falls back to native Codex defaults when remembered catalog values disappeared", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        initialConfig={{
+          runtime: "codex",
+          model: "removed-model",
+          effort: "removed-effort",
+          permission_mode: "",
+          permission_preset: "workspace-write",
+          memory_enabled: true,
+          profile_enabled: true,
+        }}
+        codexModels={CODEX_MODELS}
+        onCreate={onCreate}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "gpt-5.6-sol" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    expect(screen.getByRole("button", { name: "low" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    fireEvent.click(createButton());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      model: "gpt-5.6-sol",
+      effort: "low",
+    });
   });
 
   it("warns that workspace approvals pause for confirmation", () => {

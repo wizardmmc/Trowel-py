@@ -74,6 +74,29 @@ def test_command_completed_maps_result_fields(adapter) -> None:
     assert event.payload["cwd"] == "/repo"
 
 
+def test_mcp_completed_serializes_structured_result_for_shared_reducer(adapter) -> None:
+    event = adapter.wrap(
+        make_codex_event(
+            CodexEventType.TOOL_COMPLETED,
+            seq=3,
+            item_id="item-mcp",
+            payload={
+                "kind": "mcpToolCall",
+                "tool_name": "memory.search",
+                "status": "completed",
+                "result": {"content": [{"type": "text", "text": "{}"}]},
+                "duration_ms": 12,
+            },
+        )
+    )
+
+    assert event.type == "tool_result"
+    assert event.payload["tool_name"] == "memory.search"
+    assert event.payload["content"] == (
+        '{"content": [{"text": "{}", "type": "text"}]}'
+    )
+
+
 def test_file_change_started_maps_apply_patch_targets(adapter) -> None:
     event = adapter.wrap(
         make_codex_event(

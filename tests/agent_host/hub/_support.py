@@ -39,6 +39,10 @@ class FakeCodexManager:
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
         self.answered_requests: list[tuple[str, str, str]] = []
+        self.threads: list[dict[str, Any]] = []
+        self.thread_reads: dict[str, dict[str, Any]] = {}
+        self.list_thread_calls: list[tuple[str, int]] = []
+        self.read_thread_calls: list[str] = []
         self.models: list[dict[str, Any]] = [
             {
                 "id": "gpt-5.6-sol",
@@ -100,6 +104,14 @@ class FakeCodexManager:
     async def list_models(self) -> list[dict[str, Any]]:
 
         return self.models
+
+    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
+        self.list_thread_calls.append((cwd, limit))
+        return self.threads[:limit]
+
+    async def read_thread(self, thread_id: str) -> dict[str, Any]:
+        self.read_thread_calls.append(thread_id)
+        return self.thread_reads[thread_id]
 
     def answer_request(self, session_id: str, request_id: str, decision: str) -> Any:
 

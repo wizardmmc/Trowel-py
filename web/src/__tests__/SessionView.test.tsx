@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("../api/agent", () => ({
   createAgentSession: vi.fn().mockResolvedValue({
@@ -19,7 +19,7 @@ vi.mock("../api/agent", () => ({
   }),
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
-  listAgentHistory: vi.fn().mockResolvedValue([]),
+  listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
@@ -44,16 +44,26 @@ import {
   createAgentSession as createSession,
   listAgentHistory as listSessions,
   listActiveAgentSessions as listActiveSessions,
+  listAgentRuntimes,
 } from "../api/agent";
+import {
+  loadNewSessionPreferences,
+  saveNewSessionPreferences,
+} from "../components/cc/newSessionPreferences";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   useCcStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
     historyTotal: 0,
     loadingHistory: false,
+    loadingMoreHistory: false,
+    historyCursor: null,
+    historyHasMore: false,
+    historyWorkdir: null,
   });
 });
 
@@ -178,5 +188,69 @@ describe("SessionView", () => {
     render(<SessionView workdir="/wd" />);
     expect(screen.getByText(/Codex host 已断开/)).toBeInTheDocument();
     expect(screen.getByText(/不会自动重放写操作/)).toBeInTheDocument();
+  });
+
+  it("persists the explicit new-session config only after creation succeeds", async () => {
+    vi.mocked(listAgentRuntimes).mockResolvedValue([
+      {
+        runtime: "claude_code",
+        label: "Claude Code",
+        native: "claude -p",
+        capabilities: [],
+        connected: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+    const high = await screen.findByRole("button", { name: "high" });
+    fireEvent.click(high);
+    const create = screen.getByRole("button", { name: /^创建/ });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "新建 Agent 会话" })).toBeNull(),
+    );
+
+    expect(loadNewSessionPreferences()).toMatchObject({
+      runtime: "claude_code",
+      effort: "high",
+      permission_mode: "bypassPermissions",
+      memory_enabled: true,
+      profile_enabled: true,
+    });
+  });
+
+  it("does not overwrite the previous config when explicit creation fails", async () => {
+    const previous = {
+      runtime: "claude_code" as const,
+      model: "",
+      effort: "low",
+      permission_mode: "default",
+      memory_enabled: false,
+      profile_enabled: true,
+    };
+    saveNewSessionPreferences(previous);
+    vi.mocked(listAgentRuntimes).mockResolvedValue([
+      {
+        runtime: "claude_code",
+        label: "Claude Code",
+        native: "claude -p",
+        capabilities: [],
+        connected: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+    vi.mocked(createSession).mockRejectedValueOnce(new Error("backend down"));
+
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+    const create = await screen.findByRole("button", { name: /^创建/ });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    await screen.findByRole("alert");
+
+    expect(loadNewSessionPreferences()).toEqual(previous);
   });
 });

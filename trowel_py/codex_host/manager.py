@@ -247,6 +247,60 @@ class CodexHostManager:
             if cursor is None:
                 return rows
 
+    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
+        """按更新时间列出指定 cwd 的默认交互 thread，不读取私有 rollout。"""
+
+        if limit <= 0:
+            return []
+        client = await self.ensure_ready()
+        rows: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while len(rows) < limit:
+            params: dict[str, Any] = {
+                "cwd": cwd,
+                "limit": limit - len(rows),
+                "sortKey": "updated_at",
+                "sortDirection": "desc",
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = await client.request(
+                "thread/list", params, timeout=_REQUEST_TIMEOUT_S
+            )
+            data = result.get("data") if isinstance(result, Mapping) else None
+            if not isinstance(data, list) or not all(
+                isinstance(row, Mapping) for row in data
+            ):
+                raise ProtocolViolationError("thread/list result.data is not an array")
+            rows.extend(dict(row) for row in data[: limit - len(rows)])
+
+            next_cursor = result.get("nextCursor")
+            if next_cursor is not None and not isinstance(next_cursor, str):
+                raise ProtocolViolationError(
+                    "thread/list nextCursor is not a string or null"
+                )
+            if next_cursor is None or len(rows) >= limit:
+                return rows
+            if next_cursor in seen_cursors:
+                raise ProtocolViolationError("thread/list returned a repeated cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+    async def read_thread(self, thread_id: str) -> dict[str, Any]:
+        """通过公共 ``thread/read`` 取得含 turns 的 transcript。"""
+
+        client = await self.ensure_ready()
+        result = await client.request(
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": True},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        thread = result.get("thread") if isinstance(result, Mapping) else None
+        if not isinstance(thread, Mapping):
+            raise ProtocolViolationError("thread/read result.thread is not an object")
+        return dict(thread)
+
     async def send(
         self,
         session: CodexSession,

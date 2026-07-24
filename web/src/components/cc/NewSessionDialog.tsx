@@ -33,6 +33,7 @@ interface NewSessionDialogProps {
   readonly workdir: string;
   readonly onCreate: (config: NewSessionConfig) => void;
   readonly onCancel: () => void;
+  readonly initialConfig?: NewSessionConfig | null;
   // 省略 catalog 时默认两个 runtime 均已连接。
   readonly runtimesState?: RuntimesState;
   readonly onRetryRuntimes?: () => void;
@@ -48,6 +49,7 @@ export function NewSessionDialog({
   workdir,
   onCreate,
   onCancel,
+  initialConfig = null,
   runtimesState,
   onRetryRuntimes,
   creating = false,
@@ -57,13 +59,22 @@ export function NewSessionDialog({
   codexCatalogError = null,
   onRetryCodexCatalog,
 }: NewSessionDialogProps) {
-  const [runtime, setRuntime] = useState<Runtime>("claude_code");
-  const [model, setModel] = useState<string>("");
-  const [effort, setEffort] = useState<string>("");
-  const [permission, setPermission] = useState<string>("");
-  const [memory, setMemory] = useState(true);
-  const [profile, setProfile] = useState(true);
-  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  const initialPermission =
+    initialConfig?.runtime === "codex"
+      ? (initialConfig.permission_preset ?? "follow")
+      : (initialConfig?.permission_mode || "bypassPermissions");
+  const [runtime, setRuntime] = useState<Runtime>(
+    initialConfig?.runtime ?? "claude_code",
+  );
+  const [model, setModel] = useState(initialConfig?.model ?? "");
+  const [effort, setEffort] = useState(initialConfig?.effort ?? "");
+  const [permission, setPermission] = useState(initialPermission);
+  const [memory, setMemory] = useState(initialConfig?.memory_enabled ?? true);
+  const [profile, setProfile] = useState(initialConfig?.profile_enabled ?? true);
+  const [confirmFullAccess, setConfirmFullAccess] = useState(
+    initialPermission === "danger-full-access",
+  );
+  const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
 
   const defaultCodexModel =
     codexModels.find((item) => item.is_default) ?? codexModels[0];
@@ -75,6 +86,8 @@ export function NewSessionDialog({
   )
     ? effort
     : (selectedCodexModel?.default_effort ?? "");
+  const selectedCcModel =
+    model === "" || ccModels.some((item) => item.value === model) ? model : "";
 
   const readyRuntimes =
     runtimesState?.status === "ready" ? runtimesState.runtimes : null;
@@ -94,12 +107,28 @@ export function NewSessionDialog({
       !selectedCodexModel.supported_efforts.some(
         (item) => item.value === selectedCodexEffort,
       ));
+  const activeOption = RUNTIME_OPTIONS[runtimeOptionIndex(runtime)];
+  const selectedPermission = activeOption.permissions.some(
+    (option) => option.value === permission,
+  )
+    ? permission
+    : runtime === "claude_code"
+      ? "bypassPermissions"
+      : "follow";
+  const selectedCcEffort = activeOption.efforts.some(
+    (option) => option.value === effort,
+  )
+    ? effort
+    : "";
   const createBlocked =
     creating ||
     catalogLoading ||
     catalogError !== null ||
     !selectedConnected ||
-    codexCatalogBlocked;
+    codexCatalogBlocked ||
+    (runtime === "codex" &&
+      selectedPermission === "danger-full-access" &&
+      !fullAccessConfirmed);
 
   // 切换 runtime 时清空旧选择，避免跨 runtime 泄漏配置。
   function selectRuntime(next: Runtime): void {
@@ -114,12 +143,12 @@ export function NewSessionDialog({
     } else {
       setModel("");
       setEffort("");
-      setPermission("");
+      setPermission("bypassPermissions");
     }
     setConfirmFullAccess(false);
+    setFullAccessConfirmed(false);
   }
 
-  const activeOption = RUNTIME_OPTIONS[runtimeOptionIndex(runtime)];
   const visibleModels =
     runtime === "codex"
       ? codexModels.map((item) => ({ value: item.id, label: item.id }))
@@ -147,11 +176,14 @@ export function NewSessionDialog({
 
   function pickPermission(nextPermission: string): void {
     if (nextPermission === "danger-full-access") {
+      setPermission(nextPermission);
       setConfirmFullAccess(true);
+      setFullAccessConfirmed(false);
       return;
     }
     setPermission(nextPermission);
     setConfirmFullAccess(false);
+    setFullAccessConfirmed(false);
   }
 
   function submit(): void {
@@ -159,12 +191,16 @@ export function NewSessionDialog({
       runtime,
       memory_enabled: memory,
       profile_enabled: profile,
-      model: runtime === "codex" ? (selectedCodexModel?.id ?? "") : model,
-      effort: runtime === "codex" ? selectedCodexEffort : effort,
-      permission_mode: runtime === "claude_code" ? permission : "",
+      model:
+        runtime === "codex" ? (selectedCodexModel?.id ?? "") : selectedCcModel,
+      effort: runtime === "codex" ? selectedCodexEffort : selectedCcEffort,
+      permission_mode:
+        runtime === "claude_code" ? selectedPermission : "",
       permission_preset:
         runtime === "codex"
-          ? (permission as NonNullable<NewSessionConfig["permission_preset"]>)
+          ? (selectedPermission as NonNullable<
+              NewSessionConfig["permission_preset"]
+            >)
           : undefined,
     };
     onCreate(config);
@@ -204,14 +240,16 @@ export function NewSessionDialog({
             creating={creating}
             models={visibleModels}
             selectedModel={
-              runtime === "codex" ? (selectedCodexModel?.id ?? "") : model
+              runtime === "codex"
+                ? (selectedCodexModel?.id ?? "")
+                : selectedCcModel
             }
             efforts={visibleEfforts}
             selectedEffort={
-              runtime === "codex" ? selectedCodexEffort : effort
+              runtime === "codex" ? selectedCodexEffort : selectedCcEffort
             }
             permissions={activeOption.permissions}
-            selectedPermission={permission}
+            selectedPermission={selectedPermission}
             codexCatalogError={codexCatalogError}
             confirmFullAccess={confirmFullAccess}
             onSelectModel={pickModel}
@@ -220,6 +258,7 @@ export function NewSessionDialog({
             onConfirmFullAccess={() => {
               setPermission("danger-full-access");
               setConfirmFullAccess(false);
+              setFullAccessConfirmed(true);
             }}
             onRetryCodexCatalog={onRetryCodexCatalog}
           />

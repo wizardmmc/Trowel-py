@@ -47,6 +47,11 @@ export interface AgentHistoryRow {
   readonly updated_at: number | string;
 }
 
+export interface AgentHistoryPage {
+  readonly rows: readonly AgentHistoryRow[];
+  readonly nextCursor: string | null;
+}
+
 export interface AgentRuntimeInfo {
   readonly runtime: Runtime;
   readonly label: string;
@@ -98,21 +103,30 @@ export interface AgentPendingRequest {
 
 const AGENT_API_BASE = "/api/agent";
 
-interface ApiEnvelope<T> {
+interface ApiEnvelope<T, M = unknown> {
   readonly success: boolean;
   readonly data: T | null;
+  readonly meta?: M;
   readonly error: string | null;
 }
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+async function requestEnvelope<T, M = unknown>(
+  url: string,
+  options?: RequestInit,
+): Promise<ApiEnvelope<T, M>> {
   const response = await fetch(url, options);
   if (!response.ok) {
     throw new Error(`Agent API error: ${response.status}`);
   }
-  const result: ApiEnvelope<T> = await response.json();
+  const result: ApiEnvelope<T, M> = await response.json();
   if (!result.success || result.error) {
     throw new Error(result.error ?? "Agent API call failed");
   }
+  return result;
+}
+
+async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const result = await requestEnvelope<T>(url, options);
   return result.data as T;
 }
 
@@ -221,10 +235,21 @@ export async function updateAgentSessionSettings(
 
 export async function listAgentHistory(
   workdir: string,
-): Promise<readonly AgentHistoryRow[]> {
-  return request<readonly AgentHistoryRow[]>(
-    `${AGENT_API_BASE}/sessions?workdir=${encodeURIComponent(workdir)}`,
+  options: { readonly limit?: number; readonly cursor?: string | null } = {},
+): Promise<AgentHistoryPage> {
+  const limit = options.limit ?? 20;
+  let url = `${AGENT_API_BASE}/sessions?workdir=${encodeURIComponent(workdir)}&limit=${limit}`;
+  if (options.cursor) url += `&cursor=${encodeURIComponent(options.cursor)}`;
+  const result = await requestEnvelope<
+    readonly AgentHistoryRow[],
+    { readonly limit: number; readonly next_cursor: string | null }
+  >(
+    url,
   );
+  return {
+    rows: result.data ?? [],
+    nextCursor: result.meta?.next_cursor ?? null,
+  };
 }
 
 export function agentMessagesUrl(sessionId: string): string {

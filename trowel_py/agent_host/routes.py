@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime
-from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
@@ -278,66 +277,34 @@ async def list_models(
 
 
 @router.get("/sessions/{session_id}/history")
-def get_session_history(
+async def get_session_history(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """将已落盘的 CC history 转为 AgentEvent v1 envelope。
+    """按 binding runtime 回放原生 history；序号独立从 1 开始。"""
 
-    history 使用从 1 开始的独立序号，不延续 live adapter。尚无原生 id 的 CC 会话
-    返回空列表；Codex history replay 尚未实现并返回 501。
-    """
-
-    binding = hub.get(session_id)
-    if binding is None:
-        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
-    if binding.runtime is Runtime.CODEX:
-        raise HTTPException(
-            status_code=501,
-            detail="codex thread history replay lands in slice-079",
-        )
-    native_session_id = binding.native_session_id
-    if not native_session_id:
-        return {"success": True, "data": [], "error": None}
-    from trowel_py.cc_host.history import parse_history
-
-    events = parse_history(binding.workdir, native_session_id)
-    # history 是独立流，不能继承 live adapter 的序号。
-    adapter = CcEventAdapter(session_id)
-    envelopes = [adapter.wrap(e.model_dump()).model_dump(by_alias=True) for e in events]
+    envelopes = await _await_hub(hub.history, session_id)
     return {"success": True, "data": envelopes, "error": None}
 
 
 @router.get("/sessions")
-def list_history(
+async def list_history(
     workdir: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(None),
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """合并 CC 扫描记录与 Codex binding，并显式标记 runtime。
+    """返回两个 runtime 全局排序后的历史分页。"""
 
-    每行都携带 ``native_session_id`` 字段；仅非空原生 id 可以用于恢复。
-    """
-
-    from trowel_py.cc_host.session_scan import list_sessions as cc_list_sessions
-
-    rows: list[dict[str, Any]] = []
-    for summary in cc_list_sessions(workdir, limit=20):
-        rows.append(
-            {
-                "runtime": "claude_code",
-                "native_session_id": summary.cc_session_id,
-                "title": summary.title,
-                "updated_at": summary.updated_at,
-            }
-        )
-    for binding in hub.store.list_all():
-        if binding.runtime is Runtime.CODEX and binding.workdir == workdir:
-            rows.append(
-                {
-                    "runtime": "codex",
-                    "native_session_id": binding.native_session_id,
-                    "title": binding.name,
-                    "updated_at": binding.updated_at,
-                }
-            )
-    return {"success": True, "data": rows, "error": None}
+    rows, next_cursor = await _await_hub(
+        hub.list_history,
+        workdir,
+        limit=limit,
+        cursor=cursor,
+    )
+    return {
+        "success": True,
+        "data": rows,
+        "meta": {"limit": limit, "next_cursor": next_cursor},
+        "error": None,
+    }

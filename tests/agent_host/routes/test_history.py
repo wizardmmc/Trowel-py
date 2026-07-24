@@ -62,7 +62,7 @@ def test_get_history_cc_no_native_returns_empty(
     assert response.json()["data"] == []
 
 
-def test_get_history_codex_not_implemented(
+def test_get_history_codex_uses_thread_read_and_returns_replay(
     client: TestClient,
     hub: SessionHub,
     workdir: Path,
@@ -81,16 +81,55 @@ def test_get_history_codex_not_implemented(
         name="project",
     )
     hub.store.put(binding)
+    hub._codex.thread_reads["thread-1"] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": "thread-1",
+        "turns": [
+            {
+                "id": "turn-1",
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "user-1",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "hi"}],
+                    },
+                    {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": "hello back",
+                    },
+                ],
+            }
+        ],
+    }
 
     response = client.get(f"/api/agent/sessions/{binding.session_id}/history")
 
-    assert response.status_code == 501
+    assert response.status_code == 200
+    assert [event["type"] for event in response.json()["data"]] == [
+        "user",
+        "text",
+        "finished",
+    ]
+    assert hub._codex.read_thread_calls == ["thread-1"]  # type: ignore[union-attr]  # noqa: SLF001
 
 
 def test_get_history_unknown_session_404(client: TestClient) -> None:
     response = client.get("/api/agent/sessions/unknown/history")
 
     assert response.status_code == 404
+
+
+def test_list_history_invalid_cursor_returns_400(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    response = client.get(
+        "/api/agent/sessions",
+        params={"workdir": str(workdir), "cursor": "not-a-cursor"},
+    )
+
+    assert response.status_code == 400
 
 
 def test_error_envelope_uses_per_session_seq_not_fixed_one(

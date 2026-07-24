@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -9,6 +10,7 @@ from trowel_py.codex_host.events import CodexEvent, CodexEventType
 
 _COMMAND_TOOL_NAME = "command"
 _FILE_CHANGE_KIND = "fileChange"
+_MCP_TOOL_KIND = "mcpToolCall"
 _APPLY_PATCH_TOOL_NAME = "apply_patch"
 
 
@@ -67,6 +69,8 @@ def _reasoning_delta(event: CodexEvent) -> MappedCodexEvent:
 def _tool_started(event: CodexEvent) -> MappedCodexEvent:
     if event.payload.get("kind") == _FILE_CHANGE_KIND:
         return _file_change_started(event)
+    if event.payload.get("kind") == _MCP_TOOL_KIND:
+        return _mcp_tool_started(event)
     return _mapped(
         "tool_call",
         {
@@ -81,6 +85,18 @@ def _tool_started(event: CodexEvent) -> MappedCodexEvent:
                     for action in (event.payload.get("command_actions") or ())
                 ],
             },
+            "started_at_ms": event.payload.get("started_at"),
+        },
+    )
+
+
+def _mcp_tool_started(event: CodexEvent) -> MappedCodexEvent:
+    return _mapped(
+        "tool_call",
+        {
+            "tool_use_id": event.item_id,
+            "tool_name": event.payload.get("tool_name"),
+            "input": event.payload.get("arguments"),
             "started_at_ms": event.payload.get("started_at"),
         },
     )
@@ -105,6 +121,8 @@ def _file_change_started(event: CodexEvent) -> MappedCodexEvent:
 def _tool_completed(event: CodexEvent) -> MappedCodexEvent:
     if event.payload.get("kind") == _FILE_CHANGE_KIND:
         return _file_change_completed(event)
+    if event.payload.get("kind") == _MCP_TOOL_KIND:
+        return _mcp_tool_completed(event)
     return _mapped(
         "tool_result",
         {
@@ -117,6 +135,31 @@ def _tool_completed(event: CodexEvent) -> MappedCodexEvent:
             "status": event.payload.get("status"),
         },
     )
+
+
+def _mcp_tool_completed(event: CodexEvent) -> MappedCodexEvent:
+    content = event.payload.get("result")
+    if content is None:
+        content = event.payload.get("error")
+    return _mapped(
+        "tool_result",
+        {
+            "tool_use_id": event.item_id,
+            "tool_name": event.payload.get("tool_name"),
+            "content": _tool_content(content),
+            "status": event.payload.get("status"),
+            "duration_ms": event.payload.get("duration_ms"),
+        },
+    )
+
+
+def _tool_content(value: Any) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _file_change_completed(event: CodexEvent) -> MappedCodexEvent:

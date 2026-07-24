@@ -1,0 +1,54 @@
+{
+  "thread": {
+    "id": "00000000-0000-7000-8000-000000000001",
+    "sessionId": "00000000-0000-7000-8000-000000000001",
+    "preview": "sanitized user message",
+    "ephemeral": false,
+    "modelProvider": "openai",
+    "createdAt": 1784851200,
+    "updatedAt": 1784851210,
+    "status": {"type": "idle"},
+    "cwd": "/workspace",
+    "cliVersion": "0.144.0",
+    "source": "vscode",
+    "turns": [
+      {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "status": "completed",
+        "durationMs": 1200,
+        "items": [
+          {
+            "id": "user-1",
+            "type": "userMessage",
+            "content": [
+              {"type": "text", "text": "sanitized user message", "text_elements": []}
+            ]
+          },
+          {
+            "id": "agent-1",
+            "type": "agentMessage",
+            "text": "sanitized assistant message",
+            "phase": "final_answer",
+            "memoryCitation": null
+          },
+          {
+            "id": "mcp-1",
+            "type": "mcpToolCall",
+            "server": "trowel_note_search",
+            "tool": "search",
+            "arguments": {"query": "sanitized"},
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{}"}]},
+            "error": null,
+            "durationMs": 15
+          },
+          {
+            "id": "future-1",
+            "type": "futureItem",
+            "payload": "ignored"
+          }
+        ]
+      }
+    ]
+  }
+}

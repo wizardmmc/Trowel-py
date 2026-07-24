@@ -122,15 +122,28 @@ def test_get_models_returns_the_manager_catalog(
     assert response.json()["data"]["models"] == native
 
 
-def test_get_history_returns_codex_rows_for_workdir(
+def test_get_history_returns_native_codex_threads_for_workdir(
     client: TestClient,
+    hub: SessionHub,
     workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_session(client, codex_payload(workdir))
+    monkeypatch.setattr(
+        "trowel_py.agent_host.history.scan_cc_history",
+        lambda _workdir, *, limit: [],
+    )
+    hub._codex.threads = [  # type: ignore[union-attr]  # noqa: SLF001
+        {
+            "id": "thread-native-1",
+            "preview": "native title",
+            "updatedAt": 123,
+        }
+    ]
 
     response = client.get(f"/api/agent/sessions?workdir={workdir}")
     assert response.status_code == 200
     rows = response.json()["data"]
     codex_rows = [row for row in rows if row["runtime"] == "codex"]
     assert codex_rows
-    assert codex_rows[0]["native_session_id"] is None
+    assert codex_rows[0]["native_session_id"] == "thread-native-1"
+    assert response.json()["meta"] == {"limit": 20, "next_cursor": None}
