@@ -6,6 +6,7 @@ import {
   useActiveSession,
 } from "../../stores/ccStore";
 import type { AgentHistoryRow } from "../../api/agent";
+import { getAgentSessionDefaults } from "../../api/agent";
 import type { NewSessionConfig } from "./NewSessionDialog";
 import {
   loadNewSessionPreferences,
@@ -117,9 +118,10 @@ export function SessionView({
     }
   }
 
-  function handleNewSameWorkdir() {
+  async function handleNewSameWorkdir() {
     setCreateError(null);
-    setNewSessionInitialConfig(loadNewSessionPreferences());
+    const latest = await getAgentSessionDefaults().catch(() => null);
+    setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
     setShowNewDialog(true);
   }
 
@@ -165,7 +167,7 @@ export function SessionView({
   return (
     <div className="cc-3col">
       <MultiSessionBar
-        onNewSameWorkdir={handleNewSameWorkdir}
+        onNewSameWorkdir={() => void handleNewSameWorkdir()}
         onChangeWorkdir={() => onRequestChangeWorkdir?.()}
       />
       <div className="cc-view">
@@ -184,7 +186,7 @@ export function SessionView({
           onPickHistory={(row) => void handlePick(row)}
           onLoadMoreHistory={() => void loadMoreHistory()}
           onRetryHistory={() => void refreshHistory(active?.workdir ?? workdir)}
-          onNew={handleNewSameWorkdir}
+          onNew={() => void handleNewSameWorkdir()}
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
         <SessionBanners active={active} activeSid={activeSid} />

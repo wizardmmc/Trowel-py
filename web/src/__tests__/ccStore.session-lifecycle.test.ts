@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  apiCreateSession,
   apiDeleteSession,
   ev,
   mockCreate,
@@ -81,6 +82,60 @@ describe("createCcStore — multi-session lifecycle", () => {
     expect(store.getState().sessions.s2).toBeDefined();
     expect(store.getState().activeSid).toBe("s2");
     expect(apiDeleteSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("concurrent starts keep the latest request active when responses reorder", async () => {
+    const store = createCcStore();
+    let resolveA!: (session: ReturnType<typeof mockCreate>) => void;
+    let resolveB!: (session: ReturnType<typeof mockCreate>) => void;
+    const first = new Promise<ReturnType<typeof mockCreate>>((resolve) => {
+      resolveA = resolve;
+    });
+    const second = new Promise<ReturnType<typeof mockCreate>>((resolve) => {
+      resolveB = resolve;
+    });
+    apiCreateSession
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second);
+
+    const startA = store.getState().startSession({ workdir: "/a" });
+    const startB = store.getState().startSession({ workdir: "/b" });
+    resolveB({
+      session_id: "s-b",
+      runtime: "claude_code",
+      native_session_id: null,
+      workdir: "/b",
+      model: "glm-5.2",
+      effort: null,
+      permission: "bypassPermissions",
+      memory_enabled: true,
+      profile_enabled: true,
+      capabilities: ["tools"],
+      name: "b",
+      connected: false,
+      running: false,
+    });
+    await startB;
+    resolveA({
+      session_id: "s-a",
+      runtime: "claude_code",
+      native_session_id: null,
+      workdir: "/a",
+      model: "glm-5.2",
+      effort: null,
+      permission: "bypassPermissions",
+      memory_enabled: true,
+      profile_enabled: true,
+      capabilities: ["tools"],
+      name: "a",
+      connected: false,
+      running: false,
+    });
+    await startA;
+
+    expect(store.getState().activeSid).toBe("s-b");
+    expect(store.getState().sessions["s-a"]).toBeUndefined();
+    expect(apiDeleteSession).toHaveBeenCalledWith("s-a");
   });
 
   it("Q4: send routes events to the session that opened the stream, not the active one", async () => {

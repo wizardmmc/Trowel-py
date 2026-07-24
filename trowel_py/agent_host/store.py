@@ -118,7 +118,7 @@ class BindingStore:
         if existing is None:
             raise KeyError(session_id)
         changes: dict[str, Any] = {
-            "updated_at": datetime.now().isoformat(timespec="seconds")
+            "updated_at": datetime.now().isoformat(timespec="microseconds")
         }
         if native_session_id is not None:
             changes["native_session_id"] = native_session_id

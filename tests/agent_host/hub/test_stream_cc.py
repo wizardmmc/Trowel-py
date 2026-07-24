@@ -45,3 +45,26 @@ async def test_stream_cc_seq_persists_across_turns(hub: SessionHub, workdir: Pat
     assert second[0]["seq"] == first[-1]["seq"] + 1, (
         "seq must continue from the prior turn, not reset to 1"
     )
+
+
+async def test_stream_cc_writes_back_effective_effort_and_permission(
+    hub: SessionHub, workdir: Path
+) -> None:
+    binding = hub.create(
+        cc_req(
+            workdir,
+            model="opus",
+            effort="max",
+            permission_mode="acceptEdits",
+        )
+    )
+    host = hub._cc_registry[binding.session_id]
+    host.cc_session_id = "native-cc-config"
+
+    _ = [event async for event in hub.stream(binding.session_id, "hello")]
+
+    persisted = hub.get(binding.session_id)
+    assert persisted is not None
+    assert persisted.model == "opus"
+    assert persisted.effort == "max"
+    assert persisted.permission == "acceptEdits"

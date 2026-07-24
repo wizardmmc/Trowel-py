@@ -81,23 +81,46 @@ def _sse(event: dict[str, Any]) -> bytes:
 
 
 @router.post("/sessions")
-def create_session(
+async def create_session(
     req: CreateAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
+    req = await _await_hub(hub.prepare_create_request, req)
+    explicit = req.model_fields_set
     if req.resume_from is not None:
         _call_hub(
             hub.validate_resume,
             Runtime(req.runtime),
             req.resume_from,
-            memory_enabled=req.memory_enabled,
-            profile_enabled=req.profile_enabled,
-            self_enabled=req.self_enabled,
+            memory_enabled=(
+                req.memory_enabled if "memory_enabled" in explicit else None
+            ),
+            profile_enabled=(
+                req.profile_enabled if "profile_enabled" in explicit else None
+            ),
+            self_enabled=req.self_enabled if "self_enabled" in explicit else None,
         )
     binding = _call_hub(hub.create, req)
+    if req.resume_from is not None and req.runtime == "codex":
+        try:
+            binding = await _await_hub(hub.hydrate_resume, binding.session_id)
+        except HTTPException:
+            await hub.delete(binding.session_id)
+            raise
     return {"success": True, "data": binding.to_dict(), "error": None}
+
+
+@router.get("/session-defaults")
+def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
+    """返回最近成功创建或使用的 runtime 配置；无历史时返回 null。"""
+
+    return {
+        "success": True,
+        "data": hub.latest_session_defaults(),
+        "error": None,
+    }
 
 
 @router.get("/sessions/active")

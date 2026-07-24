@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { getAgentSessionDefaults } from "../../api/agent";
 import {
   useCcStore,
   type PerSessionState,
@@ -28,7 +29,8 @@ export function useSessionLifecycle({
       const activeSession =
         current.sessions[current.activeSid ?? ""];
       if (!activeSession || activeSession.workdir !== workdir) {
-        await store.startSession({ workdir }).catch(() => {
+        const defaults = await getAgentSessionDefaults().catch(() => null);
+        await store.startSession({ workdir, ...defaults }).catch(() => {
           // mount 新建失败时保留空态，用户仍可手动重试。
         });
       }

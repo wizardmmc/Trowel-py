@@ -154,6 +154,7 @@ class SessionHub:
         return self._codex is not None
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
+        req = self._inherit_resume_config(req)
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
         if self._live_connection_count() >= MAX_CONNECTIONS:
@@ -163,6 +164,134 @@ class SessionHub:
         if req.runtime == "claude_code":
             return self._create_cc(req)
         return self._create_codex(req)
+
+    def _inherit_resume_config(
+        self, req: CreateAgentSessionRequest
+    ) -> CreateAgentSessionRequest:
+        if req.resume_from is None:
+            return req
+        previous = self._latest_binding(
+            runtime=Runtime(req.runtime), native_session_id=req.resume_from
+        )
+        if previous is None:
+            return req
+        explicit = req.model_fields_set
+        updates: dict[str, Any] = {}
+        if req.runtime == "claude_code":
+            for field in ("model", "effort"):
+                if field not in explicit:
+                    updates[field] = getattr(previous, field)
+            if "permission_mode" not in explicit:
+                updates["permission_mode"] = previous.permission
+        elif "permission_preset" not in explicit:
+            updates["permission_preset"] = previous.permission_preset
+        for request_field, binding_field in (
+            ("memory_enabled", "memory_enabled"),
+            ("profile_enabled", "profile_enabled"),
+            ("self_enabled", "self_enabled"),
+        ):
+            if request_field not in explicit:
+                updates[request_field] = getattr(previous, binding_field)
+        return req.model_copy(update=updates)
+
+    async def prepare_create_request(
+        self, req: CreateAgentSessionRequest
+    ) -> CreateAgentSessionRequest:
+        """继承 binding，并在线程中补读旧 CC transcript 的缺失配置。"""
+
+        prepared = self._inherit_resume_config(req)
+        if req.runtime != "claude_code" or req.resume_from is None:
+            return prepared
+        from trowel_py.cc_host.session_scan import read_session_config
+
+        native = await asyncio.to_thread(
+            read_session_config, req.workdir, req.resume_from
+        )
+        if native is None:
+            return prepared
+        explicit = req.model_fields_set
+        updates: dict[str, Any] = {}
+        for field in ("model", "effort"):
+            if field not in explicit and getattr(prepared, field) is None:
+                updates[field] = getattr(native, field)
+        if (
+            "permission_mode" not in explicit
+            and prepared.permission_mode is None
+        ):
+            updates["permission_mode"] = native.permission_mode
+        return prepared.model_copy(update=updates)
+
+    def _latest_binding(
+        self,
+        *,
+        runtime: Runtime | None = None,
+        native_session_id: str | None = None,
+    ) -> SessionBinding | None:
+        candidates = [
+            binding
+            for binding in self._store.list_all()
+            if (runtime is None or binding.runtime is runtime)
+            and (
+                native_session_id is None
+                or binding.native_session_id == native_session_id
+            )
+        ]
+        if not candidates:
+            return None
+        return max(
+            enumerate(candidates),
+            key=lambda pair: (
+                pair[1].updated_at,
+                pair[1].created_at,
+                pair[0],
+            ),
+        )[1]
+
+    def latest_session_defaults(self) -> dict[str, Any] | None:
+        """返回最近成功创建或实际使用的会话配置。"""
+
+        bindings = self._store.list_all()
+        if not bindings:
+            return None
+        binding = max(
+            enumerate(bindings),
+            key=lambda pair: (pair[1].updated_at, pair[1].created_at, pair[0]),
+        )[1]
+        defaults: dict[str, Any] = {
+            "runtime": binding.runtime.value,
+            "model": binding.model or "",
+            "effort": binding.effort or "",
+            "permission_mode": (
+                binding.permission or ""
+                if binding.runtime is Runtime.CLAUDE_CODE
+                else ""
+            ),
+            "memory_enabled": binding.memory_enabled,
+            "profile_enabled": binding.profile_enabled,
+        }
+        if binding.runtime is Runtime.CODEX and binding.permission_preset is not None:
+            defaults["permission_preset"] = binding.permission_preset
+        return defaults
+
+    async def hydrate_resume(self, session_id: str) -> SessionBinding:
+        """Codex resume 只挂载原生 thread，并在首条消息前写回有效事实。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX or binding.native_session_id is None:
+            return binding
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        try:
+            await self._codex.attach(session)
+            self._writeback_codex_native(session_id, session)
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 统一映射为可诊断的 runtime 错误。
+            raise RuntimeTurnError(f"codex resume failed: {exc}") from exc
+        return self._require(session_id)
 
     def _create_cc(self, req: CreateAgentSessionRequest) -> SessionBinding:
         from trowel_py.cc_host.schemas import CreateSessionRequest
@@ -660,6 +789,8 @@ class SessionHub:
                 session_id,
                 native_session_id=cc_session_id,
                 model=model,
+                effort=getattr(host, "effort", None),
+                permission=getattr(host, "permission_mode", None),
             )
         except KeyError:
             _log.debug("cc writeback skipped, binding %s gone", session_id)

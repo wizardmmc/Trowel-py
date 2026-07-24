@@ -40,6 +40,20 @@ export interface CreateAgentSessionParams {
   readonly profile_enabled?: boolean;
 }
 
+export interface AgentSessionDefaults {
+  readonly runtime: Runtime;
+  readonly model: string;
+  readonly effort: string;
+  readonly permission_mode: string;
+  readonly permission_preset?:
+    | "follow"
+    | "read-only"
+    | "workspace-write"
+    | "danger-full-access";
+  readonly memory_enabled: boolean;
+  readonly profile_enabled: boolean;
+}
+
 export interface AgentHistoryRow {
   readonly runtime: Runtime;
   readonly native_session_id: string | null;
@@ -138,6 +152,12 @@ export async function createAgentSession(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
+}
+
+export async function getAgentSessionDefaults(): Promise<AgentSessionDefaults | null> {
+  return request<AgentSessionDefaults | null>(
+    `${AGENT_API_BASE}/session-defaults`,
+  );
 }
 
 export interface ActiveAgentListResult {

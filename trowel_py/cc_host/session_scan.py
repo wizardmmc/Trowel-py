@@ -29,6 +29,13 @@ class SessionSummary:
     updated_at: float  # 文件修改时间，Unix 秒
 
 
+@dataclass(frozen=True)
+class SessionConfigSummary:
+    model: str | None
+    effort: str | None
+    permission_mode: str | None
+
+
 def cc_projects_root() -> Path:
     return Path.home() / ".claude" / "projects"
 
@@ -53,6 +60,81 @@ def _is_valid_uuid_session_id(stem: str) -> bool:
 def count_sessions(workdir: str | os.PathLike) -> int:
     """复用恢复列表的过滤规则，避免裸 glob 计入 sidechain 和元数据文件。"""
     return len(list_sessions(workdir))
+
+
+def read_session_config(
+    workdir: str | os.PathLike, cc_session_id: str
+) -> SessionConfigSummary | None:
+    """从主 transcript 顺序提取最后一组已确认的 CC 配置事实。"""
+
+    if not _is_valid_uuid_session_id(cc_session_id):
+        return None
+    path = (
+        cc_projects_root()
+        / workdir_to_slug(workdir)
+        / f"{cc_session_id}.jsonl"
+    )
+    if not path.is_file():
+        return None
+    model: str | None = None
+    effort: str | None = None
+    permission_mode: str | None = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get("type")
+                candidate_model: object = None
+                if event_type == "system" and event.get("subtype") == "init":
+                    candidate_model = event.get("model")
+                elif event_type == "assistant" and isinstance(
+                    event.get("message"), dict
+                ):
+                    candidate_model = event["message"].get("model")
+                if (
+                    isinstance(candidate_model, str)
+                    and candidate_model
+                    and candidate_model != "<synthetic>"
+                ):
+                    model = candidate_model
+
+                top_permission = event.get("permissionMode")
+                if isinstance(top_permission, str) and top_permission:
+                    permission_mode = top_permission
+
+                attachment = event.get("attachment")
+                response = (
+                    attachment.get("response")
+                    if isinstance(attachment, dict)
+                    else None
+                )
+                if not isinstance(response, dict):
+                    continue
+                response_permission = response.get("permission_mode")
+                if isinstance(response_permission, str) and response_permission:
+                    permission_mode = response_permission
+                response_effort = response.get("effort")
+                level = (
+                    response_effort.get("level")
+                    if isinstance(response_effort, dict)
+                    else None
+                )
+                if isinstance(level, str) and level:
+                    effort = level
+    except OSError:
+        return None
+    if model is None and effort is None and permission_mode is None:
+        return None
+    return SessionConfigSummary(
+        model=model,
+        effort=effort,
+        permission_mode=permission_mode,
+    )
 
 
 def list_sessions(

@@ -84,6 +84,7 @@ export function createCcStore() {
     let historyGeneration = 0;
     let historyLoadMorePromise: Promise<void> | null = null;
     let historyLoadMoreToken: symbol | null = null;
+    let sessionStartGeneration = 0;
 
     function applyTo(sid: string, event: AgentEvent): void {
       set((state) => {
@@ -181,11 +182,20 @@ export function createCcStore() {
       historyError: null,
 
       startSession: async (params) => {
+        const generation = ++sessionStartGeneration;
         // 未连接的临时会话不计入并发上限，切换前直接丢弃。
         await dropTempActive();
         const runtime: Runtime = params.runtime ?? "claude_code";
         const session = await apiCreateSession({ ...params, runtime });
         const sid = session.session_id;
+        if (generation !== sessionStartGeneration) {
+          try {
+            await apiDeleteSession(sid);
+          } catch {
+            // 迟到请求不能重新占据界面；后端清理保持 best-effort。
+          }
+          return session;
+        }
         const perSession = createNewSessionState(session, params);
         set((state) => ({
           ...state,
@@ -245,13 +255,11 @@ export function createCcStore() {
             if (merged[b.session_id]) continue;
             merged[b.session_id] = createReconciledSessionState(b);
           }
-          const fallback =
-            activeId ?? (backend.length > 0 ? backend[0].session_id : null);
           const activeSid =
             state.activeSid && merged[state.activeSid]
               ? state.activeSid
-              : fallback && merged[fallback]
-                ? fallback
+              : activeId && merged[activeId]
+                ? activeId
                 : state.activeSid;
           return { ...state, sessions: merged, activeSid };
         });
@@ -573,6 +581,7 @@ export function createCcStore() {
       },
 
       reset: () => {
+        sessionStartGeneration += 1;
         for (const s of Object.values(get().sessions)) {
           s.abort?.abort();
         }

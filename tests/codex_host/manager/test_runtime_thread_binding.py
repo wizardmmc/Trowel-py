@@ -96,6 +96,40 @@ async def test_second_turn_reuses_thread_loaded_in_current_connection() -> None:
     await manager.close()
 
 
+async def test_attach_resumes_thread_without_starting_turn() -> None:
+    async def behavior():
+        initialize = yield Step.recv()
+        yield _init_resp(initialize["id"])
+        yield Step.recv()
+        resume = yield Step.recv()
+        assert resume["method"] == "thread/resume"
+        yield Step.send(
+            {"id": resume["id"], "result": _thread_result("thread-existing")}
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(
+        CodexSessionConfig(
+            "resume-only",
+            "/tmp/x",
+            initial_thread_id="thread-existing",
+        )
+    )
+    manager.register(session)
+    # 模拟旧连接刚断、EOF watcher 尚未清理 attachment 标记的窗口。
+    manager._attached_session_ids.add(session.session_id)  # noqa: SLF001
+
+    binding = await manager.attach(session)
+
+    assert binding.thread_id == "thread-existing"
+    methods = [message["method"] for message in fake.received if "method" in message]
+    assert methods.count("thread/resume") == 1
+    assert "turn/start" not in methods
+    await manager.close()
+
+
 async def test_live_sessions_cannot_share_one_native_thread() -> None:
 
     fake = FakeAppServer(_behavior_server(on_turn=_deltas))

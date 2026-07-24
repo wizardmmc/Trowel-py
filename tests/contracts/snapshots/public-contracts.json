@@ -2190,6 +2190,27 @@
           }
         }
       },
+      "/api/agent/session-defaults": {
+        "get": {
+          "summary": "Get Session Defaults",
+          "description": "返回最近成功创建或使用的 runtime 配置；无历史时返回 null。",
+          "operationId": "get_session_defaults_api_agent_session_defaults_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Session Defaults Api Agent Session Defaults Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/active": {
         "get": {
           "summary": "List Active",

@@ -25,7 +25,7 @@ from trowel_py.codex_host.events import (
     immutable_payload,
 )
 from trowel_py.codex_host import manager_params
-from trowel_py.codex_host.session import CodexSession, TurnConflictError
+from trowel_py.codex_host.session import CodexSession, ThreadBinding, TurnConflictError
 from trowel_py.codex_host.pending_requests import (
     PendingRequest,
     PendingRequestKind,
@@ -301,6 +301,56 @@ class CodexHostManager:
             raise ProtocolViolationError("thread/read result.thread is not an object")
         return dict(thread)
 
+    async def attach(self, session: CodexSession) -> ThreadBinding:
+        """按当前连接代际 start/resume thread，但不启动 turn。"""
+
+        self._require_registered(session)
+        client = await self.ensure_ready()
+        self._require_registered(session)
+        if session.session_id in self._attached_session_ids:
+            binding = session.binding
+            if binding is None:
+                raise ProtocolViolationError("attached session has no thread binding")
+            return binding
+        reserved_thread_id: str | None = None
+        binding = session.binding
+        try:
+            if binding is not None:
+                owner = self._thread_to_session.get(binding.thread_id)
+                if owner is None:
+                    self._thread_to_session[binding.thread_id] = session
+                    reserved_thread_id = binding.thread_id
+                elif owner is not session:
+                    raise TurnConflictError(
+                        f"thread {binding.thread_id} is already attached to "
+                        f"session {owner.session_id}"
+                    )
+            if session.is_new_thread:
+                result = await client.request(
+                    "thread/start",
+                    self._thread_start_params(session),
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+            else:
+                result = await client.request(
+                    "thread/resume",
+                    self._thread_resume_params(session),
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+            self._require_registered(session)
+            attached = session.attach_thread_binding(result)
+            session.emit_session_started_if_first()
+            self._attached_session_ids.add(session.session_id)
+            self._thread_to_session[attached.thread_id] = session
+            return attached
+        except BaseException:
+            if (
+                reserved_thread_id is not None
+                and self._thread_to_session.get(reserved_thread_id) is session
+            ):
+                self._thread_to_session.pop(reserved_thread_id, None)
+            raise
+
     async def send(
         self,
         session: CodexSession,
@@ -318,48 +368,12 @@ class CodexHostManager:
 
         self._require_registered(session)
         session.begin_send()
-        reserved_thread_id: str | None = None
         try:
+            await self.attach(session)
             client = await self.ensure_ready()
-            self._require_registered(session)
-            binding = session.binding
-            if binding is not None:
-                owner = self._thread_to_session.get(binding.thread_id)
-                if owner is None:
-                    # 首次 resume await 前同步占位，避免两个 session
-                    # 同时取得同一原生 thread 的通知路由。
-                    self._thread_to_session[binding.thread_id] = session
-                    reserved_thread_id = binding.thread_id
-                elif owner is not session:
-                    raise TurnConflictError(
-                        f"thread {binding.thread_id} is already attached to "
-                        f"session {owner.session_id}"
-                    )
-            if session.is_new_thread:
-                result = await client.request(
-                    "thread/start",
-                    self._thread_start_params(session),
-                    timeout=_REQUEST_TIMEOUT_S,
-                )
-                self._require_registered(session)
-                session.attach_thread_binding(result)
-                session.emit_session_started_if_first()
-                self._attached_session_ids.add(session.session_id)
-            elif session.session_id not in self._attached_session_ids:
-                result = await client.request(
-                    "thread/resume",
-                    self._thread_resume_params(session),
-                    timeout=_REQUEST_TIMEOUT_S,
-                )
-                self._require_registered(session)
-                session.attach_thread_binding(result)
-                session.emit_session_started_if_first()
-                self._attached_session_ids.add(session.session_id)
             assert session.binding is not None
             self._require_registered(session)
             self._thread_to_session[session.binding.thread_id] = session
-            # 挂载已经成立；turn/start 失败时仍保留路由供重试复用。
-            reserved_thread_id = None
             if before_turn_start is not None:
                 before_turn_start(session)
             self._require_registered(session)
@@ -398,12 +412,6 @@ class CodexHostManager:
             session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
-            if (
-                reserved_thread_id is not None
-                and self._thread_to_session.get(reserved_thread_id) is session
-            ):
-                self._thread_to_session.pop(reserved_thread_id, None)
-            # 只撤销尚未 attach 的临时路由占位；attach 后的路由保留。
             # 所有失败都需释放 _sending，成功路径由 record_turn_started 清除。
             session.abort_send()
             raise

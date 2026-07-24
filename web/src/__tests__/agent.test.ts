@@ -6,6 +6,7 @@ import {
   answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
+  getAgentSessionDefaults,
   getAgentSession,
   interruptAgentSession,
   listActiveAgentSessions,
@@ -62,6 +63,28 @@ describe("api/agent", () => {
     expect(
       (vi.mocked(globalThis.fetch).mock.calls[0][0] as string),
     ).toBe("/api/agent/sessions/active");
+  });
+
+  it("getAgentSessionDefaults returns the last effective launch config", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockEnvelope({
+        runtime: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        permission_mode: "",
+        permission_preset: "workspace-write",
+        memory_enabled: true,
+        profile_enabled: false,
+      }),
+    );
+
+    const defaults = await getAgentSessionDefaults();
+
+    expect(defaults?.runtime).toBe("codex");
+    expect(defaults?.effort).toBe("high");
+    expect(vi.mocked(globalThis.fetch).mock.calls[0][0]).toBe(
+      "/api/agent/session-defaults",
+    );
   });
 
   it("activateAgentSession POSTs to /activate", async () => {

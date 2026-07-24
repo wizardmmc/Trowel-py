@@ -10,9 +10,17 @@ from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 
 
 class FakeCcHost:
-    def __init__(self, workdir: str, model: str = "glm-5.2") -> None:
+    def __init__(
+        self,
+        workdir: str,
+        model: str = "glm-5.2",
+        effort: str | None = None,
+        permission_mode: str = "bypassPermissions",
+    ) -> None:
         self.workdir = workdir
         self.model = model
+        self.effort = effort
+        self.permission_mode = permission_mode
         self.running = False
         self.is_dead = False
         self.memory_enabled = True
@@ -43,6 +51,8 @@ class FakeCodexManager:
         self.thread_reads: dict[str, dict[str, Any]] = {}
         self.list_thread_calls: list[tuple[str, int]] = []
         self.read_thread_calls: list[str] = []
+        self.attached: list[str] = []
+        self.attach_results: dict[str, dict[str, Any]] = {}
         self.models: list[dict[str, Any]] = [
             {
                 "id": "gpt-5.6-sol",
@@ -113,6 +123,12 @@ class FakeCodexManager:
         self.read_thread_calls.append(thread_id)
         return self.thread_reads[thread_id]
 
+    async def attach(self, session: Any) -> Any:
+        thread_id = session.config.initial_thread_id
+        self.attached.append(session.session_id)
+        result = self.attach_results[thread_id]
+        return session.attach_thread_binding(result)
+
     def answer_request(self, session_id: str, request_id: str, decision: str) -> Any:
 
         self.answered_requests.append((session_id, request_id, decision))
@@ -170,7 +186,12 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
     ) -> OpenedCcSession:
         del proxy_base_url, settings_path
         sid = "cc-" + uuid.uuid4().hex[:8]
-        host = FakeCcHost(req.workdir, model=req.model or "glm-5.2")
+        host = FakeCcHost(
+            req.workdir,
+            model=req.model or "glm-5.2",
+            effort=req.effort,
+            permission_mode=req.permission_mode or "bypassPermissions",
+        )
         target = reg if reg is not None else registry
         target[sid] = host
         registry[sid] = host

@@ -21,6 +21,7 @@ vi.mock("../api/agent", () => ({
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
   listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
+  getAgentSessionDefaults: vi.fn().mockResolvedValue(null),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
   listAgentRequests: vi.fn().mockResolvedValue([]),
@@ -42,6 +43,7 @@ import { SessionView } from "../components/cc/SessionView";
 import { useCcStore } from "../stores/ccStore";
 import {
   createAgentSession as createSession,
+  getAgentSessionDefaults,
   listAgentHistory as listSessions,
   listActiveAgentSessions as listActiveSessions,
   listAgentRuntimes,
@@ -53,6 +55,7 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getAgentSessionDefaults).mockResolvedValue(null);
   localStorage.clear();
   useCcStore.setState({
     sessions: {},
@@ -130,6 +133,69 @@ describe("SessionView", () => {
     expect(useCcStore.getState().sessions["sid-/b"]?.workdir).toBe("/b");
     expect(useCcStore.getState().sessions["sid-/a"]).toBeUndefined();
     expect(vi.mocked(listSessions).mock.calls.at(-1)?.[0]).toBe("/b");
+  });
+
+  it("首次进入 Agent 页时用最近实际配置自动创建可发送会话", async () => {
+    vi.mocked(getAgentSessionDefaults).mockResolvedValueOnce({
+      runtime: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      permission_mode: "",
+      permission_preset: "workspace-write",
+      memory_enabled: false,
+      profile_enabled: true,
+    });
+
+    render(<SessionView workdir="/wd" />);
+
+    await waitFor(() =>
+      expect(vi.mocked(createSession)).toHaveBeenCalledWith({
+        workdir: "/wd",
+        runtime: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        permission_mode: "",
+        permission_preset: "workspace-write",
+        memory_enabled: false,
+        profile_enabled: true,
+      }),
+    );
+  });
+
+  it("后端重启后不把 stale binding 当 active，而是按最近配置新建", async () => {
+    vi.mocked(listActiveSessions).mockResolvedValueOnce({
+      sessions: [
+        {
+          session_id: "stale",
+          runtime: "claude_code",
+          native_session_id: "old-native",
+          workdir: "/wd",
+          model: "opus",
+          effort: "max",
+          permission: "bypassPermissions",
+          memory_enabled: true,
+          profile_enabled: true,
+          capabilities: ["tools"],
+          name: "wd",
+          connected: false,
+          running: false,
+        },
+      ],
+      activeId: null,
+    });
+    vi.mocked(getAgentSessionDefaults).mockResolvedValueOnce({
+      runtime: "claude_code",
+      model: "opus",
+      effort: "max",
+      permission_mode: "bypassPermissions",
+      memory_enabled: true,
+      profile_enabled: true,
+    });
+
+    render(<SessionView workdir="/wd" />);
+
+    await waitFor(() => expect(vi.mocked(createSession)).toHaveBeenCalled());
+    expect(useCcStore.getState().activeSid).not.toBe("stale");
   });
 
   it("startSession 失败时历史仍刷新到当前 workdir（兜底，不停留在旧路径）", async () => {
@@ -220,6 +286,48 @@ describe("SessionView", () => {
       memory_enabled: true,
       profile_enabled: true,
     });
+  });
+
+  it("新会话弹窗优先继承后端最近实际配置", async () => {
+    vi.mocked(getAgentSessionDefaults)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        runtime: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        permission_mode: "",
+        permission_preset: "workspace-write",
+        memory_enabled: false,
+        profile_enabled: true,
+      });
+    vi.mocked(listAgentRuntimes).mockResolvedValue([
+      {
+        runtime: "codex",
+        label: "Codex",
+        native: "app-server",
+        capabilities: [],
+        connected: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "新建 Agent 会话",
+    });
+    expect(dialog.querySelectorAll('[role="radio"]')[1]).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "workspace-write" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    expect(screen.getByRole("switch", { name: "Memory 开关" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
   });
 
   it("does not overwrite the previous config when explicit creation fails", async () => {

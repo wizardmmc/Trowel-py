@@ -103,7 +103,7 @@ def make_binding(
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。"""
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="microseconds")
     return SessionBinding(
         session_id=session_id,
         runtime=runtime,
