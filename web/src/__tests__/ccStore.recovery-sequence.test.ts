@@ -119,4 +119,146 @@ describe("createCcStore — per-session event sequence", () => {
     expect(store.getState().sessions.s2.lastSeq).toBe(2);
     expect(store.getState().sessions.s2.needsReplay).toBe(false);
   });
+
+  it("applies the current request error when a restarted backend resets seq", async () => {
+    const store = createCcStore();
+    mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+
+    const first = store.getState().send("first");
+    stream.apply!(ev("finished", {}, { runtime: "codex", seq: 87 }));
+    await releaseAllStreams();
+    await first;
+
+    const second = store.getState().send("please commit");
+    stream.apply!(
+      ev(
+        "error",
+        {
+          subclass: "host_error",
+          errors: ["codex session s1 not live"],
+          api_error_status: null,
+        },
+        { runtime: "codex", seq: 1 },
+      ),
+    );
+    await releaseAllStreams();
+    await second;
+
+    const session = store.getState().sessions.s1;
+    const turn = session.turns.at(-1)!;
+    expect(session.phase).toBe("error");
+    expect(turn.status).toBe("error");
+    expect(turn.items.at(-1)).toMatchObject({
+      kind: "error",
+      subclass: "host_error",
+      errors: ["codex session s1 not live"],
+    });
+    expect(session.lastSeq).toBe(1);
+  });
+
+  it("still flags a seq gap when the current request error moves forward", async () => {
+    const store = createCcStore();
+    mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+
+    const sending = store.getState().send("hello");
+    stream.apply!(ev("text", { text: "partial" }, { runtime: "codex", seq: 1 }));
+    stream.apply!(
+      ev(
+        "error",
+        {
+          subclass: "host_error",
+          errors: ["stream failed"],
+          api_error_status: null,
+        },
+        { runtime: "codex", seq: 3 },
+      ),
+    );
+    await releaseAllStreams();
+    await sending;
+
+    const session = store.getState().sessions.s1;
+    expect(session.phase).toBe("error");
+    expect(session.lastSeq).toBe(3);
+    expect(session.needsReplay).toBe(true);
+  });
+
+  it("drops a repeated low-seq request error after accepting the reset", async () => {
+    const store = createCcStore();
+    mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+
+    const first = store.getState().send("first");
+    stream.apply!(ev("finished", {}, { runtime: "codex", seq: 87 }));
+    await releaseAllStreams();
+    await first;
+
+    const second = store.getState().send("second");
+    const error = ev(
+      "error",
+      {
+        subclass: "host_error",
+        errors: ["codex session s1 not live"],
+        api_error_status: null,
+      },
+      { runtime: "codex", seq: 1 },
+    );
+    stream.apply!(error);
+    stream.apply!(error);
+    await releaseAllStreams();
+    await second;
+
+    const items = store.getState().sessions.s1.turns.at(-1)!.items;
+    expect(items.filter((item) => item.kind === "error")).toHaveLength(1);
+  });
+
+  it("turns a clean empty stream into a visible protocol error", async () => {
+    const store = createCcStore();
+    mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
+    await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
+
+    const sending = store.getState().send("hello");
+    await releaseAllStreams();
+    await sending;
+
+    const session = store.getState().sessions.s1;
+    expect(session.phase).toBe("error");
+    expect(session.turns[0].status).toBe("error");
+    expect(session.turns[0].items.at(-1)).toMatchObject({
+      kind: "error",
+      subclass: "stream_closed_without_terminal",
+    });
+  });
+
+  it("still completes a local slash command without a finished event", async () => {
+    const store = createCcStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+
+    const sending = store.getState().send("/cost");
+    stream.apply!(ev("local_command", { content: "cost: 0.1" }));
+    await releaseAllStreams();
+    await sending;
+
+    const session = store.getState().sessions.s1;
+    expect(session.phase).toBe("done");
+    expect(session.turns[0].status).toBe("done");
+  });
+
+  it("still completes a model restart status without a finished event", async () => {
+    const store = createCcStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+
+    const sending = store.getState().send("/model opus");
+    stream.apply!(ev("status", { stage: "restarting: model=opus" }));
+    stream.apply!(ev("model_changed", { model: "opus", effort: null }));
+    await releaseAllStreams();
+    await sending;
+
+    const session = store.getState().sessions.s1;
+    expect(session.phase).toBe("done");
+    expect(session.turns[0].status).toBe("done");
+  });
 });

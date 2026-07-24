@@ -323,6 +323,7 @@ export type TrowelEvent =
 
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([
   "error_during_execution",
+  "stream_closed_without_terminal",
 ]);
 
 export const TERMINAL_ERROR_SUBCLASSES = new Set([

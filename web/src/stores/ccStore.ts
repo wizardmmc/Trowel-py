@@ -86,12 +86,20 @@ export function createCcStore() {
     let historyLoadMoreToken: symbol | null = null;
     let sessionStartGeneration = 0;
 
-    function applyTo(sid: string, event: AgentEvent): void {
+    function applyTo(
+      sid: string,
+      event: AgentEvent,
+      options: { readonly currentRequest?: boolean } = {},
+    ): boolean {
+      let applied = false;
       set((state) => {
         const cur = state.sessions[sid];
         if (!cur) return state;
-        const result = reduceAgentEvent(cur, event);
+        const result = reduceAgentEvent(cur, event, {
+          acceptRequestErrorSeqReset: options.currentRequest,
+        });
         if (result.kind === "duplicate") return state;
+        applied = true;
         if (result.kind === "session_exited") {
           const sessions = { ...state.sessions };
           delete sessions[sid];
@@ -104,6 +112,7 @@ export function createCcStore() {
           activeSid: state.activeSid,
         };
       });
+      return applied;
     }
 
     function applyApprovalRequest(
@@ -454,11 +463,17 @@ export function createCcStore() {
         if (!accepted) return;
 
         let transportOk = false;
+        let allowNonTerminalClose = false;
         try {
           await postMessageStream(
             messagesUrl(sid),
             { text },
-            (ev) => applyTo(sid, ev),
+            (ev) => {
+              const applied = applyTo(sid, ev, { currentRequest: true });
+              if (applied && permitsNonTerminalClose(ev)) {
+                allowNonTerminalClose = true;
+              }
+            },
             { signal: abort.signal },
           );
           transportOk = true;
@@ -482,6 +497,7 @@ export function createCcStore() {
             const closed = endActiveTurnOnStreamClose(s, {
               aborted: abort.signal.aborted,
               transportOk,
+              allowNonTerminalClose,
             });
             return {
               ...state,
@@ -610,3 +626,13 @@ export function useActiveSession(): PerSessionState | null {
 }
 
 export type { AgentHistoryRow, AgentSession, Runtime };
+
+function permitsNonTerminalClose(event: AgentEvent): boolean {
+  if (event.type === "local_command") return true;
+  const stage = event.payload.stage;
+  return (
+    event.type === "status" &&
+    typeof stage === "string" &&
+    stage.startsWith("restarting:")
+  );
+}

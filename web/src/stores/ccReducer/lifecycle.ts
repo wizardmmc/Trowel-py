@@ -1,4 +1,5 @@
 import type { Phase, ReducerState } from "./model";
+import { applyErrorEvent } from "./terminal";
 
 /**
  * 在 live SSE 干净关闭但没有终态事件时结束 active turn。
@@ -9,7 +10,11 @@ import type { Phase, ReducerState } from "./model";
  */
 export function endActiveTurnOnStreamClose(
   state: ReducerState,
-  opts: { aborted: boolean; transportOk: boolean },
+  opts: {
+    aborted: boolean;
+    transportOk: boolean;
+    allowNonTerminalClose?: boolean;
+  },
 ): ReducerState {
   if (!opts.transportOk || opts.aborted) {
     return state;
@@ -18,6 +23,15 @@ export function endActiveTurnOnStreamClose(
   const last = state.turns[state.turns.length - 1];
   if (!last || last.status !== "active") {
     return state;
+  }
+
+  if (!opts.allowNonTerminalClose) {
+    return applyErrorEvent(state, {
+      type: "error",
+      subclass: "stream_closed_without_terminal",
+      errors: ["Agent stream closed before a terminal event"],
+      api_error_status: null,
+    });
   }
 
   const lastIndex = state.turns.length - 1;

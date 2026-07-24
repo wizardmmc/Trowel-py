@@ -8,16 +8,33 @@ export type AgentEventReduction =
   | { readonly kind: "session_exited" }
   | { readonly kind: "updated"; readonly session: PerSessionState };
 
+interface AgentEventReductionOptions {
+  readonly acceptRequestErrorSeqReset?: boolean;
+}
+
 /** 把一个带 seq 的统一事件归约到单个会话，不处理 Zustand 字典编排。 */
 export function reduceAgentEvent(
   current: PerSessionState,
   event: AgentEvent,
+  options: AgentEventReductionOptions = {},
 ): AgentEventReduction {
-  if (current.lastSeq !== null && event.seq <= current.lastSeq) {
+  const activeTurn = current.turns.at(-1)?.status === "active";
+  const requestErrorSeqReset =
+    options.acceptRequestErrorSeqReset === true &&
+    activeTurn &&
+    event.type === "error" &&
+    current.lastSeq !== null &&
+    event.seq <= current.lastSeq;
+  if (
+    current.lastSeq !== null &&
+    event.seq <= current.lastSeq &&
+    !requestErrorSeqReset
+  ) {
     return { kind: "duplicate" };
   }
+  const baseline = requestErrorSeqReset ? { ...current, lastSeq: null } : current;
   const gapped =
-    current.lastSeq !== null && event.seq > current.lastSeq + 1;
+    baseline.lastSeq !== null && event.seq > baseline.lastSeq + 1;
 
   // Claude Code 进程退出会删除连接行；Codex host_exited 仍保留绑定。
   if (event.type === "session_exited") {
@@ -25,12 +42,12 @@ export function reduceAgentEvent(
   }
 
   const flat = agentEventToTrowel(event);
-  const reduced = reduceEvent(current, flat);
+  const reduced = reduceEvent(baseline, flat);
   let next: PerSessionState = {
-    ...current,
+    ...baseline,
     ...reduced,
     lastSeq: event.seq,
-    needsReplay: current.needsReplay || gapped,
+    needsReplay: baseline.needsReplay || gapped,
   };
 
   const effort = (flat as { effort?: string | null }).effort;

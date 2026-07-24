@@ -108,11 +108,12 @@ describe("reduceEvent — turn duration (用时)", () => {
 });
 
 describe("endActiveTurnOnStreamClose — slash commands end the turn without a finished", () => {
-  it("marks an active turn done on a clean stream close with no terminal event", () => {
+  it("marks an explicitly allowed local turn done on a clean stream close", () => {
     const before = withOpenTurn("/model glm-5.1");
     const after = endActiveTurnOnStreamClose(before, {
       aborted: false,
       transportOk: true,
+      allowNonTerminalClose: true,
     });
     expect(after.turns[0].status).toBe("done");
     expect(after.phase).toBe("done");
@@ -159,6 +160,7 @@ describe("endActiveTurnOnStreamClose — slash commands end the turn without a f
     const after = endActiveTurnOnStreamClose(before, {
       aborted: false,
       transportOk: true,
+      allowNonTerminalClose: true,
     });
     expect(after.turns[0].status).toBe("done");
     expect(after.meta.costUsd).toBe(0.123);
