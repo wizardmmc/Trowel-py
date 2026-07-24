@@ -1,14 +1,4 @@
-"""CCHost — long-lived CC subprocess manager.
-
-One trowel session owns one long-lived `claude -p --input-format stream-json`
-subprocess. send() feeds a user message and yields trowel events. Interrupt
-(SIGINT) and a genuine stall both kill the process; the next send() lazily
-respawns via `--resume <cc_session_id>`, preserving history.
-
-Retry/fallback is left to CC (--fallback-model). The host only transparently
-reports retries, restarts once on a stall per turn, and surfaces an error on
-the second stall.
-"""
+"""管理每个 trowel 会话独占的长驻 CC stream-json 子进程。"""
 
 from __future__ import annotations
 
@@ -23,7 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from trowel_py.cc_host import checkpoint
+from trowel_py.cc_host import checkpoint, session_registration
 from trowel_py.cc_host.input import (
     ExitSession,
     LocalCommand,
@@ -72,23 +62,12 @@ from trowel_py.model_os.self_assembler import build_session_injection
 
 logger = logging.getLogger(__name__)
 
-# slice-036 TEMP DIAGNOSTIC: log the cc event timeline to /tmp to root-cause
-# the "reply lags one turn" bug (problem 3/4). Records send boundaries + the
-# `result` event's watcher state, so we can tell whether cc pushes `result`
-# before a workflow finishes (=> post-result events land on the next turn).
-# Remove once root-caused + fixed.
 def _wf_debug(msg: str) -> None:
-    """Diagnostic stub — slice-036 root-caused + fixed (see
-    docs/design/front-end/cc-workflow-event-model.md). Real writes removed;
-    calls remain as no-op trace points for future debugging.
-    """
+    """保留调用位作为诊断接缝，默认不产生 I/O。"""
     pass
 
 
-
-
 def _user_msg(text: str) -> bytes:
-    """Encode a user text message in CC's stream-json input shape."""
     payload = {
         "type": "user",
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
@@ -103,22 +82,7 @@ def _control_response_msg(
     updated_input: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> bytes:
-    """Encode a control_response for CC's stream-json input (slice-025-c).
-
-    Used to answer AskUserQuestion's control_request(can_use_tool):
-    behavior=allow + updatedInput.{questions, answers, annotations} carries the
-    user's selections back to cc (answers is a required record — 052 ZodError
-    when absent). behavior=deny + message declines the question.
-
-    Args:
-        request_id: must match the control_request's request_id (cc blocks on it).
-        behavior: "allow" or "deny".
-        updated_input: the updatedInput record (required for allow, omitted for deny).
-        message: deny reason (required for deny, omitted for allow).
-
-    Returns:
-        newline-terminated JSON bytes ready for cc stdin.
-    """
+    """编码 AskUserQuestion 回包；allow 时 `updatedInput` 必须包含 `answers`。"""
     response: dict[str, Any] = {"behavior": behavior}
     if updated_input is not None:
         response["updatedInput"] = updated_input
@@ -136,16 +100,11 @@ def _control_response_msg(
 
 
 async def _default_spawner(args: list[str], kwargs: dict[str, Any]) -> Any:
-    """Default spawner: a real asyncio subprocess."""
     return await asyncio.create_subprocess_exec(*args, **kwargs)
 
 
 class CCHost:
-    """Owns one CC subprocess per session.
-
-    The spawner/now hooks exist so tests can inject a fake process and a
-    virtual clock instead of spawning real `claude`.
-    """
+    """管理单个会话的 CC 子进程与 stream-json 生命周期。"""
 
     def __init__(
         self,
@@ -174,58 +133,11 @@ class CCHost:
         profile_enabled: bool = True,
         self_enabled: bool = True,
     ) -> None:
-        """Store session config and the injection hooks for tests.
-
-        Args:
-            session_id: trowel's id for this session (registry key).
-            workdir: subprocess cwd for CC (loads that project's .claude/).
-            model: override --model; None (default) omits the flag and CC reads
-                ~/.claude/settings.json (slice-027: the old glm-5.2 was a placeholder).
-            effort: override --effort; None (default) omits the flag (was medium).
-            permission_mode: CC --permission-mode (default bypassPermissions).
-            resume_from: optional CC session id to resume on first spawn.
-            proxy_base_url: slice-030 local reverse proxy URL the CC subprocess
-                targets as its ANTHROPIC_BASE_URL. None disables the proxy
-                (pre-030 behavior / tests).
-            settings_path: path to ~/.claude/settings.json, read for provider-var
-                passthrough (token/model) when the proxy is on.
-            spawner: async factory (args, kwargs) -> subprocess; defaults to a
-                real asyncio subprocess, tests inject a fake.
-            now: monotonic clock callable, injected so stalled tests are deterministic.
-            stalled_threshold_mild: quiet seconds before the mild heads-up
-                (StalledWarningEvent severity=mild). See StalledDetector.
-            stalled_threshold_severe: quiet seconds before the severe heads-up.
-            stalled_threshold_kill: quiet seconds before the hard cap (service
-                kills cc + emits ErrorEvent). 30min default — genuine deadlock
-                (issue #53584) backstop; normal GLM waits stay well under it.
-            stalled_tick: how long to wait between stalled checks on readline.
-            session_registrar: slice-040-b injectable registrar (duck-typed
-                ``SessionRegistrar``). None (default) → the real
-                ``~/.trowel/memory/meta/sessions.db`` is written via the lazy
-                import path (unchanged for production + existing tests). Tests
-                inject a no-op/capturing fake so they never touch the real db.
-            session_kind: ``"user"`` (default) or ``"review"`` (the daily-review
-                distillation sessions themselves). Stamped on the SessionRecord
-                so ``find_pending(exclude_kinds=["review"])`` keeps the
-                distillation sessions out of their own queue (C-5: kind, not
-                workdir-path guessing).
-            mcp_config: path to an mcp-config JSON attaching the memory MCP
-                server (search/read/outcome). None → no ``--mcp-config`` flag.
-                Dropped to None when ``memory_enabled`` is False (C-3: memory off
-                closes the MCP read-path too), frozen at construction.
-            memory_enabled: slice-060 A/B switch, frozen for the session. False
-                drops every memory read-path section (core/L0/diary/root) and
-                detaches the memory MCP, for a clean "no stored memory" baseline.
-            profile_enabled: slice-060 A/B switch, frozen for the session. False
-                drops only the ``# 用户画像`` section; memory read-paths are
-                unaffected. Isolates the effect of the explicit profile.
-        """
         self.session_id = session_id
         self.workdir = workdir
-        self.running = False  # slice-028 D2: send() 期间 True（GET /sessions/active 用）
-        # slice-028 v2: hold a strong ref to the background drain task so the
-        # event loop doesn't GC it mid-run (Python's loop keeps only a weak ref
-        # to tasks created via create_task). Cleared in the drain's finally.
+        # routes 与 hub 会读取；send 或断线 drain 持有 stdout reader 时为 True。
+        self.running = False
+        # 事件循环只弱引用 task；必须持有 drain，直到它在 finally 中自行释放。
         self._drain_task: asyncio.Task | None = None
         self._model = model or DEFAULT_MODEL
         self.effort = effort or DEFAULT_EFFORT
@@ -242,134 +154,72 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
-        # slice-060: two independent A/B switches, frozen at construction.
-        # memory_enabled governs the whole memory read-path (core/L0/diary/root
-        # injection AND the memory MCP server). profile_enabled governs ONLY the
-        # explicit `# 用户画像` section. C-5: both are immutable for the session
-        # so respawns (/model, stall, interrupt) keep the same condition.
+        # 三个开关彼此独立，并在整个会话及重启期间保持不变。
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
         self._self_enabled = self_enabled
-        # slice-040-c: path to an mcp-config JSON attaching the memory MCP
-        # server (search/read/outcome). slice-060 C-3: when memory is off, the
-        # MCP read-path is closed too — the config is dropped HERE (not only at
-        # the route), so a memory-off session never re-attaches memory on
-        # respawn even when a config path was passed in.
+        # memory 关闭时在宿主边界丢弃配置，重启也不能重新接入 MCP 读路径。
         self._mcp_config = mcp_config if memory_enabled else None
 
         self._proc: Any = None
         self._started = False
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
-        # slice-025-c: pending AskUserQuestion elicitation (set when translator
-        # emits ElicitationRequestEvent, cleared on answer/cancel). None when
-        # no interactive tool is awaiting the user. One at a time — cc does not
-        # ask concurrently. The lock serializes answer/cancel so a double-submit
-        # can't write two control_response rows for the same request_id.
+        # 锁保证同一 AskUserQuestion 只写入一次 answer 或 cancel。
         self._pending_elicit: dict[str, Any] | None = None
         self._elicit_lock = asyncio.Lock()
-        # slice-042 P1: cc init's slash_commands roster — the authoritative
-        # name floor for GET /slash-items (keeps up with cc updates). Filled
-        # when SessionStartedEvent flows through send().
+        # routes 读取 init 命令列表，作为 slash-items 的名称下限。
         self._init_roster: list[str] = []
 
-        # slice-026 E1: a session-start checkpoint captures the worktree (and,
-        # for resumed sessions, the jsonl cut) BEFORE turn 1 runs, so the first
-        # turn is revertible too. _session_start_turn_id is the turn_id reused
-        # by turn 1; _session_start_saved tracks whether the ref was written.
+        # 首轮复用在首轮执行前保存的 checkpoint，确保第一轮也能回退。
         self._session_start_turn_id = uuid.uuid4().hex
         self._session_start_saved = False
         self._turn_count = 0
-        # slice-036: workflow progress watcher. cc runs Workflows in the
-        # background and pushes NOTHING about them to stdout, so trowel reads
-        # the on-disk wf_<runId>.json cc maintains. Lives across turns: a
-        # workflow routinely outlives the turn that launched it (cc returns
-        # once the Workflow is backgrounded), so its final state must surface
-        # on a later send's poll (see resync + the poll at the top of the
-        # readline loop in send()).
+        # Workflow 不写 stdout 且可能跨 turn，watcher 必须跨轮读取磁盘状态。
         self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
-        # slice-077-prefix: background task activity tracker. task_started adds
-        # a pending task_id; task_notification removes it; a `result` is the
-        # logical turn terminal only when no tasks are pending AND no workflow
-        # is in flight. Lives across the process but reset() at each turn entry
-        # so a prior turn's pending cannot leak into the next (C-9).
         self._bg_tracker = BackgroundActivityTracker()
-        # slice-077-prefix: a `result` event's terminal (FinishedEvent /
-        # ErrorEvent) is buffered here, NOT yielded immediately. The result
-        # block below decides: terminal success → yield; mid-turn success
-        # (background still active) → drop and keep draining; error → always
-        # yield + clear pending. C-3: at most one terminal per turn.
+        # 成功 result 等后台结束；错误 result 立即结束，每轮只发布一个终态。
         self._pending_terminal: FinishedEvent | ErrorEvent | None = None
-        # Resumed session knows cc_session_id now → save session-start at once.
-        # Fresh session defers to the init handler (cc_session_id unknown here).
         if checkpoint.is_git_repo(self.workdir) and resume_from:
             jsonl_path = self._jsonl_path(resume_from)
             offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
             if self._save_session_start_blocking(str(jsonl_path), offset):
                 self._session_start_saved = True
 
-    # -- introspection -----------------------------------------------------
-
     @property
     def cc_session_id(self) -> str | None:
-        """CC's session id (from system/init), used to --resume after a death."""
         return self._cc_session_id
 
     @property
     def model(self) -> str | None:
-        """The --model currently in effect, or None when trowel is deferring to
-        cc's ~/.claude/settings.json (slice-027 default)."""
         return self._model
 
     @property
     def _model_for_display(self) -> str:
-        """Model name for /cost /status local text; None → '(cc default)'."""
         return self._model or "(cc default)"
 
     @property
     def _effort_for_display(self) -> str:
-        """Effort for /cost /status local text; None → '(cc default)'."""
         return self.effort or "(cc default)"
 
     @property
     def is_dead(self) -> bool:
-        """True when there is no live subprocess (none yet, or already exited)."""
         return self._proc is None or self._proc.returncode is not None
 
     @property
     def memory_enabled(self) -> bool:
-        """slice-060: whether this session injects memory read-paths + MCP.
-
-        Frozen at construction; read by routes to surface the condition in the
-        create / active-session responses.
-        """
         return self._memory_enabled
 
     @property
     def profile_enabled(self) -> bool:
-        """slice-060: whether this session injects the ``# 用户画像`` section."""
         return self._profile_enabled
 
     @property
     def self_enabled(self) -> bool:
-        """slice-085: whether this session injects the Self section."""
         return self._self_enabled
 
-    # -- lifecycle ---------------------------------------------------------
-
     async def _spawn(self, resume_from: str | None) -> Any:
-        """Build args/kwargs and spawn a CC subprocess via the configured spawner.
-
-        Args:
-            resume_from: CC session id to pass as --resume, or None for fresh.
-
-        Returns:
-            the spawned subprocess object (real or fake).
-        """
-        # slice-039: inject memory (layer-one + dictionary L0 + recent diary) via
-        # cc's native --append-system-prompt. Failure degrades to "" — a memory
-        # read error must NEVER block a cc spawn (spike 2026-07-09: append lands
-        # in the system tail, proxy identity-rewrite stays untouched).
+        # memory 读取失败只能降级注入，不能阻止 CC 启动。
         try:
             memory_text = build_memory_injection(
                 date.today().isoformat(),
@@ -382,8 +232,7 @@ class CCHost:
                 exc_info=True,
             )
             memory_text = ""
-        # slice-085: Self assembly is isolated from memory failure — the three
-        # switches are independent, so a memory read error must NOT drop Self.
+        # Self 组装与 memory 读取隔离，前者不能被后者的失败连带关闭。
         try:
             injection = build_session_injection(
                 self_enabled=self._self_enabled,
@@ -417,14 +266,7 @@ class CCHost:
         return await self._spawner(args, kwargs)
 
     def _build_spawn_env(self) -> dict[str, str] | None:
-        """Build the CC subprocess env that routes through the local reverse
-        proxy (slice-030), or None to inherit the parent env (pre-030 behavior,
-        tests, or when the proxy is disabled).
-
-        Returns:
-            A full env dict (os.environ merged with the proxy delta) when the
-            proxy is on, else None so the subprocess inherits the parent env.
-        """
+        """返回代理与 MCP 环境；`None` 表示完整继承父进程环境。"""
         if not self._proxy_base_url:
             env: dict[str, str] | None = None
         else:
@@ -432,15 +274,8 @@ class CCHost:
                 load_settings_env(self._settings_path) if self._settings_path else {}
             )
             env = dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
-        # slice-040-c: inject memory identity when the MCP server is attached.
-        # The stdio MCP subprocess inherits cc's env (subprocessEnv 透传, reverse-
-        # engineered), so TROWEL_SESSION_ID / MEMORY_ROOT / CC_SESSION_ID land in
-        # the server. CC_SESSION_ID is None for a fresh session until init —
-        # injected only when known (resume); per-call identity uses toolUseId.
-        # slice-078: also stamp the host-neutral pair (TROWEL_HOST_KIND=cc +
-        # TROWEL_NATIVE_SESSION_ID=<cc_session_id>) so the memory MCP writes the
-        # same identity shape for CC as it does for Codex. The legacy
-        # CC_SESSION_ID is still set for back-compat reads of pre-078 logs.
+        # stdio MCP 继承启动环境；只有 resume 能在启动前预先写入原生会话 ID。
+        # `CC_SESSION_ID` 仅兼容旧版 CC 身份环境变量。
         if self._mcp_config:
             env = dict(env) if env is not None else dict(os.environ)
             from trowel_py.memory.paths import resolve_memory_root
@@ -453,7 +288,6 @@ class CCHost:
         return env
 
     async def _ensure_process(self) -> None:
-        """Respawn if there is no live process. Resumes the known CC session."""
         if self._proc is not None and self._proc.returncode is None:
             return
         resume: str | None = None
@@ -465,7 +299,7 @@ class CCHost:
         self._started = True
 
     async def _kill(self) -> None:
-        """SIGKILL the subprocess if alive and await its exit (best-effort, 5s)."""
+        """尽力终止仍存活的子进程，最多等待五秒。"""
         proc = self._proc
         if proc is None or proc.returncode is not None:
             return
@@ -476,33 +310,24 @@ class CCHost:
             pass
 
     def _interrupt_proc(self, proc: Any) -> None:
-        """Send SIGINT to the CC process group (overridable in tests).
-
-        Tolerates the race where the process exits between the returncode check
-        and getpgid/killpg — a missing process is not an error here.
-        """
+        """向进程组发送 SIGINT，并容忍检查后退出的竞态。"""
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGINT)
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
     def _sync_kill(self) -> None:
-        """Best-effort synchronous SIGKILL of the live process.
-
-        Used in cancellation/cleanup paths where we cannot await (GeneratorExit)
-        but must not leave an orphaned CC subprocess behind.
-        """
+        """在 GeneratorExit 等无法 await 的清理路径中同步终止子进程。"""
         proc = self._proc
         if proc is None or getattr(proc, "returncode", None) is not None:
             return
         try:
             proc.kill()
-        except Exception:  # noqa: BLE001 — cleanup must never throw
+        except Exception:  # noqa: BLE001 — 清理不能遮蔽原始退出原因
             pass
 
     async def interrupt(self) -> None:
-        """Cancel the current turn: SIGINT the process group. CC exits cleanly;
-        the next send() will --resume."""
+        """中断当前 turn；已知原生会话 ID 时，后续发送会恢复上下文。"""
         proc = self._proc
         if proc is None or proc.returncode is not None:
             return
@@ -513,9 +338,8 @@ class CCHost:
             pass
 
     async def close(self) -> None:
-        """End the session: cancel any background drain, then kill the subprocess."""
-        # slice-028 v2: 取消后台 drain（前端 × 关闭 / DELETE），否则它持着 proc
-        # 的 stdout reader，_kill 后还可能跑一阵。
+        """关闭后台 drain 和会话子进程。"""
+        # drain 持有 stdout reader，终止进程前必须先取消它。
         if self._drain_task is not None and not self._drain_task.done():
             self._drain_task.cancel()
             try:
@@ -523,43 +347,20 @@ class CCHost:
             except (asyncio.CancelledError, Exception):
                 pass
             self._drain_task = None
-        # slice-036: drop workflow watcher tracking state (bounds memory).
         self._workflow_watcher.close()
         await self._kill()
 
     async def reload(self) -> None:
-        """Kill the live CC process so the next send() re-resumes from disk.
-
-        Used by the revert endpoint: after truncating the CC jsonl, the live
-        subprocess still holds the pre-revert context in memory, so it must be
-        respawned (``--resume`` then reloads the truncated jsonl) before the
-        next turn. Idempotent — no-op when the process is already dead.
-        """
+        """丢弃进程内旧上下文，使 revert 后的下一轮从截断 jsonl 恢复。"""
         await self._kill()
 
-    # -- checkpoint (slice-026 E1) -----------------------------------------
-
     async def _prepare_checkpoint(self) -> tuple[str, bool]:
-        """Generate a turn_id and save a git checkpoint if possible.
-
-        Returns:
-            (turn_id, revertible). revertible is True only when a checkpoint
-            is (or will be) written: the workdir is a git repo. Turn 1 reuses
-            the session-start checkpoint (saved at construction for resumed
-            sessions, or saved in the init handler for fresh ones); turns 2+
-            get a fresh checkpoint saved here.
-
-        The blocking git subprocess work runs in the default executor so the
-        SSE event loop (and the stalled-detector heartbeat) keeps draining
-        while the snapshot is taken (~100-300ms for a typical repo).
-        """
+        """首轮复用启动 checkpoint；后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
         if not checkpoint.is_git_repo(self.workdir):
             return uuid.uuid4().hex, False
-        # turn 1: reuse the session-start checkpoint (no new save here).
         if self._turn_count == 1:
             return self._session_start_turn_id, True
-        # turn 2+: fresh checkpoint at entry
         turn_id = uuid.uuid4().hex
         cc_sid = self._cc_session_id
         if not cc_sid:
@@ -577,12 +378,7 @@ class CCHost:
         return turn_id, revertible
 
     async def _maybe_save_session_start_checkpoint(self, cc_sid: str) -> None:
-        """Save the deferred session-start checkpoint for a fresh session.
-
-        Called from the init handler once cc_session_id is learned. Idempotent
-        (guarded by _session_start_saved). Runs git in the executor so the
-        stream loop keeps draining.
-        """
+        """原生会话 ID 就绪后，在线程池中幂等保存启动 checkpoint。"""
         if self._session_start_saved or not checkpoint.is_git_repo(self.workdir):
             return
         jsonl_path = self._jsonl_path(cc_sid)
@@ -595,16 +391,7 @@ class CCHost:
             self._session_start_saved = True
 
     async def _maybe_register_session(self, cc_sid: str) -> None:
-        """Register this cc session into the memory sessions db (slice-040).
-
-        Runs the blocking sqlite insert on the default executor and awaits it:
-        the executor keeps the event loop responsive to OTHER sessions, while
-        awaiting preserves init ordering. The insert is sub-50ms, so the init
-        handler is not meaningfully delayed. Never raises —
-        ``_register_session_blocking`` swallows all errors, so a memory
-        subsystem failure cannot break the cc session (same stance as memory
-        injection in ``_spawn``). Idempotent via the sessions PK.
-        """
+        """在 executor 中等待注册完成，保持 init 事件的处理顺序。"""
         jsonl_path = self._jsonl_path(cc_sid)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -612,68 +399,23 @@ class CCHost:
         )
 
     def _register_session_blocking(self, jsonl_path: str) -> None:
-        """Blocking sqlite insert; runs in an executor. Swallows all errors.
-
-        slice-040-b: when ``self._session_registrar`` is set (injected), the
-        record is routed there and the real sessions.db is never touched — the
-        basis of cc_host test isolation (C-2). The SessionRecord is built once
-        with ``self._session_kind``; kind flows to whichever path is taken.
-        """
+        """注册失败不能中断 CC 会话。"""
+        if not self._cc_session_id:
+            return
         try:
-            if not self._cc_session_id:
-                # pre-init guard: nothing to register without a cc session id
-                # (mirrors _maybe_update_completed; defends against an empty PK).
-                return
-            from datetime import datetime
-
-            from trowel_py.memory.sessions_repo import SessionRecord
-
-            now = datetime.now()  # one snapshot so date/registered_at can't drift
-            rec = SessionRecord(
-                cc_session_id=self._cc_session_id or "",
-                workdir=str(self.workdir),
-                date=now.date().isoformat(),
-                jsonl_path=jsonl_path,
-                registered_at=now.isoformat(),
-                session_kind=self._session_kind,
-                # slice-061: trowel's session id, so register() can persist the
-                # trowel→cc binding (C-3 — lets pre-init access records resolve).
+            session_registration.register_session(
+                cc_session_id=self._cc_session_id,
                 trowel_session_id=self.session_id,
+                workdir=self.workdir,
+                jsonl_path=jsonl_path,
+                session_kind=self._session_kind,
+                registrar=self._session_registrar,
             )
-            if self._session_registrar is not None:
-                self._session_registrar.register(rec)
-                return
-            from trowel_py.memory.paths import resolve_memory_root
-            from trowel_py.memory.sessions_repo import (
-                create_sessions_repository,
-                open_sessions_db,
-            )
-
-            root = resolve_memory_root()
-            conn = open_sessions_db(root)
-            try:
-                create_sessions_repository(conn).register(rec)
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 — never break the cc session
+        except Exception as exc:  # noqa: BLE001 — 注册失败不能中断 CC 会话
             _wf_debug(f"memory session register failed (ignored): {exc}")
 
     async def _maybe_update_completed(self) -> None:
-        """Stamp the completed water mark at the result turn boundary (040-b C-6).
-
-        Reads the jsonl byte size — every byte up to it is a fully-flushed turn,
-        safe to distill — and forwards it to the registrar. Mirrors
-        ``_maybe_register_session``: the blocking stat+update runs on the default
-        executor and swallows all errors (a memory-subsystem failure must never
-        break the cc turn). Called ONLY on the normal_end path; cancelled and
-        stall-killed turns skip it — the next normal turn pushes the mark forward.
-
-        Trade-off (CR H-2): the await runs on the result boundary every turn, so
-        the event loop blocks for the sqlite open+update+close (~few ms). We
-        accept this for a DETERMINISTICALLY landed water mark (the next
-        incremental review reads it); a fire-and-forget variant would need
-        task-lifecycle bookkeeping for marginal latency gain at this frequency.
-        """
+        """在逻辑终态等待 completed watermark 落地。"""
         if not self._cc_session_id:
             return
         jsonl_path = self._jsonl_path(self._cc_session_id)
@@ -683,38 +425,19 @@ class CCHost:
         )
 
     def _update_completed_blocking(self, jsonl_path: str) -> None:
-        """Blocking stat + update_completed; runs in an executor. Swallows errors."""
+        """水位更新失败不能中断 CC turn。"""
+        if not self._cc_session_id:
+            return
         try:
-            if not self._cc_session_id:
-                return  # pre-init guard: no water mark without a cc session id
-            try:
-                size = os.path.getsize(jsonl_path)
-            except OSError:
-                size = 0  # jsonl vanished (rotated) → treat as empty, not a crash
-            if self._session_registrar is not None:
-                self._session_registrar.update_completed(
-                    self._cc_session_id or "", size
-                )
-                return
-            from trowel_py.memory.paths import resolve_memory_root
-            from trowel_py.memory.sessions_repo import (
-                create_sessions_repository,
-                open_sessions_db,
+            session_registration.update_completed(
+                cc_session_id=self._cc_session_id,
+                jsonl_path=jsonl_path,
+                registrar=self._session_registrar,
             )
-
-            root = resolve_memory_root()
-            conn = open_sessions_db(root)
-            try:
-                create_sessions_repository(conn).update_completed(
-                    self._cc_session_id or "", size
-                )
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 — never break the cc session
+        except Exception as exc:  # noqa: BLE001 — 水位失败不能中断 CC turn
             _wf_debug(f"memory completed-offset update failed (ignored): {exc}")
 
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
-        """Blocking session-start save+gc; runs in an executor / sync __init__."""
         try:
             checkpoint.save(
                 self.workdir,
@@ -730,7 +453,6 @@ class CCHost:
     def _save_checkpoint_blocking(
         self, turn_id: str, jsonl_path: str, offset: int
     ) -> bool:
-        """Blocking save+gc for turns 2+; runs in an executor."""
         try:
             checkpoint.save(
                 self.workdir,
@@ -744,7 +466,6 @@ class CCHost:
         return True
 
     def _jsonl_path(self, cc_session_id: str) -> Path:
-        """Resolve the on-disk CC session jsonl for this workdir + cc sid."""
         return (
             cc_projects_root()
             / workdir_to_slug(self.workdir)
@@ -752,13 +473,7 @@ class CCHost:
         )
 
     def _workflow_transcript_dir(self) -> Path | None:
-        """The session transcript dir that holds workflows/ + subagents/ (slice-036).
-
-        cc 2.1.197 writes both ``<slug>/<cc_session_id>.jsonl`` (main dialogue)
-        AND a same-named directory ``<slug>/<cc_session_id>/`` holding
-        ``workflows/wf_<runId>.json`` + ``subagents/``. This returns the dir;
-        None when cc_session_id isn't known yet (fresh session, pre-init).
-        """
+        """返回 CC 2.1.197 存放 workflows 与 subagents 的会话目录。"""
         if not self._cc_session_id:
             return None
         return (
@@ -767,17 +482,8 @@ class CCHost:
             / self._cc_session_id
         )
 
-    # -- send --------------------------------------------------------------
-
     def _update_bg_tracker(self, ev: dict[str, Any]) -> None:
-        """slice-077-prefix: feed one raw CC event into the background tracker.
-
-        task_started registers a pending task; task_progress updates it. A
-        task_notification terminates it regardless of status. Real CC 2.1.197
-        TaskOutput(block=true) recordings have a second terminal path with no
-        task_notification: task_updated.patch.status=completed. Centralised so
-        the live send loop and disconnect drain stay in lockstep.
-        """
+        """同步后台任务状态，供实时读取与断线 drain 共用。"""
         if ev.get("type") != "system":
             return
         sub = ev.get("subtype")
@@ -792,38 +498,23 @@ class CCHost:
         elif sub == "task_updated":
             patch = ev.get("patch")
             if isinstance(patch, dict) and patch.get("status") == "completed":
-                # 2026-07-23 real CC 2.1.197 recording: when the assistant
-                # waits through TaskOutput(block=true), completion arrives as
-                # task_updated(completed) + the TaskOutput tool result, with no
-                # top-level task_notification. Only remove an already-known
-                # task_id; terminate() is a no-op for unrelated task updates.
+                # 真实录制中 TaskOutput(block=true) 可能只发 task_updated(completed)，
+                # 不发顶层 task_notification；未知 task_id 仍由 terminate 忽略。
                 self._bg_tracker.terminate(ev.get("task_id", ""))
         elif sub == "task_notification":
             self._bg_tracker.terminate(ev.get("task_id", ""))
 
     def _has_background_activity(self) -> bool:
-        """slice-077-prefix: whether the logical turn is still active.
-
-        True when either a background task is pending (task_started seen
-        without a recorded terminal signal) or a workflow is in flight. A
-        ``result`` arriving while this is True is a mid-turn boundary, not the
-        terminal — the live loop and the disconnect drain share this check.
-        """
+        """判断逻辑 turn 是否仍有后台活动；此时 result 只是中途边界。"""
         return self._bg_tracker.has_pending_tasks() or (
             self._workflow_watcher.enabled
             and not self._workflow_watcher.all_done
         )
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
-        """Feed one user message and yield trowel events until the turn ends."""
+        """处理会话输入；SendText 独占 stdout 直到逻辑 turn 结束。"""
         action = classify_input(text, self.workdir)
-        # slice-077-prefix C-4: a previous turn still running means its stdout
-        # reader is live — a second SendText would contend for the same pipe
-        # (C-1) and its text would 串 into the prior turn's backlog. Reject
-        # before touching stdin. Control commands (RestartSession /
-        # ExitSession / LocalCommand / UnsupportedSlash) are NOT user messages
-        # and stay allowed — they kill / interrupt / answer locally and never
-        # append text to CC's stdin, so they cannot cause a cross-turn 串流.
+        # 每个子进程只能有一个 stdout reader；控制命令不写用户消息，因此不受此门禁。
         if self.running and isinstance(action, SendText):
             yield ErrorEvent(
                 type="error",
@@ -836,11 +527,7 @@ class CCHost:
             yield self._local_answer(action)
             return
         if isinstance(action, RestartSession):
-            # /model or /effort with no arg → classify_input returns
-            # RestartSession(model=None, effort=None). The frontend picker is
-            # supposed to intercept bare /model; if one still reaches here, do
-            # NOT kill the live CC process for a no-op (would drop in-flight
-            # context and confuse the user).
+            # 裸 /model 或 /effort 不应为无效切换终止现有进程。
             if not (action.model or action.effort):
                 yield LocalCommandEvent(
                     type="local_command",
@@ -857,9 +544,7 @@ class CCHost:
             await self._kill()
             stage = self._restart_stage(action)
             yield StatusEvent(type="status", stage=stage)
-            # slice-027 C2: immediate sync so the StatusBar updates now. CC is
-            # lazy-restarted by the next send's _ensure_process, so without
-            # this the model/effort display would lag a full turn behind.
+            # 进程下次 send 才重启，先发布新配置供界面立即同步。
             yield ModelChangedEvent(
                 type="model_changed",
                 model=self._model,
@@ -870,28 +555,13 @@ class CCHost:
             yield LocalCommandEvent(type="local_command", content=action.message)
             return
         if isinstance(action, ExitSession):
-            # slice-028 bug3: /exit (alias /quit). CC's stream-json mode doesn't
-            # intercept the literal string — shut down via the end_session
-            # control_request channel, then surface SessionExitedEvent so the
-            # frontend drops the multi-session row.
+            # stream-json 不识别字面量 /exit，必须改走 end_session 控制通道。
             async for tev in self._exit_session():
                 yield tev
             return
 
-        # SendText main path — only here does a CC turn actually run, so only
-        # here do we flip running (slice-077-prefix: lets the next send's gate
-        # reject correctly). The per-turn tracker/terminal reset happens AFTER
-        # the disconnect drain is awaited below — resetting here would race a
-        # still-running drain (C1: drain would see an empty tracker and treat
-        # a mid-turn result as terminal).
-        self.running = True  # slice-028 D2: 标记在跑（GET /sessions/active 用）
+        self.running = True
         payload = _user_msg(action.text)
-        # slice-026 E1: snapshot the worktree before the turn runs so the user
-        # can revert it. turn_id names the checkpoint ref; revertible is False
-        # for non-git workdirs and for a fresh session's first turn (no
-        # resumable jsonl yet — cc_session_id is learned from init mid-turn).
-        # Run in an executor — git subprocess calls would otherwise block the
-        # SSE event loop (and the stalled-detector heartbeat) for ~100-300ms.
         turn_id, revertible = await self._prepare_checkpoint()
         yield TurnStartEvent(
             type="turn_start", turn_id=turn_id, revertible=revertible
@@ -906,34 +576,21 @@ class CCHost:
             threshold_kill=self.stalled_threshold_kill,
         )
         detector.start_turn(self._now())
-        # slice-036: a workflow often finishes between turns (cc backgrounds it
-        # and returns). Re-read every non-finished runId this turn so the final
-        # state surfaces even when its wf.json mtime hasn't moved since.
+        # Workflow 可能在两轮之间结束，需强制重读未完成项。
         self._workflow_watcher.resync()
-        # Phased heads-up flags (per-turn): each severity fires once, then the
-        # process is left alone until the next phase or the 30-min hard cap.
         mild_warned = False
         severe_warned = False
 
         normal_end = False
-        cancelled = False  # slice-028 v2: CancelledError 时让后台 drain，finally 不杀
+        cancelled = False
         try:
-            # slice-028 v2: 如果上一轮 send 因前端断开走到了后台 drain，这里必须
-            # 等它读完 stdout 到 result——否则这一轮 send 的 readline 会跟 drain 抢
-            # 同一根管道，把上一轮 turn 的尾巴事件误算进这一轮（reducer 混乱）。
-            # drain 跑完 = cc 已结束上一轮、写满 jsonl，本轮 send 干净开始。
+            # 先等旧 drain 释放 reader，再重置其 tracker，避免上一轮污染本轮。
             if self._drain_task is not None and not self._drain_task.done():
                 try:
                     await self._drain_task
                 except (asyncio.CancelledError, Exception):
                     pass
                 self._drain_task = None
-            # slice-077-prefix C1: reset per-turn state ONLY after any pending
-            # drain has finished — the drain owns the prior turn's tracker
-            # (task_started/notification it may still be processing). Resetting
-            # before the drain completes would empty the tracker mid-drain,
-            # letting a mid-turn result look terminal and strand the prior
-            # turn's tail in stdout for THIS turn to trip over.
             self._pending_terminal = None
             self._bg_tracker.reset()
             await self._ensure_process()
@@ -948,20 +605,10 @@ class CCHost:
             detector.record_event(self._now())
 
             while True:
-                # slice-036: drain workflow snapshots every readline tick. Cheap
-                # (stat only); a no-op until a Workflow tool_use enables the
-                # watcher. Placed at loop top so it runs on every iteration —
-                # after a readline timeout's `continue` rolls back here too.
                 for wfev in self._workflow_watcher.poll():
                     yield wfev
-                    # workflow activity = cc is alive; don't let the stalled
-                    # detector count cc's background-workflow silence as a hang.
+                    # Workflow 有进展时，stdout 静默不代表 CC 卡死。
                     detector.record_event(self._now())
-                # slice-036: turn boundary is cc's `result` event (see §5 of
-                # docs/design/front-end/cc-workflow-event-model.md). We keep
-                # draining past cc's early `result` when a workflow is in flight
-                # (result handler below); the turn ends only on the final
-                # `result`. The stalled detector (120s/300s/1800s) guards hangs.
                 proc = self._proc
                 try:
                     raw = await asyncio.wait_for(
@@ -969,35 +616,18 @@ class CCHost:
                     )
                 except asyncio.TimeoutError:
                     if proc.returncode is not None:
-                        # slice-077-prefix C-3 (codex H6): proc died without a
-                        # result — emit a terminal so the turn has exactly one.
+                        # 无 result 退出也必须为当前 turn 补一个终态。
                         yield ErrorEvent(
                             type="error",
                             subclass="host_error",
                             errors=["CC process exited without a result"],
                         )
                         break
-                    # slice-036 fix: turn boundary is cc's `result` event, NOT
-                    # all_done+silence. cc finishes a workflow, then thinks
-                    # (silent ~4s) and emits the completion text + result. The
-                    # old `all_done + silent → break` ended the turn during that
-                    # think gap, dropping cc's completion text + result (verified
-                    # by recording real cc stdout — see
-                    # docs/design/front-end/cc-workflow-event-model.md §5). The
-                    # stalled detector (120s/300s/1800s) still guards true hangs.
-                    # slice-025-c: while cc awaits the user's control_response
-                    # (AskUserQuestion), the stream is silent by design — don't
-                    # let the stall watchdog kill the process and force a retry
-                    # (which would make cc re-emit the AskUserQuestion).
+                    # 真实 turn 边界是 result，不能用 all_done 后的静默代替。
+                    # 等待用户 control_response 时静默是正常状态，不能触发 stall。
                     if self._pending_elicit is not None:
                         continue
-                    # slice-077-prefix C-7 (codex H2): a pending background task
-                    # or workflow is legitimate activity — CC is waiting on
-                    # Bash/Agent, not hung. Keep the stall detector quiet while
-                    # _has_background_activity() holds; once the last terminal
-                    # task_notification lands (pending empties), the next
-                    # record_event is that notification and normal stall timing
-                    # resumes from there (C-8).
+                    # 后台任务或 Workflow 执行期间的静默也不计入 stall。
                     if self._has_background_activity():
                         detector.record_event(self._now())
                         continue
@@ -1046,11 +676,7 @@ class CCHost:
                         continue
                     continue
                 except ValueError as exc:
-                    # slice-028 bug1: cc 单行 stream-json 超 StreamReader limit
-                    # (即使 limit 提到 16MB，理论上更大的行仍会超)。drain 超长行
-                    # 复杂且易死循环，改为明确报错 + 结束 turn，不让 ValueError 冒
-                    # 泡到 routes.py 变 host_error。超 16MB 的单行极罕见（实测最大
-                    # 1.08MB），break + 明确报错是可接受的兜底。
+                    # 超长行无法安全 drain；明确结束 turn，避免 reader 死循环。
                     logger.warning(
                         "cc stream-json line exceeded StreamReader limit; "
                         "ending turn as overlong_line. error=%s",
@@ -1067,10 +693,7 @@ class CCHost:
                     normal_end = True
                     break
                 if not raw:
-                    # slice-077-prefix C-3 (codex H6): stdout EOF without a
-                    # result — emit a terminal so the turn has exactly one
-                    # (a BufferedState mid-result was dropped on purpose; EOF
-                    # is a host-side failure, not a turn success).
+                    # EOF 不是 turn 成功，仍需发布唯一的 host_error 终态。
                     yield ErrorEvent(
                         type="error",
                         subclass="host_error",
@@ -1082,8 +705,6 @@ class CCHost:
                 except json.JSONDecodeError:
                     continue
                 detector.record_event(self._now())
-                # slice-036 DIAGNOSTIC: record key cc events to see turn
-                # boundaries vs workflow/subagent completion ordering.
                 _et = ev.get("type")
                 _es = str(ev.get("subtype", ""))
                 if (
@@ -1104,42 +725,17 @@ class CCHost:
                     _wf_debug(f"INIT sid={sid}")
                     if sid:
                         self._cc_session_id = sid
-                        # slice-040: register into the memory sessions db so the
-                        # daily review job can find this session by date.
-                        # Fire-and-forget; never breaks the cc session.
                         await self._maybe_register_session(sid)
-                        # slice-026: fresh session — now that we know
-                        # cc_session_id, save the deferred session-start
-                        # checkpoint (worktree is still pristine at init).
+                        # init 时工作区尚未执行首轮，必须先补存启动 checkpoint。
                         if not self._session_start_saved:
                             await self._maybe_save_session_start_checkpoint(sid)
-                        # slice-036: now that cc_session_id is known, point the
-                        # workflow watcher at this session's transcript dir.
                         tdir = self._workflow_transcript_dir()
                         _wf_debug(f"  watcher set_transcript_dir={tdir}")
                         if tdir is not None:
                             self._workflow_watcher.set_transcript_dir(tdir)
-                # slice-077-prefix: keep the background tracker in sync so a
-                # mid-turn `result` does not end the turn while a task is still
-                # pending. Helper shared with the disconnect drain (lockstep).
                 self._update_bg_tracker(ev)
-                # slice-036: workflow completion. cc pushes a system
-                # task_notification when the workflow finishes, but实测 (see
-                # docs/design/front-end/cc-workflow-event-model.md §3) shows
-                # workflow scenarios emit 0 task_notification, and its summary
-                # field is the task description ("Count files in directory"),
-                # NOT cc's completion text. The completion text is a normal
-                # assistant TextEvent after TaskOutput returns. So route
-                # task_notification through translator's normal path (no
-                # special TextEvent routing — the old routing was wrong).
                 for tev in translator.translate(ev):
                     if isinstance(tev, ElicitationRequestEvent):
-                        # Remember the pending elicitation so answer_elicit /
-                        # cancel_elicit can write the matching control_response.
-                        # NB: stall detection is short-circuited while this is
-                        # set (see the _pending_elicit guard above), so a stall
-                        # never fires during a pending elicit — no kind field
-                        # is needed for stall diagnosis.
                         self._pending_elicit = {
                             "request_id": tev.request_id,
                             "tool_use_id": tev.tool_use_id,
@@ -1149,35 +745,16 @@ class CCHost:
                         isinstance(tev, ToolCallEvent)
                         and tev.tool_name == "Workflow"
                     ):
-                        # slice-036: a Workflow was launched in the background.
-                        # cc will write workflows/wf_<runId>.json — start
-                        # stat-polling it (the poll at loop top does the rest).
                         _wf_debug(
                             f"  watcher enable (Workflow tu={tev.tool_use_id}) "
                             f"dir={self._workflow_transcript_dir()}"
                         )
                         self._workflow_watcher.enable()
                     if isinstance(tev, SubagentProgressEvent):
-                        # slice-036 D 层: cc under GLM reports total_tokens=0
-                        # in task_* events; sum the subagent transcript's
-                        # message usage instead (mirrors cc's own TUI).
                         tev = self._backfill_subagent_usage(tev)
                     if isinstance(tev, SessionStartedEvent):
-                        # slice-042 P1: cache cc init's slash_commands roster
-                        # as the name floor for GET /slash-items. A fresh list
-                        # copy — cc sends a new roster on every init.
                         self._init_roster = list(tev.slash_commands)
-                    # slice-077-prefix: buffer the terminal event from a
-                    # `result` — a mid-turn success result must NOT emit
-                    # finished (C-3: at most one terminal per turn). The result
-                    # block below decides yield (terminal) vs drop (mid-turn)
-                    # after checking background activity.
-                    #
-                    # Contract: translator._on_result emits exactly ONE terminal
-                    # event (FinishedEvent on success, ErrorEvent otherwise) per
-                    # `result`, and it is the event translate() yields for that
-                    # result. If that ever changes (e.g. _on_result emits
-                    # multiple events for one result), revisit this buffer.
+                    # Translator 每个 result 只产出一个终态；先缓冲，再按后台状态决策。
                     if ev.get("type") == "result" and isinstance(
                         tev, (FinishedEvent, ErrorEvent)
                     ):
@@ -1191,14 +768,8 @@ class CCHost:
                         and not ev.get("is_error")
                     )
                     if is_error_result:
-                        # slice-077-prefix §4 + codex C3: error result is always
-                        # terminal — clear pending state and yield the error. Do
-                        # NOT set normal_end: the turn did not end cleanly, and
-                        # a still-alive CC may push late task_notification /
-                        # assistant events into the next send's stdout. Leaving
-                        # normal_end=False lets the finally block _sync_kill,
-                        # forcing the next send to respawn a fresh process
-                        # (true generation isolation, not just a tracker reset).
+                        # 错误 result 始终结束本轮，但不算干净终态；finally 会杀掉
+                        # 仍存活的进程，隔离可能迟到的后台事件。
                         self._bg_tracker.reset()
                         self._pending_terminal = None
                         if terminal is not None:
@@ -1206,22 +777,10 @@ class CCHost:
                         await self._maybe_update_completed()
                         break
                     if self._has_background_activity():
-                        # slice-077-prefix: mid-turn boundary. Drop the buffered
-                        # FinishedEvent (C-3) and keep draining so the background
-                        # task's completion + CC's auto-continuation land on THIS
-                        # turn. The accumulator was already reset by the
-                        # translator's _on_result; CC's next assistant text
-                        # starts a fresh native segment.
+                        # 后台仍活动时，result 只是原生分段边界；丢弃成功终态，
+                        # 继续收集自动续跑。Translator 已为下一原生片段重置累积器。
                         self._pending_terminal = None
-                        # The native foreground segment has finished.  The
-                        # logical turn deliberately remains open, but leaving
-                        # the last assistant TextEvent as the visible phase
-                        # makes the UI claim CC is still "generating" during a
-                        # potentially long, silent background wait.  Reuse the
-                        # existing host-neutral status event to expose the
-                        # background_waiting phase named by slice-077-prefix's
-                        # logical-turn state model.  A later assistant/tool
-                        # event naturally replaces it when CC auto-continues.
+                        # 前台段已结束但逻辑 turn 未完，避免静默期仍显示“生成中”。
                         yield StatusEvent(stage="background_waiting")
                         _wf_debug(
                             "  RESULT mid-turn (bg_pending="
@@ -1239,14 +798,10 @@ class CCHost:
                             yield terminal
                             if isinstance(terminal, FinishedEvent):
                                 self._last_finished = terminal
-                        # slice-040-b: stamp the completed water mark BEFORE
-                        # breaking (the result turn is fully done; the next
-                        # increment distiles up to this byte offset).
+                        # 退出循环前推进 completed 水位，增量提炼只能读取完整 turn。
                         await self._maybe_update_completed()
                         break
-            # slice-028 bug3: result 后检测 cc 是否退出（用户 /exit）。普通 turn
-            # proc 不退（returncode None）；/exit 后 proc 退（returncode 0）。短
-            # wait 确认（真实 cc 普通 turn 会 timeout；FakeProc.wait 立即返回）。
+            # 正常 result 后短暂确认进程状态：存活则复用，退出则通知前端。
             if normal_end and self._proc is not None:
                 if self._proc.returncode is None:
                     try:
@@ -1259,44 +814,22 @@ class CCHost:
                         returncode=self._proc.returncode,
                     )
         except asyncio.CancelledError:
-            # slice-028 v2 多 session: 客户端断开（前端刷新 / 切换会话）= 暂时不
-            # 消费 events，**绝不杀 cc**。单 session 时代这里 _sync_kill 是为了
-            # 不留孤儿，但多 session 下 cc 必须继续跑完 turn——否则刷新会中断 AI
-            # 思考、最后那个 turn 的回复永远丢失（实测 jsonl 末尾只写了 user）。
-            # 把"读到 result 为止"的活移交到后台 task，让 cc 跑完写满 jsonl；前端
-            # reconcile 后 resume 即可看到完整对话。GeneratorExit（gen.close，真
-            # 不用了）仍走 finally 的 _sync_kill 兜底。
+            # SSE 断开只停止消费，不中止 CC；把 stdout 读取权移交给后台 drain。
+            # GeneratorExit 等非取消退出仍由 finally 清理进程。
             cancelled = True
-            # 存强引用防 GC（Python event loop 只对 task 持弱引用）；drain 自己
-            # 在 finally 里清 self._drain_task = None。下一次 send 入口会 await 它。
+            # host 持有强引用；drain 自行清空，下一次 send 会等待它结束。
             self._drain_task = asyncio.create_task(
                 self._drain_to_result_after_disconnect()
             )
             raise
         finally:
-            # slice-028 D2: send 结束，不再在跑（后台 drain 自己管 running 标志）
             self.running = False
-            # GeneratorExit (gen.close) or any non-local exit without a clean
-            # result: don't leave a live subprocess behind. CancelledError 走后台
-            # drain，不杀。
+            # 取消路径由 drain 接管；其他非干净退出必须同步杀进程。
             if not normal_end and not cancelled:
                 self._sync_kill()
 
     async def answer_elicit(self, answers: dict[str, str]) -> bool:
-        """Reply to the pending AskUserQuestion with the user's selections.
-
-        Writes control_response(behavior=allow, updatedInput={questions, answers,
-        annotations}) to cc stdin, then clears the pending state. cc unblocks and
-        continues the turn (the next readline in send() resumes).
-
-        Args:
-            answers: {questionText: answerStr}. Multi-select answers are
-                comma-separated strings (spec/04 A.2).
-
-        Returns:
-            True if a control_response was written; False if no elicitation is
-            pending (caller surfaces an error).
-        """
+        """向待处理 AskUserQuestion 写入 allow；成功后才清除 pending。"""
         async with self._elicit_lock:
             pending = self._pending_elicit
             if pending is None:
@@ -1310,23 +843,14 @@ class CCHost:
                     "annotations": {},
                 },
             )
-            # Write first; clear pending only on success so a failed write
-            # (dead subprocess) leaves the state intact for retry / diagnosis.
+            # 先写后清；失败时保留 pending，允许重试和诊断。
             ok = await self._safe_write(payload)
             if ok:
                 self._pending_elicit = None
             return ok
 
     async def cancel_elicit(self) -> bool:
-        """Decline the pending AskUserQuestion (behavior=deny).
-
-        Used when the user presses Esc / Cancel, or (future) when they send a
-        new message instead of answering (boundary in slice-025-c).
-
-        Returns:
-            True if a deny control_response was written; False if nothing pending
-            or the write failed (pending left intact for retry).
-        """
+        """向待处理 AskUserQuestion 写入 deny；无 pending 或写入失败时返回 False。"""
         async with self._elicit_lock:
             pending = self._pending_elicit
             if pending is None:
@@ -1342,7 +866,7 @@ class CCHost:
             return ok
 
     async def _safe_write(self, payload: bytes) -> bool:
-        """Write payload; return False if the process is dead (broken pipe)."""
+        """断管或写入失败时返回 False，不让异常逃出控制流程。"""
         try:
             await self._write(payload)
             return True
@@ -1350,31 +874,16 @@ class CCHost:
             return False
 
     async def _write(self, payload: bytes) -> None:
-        """Write raw bytes to the CC subprocess stdin and flush.
-
-        Args:
-            payload: one stream-json line (a user message), utf-8 encoded.
-        """
         proc = self._proc
         proc.stdin.write(payload)
         await proc.stdin.drain()
 
     async def _drain_to_result_after_disconnect(self) -> None:
-        """slice-028 v2 多 session: 客户端断开后，后台把 cc stdout 读到 result/
-        EOF，让 cc 自己跑完这个 turn（写满 jsonl），**绝不杀进程**。
+        """SSE 断开后不杀 CC，独占读取 stdout 直到逻辑 turn 结束。
 
-        为什么需要这个：单 session 时代前端断开 = 不用了，直接杀 cc 没问题。但多
-        session 下刷新前端是"暂时断开、待会 reconcile 回来"——如果杀 cc，AI 正在
-        思考的 turn 会被中断，那一句的回复永久丢失（实测 jsonl 末尾只剩 user）。
-        后台 drain 让 cc 跑完，前端 reconcile + resume 即可看到完整对话。
-
-        生命周期：CancelledError 的 except 用 ``self._drain_task = create_task(...)``
-        存强引用（防 GC），这里 finally 清空。下一次 send() 入口会 await 这个 task
-        到完成（避免两条 readline 抢同一根 stdout），close()/DELETE 会 cancel 它。
-        ``_DRAIN_MAX_TICKS`` 只作 1 小时兜底（真 stalled 的 cc 交给下一次 send 的
-        stalled 检测或 close 杀掉）。
+        host 强持有本任务；下一次 send 等待它，close 会取消它。
         """
-        self.running = True  # drain 期间 cc 还在跑（GET /sessions/active 准确）
+        self.running = True
         try:
             for _ in range(self._DRAIN_MAX_TICKS):
                 proc = self._proc
@@ -1389,24 +898,18 @@ class CCHost:
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
                 if not raw:
-                    return  # EOF — cc 退出
+                    return
                 try:
                     ev = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                # slice-077-prefix: keep the tracker in sync so the drain uses
-                # the SAME logical-turn terminal condition as a live send
-                # (slice §6 断线 drain). Shared helper → no drift between paths.
+                # 与 live send 共用活动跟踪，保证逻辑终态判定一致。
                 self._update_bg_tracker(ev)
                 if ev.get("type") == "result":
                     if self._has_background_activity():
-                        continue  # mid-turn result — keep draining
-                    # logical turn terminal: advance the completed watermark so
-                    # a later reconcile does not leave the background tail for
-                    # the next send to trip over (slice §6 / C-5). Also refresh
-                    # _last_finished from this final result so /cost reflects
-                    # the WHOLE logical turn (background 续跑 included), not
-                    # just the pre-disconnect segment (slice §5 / C-5).
+                        continue
+                    # 用最终 result 刷新 /cost，并推进 completed 水位，
+                    # 避免断线后的尾部事件遗留给下一轮。
                     if ev.get("subtype") == "success" and not ev.get("is_error"):
                         self._last_finished = FinishedEvent(
                             usage=ev.get("usage") or {},
@@ -1415,45 +918,27 @@ class CCHost:
                         )
                     else:
                         self._bg_tracker.reset()
-                    # Advance the watermark so a reconcile does not strand the
-                    # background tail (slice §6 / C-5). If this raises (e.g.
-                    # jsonl not yet flushed), the next live send's terminal
-                    # block re-calls _maybe_update_completed — so a drain-side
-                    # failure cannot permanently strand the watermark.
+                    # 水位失败不能终止 drain；后续正常终态还会再次推进。
                     try:
                         await self._maybe_update_completed()
-                    except Exception as exc:  # noqa: BLE001 — never crash drain
+                    except Exception as exc:  # noqa: BLE001 — 水位异常不能终止 drain
                         logger.warning(
                             "drain completed-offset update failed: %s", exc
                         )
                     return
         finally:
             self.running = False
-            self._drain_task = None  # 释放强引用
+            self._drain_task = None
 
-    # slice-028 bug3: how long to wait for CC to flush + exit after we send the
-    # end_session control_request before SIGKILL-ing it. CC is supposed to exit
-    # promptly (gracefulShutdown has its own ~1.5s budget); 3s is a generous cap.
+    # end_session 最多等待三秒；超时后强杀，避免关闭流程卡住。
     _END_SESSION_TIMEOUT_S = 3.0
-    # slice-028 v2: background-drain backstop. Primary lifecycle is explicit
-    # (next send() awaits the drain; close()/DELETE cancels it). This cap only
-    # catches a truly hung cc so the drain task can't run forever — 1 hour is
-    # well past any real turn, so hitting it means cc is stalled.
+    # drain 由下一次 send 或 close 收口；默认配置下约一小时的上限只防真正挂死。
     _DRAIN_MAX_TICKS = 3600
 
     async def _exit_session(self) -> AsyncIterator[TrowelEvent]:
-        """slice-028 bug3: gracefully shut CC down via stream-json's
-        control_request(subtype=end_session) channel.
+        """通过 stream-json 的 end_session 控制请求关闭 CC。
 
-        CC's stream-json mode does NOT intercept the literal "/exit" string (a
-        `local-jsx` command in the interactive TUI only). The canonical
-        non-interactive shutdown (cc's cli/print.ts) is to send a control_request
-        with subtype=end_session: CC emits its final `result` event and exits 0.
-        We write that request, drain stdout until the process dies, then yield
-        SessionExitedEvent so the frontend drops the multi-session row.
-
-        Fallback: if CC doesn't die within _END_SESSION_TIMEOUT_S (rare), we
-        SIGKILL it and still yield exited so the UI is never stuck.
+        启动、写入或超时失败也必须返回 SessionExitedEvent，避免前端卡住。
         """
         payload = (
             json.dumps(
@@ -1469,12 +954,10 @@ class CCHost:
             await self._ensure_process()
             wrote = await self._safe_write(payload)
             if not wrote:
-                # process already dead — nothing to drain
                 yield SessionExitedEvent(type="session_exited", returncode=0)
                 return
         except Exception as exc:
-            # process never started or died writing — surface exited regardless
-            # (UI 不该卡死)，但留日志便于排查（cc 命令不存在 / 权限 / 等）
+            # 启动或写入失败也要结束 UI 会话，并记录原因。
             logger.warning("end_session control_request failed: %s", exc)
             yield SessionExitedEvent(type="session_exited", returncode=0)
             return
@@ -1492,7 +975,7 @@ class CCHost:
             except asyncio.TimeoutError:
                 continue
             if not raw:
-                # EOF on stdout — process is exiting (or has exited). Confirm.
+                # EOF 后短暂等待 returncode 落定。
                 if proc.returncode is None:
                     try:
                         await asyncio.wait_for(proc.wait(), timeout=1.0)
@@ -1500,14 +983,14 @@ class CCHost:
                         pass
                 break
 
-        # if still alive after the drain window, force-kill
+        # 超过关闭窗口仍存活时强杀。
         if self._proc is not None and self._proc.returncode is None:
             await self._kill()
         rc = self._proc.returncode if self._proc is not None else 0
         yield SessionExitedEvent(type="session_exited", returncode=rc or 0)
 
     def _local_answer(self, action: LocalCommand) -> TrowelEvent:
-        """Answer /cost or /status from accumulated result data (no CC call)."""
+        """根据最近 result 本地回答 /cost 或 /status，不访问 CC。"""
         if action.kind == "cost":
             f = self._last_finished
             if f is None:
@@ -1517,7 +1000,7 @@ class CCHost:
                     f"cost: ${f.total_cost_usd:.4f}  "
                     f"turns: {f.num_turns}  usage: {f.usage}  model: {self._model_for_display}"
                 )
-        else:  # status
+        else:
             state = "dead" if self.is_dead else "alive"
             content = (
                 f"model: {self._model_for_display}  "
@@ -1526,14 +1009,7 @@ class CCHost:
         return LocalCommandEvent(type="local_command", content=content)
 
     def _restart_stage(self, action: RestartSession) -> str:
-        """Build the human-readable status string for a seamless restart.
-
-        Args:
-            action: the RestartSession carrying the new effort or model.
-
-        Returns:
-            a status string saying what changed (e.g. 'restarting: effort=high').
-        """
+        """生成模型或 effort 切换后的状态文本。"""
         if action.effort:
             return f"restarting: effort={action.effort}"
         return f"restarting: model={action.model}"
@@ -1541,32 +1017,13 @@ class CCHost:
     def _backfill_subagent_usage(
         self, tev: SubagentProgressEvent
     ) -> SubagentProgressEvent:
-        """slice-036 D 层: replace cc's empty usage with a transcript sum.
+        """用子代理 transcript 回填 task_* 的空 usage。
 
-        Under GLM, cc's task_progress/task_notification events carry
-        ``total_tokens: 0`` (the field is empty there), so the SubagentBlock
-        rendered "0 tokens" and hid the spend line. cc's own TUI shows real
-        numbers because it sums each assistant message's usage from the
-        subagent transcript. This reads that transcript and does the same.
-
-        Reads at every SubagentProgressEvent (started/progress/completed): the
-        transcript is small and task_* events are infrequent, so the IO cost is
-        negligible, and reading on `completed` alone would miss the running
-        progress display. Returns the original event unchanged when there is no
-        transcript yet (subagent still booting / pre-init).
-
-        Args:
-            tev: the SubagentProgressEvent to backfill.
-
-        Returns:
-            A copy with ``usage`` replaced by :func:`merge_usage` output when a
-            transcript exists; the original ``tev`` when no transcript is found.
+        progress 与 completed 都需读取，以保持运行中和终态展示一致。
         """
         if not self._cc_session_id or not tev.task_id:
             return tev
-        # `started` arrives the moment cc forks the subagent — its transcript
-        # doesn't exist yet, so the stat would always miss. Skip it (cc under
-        # GLM only carries tokens on progress/completed anyway).
+        # started 发出时 transcript 尚未创建，避免必然失败的读取。
         if tev.status == "started":
             return tev
         path = subagent_transcript_path(

@@ -1,24 +1,6 @@
-"""List resumable CC history sessions for a workdir.
+"""列出指定工作目录下可恢复的 CC 历史会话。
 
-CC persists each session as a JSONL file under ~/.claude/projects/<slug>/
-where <slug> is the workdir path with '/' replaced by '-'. We scan that dir
-and return summaries of the sessions cc's own ``--resume`` picker would show
-— most-recent-first, with cc's title priority (customTitle > aiTitle >
-lastPrompt > firstPrompt).
-
-Filtering aligns with the leaked source's ``parseSessionInfoFromLite``
-(claude-code-main/src/utils/listSessionsImpl.ts). A file is a *resumable
-session* iff:
-
-1. its stem is a valid UUID (cc writes sessions as ``<uuid>.jsonl``);
-2. its **first line** does NOT carry ``isSidechain:true`` — that marks a
-   sub-agent (Task tool) session's own jsonl, which cc ``--resume`` hides;
-3. it yields a summary (customTitle / aiTitle / lastPrompt / firstPrompt) —
-   metadata-only files (queue-operation / attachment, no real prompt) are
-   hidden too.
-
-This is NOT limited to sessions trowel created — any CC session the user ran
-from that workdir (including months-old ones) shows up, mirroring cc.
+扫描范围包括该目录的全部 CC 会话，不限于 Trowel 创建的记录。
 """
 from __future__ import annotations
 
@@ -32,65 +14,35 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Read this many bytes from the head and the tail of each session file. cc
-# writes the first user message near the top and titles (aiTitle/customTitle)
-# near the end, so a head+tail slice is enough without loading a multi-MB
-# transcript. Mirrors readSessionLite's approach in the leaked source.
-# slice-028 bug2: raised from 8192 — stream-json mode (tcc-spawned sessions)
-# has large queue-operation/attachment metadata on the first lines, so the
-# first user message sat beyond 8KB and title extraction failed, hiding the
-# session from history (real case 128a31b0: user on line 5, 8KB covered 4).
+# 只读文件首尾以限制内存；头部需覆盖首条用户消息前的大块元数据。
 _HEAD_BYTES = 65536
 _TAIL_BYTES = 8192
 
-# Match ``"isSidechain": true`` (with optional whitespace) on a session's first
-# line — that line marks a sub-agent session's own jsonl.
+# sidechain 标记只在首行生效。
 _SIDECHAIN_FIRST_LINE = re.compile(r'"isSidechain"\s*:\s*true')
 
 
 @dataclass(frozen=True)
 class SessionSummary:
-    """One resumable CC history session."""
-
     cc_session_id: str
     title: str
-    updated_at: float  # epoch seconds (file mtime)
+    updated_at: float  # 文件修改时间，Unix 秒
 
 
 def cc_projects_root() -> Path:
-    """~/.claude/projects (overridable in tests)."""
     return Path.home() / ".claude" / "projects"
 
 
 def workdir_to_slug(workdir: str | os.PathLike) -> str:
-    """Workdir path → CC's projects-dir slug.
+    """将真实工作目录转换为 CC 使用的项目目录 slug。
 
-    Mirrors CC's ``sanitizePath`` (leaked ``src/utils/sessionStoragePortable.ts``):
-    every non-alphanumeric character becomes ``-``. So ``telecom_empirical_research``
-    slugs to ``telecom-empirical-research``, ``reverse_cc`` to ``reverse-cc``,
-    and ``/Users/alice/.config`` to ``-Users-alice--config`` (the ``.`` also
-    becomes ``-``). Uppercase and digits are kept — CC does not lowercase.
-
-    The previous impl only replaced ``/``, leaving ``_`` and ``.`` intact. That
-    mismatched CC's on-disk slug, so any workdir whose path contains an
-    underscore or dot showed zero history sessions (real case:
-    ``works/telecom_empirical_research`` — tcc looked for ``..._research``
-    while CC wrote ``...-research``, so the dir scan found nothing).
-
-    Paths over 200 chars hit CC's hash-suffix truncation branch
-    (MAX_SANITIZED_LENGTH=200); not reproduced here — real project paths are
-    far shorter, and cross-language replay of CC's simpleHash is fragile.
+    解析符号链接后，将每个非 ASCII 字母数字字符替换为连字符。
+    当前未复现 CC 对超过 200 字符路径的哈希截断，超长路径可能无法命中。
     """
-    # Resolve symlinks first: cc sanitizes the realpath (e.g. /tmp →
-    # /private/tmp on macOS), so trowel must too — otherwise the slug
-    # mismatches cc's on-disk session dir and the workflow watcher / history
-    # scan find nothing (verified: cc wrote -private-tmp-... while trowel
-    # looked for -tmp-...). See docs/design/front-end/cc-workflow-event-model.md §6.
     return re.sub(r"[^a-zA-Z0-9]", "-", str(os.path.realpath(workdir)))
 
 
 def _is_valid_uuid_session_id(stem: str) -> bool:
-    """True if the filename stem is a valid UUID (cc's session id shape)."""
     try:
         uuid.UUID(stem)
     except (ValueError, AttributeError, TypeError):
@@ -99,29 +51,14 @@ def _is_valid_uuid_session_id(stem: str) -> bool:
 
 
 def count_sessions(workdir: str | os.PathLike) -> int:
-    """Count resumable CC sessions for workdir (after cc --resume filtering).
-
-    Same filtering rules as :func:`list_sessions` — the raw glob count is wrong
-    (it includes sub-agent and metadata-only files cc hides). Implemented as
-    ``len(list_sessions(...))`` so the total can never drift from the list.
-    """
+    """复用恢复列表的过滤规则，避免裸 glob 计入 sidechain 和元数据文件。"""
     return len(list_sessions(workdir))
 
 
 def list_sessions(
     workdir: str | os.PathLike, *, limit: int | None = None
 ) -> list[SessionSummary]:
-    """Return resumable CC sessions for workdir, most-recent-first.
-
-    Args:
-        workdir: the workdir whose CC project slug is scanned.
-        limit: if set, cap the result to the N most recent sessions. None
-            (default) returns all. The history dropdown uses this so it
-            doesn't surface hundreds of months-old sessions at once.
-
-    Returns:
-        filtered + sorted session summaries (cc ``--resume``'s view).
-    """
+    """返回按更新时间倒序排列的可恢复会话，可限制数量。"""
     slug = workdir_to_slug(workdir)
     proj_dir = cc_projects_root() / slug
     if not proj_dir.is_dir():
@@ -134,15 +71,13 @@ def list_sessions(
             mtime = f.stat().st_mtime
             title = _extract_title(f)
         except OSError:
-            # file vanished between glob and read (CC rotates its own logs)
+            # CC 可能在扫描期间轮转文件。
             continue
-        except Exception as exc:  # noqa: BLE001 — one malformed jsonl must not
-            # crash the whole dropdown (a bad bytes slice, regex on weird input,
-            # etc.). Skip the file, keep the rest of the list working.
+        except Exception as exc:  # noqa: BLE001 — 单个坏文件不能阻断整个列表
             logger.debug("skipping unparseable session file %s: %s", f, exc)
             continue
         if title == "":
-            # metadata-only (no customTitle/aiTitle/lastPrompt/firstPrompt)
+            # 无可展示标题的文件不加入恢复列表。
             continue
         out.append(
             SessionSummary(
@@ -158,11 +93,7 @@ def list_sessions(
 
 
 def _read_head_tail(path: Path) -> tuple[str, str]:
-    """Return (head_text, tail_text) — first/last bytes of the file, utf-8.
-
-    Kept bounded so a multi-MB transcript costs at most 2× _HEAD/_TAIL bytes
-    of read. Used for title extraction + first-line sidechain check.
-    """
+    """以 UTF-8 容错解码并返回文件的有界首尾文本。"""
     size = path.stat().st_size
     head_text = ""
     tail_text = ""
@@ -175,24 +106,17 @@ def _read_head_tail(path: Path) -> tuple[str, str]:
             fh.seek(size - _TAIL_BYTES)
             tail_text = fh.read().decode("utf-8", errors="replace")
         elif size > 0:
-            # small file: tail == head (already read); avoid double work
             tail_text = head_text
     return head_text, tail_text
 
 
 def _extract_title(path: Path) -> str:
-    """Pick a display title for a session file, cc --resume style.
+    """按 customTitle、aiTitle、lastPrompt、首条用户文本选择标题。
 
-    Priority (ported from parseSessionInfoFromLite): ``customTitle`` >
-    ``aiTitle`` > ``lastPrompt`` > first user message text. Returns "" when
-    nothing is extractable (caller treats that as "metadata-only, hide").
-
-    Also returns "" when the file's first line marks it a sub-agent session
-    (``isSidechain:true``) — cc hides those, and so do we.
+    首行为 sidechain 标记或无法提取标题时返回空字符串。
     """
     head, tail = _read_head_tail(path)
 
-    # First-line sidechain check: cc writes the marker on the very first line.
     first_line = head.split("\n", 1)[0]
     if _SIDECHAIN_FIRST_LINE.search(first_line):
         return ""
@@ -210,31 +134,21 @@ def _extract_title(path: Path) -> str:
 
 
 def _last_string_field(blob: str, field: str) -> str:
-    """Last ``"field":"value"`` occurrence in blob (cc's inline jsonl fields).
-
-    Scans the text directly (no full JSON parse) the way the leaked source's
-    ``extractLastJsonStringField`` does, so it works on a head/tail byte slice.
-    Returns "" if not found.
-    """
+    """从不完整 JSONL 文本中提取字段最后一个字符串值。"""
     pattern = re.compile(r'"' + re.escape(field) + r'"\s*:\s*"((?:[^"\\]|\\.)*)"')
     matches = pattern.findall(blob)
     if not matches:
         return ""
     raw = matches[-1]
     try:
-        # the captured group is a JSON string body — re-decode escapes safely
+        # 捕获的是 JSON 字符串体，需要再次解码转义。
         return json.loads('"' + raw + '"')
     except json.JSONDecodeError:
         return raw
 
 
 def _first_user_text_from_head(head: str) -> str:
-    """Scan the head slice for the first real user text message.
-
-    Mirrors the old ``_first_user_text`` but operates on an already-read head
-    blob. Skips ``tool_result`` echoes and ``last-prompt`` metadata entries
-    (cc's extractFirstPromptFromHead filters those too).
-    """
+    """从头部切片提取首条真实用户文本，忽略工具结果回显。"""
     for raw in head.splitlines():
         line = raw.strip()
         if not line:
@@ -246,9 +160,7 @@ def _first_user_text_from_head(head: str) -> str:
         if ev.get("type") != "user":
             continue
         content = ev.get("message", {}).get("content")
-        # A user message may actually be a tool_result echo (cc wraps tool
-        # results in a type:"user" envelope) — skip those so we don't grab
-        # tool output as the title. Mirrors cc's extractFirstPromptFromHead.
+        # tool_result 也封装为 user 事件，不能作为会话标题。
         if isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content
         ):
@@ -260,14 +172,6 @@ def _first_user_text_from_head(head: str) -> str:
 
 
 def _extract_text(content: object) -> str:
-    """Pull the first text string out of a CC message content block list.
-
-    Args:
-        content: a string, or a list of content blocks (dicts with type/text).
-
-    Returns:
-        the first block's text, or "" if none is a text block.
-    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):

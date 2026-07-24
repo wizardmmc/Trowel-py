@@ -1,9 +1,24 @@
 from pathlib import Path
 
 from trowel_py.cc_host import checkpoint
-from trowel_py.cc_host.checkpoint import CheckpointMeta
+from trowel_py.cc_host.checkpoint import (
+    CheckpointMeta,
+    NotAGitRepoError,
+    UnknownCheckpointError,
+)
 
 from .support import new_turn_id
+
+
+def test_public_symbols_keep_checkpoint_facade_identity() -> None:
+    assert CheckpointMeta is checkpoint.CheckpointMeta
+    assert NotAGitRepoError is checkpoint.NotAGitRepoError
+    assert UnknownCheckpointError is checkpoint.UnknownCheckpointError
+    assert {
+        CheckpointMeta.__module__,
+        NotAGitRepoError.__module__,
+        UnknownCheckpointError.__module__,
+    } == {"trowel_py.cc_host.checkpoint"}
 
 
 def test_list_checkpoints_roundtrip(git_repo: Path) -> None:

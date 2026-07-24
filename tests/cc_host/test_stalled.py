@@ -1,17 +1,10 @@
-"""Tests for cc_host.stalled.StalledDetector.
-
-Phased heads-up: quiet → mild (120s) → severe (300s) → kill (1800s).
-The detector does NOT kill cc itself — the service reads `phase()` and decides
-(mild/severe = emit StalledWarningEvent, kill = ErrorEvent + stop). Pure logic
-— time is injected so we can test boundaries without sleeping.
-"""
-import pytest
-
 from trowel_py.cc_host.stalled import StalledDetector
 
 
 def _detector() -> StalledDetector:
-    return StalledDetector(threshold_mild=120.0, threshold_severe=300.0, threshold_kill=1800.0)
+    return StalledDetector(
+        threshold_mild=120.0, threshold_severe=300.0, threshold_kill=1800.0
+    )
 
 
 class TestPhase:
@@ -41,17 +34,16 @@ class TestPhase:
         d.start_turn(now=0.0)
         d.record_event(now=0.0)
         assert d.phase(now=150.0) == "mild"
-        d.record_event(now=150.0)  # any event resets the quiet clock
-        assert d.phase(now=200.0) == "quiet"  # only 50s since last event
+        d.record_event(now=150.0)
+        assert d.phase(now=200.0) == "quiet"
 
     def test_quiet_inside_retry_backoff(self):
         d = _detector()
         d.start_turn(now=0.0)
         d.record_event(now=0.0)
-        # CC says it's retrying with a long backoff; inside the window is "waiting".
-        d.record_retry(now=10.0, retry_delay_ms=240_000)  # retry_until = 250
-        assert d.phase(now=200.0) == "quiet"  # inside backoff (200 < 250)
-        assert d.phase(now=260.0) == "mild"  # backoff expired, 260s quiet → mild
+        d.record_retry(now=10.0, retry_delay_ms=240_000)
+        assert d.phase(now=200.0) == "quiet"
+        assert d.phase(now=260.0) == "mild"
 
     def test_not_started_is_quiet(self):
         d = _detector()
@@ -62,7 +54,7 @@ class TestPhase:
         d.start_turn(now=0.0)
         d.record_event(now=0.0)
         assert d.phase(now=150.0) == "mild"
-        d.start_turn(now=200.0)  # new turn
+        d.start_turn(now=200.0)
         assert d.phase(now=250.0) == "quiet"
 
     def test_quiet_seconds_reports_silent_duration(self):

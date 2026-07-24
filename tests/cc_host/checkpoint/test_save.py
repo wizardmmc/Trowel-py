@@ -17,6 +17,36 @@ def test_save_creates_ref(git_repo: Path) -> None:
     assert checkpoint_ref_exists(git_repo, turn_id)
 
 
+def test_save_resolves_git_plumbing_at_call_time(
+    git_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str, str]] = []
+
+    def fake_create_checkpoint(
+        root: str,
+        turn_id: str,
+        message: str,
+        created_at: str,
+    ) -> None:
+        calls.append((root, turn_id, message, created_at))
+
+    monkeypatch.setattr(
+        checkpoint.checkpoint_git,
+        "create_checkpoint",
+        fake_create_checkpoint,
+    )
+
+    meta = checkpoint.save(str(git_repo), "facade-turn")
+
+    assert len(calls) == 1
+    root, turn_id, message, created_at = calls[0]
+    assert root == str(git_repo)
+    assert turn_id == meta.turn_id == "facade-turn"
+    assert message == checkpoint._encode_message(meta)
+    assert created_at == meta.created_at
+
+
 def test_save_does_not_move_head(git_repo: Path) -> None:
     head_before = git_output(git_repo, "rev-parse", "HEAD")
 

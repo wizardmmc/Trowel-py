@@ -1,92 +1,54 @@
-"""Pydantic models for the cc_host slice.
+"""CC Host 请求模型与前端事件契约。
 
-Two groups:
-- Request models: bodies for the HTTP endpoints.
-- Trowel event models: the ONLY event contract the frontend consumes. CC's raw
-  stream-json events are translated into these before leaving the server (see
-  trowel_py/cc_host/translator.py). The frontend never sees raw CC events.
-
-Every event carries a literal `type` discriminator so the frontend can switch
-on it without guessing.
+CC 原始 stream-json 事件离开服务端前统一转换为 Trowel 事件；前端不直接消费
+原始 CC 事件。每种事件用字面量 `type` 作为 discriminator。
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
+# 请求模型
 
 
 class CreateSessionRequest(BaseModel):
-    """Body for POST /api/cc/sessions.
-
-    Attributes:
-        workdir: working directory the CC subprocess runs in (its cwd), so CC
-            loads that project's .claude/ hooks/memory/skills.
-        resume_from: optional CC session id to resume (--resume <id>).
-        permission_mode: CC --permission-mode. Defaults to bypassPermissions
-            for a smooth, non-interrupting experience (v1 has no permission UI).
-        model: override --model (defaults handled by launcher).
-        effort: override --effort (defaults handled by launcher).
-        memory_enabled: slice-060 A/B switch. False drops every memory read-path
-            section (core/L0/diary/root) and detaches the memory MCP, for a
-            clean "no stored memory" baseline. Defaults True (C-1 zero-regression).
-        profile_enabled: slice-060 A/B switch. False drops only the explicit
-            ``# 用户画像`` section. Defaults True.
-        self_enabled: slice-085 switch. False drops the entire Self section
-            (the Trowel "你是谁/能做什么" shell-on-top of cc's default system
-            prompt), for an A/B baseline measuring the Self section's effect.
-            Defaults True.
-    """
+    """创建或恢复 CC 会话，并设置本次运行使用的模型、权限与注入开关。"""
 
     workdir: str = Field(min_length=1)
     resume_from: str | None = None
     permission_mode: str = "bypassPermissions"
     model: str | None = None
     effort: str | None = None
-    # strict=True (spec C-1): only a real JSON boolean is accepted — strings
-    # like "yes"/"true" or numbers are NOT coerced, they 422. No truthiness.
+    # 注入开关只接受 JSON boolean；字符串和数字不能按 truthiness 强制转换。
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
 
 
 class SendMessageRequest(BaseModel):
-    """Body for POST /api/cc/sessions/{id}/messages."""
+    """向 CC 会话发送一条非空消息。"""
 
     text: str = Field(min_length=1)
 
 
 class AnswerElicitRequest(BaseModel):
-    """Body for POST /api/cc/sessions/{id}/answer (slice-025-c).
-
-    The frontend posts the user's AskUserQuestion selections here. `cancel`
-    declines the question (writes control_response behavior=deny).
-    """
+    """回答待处理的 AskUserQuestion；`cancel` 会写入 deny control_response。"""
 
     answers: dict[str, str] = Field(default_factory=dict)
     cancel: bool = False
 
 
 class RevertRequest(BaseModel):
-    """Body for POST /api/cc/sessions/{id}/revert (slice-026 E1).
-
-    turn_id identifies the checkpoint to revert to (drops that turn and every
-    later one). It comes from the TurnStartEvent emitted at the start of the
-    turn the user is reverting to.
-    """
+    """恢复到 `turn_id` 对应 turn 之前，并丢弃该 turn 及后续内容。"""
 
     turn_id: str = Field(min_length=1)
 
 
-# ---------------------------------------------------------------------------
-# Trowel event models (frontend wire contract)
-# ---------------------------------------------------------------------------
+# 前端消费的 Trowel 事件模型
 
-# Discriminator strings, one per trowel event kind.
+# 每种事件各占一个 discriminator 字符串。
 EVENT_TYPES = frozenset(
     {
         "session_started",
@@ -111,33 +73,23 @@ EVENT_TYPES = frozenset(
         "turn_start",
         "model_changed",
         "workflow_tree",
-        # slice-074: required so the AgentEvent vocabulary validator accepts
-        # the CC subprocess-exit signal. Previously a documentation-only gap;
-        # slice-074's envelope validation turned it into a hard reject that
-        # would break CC /exit (row not dropped + spurious error turn).
+        # /exit 会产生 session_exited，AgentEvent envelope 必须接受该终态。
         "session_exited",
-        # slice-088: the model's per-message token usage, emitted from a CC
-        # assistant envelope before it is split into text/thinking/tool_use
-        # (the split discards usage/model/message_id).
+        # assistant envelope 拆分后会丢失 usage/model/message_id，须先发布用量。
         "context_usage",
     }
 )
 
 
 class _Event(BaseModel):
-    """Base for every trowel event: carries the discriminator `type`."""
-
     type: str
 
 
 class SessionStartedEvent(_Event):
-    """Emitted once per CC process after system/init.
+    """每个 CC 进程在 system/init 后发布一次。
 
-    Carries model/cwd/tools plus the bare-name rosters from cc init
-    (slash_commands/skills/agents). cc init's lists are z.array(z.string()) —
-    names only, no description; the frontend's '/' autocomplete fetches
-    descriptions separately from GET /cc/slash-items. Defaults to empty so the
-    reducer can treat absent fields (older CC / minimal fixtures) uniformly.
+    init roster 只有名称，没有描述；前端从 `/cc/slash-items` 单独获取描述。空列表
+    默认值让旧版 CC 或最小录制缺字段时仍可统一归并。
     """
 
     type: Literal["session_started"] = "session_started"
@@ -151,20 +103,10 @@ class SessionStartedEvent(_Event):
 
 
 class TurnStartEvent(_Event):
-    """Emitted at the start of each turn (slice-026 E1).
+    """实时 turn 的 checkpoint 身份与可恢复性。
 
-    Carries the trowel turn_id (the checkpoint ref name) and whether this turn
-    is revertible. The frontend attaches turn_id to the optimistic turn it
-    already appended, and renders the 'revert to here' button iff revertible.
-
-    Live-only: the history-replay path (parse_history) never emits this —
-    replayed turns predate this trowel session and have no checkpoint, so they
-    are not revertible (and the frontend shows no button for them).
-
-    revertible is False when the workdir is not a git repo or when the turn
-    has no resumable jsonl yet (a fresh session's first turn — cc_session_id
-    is only learned from init mid-turn, and there is nothing prior to revert
-    to anyway).
+    history replay 没有当前进程创建的 checkpoint，因此不发布此事件。非 Git 工作
+    目录不可恢复；Git 首轮复用启动 checkpoint，后续 turn 创建新 checkpoint。
     """
 
     type: Literal["turn_start"] = "turn_start"
@@ -173,55 +115,36 @@ class TurnStartEvent(_Event):
 
 
 class UserEvent(_Event):
-    """A user text message — history-replay only.
+    """仅供 history replay 使用的用户消息。
 
-    The live stream never carries user text as an event: the frontend appends
-    the user's own message optimistically when it sends. But when replaying a
-    past CC session (GET /sessions/{id}/history), the user's messages must
-    surface somehow, and reusing the same reducer is a hard spec constraint.
-    So the history translator emits this event for each historical user turn;
-    it never appears on the live SSE stream.
+    实时路径由前端乐观追加用户消息，不发布此事件；回放路径补发该事件，使 live 与
+    history 继续复用同一 reducer。
     """
 
     type: Literal["user"] = "user"
     text: str
-    # Whole seconds this turn took — history-replay only. The live stream has
-    # no UserEvent (the FE renders the user's message optimistically and times
-    # the turn send->finished itself); this field carries that same "one turn's
-    # wall-clock" value for replayed turns. CC's jsonl has no `result` line
-    # (interrupted sessions never write one), so history has no finished event;
-    # history.py back-fills this from the delta between the turn's user entry
-    # timestamp and its last assistant entry timestamp. None (no usable
-    # timestamps) makes the frontend omit the "Ran for …" label.
+    # CC jsonl 可能没有 result；回放用用户条目到末个 assistant 的时间差近似耗时。
+    # 时间戳不可用时保持 None，前端不显示耗时。
     duration_seconds: int | None = None
 
 
 class TextEvent(_Event):
-    """One assistant text delta (a fragment of the streaming reply)."""
-
     type: Literal["text"] = "text"
     text: str
 
 
 class ThinkingEvent(_Event):
-    """One thinking delta, so the UI can show 'thinking...' instead of idling."""
-
     type: Literal["thinking"] = "thinking"
     text: str
-    # slice-031: reconstructed think duration in seconds for history replay.
-    # The live stream derives this from thinking_tokens heartbeats; the jsonl
-    # has none, so history.py back-fills it from entry-timestamp deltas. None
-    # when no prev timestamp is available (frontend falls back to bare "思考").
+    # history jsonl 没有 thinking_tokens heartbeat，只能用相邻条目时间差近似；
+    # 无前序时间戳时保持 None，前端只显示“思考”。
     thinking_duration_seconds: int | None = None
 
 
 class DiffHunk(BaseModel):
-    """One diff hunk — jsdiff StructuredPatchHunk shape (slice-029).
+    """与 jsdiff StructuredPatchHunk 对齐的 wire hunk。
 
-    ``lines`` carry the leading marker char: ``' ctx'``, ``'+add'``, ``'-rm'``.
-    Mirrors the FE ``DiffHunk`` interface so both stacks share one wire shape.
-    (slice-033 removed the BE-side ``diff_snapshot`` dataclass — cc's own
-    structuredPatch is now converted directly in ``tool_use_result.py``.)
+    `lines` 保留 `' ctx'`、`'+add'`、`'-rm'` 的首字符标记。
     """
 
     oldStart: int
@@ -232,11 +155,9 @@ class DiffHunk(BaseModel):
 
 
 class WriteDiff(BaseModel):
-    """BE-computed diff for a Write tool_use (slice-029 Phase 2).
+    """CC 执行写工具后生成的 diff。
 
-    ``type='create'`` (new file) → empty hunks; ``type='update'`` → real diff.
-    The FE picks render mode off ``type``. Only present on Write tool_call
-    events (Edit/MultiEdit diffs are FE-computed from input).
+    `create` 使用空 hunks，`update` 携带真实 patch；前端按 `type` 选择渲染方式。
     """
 
     type: Literal["create", "update", "delete"]
@@ -244,12 +165,10 @@ class WriteDiff(BaseModel):
 
 
 class ToolCallEvent(_Event):
-    """A complete tool_use call (name + full input), emitted when the block closes.
+    """content block 结束后发布的完整 tool_use。
 
-    parent_tool_use_id is set when this tool_use came from a sub-agent (the cc
-    envelope carries it, pointing at the spawning Agent tool_call). Null for
-    top-level tool_use. The frontend uses it to nest sub-agent tools under their
-    Agent (slice-025-a problem 2).
+    子代理工具通过 CC envelope 的 `parent_tool_use_id` 指向创建它的 Agent
+    tool_call；顶层工具为 None。
     """
 
     type: Literal["tool_call"] = "tool_call"
@@ -260,8 +179,6 @@ class ToolCallEvent(_Event):
 
 
 class ToolProgressEvent(_Event):
-    """A long-running tool is still executing (keeps the stream alive)."""
-
     type: Literal["tool_progress"] = "tool_progress"
     tool_use_id: str
     tool_name: str
@@ -269,17 +186,11 @@ class ToolProgressEvent(_Event):
 
 
 class ToolResultEvent(_Event):
-    """The result of a tool_use, carried back by CC in a user message.
+    """CC 在 user message 中返回的 tool_use 结果。
 
-    write_diff (slice-033 feat 2, 方案 F): present on Edit/MultiEdit/Write
-    tool_results — converted from cc's own ``structuredPatch``, which cc
-    computes at execution time and carries in the jsonl ``toolUseResult`` /
-    stream-json ``tool_use_result`` field. Because cc computed it against the
-    real file, the hunk ``oldStart``/``newStart`` are real file line numbers,
-    and because it's persisted in jsonl, replay renders identically to live
-    even after a BE restart (the old in-memory ``_write_diffs`` cache could
-    not). Absent for other tools and for failed/no-op edits — the FE then
-    falls back to its fragment diff (line numbers from 1).
+    Edit/MultiEdit/Write 的 `write_diff` 来自 CC 执行时生成的 `structuredPatch`，
+    因而保留真实文件行号，并让 live 与 jsonl replay 一致。其他工具、失败或 no-op
+    编辑没有该字段，前端回退到 fragment diff。
     """
 
     type: Literal["tool_result"] = "tool_result"
@@ -289,8 +200,6 @@ class ToolResultEvent(_Event):
 
 
 class RetryingEvent(_Event):
-    """GLM/backend retry in progress (transparently shown, CC manages it)."""
-
     type: Literal["retrying"] = "retrying"
     attempt: int
     max_retries: int | None = None
@@ -300,26 +209,20 @@ class RetryingEvent(_Event):
 
 
 class HookEvent(_Event):
-    """A workdir hook fired (proves the project's .claude/ hooks are active)."""
-
     type: Literal["hook"] = "hook"
     hook_name: str
     outcome: str | None = None
 
 
 class StatusEvent(_Event):
-    """A phase transition (e.g. 'compacting'), so the UI does not read silence as a hang."""
-
     type: Literal["status"] = "status"
     stage: str
 
 
 class ModelChangedEvent(_Event):
-    """slice-027 C2: emitted right after /model (or /effort) RestartSession so
-    the StatusBar syncs immediately. CC is lazy-restarted by the next send's
-    _ensure_process, so without this event the model/effort display would lag a
-    full turn behind. None fields mean trowel is deferring to cc settings.json
-    (no --model / --effort flag passed that turn).
+    """模型或 effort 切换后立即同步界面，不等待下一次 send 惰性重启 CC。
+
+    None 表示沿用 CC settings.json，不传 `--model` 或 `--effort`。
     """
 
     type: Literal["model_changed"] = "model_changed"
@@ -328,12 +231,10 @@ class ModelChangedEvent(_Event):
 
 
 class CompactBoundaryEvent(_Event):
-    """CC finished an auto-compact pass on its context.
+    """CC 完成一次上下文 compact。
 
-    slice-088: ``trigger`` ("auto" / "manual") comes from
-    ``compactMetadata.trigger`` so the context observer can tell a threshold
-    auto-compact from a user-run /compact (only the former evidence-pins where
-    auto-compact fires).
+    `trigger` 原样来自 `compactMetadata.trigger`，用于区分阈值触发的 `auto` 与用户
+    执行 `/compact` 产生的 `manual`。
     """
 
     type: Literal["compact_boundary"] = "compact_boundary"
@@ -341,13 +242,11 @@ class CompactBoundaryEvent(_Event):
 
 
 class ContextUsageEvent(_Event):
-    """The model's token usage for one assistant message (slice-088).
+    """单条 assistant message 的原始 token usage。
 
-    Emitted from a CC assistant envelope BEFORE it is split into text/thinking/
-    tool_use, so the context observer can read ``message.usage`` /
-    ``message.model`` / ``message.id`` — which the split events discard
-    (codex code review HIGH 6). Carries the raw usage mapping verbatim; the
-    context calculator interprets it.
+    必须在 envelope 拆成 text/thinking/tool_use 前发布，否则会丢失 `message.usage`、
+    `message.model` 与 `message.id`。usage mapping 保持原样，由 context calculator
+    解释。
     """
 
     type: Literal["context_usage"] = "context_usage"
@@ -357,15 +256,11 @@ class ContextUsageEvent(_Event):
 
 
 class LocalCommandEvent(_Event):
-    """Output from a trowel-handled local command (/cost, /status) or unsupported slash."""
-
     type: Literal["local_command"] = "local_command"
     content: str
 
 
 class FinishedEvent(_Event):
-    """The turn completed successfully; carries usage/cost for accounting and /cost."""
-
     type: Literal["finished"] = "finished"
     usage: dict[str, Any]
     total_cost_usd: float
@@ -373,18 +268,13 @@ class FinishedEvent(_Event):
 
 
 class SessionExitedEvent(_Event):
-    """slice-028 bug3: the CC subprocess exited (user typed /exit, or it died
-    after the turn). Emitted after FinishedEvent when proc.returncode is set, so
-    the frontend can mark the session as exited in the multi-session bar (grey
-    out, resumable) and reset the view if it was the active session."""
+    """CC 子进程退出后发布；正常 turn 中必须排在 FinishedEvent 之后。"""
 
     type: Literal["session_exited"] = "session_exited"
     returncode: int
 
 
 class ErrorEvent(_Event):
-    """The turn ended in error; subclass distinguishes cause (max_turns, stalled, ...)."""
-
     type: Literal["error"] = "error"
     subclass: str
     errors: list[str] = Field(default_factory=list)
@@ -392,21 +282,14 @@ class ErrorEvent(_Event):
 
 
 class InterruptedEvent(_Event):
-    """The user interrupted the current turn (SIGINT)."""
-
     type: Literal["interrupted"] = "interrupted"
 
 
 class StalledWarningEvent(_Event):
-    """CC has been silent long enough to surface a non-fatal heads-up.
+    """CC 长时间静默时发布的非终态警告。
 
-    severity=mild at threshold_mild (120s), severe at threshold_severe (300s).
-    The process is NOT killed — on GLM's non-streaming backend, long silence is
-    usually legitimate waiting for the first event, not a deadlock. The
-    frontend shows a "be patient" / "may be stuck" line under the spinner; the
-    user interrupts manually if needed. The 30-min hard cap
-    (StalledDetector.threshold_kill) eventually emits ErrorEvent if cc is truly
-    wedged.
+    GLM 非流式 backend 的首事件可能很晚，mild/severe 只提示而不杀进程；达到
+    `StalledDetector.threshold_kill` 后才发布 ErrorEvent。
     """
 
     type: Literal["stalled_warning"] = "stalled_warning"
@@ -415,13 +298,10 @@ class StalledWarningEvent(_Event):
 
 
 class ThinkingProgressEvent(_Event):
-    """A thinking-tokens heartbeat: CC is still thinking, with a running token estimate.
+    """携带累计 token 估算的 thinking heartbeat。
 
-    On the GLM backend this is the ONLY signal during thinking — thinking content
-    arrives in a later assistant envelope (not via stream deltas), so without these
-    heartbeats the frontend would see no event during the whole think and the
-    'thinking…' spinner could never trigger. Carries only the cumulative token
-    estimate; seconds and verb are computed client-side (see slice-025-a decision #1).
+    GLM backend 的 thinking 内容可能只在后续 assistant envelope 到达；heartbeat
+    是期间唯一活动信号。秒数和展示文案由前端计算。
     """
 
     type: Literal["thinking_progress"] = "thinking_progress"
@@ -429,26 +309,19 @@ class ThinkingProgressEvent(_Event):
 
 
 class SubagentProgressEvent(_Event):
-    """Progress of a sub-agent spawned via the Agent tool (task_* system events).
+    """Agent tool 创建的子代理进度。
 
-    task_started / task_progress / task_notification each carry the tool_use_id of
-    the Agent tool_call, so the frontend can attach this to the matching Agent
-    ToolItem. task_updated is intentionally NOT mapped: it has no tool_use_id and
-    its patch.status duplicates task_notification.status (slice-025-a decision #5).
-
-    Optional fields vary per event: started carries description/subagent_type,
-    progress adds last_tool_name/usage, notification carries final usage. The
-    frontend merges successive events onto the ToolItem's subagent field.
+    task_started/task_progress/task_notification 用 `tool_use_id` 归属到对应 Agent
+    ToolItem。task_updated 没有该身份且状态与 notification 重复，因此不映射。
+    不同阶段只填充各自已知字段，前端按 task 合并。
     """
 
     type: Literal["subagent_progress"] = "subagent_progress"
     tool_use_id: str
     task_id: str
-    # slice-077-prefix: ``task_notification`` carries CC's native terminal status
-    # (completed / failed / cancelled — confirmed values; others not yet recorded).
-    # Kept as ``str`` (not Literal) so an unforeseen CC status does not crash the
-    # translator — the frontend treats anything that is not started/progress as
-    # terminal. ``task_started`` / ``task_progress`` still set started/progress.
+    # task_notification 的真实录制确认 completed/failed/cancelled；其他值尚未录制。
+    # 保持 str 可避免未知 CC 状态让 translator 崩溃；前端把 started/progress 之外
+    # 的值视为终态。
     status: str
     description: str | None = None
     subagent_type: str | None = None
@@ -457,35 +330,24 @@ class SubagentProgressEvent(_Event):
 
 
 class ElicitationRequestEvent(_Event):
-    """cc asked the user a multiple-choice question via AskUserQuestion (slice-025-c).
+    """AskUserQuestion 的 control_request。
 
-    Emitted when translator sees a control_request(can_use_tool) whose
-    tool_name is AskUserQuestion. The frontend renders an inline selection
-    box (see docs/design/front-end/ask-user-question-20260704.html); the
-    user's answers are posted back to the service, which writes a
-    control_response(behavior=allow, updatedInput={questions, answers,
-    annotations}) to cc stdin. Ground truth: reverse_cc
-    samples/raw/052_askuser_bypass_stdio.jsonl (bypass + --permission-prompt-tool
-    stdio route — ordinary tools stay silent, only interactive tools trigger this).
+    translator 只处理 `can_use_tool` 且 tool_name 为 AskUserQuestion 的请求；回答通过
+    带 `updatedInput` 的 allow control_response 写回 CC stdin，取消则写 deny。
     """
 
     type: Literal["elicit_request"] = "elicit_request"
     tool_use_id: str
     request_id: str
-    # questions carried verbatim from control_request.input.questions; the
-    # frontend reads {question, header, options:[{label, description?, preview?}],
-    # multiSelect} per the mockup field map. Loose dict keeps coupling with cc's
-    # evolving schema minimal.
+    # questions 原样来自 control_request.input.questions；宽松 dict 避免与 CC 仍在
+    # 演进的 question/options shape 强耦合。
     questions: list[dict[str, Any]]
 
 
 class WorkflowPhaseInfo(BaseModel):
-    """One phase group in a workflow tree (slice-036).
+    """来自 `wf_<runId>.json` 顶层 phases 数组的阶段。
 
-    Sourced from wf_<runId>.json's top-level ``phases`` array (which carries
-    both title and detail). Order is the array order — there is no separate
-    ``order`` field, and the frontend does NOT render a numeric badge (mockup
-    decision: the gold rule + bold title already carry the hierarchy).
+    数组顺序就是展示顺序，上游没有独立 order 字段。
     """
 
     title: str
@@ -493,16 +355,10 @@ class WorkflowPhaseInfo(BaseModel):
 
 
 class WorkflowAgentInfo(BaseModel):
-    """One agent node in a workflow tree (slice-036).
+    """来自 workflowProgress 中 `workflow_agent` 的代理节点。
 
-    Sourced from wf_<runId>.json's ``workflowProgress[type="workflow_agent"]``.
-    cc already aggregates per-agent tokens/toolCalls/lastToolName here, so trowel
-    reads them verbatim (no client-side reduction — slice-036 data-source rule).
-
-    ``state`` is the trowel wire enum (queued/running/done/failed), NOT cc's
-    internal one. cc writes ``start``/``progress``/``done``/``error``; the
-    watcher normalizes them at parse time (start|progress→running, error→failed)
-    so the frontend switches on a stable set regardless of cc renames.
+    tokens/toolCalls/lastToolName 使用 CC 已聚合的值。`state` 是稳定 Trowel wire
+    枚举；watcher 把 CC 的 start/progress/done/error 归一化后再写入。
     """
 
     agent_id: str
@@ -520,25 +376,12 @@ class WorkflowAgentInfo(BaseModel):
 
 
 class WorkflowTreeEvent(_Event):
-    """A complete snapshot of one workflow run (slice-036).
+    """单个 workflow run 的完整磁盘快照。
 
-    cc runs Workflows in the background and pushes nothing about them to the
-    ``--stream-json`` stdout (verified by binary reverse + transcript scan — see
-    wiki/raw/2026-07-07-tcc-workflow-render-bug.md). So trowel reads the
-    on-disk ``wf_<runId>.json`` cc maintains (the single source of truth cc's
-    own TUI also reads), and emits this event. Each push is a FULL snapshot
-    (replace, not patch): cc rewrites the whole file on every progress change,
-    so a snapshot is simplest and lets the frontend reducer just swap the
-    matching run_id.
-
-    Used for BOTH the live path (WorkflowWatcher stat-polls the file while the
-    workflow runs) and history replay (history.py scans workflows/wf_*.json) —
-    same event shape + same frontend ``WorkflowTree`` component is the C-1
-    invariant: reload renders identically to the live completed state.
-
-    Multi-workflow concurrency (C-6): one session may run several workflows;
-    each gets its own WorkflowTreeEvent stream keyed by run_id, and the frontend
-    renders one card per run_id.
+    真实逆向确认 CC 不向 stream-json stdout 发布 workflow 进度；`wf_<runId>.json`
+    是 CC TUI 同样读取的事实源。CC 每次重写整文件，因此事件采用 replace 语义而非
+    patch。live watcher 与 history replay 使用同一 shape；并行 run 用 `run_id`
+    独立归并。
     """
 
     type: Literal["workflow_tree"] = "workflow_tree"
@@ -548,8 +391,7 @@ class WorkflowTreeEvent(_Event):
     args: str | None = None
     status: Literal["running", "completed", "killed", "failed"]
     agent_count: int
-    """done agents / total — the progress bar (done/total). Computed at parse
-    time from the agents list (count of state=='done')."""
+    # 由 agents 中 state=done 的数量计算，用于 done/total 进度。
     done_count: int
     total_tokens: int | None = None
     total_tool_calls: int | None = None
@@ -559,7 +401,7 @@ class WorkflowTreeEvent(_Event):
     error: str | None = None
 
 
-# Union of all trowel events (for type hints; not used as a validator).
+# 仅供类型标注的 Trowel 事件联合，不承担运行时校验。
 TrowelEvent = (
     SessionStartedEvent
     | TurnStartEvent
@@ -573,6 +415,7 @@ TrowelEvent = (
     | HookEvent
     | StatusEvent
     | CompactBoundaryEvent
+    | ContextUsageEvent
     | LocalCommandEvent
     | FinishedEvent
     | SessionExitedEvent

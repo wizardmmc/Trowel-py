@@ -1,12 +1,3 @@
-"""Tests for cc_host.delta.DeltaAccumulator.
-
-CC streams tool_use inputs as partial JSON fragments across many
-content_block_delta events (Anthropic streaming protocol). The accumulator
-stitches them into a complete dict when the block closes, so the translator
-can emit a single tool_call event with the full input.
-"""
-import pytest
-
 from trowel_py.cc_host.delta import DeltaAccumulator, ToolBlockResult
 
 
@@ -23,7 +14,6 @@ class TestInputJsonAccumulation:
         assert result.input == {"path": "/a", "content": "x"}
 
     def test_empty_input_becomes_empty_dict(self):
-        # a tool_use with no arguments streams no input_json_delta
         acc = DeltaAccumulator()
         acc.on_block_start(0, {"type": "tool_use", "id": "tu_2", "name": "List"})
         result = acc.on_block_stop(0)
@@ -58,5 +48,4 @@ class TestInputJsonAccumulation:
         acc.on_block_start(0, {"type": "tool_use", "id": "tu_1", "name": "Write"})
         acc.on_input_json_delta(0, '{"a":1}')
         acc.reset()
-        # after reset, a stray stop on stale index yields nothing
         assert acc.on_block_stop(0) is None

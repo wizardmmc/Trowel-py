@@ -1,8 +1,3 @@
-"""Tests for cc_host schemas: trowel event models + request models.
-
-These pin the wire contract the frontend will consume. Every trowel event
-carries a discriminator `type` so the frontend can switch on it.
-"""
 import pytest
 from pydantic import ValidationError
 
@@ -42,7 +37,6 @@ class TestRequestModels:
         req = CreateSessionRequest(workdir="/tmp/x")
         assert req.workdir == "/tmp/x"
         assert req.resume_from is None
-        # spec: permission_mode defaults to bypassPermissions
         assert req.permission_mode == "bypassPermissions"
 
     def test_create_session_with_resume(self):
@@ -67,13 +61,16 @@ class TestRequestModels:
 
 
 class TestSessionStartedRosters:
-    """slice-027 C1: SessionStartedEvent carries the bare-name rosters from
-    cc system.init (description is fetched separately via /cc/slash-items)."""
+    """Roster 名称来自 CC system.init，描述由 /cc/slash-items 单独提供。"""
 
     def test_carries_slash_rosters(self):
         ev = SessionStartedEvent(
-            model="glm-5.2", cwd="/tmp", cc_session_id="s", tools=[],
-            slash_commands=["monthly-etf"], skills=["monthly-etf"],
+            model="glm-5.2",
+            cwd="/tmp",
+            cc_session_id="s",
+            tools=[],
+            slash_commands=["monthly-etf"],
+            skills=["monthly-etf"],
             agents=["claude"],
         )
         assert ev.slash_commands == ["monthly-etf"]
@@ -88,10 +85,6 @@ class TestSessionStartedRosters:
 
 
 class TestModelChangedSchema:
-    """slice-027 C2: emitted right after /model (or /effort) RestartSession so
-    the StatusBar syncs immediately — without waiting for the next message's
-    system.init (CC is lazy-restarted by the next send's _ensure_process)."""
-
     def test_carries_model_and_effort(self):
         ev = ModelChangedEvent(model="opus", effort="high")
         d = ev.model_dump()
@@ -100,7 +93,6 @@ class TestModelChangedSchema:
         assert d["effort"] == "high"
 
     def test_defaults_none_means_follow_settings(self):
-        """None = trowel is deferring to cc settings.json (no --model / --effort)."""
         ev = ModelChangedEvent()
         assert ev.model is None
         assert ev.effort is None
@@ -149,18 +141,30 @@ class TestEventDiscriminators:
         ],
     )
     def test_each_event_has_unique_type(self, model, etype):
-        # the literal type field must match the expected wire discriminator
         assert set(EVENT_TYPES) == {
-            "session_started", "turn_start", "user", "text", "thinking",
-            "tool_call", "tool_progress", "tool_result", "retrying", "hook",
-            "status", "compact_boundary", "local_command", "finished", "error",
-            "interrupted", "stalled_warning",
-            "thinking_progress", "subagent_progress",
-            "elicit_request", "model_changed",
+            "session_started",
+            "turn_start",
+            "user",
+            "text",
+            "thinking",
+            "tool_call",
+            "tool_progress",
+            "tool_result",
+            "retrying",
+            "hook",
+            "status",
+            "compact_boundary",
+            "local_command",
+            "finished",
+            "error",
+            "interrupted",
+            "stalled_warning",
+            "thinking_progress",
+            "subagent_progress",
+            "elicit_request",
+            "model_changed",
             "workflow_tree",
-            # slice-074: session_exited is now in EVENT_TYPES (previously a
-            # documentation-only gap that slice-074's envelope validation made
-            # into a hard reject, breaking CC /exit).
+            # /exit 产生 session_exited，envelope 校验必须接受它。
             "session_exited",
             "context_usage",
         }
@@ -184,7 +188,9 @@ class TestEventDiscriminators:
 
     def test_tool_call_event_carries_input_dict(self):
         ev = ToolCallEvent(
-            tool_use_id="tu_1", tool_name="Write", input={"path": "/a", "content": "x"},
+            tool_use_id="tu_1",
+            tool_name="Write",
+            input={"path": "/a", "content": "x"},
         )
         dumped = ev.model_dump()
         assert dumped["tool_name"] == "Write"
@@ -206,8 +212,14 @@ class TestElicitationRequestSchema:
         e = ElicitationRequestEvent(
             tool_use_id="call_abc",
             request_id="req-1",
-            questions=[{"question": "A or B?", "header": "Pref",
-                        "options": [{"label": "A"}], "multiSelect": False}],
+            questions=[
+                {
+                    "question": "A or B?",
+                    "header": "Pref",
+                    "options": [{"label": "A"}],
+                    "multiSelect": False,
+                }
+            ],
         )
         dumped = e.model_dump()
         assert dumped["type"] == "elicit_request"
@@ -217,27 +229,19 @@ class TestElicitationRequestSchema:
 
 
 def test_event_types_covers_every_trowel_event_subclass():
-    """slice-074 gpt5.6 Info 6: EVENT_TYPES must contain the `type` literal of
-    EVERY TrowelEvent subclass. Catches the class of bug where session_exited
-    was missing — a hand-maintained set drifting from the union."""
-    import inspect
+    from typing import get_args
 
     from trowel_py.schemas import cc_host as mod
 
-    event_classes = [
-        obj
-        for _, obj in inspect.getmembers(mod, inspect.isclass)
-        if issubclass(obj, mod._Event) and obj is not mod._Event
-    ]
-    literals = set()
+    event_classes = set(mod._Event.__subclasses__())
+    assert set(get_args(mod.TrowelEvent)) == event_classes
+
+    literals = []
     for cls in event_classes:
-        # each _Event subclass sets a `type: Literal["..."]` default
         type_field = cls.model_fields.get("type")
         assert type_field is not None, f"{cls.__name__} has no type field"
         default = type_field.default
         assert isinstance(default, str), f"{cls.__name__} type default is not a str"
-        literals.add(default)
-    missing = literals - mod.EVENT_TYPES
-    assert not missing, (
-        f"TrowelEvent subclass type literals missing from EVENT_TYPES: {missing}"
-    )
+        literals.append(default)
+    assert len(literals) == len(set(literals))
+    assert set(literals) == mod.EVENT_TYPES

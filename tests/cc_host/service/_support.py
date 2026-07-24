@@ -67,7 +67,6 @@ def init_event(sid="s-1", model="glm-5.2"):
         "model": model,
         "cwd": "/wd",
         "session_id": sid,
-        " tools": [],
         "tools": ["Read", "Skill"],
     }
 

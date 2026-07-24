@@ -1,10 +1,3 @@
-"""Tests for cc_host.input — the slash-handling input layer.
-
-CC's stream-json input has no command channel; slash is REPL-only. So trowel
-intercepts `/<name>` itself, classifies it, and hands CC only plain text. This
-is mandatory: smoke A proved that passing a raw `/skillname` makes the model
-guess from the skill directory instead of actually invoking the Skill tool.
-"""
 from pathlib import Path
 
 import pytest
@@ -28,7 +21,6 @@ class TestPlainText:
         assert action.text == "hello world"
 
     def test_leading_slash_only_is_plain(self, tmp_path: Path):
-        # "/" alone is not a command; send as text
         action = classify_input("/", workdir=tmp_path)
         assert isinstance(action, SendText)
 
@@ -65,20 +57,23 @@ class TestCustomCommandExpansion:
         action = classify_input("/echo hello", workdir=tmp_path)
         assert isinstance(action, SendText)
         assert "ECHOhello" in action.text
-        # frontmatter stripped
         assert "description" not in action.text
 
-    def test_user_level_command_also_resolved(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_user_level_command_also_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         user_cmds = tmp_path / "userhome" / ".claude" / "commands"
-        self._write_echo(user_cmds, "---\ndescription: echo\n---\nbody $ARGUMENTS end\n")
-        monkeypatch.setattr("trowel_py.cc_host.input.user_commands_dir", lambda: user_cmds)
-        # no project command, falls through to user-level
+        self._write_echo(
+            user_cmds, "---\ndescription: echo\n---\nbody $ARGUMENTS end\n"
+        )
+        monkeypatch.setattr(
+            "trowel_py.cc_host.input.user_commands_dir", lambda: user_cmds
+        )
         action = classify_input("/echo hi", workdir=tmp_path / "wd")
         assert isinstance(action, SendText)
         assert "body hi end" in action.text
 
     def test_command_takes_precedence_over_skill_trigger(self, tmp_path: Path):
-        # if a command file exists for the name, it wins over generic skill trigger
         self._write_echo(tmp_path / ".claude" / "commands", "---\n---\nCOMMAND_BODY\n")
         action = classify_input("/echo whatever", workdir=tmp_path)
         assert isinstance(action, SendText)
@@ -110,8 +105,6 @@ class TestBuiltinCommands:
         assert action.effort is None
 
     def test_exit_classifies_as_exit_session(self, tmp_path: Path):
-        """slice-028 bug3: /exit 必须分类成 ExitSession，不能落到 skill_trigger
-        （否则会把 'Use the Skill tool with skill=exit.' 发给 cc，cc 当文本喂模型）。"""
         action = classify_input("/exit", workdir=tmp_path)
         assert isinstance(action, ExitSession)
 
@@ -125,7 +118,6 @@ class TestBuiltinCommands:
         assert action.name == "compress"
 
     def test_builtin_takes_precedence_over_command_file(self, tmp_path: Path):
-        # even if someone ships a cost.md, /cost stays a local command
         (tmp_path / ".claude" / "commands").mkdir(parents=True)
         (tmp_path / ".claude" / "commands" / "cost.md").write_text("---\n---\nX\n")
         action = classify_input("/cost", workdir=tmp_path)
@@ -139,7 +131,9 @@ class TestHelpers:
         assert "skill='deep-research'" in p
         assert "query here" in p
 
-    def test_expand_command_file_strips_frontmatter_and_substitutes(self, tmp_path: Path):
+    def test_expand_command_file_strips_frontmatter_and_substitutes(
+        self, tmp_path: Path
+    ):
         f = tmp_path / "c.md"
         f.write_text("---\ndescription: d\n---\nHello $ARGUMENTS!\n")
         assert expand_command_file(f, "world") == "Hello world!"

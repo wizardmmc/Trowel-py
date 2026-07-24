@@ -1,16 +1,13 @@
-"""Integration tests for cc_host against a REAL `claude -p` subprocess.
+"""使用真实 `claude -p` 子进程的 CC Host 集成测试。
 
-These are NOT run by default: they need a real claude binary, a live GLM
-backend, and — critically — must NOT run inside an interactive claude session
-(nesting `claude -p` deadlocks with exit 124 / #46416). The spike file headers
-document the same constraint.
+默认不运行：测试依赖真实 claude binary 和可用的 GLM backend，且不能在交互式
+claude 会话内执行；嵌套 `claude -p` 会因 #46416 死锁并以 124 退出。
 
-To run them, from an ordinary terminal:
+在普通终端运行：
     CC_INTEGRATION=1 .venv/bin/python -m pytest -m integration \
         tests/cc_host/test_integration.py
-
-They map to the "打真 CC" rows of slice022's 通过标准.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,7 +18,6 @@ import pytest
 
 from trowel_py.cc_host.service import CCHost
 from trowel_py.schemas.cc_host import (
-    ErrorEvent,
     FinishedEvent,
     SessionStartedEvent,
     TextEvent,
@@ -36,9 +32,7 @@ _HAS_CLAUDE = shutil.which("claude") is not None
 _SKIP_REASON = (
     "set CC_INTEGRATION=1 and run from a plain terminal (not inside claude; #46416)"
 )
-skip = pytest.mark.skipif(
-    not (_INTEGRATION_ON and _HAS_CLAUDE), reason=_SKIP_REASON
-)
+skip = pytest.mark.skipif(not (_INTEGRATION_ON and _HAS_CLAUDE), reason=_SKIP_REASON)
 
 
 async def _events(host: CCHost, text: str) -> list:
@@ -69,12 +63,12 @@ async def test_coding_writes_file(tmp_path: Path):
 
 @skip
 async def test_skill_explicit_trigger(tmp_path: Path):
-    # system/init.tools must contain Skill; /name is intercepted into a trigger prompt.
+    # system/init.tools 必须包含 Skill；/name 会转换为触发 prompt。
     host = CCHost("s", tmp_path)
     events = await _events(host, "/test-skill")
     init = next(e for e in events if isinstance(e, SessionStartedEvent))
     assert "Skill" in init.tools
-    # the model should actually invoke the Skill tool
+    # 模型必须实际调用 Skill tool。
     assert any(isinstance(e, ToolCallEvent) and e.tool_name == "Skill" for e in events)
     await host.close()
 
@@ -84,7 +78,8 @@ async def test_custom_command_expansion(tmp_path: Path):
     cmd_dir = tmp_path / ".claude" / "commands"
     cmd_dir.mkdir(parents=True)
     (cmd_dir / "echo.md").write_text(
-        "---\ndescription: echo\n---\nRespond with exactly: ECHO$ARGUMENTS\n")
+        "---\ndescription: echo\n---\nRespond with exactly: ECHO$ARGUMENTS\n"
+    )
     host = CCHost("s", tmp_path)
     events = await _events(host, "/echo hello")
     text = "".join(e.text for e in events if isinstance(e, TextEvent))
@@ -95,8 +90,9 @@ async def test_custom_command_expansion(tmp_path: Path):
 @skip
 async def test_interrupt_then_resume(tmp_path: Path):
     host = CCHost("s", tmp_path, effort="high")
-    # start a long task, then interrupt mid-flight
+    # 先启动长任务，再在执行中中断。
     import asyncio
+
     task = asyncio.create_task(_events(host, "explain Shannon entropy in great detail"))
     await asyncio.sleep(8)
     await host.interrupt()
@@ -104,7 +100,7 @@ async def test_interrupt_then_resume(tmp_path: Path):
         await task
     except Exception:
         pass
-    # process is dead; next send must lazily resume
+    # 进程已结束；下一次 send 必须惰性恢复。
     events = await _events(host, "reply with a single digit: 1")
     assert any(isinstance(e, FinishedEvent) for e in events)
     await host.close()
