@@ -6,7 +6,7 @@ import logging
 import threading
 import tomllib
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -159,7 +159,15 @@ class MemoryReviewScheduler:
 
     async def _run_once(self, *, label: str = "run") -> None:
         """在线程中派发一次 review；失败只记录日志，不能拖垮应用。"""
-        event = {"date": date.today().isoformat(), "root": str(self._memory_root)}
+        now = self._now()
+        if now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        event = {
+            "date": (cutoff.date() - timedelta(days=1)).isoformat(),
+            "eligible_before": cutoff.isoformat(),
+            "root": str(self._memory_root),
+        }
         try:
             await asyncio.to_thread(self._dispatch, event)
         except Exception:

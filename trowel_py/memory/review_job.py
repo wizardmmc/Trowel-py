@@ -56,6 +56,7 @@ async def run_daily_review(
     *,
     host_factory: HostFactory | None = None,
     provider: Any = None,
+    eligible_before: str | None = None,
 ) -> None:
     """提炼所有已完成但尚未推进 extracted 水位的增量 segment。
 
@@ -68,9 +69,19 @@ async def run_daily_review(
             date_str = str(event["date"])
         else:
             date_str = date.today().isoformat()
+    if eligible_before is None and event and isinstance(event, dict):
+        raw_cutoff = event.get("eligible_before")
+        if raw_cutoff:
+            eligible_before = str(raw_cutoff)
     try:
         with _review_lock(root):
-            await _run_daily_review_locked(root, date_str, host_factory, provider)
+            await _run_daily_review_locked(
+                root,
+                date_str,
+                host_factory,
+                provider,
+                eligible_before,
+            )
     except BlockingIOError:
         logger.warning("daily review already running; skipping this run")
 
@@ -81,8 +92,17 @@ def run_daily_review_sync(event: Any = None) -> None:
 
     root = None
     date_str = None
+    eligible_before = None
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
+        eligible_before = event.get("eligible_before")
     root_path = Path(root) if root else None
-    asyncio.run(run_daily_review(event, memory_root=root_path, date_str=date_str))
+    asyncio.run(
+        run_daily_review(
+            event,
+            memory_root=root_path,
+            date_str=date_str,
+            eligible_before=eligible_before,
+        )
+    )

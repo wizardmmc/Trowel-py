@@ -51,12 +51,21 @@ async def run_daily_review_locked(
     date_str: str,
     host_factory: HostFactory | None,
     provider: Any,
+    completed_before: str | None = None,
 ) -> None:
     provider = _resolve_provider(provider)
+    try:
+        from trowel_py.memory.codex_journal import recover_sealed_codex_turns
+
+        recovered = recover_sealed_codex_turns(root)
+        if recovered:
+            logger.info("daily review: recovered %d sealed Codex turn(s)", recovered)
+    except Exception:  # noqa: BLE001 - Codex 修复失败不能阻断 CC review。
+        logger.warning("daily review: Codex journal recovery failed", exc_info=True)
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        segments = repo.find_incremental()
+        segments = repo.find_incremental(completed_before=completed_before)
         logger.info(
             "daily review: %d incremental segment(s) (date_str=%s)",
             len(segments),
@@ -176,6 +185,19 @@ async def run_daily_review_locked(
                     session.cc_session_id,
                     exc,
                 )
+
+        from trowel_py.memory.daily_review.codex import review_codex_segments
+
+        touched_dates.update(
+            await review_codex_segments(
+                root,
+                date_str,
+                repo,
+                store,
+                host_factory=host_factory,
+                completed_before=completed_before,
+            )
+        )
 
         if provider is not None:
             from trowel_py.memory.compress import daily_dates_needing_rebuild

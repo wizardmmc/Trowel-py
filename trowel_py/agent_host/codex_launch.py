@@ -43,6 +43,7 @@ def prepare_codex_session(
     from trowel_py.codex_host import CodexSession, CodexSessionConfig
     from trowel_py.codex_host.session import build_default_trowel_memory_mcp
     from trowel_py.memory.injection import build_memory_injection
+    from trowel_py.memory.codex_journal import CodexTurnJournal
     from trowel_py.memory.paths import resolve_memory_root
     from trowel_py.model_os.self_assembler import build_session_injection
 
@@ -113,7 +114,14 @@ def prepare_codex_session(
         developer_instructions=injection_text or None,
         trowel_memory_mcp=trowel_memory_mcp,
     )
-    session = CodexSession(config)
+    journal = CodexTurnJournal(
+        memory_root,
+        trowel_session_id=session_id,
+        workdir=req.workdir,
+        memory_enabled=req.memory_enabled,
+        profile_enabled=req.profile_enabled,
+    )
+    session = CodexSession(config, event_sink=journal.record)
     return PreparedCodexSession(
         session_id=session_id,
         session=session,

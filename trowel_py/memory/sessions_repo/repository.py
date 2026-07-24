@@ -9,9 +9,16 @@ from .database import (
     ensure_columns,
     initialize_schema,
     row_to_binding,
+    row_to_codex_turn,
     row_to_record,
 )
-from .models import IncrementalSegment, SessionBinding, SessionRecord
+from .models import (
+    CodexIncrementalSegment,
+    CodexTurnRecord,
+    IncrementalSegment,
+    SessionBinding,
+    SessionRecord,
+)
 
 
 class SessionsRepository:
@@ -115,14 +122,23 @@ class SessionsRepository:
         )
         self._conn.commit()
 
-    def find_incremental(self) -> list[IncrementalSegment]:
+    def find_incremental(
+        self, *, completed_before: str | None = None
+    ) -> list[IncrementalSegment]:
         """返回 user session 中尚未提炼的已完成区间。"""
+        cutoff_sql = ""
+        params: tuple[str, ...] = ()
+        if completed_before is not None:
+            cutoff_sql = " AND last_completed_at < ?"
+            params = (completed_before,)
         rows = self._conn.execute(
             "SELECT * FROM sessions"
             " WHERE COALESCE(session_kind, 'user') = 'user'"
             " AND last_completed_offset IS NOT NULL"
             " AND last_completed_offset > COALESCE(last_extracted_offset, 0)"
-            " ORDER BY registered_at"
+            + cutoff_sql
+            + " ORDER BY registered_at",
+            params,
         ).fetchall()
         segments: list[IncrementalSegment] = []
         for row in rows:
@@ -142,6 +158,104 @@ class SessionsRepository:
                     )
                 )
         return segments
+
+    def register_codex_turn(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        trowel_session_id: str,
+        workdir: str,
+        journal_path: str,
+        registered_at: str,
+        model: str,
+        effort: str,
+        provider: str,
+        memory_enabled: bool,
+        profile_enabled: bool,
+    ) -> None:
+        """首次事件登记 turn；重放同一原生 turn 时不覆盖原始身份。"""
+
+        self._conn.execute(
+            "INSERT OR IGNORE INTO codex_turns"
+            " (thread_id, turn_id, trowel_session_id, workdir, journal_path,"
+            " registered_at, model, effort, provider, memory_enabled,"
+            " profile_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                turn_id,
+                trowel_session_id,
+                workdir,
+                journal_path,
+                registered_at,
+                model,
+                effort,
+                provider,
+                int(memory_enabled),
+                int(profile_enabled),
+            ),
+        )
+        self._conn.commit()
+
+    def complete_codex_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        status: str,
+        completed_at: str,
+    ) -> None:
+        """只在 journal terminal 已持久化后推进原生 turn 完成水位。"""
+
+        if status not in {"completed", "interrupted", "failed"}:
+            raise ValueError(f"unknown Codex terminal status: {status}")
+        cursor = self._conn.execute(
+            "UPDATE codex_turns SET status = ?, completed_at = ?"
+            " WHERE thread_id = ? AND turn_id = ?",
+            (status, completed_at, thread_id, turn_id),
+        )
+        if cursor.rowcount != 1:
+            raise KeyError((thread_id, turn_id))
+        self._conn.commit()
+
+    def find_incremental_codex(
+        self, *, completed_before: str | None = None
+    ) -> list[CodexIncrementalSegment]:
+        cutoff_sql = ""
+        params: tuple[str, ...] = ()
+        if completed_before is not None:
+            cutoff_sql = " AND completed_at < ?"
+            params = (completed_before,)
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE completed_at IS NOT NULL AND extracted_at IS NULL"
+            + cutoff_sql
+            + " ORDER BY completed_at, registered_at, thread_id, turn_id",
+            params,
+        ).fetchall()
+        return [CodexIncrementalSegment(row_to_codex_turn(row)) for row in rows]
+
+    def find_unsealed_codex_turns(self) -> list[CodexTurnRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns WHERE completed_at IS NULL"
+            " ORDER BY registered_at, thread_id, turn_id"
+        ).fetchall()
+        return [row_to_codex_turn(row) for row in rows]
+
+    def advance_codex_extracted(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        when: str | None = None,
+    ) -> None:
+        stamp = when or datetime.now().isoformat()
+        self._conn.execute(
+            "UPDATE codex_turns SET extracted_at = ?"
+            " WHERE thread_id = ? AND turn_id = ? AND completed_at IS NOT NULL",
+            (stamp, thread_id, turn_id),
+        )
+        self._conn.commit()
 
     def advance_extracted(
         self,

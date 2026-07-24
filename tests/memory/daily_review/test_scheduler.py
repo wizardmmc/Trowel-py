@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
@@ -102,6 +102,39 @@ class TestSchedulerRunOnce:
         assert len(calls) == 1
         assert calls[0]["root"] == str(tmp_path)
         assert "date" in calls[0]
+
+    async def test_run_once_dispatches_closed_date_window(self, tmp_path):
+        calls: list[dict] = []
+        sched = MemoryReviewScheduler(
+            _cfg(),
+            tmp_path,
+            dispatch_fn=calls.append,
+            now_fn=lambda: datetime(2026, 7, 24, 9, 15),
+        )
+
+        await sched._run_once(label="catchup")
+
+        assert calls == [
+            {
+                "date": "2026-07-23",
+                "eligible_before": "2026-07-24T00:00:00",
+                "root": str(tmp_path),
+            }
+        ]
+
+    async def test_run_once_normalizes_aware_now_to_local_wall_clock(self, tmp_path):
+        calls: list[dict] = []
+        cst = timezone(timedelta(hours=8))
+        sched = MemoryReviewScheduler(
+            _cfg(),
+            tmp_path,
+            dispatch_fn=calls.append,
+            now_fn=lambda: datetime(2026, 7, 24, 9, 15, tzinfo=cst),
+        )
+
+        await sched._run_once()
+
+        assert calls[0]["eligible_before"] == "2026-07-24T00:00:00"
 
     async def test_run_once_swallows_dispatch_exception(self, tmp_path):
         def boom(_event: dict) -> None:

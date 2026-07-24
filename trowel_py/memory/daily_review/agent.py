@@ -112,6 +112,7 @@ async def run_one_session(
     start_offset: int | None = None,
     end_offset: int | None = None,
     derivation_sink: DerivationSink | None = None,
+    source_runtime: str = "claude_code",
 ) -> Draft:
     """驱动一个提炼 session，并返回通过门禁的 draft。
 
@@ -126,11 +127,20 @@ async def run_one_session(
         start_offset=start_offset,
         end_offset=end_offset,
     )
+    if source_runtime == "codex":
+        prompt = (
+            "【输入运行时更正】本次文件是 Trowel 持久化的单个 Codex turn "
+            "normalized event journal，不是 Claude Code JSONL。下文沿用的“cc 会话”"
+            "和“今天”属于旧模板措辞；只提炼该文件中的这个 completed turn，"
+            "不要补写文件外内容。\n\n"
+            + prompt
+        )
 
     workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
     workdir.mkdir(parents=True, exist_ok=True)
-    host = _create_host(session, workdir, host_factory)
     draft_path = workdir / "draft.json"
+    draft_path.unlink(missing_ok=True)
+    host = _create_host(session, workdir, host_factory)
 
     try:
         if not await _drive_host(host, prompt):

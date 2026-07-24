@@ -203,6 +203,24 @@ async def test_run_one_session_no_draft_raises(tmp_path: Path) -> None:
         )
 
 
+async def test_run_one_session_does_not_reuse_stale_draft(tmp_path: Path) -> None:
+    memory_root = tmp_path / "memory"
+    await run_one_session(
+        session(),
+        "2026-07-09",
+        memory_root,
+        host_factory=factory([FINISHED], VALID_DRAFT),
+    )
+
+    with pytest.raises(DistillError, match="draft.json was not created"):
+        await run_one_session(
+            session(),
+            "2026-07-09",
+            memory_root,
+            host_factory=factory([FINISHED]),
+        )
+
+
 async def test_run_one_session_invalid_draft_raises(tmp_path: Path) -> None:
     bad = json.dumps({"notes": [{"title": "x", "verification": "bogus"}]})
     with pytest.raises(DistillError):

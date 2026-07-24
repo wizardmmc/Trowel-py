@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .models import SessionBinding, SessionRecord
+from .models import CodexTurnRecord, SessionBinding, SessionRecord
 
 _META_DIR = "meta"
 _SESSIONS_DB = "sessions.db"
@@ -33,6 +33,25 @@ CREATE TABLE IF NOT EXISTS session_bindings (
     bound_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
+CREATE TABLE IF NOT EXISTS codex_turns (
+    thread_id           TEXT NOT NULL,
+    turn_id             TEXT NOT NULL,
+    trowel_session_id   TEXT NOT NULL,
+    workdir             TEXT NOT NULL,
+    journal_path        TEXT NOT NULL,
+    registered_at       TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'running',
+    completed_at        TEXT,
+    extracted_at        TEXT,
+    model               TEXT NOT NULL DEFAULT '',
+    effort              TEXT NOT NULL DEFAULT '',
+    provider            TEXT NOT NULL DEFAULT '',
+    memory_enabled      INTEGER NOT NULL DEFAULT 1,
+    profile_enabled     INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (thread_id, turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
+    ON codex_turns(completed_at, extracted_at);
 """
 
 _ADD_COLUMN_SQL = {
@@ -111,4 +130,23 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
         session_kind=row["session_kind"],
         workdir=row["workdir"],
         bound_at=row["bound_at"],
+    )
+
+
+def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
+    return CodexTurnRecord(
+        thread_id=row["thread_id"],
+        turn_id=row["turn_id"],
+        trowel_session_id=row["trowel_session_id"],
+        workdir=row["workdir"],
+        journal_path=row["journal_path"],
+        registered_at=row["registered_at"],
+        status=row["status"],
+        completed_at=row["completed_at"],
+        extracted_at=row["extracted_at"],
+        model=row["model"] or "",
+        effort=row["effort"] or "",
+        provider=row["provider"] or "",
+        memory_enabled=bool(row["memory_enabled"]),
+        profile_enabled=bool(row["profile_enabled"]),
     )

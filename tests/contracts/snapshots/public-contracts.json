@@ -173,6 +173,12 @@
       },
       {
         "type": "index",
+        "name": "idx_codex_turns_incremental",
+        "table": "codex_turns",
+        "sql": "CREATE INDEX idx_codex_turns_incremental ON codex_turns(completed_at, extracted_at)"
+      },
+      {
+        "type": "index",
         "name": "idx_sessions_date",
         "table": "sessions",
         "sql": "CREATE INDEX idx_sessions_date ON sessions(date)"
@@ -182,6 +188,12 @@
         "name": "idx_sessions_incremental",
         "table": "sessions",
         "sql": "CREATE INDEX idx_sessions_incremental ON sessions(last_completed_offset, last_extracted_offset)"
+      },
+      {
+        "type": "table",
+        "name": "codex_turns",
+        "table": "codex_turns",
+        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (thread_id, turn_id) )"
       },
       {
         "type": "table",

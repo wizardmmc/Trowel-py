@@ -26,6 +26,18 @@ def test_find_incremental_returns_segment() -> None:
     assert segments[0].end == 2048
 
 
+def test_find_incremental_only_returns_segments_completed_before_cutoff() -> None:
+    repo = repository()
+    repo.register(session_record(cc_session_id="yesterday"))
+    repo.register(session_record(cc_session_id="today"))
+    repo.update_completed("yesterday", 100, when="2026-07-23T23:59:59")
+    repo.update_completed("today", 100, when="2026-07-24T00:00:00")
+
+    segments = repo.find_incremental(completed_before="2026-07-24T00:00:00")
+
+    assert [segment.session.cc_session_id for segment in segments] == ["yesterday"]
+
+
 def test_find_incremental_excludes_equal_offsets() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))

@@ -56,3 +56,30 @@ class IncrementalSegment:
     session: SessionRecord
     start: int
     end: int
+
+
+@dataclass(frozen=True)
+class CodexTurnRecord:
+    """一个 Trowel 托管的 Codex turn 及其 normalized journal。"""
+
+    thread_id: str
+    turn_id: str
+    trowel_session_id: str
+    workdir: str
+    journal_path: str
+    registered_at: str
+    status: str = "running"
+    completed_at: str | None = None
+    extracted_at: str | None = None
+    model: str = ""
+    effort: str = ""
+    provider: str = ""
+    memory_enabled: bool = True
+    profile_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class CodexIncrementalSegment:
+    """尚未提炼且已经原生 terminal 封口的 Codex turn。"""
+
+    turn: CodexTurnRecord

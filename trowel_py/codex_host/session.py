@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.errors import CodexHostError
 from trowel_py.codex_host.events import (
@@ -29,6 +30,8 @@ from trowel_py.codex_host.session_types import (
     build_default_trowel_memory_mcp as build_default_trowel_memory_mcp,
     parse_thread_binding,
 )
+
+_log = logging.getLogger(__name__)
 
 
 class TurnConflictError(CodexHostError):
@@ -54,8 +57,14 @@ _SENDABLE_STATES: frozenset[CodexSessionState] = frozenset(
 class CodexSession:
     """一个 Trowel 会话对应的 Codex thread 状态机与事件队列。"""
 
-    def __init__(self, config: CodexSessionConfig) -> None:
+    def __init__(
+        self,
+        config: CodexSessionConfig,
+        *,
+        event_sink: Callable[[CodexEvent, ThreadBinding | None], None] | None = None,
+    ) -> None:
         self._config = config
+        self._event_sink = event_sink
         # resume 先放入最小绑定以选择 thread/resume，响应回来后再覆盖真实事实。
         self._binding: ThreadBinding | None
         if config.initial_thread_id is not None:
@@ -242,6 +251,7 @@ class CodexSession:
             TranslatedItem(
                 type=CodexEventType.USER,
                 thread_id=thread_id,
+                turn_id=turn_id,
                 payload=immutable_payload(text=user_text),
             )
         )
@@ -336,6 +346,17 @@ class CodexSession:
 
     def _emit(self, item: TranslatedItem, *, also_terminal: bool = False) -> CodexEvent:
         event = self._stamp(item)
+        if self._event_sink is not None:
+            try:
+                self._event_sink(event, self._binding)
+            except Exception:  # noqa: BLE001 - memory 旁路失败不能打断原生 turn。
+                _log.warning(
+                    "Codex turn journal failed for session=%s turn=%s; "
+                    "turn remains unsealed for memory",
+                    self.session_id,
+                    event.turn_id,
+                    exc_info=True,
+                )
         self._queue.put_nowait(event)
         return event
 

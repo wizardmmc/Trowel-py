@@ -96,6 +96,51 @@ async def test_half_turn_without_completed_watermark_is_not_distilled(
     assert calls == []
 
 
+async def test_review_cutoff_leaves_today_cc_segment_pending(tmp_path: Path) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.register(session("yesterday", "/yesterday"))
+    repo.register(session("today", "/today"))
+    repo.update_completed("yesterday", 4096, "2026-07-23T23:59:59")
+    repo.update_completed("today", 4096, "2026-07-24T00:00:00")
+    conn.close()
+    calls: list[str] = []
+
+    def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
+        calls.append(session_record.cc_session_id)
+        (workdir / "draft.json").write_text(
+            json.dumps(
+                {
+                    "diary": [
+                        {
+                            "date": "2026-07-09",
+                            "outcomes": ["完成昨日会话提炼"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return FakeHost([FINISHED])
+
+    await run_daily_review(
+        memory_root=memory_root,
+        date_str="2026-07-23",
+        eligible_before="2026-07-24T00:00:00",
+        host_factory=create_host,
+    )
+
+    assert calls[0] == "yesterday"
+    assert "today" not in calls
+    conn = open_sessions_db(memory_root)
+    try:
+        pending = create_sessions_repository(conn).find_incremental()
+    finally:
+        conn.close()
+    assert [item.session.cc_session_id for item in pending] == ["today"]
+
+
 async def test_fallback_daily_is_retried_without_new_segments(
     tmp_path: Path,
 ) -> None:
