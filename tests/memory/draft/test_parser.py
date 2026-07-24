@@ -33,9 +33,13 @@ def test_parse_structured_diary_four_lists() -> None:
     [entry] = parse_draft(structured_diary_json()).diary
     assert entry.date == "2026-07-17"
     assert entry.outcomes == ("完成了 daily 重写", "验证到全量测试通过")
-    assert entry.decisions == ("固定三问结构（进展/更正/待续）",)
-    assert entry.corrections == ("原来以为单 $ 零误伤 -> 实测就近配对吞整段",)
-    assert entry.open_loops == ("weekly 表达重写未做",)
+    assert entry.decisions == (
+        "固定三问结构（进展/更正/待续）（理由：方便第二天恢复）",
+    )
+    assert entry.corrections == (
+        "原来以为 单 $ 零误伤，现确认 实测就近配对吞整段（依据：真实渲染复现）",
+    )
+    assert entry.open_loops == ("weekly 表达重写未做（原因：不在当前 slice）",)
 
 
 def test_parse_structured_diary_empty_lists_default() -> None:
@@ -68,9 +72,9 @@ def test_diary_all_items_concatenates_four_lists() -> None:
     assert entry.all_items() == [
         "完成了 daily 重写",
         "验证到全量测试通过",
-        "固定三问结构（进展/更正/待续）",
-        "原来以为单 $ 零误伤 -> 实测就近配对吞整段",
-        "weekly 表达重写未做",
+        "固定三问结构（进展/更正/待续）（理由：方便第二天恢复）",
+        "原来以为 单 $ 零误伤，现确认 实测就近配对吞整段（依据：真实渲染复现）",
+        "weekly 表达重写未做（原因：不在当前 slice）",
     ]
 
 

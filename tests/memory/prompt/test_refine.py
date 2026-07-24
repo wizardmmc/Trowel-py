@@ -4,8 +4,6 @@ import trowel_py.memory.prompt as prompt_module
 from trowel_py.memory.prompt import (
     DRAFT_SCHEMA,
     DUALTRACK_SIGNAL_WORDS,
-    EPISODE_MAX_ITEM_CHARS,
-    EPISODE_TARGET_ITEM_CHARS,
     NOTE_KINDS,
     REFINE_PROMPT_TEMPLATE,
     VERIFICATION_TIERS,
@@ -71,8 +69,20 @@ def test_draft_schema_includes_kind() -> None:
 
 
 def test_draft_schema_diary_uses_four_lists() -> None:
-    for field in ("outcomes", "decisions", "corrections", "open_loops"):
-        assert field in DRAFT_SCHEMA
+    for kind in ("outcome", "decision", "correction", "open_loop", "evidence"):
+        assert kind in DRAFT_SCHEMA
+
+
+def test_episode_v2_prompt_has_source_refs_and_no_old_hard_compression() -> None:
+    prompt = build_refine_prompt(
+        "/x/source.numbered.jsonl",
+        "tokens=1 turns=1 errors=0",
+    )
+
+    assert "source_refs" in prompt
+    assert "before" in prompt and "after" in prompt
+    assert "每个日期四类合计最多" not in prompt
+    assert "1600" not in prompt
 
 
 def test_refine_prompt_describes_four_diary_lists() -> None:
@@ -84,17 +94,6 @@ def test_refine_prompt_forbids_agent_self_eval_in_diary() -> None:
     assert "自评" in REFINE_PROMPT_TEMPLATE or "绩效" in REFINE_PROMPT_TEMPLATE
 
 
-def test_refine_prompt_keeps_item_target_below_hard_gate() -> None:
-    prompt = build_refine_prompt(
-        "/x/y.jsonl",
-        "tokens=1 turns=1 errors=0",
-    )
-
-    assert EPISODE_TARGET_ITEM_CHARS < EPISODE_MAX_ITEM_CHARS
-    assert f"尽量控制在 {EPISODE_TARGET_ITEM_CHARS} 字以内" in prompt
-    assert f"硬上限 {EPISODE_MAX_ITEM_CHARS} 字" in prompt
-
-
 def test_facade_functions_keep_module_identity() -> None:
     assert build_refine_prompt.__module__ == "trowel_py.memory.prompt"
 
@@ -103,10 +102,9 @@ def test_facade_refine_patches_flow_to_builder(monkeypatch) -> None:
     monkeypatch.setattr(
         prompt_module,
         "REFINE_PROMPT_TEMPLATE",
-        "path={jsonl_path};cost={cost};items={episode_max_items}",
+        "path={jsonl_path};cost={cost}",
     )
-    monkeypatch.setattr(prompt_module, "EPISODE_MAX_ITEMS_PER_DATE", 7)
 
     prompt = build_refine_prompt("/patched.jsonl", "patched-cost")
 
-    assert prompt == "path=/patched.jsonl;cost=patched-cost;items=7"
+    assert prompt == "path=/patched.jsonl;cost=patched-cost"

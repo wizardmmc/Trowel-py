@@ -12,11 +12,13 @@ from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
 from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
 from trowel_py.memory.daily_review.workspace import ensure_review_workdir
+from trowel_py.memory.daily_review.source_refs import materialize_numbered_source
 from trowel_py.memory.sessions_repo import SessionRecord
 
 HostFactory = Callable[[SessionRecord, Path], Any]
 DerivationSink = Callable[[DerivationProvenance], None]
-_REFINE_PIPELINE_VERSION = 1
+_REFINE_PIPELINE_VERSION = 2
+_DISTILL_MODEL = "glm-5.1"
 
 
 class DistillError(Exception):
@@ -35,14 +37,17 @@ async def _drive_host(host: Any, prompt: str) -> bool:
     return finished
 
 
-def _read_draft(draft_path: Path) -> tuple[Draft | None, list[str]]:
+def _read_draft(
+    draft_path: Path,
+    legal_source_refs: set[str],
+) -> tuple[Draft | None, list[str]]:
     if not draft_path.exists():
         return None, ["draft.json was not created"]
     try:
         draft = parse_draft(draft_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         return None, [f"draft.json is malformed: {exc}"]
-    return draft, validate_draft(draft)
+    return draft, validate_draft(draft, legal_source_refs=legal_source_refs)
 
 
 def _revision_prompt(errors: list[str]) -> str:
@@ -51,7 +56,7 @@ def _revision_prompt(errors: list[str]) -> str:
         "你刚写的 draft.json 被 Python 门禁拒绝。只修改当前工作目录的 "
         "draft.json，按下面具体错误压缩、合并或补全；不要改 memory，不要写其他文件。\n\n"
         f"【门禁错误】\n{details}\n\n"
-        "保持原有事实和四列表语义，修好后回复“draft 已修正”。"
+        "保持原有事实、item kind 和 source_refs 语义，修好后回复“draft 已修正”。"
     )
 
 
@@ -70,6 +75,7 @@ def _create_host(
     return CCHost(
         session_id=uuid.uuid4().hex,
         workdir=str(workdir),
+        model=_DISTILL_MODEL,
         # review 类型阻止提炼会话重新进入用户 session 队列。
         session_kind="review",
         # 注入声明了 memory.search，因此真实 host 必须同时挂载 memory MCP。
@@ -120,24 +126,32 @@ async def run_one_session(
     draft 未通过门禁时会在同一 session 内修订一次；仍失败则抛出
     ``DistillError``，由批处理保留水位以便重试。
     """
+    workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        numbered = materialize_numbered_source(
+            Path(session.jsonl_path),
+            workdir,
+            start_offset=start_offset,
+            end_offset=end_offset,
+        )
+    except (OSError, ValueError) as exc:
+        raise DistillError(
+            f"cannot materialize source for {session.cc_session_id}: {exc}"
+        ) from exc
     cost = extract_cost_from_jsonl(session.jsonl_path)
     prompt = build_refine_prompt(
-        session.jsonl_path,
+        str(numbered.path),
         _cost_text(cost),
         start_offset=start_offset,
         end_offset=end_offset,
     )
     if source_runtime == "codex":
         prompt = (
-            "【输入运行时更正】本次文件是 Trowel 持久化的单个 Codex turn "
-            "normalized event journal，不是 Claude Code JSONL。下文沿用的“cc 会话”"
-            "和“今天”属于旧模板措辞；只提炼该文件中的这个 completed turn，"
-            "不要补写文件外内容。\n\n"
+            "【输入运行时】本次 numbered 文件来自 Trowel 持久化的单个 Codex "
+            "completed turn normalized event journal；不要补写文件外内容。\n\n"
             + prompt
         )
-
-    workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
-    workdir.mkdir(parents=True, exist_ok=True)
     draft_path = workdir / "draft.json"
     draft_path.unlink(missing_ok=True)
     host = _create_host(session, workdir, host_factory)
@@ -149,7 +163,7 @@ async def run_one_session(
             )
         errors: list[str] = []
         for attempt in range(2):
-            draft, errors = _read_draft(draft_path)
+            draft, errors = _read_draft(draft_path, set(numbered.refs))
             if draft is not None and not errors:
                 if derivation_sink is not None:
                     derivation_sink(_derivation_for_host(host))

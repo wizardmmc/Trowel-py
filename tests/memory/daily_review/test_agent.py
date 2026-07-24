@@ -27,11 +27,11 @@ async def test_run_one_session_reads_draft(tmp_path: Path) -> None:
     assert draft.notes[0].verification == "verified"
 
 
-async def test_run_one_session_retries_oversized_episode_draft(
+async def test_run_one_session_retries_legacy_episode_draft(
     tmp_path: Path,
 ) -> None:
     day = "2026-07-09"
-    oversized = json.dumps(
+    legacy = json.dumps(
         {
             "diary": [
                 {
@@ -49,10 +49,14 @@ async def test_run_one_session_retries_oversized_episode_draft(
             "diary": [
                 {
                     "date": day,
-                    "outcomes": ["完成关键实现并通过相关验证"],
-                    "decisions": ["确定后续采用可追溯方案"],
-                    "corrections": ["原判断被真实证据纠正"],
-                    "open_loops": ["下一步补真实端到端验证"],
+                    "items": [
+                        {
+                            "kind": "outcome",
+                            "summary": "完成关键实现并通过相关验证",
+                            "detail": "",
+                            "source_refs": ["L000001"],
+                        }
+                    ],
                 }
             ]
         }
@@ -77,7 +81,7 @@ async def test_run_one_session_retries_oversized_episode_draft(
         _session: SessionRecord,
         workdir: Path,
     ) -> RevisingHost:
-        (workdir / "draft.json").write_text(oversized, encoding="utf-8")
+        (workdir / "draft.json").write_text(legacy, encoding="utf-8")
         host = RevisingHost(workdir)
         holder["host"] = host
         return host
@@ -92,7 +96,7 @@ async def test_run_one_session_retries_oversized_episode_draft(
     host = holder["host"]
     assert isinstance(host, RevisingHost)
     assert len(host.prompts) == 2
-    assert "too many structured items" in host.prompts[1]
+    assert "legacy structured lists" in host.prompts[1]
     assert draft.diary[0].outcomes == ("完成关键实现并通过相关验证",)
 
 

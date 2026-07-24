@@ -2,10 +2,38 @@
 
 from pathlib import Path
 
+import pytest
+
 from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.store import MemoryStore
 
 from .support import _ctx
+
+
+def test_episode_atomic_publish_keeps_live_file_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1"),
+        (DraftDiary(date="2026-07-09", outcomes=("live",)),),
+    )
+    path = tmp_path / "episodes" / "s1.md"
+    before = path.read_bytes()
+
+    def fail_replace(_source: object, _target: object) -> None:
+        raise OSError("publish failed")
+
+    monkeypatch.setattr("trowel_py.memory.store.episodes.os.replace", fail_replace)
+    with pytest.raises(OSError, match="publish failed"):
+        store.write_episode(
+            _ctx("s1"),
+            (DraftDiary(date="2026-07-09", outcomes=("replacement",)),),
+        )
+
+    assert path.read_bytes() == before
+    assert not path.with_suffix(".md.tmp").exists()
 
 
 def test_write_episode_creates_per_session_file(tmp_path: Path) -> None:

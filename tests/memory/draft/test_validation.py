@@ -28,7 +28,7 @@ def test_validate_accepts_structured_only_diary() -> None:
     assert validate_draft(parse_draft(structured_diary_json())) == []
 
 
-def test_validate_rejects_episode_with_too_many_structured_items() -> None:
+def test_validate_does_not_cap_episode_item_count() -> None:
     item = "完成当天关键实现并通过相关测试"
     draft = parse_draft(
         json.dumps(
@@ -36,34 +36,44 @@ def test_validate_rejects_episode_with_too_many_structured_items() -> None:
                 "diary": [
                     {
                         "date": "2026-07-20",
-                        "outcomes": [item] * 5,
-                        "decisions": [item] * 3,
-                        "corrections": [item] * 3,
-                        "open_loops": [item] * 2,
+                        "items": [
+                            {
+                                "kind": "outcome",
+                                "summary": f"{item}{index}",
+                                "detail": "",
+                                "source_refs": [f"L{index + 1:06d}"],
+                            }
+                            for index in range(30)
+                        ],
                     }
                 ]
             }
         )
     )
-    errors = validate_draft(draft)
-    assert any("too many structured items" in error for error in errors)
+    assert validate_draft(draft) == []
 
 
-def test_validate_rejects_episode_item_that_is_too_long() -> None:
+def test_validate_does_not_apply_old_item_character_cap() -> None:
     draft = parse_draft(
         json.dumps(
             {
                 "diary": [
                     {
                         "date": "2026-07-20",
-                        "outcomes": ["长" * 201],
+                        "items": [
+                            {
+                                "kind": "outcome",
+                                "summary": "长" * 500,
+                                "detail": "",
+                                "source_refs": ["L000001"],
+                            }
+                        ],
                     }
                 ]
             }
         )
     )
-    errors = validate_draft(draft)
-    assert any("item exceeds 200 chars" in error for error in errors)
+    assert validate_draft(draft) == []
 
 
 def test_validate_accepts_valid_draft() -> None:
@@ -147,28 +157,25 @@ def test_validate_accumulates_errors_in_stable_order() -> None:
         "diary[0]: missing date",
         (
             "diary[0]: legacy events are not allowed in a new draft; "
-            "use outcomes/decisions/corrections/open_loops"
+            "use items"
         ),
-        "diary[0].outcomes: too many items (4 > 3)",
-        "diary[0].outcomes[0]: item exceeds 200 chars",
+        (
+            "diary[0]: legacy structured lists are not allowed in a new "
+            "draft; use items"
+        ),
     ]
 
 
-def test_validate_rejects_excess_total_chars() -> None:
-    items = ("x" * 134,) * 3
+def test_validate_rejects_legacy_structured_lists_in_new_draft() -> None:
     draft = Draft(
-        diary=(
-            DraftDiary(
-                date="2026-07-20",
-                outcomes=items,
-                decisions=items,
-                corrections=items,
-                open_loops=items,
-            ),
-        )
+        diary=(DraftDiary(date="2026-07-20", outcomes=("旧格式",)),)
     )
-    errors = validate_draft(draft)
-    assert errors == ["diary[0]: structured text exceeds 1600 chars (1608)"]
+    assert validate_draft(draft) == [
+        (
+            "diary[0]: legacy structured lists are not allowed in a new "
+            "draft; use items"
+        )
+    ]
 
 
 def test_procedure_note_with_four_elements_no_warning() -> None:

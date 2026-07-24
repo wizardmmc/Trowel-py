@@ -13,6 +13,7 @@ from tests.memory.daily_review.support import (
     factory,
     session,
 )
+from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.review_job import run_daily_review
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
@@ -20,6 +21,23 @@ from trowel_py.memory.sessions_repo import (
     open_sessions_db,
 )
 from trowel_py.memory.store import MemoryStore
+from trowel_py.memory.types import PersistContext
+
+
+def _context_for_existing_episode() -> PersistContext:
+    return PersistContext(
+        segment_id="s1:old",
+        cc_session_id="s1",
+        workdir="/proj1",
+        registered_at="2026-07-09T09:00:00",
+        review_date="2026-07-09",
+        source_jsonl="/old/source.jsonl",
+        activity_dates=("2026-07-09",),
+    )
+
+
+def _existing_diary() -> DraftDiary:
+    return DraftDiary(date="2026-07-09", outcomes=("已有 live episode",))
 
 
 async def test_run_daily_review_persists_and_advances_all_segments(
@@ -131,12 +149,19 @@ async def test_daily_review_keeps_all_session_episodes(tmp_path: Path) -> None:
                         "verification": "verified",
                     }
                 ],
-                "diary": [
-                    {
-                        "date": "2026-07-09",
-                        "outcomes": [f"锚点 {session_record.cc_session_id}"],
-                    }
-                ],
+                    "diary": [
+                        {
+                            "date": "2026-07-09",
+                            "items": [
+                                {
+                                    "kind": "outcome",
+                                    "summary": f"锚点 {session_record.cc_session_id}",
+                                    "detail": "",
+                                    "source_refs": ["L000001"],
+                                }
+                            ],
+                        }
+                    ],
             }
         )
         (workdir / "draft.json").write_text(draft, encoding="utf-8")
@@ -237,6 +262,56 @@ async def test_schema_error_does_not_abort_or_advance_batch(
     pending = create_sessions_repository(conn).find_incremental()
     conn.close()
     assert [item.session.cc_session_id for item in pending] == ["s1"]
+
+
+async def test_illegal_episode_refs_do_not_replace_live_episode(tmp_path: Path) -> None:
+    memory_root = tmp_path / "memory"
+    store = MemoryStore(memory_root)
+    store.write_episode(
+        _context_for_existing_episode(),
+        (_existing_diary(),),
+    )
+    episode_path = memory_root / "episodes" / "s1.md"
+    before = episode_path.read_bytes()
+
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.register(session("s1", "/proj1"))
+    repo.update_completed("s1", 4096)
+    conn.close()
+    invalid = json.dumps(
+        {
+            "diary": [
+                {
+                    "date": "2026-07-09",
+                    "items": [
+                        {
+                            "kind": "outcome",
+                            "summary": "不应落盘",
+                            "detail": "",
+                            "source_refs": ["L999999"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    await run_daily_review(
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=factory([FINISHED], invalid),
+    )
+
+    assert episode_path.read_bytes() == before
+    conn = open_sessions_db(memory_root)
+    try:
+        assert [
+            item.session.cc_session_id
+            for item in create_sessions_repository(conn).find_incremental()
+        ] == ["s1"]
+    finally:
+        conn.close()
 
 
 async def test_rerun_after_failure_lands_each_artifact_once(

@@ -5,16 +5,19 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
+from trowel_py.memory.draft.episode import (
+    DraftCorrection,
+    DraftDecision,
+    DraftOpenLoop,
+)
+
 
 def validate_draft(
     draft: Any,
     *,
     note_kinds: Collection[str],
     verification_tiers: Collection[str],
-    max_items_per_date: int,
-    max_items_per_field: int,
-    max_item_chars: int,
-    max_total_chars: int,
+    legal_source_refs: set[str] | None,
 ) -> list[str]:
     errors: list[str] = []
     for index, note in enumerate(draft.notes):
@@ -37,38 +40,62 @@ def validate_draft(
         if diary.events.strip():
             errors.append(
                 f"diary[{index}]: legacy events are not allowed in a new "
-                "draft; use outcomes/decisions/corrections/open_loops"
+                "draft; use items"
             )
-        structured = diary.all_items()
-        if len(structured) > max_items_per_date:
+        legacy_fields = tuple(
+            field_name
+            for field_name in (
+                "outcomes",
+                "decisions",
+                "corrections",
+                "open_loops",
+            )
+            if getattr(diary, field_name) and not diary.items
+        )
+        if legacy_fields:
             errors.append(
-                f"diary[{index}]: too many structured items "
-                f"({len(structured)} > {max_items_per_date})"
+                f"diary[{index}]: legacy structured lists are not allowed in a new "
+                "draft; use items"
             )
-        for field_name in (
-            "outcomes",
-            "decisions",
-            "corrections",
-            "open_loops",
-        ):
-            field_items = getattr(diary, field_name)
-            if len(field_items) > max_items_per_field:
-                errors.append(
-                    f"diary[{index}].{field_name}: too many items "
-                    f"({len(field_items)} > {max_items_per_field})"
-                )
-            for item_index, item in enumerate(field_items):
-                if len(item) > max_item_chars:
+        for item_index, item in enumerate(diary.items):
+            prefix = f"diary[{index}].items[{item_index}]"
+            if isinstance(item, DraftCorrection):
+                if not item.before:
+                    errors.append(f"{prefix}.before must not be empty")
+                if not item.after:
+                    errors.append(f"{prefix}.after must not be empty")
+                if not item.reason:
+                    errors.append(f"{prefix}.reason must not be empty")
+            else:
+                if not item.summary:
+                    errors.append(f"{prefix}.summary must not be empty")
+            if isinstance(item, DraftDecision):
+                if not item.reason:
+                    errors.append(f"{prefix}.reason must not be empty")
+                if item.status not in {"active", "superseded"}:
                     errors.append(
-                        f"diary[{index}].{field_name}[{item_index}]: item "
-                        f"exceeds {max_item_chars} chars"
+                        f"{prefix}.status must be one of ['active', 'superseded']"
                     )
-        total_chars = sum(len(item) for item in structured)
-        if total_chars > max_total_chars:
-            errors.append(
-                f"diary[{index}]: structured text exceeds "
-                f"{max_total_chars} chars ({total_chars})"
-            )
+            if isinstance(item, DraftOpenLoop):
+                if not item.reason:
+                    errors.append(f"{prefix}.reason must not be empty")
+                if item.status not in {"active", "closed"}:
+                    errors.append(
+                        f"{prefix}.status must be one of ['active', 'closed']"
+                    )
+            refs = item.source_refs
+            if not refs:
+                errors.append(f"{prefix}.source_refs must not be empty")
+            elif any(not ref for ref in refs):
+                errors.append(f"{prefix}.source_refs contains empty refs")
+            elif len(refs) != len(set(refs)):
+                errors.append(f"{prefix}.source_refs contains duplicates")
+            if legal_source_refs is not None:
+                illegal = [ref for ref in refs if ref not in legal_source_refs]
+                if illegal:
+                    errors.append(
+                        f"{prefix}.source_refs contains illegal refs: {illegal!r}"
+                    )
     return errors
 
 

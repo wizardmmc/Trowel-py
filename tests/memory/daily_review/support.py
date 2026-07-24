@@ -11,7 +11,19 @@ ERROR = SimpleNamespace(type="error")
 VALID_DRAFT = json.dumps(
     {
         "notes": [{"title": "结论", "verification": "verified"}],
-        "diary": [{"date": "2026-07-09", "outcomes": ["完成事件提炼"]}],
+        "diary": [
+            {
+                "date": "2026-07-09",
+                "items": [
+                    {
+                        "kind": "outcome",
+                        "summary": "完成事件提炼",
+                        "detail": "",
+                        "source_refs": ["L000001"],
+                    }
+                ],
+            }
+        ],
     }
 )
 

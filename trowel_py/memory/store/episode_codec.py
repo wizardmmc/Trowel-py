@@ -7,11 +7,22 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from trowel_py.memory.draft import DraftDiary
+from trowel_py.memory.draft import (
+    DraftDiary,
+    episode_item_text,
+    parse_episode_item,
+)
 
 from .codec import _coerce_meta_str
 
 _DIARY_FIELDS = ("outcomes", "decisions", "corrections", "open_loops")
+_HEADING_FOR_KIND = {
+    "outcome": "outcomes",
+    "decision": "decisions",
+    "correction": "corrections",
+    "open_loop": "open_loops",
+    "evidence": "evidence",
+}
 _SEG_START = re.compile(r"<!-- @segment (\S+) -->")
 _SEG_END = re.compile(r"<!-- @endsegment (\S+) -->")
 
@@ -40,6 +51,15 @@ def _render_segment(
 
 def _render_date_block(d: DraftDiary) -> str:
 
+    if d.items:
+        v2_sections: list[str] = []
+        for kind, heading in _HEADING_FOR_KIND.items():
+            items = [item for item in d.items if item.kind == kind]
+            if not items:
+                continue
+            bullets = "\n".join(_render_v2_item(item) for item in items)
+            v2_sections.append(f"#### {heading}\n{bullets}")
+        return f"## {d.date}\n\n" + "\n\n".join(v2_sections) + "\n"
     sections: list[str] = []
     for field_name in _DIARY_FIELDS:
         items = getattr(d, field_name)
@@ -56,6 +76,34 @@ def _render_date_block(d: DraftDiary) -> str:
 def _single_line(text: str) -> str:
 
     return " ".join(text.split())
+
+
+def _render_v2_item(item: Any) -> str:
+    text = episode_item_text(item)
+    status = getattr(item, "status", "")
+    status_text = f"; status: {status}" if status else ""
+    refs = ", ".join(item.source_refs)
+    return f"- {_single_line(text)}{status_text}; source_refs: {refs}"
+
+
+def _entry_from_v2_meta(meta: dict[str, Any], date: str) -> DraftDiary | None:
+    if meta.get("episode_schema_version") != 2:
+        return None
+    items = []
+    for record in meta.get("episode_items") or []:
+        if not isinstance(record, dict) or record.get("date") != date:
+            continue
+        raw_item = record.get("item")
+        if not isinstance(raw_item, dict):
+            return None
+        try:
+            items.append(parse_episode_item(raw_item))
+        except (TypeError, ValueError):
+            return None
+    dates = {_coerce_meta_str(value) for value in meta.get("activity_dates") or []}
+    if not items and date not in dates:
+        return None
+    return DraftDiary(date=date, items=tuple(items))
 
 
 def _parse_structured_block(block_text: str, date: str) -> DraftDiary:

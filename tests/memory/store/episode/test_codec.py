@@ -2,7 +2,14 @@
 
 from pathlib import Path
 
-from trowel_py.memory.draft import DraftDiary
+from trowel_py.memory.draft import (
+    DraftCorrection,
+    DraftDecision,
+    DraftDiary,
+    DraftEvidence,
+    DraftOpenLoop,
+    DraftOutcome,
+)
 from trowel_py.memory.store import MemoryStore
 
 from .support import _ctx, _structured_entry
@@ -162,3 +169,86 @@ def test_parse_unknown_field_header_degrades_to_events(tmp_path: Path) -> None:
     assert len(sources) == 1
     entry = sources[0][2]
     assert entry.events and "某条手写内容" in entry.events
+
+
+def test_episode_v2_roundtrips_structured_items_and_daily_projection(
+    tmp_path: Path,
+) -> None:
+    entry = DraftDiary(
+        date="2026-07-24",
+        items=(
+            DraftOutcome("完成 Episode v2", "窄测通过", ("L000001",)),
+            DraftDecision(
+                "生产提炼继续使用 GLM-5.1",
+                "真实 A/B 的长会话召回更完整",
+                "active",
+                ("L000002",),
+            ),
+            DraftDecision(
+                "改用 Luna",
+                "早期只看到了速度",
+                "superseded",
+                ("L000008",),
+            ),
+            DraftCorrection(
+                "Luna 已足够",
+                "Episode 继续使用 GLM-5.1",
+                "GLM 赢 5 个样本",
+                ("L000003", "L000004"),
+            ),
+            DraftOpenLoop(
+                "补 Codex command smoke",
+                "实验样本没有 commandExecution",
+                "active",
+                ("L000005",),
+            ),
+            DraftOpenLoop(
+                "旧临时任务",
+                "已在当前 segment 解决",
+                "closed",
+                ("L000006",),
+            ),
+            DraftEvidence(
+                "schema gate 通过",
+                "GLM 与 Luna 都是 7/7",
+                ("L000007",),
+            ),
+        ),
+    )
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("s1", activity_dates=("2026-07-24",)),
+        (entry,),
+    )
+
+    text = (tmp_path / "episodes" / "s1.md").read_text(encoding="utf-8")
+    assert "episode_schema_version: 2" in text
+    assert "source_ref_scheme: nonempty_jsonl_line_v1" in text
+    assert "source_refs:" in text
+    assert "#### evidence" in text
+
+    [source] = store.project_daily_sources("2026-07-24")
+    projected = source[2]
+    assert len(projected.items) == 7
+    assert projected.items == entry.items
+    assert projected.decisions == (
+        "生产提炼继续使用 GLM-5.1（理由：真实 A/B 的长会话召回更完整）",
+    )
+    assert projected.corrections == (
+        "原来以为 Luna 已足够，现确认 Episode 继续使用 GLM-5.1（依据：GLM 赢 5 个样本）",
+    )
+    assert projected.open_loops == (
+        "补 Codex command smoke（原因：实验样本没有 commandExecution）",
+    )
+
+
+def test_legacy_structured_episode_still_reads_after_v2(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_episode(
+        _ctx("legacy", activity_dates=("2026-07-17",)),
+        (DraftDiary(date="2026-07-17", outcomes=("旧结果",)),),
+    )
+
+    [source] = store.project_daily_sources("2026-07-17")
+    assert source[2].items == ()
+    assert source[2].outcomes == ("旧结果",)

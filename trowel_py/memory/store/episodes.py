@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
-from trowel_py.memory.draft import DraftDiary
+from trowel_py.memory.draft import DraftDiary, episode_item_to_dict
 from trowel_py.memory.provenance import (
     derivation_to_dict,
     model_identity_to_dict,
@@ -17,6 +18,7 @@ from .codec import _coerce_meta_str, _dump_frontmatter, _split_frontmatter
 from .diary import _DiaryStore
 from .episode_codec import (
     _episode_covers_date,
+    _entry_from_v2_meta,
     _extract_h2_block,
     _h2_headings,
     _parse_segment_blocks,
@@ -79,6 +81,15 @@ class _EpisodeStore(_DiaryStore):
             ]
         if context.derivation is not None:
             seg_meta["derivation"] = derivation_to_dict(context.derivation)
+        v2_entries = [entry for entry in diary_entries if entry.items]
+        if v2_entries:
+            seg_meta["episode_schema_version"] = 2
+            seg_meta["source_ref_scheme"] = "nonempty_jsonl_line_v1"
+            seg_meta["episode_items"] = [
+                {"date": entry.date, "item": episode_item_to_dict(item)}
+                for entry in v2_entries
+                for item in entry.items
+            ]
         new_segs: list[dict[str, Any]] = []
         replaced = False
         for s in segs:
@@ -111,7 +122,15 @@ class _EpisodeStore(_DiaryStore):
                 if key in fm:
                     fm_out[key] = fm[key]
         body_out = "".join(blocks.values())
-        path.write_text(_dump_frontmatter(fm_out, body_out), encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            temporary.write_text(
+                _dump_frontmatter(fm_out, body_out),
+                encoding="utf-8",
+            )
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return context.cc_session_id
 
     def derive_daily_from_episodes(self, date: str) -> str:
@@ -192,11 +211,15 @@ class _EpisodeStore(_DiaryStore):
                         block, date, seg_metas.get(seg_id, {})
                     )
                     if entry_block:
+                        structured = _entry_from_v2_meta(
+                            seg_metas.get(seg_id, {}), date
+                        )
                         out.append(
                             (
                                 seg_id,
                                 registered_at,
-                                _parse_structured_block(entry_block, date),
+                                structured
+                                or _parse_structured_block(entry_block, date),
                             )
                         )
             elif _h2_headings(body):

@@ -12,6 +12,7 @@ from trowel_py.memory.draft import (
     Draft,
     DraftDiary,
     DraftNote,
+    DraftOutcome,
     _parse_diary,
     _parse_note,
     _str_list,
@@ -34,8 +35,9 @@ def test_facade_keeps_model_and_function_contracts() -> None:
         DraftDiary: (
             "(date: 'str', outcomes: 'tuple[str, ...]' = (), "
             "decisions: 'tuple[str, ...]' = (), "
-            "corrections: 'tuple[str, ...]' = (), "
-            "open_loops: 'tuple[str, ...]' = (), events: 'str' = '') -> None"
+                "corrections: 'tuple[str, ...]' = (), "
+                "open_loops: 'tuple[str, ...]' = (), events: 'str' = '', "
+                "items: 'tuple[DraftEpisodeItem, ...]' = ()) -> None"
         ),
         Draft: (
             "(notes: 'tuple[DraftNote, ...]' = (), "
@@ -44,7 +46,10 @@ def test_facade_keeps_model_and_function_contracts() -> None:
             "escalate_to_human: 'tuple[str, ...]' = ()) -> None"
         ),
         parse_draft: "(text: 'str') -> 'Draft'",
-        validate_draft: "(draft: 'Draft') -> 'list[str]'",
+        validate_draft: (
+            "(draft: 'Draft', *, legal_source_refs: 'set[str] | None' = None) "
+            "-> 'list[str]'"
+        ),
         procedure_warnings: "(draft: 'Draft') -> 'list[str]'",
         _parse_note: "(n: 'dict[str, Any]') -> 'DraftNote'",
         _parse_diary: "(d: 'dict[str, Any]') -> 'DraftDiary'",
@@ -74,6 +79,7 @@ def test_facade_keeps_model_and_function_contracts() -> None:
         "corrections",
         "open_loops",
         "events",
+        "items",
     ]
     assert [field.name for field in fields(Draft)] == [
         "notes",
@@ -175,6 +181,7 @@ def test_private_parsers_use_current_facade_dependencies(
             "corrections": ("normalized", "None"),
             "open_loops": ("normalized", "None"),
             "events": "",
+            "items": (),
         },
     )
 
@@ -193,7 +200,7 @@ def test_validation_uses_current_facade_policy(
         diary=(
             DraftDiary(
                 date="2026-07-23",
-                outcomes=("a", "b"),
+                items=(DraftOutcome("x", "", ("L000001",)),),
             ),
         ),
     )
@@ -203,17 +210,8 @@ def test_validation_uses_current_facade_policy(
         "VERIFICATION_TIERS",
         ("custom-tier",),
     )
-    monkeypatch.setattr(draft_module, "EPISODE_MAX_ITEMS_PER_DATE", 1)
-    monkeypatch.setattr(draft_module, "EPISODE_MAX_ITEMS_PER_FIELD", 1)
-    monkeypatch.setattr(draft_module, "EPISODE_MAX_ITEM_CHARS", 0)
-    monkeypatch.setattr(draft_module, "EPISODE_MAX_TOTAL_CHARS", 0)
-
-    assert draft_module.validate_draft(draft) == [
-        "diary[0]: too many structured items (2 > 1)",
-        "diary[0].outcomes: too many items (2 > 1)",
-        "diary[0].outcomes[0]: item exceeds 0 chars",
-        "diary[0].outcomes[1]: item exceeds 0 chars",
-        "diary[0]: structured text exceeds 0 chars (2)",
+    assert draft_module.validate_draft(draft, legal_source_refs=set()) == [
+        "diary[0].items[0].source_refs contains illegal refs: ['L000001']",
     ]
 
 

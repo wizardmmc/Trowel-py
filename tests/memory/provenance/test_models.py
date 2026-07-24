@@ -90,6 +90,8 @@ def test_generator_keeps_known_effort_when_model_is_unknown() -> None:
 
 
 async def test_review_draft_records_configured_generator(tmp_path: Path) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"user"}\n', encoding="utf-8")
     class ProvenanceHost:
         session_id = "review-run-1"
         model = "glm-5.1"
@@ -109,6 +111,7 @@ async def test_review_draft_records_configured_generator(tmp_path: Path) -> None
         cc_session_id="cc-source",
         workdir="/project",
         date="2026-07-24",
+        jsonl_path=str(source),
         registered_at="2026-07-24T10:00:00",
     )
     captured: list[DerivationProvenance] = []

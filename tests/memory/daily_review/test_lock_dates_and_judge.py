@@ -176,7 +176,19 @@ async def test_in_range_diary_date_lands_and_advances(tmp_path: Path) -> None:
     draft = json.dumps(
         {
             "notes": [],
-            "diary": [{"date": "2026-07-09", "outcomes": ["完成事件提炼"]}],
+            "diary": [
+                {
+                    "date": "2026-07-09",
+                    "items": [
+                        {
+                            "kind": "outcome",
+                            "summary": "完成事件提炼",
+                            "detail": "",
+                            "source_refs": ["L000001"],
+                        }
+                    ],
+                }
+            ],
         }
     )
 

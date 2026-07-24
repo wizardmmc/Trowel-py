@@ -49,7 +49,15 @@ def parse_diary(
     *,
     diary_type: Callable[..., Any],
     str_list: Callable[[Any], tuple[str, ...]],
+    parse_episode_item: Callable[[dict[str, Any]], Any],
 ) -> Any:
+    raw_items = diary.get("items")
+    if raw_items is not None and not isinstance(raw_items, list):
+        raise TypeError("diary items must be a list")
+    if raw_items is not None and set(diary) != {"date", "items"}:
+        raise ValueError(
+            "episode v2 diary keys must be exactly ['date', 'items']"
+        )
     return diary_type(
         date=str(diary.get("date", "")),
         outcomes=str_list(diary.get("outcomes")),
@@ -57,6 +65,7 @@ def parse_diary(
         corrections=str_list(diary.get("corrections")),
         open_loops=str_list(diary.get("open_loops")),
         events=str(diary.get("events") or ""),
+        items=tuple(parse_episode_item(item) for item in (raw_items or [])),
     )
 
 

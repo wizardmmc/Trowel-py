@@ -11,11 +11,6 @@ from .daily import build_daily_compress_prompt as _build_daily_compress_prompt
 from .refine import (
     DRAFT_SCHEMA,
     DUALTRACK_SIGNAL_WORDS,
-    EPISODE_MAX_ITEMS_PER_DATE,
-    EPISODE_MAX_ITEMS_PER_FIELD,
-    EPISODE_MAX_ITEM_CHARS,
-    EPISODE_MAX_TOTAL_CHARS,
-    EPISODE_TARGET_ITEM_CHARS,
     NOTE_KINDS,
     REFINE_PROMPT_TEMPLATE,
     VERIFICATION_TIERS,
@@ -37,11 +32,6 @@ def build_refine_prompt(
         start_offset=start_offset,
         end_offset=end_offset,
         template=REFINE_PROMPT_TEMPLATE,
-        episode_max_items=EPISODE_MAX_ITEMS_PER_DATE,
-        episode_max_items_per_field=EPISODE_MAX_ITEMS_PER_FIELD,
-        episode_target_item_chars=EPISODE_TARGET_ITEM_CHARS,
-        episode_max_item_chars=EPISODE_MAX_ITEM_CHARS,
-        episode_max_total_chars=EPISODE_MAX_TOTAL_CHARS,
     )
 
 
@@ -60,11 +50,6 @@ __all__ = [
     "DAILY_ITEM_TYPES",
     "DRAFT_SCHEMA",
     "DUALTRACK_SIGNAL_WORDS",
-    "EPISODE_MAX_ITEMS_PER_DATE",
-    "EPISODE_MAX_ITEMS_PER_FIELD",
-    "EPISODE_MAX_ITEM_CHARS",
-    "EPISODE_MAX_TOTAL_CHARS",
-    "EPISODE_TARGET_ITEM_CHARS",
     "NOTE_KINDS",
     "REFINE_PROMPT_TEMPLATE",
     "VERIFICATION_TIERS",

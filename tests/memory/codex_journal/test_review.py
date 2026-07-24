@@ -73,7 +73,14 @@ def _host_factory(_session: SessionRecord, workdir: Path) -> ReviewHost:
                 "diary": [
                     {
                         "date": "2026-07-09",
-                        "outcomes": ["完成 Codex turn 会后提炼"],
+                        "items": [
+                            {
+                                "kind": "outcome",
+                                "summary": "完成 Codex turn 会后提炼",
+                                "detail": "",
+                                "source_refs": ["L000001"],
+                            }
+                        ],
                     }
                 ],
             }

@@ -5,14 +5,6 @@ from __future__ import annotations
 # 与 schema/types 同步的 verification 闭集。
 VERIFICATION_TIERS = ("verified", "event-data-supported", "inferred-untested")
 
-# 单日 episode 的 Python 写入硬门禁。
-EPISODE_MAX_ITEMS_PER_DATE = 12
-EPISODE_MAX_ITEMS_PER_FIELD = 3
-# 模型字符计数不稳定，写作目标需低于 Python 硬上限。
-EPISODE_TARGET_ITEM_CHARS = 120
-EPISODE_MAX_ITEM_CHARS = 200
-EPISODE_MAX_TOTAL_CHARS = 1600
-
 # 与 schema/types 同步的 note kind 闭集。
 NOTE_KINDS = ("fact", "gotcha", "procedure", "preference", "hypothesis")
 
@@ -49,10 +41,41 @@ DRAFT_SCHEMA = """\
   "diary": [
     {
       "date": "YYYY-MM-DD",
-      "outcomes": ["完成或推进到什么可观察状态"],
-      "decisions": ["做了什么选择 + 必要的一句理由"],
-      "corrections": ["原判断/做法 -> 更正后的结论/做法"],
-      "open_loops": ["还没完成什么；下一步或阻塞是什么"]
+      "items": [
+        {
+          "kind": "outcome",
+          "summary": "完成或推进到什么可观察状态",
+          "detail": "影响恢复的文件、commit、测试或失败细节；没有则为空字符串",
+          "source_refs": ["L000001"]
+        },
+        {
+          "kind": "decision",
+          "summary": "做了什么选择",
+          "reason": "为什么这样选",
+          "status": "active | superseded",
+          "source_refs": ["L000002"]
+        },
+        {
+          "kind": "correction",
+          "before": "原判断或原做法",
+          "after": "更正后的判断或做法",
+          "reason": "什么证据促成更正",
+          "source_refs": ["L000003", "L000004"]
+        },
+        {
+          "kind": "open_loop",
+          "summary": "还没完成什么；下一步或阻塞是什么",
+          "reason": "为什么仍未完成",
+          "status": "active | closed",
+          "source_refs": ["L000005"]
+        },
+        {
+          "kind": "evidence",
+          "summary": "影响后续判断的观测证据",
+          "detail": "必要的命令、测试、错误或数值",
+          "source_refs": ["L000006"]
+        }
+      ]
     }
   ],
   "reflection": "温故反思：有没有已存在笔记没用上导致绕弯路",
@@ -62,13 +85,13 @@ DRAFT_SCHEMA = """\
 
 REFINE_PROMPT_TEMPLATE = (
     """\
-你是 trowel 的「温故提炼」agent。任务：读今天的 cc 会话，提炼出可复用知识 + 经历事件，双轨分流，并对每条结论做自行验证（第 7 步是命门）。
+你是 trowel 的「温故提炼」agent。任务：读一个已完成的会话片段，提炼出可复用知识 + 高召回经历，并对每条结论做自行验证（第 7 步是命门）。
 
 你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记 + memory 根路径）——这模拟"我还记得点"。查已有笔记主动用 memory.search 工具（注入段里给了根路径和用法），别只靠注入的日记就当查过了。
 
 【输入】
-- 今天要提炼的会话 jsonl 路径：{jsonl_path}
-  你自己 read 这个文件（绝对路径），用原始材料，不要用别人预处理过的二手。
+- 要提炼的 numbered JSONL 路径：{jsonl_path}
+  你自己 read 这个文件（绝对路径）。每个非空原始事件前只有一个 `Lxxxxxx<TAB>` 前缀，L 编号是 source ref，TAB 后仍是原始 runtime event。
 - 客观成本（供痛感判断参考，Python 预提取）：{cost}
 
 【8 步流程】
@@ -107,15 +130,16 @@ REFINE_PROMPT_TEMPLATE = (
 
 【双轨分流】
 - 知识轨（notes）：可复用结论 / gotcha / 方法论
-- 经历轨（diary）：结构化四列表，不是自由流水账。每个日期产出四类可空列表：
+- 经历轨（diary）：按 item kind 结构化，不是自由流水账。每个日期可产出五类 item：
   - outcomes：完成或推进到什么可观察状态（做了什么、验证到什么程度）
   - decisions：做了什么选择 + 必要的一句理由（只在影响后续行为时记）
   - corrections：原判断/做法 -> 更正后的结论/做法（用户纠错、被证据推翻的旧判断）
   - open_loops：还没完成什么；下一步或阻塞是什么（仍有效的待办）
-- 经历轨硬规则：每项必须是完整、可独立理解的一句话；无信息的字段输出空列表，不写"无"。
-- 经历轨是摘要，不是逐轮记录。每个日期四类合计最多 {episode_max_items} 条、每类最多 {episode_max_items_per_field} 条；单条尽量控制在 {episode_target_item_chars} 字以内，硬上限 {episode_max_item_chars} 字，四类正文合计最多 {episode_max_total_chars} 字。
-- 长会话先合并同一工作主线，只留关键里程碑。commit hash、diff 行数、精确测试数、逐个文件名通常不写；只有它们本身影响后续判断时才保留。
-- outcomes 至少覆盖当天真正完成或推进的一件事；多个相邻实现合成一条“完成什么 + 验证到什么状态”。corrections 保留最重要的认知反转；open_loops 合并同一下一步，不拆成多个技术子项。
+  - evidence：影响恢复或判断的真实观测，例如关键测试、错误、命令结果或数值
+- 每项必须独立可理解，并至少引用一个直接支持它的真实 L 编号；Python 会拒绝不存在、重复或空的 source_refs。
+- decision 必须保留理由；correction 必须拆成 before / after 并写促成更正的证据；open_loop 只把片段结束时仍有效的事项标 active，已完成或放弃的标 closed。
+- episode 偏高召回。合并同一事实，但不要为了固定条数或字符预算提前丢掉恢复状态；文件、commit、测试、失败和阻塞只要影响恢复或判断就保留。
+- 不逐轮复述工具流水，也不补写 source 外的事实。无信息时 items 输出空列表，不写"无"。
 - 经历轨禁 agent 自评：不写"认真检查/反复确认/表现不错/全程高价值"这类绩效复盘腔，也不写 agent 自己的情绪，除非它反映用户真实痛点且影响后续决策。工具调用顺序、逐轮尝试、常规测试流水不进经历轨。
 - 元话语（我想到 / 感悟 / 本质是 / 原理是 / 启示 / 教训 / 规律 / 方法论 / 告诉我们）→ 知识轨，不要漏进 diary。
 - 同一个坑两处都可能记：经历轨记"7/8 卡两小时在 X（open_loop 或 correction）"，笔记记"遇到 X 先查 Y"。
@@ -145,33 +169,15 @@ def build_refine_prompt(
     start_offset: int | None = None,
     end_offset: int | None = None,
     template: str = REFINE_PROMPT_TEMPLATE,
-    episode_max_items: int = EPISODE_MAX_ITEMS_PER_DATE,
-    episode_max_items_per_field: int = EPISODE_MAX_ITEMS_PER_FIELD,
-    episode_target_item_chars: int = EPISODE_TARGET_ITEM_CHARS,
-    episode_max_item_chars: int = EPISODE_MAX_ITEM_CHARS,
-    episode_max_total_chars: int = EPISODE_MAX_TOTAL_CHARS,
 ) -> str:
     """填充会话信息；给定字节范围时只产出该增量的新记忆。"""
     prompt = template.replace("{jsonl_path}", jsonl_path).replace("{cost}", cost_text)
-    prompt = (
-        prompt.replace("{episode_max_items}", str(episode_max_items))
-        .replace(
-            "{episode_max_items_per_field}",
-            str(episode_max_items_per_field),
-        )
-        .replace(
-            "{episode_target_item_chars}",
-            str(episode_target_item_chars),
-        )
-        .replace("{episode_max_item_chars}", str(episode_max_item_chars))
-        .replace("{episode_max_total_chars}", str(episode_max_total_chars))
-    )
     if start_offset is not None or end_offset is not None:
         start = start_offset or 0
         end = "EOF" if end_offset is None else end_offset
         prompt = (
-            f"【增量范围】本次只为 jsonl 字节区间 [{start}, {end}] 产新记忆；"
-            "该区间之前的内容已提炼过，不要重复。续聊增量提炼（slice-040-b）。\n\n"
+            f"【来源范围】numbered 文件只包含原 jsonl 字节区间 [{start}, {end}]；"
+            "该区间之前的内容已提炼过，不要补写。\n\n"
             + prompt
         )
     return prompt

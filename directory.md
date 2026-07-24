@@ -85,6 +85,8 @@
 | `memory/dictionary_check/` | dictionary 纯一致性评估与只读文件快照 |
 | `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
 | `memory/draft/` | 提炼 draft 的稳定模型、宽松解析、硬校验与 procedure 软告警 |
+| `memory/draft/episode.py` | Episode v2 的 kind-specific item、严格解析与 daily 文本投影 |
+| `memory/daily_review/source_refs.py` | CompletedSegment 精确字节范围到可校验 numbered line refs 的转换 |
 
 ## 前端
 

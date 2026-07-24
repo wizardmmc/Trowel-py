@@ -1,7 +1,14 @@
 from pathlib import Path
 
 from trowel_py.memory.compress import compress_daily, write_fallback_daily
+from trowel_py.memory.draft import (
+    DraftDecision,
+    DraftDiary,
+    DraftEvidence,
+    DraftOpenLoop,
+)
 from trowel_py.memory.store import MemoryStore
+from trowel_py.memory.types import PersistContext
 
 from .support import (
     FakeProvider,
@@ -26,6 +33,66 @@ def test_compress_daily_retries_on_bad_source_then_succeeds(tmp_path: Path) -> N
         require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"]
         == "ok"
     )
+
+
+def test_compress_daily_projects_v2_reason_and_only_active_open_loops(
+    tmp_path: Path,
+) -> None:
+    MemoryStore(tmp_path).write_episode(
+        PersistContext(
+            segment_id="s1:0:end",
+            cc_session_id="s1",
+            workdir="/tmp",
+            registered_at="2026-07-01T10:00:00",
+            review_date="2026-07-01",
+            source_jsonl="/tmp/source.jsonl",
+            activity_dates=("2026-07-01",),
+        ),
+        (
+            DraftDiary(
+                date="2026-07-01",
+                items=(
+                    DraftDecision(
+                        "继续使用 GLM-5.1",
+                        "长会话召回更完整",
+                        "active",
+                        ("L000001",),
+                    ),
+                    DraftOpenLoop(
+                        "补 command smoke",
+                        "实验样本未覆盖",
+                        "active",
+                        ("L000002",),
+                    ),
+                    DraftOpenLoop(
+                        "旧阻塞",
+                        "已经解决",
+                        "closed",
+                        ("L000003",),
+                    ),
+                    DraftEvidence(
+                        "schema gate 通过",
+                        "7/7",
+                        ("L000004",),
+                    ),
+                ),
+            ),
+        ),
+    )
+    provider = FakeProvider(
+        items_json(
+            ("decision", "继续使用 GLM-5.1", "S1"),
+            ("open_loop", "补 command smoke", "S1"),
+        )
+    )
+
+    compress_daily(tmp_path, "2026-07-01", provider)
+
+    prompt = provider.calls[0][1]
+    assert "长会话召回更完整" in prompt
+    assert "补 command smoke" in prompt
+    assert "旧阻塞" not in prompt
+    assert "schema gate 通过" not in prompt
 
 
 def test_compress_daily_retries_when_model_omits_source_progress(
