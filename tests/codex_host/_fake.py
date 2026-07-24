@@ -1,16 +1,7 @@
-"""In-process fake of ``codex app-server`` for transport unit tests.
+"""用进程内管道模拟 ``codex app-server``，稳定覆盖协议与进程故障边界。
 
-Why in-process (not a real subprocess): the production spawner path
-(:func:`asyncio.create_subprocess_exec`) is stdlib and not under test here.
-What we *do* need to exercise is the transport's behaviour against the
-app-server wire format — EOF, non-zero exit, late responses, server requests,
-bad JSON. An in-process fake that speaks the same StreamReader/StreamWriter
-interface as ``asyncio.subprocess.Process`` is fully deterministic, needs no
-network or Codex auth, and runs in milliseconds.
-
-A test describes the fake's behaviour as an async generator that yields
-:class:`Step` values. The runner feeds/drains the pipes accordingly, so each
-test reads top-to-bottom as a script of what the server does.
+测试以异步生成器产出 ``Step``；runner 按顺序驱动 stdin、stdout、stderr、EOF 和
+returncode，无需网络、Codex 认证或真实子进程。
 """
 
 from __future__ import annotations
@@ -18,122 +9,77 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 JsonObject = dict[str, Any]
 
 
 class _FakeStdin:
-    """StreamWriter-side of stdin: transport writes bytes, the driver reads."""
+    """只实现 Transport 会使用的 ``StreamWriter`` 写入侧接口。"""
 
     def __init__(self) -> None:
-        """Create the internal queue the driver drains."""
-
         self._reader = asyncio.StreamReader()
         self._closing = False
 
     def write(self, data: bytes) -> None:
-        """Accept bytes from the transport and feed them to the driver."""
-
         self._reader.feed_data(data)
 
     def is_closing(self) -> bool:
-        """Return True after :meth:`close`."""
-
         return self._closing
 
     def close(self) -> None:
-        """Signal EOF to the driver and mark the pipe closed."""
-
         self._closing = True
         self._reader.feed_eof()
 
     def write_eof(self) -> None:
-        """Mirror :meth:`asyncio.StreamWriter.write_eof`."""
-
         self.close()
 
     async def drain(self) -> None:
-        """No-op backpressure sink — writes are synchronous."""
-
         return None
 
     async def readline(self) -> bytes:
-        """Read one newline-terminated line the transport wrote."""
-
         return await self._reader.readline()
 
 
 @dataclass
 class Step:
-    """One scripted action the fake server performs.
-
-    Pick the kind via the factory classmethods; do not build the dataclass by
-    hand (keeps the call sites readable).
-    """
+    """一条 app-server 脚本动作；``recv`` 的结果会送回生成器的 ``yield``。"""
 
     kind: str
     payload: Any = None
 
     @classmethod
     def send(cls, message: JsonObject) -> "Step":
-        """Feed one parsed message to stdout (the transport reads it)."""
-
         return cls("send", message)
 
     @classmethod
     def send_raw(cls, text: str) -> "Step":
-        """Feed a raw line (use to emit malformed JSON on purpose)."""
-
         return cls("send_raw", text)
 
     @classmethod
     def stderr(cls, text: str) -> "Step":
-        """Feed one stderr line."""
-
         return cls("stderr", text)
 
     @classmethod
     def recv(cls) -> "Step":
-        """Block until the transport writes one stdin line, return it parsed."""
-
         return cls("recv")
 
     @classmethod
     def exit(cls, code: int = 0) -> "Step":
-        """Close stdout/stderr and set ``returncode``."""
-
         return cls("exit", code)
 
     @classmethod
     def hold(cls, seconds: float) -> "Step":
-        """Sleep — used to simulate a server that ignores close (kill path)."""
-
         return cls("hold", seconds)
 
 
-Behavior = AsyncIterator[Step]
+Behavior = AsyncGenerator[Step, JsonObject | None]
 
 
 class FakeAppServer:
-    """Drives a scripted in-process app-server process.
-
-    Usage in a test::
-
-        async def behavior():
-            msg = yield Step.recv()
-            assert msg["method"] == "initialize"
-            yield Step.send({"id": msg["id"], "result": {...}})
-            ...
-
-        fake = FakeAppServer(behavior())
-        client = AppServerClient(spawner=fake.spawner, ...)
-        await client.start()
-    """
+    """按异步生成器脚本驱动进程内 app-server。"""
 
     def __init__(self, behavior: Behavior) -> None:
-        """Store the behavior generator; pipes are created lazily on spawn."""
-
         self._behavior = behavior
         self._process: FakeProcess | None = None
         self._task: asyncio.Task[None] | None = None
@@ -142,12 +88,12 @@ class FakeAppServer:
         self.last_spawn_args: list[str] | None = None
         self.last_spawn_kwargs: dict[str, Any] | None = None
 
-    def spawner(self) -> Callable[[list[str], dict[str, Any]], Awaitable["FakeProcess"]]:
-        """Return an async spawner compatible with ``AppServerClient``."""
+    def spawner(
+        self,
+    ) -> Callable[[list[str], dict[str, Any]], Awaitable["FakeProcess"]]:
+        """返回与 ``AppServerClient`` 注入点兼容的异步进程工厂。"""
 
         async def _spawn(args: list[str], kwargs: dict[str, Any]) -> FakeProcess:
-            """Create the fake process and kick off the behavior driver."""
-
             assert "app-server" in args, f"fake expected app-server argv, got {args}"
             self.last_spawn_args = list(args)
             self.last_spawn_kwargs = dict(kwargs)
@@ -160,12 +106,7 @@ class FakeAppServer:
         return _spawn
 
     async def _drive(self) -> None:
-        """Execute each Step the behavior yields, in order.
-
-        Uses ``asend`` so a ``recv`` step surfaces the parsed message back to
-        the generator as the value of its ``yield`` expression — that lets a
-        behavior echo the client's request id when building a response.
-        """
+        """通过 ``asend`` 把 ``recv`` 结果送回 ``yield``，供脚本复用原生请求 ID。"""
 
         send_value: Any = None
         try:
@@ -177,13 +118,11 @@ class FakeAppServer:
             return
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — surface test-script bugs loudly
+        except Exception:  # noqa: BLE001
             self._finish(1)
             raise
 
     async def _run_step(self, step: Step) -> JsonObject | None:
-        """Apply one step; return the parsed message for recv, else None."""
-
         proc = self._process
         assert proc is not None
         if step.kind == "send":
@@ -217,7 +156,7 @@ class FakeAppServer:
         raise AssertionError(f"unknown step kind {step.kind!r}")
 
     def _finish(self, code: int) -> None:
-        """Feed EOF on both pipes and stamp the returncode."""
+        """同时关闭两个输出管道并写入 returncode，模拟子进程退出。"""
 
         proc = self._process
         if proc is None:
@@ -227,24 +166,16 @@ class FakeAppServer:
         proc._set_returncode(code)
 
     async def join(self) -> None:
-        """Wait for the driver task to finish."""
-
         if self._task is not None:
             await self._task
 
 
 class FakeProcess:
-    """Subset of ``asyncio.subprocess.Process`` the transport touches."""
+    """只实现 Transport 会使用的 ``asyncio.subprocess.Process`` 接口。"""
 
     def __init__(self, *, stdout_limit: int = 2**16) -> None:
-        """Create fresh stdin/stdout/stderr pipes.
-
-        Args:
-            stdout_limit: Maximum buffered stdout line size, matching the
-                ``limit`` accepted by :func:`asyncio.create_subprocess_exec`.
-        """
-
         self._stdin = _FakeStdin()
+        # stdout 必须保留生产 spawner 的 limit 语义，才能覆盖超长 JSONL 消息。
         self.stdout = asyncio.StreamReader(limit=stdout_limit)
         self.stderr = asyncio.StreamReader()
         self._exit = asyncio.Event()
@@ -253,26 +184,24 @@ class FakeProcess:
 
     @property
     def stdin(self) -> _FakeStdin:
-        """The stdin the transport writes to."""
-
         return self._stdin
 
     def terminate(self) -> None:
-        """SIGTERM — set returncode=15 if the process has not exited yet."""
+        """模拟 SIGTERM；进程未退出时把 returncode 设为 -15。"""
 
         self._signaled = True
         if not self._exit.is_set():
             self._set_returncode(-15)
 
     def kill(self) -> None:
-        """SIGKILL — set returncode=-9 if the process has not exited yet."""
+        """模拟 SIGKILL；进程未退出时把 returncode 设为 -9。"""
 
         self._signaled = True
         if not self._exit.is_set():
             self._set_returncode(-9)
 
     def _set_returncode(self, code: int) -> None:
-        """Stamp the returncode and release anyone awaiting :meth:`wait`."""
+        """只写入一次 returncode，并释放所有 ``wait`` 等待者。"""
 
         if self._exit.is_set():
             return
@@ -280,8 +209,6 @@ class FakeProcess:
         self._exit.set()
 
     async def wait(self) -> int:
-        """Block until the fake process has a returncode."""
-
         await self._exit.wait()
         assert self.returncode is not None
         return self.returncode

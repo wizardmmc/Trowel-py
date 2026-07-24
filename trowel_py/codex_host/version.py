@@ -1,8 +1,7 @@
-"""Read and validate the installed Codex CLI version.
+"""读取并校验本机 Codex CLI 版本。
 
-Spec §1 pins the protocol baseline to ``codex-cli 0.144.0``. The transport
-refuses to enter ``ready`` when the installed version differs unless the caller
-explicitly opts into an override (which still emits a warning — never silent).
+协议基线固定为 ``codex-cli 0.144.0``。版本不一致时 transport 不会进入 ``ready``；
+显式 override 可以继续，但仍必须记录警告。
 """
 
 from __future__ import annotations
@@ -17,45 +16,21 @@ from trowel_py.codex_host.protocol import SUPPORTED_CODEX_VERSION
 
 _log = logging.getLogger(__name__)
 
-# ``codex --version`` prints e.g. ``codex-cli 0.144.0``. We keep the leading
-# name so a future rename shows up, but compare only the trailing semver.
-# A pre-release suffix (``0.144.0-rc.1``) collapses to its release triple —
-# intentional, since the installed CLI in this environment is a stable build;
-# callers that need to distinguish pre-releases should inspect ``raw``.
+# 兼容 ``codex-cli 0.144.0`` 等输出，只用首个 semver 三元组比较；需要区分预发布
+# 后缀的调用者应读取 ``raw``。
 _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+)")
 
 
 @dataclass(frozen=True)
 class CodexVersion:
-    """The installed Codex CLI version string plus the parsed semver tuple.
-
-    Attributes:
-        raw: The full ``codex --version`` output (stripped).
-        semver: The ``(major, minor, patch)`` tuple parsed from ``raw``.
-    """
-
     raw: str
     semver: tuple[int, int, int]
 
     def __str__(self) -> str:
-        """Return the bare semver for compact log/UI display."""
-
         return ".".join(str(part) for part in self.semver)
 
 
 def parse_version(raw: str) -> CodexVersion:
-    """Parse ``codex --version`` output into a :class:`CodexVersion`.
-
-    Args:
-        raw: The first line of ``codex --version`` output.
-
-    Returns:
-        The parsed version.
-
-    Raises:
-        ValueError: If no ``major.minor.patch`` token is present.
-    """
-
     match = _VERSION_RE.search(raw.strip())
     if match is None:
         raise ValueError(f"Could not parse semver from codex --version: {raw!r}")
@@ -64,21 +39,7 @@ def parse_version(raw: str) -> CodexVersion:
 
 
 async def read_codex_version(codex_bin: str = "codex") -> CodexVersion:
-    """Spawn ``codex --version`` and return the parsed version.
-
-    Does not read config or auth; only the version string is captured.
-
-    Args:
-        codex_bin: The codex executable name or path.
-
-    Returns:
-        The installed Codex CLI version.
-
-    Raises:
-        FileNotFoundError: If the codex binary is not on PATH.
-        ValueError: If the version line cannot be parsed.
-    """
-
+    """只启动 ``codex --version``，不读取配置或认证信息。"""
     proc = await asyncio.create_subprocess_exec(
         codex_bin,
         "--version",
@@ -95,21 +56,7 @@ def check_version(
     supported: str = SUPPORTED_CODEX_VERSION,
     allow_override: bool = False,
 ) -> None:
-    """Assert the installed version matches the supported baseline.
-
-    Args:
-        installed: The version read from the installed CLI.
-        supported: The pinned baseline semver (``0.144.0`` by default).
-        allow_override: When True, log a warning instead of raising so a
-            developer can exercise the transport against an unvalidated build.
-            The warning is always emitted — compatibility is never silent
-            (spec §1).
-
-    Raises:
-        VersionMismatchError: When the versions differ and ``allow_override``
-            is False.
-    """
-
+    """校验基线；``allow_override`` 只将不匹配降为警告，不会静默放行。"""
     if str(installed) == supported:
         return
     if allow_override:

@@ -1,14 +1,7 @@
-"""Real Codex app-server integration smoke (slice-070 pass criteria).
+"""真实 Codex app-server 的 Transport smoke。
 
-Deselected by default (``-m 'not integration'`` in ``pyproject.toml``) and
-additionally env-gated so it only runs when the caller explicitly opts in with
-``CODEX_INTEGRATION=1``. It uses the current Codex subscription login and the
-real ``codex app-server`` — never reads ``~/.codex/auth.json``, never touches
-stable, and archives the thread it creates.
-
-Run::
-
-    CODEX_INTEGRATION=1 .venv/bin/python -m pytest -m integration tests/codex_host/test_integration.py
+测试默认由 integration marker 筛除，且只在 ``CODEX_INTEGRATION=1`` 时运行；测试
+代码不直接读取认证文件，子进程继承当前环境和 Codex 登录。
 """
 
 from __future__ import annotations
@@ -33,16 +26,7 @@ pytestmark = [
 
 
 async def test_real_initialize_and_thread_start() -> None:
-    """Real 0.144.0: initialize → thread/start end-to-end through the transport.
-
-    Spec pass criteria calls for ``initialize`` + ``thread/start`` + archive.
-    The transport handshake and request/response are fully exercised by the
-    first two calls; archive is omitted because Codex 0.144.0 rejects
-    ``thread/archive`` on a thread with no turn history (``no rollout found``),
-    and driving a turn is slice-071's boundary. The thread is started
-    ``ephemeral`` so it evaporates when the app-server process exits — same
-    no-residue intent as archiving, without leaving slice-070's scope.
-    """
+    """空 thread 没有 rollout，0.144.0 拒绝 archive；使用 ephemeral 避免残留。"""
 
     workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-integration-"))
     try:
@@ -71,35 +55,21 @@ async def test_real_initialize_and_thread_start() -> None:
 
 
 class _AsyncCtx:
-    """Tiny ``async with`` adapter so the test reads top-to-bottom."""
-
     def __init__(self, workdir: Path) -> None:
-        """Store the workdir for the subprocess cwd."""
-
         self._workdir = workdir
         self._client: AppServerClient | None = None
 
     async def __aenter__(self) -> AppServerClient:
-        """Spawn and handshake the real app-server.
-
-        No ``env`` override: the subprocess inherits the parent environment so
-        ``codex`` is on PATH and the current Codex login (``~/.codex``) is
-        reused, exactly as the spike did. Passing a partial env dict would
-        replace PATH and break executable lookup.
-        """
+        """不覆盖 env，避免用局部字典替换 PATH，并沿用当前 Codex 登录。"""
 
         self._client = AppServerClient(expected_version="0.144.0")
         await self._client.start()
         return self._client
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        """Always close the transport, even on failure."""
-
         if self._client is not None:
             await self._client.close()
 
 
 def _client(workdir: Path) -> _AsyncCtx:
-    """Build the real-client context manager."""
-
     return _AsyncCtx(workdir)

@@ -1,10 +1,3 @@
-"""Redaction tests — auth, tokens, credential-bearing proxy strings never land.
-
-Spec C-6: secrets must be scrubbed before any line reaches a fixture or log.
-These cases pin the patterns we care about so a regression that echoes raw
-auth is caught at the unit layer.
-"""
-
 from __future__ import annotations
 
 from trowel_py.codex_host.secrets import (
@@ -16,8 +9,6 @@ from trowel_py.codex_host.secrets import (
 
 
 def test_redact_value_replaces_token_keys() -> None:
-    """Any key matching token/auth/secret/api_key blanks the value."""
-
     out = redact_value(
         {
             "auth_token": "abc123",
@@ -33,19 +24,13 @@ def test_redact_value_replaces_token_keys() -> None:
 
 
 def test_redact_value_does_not_mutate_input() -> None:
-    """Immutability: the original dict is untouched."""
-
     original = {"auth_token": "abc123"}
     redact_value(original)
     assert original == {"auth_token": "abc123"}
 
 
 def test_redact_value_scrubs_url_userinfo() -> None:
-    """``scheme://user:pass@host`` loses only the password.
-
-    Per RFC 3986 a URL password containing ``@`` must be percent-encoded, so
-    the userinfo terminator is unambiguous — we test the well-formed case.
-    """
+    """RFC 3986 要求 URL password 中的 ``@`` 编码，因此终止符没有歧义。"""
 
     assert (
         redact_value("https://bot:passw0rd@proxy.example.com:7897")
@@ -54,15 +39,14 @@ def test_redact_value_scrubs_url_userinfo() -> None:
 
 
 def test_redact_value_scrubs_bearer_and_key_prefixes() -> None:
-    """Bearer tokens and ``sk-`` keys are masked inline."""
-
-    assert redact_value("Authorization: Bearer eyJabc.def.ghi") == "Authorization: Bearer ***"
+    assert (
+        redact_value("Authorization: Bearer eyJabc.def.ghi")
+        == "Authorization: Bearer ***"
+    )
     assert redact_value("key=sk-1234567890abcdef") == "key=sk-***"
 
 
 def test_redact_value_recurses_into_nested_structures() -> None:
-    """Secrets deep inside params/config get scrubbed too."""
-
     out = redact_value(
         {"params": {"config": {"env": {"OPENAI_API_KEY": "sk-deadbeef"}}}}
     )
@@ -70,8 +54,6 @@ def test_redact_value_recurses_into_nested_structures() -> None:
 
 
 def test_redact_message_keeps_protocol_shape() -> None:
-    """A realistic notification keeps every field except scrubbed secrets."""
-
     msg = {
         "method": "item/completed",
         "params": {
@@ -88,8 +70,6 @@ def test_redact_message_keeps_protocol_shape() -> None:
 
 
 def test_redact_env_blanks_secret_keys_only() -> None:
-    """Env mirror hides secret keys and copies the rest verbatim."""
-
     env = {
         "PATH": "/usr/bin",
         "HTTPS_PROXY": "http://u:p@127.0.0.1:7897",
@@ -104,8 +84,6 @@ def test_redact_env_blanks_secret_keys_only() -> None:
 
 
 def test_redact_stderr_strips_inline_credentials() -> None:
-    """stderr excerpts that reach exceptions must not carry tokens."""
-
     assert (
         redact_stderr("failed with token=sk-1234567890abcdef here")
         == "failed with token=sk-*** here"

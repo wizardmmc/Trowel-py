@@ -1,11 +1,9 @@
-"""slice-078: trowel memory MCP wiring on a Codex thread.
+"""固定 Codex thread start/resume 的 memory MCP 配置与身份 wire shape。
 
-Covers the config object that rides on ``thread/start.config.mcp_servers`` and
-the manager's translation of ``CodexSessionConfig.trowel_memory_mcp`` /
-``developer_instructions`` into ``thread/start`` params. The four M/P combos'
-*content* (what build_memory_injection returns) is exercised at the hub layer;
-these tests pin the wire shape only.
+这里只验证 session config 到 app-server 参数的协议映射；Hub 测试覆盖 injection 装配，
+正文由 memory/injection 测试覆盖。
 """
+
 from __future__ import annotations
 
 import sys
@@ -21,12 +19,6 @@ from trowel_py.codex_host.session import (
 
 
 def test_to_thread_config_shape_carries_identity_env() -> None:
-    """The MCP server dict carries the host-neutral identity env + tools.
-
-    On a fresh thread/start the native thread_id is unknown, so
-    TROWEL_NATIVE_SESSION_ID is left empty (codex review HIGH-3: do not fake
-    it with the trowel session id)."""
-
     cfg = TrowelMemoryMcpConfig(
         server_name=TROWEL_NOTE_SEARCH_SERVER_NAME,
         command="/usr/bin/python",
@@ -43,7 +35,7 @@ def test_to_thread_config_shape_carries_identity_env() -> None:
     assert env["MEMORY_ROOT"] == "/tmp/mem"
     assert env["TROWEL_SESSION_ID"] == "trowel-1"
     assert env["TROWEL_HOST_KIND"] == "codex"
-    # Fresh start: thread_id unknown → leave empty (do NOT fake with trowel id).
+    # fresh thread 尚无原生 thread ID，不能用 Trowel session ID 冒充。
     assert env["TROWEL_NATIVE_SESSION_ID"] == ""
     assert server["required"] is True
     assert server["enabled_tools"] == ["search", "read", "outcome"]
@@ -51,9 +43,6 @@ def test_to_thread_config_shape_carries_identity_env() -> None:
 
 
 def test_to_thread_config_resume_stamps_real_thread_id() -> None:
-    """On thread/resume the binding already knows the thread_id — stamp it
-    for real so the MCP writes honest identity (codex review HIGH-3)."""
-
     cfg = TrowelMemoryMcpConfig(
         server_name=TROWEL_NOTE_SEARCH_SERVER_NAME,
         command="/usr/bin/python",
@@ -69,9 +58,6 @@ def test_to_thread_config_resume_stamps_real_thread_id() -> None:
 
 
 def test_build_default_trowel_memory_mcp_uses_current_interpreter() -> None:
-    """The default factory points at the running interpreter so the spawn works
-    regardless of which venv trowel was launched from."""
-
     cfg = build_default_trowel_memory_mcp(
         trowel_session_id="sid", memory_root="/tmp/mem"
     )
@@ -83,8 +69,6 @@ def test_build_default_trowel_memory_mcp_uses_current_interpreter() -> None:
 
 
 def test_thread_start_params_includes_mcp_servers_when_memory_on() -> None:
-    """memory-on: trowel_memory_mcp set → config.mcp_servers is on the request."""
-
     manager = CodexHostManager()
     cfg = build_default_trowel_memory_mcp(
         trowel_session_id="sid", memory_root="/tmp/mem"
@@ -97,14 +81,15 @@ def test_thread_start_params_includes_mcp_servers_when_memory_on() -> None:
         )
     )
     params = manager._thread_start_params(session)  # noqa: SLF001
-    assert params["config"]["mcp_servers"][TROWEL_NOTE_SEARCH_SERVER_NAME][
-        "env"
-    ]["TROWEL_HOST_KIND"] == "codex"
+    assert (
+        params["config"]["mcp_servers"][TROWEL_NOTE_SEARCH_SERVER_NAME]["env"][
+            "TROWEL_HOST_KIND"
+        ]
+        == "codex"
+    )
 
 
 def test_thread_start_params_omits_config_when_memory_off() -> None:
-    """memory-off: trowel_memory_mcp is None → no config key at all (C-3)."""
-
     manager = CodexHostManager()
     session = CodexSession(
         CodexSessionConfig(
@@ -118,8 +103,6 @@ def test_thread_start_params_omits_config_when_memory_off() -> None:
 
 
 def test_thread_start_params_carries_developer_instructions_when_set() -> None:
-    """Static injection text flows through to developerInstructions."""
-
     manager = CodexHostManager()
     session = CodexSession(
         CodexSessionConfig(
@@ -133,9 +116,6 @@ def test_thread_start_params_carries_developer_instructions_when_set() -> None:
 
 
 def test_thread_start_params_omits_developer_instructions_when_empty() -> None:
-    """An empty injection (memory-off + no profile) maps to None → the key is
-    omitted entirely so the app-server does not see a bare empty override."""
-
     manager = CodexHostManager()
     session = CodexSession(
         CodexSessionConfig(
@@ -149,11 +129,7 @@ def test_thread_start_params_omits_developer_instructions_when_empty() -> None:
 
 
 def test_thread_resume_params_re_attaches_memory_mcp_with_thread_id() -> None:
-    """slice-078 HIGH-1 (codex review): resume re-attaches the memory MCP —
-    app-server persists model/effort but NOT the MCP config, so a memory-on
-    thread resumed after restart would silently lose the read-path. HIGH-3:
-    the real thread_id is known at resume, so it is stamped (unlike the
-    fresh start path which leaves native_session_id empty)."""
+    """app-server 不持久化 MCP 配置；resume 必须重挂并写入已知的原生 thread ID。"""
 
     manager = CodexHostManager()
     cfg = build_default_trowel_memory_mcp(
@@ -175,8 +151,6 @@ def test_thread_resume_params_re_attaches_memory_mcp_with_thread_id() -> None:
 
 
 def test_thread_resume_params_omits_config_when_memory_off() -> None:
-    """A memory-off resumed thread does NOT re-attach any MCP (C-3)."""
-
     manager = CodexHostManager()
     session = CodexSession(
         CodexSessionConfig(

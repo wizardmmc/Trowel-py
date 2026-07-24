@@ -1,9 +1,7 @@
-"""Connection-scoped pending server requests for Codex app-server.
+"""管理连接作用域内由 Codex app-server 发起的 pending request。
 
-The app-server assigns request ids, but those ids are only unique within one
-stdio connection.  This registry adds the manager's connection generation,
-binds every request to its trowel session, and owns the one-shot future that
-the transport handler awaits until the user answers.
+app-server request id 只在单个 stdio 连接内唯一。registry 将 id 与 manager 连接
+代际组合，绑定所属 Trowel session，并持有 transport handler 等待的一次性 Future。
 """
 
 from __future__ import annotations
@@ -16,16 +14,12 @@ from typing import Any, Callable, Mapping
 
 
 class PendingRequestKind(str, Enum):
-    """The server-request kinds verified for the current Codex baseline."""
-
     COMMAND_APPROVAL = "command_approval"
     FILE_APPROVAL = "file_approval"
     UNKNOWN = "unknown"
 
 
 class PendingRequestStatus(str, Enum):
-    """Lifecycle states exposed to the Agent timeline."""
-
     PENDING = "pending"
     ANSWERED = "answered"
     EXPIRED = "expired"
@@ -33,28 +27,28 @@ class PendingRequestStatus(str, Enum):
 
 
 class PendingRequestError(Exception):
-    """Base class for request lookup and validation failures."""
+    pass
 
 
 class PendingRequestNotFoundError(PendingRequestError):
-    """The public request id is unknown to this manager."""
+    pass
 
 
 class PendingRequestOwnershipError(PendingRequestError):
-    """A session tried to answer a request owned by another session."""
+    pass
 
 
 class PendingRequestConflictError(PendingRequestError):
-    """A request that is no longer pending received another answer."""
+    pass
 
 
 class PendingRequestDecisionError(PendingRequestError):
-    """The requested decision was not advertised by app-server."""
+    pass
 
 
 @dataclass
 class PendingRequest:
-    """One server request and the future used to return its native response."""
+    """一个原生 server request 及其一次性响应 Future。"""
 
     request_id: str
     native_request_id: Any
@@ -75,7 +69,7 @@ class PendingRequest:
     resolution_reason: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        """Return the JSON-safe AgentEvent payload for this lifecycle state."""
+        """生成 AgentEvent payload，并深拷贝可变的原生 decision。"""
 
         return {
             "request_id": self.request_id,
@@ -96,11 +90,9 @@ class PendingRequest:
 
 
 class PendingRequestRegistry:
-    """Own connection-scoped request identity and one-shot state transitions."""
+    """集中管理连接代际 request identity 与一次性状态转换。"""
 
     def __init__(self) -> None:
-        """Create an empty registry."""
-
         self._requests: dict[str, PendingRequest] = {}
 
     def create(
@@ -112,22 +104,7 @@ class PendingRequestRegistry:
         kind: PendingRequestKind,
         params: Mapping[str, Any],
     ) -> PendingRequest:
-        """Register a request under its connection generation and owner.
-
-        Args:
-            native_request_id: The raw JSON-RPC id assigned by app-server.
-            generation: The manager connection generation that received it.
-            session_id: The owning trowel session id.
-            kind: The verified request kind.
-            params: Raw request params from the real protocol.
-
-        Returns:
-            The newly pending request.
-
-        Raises:
-            PendingRequestConflictError: If the generated public id exists.
-            ValueError: If the request has no usable thread id.
-        """
+        """按连接代际与所属 session 登记 request；缺少 ``threadId`` 时拒绝。"""
 
         thread_id = params.get("threadId")
         if not isinstance(thread_id, str) or not thread_id:
@@ -160,12 +137,10 @@ class PendingRequestRegistry:
         return pending
 
     def get(self, request_id: str) -> PendingRequest | None:
-        """Return one request without changing its state."""
-
         return self._requests.get(request_id)
 
     def list_for_session(self, session_id: str) -> tuple[PendingRequest, ...]:
-        """Return all retained requests for a session in insertion order."""
+        """按插入顺序返回 session 的全部保留记录，包括已终止状态。"""
 
         return tuple(
             request
@@ -176,22 +151,7 @@ class PendingRequestRegistry:
     def resolve(
         self, session_id: str, request_id: str, decision: str
     ) -> PendingRequest:
-        """Validate ownership/choice and resolve a pending request once.
-
-        Args:
-            session_id: The answering trowel session.
-            request_id: The public generation-scoped request id.
-            decision: The advertised decision key selected by the UI.
-
-        Returns:
-            The answered request.
-
-        Raises:
-            PendingRequestNotFoundError: If the id is unknown.
-            PendingRequestOwnershipError: If another session owns it.
-            PendingRequestConflictError: If it is already terminal.
-            PendingRequestDecisionError: If app-server did not advertise it.
-        """
+        """校验归属与 advertised choice，并用对应原生值一次性完成 Future。"""
 
         request = self._require(request_id)
         if request.session_id != session_id:
@@ -202,9 +162,7 @@ class PendingRequestRegistry:
             raise PendingRequestConflictError(
                 f"request {request_id!r} is already {request.status.value}"
             )
-        native_decision = _find_native_decision(
-            request.available_decisions, decision
-        )
+        native_decision = _find_native_decision(request.available_decisions, decision)
         if native_decision is None:
             raise PendingRequestDecisionError(
                 f"decision {decision!r} was not advertised for request {request_id!r}"
@@ -217,11 +175,9 @@ class PendingRequestRegistry:
     def resolve_automatically(
         self, request_id: str, decision: str, *, reason: str
     ) -> PendingRequest:
-        """Resolve a request with a protocol-safe decision not offered to UI.
+        """以 fail-closed decision 自动完成 request，绕过 advertised-choice 校验。
 
-        This path is reserved for fail-closed lifecycle behavior: file requests
-        whose real payload cannot explain the change, and timeout cleanup.
-        It deliberately bypasses advertised-choice validation but never accepts.
+        调用者只可用于无法安全展示的 file request、未知 request 等拒绝路径。
         """
 
         request = self._require_pending(request_id)
@@ -233,7 +189,7 @@ class PendingRequestRegistry:
         return request
 
     def expire(self, request_id: str) -> PendingRequest:
-        """Expire one pending request and safely decline it on the wire."""
+        """将超时 request 标为 expired，并在线上回复 ``decline``。"""
 
         request = self._require_pending(request_id)
         request.status = PendingRequestStatus.EXPIRED
@@ -244,7 +200,7 @@ class PendingRequestRegistry:
         return request
 
     def close_generation(self, generation: int) -> tuple[PendingRequest, ...]:
-        """Mark every pending request from one dead connection host_closed."""
+        """取消失效连接代际中仍 pending 的 Future，并标为 host_closed。"""
 
         return self._close_matching(
             lambda request: request.generation == generation,
@@ -252,7 +208,7 @@ class PendingRequestRegistry:
         )
 
     def close_session(self, session_id: str) -> tuple[PendingRequest, ...]:
-        """Invalidate pending requests when their owning session is deleted."""
+        """session 删除时取消仍 pending 的 Future，并标为 host_closed。"""
 
         return self._close_matching(
             lambda request: request.session_id == session_id,
@@ -262,7 +218,7 @@ class PendingRequestRegistry:
     def resolve_turn_with_cancel(
         self, session_id: str, turn_id: str
     ) -> tuple[PendingRequest, ...]:
-        """Resolve advertised cancel decisions before interrupting a turn."""
+        """原生 interrupt 确认后，以 advertised ``cancel`` 完成该 turn 的审批。"""
 
         resolved: list[PendingRequest] = []
         for request in self._requests.values():
@@ -279,8 +235,6 @@ class PendingRequestRegistry:
     def _close_matching(
         self, predicate: Callable[[PendingRequest], bool], *, reason: str
     ) -> tuple[PendingRequest, ...]:
-        """Apply host_closed to pending requests matching ``predicate``."""
-
         closed: list[PendingRequest] = []
         for request in self._requests.values():
             if predicate(request) and request.status is PendingRequestStatus.PENDING:
@@ -291,8 +245,6 @@ class PendingRequestRegistry:
         return tuple(closed)
 
     def _require(self, request_id: str) -> PendingRequest:
-        """Return an existing request or raise the public not-found error."""
-
         request = self._requests.get(request_id)
         if request is None:
             raise PendingRequestNotFoundError(
@@ -301,8 +253,6 @@ class PendingRequestRegistry:
         return request
 
     def _require_pending(self, request_id: str) -> PendingRequest:
-        """Return a pending request or raise a conflict for terminal state."""
-
         request = self._require(request_id)
         if request.status is not PendingRequestStatus.PENDING:
             raise PendingRequestConflictError(
@@ -311,10 +261,8 @@ class PendingRequestRegistry:
         return request
 
 
-def _find_native_decision(
-    available: tuple[Any, ...], decision: str
-) -> Any | None:
-    """Find the exact advertised wire value for a public decision key."""
+def _find_native_decision(available: tuple[Any, ...], decision: str) -> Any | None:
+    """按公开 choice 找回 app-server advertised 的完整原生值。"""
 
     for native in available:
         if isinstance(native, str) and native == decision:
@@ -325,6 +273,4 @@ def _find_native_decision(
 
 
 def _optional_string(value: Any) -> str | None:
-    """Return a non-empty string, otherwise None."""
-
     return value if isinstance(value, str) and value else None

@@ -1,8 +1,7 @@
-"""Codex ``model/list`` parsing for the public Agent catalog.
+"""将 Codex ``model/list`` 响应转换为公开 Agent catalog。
 
-The app-server owns model availability and effort ordering. This module only
-validates the 0.144.0 wire shape and renames camelCase fields for trowel's
-public API; it never filters model ids or reasoning-effort values.
+模型可用性与 effort 顺序由 app-server 决定。本模块只校验 0.144.0 协议结构并将
+camelCase 字段转换为 Trowel 公开字段，不筛选模型或 effort 值。
 """
 
 from __future__ import annotations
@@ -15,17 +14,9 @@ from trowel_py.codex_host.errors import ProtocolViolationError
 def parse_model_list_page(
     result: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Validate and normalize one native ``model/list`` response page.
+    """校验并转换一页原生响应，原样传递不透明的下一页 cursor。
 
-    Args:
-        result: JSON-RPC result object returned by Codex app-server 0.144.0.
-
-    Returns:
-        A pair of normalized model rows and the opaque next-page cursor.
-
-    Raises:
-        ProtocolViolationError: If the result no longer matches the recorded
-            app-server shape.
+    结构偏离录制协议时抛出 ``ProtocolViolationError``。
     """
 
     raw_rows = result.get("data")
@@ -43,8 +34,6 @@ def parse_model_list_page(
 
 
 def _parse_model_row(value: object, page: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize one model row without imposing a model whitelist."""
-
     if not isinstance(value, Mapping):
         raise ProtocolViolationError(
             "model/list row is not an object", payload=dict(page)
@@ -83,8 +72,6 @@ def _parse_model_row(value: object, page: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _parse_effort_row(value: object, model: Mapping[str, Any]) -> dict[str, str]:
-    """Normalize one reasoning effort while preserving its native value."""
-
     if not isinstance(value, Mapping):
         raise ProtocolViolationError(
             "model/list effort row is not an object", payload=dict(model)

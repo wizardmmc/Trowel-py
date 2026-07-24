@@ -1,21 +1,15 @@
-"""Real Codex app-server integration smoke for slice-071.
+"""真实 Codex app-server 的 Manager、Translator 与 thread/turn 集成 smoke。
 
-Deselected by default (``-m 'not integration'``) and additionally env-gated
-behind ``CODEX_INTEGRATION=1``. It uses the current Codex subscription login
-and the real ``codex app-server`` — never reads ``~/.codex/auth.json``, never
-touches stable.
+测试默认由 integration marker 筛除，且只在 ``CODEX_INTEGRATION=1`` 时运行；测试
+代码不直接读取认证文件，子进程继承当前环境和 Codex 登录。
 
-Run::
+执行方式::
 
     CODEX_INTEGRATION=1 .venv/bin/python -m pytest -m integration \\
-        tests/codex_host/test_integration_071.py
+        tests/codex_host/integration/test_manager_runtime.py
 
-These tests exercise the slice-071 orchestration end-to-end: ``thread/start``
-→ ``turn/start`` → notification stream → ``turn/completed``, concurrent
-thread isolation, and ``thread/resume`` after a manager restart. The fake in
-``test_manager.py`` already pins the routing logic deterministically; what
-these add is confidence that the real app-server's response shapes match what
-the manager + translator expect (spec C-7 — real fixtures, no guessing).
+覆盖 ``thread/start``、``turn/start``、通知流、并发 thread 隔离和重启后的
+``thread/resume``；这些 smoke 只验证真实 app-server shape 与运行时调用链一致。
 """
 
 from __future__ import annotations
@@ -55,8 +49,6 @@ async def _drain_until(
     events: list[CodexEvent],
     timeout_s: float = 120.0,
 ) -> None:
-    """Drain ``session`` into ``events`` until ``stop(events)`` is true or timeout."""
-
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_s
     while loop.time() < deadline:
@@ -70,12 +62,7 @@ async def _drain_until(
 
 
 def _finished(events: Iterable[CodexEvent]) -> bool:
-    """True once the turn reached a turn-level terminal event.
-
-    Only FINISHED / INTERRUPTED / ERROR count — HOST_STATUS is excluded
-    because the manager broadcasts a READY host-status right after
-    ``ensure_ready``, and that initial flip is not a turn terminal.
-    """
+    """只认 turn 终态；``ensure_ready`` 广播的 READY ``HOST_STATUS`` 不结束 turn。"""
 
     terminal = {
         CodexEventType.FINISHED,
@@ -86,9 +73,7 @@ def _finished(events: Iterable[CodexEvent]) -> bool:
 
 
 async def test_real_manager_send_completes_one_turn() -> None:
-    """One session: send → SESSION_STARTED/USER/TURN_STARTED/assistant/FINISHED."""
-
-    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-071-"))
+    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-manager-"))
     try:
         manager = CodexHostManager()
         session = CodexSession(
@@ -114,17 +99,11 @@ async def test_real_manager_send_completes_one_turn() -> None:
 
 
 async def test_real_two_sessions_isolated() -> None:
-    """Two concurrent sessions on one manager: each finishes on its own thread."""
-
-    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-071-2-"))
+    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-manager-pair-"))
     try:
         manager = CodexHostManager()
-        session_a = CodexSession(
-            CodexSessionConfig("sA", str(workdir), ephemeral=True)
-        )
-        session_b = CodexSession(
-            CodexSessionConfig("sB", str(workdir), ephemeral=True)
-        )
+        session_a = CodexSession(CodexSessionConfig("sA", str(workdir), ephemeral=True))
+        session_b = CodexSession(CodexSessionConfig("sB", str(workdir), ephemeral=True))
         manager.register(session_a)
         manager.register(session_b)
         try:
@@ -138,7 +117,7 @@ async def test_real_two_sessions_isolated() -> None:
                 _drain_until(session_a, stop=_finished, events=events_a),
                 _drain_until(session_b, stop=_finished, events=events_b),
             )
-            # Different threads, no event crossed over.
+            # 不同 thread 的事件不得串线。
             assert session_a.thread_id != session_b.thread_id
             for event in events_a:
                 if event.thread_id is not None:
@@ -155,14 +134,9 @@ async def test_real_two_sessions_isolated() -> None:
 
 
 async def test_real_effort_accepted_on_turn_start() -> None:
-    """effort on turn/start is accepted by the real app-server.
+    """真实 app-server 接受 ``turn/start.effort``；``thread/start`` 没有该字段。"""
 
-    Guards the codex review P2: ThreadStartParams has no ``effort`` field, so
-    sending it on thread/start could be rejected; this confirms the override
-    rides on turn/start and the turn completes.
-    """
-
-    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-071-effort-"))
+    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-manager-effort-"))
     try:
         manager = CodexHostManager()
         session = CodexSession(
@@ -181,18 +155,15 @@ async def test_real_effort_accepted_on_turn_start() -> None:
 
 
 async def test_real_resume_after_restart() -> None:
-    """End the manager, start a fresh one, resume the same thread, finish a turn."""
-
-    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-071-resume-"))
+    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-manager-resume-"))
     try:
-        # Turn 1 on the first manager (non-ephemeral so the thread persists).
         mgr1 = CodexHostManager()
-        session = CodexSession(
-            CodexSessionConfig("s1", str(workdir), ephemeral=False)
-        )
+        session = CodexSession(CodexSessionConfig("s1", str(workdir), ephemeral=False))
         mgr1.register(session)
         try:
-            await mgr1.send(session, "Remember the marker TROWEL_071_RESUME. Reply: ok")
+            await mgr1.send(
+                session, "Remember the marker TROWEL_CODEX_RESUME_MARKER. Reply: ok"
+            )
             events1: list[CodexEvent] = []
             await _drain_until(session, stop=_finished, events=events1)
             assert session.binding is not None
@@ -200,8 +171,6 @@ async def test_real_resume_after_restart() -> None:
         finally:
             await mgr1.close()
 
-        # New manager process; the session kept the binding, so the next send
-        # must resume the same thread (not start a fresh one).
         mgr2 = CodexHostManager()
         mgr2.register(session)
         try:
@@ -212,12 +181,12 @@ async def test_real_resume_after_restart() -> None:
             assert session.binding.thread_id == thread_id
             assert any(event.type is CodexEventType.FINISHED for event in events2)
         finally:
-            # Archive the persisted thread so the smoke leaves no residue.
+            # 持久 thread 尽力归档，清理失败不能覆盖主断言。
             client = mgr2.client
             if client is not None and not client.closed:
                 try:
                     await client.request("thread/archive", {"threadId": thread_id})
-                except Exception:  # noqa: BLE001 — archive is best-effort cleanup
+                except Exception:  # noqa: BLE001
                     pass
             await mgr2.close()
     finally:

@@ -1,26 +1,4 @@
-"""Trowel-side events emitted by the Codex host (slice-071).
-
-This is the Codex translator's output boundary: every notification coming back
-from ``codex app-server`` is reduced to one of these events before it leaves
-:mod:`trowel_py.codex_host`. The frontend (slice-074) will later lift this into
-a host-neutral ``AgentEvent v1``; for now the names and envelope fields are kept
-deliberately aligned with that future contract so the migration is a rename,
-not a redesign.
-
-Field shapes trace back to the Rust protocol types in
-``app-server-protocol/src/protocol/v2/`` (``turn.rs`` / ``thread.rs`` /
-``item.rs``) at Codex 0.144.0 — see ``tests/codex_host/fixtures`` for the
-matching real recordings. Nothing here is invented from documentation prose.
-
-Design rules:
-* Events are immutable (``frozen=True`` dataclasses) — once emitted they are
-  handed to queues/reducers and must not be mutated in place.
-* Every event carries the trowel ``session_id`` it belongs to and a per-session
-  monotonically increasing ``seq`` (spec §2: routing id on every event).
-* Native ids (``thread_id``/``turn_id``/``item_id``) are surfaced when the
-  source notification provides them, so the UI can correlate deltas with the
-  final completed item.
-"""
+"""定义 Codex host 的内部事件边界。"""
 
 from __future__ import annotations
 
@@ -29,99 +7,55 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping
 
-# An immutable empty mapping reused as the default payload so events without a
-# payload do not each allocate a fresh dict (and cannot be mutated by callers).
+# 共享只读空映射，避免为无 payload 的事件重复分配字典。
 _EMPTY_PAYLOAD: Mapping[str, Any] = MappingProxyType({})
 
 
 class CodexEventType(str, Enum):
-    """Discriminator for every Codex event the translator can emit.
+    """Codex translator 与 manager 使用的内部事件判别符。"""
 
-    Values mirror the baseline event names planned for ``AgentEvent v1``
-    (slice-074) so a future adapter does not have to rename them.
-    """
-
-    # Lifecycle of a session / turn.
     SESSION_STARTED = "session_started"
     MODEL_CHANGED = "model_changed"
     TURN_STARTED = "turn_started"
-    # User echo — emitted locally when ``turn/start`` is accepted (spec §2).
+    # turn/start 接受后由 session 在本地回显。
     USER = "user"
-    # Streaming assistant output.
     ASSISTANT_DELTA = "assistant_delta"
     ASSISTANT_MESSAGE = "assistant_message"
-    # Streaming reasoning (``item/reasoningText/delta`` + completed item).
     REASONING_DELTA = "reasoning_delta"
-    # Command / tool lifecycle. ``tool_*`` covers ``commandExecution`` items
-    # (file changes / MCP / dynamic tools stay behind capability flags until
-    # their own slices record real fixtures).
     TOOL_STARTED = "tool_started"
     TOOL_PROGRESS = "tool_progress"
     TOOL_COMPLETED = "tool_completed"
-    # User-visible app-server server request lifecycle (slice-075). The
-    # manager synthesises these events; they are not notifications translated
-    # by CodexTranslator.
+    # server request 由 manager 合成，不来自 translator 通知。
     APPROVAL_REQUEST = "approval_request"
-    # Token usage, host status and terminal turn states.
     USAGE_UPDATED = "usage_updated"
     STATUS = "status"
     FINISHED = "finished"
     INTERRUPTED = "interrupted"
     ERROR = "error"
-    # Account-level rate-limit update (slice-077). Global notification — no
-    # thread id. Source: account.rs:518 AccountRateLimitsUpdatedNotification.
+    # 账户级通知没有 thread_id，由 manager 向全部已注册 session 广播。
     RATE_LIMIT_UPDATED = "rate_limit_updated"
-    # slice-077 capability=false skeletons — handlers ready in the translator,
-    # not routed until each capability is activated (see slice-077.md §阶段2).
-    #   PLAN_UPDATED       — turn/plan/updated (turn.rs:426), needs todo-mcp
-    #   SUBAGENT_ACTIVITY  — item.type=subAgentActivity (item.rs:359)
-    #   COMPACTION         — item.type=contextCompaction (item.rs:388)
-    #   HOST_WARNING       — warning / guardianWarning (notification.rs:21+)
     PLAN_UPDATED = "plan_updated"
     SUBAGENT_ACTIVITY = "subagent_activity"
     COMPACTION = "compaction"
     HOST_WARNING = "host_warning"
-    # Host-level state changes (ready / degraded / host-exited).
     HOST_STATUS = "host_status"
 
 
 class HostStatusKind(str, Enum):
-    """The discrete host conditions surfaced through ``host_status`` events.
-
-    These are the externally visible conditions the UI switches on, kept
-    separate from :class:`~trowel_py.codex_host.manager.CodexHostManagerState`
-    which is the manager's internal lifecycle state machine. A manager in
-    ``degraded`` emits a ``HOST_EXITED`` status so a running turn observes a
-    concrete terminal signal, not just a state flip.
-    """
+    """前端可见的 host 状态，与 manager 内部生命周期状态分离。"""
 
     READY = "ready"
     DEGRADED = "degraded"
     HOST_EXITED = "host_exited"
-    # Reserved for slice-080 (proxy change → managed restart). Defined here so
-    # the enum is stable across slices; slice-071 never emits it.
+    # 预留状态；当前没有发射点。
     RESTARTING = "restarting"
 
 
 @dataclass(frozen=True)
 class TranslatedItem:
-    """One translated notification, before it is stamped with ids + seq.
+    """尚未绑定 trowel 会话和序号的翻译结果。
 
-    The translator is stateless and has no knowledge of which trowel session a
-    thread is bound to — it only extracts the event shape from the native
-    notification. The :class:`~trowel_py.codex_host.manager.CodexHostManager`
-    routes by ``thread_id`` and asks the owning
-    :class:`~trowel_py.codex_host.session.CodexSession` to stamp the item into
-    a full :class:`CodexEvent` with ``session_id`` and ``seq``.
-
-    Attributes:
-        type: The event discriminator.
-        thread_id: Native thread id when the source notification carried one
-            (top-level ``params.threadId``). ``None`` for global notifications.
-        turn_id: Native turn id when known (item/* and turn/* notifications).
-        item_id: Native item id when the notification is about a specific item
-            — stable across started/delta/completed so the UI can accumulate.
-        payload: Structured, read-only fields specific to ``type``.
+    manager 按 thread_id 路由，所属 session 再补 session_id 和单会话 seq。
     """
 
     type: CodexEventType
@@ -133,22 +67,7 @@ class TranslatedItem:
 
 @dataclass(frozen=True)
 class CodexEvent:
-    """A fully addressed Codex event ready for a session event queue.
-
-    Envelope fields line up with the planned ``AgentEvent v1`` schema
-    (slice-074): ``session_id`` + ``seq`` for per-session ordering, ``runtime``
-    fixed to ``"codex"`` here, and native ids for correlation.
-
-    Attributes:
-        session_id: The trowel session this event belongs to.
-        seq: Per-session monotonically increasing sequence number. The session
-            assigns it; cross-session seqs are never compared.
-        type: The event discriminator (see :class:`CodexEventType`).
-        thread_id: Native Codex thread id when known.
-        turn_id: Native Codex turn id when known.
-        item_id: Native Codex item id when known.
-        payload: Read-only per-type fields.
-    """
+    """已由 session 盖章的内部事件；seq 只在所属会话内单调。"""
 
     session_id: str
     seq: int
@@ -159,11 +78,7 @@ class CodexEvent:
     payload: Mapping[str, Any] = field(default=_EMPTY_PAYLOAD)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return a JSON-serialisable view of the event for logging / SSE.
-
-        ``payload`` is unwrapped to a plain dict so the result is directly
-        JSON-dumpable; the event itself stays immutable.
-        """
+        """返回事件字典；payload 只复制顶层映射。"""
 
         return {
             "schema": "codex-event-v1",
@@ -179,12 +94,7 @@ class CodexEvent:
 
 
 def immutable_payload(**fields: Any) -> Mapping[str, Any]:
-    """Build a read-only payload mapping from keyword fields.
-
-    Centralising this keeps every payload an immutable
-    :class:`types.MappingProxyType`, so a buggy consumer cannot mutate an event
-    in place after it has been queued.
-    """
+    """冻结 payload 的顶层键映射，不复制或冻结嵌套值。"""
 
     return MappingProxyType(dict(fields))
 
@@ -196,12 +106,7 @@ def host_status_item(
     reason: str | None = None,
     exit_code: int | None = None,
 ) -> TranslatedItem:
-    """Build a HOST_STATUS translated item.
-
-    Used by the manager when it flips ready/degraded or fans out a host-exited
-    signal to running turns — these are not translations of a single
-    notification, they are synthesised from transport state.
-    """
+    """把 manager/transport 状态合成为 HOST_STATUS 中间事件。"""
 
     payload_fields: dict[str, Any] = {"status": status.value}
     if reason is not None:

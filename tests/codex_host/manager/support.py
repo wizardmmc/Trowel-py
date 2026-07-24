@@ -79,14 +79,14 @@ def _manager(
 def _model_list_fixture() -> dict:
     """读取来自 Codex 0.144.0 的脱敏 ``model/list`` 真实录制。"""
 
-    path = Path(__file__).parent / "fixtures" / "model-list-0.144.0.json"
+    path = Path(__file__).parent.parent / "fixtures" / "model-list-0.144.0.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _server_request_fixture(name: str) -> dict:
     """读取一份脱敏的真实 server request 录制。"""
 
-    path = Path(__file__).parent / "fixtures" / name
+    path = Path(__file__).parent.parent / "fixtures" / name
     return json.loads(path.read_text(encoding="utf-8"))
 
 

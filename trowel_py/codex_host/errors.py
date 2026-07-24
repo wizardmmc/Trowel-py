@@ -1,10 +1,7 @@
-"""Exception hierarchy for the Codex app-server transport.
+"""Codex app-server transport 的异常层级。
 
-Every failure that closes the transport or fails a pending request raises a
-subclass of :class:`CodexHostError`, so callers can catch the whole family
-without swallowing unrelated bugs. The split mirrors the failure modes the
-slice-070 spec calls out: process exit, bad messages, version drift and
-unsupported server-initiated requests.
+该错误族覆盖 app-server 明确返回的失败、协议偏离、版本不兼容和安全拒绝；发送
+异常、timeout 与任务取消仍保留 Python 原生异常语义。
 """
 
 from __future__ import annotations
@@ -13,66 +10,38 @@ from typing import Any
 
 
 class CodexHostError(Exception):
-    """Base class for every Codex app-server transport failure."""
+    pass
 
 
 class TransportClosedError(CodexHostError):
-    """The app-server process is gone or the transport was closed.
+    """app-server 已退出或 transport 已关闭。
 
-    Raised both when a caller invokes a method after close and when the
-    reader task observes EOF / a non-zero exit. Every pending request fails
-    with this exception so no future is left waiting forever (spec C-5).
+    关闭后调用、reader 读到 EOF 或进程异常退出都会触发此错误；所有 pending
+    request 也会一并失败，避免 Future 永久等待。
     """
 
     def __init__(self, message: str, *, exit_code: int | None = None) -> None:
-        """Stamp the optional process exit code for diagnostics.
-
-        Args:
-            message: Human-readable description of why the transport closed.
-            exit_code: The app-server exit code when observable, else None.
-        """
-
         super().__init__(message)
         self.exit_code = exit_code
 
 
 class ProtocolViolationError(CodexHostError):
-    """A server message did not match the JSON-RPC shapes the protocol allows.
+    """app-server 明确返回错误，或其 payload 偏离已验证结构。
 
-    Covers: unparseable JSON, a non-object payload, a response whose id is not
-a pending request, or a duplicate response id. Per spec §2 these are recorded
-    as diagnostics; the ones that signal real protocol inconsistency escalate
-    the transport to failed.
+    translator、catalog 与 session 使用此异常拒绝无法安全映射的数据，但异常本身
+    不会关闭 transport。
     """
 
     def __init__(self, message: str, *, payload: Any = None) -> None:
-        """Keep the offending payload for redacted diagnostic logging.
-
-        Args:
-            message: What was wrong with the message.
-            payload: The raw parsed object (already redacted before logging).
-        """
-
+        """保留原始 payload 供诊断；写日志前必须由调用者脱敏。"""
         super().__init__(message)
         self.payload = payload
 
 
 class VersionMismatchError(CodexHostError):
-    """The installed Codex CLI is outside the validated version window.
-
-    Attributes:
-        installed: The version string read from ``codex --version``.
-        supported: The version this transport was validated against.
-    """
+    """已安装 Codex CLI 不在验证过的版本范围内。"""
 
     def __init__(self, installed: str, supported: str) -> None:
-        """Store both versions so callers can surface them in the UI.
-
-        Args:
-            installed: The version reported by the installed ``codex`` binary.
-            supported: The pinned baseline version (see ``protocol.SUPPORTED``).
-        """
-
         self.installed = installed
         self.supported = supported
         super().__init__(
@@ -82,25 +51,13 @@ class VersionMismatchError(CodexHostError):
 
 
 class ServerRequestUnsupportedError(CodexHostError):
-    """A server-initiated request had no registered handler.
+    """handler 安全拒绝 server request 的内部信号。
 
-    Per spec C-3 the transport never auto-approves an unknown bidirectional
-    request. It replies with a structured JSON-RPC error and raises this
-    locally so the caller can decide whether to log or surface it.
-
-    Attributes:
-        method: The server request method name.
-        request_id: The server request id (echoed in the error response).
+    transport 捕获此异常并回复 JSON-RPC method-not-found；它不会逃到外层调用者，
+    也绝不将未知请求自动批准。
     """
 
     def __init__(self, method: str, request_id: object) -> None:
-        """Record the method and id for correlation.
-
-        Args:
-            method: The unsupported ``method`` from the server request.
-            request_id: The ``id`` the server assigned to the request.
-        """
-
         self.method = method
         self.request_id = request_id
         super().__init__(

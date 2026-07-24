@@ -103,7 +103,7 @@ def test_warning_rejects_non_string_message() -> None:
         CodexTranslator()._on_warning({"threadId": "t-1", "message": 123})
 
 
-def test_slice077_skeleton_methods_are_capability_false() -> None:
+def test_untranslated_skeleton_methods_remain_capability_false() -> None:
 
     translator = CodexTranslator()
     ignored = translator.ignored_methods

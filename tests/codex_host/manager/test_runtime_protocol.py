@@ -7,7 +7,7 @@ from trowel_py.codex_host import (
     CodexSessionConfig,
 )
 from tests.codex_host._fake import FakeAppServer, Step
-from tests.codex_host._manager_support import (
+from tests.codex_host.manager.support import (
     _init_resp,
     _manager,
     _model_list_fixture,

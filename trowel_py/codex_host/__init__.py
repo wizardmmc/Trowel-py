@@ -1,12 +1,7 @@
-"""trowel_py.codex_host — Codex app-server host for trowel (M9).
+"""Trowel 的 Codex app-server 主机公开入口。
 
-slice-070 shipped the transport kernel (:class:`AppServerClient`).
-slice-071 layers the shared :class:`CodexHostManager`, lightweight
-:class:`CodexSession` thread bindings and the Codex event translator on top.
-
-One backend process holds one manager, one manager holds one app-server
-process, and many Codex threads share that one process — routing every
-notification back to the owning session by ``threadId``.
+一个后端进程持有一个 manager 和一个 app-server 进程；多个 Codex thread 共享该
+进程，并按 ``threadId`` 将通知路由到所属 session。
 """
 
 from __future__ import annotations
@@ -48,31 +43,26 @@ from trowel_py.codex_host.transport import AppServerClient
 from trowel_py.codex_host.version import read_codex_version
 
 __all__ = [
-    # transport (slice-070)
     "AppServerClient",
     "ClientInfo",
     "MessageKind",
     "SUPPORTED_CODEX_VERSION",
     "classify_server_message",
     "read_codex_version",
-    # events + translator (slice-071)
     "CodexEvent",
     "CodexEventType",
     "CodexTranslator",
     "HostStatusKind",
     "TranslatedItem",
-    # session (slice-071)
     "CodexSession",
     "CodexSessionConfig",
     "CodexSessionState",
     "ThreadBinding",
     "TurnConflictError",
     "parse_thread_binding",
-    # manager (slice-071)
     "CodexHostManager",
     "CodexHostManagerState",
     "OrphanDiagnostic",
-    # errors
     "CodexHostError",
     "ProtocolViolationError",
     "ServerRequestUnsupportedError",

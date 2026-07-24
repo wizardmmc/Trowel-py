@@ -1,5 +1,3 @@
-"""slice-075 pending-request lifecycle tests using recorded Codex choices."""
-
 from __future__ import annotations
 
 import json
@@ -20,16 +18,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _recorded_command() -> dict:
-    """Load the real 0.144.0 command approval request fixture."""
-
     return json.loads(
         (FIXTURES / "server-request-approval.jsonl").read_text(encoding="utf-8")
     )
 
 
 def _create_command(registry: PendingRequestRegistry):
-    """Register one real command request under a deterministic owner."""
-
     message = _recorded_command()
     return registry.create(
         native_request_id=message["id"],
@@ -41,8 +35,6 @@ def _create_command(registry: PendingRequestRegistry):
 
 
 async def test_resolve_preserves_native_decision_and_is_single_use() -> None:
-    """C-2/C-4: one answer resolves the original native payload exactly once."""
-
     registry = PendingRequestRegistry()
     pending = _create_command(registry)
 
@@ -56,25 +48,19 @@ async def test_resolve_preserves_native_decision_and_is_single_use() -> None:
 
 
 async def test_structured_execpolicy_choice_round_trips_recorded_object() -> None:
-    """C-5: the named UI choice resolves to the exact advertised object."""
-
     registry = PendingRequestRegistry()
     pending = _create_command(registry)
 
-    registry.resolve(
-        "session-a", pending.request_id, "acceptWithExecpolicyAmendment"
-    )
+    registry.resolve("session-a", pending.request_id, "acceptWithExecpolicyAmendment")
 
     response = await pending.response
     assert response["decision"] == pending.available_decisions[1]
-    assert "execpolicy_amendment" in response["decision"][
-        "acceptWithExecpolicyAmendment"
-    ]
+    assert (
+        "execpolicy_amendment" in response["decision"]["acceptWithExecpolicyAmendment"]
+    )
 
 
 async def test_wrong_owner_and_unadvertised_decision_are_rejected() -> None:
-    """C-3/C-5: another session and wire-only decline cannot answer the card."""
-
     registry = PendingRequestRegistry()
     pending = _create_command(registry)
 
@@ -86,8 +72,6 @@ async def test_wrong_owner_and_unadvertised_decision_are_rejected() -> None:
 
 
 async def test_expire_safely_declines_and_host_close_invalidates_generation() -> None:
-    """C-1/C-6: timeout declines; host close leaves old ids permanently read-only."""
-
     registry = PendingRequestRegistry()
     expired = _create_command(registry)
     registry.expire(expired.request_id)
@@ -110,8 +94,6 @@ async def test_expire_safely_declines_and_host_close_invalidates_generation() ->
 
 
 async def test_public_id_contains_connection_generation() -> None:
-    """C-6: a reused native id in a new connection cannot collide."""
-
     registry = PendingRequestRegistry()
     first = _create_command(registry)
     second = registry.create(

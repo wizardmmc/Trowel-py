@@ -1,16 +1,4 @@
-"""Fixture provenance + schema-baseline traceability (spec §4 + C-4).
-
-The recordings under ``fixtures/`` are not hand-written — they are redacted
-slices of the real 2026-07-18 spike. These tests pin that contract:
-
-* every fixture line classifies into the JSON-RPC bucket its filename claims;
-* no fixture carries a secret or a user-specific path (C-6);
-* every notification method a fixture uses is present in the schema baseline
-  generated from ``codex app-server generate-json-schema`` on 0.144.0 (C-4 —
-  field traceability, not memory);
-* the method set ``protocol.KNOWN_SERVER_REQUEST_METHODS`` is reflected in the
-  same baseline, so the two cannot drift silently.
-"""
+"""Codex 录制 fixture 的消息分类、协议来源与隐私门禁。"""
 
 from __future__ import annotations
 
@@ -27,20 +15,18 @@ from trowel_py.codex_host.protocol import (
 
 _SECRET_RE = re.compile(
     r"Bearer|sk-[A-Za-z0-9]{8}|authorization|api[_-]?key|access[_-]?token|"
-    r"/Users/[A-Za-z0-9._-]+|/var/folders",
+    r"/Users/[A-Za-z0-9._-]+|/var/folders|"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
     re.IGNORECASE,
 )
 
 
 def _read_jsonl(path) -> list[dict]:
-    """Parse every non-blank line of a JSONL fixture into a dict."""
-
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def test_initialize_response_fixture_classifies_as_response(fixtures_dir) -> None:
-    """The initialize recording is a JSON-RPC response (id + result)."""
-
     messages = _read_jsonl(fixtures_dir / "initialize-response.jsonl")
     assert messages, "initialize-response fixture is empty"
     for message in messages:
@@ -48,10 +34,8 @@ def test_initialize_response_fixture_classifies_as_response(fixtures_dir) -> Non
 
 
 def test_notifications_fixture_classifies_as_notification(fixtures_dir) -> None:
-    """Every recorded notification has method + params, no id."""
-
     messages = _read_jsonl(fixtures_dir / "notifications.jsonl")
-    assert len(messages) >= 8  # the pack ships ≥8 distinct method shapes
+    assert len(messages) >= 8
     for message in messages:
         assert classify_server_message(message) is MessageKind.NOTIFICATION
 
@@ -59,8 +43,6 @@ def test_notifications_fixture_classifies_as_notification(fixtures_dir) -> None:
 def test_server_request_approval_fixture_classifies_as_server_request(
     fixtures_dir,
 ) -> None:
-    """The approval recording is a bidirectional server request (method + id)."""
-
     messages = _read_jsonl(fixtures_dir / "server-request-approval.jsonl")
     assert len(messages) == 1
     message = messages[0]
@@ -69,11 +51,7 @@ def test_server_request_approval_fixture_classifies_as_server_request(
 
 
 def test_file_approval_fixture_classifies_as_server_request(fixtures_dir) -> None:
-    """The slice-075 file recording is a real bidirectional request."""
-
-    messages = _read_jsonl(
-        fixtures_dir / "server-request-file-approval-075.jsonl"
-    )
+    messages = _read_jsonl(fixtures_dir / "server-request-file-approval-075.jsonl")
     assert len(messages) == 1
     message = messages[0]
     assert classify_server_message(message) is MessageKind.SERVER_REQUEST
@@ -87,19 +65,18 @@ def test_file_approval_fixture_classifies_as_server_request(fixtures_dir) -> Non
         "notifications",
         "server-request-approval",
         "server-request-file-approval-075",
+        "file-change-add-modify-076",
+        "file-change-declined-076",
+        "file-change-delete-076",
     ],
 )
 def test_fixtures_carry_no_secrets_or_user_paths(fixtures_dir, name: str) -> None:
-    """C-6: no auth, token or user-specific path survives into a fixture."""
-
     text = (fixtures_dir / f"{name}.jsonl").read_text()
     match = _SECRET_RE.search(text)
     assert match is None, f"{name}.jsonl contains a secret/path pattern: {match!r}"
 
 
 def test_notification_methods_are_in_schema_baseline(fixtures_dir) -> None:
-    """C-4: every recorded notification method is advertised by the 0.144.0 schema."""
-
     baseline = (fixtures_dir / "schema-baseline-0.144.0.txt").read_text()
     messages = _read_jsonl(fixtures_dir / "notifications.jsonl")
     for message in messages:
@@ -109,8 +86,6 @@ def test_notification_methods_are_in_schema_baseline(fixtures_dir) -> None:
 
 
 def test_known_server_request_methods_are_in_schema_baseline(fixtures_dir) -> None:
-    """The protocol constant set must match the schema baseline (anti-drift)."""
-
     baseline = (fixtures_dir / "schema-baseline-0.144.0.txt").read_text()
     missing = [m for m in KNOWN_SERVER_REQUEST_METHODS if m not in baseline]
     assert missing == [], f"KNOWN_SERVER_REQUEST_METHODS not in baseline: {missing}"

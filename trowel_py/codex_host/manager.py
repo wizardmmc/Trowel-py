@@ -1,20 +1,7 @@
-"""Shared Codex app-server manager (slice-071).
+"""管理共享 Codex app-server，并按 threadId 路由原生通知。
 
-One :class:`CodexHostManager` owns one app-server process for the whole trowel
-backend and routes native notifications to the right
-:class:`~trowel_py.codex_host.session.CodexSession` by ``threadId``. Sessions
-are cheap bookkeeping; the transport is the expensive shared resource
-(spec C-1 — never one app-server per session).
-
-Lifecycle in a sentence: the first ``send`` lazily starts the client, every
-notification is routed and translated, and an unexpected EOF flips the manager
-to ``degraded`` while every running turn observes a concrete ``host_exited``
-terminal event (spec §4 — never leave the UI on a spinner).
-
-The manager is transport-agnostic: it talks to anything that implements the
-:class:`~trowel_py.codex_host.transport.AppServerClient` surface. Tests inject
-a client wired to :class:`~tests.codex_host._fake.FakeAppServer`; production
-uses the real subprocess client.
+首个请求惰性启动 transport；意外 EOF 会进入 degraded，并向在途 turn 发出
+host_exited 终态。transport 只需实现 AppServerClient 协议。
 """
 
 from __future__ import annotations
@@ -37,6 +24,7 @@ from trowel_py.codex_host.events import (
     TranslatedItem,
     immutable_payload,
 )
+from trowel_py.codex_host import manager_params
 from trowel_py.codex_host.session import CodexSession, TurnConflictError
 from trowel_py.codex_host.pending_requests import (
     PendingRequest,
@@ -48,9 +36,7 @@ from trowel_py.codex_host.transport import AppServerClient
 
 _log = logging.getLogger(__name__)
 
-# How long ``turn/start`` / ``thread/start`` may take before we give up. Real
-# ``thread/start`` is fast (<1s on the spike) but the first call waits on the
-# OpenAI login check, so leave plenty of headroom.
+# 首次请求可能包含认证检查，因此保留充足的握手时间。
 _REQUEST_TIMEOUT_S = 60.0
 _PENDING_REQUEST_TIMEOUT_S = 600.0
 
@@ -59,7 +45,7 @@ _FILE_APPROVAL_METHOD = "item/fileChange/requestApproval"
 
 
 class CodexHostManagerState(str, Enum):
-    """Manager lifecycle state (spec §1).
+    """manager 生命周期。
 
     Transitions::
 
@@ -77,20 +63,9 @@ class CodexHostManagerState(str, Enum):
 
 @dataclass(frozen=True)
 class OrphanDiagnostic:
-    """A notification we could not route to a known session.
+    """无法路由的通知诊断。
 
-    Recorded (not raised) so the manager keeps draining the bus. Aggregated in
-    :attr:`CodexHostManager.orphans` for the connection-diagnostics UI and for
-    tests (spec §3: orphan events never land on the current UI session).
-
-    Attributes:
-        method: The JSON-RPC ``method`` of the notification.
-        thread_id: Native thread id when present, else None (global notification).
-        turn_id: Native turn id when present, else None.
-        reason: Why it was orphaned — ``unknown_thread`` (threadId we have no
-            session for), ``unknown_method`` (a method the translator does not
-            map and that is not in the explicit ignore list), or
-            ``no_thread_id`` (a non-ignored notification with no threadId).
+    orphan 只记录而不抛出，避免阻塞消息总线，也绝不能进入其他会话。
     """
 
     method: str
@@ -104,7 +79,7 @@ BeforeTurnStart = Callable[[CodexSession], None]
 
 
 class CodexHostManager:
-    """Owns the shared app-server transport and the thread→session registry."""
+    """持有共享 transport 与 thread→session 路由表。"""
 
     def __init__(
         self,
@@ -113,18 +88,6 @@ class CodexHostManager:
         translator: CodexTranslator | None = None,
         pending_request_timeout_s: float = _PENDING_REQUEST_TIMEOUT_S,
     ) -> None:
-        """Store configuration; the client is created lazily on first use.
-
-        Args:
-            client_factory: Builds the :class:`AppServerClient` on demand.
-                Production leaves it ``None`` (a default client with the version
-                lock on); tests inject one wired to a fake app-server.
-            translator: The notification translator. A shared default is fine —
-                it is stateless.
-            pending_request_timeout_s: Seconds before an unanswered approval is
-                safely declined and marked expired.
-        """
-
         self._client_factory: ClientFactory = (
             client_factory or self._default_client_factory
         )
@@ -133,12 +96,8 @@ class CodexHostManager:
         self._state: CodexHostManagerState = CodexHostManagerState.STOPPED
         self._sessions: dict[str, CodexSession] = {}
         self._thread_to_session: dict[str, CodexSession] = {}
-        # Trowel sessions whose native thread is already loaded in the current
-        # app-server connection. A later turn in the same connection goes
-        # straight to ``turn/start``; ``thread/resume`` is only needed after a
-        # fresh connection starts. This is session-scoped rather than just a
-        # thread-id set so two live trowel sessions cannot silently share one
-        # attachment and steal each other's notification route.
+        # 只记录当前连接已加载原生 thread 的本地 session；thread 独占另由
+        # _thread_to_session 保证，重连后 attachment 必须重建。
         self._attached_session_ids: set[str] = set()
         self._orphans: list[OrphanDiagnostic] = []
         self._ready_lock: asyncio.Lock = asyncio.Lock()
@@ -148,75 +107,40 @@ class CodexHostManager:
         self._connection_generation = 0
         self._active_generation = 0
 
-    # ------------------------------------------------------------- read-only
-
     @property
     def state(self) -> CodexHostManagerState:
-        """Current manager lifecycle state."""
-
         return self._state
 
     @property
     def client(self) -> AppServerClient | None:
-        """The shared transport, or None when stopped/degraded."""
-
         return self._client
 
     @property
     def orphans(self) -> list[OrphanDiagnostic]:
-        """A snapshot copy of recorded orphan diagnostics."""
-
         return list(self._orphans)
 
     @property
     def translator(self) -> CodexTranslator:
-        """The translator in use (exposed for tests / diagnostics)."""
-
         return self._translator
 
     @property
     def connection_generation(self) -> int:
-        """The current app-server connection generation, starting at zero."""
-
         return self._active_generation
 
-    # ------------------------------------------------------- session registry
-
     def register(self, session: CodexSession) -> None:
-        """Add a session to the registry (idempotent on session id).
-
-        Thread binding is recorded separately once ``thread/start`` /
-        ``thread/resume`` returns, so a freshly registered session with no
-        binding yet simply does not receive notifications until its first send.
-        """
+        """注册本地 session（同 id 覆盖）；thread 路由由 send 的挂载流程管理。"""
 
         self._sessions[session.session_id] = session
 
     def get_session(self, session_id: str) -> CodexSession | None:
-        """Look up a session by trowel session id."""
-
         return self._sessions.get(session_id)
 
     @property
     def session_ids(self) -> tuple[str, ...]:
-        """Snapshot of registered trowel session ids (slice-072).
-
-        Read-only view so the host-neutral Session Hub can count live Codex
-        sessions without reaching into the private ``_sessions`` dict. Returns
-        a tuple (immutable) so a caller cannot mutate the registry through it.
-        """
-
         return tuple(self._sessions.keys())
 
     def unregister(self, session_id: str) -> CodexSession | None:
-        """Drop a session from the registry + its thread route (slice-072).
-
-        Returns the removed session, or None if it was not registered. Used by
-        the Session Hub when a Codex session is deleted so the manager stops
-        routing notifications to it. The app-server thread itself is NOT
-        touched — Codex threads persist server-side; this only drops trowel's
-        bookkeeping (an idle thread re-registers on the next resume).
-        """
+        """注销本地 session、关闭其 pending request 并移除路由，不删除原生 thread。"""
 
         session = self._sessions.pop(session_id, None)
         for request in self._pending_requests.close_session(session_id):
@@ -228,29 +152,18 @@ class CodexHostManager:
         return session
 
     def session_for_thread(self, thread_id: str) -> CodexSession | None:
-        """Look up a session by native thread id (the routing direction)."""
-
         return self._thread_to_session.get(thread_id)
 
     def _require_registered(self, session: CodexSession) -> None:
-        """Reject work whose session was deleted or replaced while awaiting I/O."""
+        """拒绝跨 await 期间已被删除或替换的 session。"""
 
         if self._sessions.get(session.session_id) is not session:
             raise TurnConflictError(
                 f"session {session.session_id} is no longer registered"
             )
 
-    # ------------------------------------------------------------- lifecycle
-
     async def ensure_ready(self) -> AppServerClient:
-        """Lazily start the shared client, returning it ready to use.
-
-        Concurrent callers serialise on ``_ready_lock``; only the first starts
-        the client, the rest observe ``READY`` and return. After an EOF the
-        state is ``DEGRADED`` and the client is cleared, so the next
-        ``ensure_ready`` restarts a fresh process (spec §4: recovery is
-        observable — every session gets a ``READY`` host-status flip).
-        """
+        """串行化惰性启动；每次成功建连（含首次）都广播 READY。"""
 
         async with self._ready_lock:
             if (
@@ -260,8 +173,7 @@ class CodexHostManager:
             ):
                 return self._client
             self._state = CodexHostManagerState.STARTING
-            # Every app-server process has its own in-memory thread registry.
-            # Bindings survive a restart, attachments do not.
+            # binding 跨连接保留，app-server 内存中的 attachment 不保留。
             self._attached_session_ids.clear()
             client = self._client_factory()
             self._connection_generation += 1
@@ -278,9 +190,7 @@ class CodexHostManager:
             client.register_unknown_server_request_handler(
                 partial(self._handle_unknown_server_request, generation)
             )
-            # Install the new identity before its async handshake. A late EOF
-            # watcher from the previous client will then fail the identity
-            # check instead of degrading sessions that are already recovering.
+            # 握手前先安装新 identity，上一代迟到的 EOF 才不会降级新连接。
             self._client = client
             try:
                 await client.start()
@@ -291,8 +201,6 @@ class CodexHostManager:
                 raise
             client.add_notification_listener(self._on_notification)
             self._state = CodexHostManagerState.READY
-            # Restart after degraded: surface a READY flip so the UI can leave
-            # its "host degraded" banner (spec §4 — recovery must be visible).
             self._broadcast_host_status(HostStatusKind.READY, reason="ready")
             self._eof_watcher = asyncio.create_task(
                 self._eof_watcher_loop(), name="codex-host-eof-watcher"
@@ -300,8 +208,6 @@ class CodexHostManager:
             return client
 
     async def close(self) -> None:
-        """Tear down the shared client. Safe to call when already stopped."""
-
         self._state = CodexHostManagerState.CLOSING
         self._close_generation_requests(
             self._active_generation, reason="app-server manager closed"
@@ -317,20 +223,14 @@ class CodexHostManager:
                 await watcher
             except asyncio.CancelledError:
                 pass
-            except Exception:  # noqa: BLE001 — log, do not let close propagate
+            except Exception:  # noqa: BLE001 — 关闭流程只记录 watcher 异常
                 _log.debug("eof watcher raised during close", exc_info=True)
         self._client = None
         self._attached_session_ids.clear()
         self._state = CodexHostManagerState.STOPPED
 
-    # ------------------------------------------------------------ turn flow
-
     async def list_models(self) -> list[dict[str, Any]]:
-        """Return every visible native model, following all result cursors.
-
-        The server's row and effort order is preserved. Unknown model ids and
-        effort values are deliberately passed through by the catalog parser.
-        """
+        """翻页返回全部可见模型，保留原生顺序与未知枚举值。"""
 
         client = await self.ensure_ready()
         rows: list[dict[str, Any]] = []
@@ -354,21 +254,12 @@ class CodexHostManager:
         *,
         before_turn_start: BeforeTurnStart | None = None,
     ) -> str:
-        """Drive one turn: ensure ready → attach thread if needed → turn/start.
+        """执行一个 turn：确保连接、按需挂载 thread，再启动原生 turn。
 
-        A new app-server connection starts or resumes the native thread once;
-        later turns on that connection reuse the loaded thread directly.
-        ``before_turn_start`` runs synchronously after attachment and before
-        native work begins, allowing the caller to persist the binding without
-        creating an untracked live turn on failure.
-
-        Returns the native ``turn_id`` (also surfaced via the TURN_STARTED
-        event). The caller then drains :meth:`CodexSession.drain` or iterates
-        :meth:`CodexSession.events` to consume the stream.
-
-        Raises:
-            TurnConflictError: If the session already has a running turn.
-            TransportClosedError: If the transport closed mid-send.
+        同一 session 的 thread 在每个连接代际只 start/resume 一次，后续
+        turn 复用已加载的 thread。
+        ``before_turn_start`` 在挂载后、原生工作前同步执行，确保持久化
+        失败时不会留下失去追踪的 turn。返回原生 ``turn_id``。
         """
 
         self._require_registered(session)
@@ -381,10 +272,8 @@ class CodexHostManager:
             if binding is not None:
                 owner = self._thread_to_session.get(binding.thread_id)
                 if owner is None:
-                    # Reserve synchronously before the first resume await. Two
-                    # concurrent sessions targeting the same native thread
-                    # therefore cannot both pass the ownership check and race
-                    # to overwrite the notification route.
+                    # 首次 resume await 前同步占位，避免两个 session
+                    # 同时取得同一原生 thread 的通知路由。
                     self._thread_to_session[binding.thread_id] = session
                     reserved_thread_id = binding.thread_id
                 elif owner is not session:
@@ -415,8 +304,7 @@ class CodexHostManager:
             assert session.binding is not None
             self._require_registered(session)
             self._thread_to_session[session.binding.thread_id] = session
-            # The thread is now loaded in this connection. Keep its route even
-            # if the following turn/start fails so a retry can reuse it.
+            # 挂载已经成立；turn/start 失败时仍保留路由供重试复用。
             reserved_thread_id = None
             if before_turn_start is not None:
                 before_turn_start(session)
@@ -436,17 +324,15 @@ class CodexHostManager:
             try:
                 self._require_registered(session)
             except TurnConflictError:
-                # Deletion can race with the turn/start response. Codex has
-                # accepted the turn, so explicitly interrupt it before
-                # rejecting the local start; otherwise invisible native work
-                # would continue with no registered route or consumer.
+                # 仅处理 session 在 turn/start await 中被删除的竞态：拿到
+                # turn_id 说明原生端已接收，必须中断已无消费者的隐形任务。
                 try:
                     await client.request(
                         "turn/interrupt",
                         {"threadId": session.binding.thread_id, "turnId": turn_id},
                         timeout=_REQUEST_TIMEOUT_S,
                     )
-                except Exception:  # noqa: BLE001 — preserve registration error
+                except Exception:  # noqa: BLE001 — 保留原注册状态错误
                     _log.warning(
                         "failed to interrupt turn %s for deleted session %s",
                         turn_id,
@@ -463,19 +349,13 @@ class CodexHostManager:
                 and self._thread_to_session.get(reserved_thread_id) is session
             ):
                 self._thread_to_session.pop(reserved_thread_id, None)
-            # The session clears ``_sending`` itself on success (record_turn_started);
-            # any failure path must release the reservation or the session is
-            # stuck refusing future sends.
+            # 只撤销尚未 attach 的临时路由占位；attach 后的路由保留。
+            # 所有失败都需释放 _sending，成功路径由 record_turn_started 清除。
             session.abort_send()
             raise
 
     async def interrupt(self, session: CodexSession) -> None:
-        """Send ``turn/interrupt`` for the session's current turn.
-
-        No-op when the session is not running — the manager only forwards the
-        request; the terminal state still comes from the native
-        ``turn/completed.status`` (spec C-4).
-        """
+        """请求中断当前 turn；终态仍以原生 ``turn/completed.status`` 为准。"""
 
         binding = session.binding
         turn_id = session.current_turn_id
@@ -487,10 +367,7 @@ class CodexHostManager:
             {"threadId": binding.thread_id, "turnId": turn_id},
             timeout=_REQUEST_TIMEOUT_S,
         )
-        # The recorded native path interrupts while the approval is still
-        # pending. Resolve the parked server request only after app-server has
-        # acknowledged that interrupt; answering cancel first can terminate the
-        # turn before this explicit interrupt reaches it.
+        # 原生中断确认后再取消审批；反序会让 turn 先结束，中断请求无法抵达。
         for request in self._pending_requests.resolve_turn_with_cancel(
             session.session_id, turn_id
         ):
@@ -499,16 +376,7 @@ class CodexHostManager:
     def answer_request(
         self, session_id: str, request_id: str, decision: str
     ) -> PendingRequest:
-        """Resolve one pending approval after owner and decision validation.
-
-        Args:
-            session_id: Trowel session making the decision.
-            request_id: Public generation-scoped request id.
-            decision: One key advertised by the native request.
-
-        Returns:
-            The answered request.
-        """
+        """校验归属与决策后，一次性解决待处理审批。"""
 
         request = self._pending_requests.resolve(session_id, request_id, decision)
         session = self._sessions.get(session_id)
@@ -517,8 +385,6 @@ class CodexHostManager:
         return request
 
     def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
-        """Return retained request states for reconnect diagnostics."""
-
         return self._pending_requests.list_for_session(session_id)
 
     async def _handle_server_request(
@@ -528,7 +394,7 @@ class CodexHostManager:
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """Register a verified approval and wait for its one-shot response."""
+        """登记已验证归属的审批，并等待一次性答复。"""
 
         session = self._request_session(generation, method, native_request_id, params)
         kind = (
@@ -570,7 +436,7 @@ class CodexHostManager:
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """Surface and safely reject an unknown server-request method."""
+        """向所属 session 暴露未知请求，再安全拒绝。"""
 
         try:
             session = self._request_session(
@@ -600,7 +466,7 @@ class CodexHostManager:
         native_request_id: Any,
         params: Mapping[str, Any],
     ) -> CodexSession:
-        """Resolve a request owner within the active connection generation."""
+        """只在当前连接代际内解析请求归属。"""
 
         if generation != self._active_generation:
             raise ServerRequestUnsupportedError(method, native_request_id)
@@ -614,8 +480,6 @@ class CodexHostManager:
     def _emit_request_event(
         session: CodexSession, request: PendingRequest
     ) -> None:
-        """Queue one request lifecycle update on its owning session."""
-
         session.emit_translated(
             TranslatedItem(
                 type=CodexEventType.APPROVAL_REQUEST,
@@ -627,7 +491,7 @@ class CodexHostManager:
         )
 
     def _close_generation_requests(self, generation: int, *, reason: str) -> None:
-        """Invalidate and surface all pending requests from a dead host."""
+        """关闭失效连接代际的全部审批，并通知原所属 session。"""
 
         if generation <= 0:
             return
@@ -637,17 +501,11 @@ class CodexHostManager:
             if session is not None:
                 self._emit_request_event(session, request)
 
-    # ------------------------------------------------------- notification bus
-
     def _on_notification(self, method: str, params: Mapping[str, Any]) -> None:
-        """Sync listener: route → translate → dispatch to the owning session.
-
-        Runs on the transport's reader task, so it must not block. Translation
-        and ``put_nowait`` are both synchronous; the queue is unbounded.
-        """
+        """在 transport reader 上同步路由，不能阻塞；下游入队均为非阻塞操作。"""
 
         if method in self._translator.ignored_methods:
-            return  # capability-gated / echo — drop silently
+            return  # 能力门控或回显，无需分发
         if method in self._translator.account_level_methods:
             self._dispatch_account_level(method, params)
             return
@@ -669,8 +527,7 @@ class CodexHostManager:
         try:
             items = self._translator.translate(method, params)
         except ProtocolViolationError as exc:
-            # Drift on a mapped method — surface as a structured ERROR rather
-            # than swallowing it or killing the reader (spec: never fake success).
+            # 已映射协议发生漂移时向所属 session 报错，但不能杀死 reader。
             _log.warning("translator rejected %s: %s", method, exc)
             session.emit_translated(
                 TranslatedItem(
@@ -686,9 +543,7 @@ class CodexHostManager:
             )
             return
         if not items:
-            # The translator knew the method but mapped it to nothing, and it
-            # is not in the explicit ignore list — record so a new method in a
-            # future recording is visible instead of silently dropped.
+            # 非忽略方法未产出事件时留诊断，避免协议变化被静默丢弃。
             self._record_orphan(
                 method,
                 thread_id,
@@ -702,18 +557,9 @@ class CodexHostManager:
     def _dispatch_account_level(
         self, method: str, params: Mapping[str, Any]
     ) -> None:
-        """Translate an account-level notification and fan out to all sessions.
+        """翻译无 ``threadId`` 的账户级通知，并广播给全部已注册 session。
 
-        Account-level notifications (``translator.account_level_methods``) carry
-        no ``threadId`` by design — they describe the OpenAI account itself
-        (slice-077: ``account/rateLimits/updated``, source ``account.rs:518``).
-        The manager broadcasts the translated items to every active Codex session
-        so each session's UI can show, e.g., the rate-limit banner.
-
-        A ``ProtocolViolationError`` is logged but not surfaced to any session:
-        no single session owns an account-level notification, and drift here
-        should be visible to operators (log) rather than polluting every session
-        queue with an error.
+        此类通知没有唯一归属；协议错误只记录日志，避免污染所有事件队列。
         """
 
         try:
@@ -730,8 +576,6 @@ class CodexHostManager:
     def _record_orphan(
         self, method: str, thread_id: str | None, turn_id: str | None, reason: str
     ) -> None:
-        """Append one orphan diagnostic and log it at debug level."""
-
         diag = OrphanDiagnostic(
             method=method, thread_id=thread_id, turn_id=turn_id, reason=reason
         )
@@ -744,14 +588,8 @@ class CodexHostManager:
             reason,
         )
 
-    # ----------------------------------------------------------- host events
-
     async def _eof_watcher_loop(self) -> None:
-        """Wait for the transport to close, then fan out host-exited.
-
-        Cancelling the client (``close``) sets the event too — that path
-        observes ``CLOSING`` and returns without fanning out a degraded signal.
-        """
+        """等待 transport 关闭；主动关闭不广播 degraded。"""
 
         client = self._client
         if client is None:
@@ -760,7 +598,7 @@ class CodexHostManager:
             await client.wait_closed()
         except asyncio.CancelledError:
             return
-        except Exception:  # noqa: BLE001 — wait_closed does not raise, but guard anyway
+        except Exception:  # noqa: BLE001 — 防御未声明的 transport 异常
             _log.debug("wait_closed raised", exc_info=True)
             return
         if self._state is CodexHostManagerState.CLOSING:
@@ -768,12 +606,10 @@ class CodexHostManager:
         await self._on_unexpected_exit(client)
 
     async def _on_unexpected_exit(self, client: AppServerClient) -> None:
-        """Flip to degraded and give every running turn a host-exited event."""
+        """进入 degraded，并终止所有仍在途的 turn。"""
 
         if client is not self._client:
-            # A previous connection's watcher may return after recovery has
-            # already installed a new client. Never let that stale EOF degrade
-            # or detach the current connection.
+            # 旧 watcher 可能晚于新连接返回，不能让陈旧 EOF 降级当前连接。
             _log.debug("ignoring stale codex host exit")
             return
         exit_code = client.last_exit_code
@@ -789,10 +625,8 @@ class CodexHostManager:
         if stderr_tail:
             reason = f"{reason}; stderr={stderr_tail!r}"
         for session in self._sessions.values():
-            # Any session with an in-flight turn (RUNNING, or parked in the
-            # begin_send → record_turn_started window) gets a concrete
-            # HOST_EXITED terminal so the UI is never stuck and the session
-            # is not left with ``_sending`` pinned (review H-2).
+            # 在途包括 begin_send 到 record_turn_started 的窗口；二者都需
+            # HOST_EXITED 释放终态和发送占位，空闲 session 只接收状态变化。
             if session.has_in_flight_turn:
                 session.mark_host_exited(reason, exit_code=exit_code)
             else:
@@ -802,73 +636,18 @@ class CodexHostManager:
     def _broadcast_host_status(
         self, status: HostStatusKind, *, reason: str | None
     ) -> None:
-        """Push a non-terminal host-status flip to every registered session."""
-
         for session in self._sessions.values():
             session.emit_host_status(status, reason=reason)
 
-    # ------------------------------------------------------------- params I/O
-
     @staticmethod
     def _default_client_factory() -> AppServerClient:
-        """Build the production client (version lock on, no recorder by default)."""
-
         return AppServerClient()
 
     def _thread_start_params(self, session: CodexSession) -> dict[str, Any]:
-        """Build ``thread/start`` params from the session config.
-
-        Field names match ``ThreadStartParams`` in ``v2/thread.rs``. Only the
-        keys slice-071 uses are set; ``developerInstructions`` is the raw pipe
-        for M/P injection (slice-078 fills it with real content).
-        slice-078: when ``trowel_memory_mcp`` is set, its server definition
-        rides under ``config.mcp_servers`` so the app-server spawns the memory
-        MCP for this thread (memory-on path); a memory-off session leaves
-        ``config`` unset, so no trowel MCP is attached (C-3).
-        """
-
-        config = session.config
-        params: dict[str, Any] = {
-            "cwd": config.workdir,
-            "ephemeral": config.ephemeral,
-        }
-        if config.approval_policy is not None:
-            params["approvalPolicy"] = config.approval_policy
-        if config.sandbox is not None:
-            params["sandbox"] = config.sandbox
-        if config.model is not None:
-            params["model"] = config.model
-        if config.developer_instructions is not None:
-            params["developerInstructions"] = config.developer_instructions
-        if config.trowel_memory_mcp is not None:
-            params["config"] = {
-                "mcp_servers": config.trowel_memory_mcp.to_thread_config()
-            }
-        return params
+        return manager_params.thread_start_params(session)
 
     def _thread_resume_params(self, session: CodexSession) -> dict[str, Any]:
-        """Build ``thread/resume`` params — thread id + re-attached memory MCP.
-
-        slice-078 HIGH-1 (codex review): app-server persists model/provider/
-        effort in the thread metadata but NOT the MCP config, so a memory-on
-        thread resumed after an app-server restart would silently lose its
-        memory MCP — turning a frozen memory-on condition into an unintended
-        memory-off. Re-attach the same server declared at ``thread/start``
-        (C-2: the M/P *condition* is unchanged; this restores the runtime
-        capability that the condition requires). The real thread_id is known
-        here, so it is stamped as ``TROWEL_NATIVE_SESSION_ID`` (unlike the
-        fresh start path, which leaves it empty).
-        """
-
-        assert session.binding is not None
-        params: dict[str, Any] = {"threadId": session.binding.thread_id}
-        if session.config.trowel_memory_mcp is not None:
-            params["config"] = {
-                "mcp_servers": session.config.trowel_memory_mcp.to_thread_config(
-                    native_session_id=session.binding.thread_id
-                )
-            }
-        return params
+        return manager_params.thread_resume_params(session)
 
     @staticmethod
     def _turn_start_params(
@@ -878,31 +657,19 @@ class CodexHostManager:
         model: str | None = None,
         effort: str | None = None,
     ) -> dict[str, Any]:
-        """Build ``turn/start`` params for one text user message.
-
-        ``input`` is a ``Vec<UserInput>``; a single ``Text`` element with an
-        empty ``text_elements`` list is the minimal valid shape
-        (``v2/turn.rs::UserInput::Text``).
-        """
-
-        params: dict[str, Any] = {
-            "threadId": thread_id,
-            "input": [{"type": "text", "text": text, "text_elements": []}],
-        }
-        if model is not None:
-            params["model"] = model
-        if effort is not None:
-            params["effort"] = effort
-        return params
+        return manager_params.turn_start_params(
+            thread_id,
+            text,
+            model=model,
+            effort=effort,
+        )
 
 
 def _extract_thread_id(params: Mapping[str, Any]) -> str | None:
-    """Read the top-level ``threadId`` from a notification.
+    """只读取通知顶层 ``threadId``。
 
-    Returns None for global notifications (``account/rateLimits/updated`` …)
-    and for ``thread/started`` whose id is nested under ``params.thread.id`` —
-    that nesting is why ``thread/started`` lives in the translator's ignore
-    list rather than the routing path (spec §3 routing note).
+    全局通知和 ``thread/started`` 都返回 ``None``；前者由上游分支广播，
+    后者由 translator 的忽略列表处理。
     """
 
     value = params.get("threadId")
@@ -912,21 +679,12 @@ def _extract_thread_id(params: Mapping[str, Any]) -> str | None:
 
 
 def _extract_turn_id_from_params(params: Mapping[str, Any]) -> str | None:
-    """Best-effort turn id extraction for orphan diagnostics."""
-
     value = params.get("turnId")
     return value if isinstance(value, str) and value else None
 
 
 def _extract_turn_id(turn_result: Mapping[str, Any]) -> str:
-    """Read ``turn.id`` from a ``turn/start`` response result.
-
-    ``TurnStartResponse`` is ``{ turn: Turn }`` and ``Turn.id`` is the routing
-    key for every item/* notification in the turn. Missing it is drift.
-
-    Raises:
-        ProtocolViolationError: If the response shape is wrong.
-    """
+    """提取通知路由所需的 ``turn.id``；缺失即表示协议漂移。"""
 
     turn = turn_result.get("turn")
     if not isinstance(turn, Mapping) or not turn.get("id"):

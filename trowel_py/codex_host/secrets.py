@@ -1,9 +1,8 @@
-"""Secret / environment redaction for diagnostics and raw recordings.
+"""为诊断与原始录制脱敏 secret 和环境变量。
 
-Spec C-6: auth, tokens, credential-bearing proxy strings and full env must
-never enter logs or fixtures. The recorder calls :func:`redact_message` on
-every line before it touches disk; the transport uses :func:`redact_stderr`
-on stderr excerpts that bubble up into exceptions.
+auth、token、含凭据的 proxy 字符串和完整环境变量不能进入日志或 fixture。recorder
+写盘前调用 ``redact_message``，transport 将 stderr 放入异常前调用
+``redact_stderr``。
 """
 
 from __future__ import annotations
@@ -11,9 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-# Keys whose values are scrubbed wholesale when mirroring an env dict or
-# echoing a config object into a diagnostic. Matching is case-insensitive
-# (HTTP_PROXY / http_proxy / HttpProxy all treated the same).
+# key 匹配不区分大小写，命中后整值替换。
 _SECRET_KEY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -26,49 +23,37 @@ _SECRET_KEY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r".*credential.*",
         r".*bearer.*",
         r".*cookie.*",
-        r".*proxy.*",  # proxy URLs may embed user:pass@
+        r".*proxy.*",  # proxy URL 可能包含 user:pass@
     )
 )
 
-# Inline credential patterns inside otherwise-free-form strings (URLs with
-# userinfo, ``Bearer xxx``, common key prefixes). Each is replaced by a short
-# placeholder that keeps the structure visible without leaking the value.
+# 自由文本中的凭据替换为短占位符，保留结构但不保留值。
 _INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # ``scheme://user:pass@host`` → ``scheme://user:***@host`` (pass dropped,
-    # never echoed back). Real URL passwords must be percent-encoded so the
-    # userinfo terminator ``@`` is unambiguous — we do not try to salvage a
-    # password that itself contains a bare ``@``.
+    # URL password 必须按 RFC 3986 编码裸 ``@``，这里以首个 ``@`` 结束 userinfo。
     (re.compile(r"(://[^:/@\s]+):([^@/\s]+)@"), r"\1:***@"),
-    # ``Bearer xxx`` / ``bearer xxx`` → ``Bearer ***``
     (re.compile(r"(?i)\b(bearer)\s+\S+"), r"\1 ***"),
-    # ``sk-...`` style long-lived keys → ``sk-***``
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}"), "sk-***"),
-    # ``eyJ...`` JWT-like compact blobs (header.payload.sig) → ``eyJ***``
-    (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), "eyJ***"),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),
+        "eyJ***",
+    ),
 )
 
 _REDACTED = "***REDACTED***"
 
 
 def _looks_secret(key: str) -> bool:
-    """Return True if an env/config key name matches a known secret pattern."""
-
     return any(pattern.match(key) for pattern in _SECRET_KEY_PATTERNS)
 
 
 def redact_value(value: Any) -> Any:
-    """Redact one scalar/string value, recursing into containers.
-
-    Args:
-        value: The parsed JSON value to scrub.
-
-    Returns:
-        A new value of the same shape with secrets replaced. Original input is
-        never mutated (immutable: new containers are built).
-    """
+    """递归脱敏并新建容器，不修改输入对象。"""
 
     if isinstance(value, Mapping):
-        return {k: (_REDACTED if _looks_secret(str(k)) else redact_value(v)) for k, v in value.items()}
+        return {
+            k: (_REDACTED if _looks_secret(str(k)) else redact_value(v))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [redact_value(item) for item in value]
     if isinstance(value, str):
@@ -77,8 +62,6 @@ def redact_value(value: Any) -> Any:
 
 
 def _redact_string(text: str) -> str:
-    """Apply every inline credential pattern to a free-form string."""
-
     redacted = text
     for pattern, replacement in _INLINE_PATTERNS:
         redacted = pattern.sub(replacement, redacted)
@@ -86,46 +69,20 @@ def _redact_string(text: str) -> str:
 
 
 def redact_message(message: Any) -> Any:
-    """Redact a parsed JSON-RPC message before it is written to disk.
-
-    Thin alias of :func:`redact_value` named for its call site (the recorder).
-    The original object is untouched; a scrubbed deep copy is returned.
-
-    Args:
-        message: The parsed message object.
-
-    Returns:
-        A scrubbed copy safe to persist.
-    """
+    """返回保持 JSON-RPC 结构的脱敏副本，供录制与诊断使用。"""
 
     return redact_value(message)
 
 
 def redact_env(env: Mapping[str, str]) -> dict[str, str]:
-    """Return a copy of an env mapping with secret keys blanked.
+    """复制环境映射，整值替换命中 secret key 的条目。"""
 
-    Used when the recorder wants to note *which* proxy env vars were set
-    without ever echoing their values.
-
-    Args:
-        env: The subprocess environment mapping (e.g. ``os.environ``).
-
-    Returns:
-        A new dict where secret keys map to ``"***REDACTED***"`` and the rest
-        are copied verbatim.
-    """
-
-    return {key: (_REDACTED if _looks_secret(key) else value) for key, value in env.items()}
+    return {
+        key: (_REDACTED if _looks_secret(key) else value) for key, value in env.items()
+    }
 
 
 def redact_stderr(text: str) -> str:
-    """Scrub a stderr excerpt for use in an exception message.
-
-    Args:
-        text: A chunk of app-server stderr.
-
-    Returns:
-        The same chunk with inline credentials stripped.
-    """
+    """移除即将进入异常消息的 stderr 片段中的内联凭据。"""
 
     return _redact_string(text)

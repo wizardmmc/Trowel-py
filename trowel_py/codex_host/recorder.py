@@ -1,13 +1,8 @@
-"""Env-gated raw protocol recorder.
+"""受环境变量控制的原始协议录制器。
 
-Spec §4: raw recording is off by default and only enabled by an explicit
-environment variable. Every line is run through :func:`redact_message` before
-it touches disk so auth, tokens and credential-bearing proxy strings can never
-leak into a fixture (C-6).
-
-The recorder writes JSONL lines of ``{"t": <epoch>, "dir": "in"|"out", "msg":
-<redacted>}``. It is intentionally a small, dependency-free class: the
-transport owns the lifecycle, the recorder only owns the file.
+录制默认关闭，启用后也必须先经 ``redact_message`` 脱敏再写盘。每行 JSONL 为
+``{"t": <epoch>, "dir": "in"|"out", "msg": <redacted>}``；transport 负责调用
+生命周期，recorder 只持有文件。
 """
 
 from __future__ import annotations
@@ -20,23 +15,14 @@ from typing import Any, BinaryIO
 
 from trowel_py.codex_host.secrets import redact_message
 
-# Opt-in switch. Unset or empty → recording disabled everywhere.
 RECORDER_ENV_FLAG = "TROWEL_CODEX_RECORD"
 
 
 def recording_enabled(target: Path | str) -> bool:
-    """Return True if recording is explicitly enabled for the given target.
+    """检查目标路径是否被显式允许录制。
 
-    A bare ``TROWEL_CODEX_RECORD=1`` enables recording to any path. A path
-    value (``TROWEL_CODEX_RECORD=/tmp/x.jsonl``) enables it only when the
-    requested target matches — this lets a test enable one recorder without
-    accidentally turning on a neighbour's.
-
-    Args:
-        target: The file the caller intends to write to.
-
-    Returns:
-        True if the environment variable sanctions recording here.
+    ``TROWEL_CODEX_RECORD=1`` 等布尔值允许任意目标；路径值只允许完全匹配的
+    recorder，避免测试意外开启同进程中的其他录制器。
     """
 
     flag = os.environ.get(RECORDER_ENV_FLAG, "").strip()
@@ -48,22 +34,12 @@ def recording_enabled(target: Path | str) -> bool:
 
 
 class RawRecorder:
-    """Append redacted protocol lines to a JSONL file when enabled.
+    """启用后将脱敏协议追加到 JSONL。
 
-    The file is opened lazily on the first write and closed via :meth:`close`.
-    Disabled recorders are no-ops — every method is safe to call regardless of
-    the flag, so the transport does not need its own ``if recording`` guards.
+    文件在首次写入时惰性打开；禁用状态下所有方法均为空操作，调用方无需另加分支。
     """
 
     def __init__(self, path: Path, *, clock: Any = time.time) -> None:
-        """Store the target path and clock; do not open the file yet.
-
-        Args:
-            path: JSONL file to append to.
-            clock: Injectable now-callable (epoch seconds) for deterministic
-                timestamps in tests.
-        """
-
         self._path = path
         self._clock = clock
         self._handle: BinaryIO | None = None
@@ -71,17 +47,10 @@ class RawRecorder:
 
     @property
     def enabled(self) -> bool:
-        """True if this recorder will actually write to disk."""
-
         return self._enabled
 
     def record(self, direction: str, message: Any) -> None:
-        """Append one redacted message if enabled; otherwise do nothing.
-
-        Args:
-            direction: ``"out"`` for client→server, ``"in"`` for server→client.
-            message: The parsed JSON message (redacted before write).
-        """
+        """追加一条脱敏消息；``out`` 表示发往 server，``in`` 表示来自 server。"""
 
         if not self._enabled:
             return
@@ -93,11 +62,13 @@ class RawRecorder:
             "dir": direction,
             "msg": redact_message(message),
         }
-        self._handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._handle.write(
+            (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        )
         self._handle.flush()
 
     def close(self) -> None:
-        """Close the file handle if one was opened. Idempotent."""
+        """关闭已打开的文件；重复调用不产生副作用。"""
 
         if self._handle is not None:
             self._handle.close()

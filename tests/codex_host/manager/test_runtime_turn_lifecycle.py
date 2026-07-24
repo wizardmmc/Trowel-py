@@ -12,7 +12,7 @@ from trowel_py.codex_host import (
 )
 from trowel_py.codex_host.session import TurnConflictError
 from tests.codex_host._fake import FakeAppServer, Step
-from tests.codex_host._manager_support import (
+from tests.codex_host.manager.support import (
     _behavior_server,
     _cfg,
     _has,

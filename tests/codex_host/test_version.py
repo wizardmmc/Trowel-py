@@ -1,5 +1,3 @@
-"""Version read/parse/validate tests."""
-
 from __future__ import annotations
 
 import pytest
@@ -21,35 +19,27 @@ from trowel_py.codex_host.version import (
         ("  codex 0.0.1\n", (0, 0, 1)),
     ],
 )
-def test_parse_version_extracts_semver(raw: str, expected: tuple[int, int, int]) -> None:
-    """The parser pulls the first major.minor.patch token from ``--version``."""
-
+def test_parse_version_extracts_semver(
+    raw: str, expected: tuple[int, int, int]
+) -> None:
     parsed = parse_version(raw)
     assert parsed.semver == expected
 
 
 def test_parse_version_raises_on_missing_semver() -> None:
-    """No semver token → ValueError, not a silent zero."""
-
     with pytest.raises(ValueError):
         parse_version("codex-cli unknown")
 
 
 def test_version_str_is_bare_semver() -> None:
-    """Display form is compact."""
-
     assert str(CodexVersion("codex-cli 0.144.0", (0, 144, 0))) == "0.144.0"
 
 
 def test_check_version_passes_on_supported() -> None:
-    """Exact match with baseline → no raise."""
-
     check_version(CodexVersion("codex-cli 0.144.0", (0, 144, 0)))
 
 
 def test_check_version_raises_on_mismatch() -> None:
-    """Drift without override → VersionMismatchError (spec §1)."""
-
     installed = CodexVersion("codex-cli 0.150.0", (0, 150, 0))
     with pytest.raises(VersionMismatchError) as exc:
         check_version(installed)
@@ -60,9 +50,9 @@ def test_check_version_raises_on_mismatch() -> None:
 def test_check_version_override_logs_warning_not_raise(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Override mode proceeds but still logs — never silent."""
-
     installed = CodexVersion("codex-cli 0.999.0", (0, 999, 0))
     with caplog.at_level("WARNING", logger="trowel_py.codex_host.version"):
         check_version(installed, allow_override=True)
-    assert any("0.999.0" in rec.message and "0.144.0" in rec.message for rec in caplog.records)
+    assert any(
+        "0.999.0" in rec.message and "0.144.0" in rec.message for rec in caplog.records
+    )
