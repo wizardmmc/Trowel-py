@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
 import type { ToolItem } from "../../stores/ccStore";
+import { CodexMcpDetail } from "./CodexMcpDetail";
+import { isCodexMcp } from "./codexMcpPresentation";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 import {
   isCommandTool,
@@ -148,6 +150,9 @@ function ReadBody({ result }: { readonly result: string }) {
 }
 
 function renderDetail(item: ToolItem, workdir?: string): ReactNode {
+  if (isCodexMcp(item)) {
+    return <CodexMcpDetail item={item} />;
+  }
   if (isCommandTool(item.toolName)) {
     return <ToolCommandDetail item={item} workdir={workdir} />;
   }

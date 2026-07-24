@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ToolItem } from "../../stores/ccStore";
 import { getDisplayPath } from "./pathDisplay";
 import { getCodexCommandPresentation } from "./codexCommandPresentation";
+import {
+  getCodexMcpPresentation,
+  isCodexMcp,
+} from "./codexMcpPresentation";
 import { ToolDetail } from "./ToolDetail";
 import {
   asString,
@@ -65,20 +69,26 @@ function SummaryBrief({
       <code className="cc-tool__brief cc-tool__brief--mono">{brief(row.detail, 72)}</code>
     ) : null;
   }
+  if (isCodexMcp(item)) {
+    const title = getCodexMcpPresentation(item).title;
+    return title !== null ? (
+      <span className="cc-tool__brief">{title}</span>
+    ) : null;
+  }
   return null;
 }
 
 function CodexActionRows({ item, workdir }: { readonly item: ToolItem; readonly workdir?: string }) {
   const rows = getCodexCommandPresentation(item, workdir).rows;
   return (
-    <span className="cc-tool__action-rows">
+    <div className="cc-tool__action-rows">
       {rows.map((row, index) => (
-        <span className="cc-tool__action-row" key={`${row.verb}-${index}`}>
+        <div className="cc-tool__action-row" key={`${row.verb}-${index}`}>
           <span className="cc-tool__name">{row.verb}</span>
           <span className="cc-tool__brief" title={row.detail}>{row.detail}</span>
-        </span>
+        </div>
       ))}
-    </span>
+    </div>
   );
 }
 
@@ -104,7 +114,16 @@ export function ToolBlock({
   const done = item.status === "done";
   const failed = item.status === "failed";
   const codexCommand = item.toolName === "command";
-  const autoOpen = (isDiffTool(item.toolName) && done) || (codexCommand && failed);
+  const codexMcp = isCodexMcp(item);
+  const codexNative = codexCommand || codexMcp;
+  const commandPresentation = codexCommand
+    ? getCodexCommandPresentation(item, workdir)
+    : null;
+  const mcpPresentation = codexMcp ? getCodexMcpPresentation(item) : null;
+  const autoOpen =
+    (isDiffTool(item.toolName) && done) ||
+    (codexCommand && (failed || codexExploration)) ||
+    (codexMcp && failed);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const open = openOverride ?? autoOpen;
   const rootRef = useRef<HTMLDivElement>(null);
@@ -129,7 +148,11 @@ export function ToolBlock({
     prevOpenRef.current = open;
   }, [open]);
   const seconds =
-    item.elapsedSeconds !== null ? `${item.elapsedSeconds.toFixed(1)}s` : null;
+    item.elapsedSeconds !== null
+      ? `${item.elapsedSeconds.toFixed(codexMcp ? 2 : 1)}s`
+      : codexMcp && typeof item.durationMs === "number"
+        ? `${(item.durationMs / 1000).toFixed(2)}s`
+        : null;
   const stat = summaryStat(item);
   const lines = summaryLines(item);
   const verb = displayVerb(item);
@@ -137,7 +160,7 @@ export function ToolBlock({
 
   const summaryInner = (
     <>
-      {codexCommand ? (
+      {codexNative ? (
         <span className="cc-tool__codex-dot" data-state={failed ? "failed" : done ? "done" : "running"} aria-hidden="true" />
       ) : (
         <svg className="cc-tool__icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -146,22 +169,39 @@ export function ToolBlock({
         </svg>
       )}
       {codexCommand && codexExploration ? (
-        <CodexActionRows item={item} workdir={workdir} />
+        <>
+          <span className="cc-tool__name">
+            {commandPresentation?.callLabel}
+          </span>
+          <span
+            className="cc-tool__brief"
+            title={commandPresentation?.callBrief}
+          >
+            {commandPresentation?.callBrief}
+          </span>
+        </>
       ) : (
         <>
-          <span className="cc-tool__name">{verb}</span>
+          <span
+            className={`cc-tool__name${codexMcp ? " cc-tool__name--mono" : ""}`}
+          >
+            {verb}
+          </span>
           <SummaryBrief item={item} workdir={workdir} />
         </>
       )}
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
-      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexCommand) && (
+      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
         <span className="cc-tool__spinner" aria-label="进行中" />
       )}
       {failed && typeof item.exitCode === "number" && (
         <span className="cc-tool__exit">exit {item.exitCode}</span>
       )}
-      {failed && (
+      {seconds && codexNative && (!failed || codexMcp) && (
+        <span className="cc-tool__elapsed">{seconds}</span>
+      )}
+      {failed && !codexMcp && (
         <span className="cc-tool__check cc-tool__check--failed" aria-label="失败">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M6 6l12 12M18 6L6 18" />
@@ -169,7 +209,7 @@ export function ToolBlock({
           {seconds && <span className="cc-tool__elapsed">{seconds}</span>}
         </span>
       )}
-      {done && !codexCommand && (
+      {done && !codexNative && (
         <span className="cc-tool__check" aria-label="完成">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M5 13l4 4L19 7" />
@@ -180,7 +220,8 @@ export function ToolBlock({
       {!done && !failed && seconds && (
         <span className="cc-tool__elapsed cc-tool__elapsed--running">{seconds}</span>
       )}
-      {done && codexCommand && <span className="cc-tool__sr-only" aria-label="完成">完成</span>}
+      {done && codexNative && <span className="cc-tool__sr-only" aria-label="完成">完成</span>}
+      {failed && codexMcp && <span className="cc-tool__sr-only" aria-label="失败">失败</span>}
     </>
   );
 
@@ -192,7 +233,13 @@ export function ToolBlock({
       className="cc-tool__summary"
       onClick={() => setOpenOverride(!open)}
       aria-expanded={open}
-      title={codexCommand ? getCodexCommandPresentation(item, workdir).fullCommand : undefined}
+      title={
+        codexCommand
+          ? commandPresentation?.fullCommand
+          : codexMcp
+            ? mcpPresentation?.call ?? undefined
+            : undefined
+      }
     >
       {summaryInner}
     </button>
@@ -204,11 +251,17 @@ export function ToolBlock({
       className={`cc-tool${codexExploration ? " cc-tool--exploration" : ""}`}
       data-status={item.status}
       data-codex-command={codexCommand || undefined}
+      data-codex-native={codexNative || undefined}
     >
       {summary}
       {expanded && (
         <div className="cc-tool__detail">
-          <ToolDetail item={item} workdir={workdir} />
+          {codexExploration && (
+            <CodexActionRows item={item} workdir={workdir} />
+          )}
+          {(!codexExploration || failed) && (
+            <ToolDetail item={item} workdir={workdir} />
+          )}
         </div>
       )}
     </div>

@@ -27,6 +27,117 @@ describe("ToolBlock — command detail", () => {
     expect(command?.querySelectorAll(".cc-tool__bash-sep")).toHaveLength(2);
   });
 
+  it("shows a failed Codex MCP call with title, duration, error, and call", () => {
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "node_repl.js",
+          input: {
+            server: "node_repl",
+            tool: "js",
+            arguments: {
+              code: 'agent.browsers.getForUrl("http://127.0.0.1:5173/")',
+              title: "连接本地 Trowel 页面",
+            },
+          },
+          status: "failed",
+          durationMs: 1060,
+          nativeStatus: "failed",
+          result: "No browser is available",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("node_repl.js")).toBeInTheDocument();
+    expect(screen.getByText("连接本地 Trowel 页面")).toBeInTheDocument();
+    expect(screen.getByText("1.06s")).toBeInTheDocument();
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(screen.getByText("No browser is available")).toBeInTheDocument();
+    expect(screen.getByText("Call")).toBeInTheDocument();
+    expect(container.querySelector(".cc-tool__mcp-call")?.textContent).toContain(
+      "agent.browsers.getForUrl",
+    );
+    expect(screen.queryByText(/^Failed$/)).toBeNull();
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps a successful Codex MCP result collapsed until requested", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "node_repl.js",
+          input: {
+            server: "node_repl",
+            tool: "js",
+            arguments: {
+              code: "await agent.browsers.list()",
+              title: "查看可用浏览器",
+            },
+          },
+          status: "done",
+          durationMs: 100,
+          nativeStatus: "completed",
+          result: '{"content":[{"type":"text","text":"[]"}]}',
+        })}
+      />,
+    );
+
+    expect(screen.getByText("node_repl.js")).toBeInTheDocument();
+    expect(screen.getByText("查看可用浏览器")).toBeInTheDocument();
+    expect(screen.getByText("0.10s")).toBeInTheDocument();
+    expect(screen.queryByText("Result")).toBeNull();
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText("Result")).toBeInTheDocument();
+    expect(screen.getByText("[]")).toBeInTheDocument();
+  });
+
+  it("keeps structured MCP result fields instead of flattening them to text", () => {
+    const result = JSON.stringify({
+      content: [{ type: "text", text: "summary" }],
+      structuredContent: { answer: 42 },
+      _meta: null,
+    });
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "docs.lookup",
+          input: {
+            server: "docs",
+            tool: "lookup",
+            arguments: { query: "answer" },
+          },
+          status: "done",
+          result,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    expect(container.querySelector(".cc-tool__mcp-value")?.textContent).toBe(
+      result,
+    );
+  });
+
+  it("shows an explicit Error row when a failed MCP call has no error body", () => {
+    render(
+      <ToolBlock
+        item={tool({
+          toolName: "docs.lookup",
+          input: {
+            server: "docs",
+            tool: "lookup",
+            arguments: { query: "missing" },
+          },
+          status: "failed",
+          result: null,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(screen.getByText("No error details provided")).toBeInTheDocument();
+  });
+
   it("keeps a single-statement Bash command verbatim", () => {
     render(
       <ToolBlock

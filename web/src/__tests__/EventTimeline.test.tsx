@@ -178,11 +178,73 @@ describe("EventTimeline", () => {
     ];
     const { container } = render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
     expect(container.querySelectorAll(".cc-exploration")).toHaveLength(1);
-    expect(screen.getByText("Exploring")).toBeInTheDocument();
+    expect(screen.getByText("Exploring · 3 calls")).toBeInTheDocument();
     expect(screen.getByText("List")).toBeInTheDocument();
     expect(screen.getByText("Read")).toBeInTheDocument();
     expect(screen.getByText("Search")).toBeInTheDocument();
     expect(container.querySelectorAll(".cc-exploration .cc-tool__summary")).toHaveLength(3);
+  });
+
+  it("renders one call status above three status-free Read actions", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "read-3",
+        toolName: "command",
+        input: {
+          command: "sed files",
+          command_actions: [
+            { type: "read", command: "cat a", name: "a", path: "/repo/a.ts" },
+            { type: "read", command: "cat b", name: "b", path: "/repo/b.ts" },
+            { type: "read", command: "cat c", name: "c", path: "/repo/c.ts" },
+          ],
+        },
+        status: "done",
+        elapsedSeconds: 0.1,
+        result: null,
+        childTools: [],
+      },
+    ];
+
+    const { container } = render(
+      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+    );
+    expect(screen.getByText("Explored · 1 call")).toBeInTheDocument();
+    expect(screen.getByText("3 actions")).toBeInTheDocument();
+    expect(screen.getByText("Read 3 files")).toBeInTheDocument();
+    expect(container.querySelectorAll(".cc-exploration__items .cc-tool__codex-dot")).toHaveLength(1);
+    expect(container.querySelectorAll(".cc-tool__action-row")).toHaveLength(3);
+    expect(container.querySelectorAll(".cc-tool__action-row .cc-tool__codex-dot")).toHaveLength(0);
+    expect(container.querySelector(".cc-tool__bash-cmd")).toBeNull();
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getByText("b.ts")).toBeInTheDocument();
+    expect(screen.getByText("c.ts")).toBeInTheDocument();
+  });
+
+  it("summarizes mixed exploration actions on the parent call", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "mixed",
+        toolName: "command",
+        input: {
+          command: "inspect repo",
+          command_actions: [
+            { type: "search", command: "rg browser", query: "browser", path: "." },
+            { type: "read", command: "cat a", name: "a", path: "/repo/a.ts" },
+            { type: "read", command: "cat b", name: "b", path: "/repo/b.ts" },
+          ],
+        },
+        status: "done",
+        elapsedSeconds: 0.2,
+        result: null,
+        childTools: [],
+      },
+    ];
+
+    render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
+    expect(screen.getByText("Explore 3 actions")).toBeInTheDocument();
+    expect(screen.getByText("2 Read · 1 Search")).toBeInTheDocument();
   });
 
   it("text, reasoning, and unknown commands each break Codex exploration clusters", () => {
@@ -199,7 +261,7 @@ describe("EventTimeline", () => {
       { kind: "tool", toolUseId: "1", toolName: "command", input: { command: "cat missing", command_actions: [{ type: "read", command: "cat missing", name: "missing", path: "/repo/missing" }] }, status: "failed", elapsedSeconds: null, result: "not found", exitCode: 1, childTools: [] },
     ];
     const { container } = render(<EventTimeline items={items} runtime="codex" />);
-    expect(screen.getByText("Explored · 1 failed")).toBeInTheDocument();
+    expect(screen.getByText("Explored · 1 call · 1 failed")).toBeInTheDocument();
     expect(container.querySelector('[aria-label="失败"]')).not.toBeNull();
   });
 

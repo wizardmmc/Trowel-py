@@ -1,4 +1,5 @@
 import type { ToolItem } from "../../stores/ccStore";
+import { getCodexCommandPresentation } from "./codexCommandPresentation";
 import { ToolBlock } from "./ToolBlock";
 
 interface CodexExplorationGroupProps {
@@ -9,12 +10,21 @@ interface CodexExplorationGroupProps {
 export function CodexExplorationGroup({ items, workdir }: CodexExplorationGroupProps) {
   const running = items.some((item) => item.status === "running");
   const failed = items.filter((item) => item.status === "failed").length;
-  const label = `${running ? "Exploring" : "Explored"}${failed > 0 ? ` · ${failed} failed` : ""}`;
+  const calls = items.length;
+  const actions = items.reduce(
+    (total, item) =>
+      total + getCodexCommandPresentation(item, workdir).rows.length,
+    0,
+  );
+  const label = `${running ? "Exploring" : "Explored"} · ${calls} ${calls === 1 ? "call" : "calls"}${failed > 0 ? ` · ${failed} failed` : ""}`;
   return (
     <section className="cc-exploration" aria-label={label}>
       <div className="cc-exploration__head">
         <span className="cc-exploration__dot" data-state={failed > 0 ? "failed" : running ? "running" : "done"} aria-hidden="true" />
         <span className="cc-exploration__title">{label}</span>
+        <span className="cc-exploration__meta">
+          {actions} {actions === 1 ? "action" : "actions"}
+        </span>
       </div>
       <div className="cc-exploration__items">
         {items.map((item) => (

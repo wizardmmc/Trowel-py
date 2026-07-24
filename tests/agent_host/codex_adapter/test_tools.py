@@ -74,6 +74,39 @@ def test_command_completed_maps_result_fields(adapter) -> None:
     assert event.payload["cwd"] == "/repo"
 
 
+def test_mcp_started_preserves_identity_and_arguments(adapter) -> None:
+    event = adapter.wrap(
+        make_codex_event(
+            CodexEventType.TOOL_STARTED,
+            seq=3,
+            item_id="item-mcp",
+            payload={
+                "kind": "mcpToolCall",
+                "server": "node_repl",
+                "tool": "js",
+                "tool_name": "node_repl.js",
+                "arguments": {
+                    "code": "await agent.browsers.getDefault()",
+                    "title": "连接本地 Trowel 页面",
+                },
+                "status": "inProgress",
+                "started_at": 1234,
+            },
+        )
+    )
+
+    assert event.type == "tool_call"
+    assert event.payload["tool_name"] == "node_repl.js"
+    assert event.payload["input"] == {
+        "server": "node_repl",
+        "tool": "js",
+        "arguments": {
+            "code": "await agent.browsers.getDefault()",
+            "title": "连接本地 Trowel 页面",
+        },
+    }
+
+
 def test_mcp_completed_serializes_structured_result_for_shared_reducer(adapter) -> None:
     event = adapter.wrap(
         make_codex_event(
@@ -95,6 +128,30 @@ def test_mcp_completed_serializes_structured_result_for_shared_reducer(adapter) 
     assert event.payload["content"] == (
         '{"content": [{"text": "{}", "type": "text"}]}'
     )
+
+
+def test_mcp_failed_surfaces_upstream_error_message(adapter) -> None:
+    event = adapter.wrap(
+        make_codex_event(
+            CodexEventType.TOOL_COMPLETED,
+            seq=4,
+            item_id="item-mcp",
+            payload={
+                "kind": "mcpToolCall",
+                "server": "node_repl",
+                "tool": "js",
+                "tool_name": "node_repl.js",
+                "status": "failed",
+                "error": {"message": "No browser is available"},
+                "duration_ms": 1060,
+            },
+        )
+    )
+
+    assert event.type == "tool_result"
+    assert event.payload["content"] == "No browser is available"
+    assert event.payload["status"] == "failed"
+    assert event.payload["duration_ms"] == 1060
 
 
 def test_file_change_started_maps_apply_patch_targets(adapter) -> None:

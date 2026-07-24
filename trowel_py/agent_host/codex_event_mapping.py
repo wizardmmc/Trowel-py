@@ -96,7 +96,11 @@ def _mcp_tool_started(event: CodexEvent) -> MappedCodexEvent:
         {
             "tool_use_id": event.item_id,
             "tool_name": event.payload.get("tool_name"),
-            "input": event.payload.get("arguments"),
+            "input": {
+                "server": event.payload.get("server"),
+                "tool": event.payload.get("tool"),
+                "arguments": event.payload.get("arguments"),
+            },
             "started_at_ms": event.payload.get("started_at"),
         },
     )
@@ -138,19 +142,30 @@ def _tool_completed(event: CodexEvent) -> MappedCodexEvent:
 
 
 def _mcp_tool_completed(event: CodexEvent) -> MappedCodexEvent:
-    content = event.payload.get("result")
-    if content is None:
-        content = event.payload.get("error")
+    error = event.payload.get("error")
+    content = (
+        _mcp_error_content(error)
+        if error is not None
+        else _tool_content(event.payload.get("result"))
+    )
     return _mapped(
         "tool_result",
         {
             "tool_use_id": event.item_id,
             "tool_name": event.payload.get("tool_name"),
-            "content": _tool_content(content),
+            "content": content,
             "status": event.payload.get("status"),
             "duration_ms": event.payload.get("duration_ms"),
         },
     )
+
+
+def _mcp_error_content(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        message = value.get("message")
+        if isinstance(message, str):
+            return message
+    return _tool_content(value)
 
 
 def _tool_content(value: Any) -> str | None:

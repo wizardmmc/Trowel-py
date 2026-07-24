@@ -206,4 +206,46 @@ describe("reduceEvent — Codex live/history deep-equal", () => {
       },
     });
   });
+
+  it("keeps Codex MCP identity, arguments, error, and duration on the ToolItem", () => {
+    const state = run([
+      { type: "user", text: "open the page" },
+      {
+        type: "tool_call",
+        tool_use_id: "mcp-1",
+        tool_name: "node_repl.js",
+        input: {
+          server: "node_repl",
+          tool: "js",
+          arguments: {
+            code: "await agent.browsers.getDefault()",
+            title: "连接本地 Trowel 页面",
+          },
+        },
+      } as TrowelEvent,
+      {
+        type: "tool_result",
+        tool_use_id: "mcp-1",
+        content: "No browser is available",
+        status: "failed",
+        duration_ms: 1060,
+      } as TrowelEvent,
+    ]);
+
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "tool",
+      toolName: "node_repl.js",
+      status: "failed",
+      input: {
+        server: "node_repl",
+        tool: "js",
+        arguments: {
+          code: "await agent.browsers.getDefault()",
+          title: "连接本地 Trowel 页面",
+        },
+      },
+      result: "No browser is available",
+      durationMs: 1060,
+    });
+  });
 });
