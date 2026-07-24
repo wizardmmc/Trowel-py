@@ -12,7 +12,7 @@ _CODEX_RUNTIME: Literal["codex"] = "codex"
 
 
 class CodexEventAdapter:
-    """维护单个 Codex 会话的 AgentEvent 序列。"""
+    """维护单个 Codex 会话跨 turn 连续的 AgentEvent 序列。"""
 
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
@@ -51,7 +51,7 @@ class CodexEventAdapter:
         type_: str,
         payload: Mapping[str, Any],
     ) -> AgentEvent:
-        # 使用独立序列，丢弃的原生事件不会让前端观察到空洞。
+        # 统一序号只在映射成功后递增，不能复用含丢弃项的原生 seq。
         self._seq += 1
         return AgentEvent(
             session_id=self._session_id,

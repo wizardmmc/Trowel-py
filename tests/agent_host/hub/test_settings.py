@@ -57,6 +57,9 @@ async def test_codex_model_switch_rejects_unknown_model(hub: SessionHub, workdir
             binding.session_id, model="not-in-catalog", effort="low"
         )
     assert exc.value.status_code == 422
+    assert exc.value.detail == "model 'not-in-catalog' is not in the native catalog"
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
 
 
 async def test_codex_effort_only_uses_native_default_model_for_fresh_session(

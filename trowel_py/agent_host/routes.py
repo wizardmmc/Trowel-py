@@ -1,10 +1,4 @@
-"""HTTP + SSE endpoints for the host-neutral Session Hub (slice-072).
-
-Thin wrapper around :class:`SessionHub` — no business logic here, only request
-parsing, runtime/cross-resume error → HTTP status mapping, and SSE framing for
-the message stream. Tests override :func:`get_hub` to inject a Hub wired to
-fakes (spec C-7: route tests never touch the real store or DB).
-"""
+"""Agent Host 的 HTTP 与 SSE 边界。"""
 
 from __future__ import annotations
 
@@ -35,8 +29,6 @@ router = APIRouter()
 
 
 def get_hub(request: Request) -> SessionHub:
-    """Resolve the app-wide SessionHub (override in tests)."""
-
     hub = getattr(request.app.state, "agent_hub", None)
     if hub is None:
         raise HTTPException(status_code=503, detail="agent hub not initialized")
@@ -44,8 +36,6 @@ def get_hub(request: Request) -> SessionHub:
 
 
 def _sse(event: dict[str, Any]) -> bytes:
-    """Serialize one event dict as an SSE data frame."""
-
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
@@ -55,7 +45,7 @@ def create_session(
     request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Create a session under the chosen runtime (resume validated C-2)."""
+    """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
     if req.resume_from is not None:
         try:
@@ -76,7 +66,7 @@ def create_session(
 def list_active(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """List every live session (mixed CC + Codex) + the active id."""
+    """返回持久化会话、基于本地 registry/manager 的状态和当前视图 id。"""
 
     sessions, active_id = hub.list_active()
     return {
@@ -91,7 +81,7 @@ def activate_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Switch the active (viewed) session — view state only (C-4)."""
+    """只切换当前视图，不关闭或中断任何会话。"""
 
     active = hub.activate(session_id)
     return {"success": True, "data": {"active_id": active}, "error": None}
@@ -102,7 +92,7 @@ def get_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Return one session's binding."""
+    """返回单个持久化 binding；未知 session id 返回 404。"""
 
     binding = hub.get(session_id)
     if binding is None:
@@ -116,7 +106,7 @@ async def patch_session(
     body: PatchAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Partial update. slice-072: a runtime change → 422 (C-1)."""
+    """拒绝修改 runtime；model/effort 仅为下一次 Codex turn 排队。"""
 
     try:
         hub.patch(
@@ -137,7 +127,7 @@ async def delete_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Close the native host + drop the binding (idempotent)."""
+    """注销原生会话并删除 binding；重复删除仍成功返回。"""
 
     closed = await hub.delete(session_id)
     return {"success": True, "data": {"closed": closed}, "error": None}
@@ -148,7 +138,7 @@ async def interrupt_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Interrupt the running turn, routed by binding."""
+    """根据 binding 中断所属 runtime 的当前 turn。"""
 
     await hub.interrupt(session_id)
     return {"success": True, "data": {"interrupted": True}, "error": None}
@@ -159,7 +149,7 @@ async def list_session_requests(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """List retained request states so a short frontend disconnect can recover."""
+    """返回保留中的 Codex request，使短暂断线后仍可恢复待决策状态。"""
 
     requests = hub.list_requests(session_id)
     return {"success": True, "data": {"requests": requests}, "error": None}
@@ -172,7 +162,7 @@ async def answer_session_request(
     body: AnswerAgentRequest,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Validate and answer one connection-scoped Codex server request."""
+    """校验归属和 decision 后回答一个 connection-scoped Codex request。"""
 
     request = hub.answer_request(session_id, request_id, body.decision)
     return {
@@ -188,10 +178,10 @@ async def send_message(
     body: SendMessageBody,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
-    """Send one message and stream host events back as SSE.
+    """发送一条消息并以 SSE 返回共享事件。
 
-    Any error (unknown session, host down, turn-start failure) is converted to
-    a terminal ``error`` SSE frame so the client always gets a closing signal.
+    未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有
+    明确结束信号。
     """
 
     async def gen():
@@ -200,7 +190,7 @@ async def send_message(
                 yield _sse(event)
         except HTTPException as exc:
             yield _sse(hub.error_envelope(session_id, exc.detail))
-        except Exception as exc:  # noqa: BLE001 — surface as terminal error frame
+        except Exception as exc:  # noqa: BLE001 - 转为终止 error frame
             yield _sse(hub.error_envelope(session_id, str(exc)))
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -210,10 +200,9 @@ async def send_message(
 def list_runtimes(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Return the two runtimes with capabilities + connection status.
+    """返回两种 runtime 的 capability 与 host 可用状态。
 
-    Codex ``connected`` reflects whether the shared manager is wired; the
-    deeper login/proxy diagnostics land in slice-080.
+    Codex ``connected`` 只表示共享 manager 已装配，不代表登录或代理健康。
     """
 
     runtimes = [
@@ -239,7 +228,7 @@ def list_runtimes(
 async def list_models(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Return the visible native Codex model catalog without static fallback."""
+    """返回原生 Codex model catalog，不维护静态回退名单。"""
 
     models = await hub.list_codex_models()
     return {"success": True, "data": {"models": models}, "error": None}
@@ -250,19 +239,10 @@ def get_session_history(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Replay a session's stored history as AgentEvent v1 envelopes (slice-074).
+    """将已落盘的 CC history 转为 AgentEvent v1 envelope。
 
-    CC history comes from cc_host's on-disk jsonl scan, wrapped through a fresh
-    :class:`CcEventAdapter` (seq starts at 1 — history is a new stream from the
-    reducer's view, not a continuation of a live one). The CC ``native_session_id``
-    must already be written back (i.e. the session completed at least one turn);
-    a fresh session with no native id returns an empty list.
-
-    Codex thread history replay lands in slice-079; this slice returns a clear
-    501 so the frontend can fall back to its existing skip-non-CC behaviour.
-
-    Raises:
-        HTTPException: 404 unknown session; 501 Codex (slice-079).
+    history 使用从 1 开始的独立序号，不延续 live adapter。尚无原生 id 的 CC 会话
+    返回空列表；Codex history replay 尚未实现并返回 501。
     """
 
     binding = hub.get(session_id)
@@ -279,8 +259,7 @@ def get_session_history(
     from trowel_py.cc_host.history import parse_history
 
     events = parse_history(binding.workdir, native_session_id)
-    # Fresh adapter: history is an independent stream (seq from 1), never a
-    # continuation of the live adapter's counter.
+    # history 是独立流，不能继承 live adapter 的序号。
     adapter = CcEventAdapter(session_id)
     envelopes = [adapter.wrap(e.model_dump()).model_dump(by_alias=True) for e in events]
     return {"success": True, "data": envelopes, "error": None}
@@ -291,12 +270,9 @@ def list_history(
     workdir: str = Query(..., min_length=1),
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """Mixed history: CC jsonl rows + Codex bindings, each tagged by runtime.
+    """合并 CC 扫描记录与 Codex binding，并显式标记 runtime。
 
-    CC rows come from cc_host's on-disk scan; Codex rows come from this hub's
-    binding store (a trowel-created Codex thread trowel can resume). Each row
-    carries the runtime + native id so a resume request is routed correctly
-    (spec pass-criterion: mixed history rows show runtime, resume carries it).
+    每行都携带 ``native_session_id`` 字段；仅非空原生 id 可以用于恢复。
     """
 
     from trowel_py.cc_host.session_scan import list_sessions as cc_list_sessions

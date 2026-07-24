@@ -63,6 +63,22 @@ def test_activate_cc_mirrors_legacy_active_sid(
     assert cc_routes._ACTIVE_SID == cc.session_id
 
 
+def test_activate_cc_uses_public_active_setter(
+    hub: SessionHub, workdir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from trowel_py.cc_host import routes as cc_routes
+
+    activated: list[str | None] = []
+    monkeypatch.setattr(cc_routes, "set_active_session_id", activated.append)
+    cc = hub.create(cc_req(workdir), request=None)
+    cx = hub.create(codex_req(workdir), request=None)
+
+    hub.activate(cc.session_id)
+    hub.activate(cx.session_id)
+
+    assert activated == [cc.session_id]
+
+
 def test_list_active_mixes_cc_and_codex(hub: SessionHub, workdir: Path):
     cc = hub.create(cc_req(workdir), request=None)
     cx = hub.create(codex_req(workdir), request=None)
@@ -109,6 +125,19 @@ async def test_delete_codex_drops_binding(
 
 async def test_delete_unknown_returns_false(hub: SessionHub):
     assert await hub.delete("nope") is False
+
+
+def test_default_cc_registry_uses_public_getter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trowel_py.cc_host import routes as cc_routes
+
+    registry: dict = {}
+    monkeypatch.setattr(cc_routes, "get_registry", lambda: registry)
+
+    hub = SessionHub(BindingStore(tmp_path / "bindings.db"))
+
+    assert hub._cc_registry is registry
 
 
 def test_restart_recovers_bindings_from_store(

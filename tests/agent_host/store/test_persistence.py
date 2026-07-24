@@ -1,10 +1,3 @@
-"""slice-072: agent_host binding store — persistence + invariants.
-
-Spec C-7: every test injects a tmp path; the autouse conftest fixture also
-pins ``TROWEL_AGENT_SESSIONS_PATH`` to tmp as belt-and-braces, so the real
-``~/.trowel/agent_sessions.json`` is never touched.
-"""
-
 from __future__ import annotations
 
 import json
@@ -16,8 +9,6 @@ from trowel_py.agent_host.store import BindingStore, resolve_bindings_path
 
 
 def _binding(**over: object) -> SessionBinding:
-    """Build a binding with sane defaults; tests override individual fields."""
-
     base: dict[str, object] = dict(
         session_id="s1",
         runtime=Runtime.CLAUDE_CODE,
@@ -73,16 +64,11 @@ def test_delete_removes_binding(tmp_path):
 
 
 def test_update_native_atomic_writeback(tmp_path):
-    """Native facts learned from thread/start/cc init write back immutably."""
-
     store = BindingStore(tmp_path / "b.json")
     store.put(_binding())
-    updated = store.update_native(
-        "s1", native_session_id="cc-xyz", model="glm-5.2"
-    )
+    updated = store.update_native("s1", native_session_id="cc-xyz", model="glm-5.2")
     assert updated.native_session_id == "cc-xyz"
     assert updated.model == "glm-5.2"
-    # persisted to disk — a fresh store sees the writeback
     restarted = BindingStore(tmp_path / "b.json")
     got = restarted.get("s1")
     assert got is not None
@@ -97,8 +83,6 @@ def test_update_native_unknown_session_raises(tmp_path):
 
 
 def test_persistence_survives_new_store_instance(tmp_path):
-    """Spec pass criterion: binding recovers after a trowel restart."""
-
     store = BindingStore(tmp_path / "b.json")
     store.put(_binding(session_id="s1", native_session_id="cc-1"))
     restarted = BindingStore(tmp_path / "b.json")
@@ -114,6 +98,59 @@ def test_empty_store_returns_empty(tmp_path):
     assert store.get("nope") is None
 
 
+@pytest.mark.parametrize("payload", [[], None, "not-a-mapping"])
+def test_non_mapping_root_loads_empty(tmp_path, payload):
+    path = tmp_path / "b.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    store = BindingStore(path)
+
+    assert store.list_all() == []
+    assert store.get("nope") is None
+
+
+@pytest.mark.parametrize("invalid_roster", [42, "tools", {"name": "tools"}])
+def test_invalid_declared_mcp_roster_loads_empty(tmp_path, invalid_roster):
+    path = tmp_path / "b.json"
+    binding = _binding().to_dict()
+    binding["declared_mcp_roster"] = invalid_roster
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    got = BindingStore(path).get("s1")
+
+    assert got is not None
+    assert got.declared_mcp_roster == ()
+
+
+def test_missing_required_binding_field_still_raises(tmp_path):
+    path = tmp_path / "b.json"
+    binding = _binding().to_dict()
+    del binding["name"]
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KeyError):
+        BindingStore(path).get("s1")
+
+
+def test_unknown_runtime_still_raises(tmp_path):
+    path = tmp_path / "b.json"
+    binding = _binding().to_dict()
+    binding["runtime"] = "unknown"
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        BindingStore(path).get("s1")
+
+
 def test_missing_file_loads_empty_and_creates_parent_on_write(tmp_path):
     store = BindingStore(tmp_path / "nested" / "deep" / "b.json")
     assert store.list_all() == []
@@ -122,8 +159,6 @@ def test_missing_file_loads_empty_and_creates_parent_on_write(tmp_path):
 
 
 def test_atomic_write_leaves_valid_json_no_tmp_fragment(tmp_path):
-    """Spec: binding migration must be safe; write is tmp + rename, no half file."""
-
     path = tmp_path / "b.json"
     store = BindingStore(path)
     store.put(_binding(native_session_id="cc-1"))
@@ -147,8 +182,6 @@ def test_runtime_enum_wire_values():
 
 
 def test_binding_is_immutable(tmp_path):
-    """coding-style: frozen dataclass — mutation raises."""
-
     b = _binding()
     with pytest.raises(Exception):
         b.runtime = Runtime.CODEX  # type: ignore[misc]

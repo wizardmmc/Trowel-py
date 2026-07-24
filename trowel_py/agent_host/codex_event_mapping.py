@@ -121,7 +121,7 @@ def _tool_completed(event: CodexEvent) -> MappedCodexEvent:
 
 def _file_change_completed(event: CodexEvent) -> MappedCodexEvent:
     changes = [dict(change) for change in (event.payload.get("changes") or ())]
-    # 当前协议每个 item 对应一处文件变更，同时保留完整列表以兼容批量形态。
+    # 首项字段兼容旧展示契约；完整列表保留原生批量语义。
     first = changes[0] if changes else {}
     return _mapped(
         "tool_result",
@@ -146,7 +146,7 @@ def _passthrough(event: CodexEvent) -> MappedCodexEvent:
 
 def _compaction(event: CodexEvent) -> MappedCodexEvent:
     payload = dict(event.payload)
-    # translator 只转发完成事件；显式字段避免下游猜测阶段。
+    # 上游 translator 只在 compaction 完成时发出事件，显式阶段避免下游猜测。
     payload["phase"] = "completed"
     return _mapped("compaction", payload)
 

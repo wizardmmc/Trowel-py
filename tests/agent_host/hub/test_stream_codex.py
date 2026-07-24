@@ -23,7 +23,11 @@ from tests.agent_host.hub._support import (
 )
 
 
-async def test_stream_codex_yields_unified_envelope(hub: SessionHub, workdir: Path):
+async def test_stream_codex_yields_unified_envelope(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+):
 
     binding = make_binding(
         session_id="codex-sess",
@@ -66,7 +70,7 @@ async def test_stream_codex_yields_unified_envelope(hub: SessionHub, workdir: Pa
         ),
     ]
     session = FakeCodexSession("codex-sess", codex_events)
-    hub._codex.register(session)  # noqa: SLF001
+    codex_mgr.register(session)
 
     events = [e async for e in hub.stream("codex-sess", "hello")]
     assert all(_is_envelope(e) for e in events), events
@@ -146,7 +150,96 @@ async def test_stream_codex_surfaces_writeback_failure_before_native_turn(
     assert "binding store unavailable" in str(exc.value.detail)
 
 
-async def test_stream_codex_finished_terminates_loop(hub: SessionHub, workdir: Path):
+async def test_stream_codex_stops_when_binding_becomes_unreadable_before_native_turn(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    binding = hub.create(codex_req(workdir), request=None)
+    session = FakeCodexSession(
+        binding.session_id,
+        [],
+        thread_id="thr-without-readable-binding",
+    )
+    codex_mgr.sessions[binding.session_id] = session
+    native_turn_started = False
+
+    async def corrupt_binding_before_turn(
+        session: Any,
+        text: str,
+        *,
+        before_turn_start=None,
+    ) -> str:
+        nonlocal native_turn_started
+        del text
+        hub.store.path.write_text("{", encoding="utf-8")
+        if before_turn_start is not None:
+            before_turn_start(session)
+        native_turn_started = True
+        return "turn-without-binding"
+
+    monkeypatch.setattr(codex_mgr, "send", corrupt_binding_before_turn)
+
+    with pytest.raises(HTTPException) as exc:
+        _ = [e async for e in hub.stream(binding.session_id, "hello")]
+
+    assert exc.value.status_code == 502
+    assert native_turn_started is False
+
+
+async def test_stream_codex_stops_when_writeback_temporarily_reads_empty_binding(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    binding = hub.create(codex_req(workdir), request=None)
+    session = FakeCodexSession(
+        binding.session_id,
+        [],
+        thread_id="thr-missed-by-writeback",
+    )
+    codex_mgr.sessions[binding.session_id] = session
+    original_load = hub.store._load_raw  # noqa: SLF001
+    first_read = True
+    native_turn_started = False
+
+    def read_empty_once() -> dict[str, dict[str, Any]]:
+        nonlocal first_read
+        if first_read:
+            first_read = False
+            return {}
+        return original_load()
+
+    async def start_after_callback(
+        session: Any,
+        text: str,
+        *,
+        before_turn_start=None,
+    ) -> str:
+        nonlocal native_turn_started
+        del text
+        monkeypatch.setattr(hub.store, "_load_raw", read_empty_once)
+        if before_turn_start is not None:
+            before_turn_start(session)
+        native_turn_started = True
+        return "turn-with-stale-binding"
+
+    monkeypatch.setattr(codex_mgr, "send", start_after_callback)
+
+    with pytest.raises(HTTPException) as exc:
+        _ = [e async for e in hub.stream(binding.session_id, "hello")]
+
+    assert exc.value.status_code == 502
+    assert native_turn_started is False
+
+
+async def test_stream_codex_finished_terminates_loop(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+):
 
     binding = make_binding(
         session_id="codex-sess",
@@ -193,7 +286,7 @@ async def test_stream_codex_finished_terminates_loop(hub: SessionHub, workdir: P
         ),
     ]
     session = FakeCodexSession("codex-sess", codex_events)
-    hub._codex.register(session)  # noqa: SLF001
+    codex_mgr.register(session)
 
     events = [e async for e in hub.stream("codex-sess", "hi")]
     types = [e["type"] for e in events]

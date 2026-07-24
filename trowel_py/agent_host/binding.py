@@ -1,12 +1,4 @@
-"""Session binding schema for the host-neutral Session Hub (slice-072).
-
-A :class:`SessionBinding` is the frozen public shape of one trowel agent
-session — the answer to "which runtime owns this session, and which native
-session id is it bound to?". ``runtime`` is frozen at create (spec C-1); only
-``native_session_id`` and the effective facts learned from the native host
-get written back later, and even then immutably (a fresh dataclass replaces
-the old one — never in-place mutation).
-"""
+"""Agent Host 的持久化记录及其公开会话投影。"""
 
 from __future__ import annotations
 
@@ -17,12 +9,7 @@ from enum import Enum
 
 
 class Runtime(str, Enum):
-    """The two native agent runtimes trowel drives (spec §1).
-
-    Values are the wire strings the API and the frontend switch on; kept as a
-    ``str`` enum so ``Runtime.CLAUDE_CODE == "claude_code"`` holds and JSON
-    serialisation is the bare string (no ``.value`` dance at the boundary).
-    """
+    """枚举值同时写入持久化文件和 API wire shape，不能作为内部名称改写。"""
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
@@ -30,43 +17,12 @@ class Runtime(str, Enum):
 
 @dataclass(frozen=True)
 class SessionBinding:
-    """The frozen public shape of one agent session.
+    """不可变的公开会话绑定。
 
-    Attributes:
-        session_id: trowel session id (the routing key).
-        runtime: native host that owns this session; frozen at create.
-        native_session_id: ``cc_session_id`` / Codex ``thread_id``, or ``None``
-            for a fresh session until the native host reports it (spec: a bare
-            id with no runtime is never legal).
-        workdir: absolute working directory the session runs in.
-        model: effective model once the host reports one; else ``None``.
-        effort: reasoning-effort override or ``None``.
-        permission: runtime-specific effective policy string, or ``None``.
-        memory_enabled: frozen memory A/B switch.
-        profile_enabled: frozen profile A/B switch.
-        capabilities: runtime-declared capability tags (``tools`` / ``approval``
-            / …) — the UI keys off this list, never off ``runtime == …`` (C-6).
-        name: multi-session display name (workdir basename + ``#N``).
-        connected: ``True`` once the native host has a live process/thread.
-        running: ``True`` while a turn is mid-stream.
-        created_at / updated_at: ISO timestamps (second precision).
-        injection_hash: slice-078 — short sha of the static M/P injection text
-            (empty on CC, and on a Codex memory-off + no-profile session whose
-            injection is empty). Lets experiments verify a resumed session
-            kept its frozen condition without storing the injection body in
-            the binding (C-6).
-        declared_mcp_roster: slice-078 — the MCP server names trowel itself
-            attached on this thread (``("trowel_note_search",)`` on a Codex
-            memory-on session; empty otherwise). This is the *declared*
-            roster, not the *effective* one — external MCP servers the user
-            configured are not visible here (their detection lives in
-            ``codex_host.mcp_isolation``); a future slice may add a live-roster
-            field populated from ``mcpServerStatus/list`` (C-7).
-        self_enabled: slice-085 — whether the Self section (the Trowel
-            "你是谁/能做什么" shell-on-top of cc/codex's default system prompt)
-            is injected this call. Default True; False drops the entire Self
-            section for an A/B baseline. Frozen at create so a resumed session
-            keeps its condition, like memory_enabled/profile_enabled.
+    ``native_session_id`` 在原生 host 首次报告前可以为空。注入开关在恢复时保持
+    不变；``injection_hash`` 只保存正文指纹，``declared_mcp_roster`` 只记录
+    Trowel 声明的 MCP，不代表用户配置后的有效 roster。状态更新必须创建新实例，
+    避免内存对象与落盘记录各自发生局部修改。
     """
 
     session_id: str
@@ -94,8 +50,6 @@ class SessionBinding:
     self_enabled: bool = True
 
     def to_dict(self) -> dict[str, object]:
-        """JSON-serialisable view (runtime + capabilities unwrapped)."""
-
         return {
             "session_id": self.session_id,
             "runtime": self.runtime.value,
@@ -147,11 +101,7 @@ def make_binding(
     declared_mcp_roster: Iterable[str] = (),
     self_enabled: bool = True,
 ) -> SessionBinding:
-    """Construct a :class:`SessionBinding`, stamping both timestamps at now.
-
-    Centralising timestamping here means callers never hand-build a binding
-    with a stale/empty ``created_at``.
-    """
+    """创建 binding，并在同一时刻设置创建与更新时间。"""
 
     now = datetime.now().isoformat(timespec="seconds")
     return SessionBinding(
@@ -182,18 +132,10 @@ def make_binding(
 
 
 def binding_from_dict(data: dict[str, object]) -> SessionBinding:
-    """Reconstruct a binding from its persisted dict shape.
-
-    Tolerant on optional fields so an older/partial file still loads; strict
-    on ``runtime`` (a bad value is drift, not a default).
-
-    Raises:
-        KeyError: if a required field (``session_id`` / ``runtime`` /
-            ``workdir`` / ``name``) is missing.
-        ValueError: if ``runtime`` is not a known :class:`Runtime` value.
-    """
+    """兼容旧记录缺失的可选字段；必填字段和未知 runtime 仍严格失败。"""
 
     capabilities = data.get("capabilities", ())
+    declared_mcp_roster = data.get("declared_mcp_roster", ())
     return SessionBinding(
         session_id=str(data["session_id"]),
         runtime=Runtime(str(data["runtime"])),
@@ -242,8 +184,8 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             else None
         ),
         injection_hash=str(data.get("injection_hash", "")),
-        declared_mcp_roster=tuple(
-            str(s) for s in (data.get("declared_mcp_roster") or ())
-        ),
+        declared_mcp_roster=tuple(str(s) for s in declared_mcp_roster)
+        if isinstance(declared_mcp_roster, (list, tuple))
+        else (),
         self_enabled=bool(data.get("self_enabled", True)),
     )

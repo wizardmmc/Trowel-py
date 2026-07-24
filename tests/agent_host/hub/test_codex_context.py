@@ -5,6 +5,11 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from trowel_py.agent_host import hub as hub_module
+from trowel_py.agent_host.codex_launch import (
+    _CODEX_PERMISSION_PRESETS,
+    _injection_fingerprint,
+)
 from trowel_py.agent_host.hub import (
     SessionHub,
 )
@@ -12,6 +17,70 @@ from tests.agent_host.hub._support import (
     FakeCodexManager,
     codex_req,
 )
+
+
+def test_hub_keeps_codex_launch_compatibility_facades() -> None:
+    assert hub_module._CODEX_PERMISSION_PRESETS is _CODEX_PERMISSION_PRESETS
+    assert hub_module._injection_fingerprint is _injection_fingerprint
+
+
+def test_create_codex_uses_replaced_launch_facades(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        hub_module,
+        "_CODEX_PERMISSION_PRESETS",
+        {"follow": ("replacement-approval", "replacement-sandbox")},
+    )
+    monkeypatch.setattr(
+        hub_module,
+        "_injection_fingerprint",
+        lambda text: f"replacement:{len(text)}",
+    )
+
+    binding = hub.create(codex_req(workdir), request=None)
+    config = codex_mgr.get_session(binding.session_id).config
+
+    assert (config.approval_policy, config.sandbox) == (
+        "replacement-approval",
+        "replacement-sandbox",
+    )
+    assert binding.injection_hash.startswith("replacement:")
+
+
+def test_fingerprint_failure_precedes_mcp_registration_and_persistence(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail_fingerprint(text: str) -> str:
+        del text
+        calls.append("fingerprint")
+        raise RuntimeError("fingerprint failed")
+
+    def record_mcp(**kwargs):
+        del kwargs
+        calls.append("mcp")
+        raise AssertionError("MCP construction must follow fingerprint")
+
+    monkeypatch.setattr(hub_module, "_injection_fingerprint", fail_fingerprint)
+    monkeypatch.setattr(
+        "trowel_py.codex_host.session.build_default_trowel_memory_mcp",
+        record_mcp,
+    )
+
+    with pytest.raises(RuntimeError, match="fingerprint failed"):
+        hub.create(codex_req(workdir), request=None)
+
+    assert calls == ["fingerprint"]
+    assert codex_mgr.sessions == {}
+    assert hub.store.list_all() == []
 
 
 def test_create_codex_refuses_when_user_config_has_same_named_mcp(
