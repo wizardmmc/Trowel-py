@@ -1,21 +1,7 @@
-/**
- * WorkdirPicker — modal workdir selector (slice-027 C4).
- *
- * Completion model = zsh AUTO_MENU + fish ghost text (deep-research 2026-07-05).
- *  - typing shows an inline gray ghost suggestion (best candidate, fish-style)
- *  - Tab: unique → accept; ambiguous → complete common prefix AND open dropdown
- *  - ↓ / Tab (again) / ↑: navigate the dropdown
- *  - Enter: in dropdown = pick (stay open for more typing); else = submit
- *  - → : accept the whole ghost suggestion (fish)
- *  - Esc: close dropdown; Esc again = cancel
- *
- * Below the input sits a single-column tree (方案 A) of the current path's
- * subdirectories (click to descend, ".." to ascend) — independent of the
- * completion dropdown, for click-based browsing. `~` is expanded server-side.
- */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DirEntry } from "../../api/cc";
 import { listDir } from "../../api/cc";
+import { WorkdirBrowser } from "./WorkdirBrowser";
 
 interface WorkdirPickerProps {
   readonly initialPath?: string;
@@ -39,14 +25,12 @@ function joinBase(base: string, seg: string): string {
   return b ? `${b}/${seg}` : `/${seg}`;
 }
 
-/** append a trailing / so the user can keep typing the next segment (terminal
- * convention after completing a directory). */
+// 补全目录后保留斜杠，用户可继续输入下一层。
 function withSlash(p: string): string {
   return p.endsWith("/") ? p : `${p}/`;
 }
 
-/** strip trailing slashes for the final submit — backend is_dir accepts both,
- * but a clean path reads better in the recent-works chip. */
+// 提交时只清理尾斜杠；~ 仍由服务端展开。
 function normSubmit(p: string): string {
   return p.replace(/\/+$/, "");
 }
@@ -68,7 +52,6 @@ export function WorkdirPicker({
 
   const { parent, last } = splitPath(input || "~");
 
-  // siblings of the last segment → drive completion candidates + ghost.
   useEffect(() => {
     let cancelled = false;
     listDir(parent || "/")
@@ -83,7 +66,6 @@ export function WorkdirPicker({
     };
   }, [parent]);
 
-  // current path's own children → drive the browse tree.
   useEffect(() => {
     let cancelled = false;
     listDir(input || "/")
@@ -102,7 +84,6 @@ export function WorkdirPicker({
     };
   }, [input]);
 
-  // completion candidates: siblings whose name prefixes the last segment
   const candidates = useMemo(() => {
     if (!last) return [];
     return siblings.filter((s) => s.name.startsWith(last) && s.name !== last);
@@ -118,7 +99,6 @@ export function WorkdirPicker({
     return prefix;
   }, [candidates]);
 
-  // ghost = best candidate's full path (fish-style single inline suggestion)
   const ghost = candidates.length > 0 ? candidates[0].path : "";
   const ghostRest = ghost && ghost.startsWith(input) ? ghost.slice(input.length) : "";
 
@@ -141,14 +121,14 @@ export function WorkdirPicker({
         return;
       }
       if (mode === "idle") {
-        // first Tab on ambiguous: complete common prefix + open dropdown
+        // 首次 Tab 遇到多个候选时先补公共前缀，再打开列表。
         if (commonPrefix.length > last.length) {
           setInput(joinBase(parent, commonPrefix));
         }
         setMode("listing");
         setHighlight(0);
       } else {
-        setHighlight((h) => (h + 1) % n); // Tab cycles within the dropdown
+        setHighlight((h) => (h + 1) % n);
       }
       return;
     }
@@ -172,7 +152,7 @@ export function WorkdirPicker({
     }
 
     if (e.key === "ArrowRight" && !e.altKey) {
-      // accept the whole ghost suggestion (fish → key), only at line end
+      // 仅在光标位于末尾时接受整段 ghost。
       if (ghostRest && mode === "idle" && isCursorAtEnd()) {
         e.preventDefault();
         setInput(withSlash(ghost));
@@ -205,7 +185,7 @@ export function WorkdirPicker({
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     setInput(e.target.value);
-    setMode("idle"); // typing refilters; drop the dropdown
+    setMode("idle");
     setHighlight(0);
   }
 
@@ -224,8 +204,6 @@ export function WorkdirPicker({
         </div>
         <div className="cc-modal__body">
           <div className="cc-wd__input-wrap">
-            {/* ghost suggestion (fish-style): typed part invisible (spacing),
-                rest gray. Hidden once the dropdown is open. */}
             {ghostRest && mode === "idle" && (
               <span className="cc-wd__ghost" aria-hidden="true">
                 <span className="cc-wd__ghost-typed">{input}</span>
@@ -244,7 +222,6 @@ export function WorkdirPicker({
               spellCheck={false}
               autoComplete="off"
             />
-            {/* completion dropdown (zsh MENU_SELECT style) */}
             {mode === "listing" && candidates.length > 0 && (
               <ul className="cc-wd__dropdown" role="listbox" aria-label="补全候选">
                 {candidates.map((c, i) => (
@@ -254,7 +231,8 @@ export function WorkdirPicker({
                     aria-selected={i === highlight}
                     className={`cc-wd__dropdown-item${i === highlight ? " cc-wd__dropdown-item--sel" : ""}`}
                     onMouseDown={(e) => {
-                      e.preventDefault(); // keep input focused
+                      // 保持输入框焦点，后续键盘操作仍由输入框接收。
+                      e.preventDefault();
                       setHighlight(i);
                     }}
                     onClick={() => {
@@ -275,76 +253,27 @@ export function WorkdirPicker({
             </div>
           )}
 
-          <div className="cc-wd__tree" role="listbox" aria-label="目录列表">
-            <button
-              type="button"
-              className="cc-wd__tree-row cc-wd__tree-row--up"
-              onClick={() => {
-                setInput(parent || "/");
-                setMode("idle");
-              }}
-              disabled={!parent || parent === input}
-            >
-              <span className="cc-wd__tree-name">📁 ..</span>
-              <span className="cc-wd__tree-hint">上级</span>
-            </button>
-            {browseChildren.map((c) => (
-              <button
-                key={c.path}
-                type="button"
-                className={`cc-wd__tree-row${c.path === input ? " cc-wd__tree-row--sel" : ""}`}
-                onClick={() => {
-                  setInput(withSlash(c.path));
-                  setMode("idle");
-                }}
-                onDoubleClick={() => onSelect(c.path)}
-              >
-                <span className="cc-wd__tree-name">📁 {c.name}</span>
-              </button>
-            ))}
-            {isEmpty && <div className="cc-wd__tree-empty">（无子目录）</div>}
-          </div>
-
-          {recents.length > 0 && (
-            <div className="cc-wd__section">
-              <div className="cc-wd__label">最近</div>
-              <div className="cc-wd__chips">
-                {recents.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className="cc-wd__chip"
-                    onClick={() => {
-                      setInput(p);
-                      setMode("idle");
-                    }}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {favorites.length > 0 && (
-            <div className="cc-wd__section">
-              <div className="cc-wd__label">收藏</div>
-              <div className="cc-wd__chips">
-                {favorites.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className="cc-wd__chip cc-wd__chip--star"
-                    onClick={() => {
-                      setInput(p);
-                      setMode("idle");
-                    }}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <WorkdirBrowser
+            input={input}
+            parent={parent}
+            children={browseChildren}
+            isEmpty={isEmpty}
+            recents={recents}
+            favorites={favorites}
+            onAscend={() => {
+              setInput(parent || "/");
+              setMode("idle");
+            }}
+            onBrowse={(path) => {
+              setInput(withSlash(path));
+              setMode("idle");
+            }}
+            onSelect={onSelect}
+            onPickSaved={(path) => {
+              setInput(path);
+              setMode("idle");
+            }}
+          />
         </div>
         <div className="cc-modal__foot">
           <span className="cc-modal__hint">Tab 补全 · ↑↓ 选择 · → 接受</span>

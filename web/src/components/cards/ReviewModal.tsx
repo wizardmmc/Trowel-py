@@ -19,7 +19,6 @@ interface ReviewModalProps {
   onPrev: () => void;
   onClose: () => void;
   loading: boolean;
-  // re-explain (slice 021) — pure props; App wires them to cardStore
   reExplainRegens: ReExplainCandidate[];
   reExplainSelectedId: string;
   reExplainLoading: boolean;
@@ -51,9 +50,6 @@ export function ReviewModal({
   const [hint, setHint] = useState("");
   if (!draft) return null;
 
-  // V0 (the draft's own explanation) is always the first candidate and is
-  // never overwritten — invariant 1: the draft explanation only changes when
-  // the user picks a regen and accepts.
   const candidates: ReExplainCandidate[] = [
     { id: ORIGINAL_ID, tag: "原始版本", text: draft.explanation },
     ...reExplainRegens,
@@ -62,7 +58,6 @@ export function ReviewModal({
   const atCap = count >= MAX_RE_EXPLAINS;
 
   const handleAccept = () => {
-    // write-back: original → accept (no change); regen → edit with its text
     if (reExplainSelectedId !== ORIGINAL_ID) {
       const selected = reExplainRegens.find(
         (c) => c.id === reExplainSelectedId,

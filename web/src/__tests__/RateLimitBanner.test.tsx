@@ -9,7 +9,6 @@ import {
 } from "../components/cc/rateLimit";
 import type { RateLimitSnapshot } from "../api/ccTypes";
 
-/** The real 2026-07-18 fixture shape (usedPercent:20, not reached). */
 const FIXTURE_LOW: RateLimitSnapshot = {
   limit_id: "codex",
   limit_name: null,
@@ -22,14 +21,12 @@ const FIXTURE_LOW: RateLimitSnapshot = {
   rate_limit_reached_type: null,
 };
 
-describe("rateLimitLevel (slice-077)", () => {
+describe("rateLimitLevel", () => {
   it("returns null for a null snapshot (no banner)", () => {
     expect(rateLimitLevel(null)).toBeNull();
   });
 
   it("returns null for the real fixture's low-usage rolling update", () => {
-    // spec C-6: the 20% snapshot must not pop a banner — that would cry wolf
-    // on every sparse update.
     expect(rateLimitLevel(FIXTURE_LOW)).toBeNull();
   });
 
@@ -40,8 +37,6 @@ describe("rateLimitLevel (slice-077)", () => {
   });
 
   it("returns 'near' when only secondary crosses the threshold (primary idle)", () => {
-    // primary and secondary are independent windows; a high secondary must
-    // warn even when primary is low (codex review HIGH).
     expect(
       rateLimitLevel({
         ...FIXTURE_LOW,
@@ -73,24 +68,21 @@ describe("rateLimitLevel (slice-077)", () => {
   });
 });
 
-describe("formatResetCountdown (slice-077)", () => {
-  // resetsAt = 1_000_000 (unix seconds); nowMs anchors relative to it.
+describe("formatResetCountdown", () => {
   const RESET_AT = 1_000_000;
 
   it("formats sub-day remaining as +H:MM", () => {
-    // 3h 5m before reset
     const nowMs = (RESET_AT - (3 * 3600 + 5 * 60)) * 1000;
     expect(formatResetCountdown(RESET_AT, nowMs)).toBe("+3:05");
   });
 
   it("formats day-scale remaining as +Dd Hh", () => {
-    // 2d 14h before reset
     const nowMs = (RESET_AT - (2 * 86400 + 14 * 3600)) * 1000;
     expect(formatResetCountdown(RESET_AT, nowMs)).toBe("+2d 14h");
   });
 
   it("clamps an expired window to +0:00 (no negative countdown)", () => {
-    const nowMs = (RESET_AT + 60) * 1000; // 1 minute past reset
+    const nowMs = (RESET_AT + 60) * 1000;
     expect(formatResetCountdown(RESET_AT, nowMs)).toBe("+0:00");
   });
 
@@ -100,7 +92,7 @@ describe("formatResetCountdown (slice-077)", () => {
   });
 });
 
-describe("REACHED_TYPE_LABEL (slice-077)", () => {
+describe("REACHED_TYPE_LABEL", () => {
   it("covers every RateLimitReachedType wire value from account.rs", () => {
     expect(REACHED_TYPE_LABEL["rate_limit_reached"]).toBe("常规速率限制触顶");
     expect(REACHED_TYPE_LABEL["workspace_owner_credits_depleted"]).toBe(
@@ -118,7 +110,7 @@ describe("REACHED_TYPE_LABEL (slice-077)", () => {
   });
 });
 
-describe("RateLimitBanner rendering (slice-077)", () => {
+describe("RateLimitBanner rendering", () => {
   it("renders nothing for a null snapshot", () => {
     const { container } = render(<RateLimitBanner snapshot={null} />);
     expect(container.firstChild).toBeNull();
@@ -136,7 +128,6 @@ describe("RateLimitBanner rendering (slice-077)", () => {
     };
     render(<RateLimitBanner snapshot={near} />);
     expect(screen.getByText("接近速率限制")).toBeInTheDocument();
-    // near is a status, not an alert (not terminal)
     expect(screen.queryByText("已触发速率限制")).not.toBeInTheDocument();
     expect(screen.getByText(/窗口 84%/)).toBeInTheDocument();
   });
@@ -149,14 +140,10 @@ describe("RateLimitBanner rendering (slice-077)", () => {
     render(<RateLimitBanner snapshot={reached} />);
     expect(screen.getByText("已触发速率限制")).toBeInTheDocument();
     expect(screen.getByText("常规速率限制触顶")).toBeInTheDocument();
-    // reached is a heads-up (status), not an emergency alert — a rate limit
-    // is not an "act now" condition like a turn failure (codex review M2).
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
   it("falls back to the raw wire value for an unknown reached_type", () => {
-    // forward-compat: a future account.rs tag surfaces verbatim instead of
-    // being hidden as "no limit".
     const reached: RateLimitSnapshot = {
       ...FIXTURE_LOW,
       rate_limit_reached_type: "some_future_limit_kind",
@@ -166,9 +153,6 @@ describe("RateLimitBanner rendering (slice-077)", () => {
   });
 
   it("renders reached with no primary window (future reached_type without primary)", () => {
-    // The 2026-07-18 fixture always carries primary, but the protocol makes it
-    // nullable — a future workspace-owner-credits kind could land without one.
-    // The title + reached_type must still render; no window row.
     const reached: RateLimitSnapshot = {
       ...FIXTURE_LOW,
       primary: null,
@@ -181,8 +165,6 @@ describe("RateLimitBanner rendering (slice-077)", () => {
   });
 
   it("shows both primary and secondary windows when the snapshot carries both", () => {
-    // secondary is null in the 2026-07-18 fixture; the renderer must still
-    // honor a real secondary once a future recording carries one.
     const both: RateLimitSnapshot = {
       ...FIXTURE_LOW,
       primary: { usedPercent: 84, windowDurationMins: 300, resetsAt: 1_000_000 },
@@ -200,11 +182,10 @@ describe("RateLimitBanner rendering (slice-077)", () => {
       primary: { usedPercent: 84, windowDurationMins: 300, resetsAt: 1_000_000 },
     };
     render(<RateLimitBanner snapshot={near} />);
-    // countdown format is "+H:MM" or "+Dd Hh"; assert the leading "+" and "resets"
     expect(screen.getByText(/resets \+/)).toBeInTheDocument();
   });
 
-  it("omits the countdown when resetsAt is null (no fabrication, spec C-4)", () => {
+  it("omits the countdown when resetsAt is null", () => {
     const near: RateLimitSnapshot = {
       ...FIXTURE_LOW,
       primary: { usedPercent: 84, windowDurationMins: null, resetsAt: null },

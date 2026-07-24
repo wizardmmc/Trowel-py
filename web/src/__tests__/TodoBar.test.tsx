@@ -51,7 +51,7 @@ beforeEach(() => {
   });
 });
 
-describe("TodoBar (slice-028)", () => {
+describe("TodoBar", () => {
   it("shows the idle hint when there is no active session", () => {
     setActive(null);
     render(<TodoBar />);
@@ -74,9 +74,7 @@ describe("TodoBar (slice-028)", () => {
     render(<TodoBar />);
     expect(screen.getByText("写后端")).toBeInTheDocument();
     expect(screen.getByText("写前端")).toBeInTheDocument();
-    // progress 0/2 (no completed yet)
     expect(screen.getByText("0/2")).toBeInTheDocument();
-    // activeForm surfaces for the in_progress task
     expect(screen.getByText("写后端中")).toBeInTheDocument();
   });
 
@@ -88,12 +86,10 @@ describe("TodoBar (slice-028)", () => {
       ]),
     );
     render(<TodoBar />);
-    // completed subject hidden until expanded
     expect(screen.queryByText("做 A")).toBeNull();
     expect(screen.getByText(/已完成 1 项/)).toBeInTheDocument();
     expect(screen.getByText("1/2")).toBeInTheDocument();
 
-    // expand → completed subject appears
     fireEvent.click(screen.getByText(/已完成 1 项/));
     expect(screen.getByText("做 A")).toBeInTheDocument();
   });
@@ -105,7 +101,6 @@ describe("TodoBar (slice-028)", () => {
     const { rerender } = render(<TodoBar />);
     expect(screen.getByText("0/1")).toBeInTheDocument();
 
-    // simulate a TaskUpdate flipping X to completed
     setActive(
       makeSession([
         { taskId: "1", toolUseId: "tu_1", subject: "X", status: "completed" },

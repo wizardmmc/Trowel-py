@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { useStickyBottom } from "../components/cc/useStickyBottom";
 
-/** Build a fake scroll container with jsdom-mockable layout props. */
 function makeScrollRef(scrollHeight: number, clientHeight: number) {
   const div = document.createElement("div");
   let scrollTop = 0;
@@ -32,7 +31,7 @@ function makeScrollRef(scrollHeight: number, clientHeight: number) {
   };
 }
 
-describe("useStickyBottom (slice-035 bug2)", () => {
+describe("useStickyBottom", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -48,7 +47,7 @@ describe("useStickyBottom (slice-035 bug2)", () => {
   it("flips sticky=false when scrolled away from the bottom", () => {
     const { ref, div, setScrollTop } = makeScrollRef(1000, 500);
     const { result } = renderHook(() => useStickyBottom(ref, 1));
-    setScrollTop(0); // far from bottom
+    setScrollTop(0);
     act(() => div.dispatchEvent(new Event("scroll")));
     expect(result.current.sticky).toBe(false);
     expect(result.current.stickyRef.current).toBe(false);
@@ -77,7 +76,7 @@ describe("useStickyBottom (slice-035 bug2)", () => {
     act(() => div.dispatchEvent(new Event("scroll")));
     rerender({ n: 3 });
     expect(result.current.unread).toBe(2);
-    setScrollTop(500); // 1000 - 500 - 500 = 0 <= threshold → at bottom
+    setScrollTop(500);
     act(() => div.dispatchEvent(new Event("scroll")));
     expect(result.current.sticky).toBe(true);
     expect(result.current.unread).toBe(0);

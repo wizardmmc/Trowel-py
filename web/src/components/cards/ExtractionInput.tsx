@@ -1,14 +1,11 @@
 import { useState, useRef } from "react";
 
 interface ExtractionInputProps {
-  /** extract from pasted text / git diff (POST /extract) */
   onExtract: (content: string) => Promise<void>;
-  /** extract from a CC JSONL conversation log (POST /extract-conversation) */
   onExtractConversation: (content: string) => Promise<void>;
   loading: boolean;
 }
 
-/** Maximum upload file size — 10MB */
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".jsonl", ".json", ".txt"];
 
@@ -49,12 +46,10 @@ export function ExtractionInput({
       setFileFormat(format);
 
       if (format === "jsonl") {
-        // conversation log -> backend parses the raw text
         await onExtractConversation(text);
       } else if (format === "empty") {
         setFileError("上传的文件是空的。");
       } else {
-        // git-diff or plain-text: populate textarea for manual extraction
         setContent(text);
       }
     } catch (err) {
@@ -67,7 +62,6 @@ export function ExtractionInput({
     const file = e.target.files?.[0];
     if (!file) return;
     await processFile(file);
-    // reset so the same file can be re-uploaded
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -149,13 +143,6 @@ export function ExtractionInput({
   );
 }
 
-/**
- * Detect file format from content.
- *
- * jsonl: first few non-blank lines are all JSON objects. Real CC logs nest
- * role/content under "message" and may start with a summary line, so we only
- * require "each line is a JSON object" rather than a top-level role/content.
- */
 function detectFormat(text: string): FileFormat {
   const trimmed = text.trim();
   if (!trimmed) return "empty";

@@ -8,21 +8,16 @@ import {
 } from "../api/client";
 
 export interface PlayerState {
-  /** the default player's profile, or null before first load */
   readonly player: PlayerProfile | null;
-  /** every owned item (food + hats); row id is item.id, catalog id is item.item_id */
   readonly inventory: readonly InventoryItem[];
   readonly loading: boolean;
   readonly error: string | null;
 
   fetchProfile: () => Promise<void>;
   fetchInventory: () => Promise<void>;
-  /** buy an item by catalog id; rethrows on failure so callers can branch */
   buyItem: (itemId: string) => Promise<void>;
 }
 
-// API functions are imported with an `Api` suffix so the store actions
-// (fetchPlayer, buyItem, ...) don't shadow them inside the action bodies.
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   player: null,
   inventory: [],
@@ -55,9 +50,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   buyItem: async (itemId: string) => {
     set({ loading: true, error: null });
     try {
-      // buy only returns the catalog id + type, not the new row id. re-fetch
-      // both the profile (coins were spent server-side) and the inventory
-      // (the granted row must be resolved by row id for feed/equip).
       await buyItemApi(itemId);
       await get().fetchProfile();
       await get().fetchInventory();

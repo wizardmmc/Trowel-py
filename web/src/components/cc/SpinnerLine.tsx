@@ -2,19 +2,6 @@ import { useEffect, useState } from "react";
 
 import { useActiveSession } from "../../stores/ccStore";
 
-/**
- * The "✻ thinking…" line shown at the tail of the message stream while CC is
- * thinking (slice-025-a A1).
- *
- * Driven by thinking_tokens heartbeats: the reducer flips phase to "thinking"
- * and records meta.thinkingStartedAt on the first heartbeat. The verb is picked
- * once per think and stays stable. Seconds + token count are hidden until 5s
- * elapse (tcc-defined threshold — NOT cc's 30s; see slice-025-a decision #3).
- * The effort suffix shows only when the user explicitly set an effort.
- *
- * Seconds use a local setInterval (cc itself uses local wall-clock, per
- * reverse_cc spec/05). Renders null outside the thinking phase.
- */
 const SPINNER_VERBS = [
   "Pondering", "Synthesizing", "Analyzing", "Thinking", "Working",
   "Deliberating", "Composing", "Reasoning", "Reflecting", "Considering",
@@ -26,8 +13,6 @@ const SPINNER_VERBS = [
 ] as const;
 
 const FALLBACK_VERB = "Working";
-/** tcc threshold for showing seconds/tokens (cc's source says 30s but实测 shows
- * earlier — slice-025-a decision #3 picks 5s). */
 const SHOW_STATS_AFTER_MS = 5000;
 const TICK_MS = 200;
 
@@ -36,8 +21,6 @@ function pickVerb(): string {
 }
 
 export function SpinnerLine() {
-  // slice-028: thinking state lives on the active session (multi-session store).
-  // Renders null when no session is active or the active one isn't thinking.
   const active = useActiveSession();
   const phase = active?.phase ?? "idle";
   const thinkingStartedAt = active?.meta.thinkingStartedAt ?? null;
@@ -45,7 +28,6 @@ export function SpinnerLine() {
   const stallWarning = active?.meta.stallWarning ?? null;
   const effort = active?.effort ?? null;
 
-  // Pick one verb per think (stable within the think); cleared when not thinking.
   const [verb, setVerb] = useState<string | null>(null);
   useEffect(() => {
     if (phase === "thinking" && thinkingStartedAt !== null && verb === null) {
@@ -55,7 +37,6 @@ export function SpinnerLine() {
     }
   }, [phase, thinkingStartedAt, verb]);
 
-  // Local wall-clock tick so the seconds counter advances.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (phase !== "thinking") return;
@@ -63,9 +44,6 @@ export function SpinnerLine() {
     return () => clearInterval(id);
   }, [phase]);
 
-  // Hide once the thinking envelope arrives (the thinking reducer case clears
-  // thinkingStartedAt) even though phase is still "thinking" until the next
-  // event flips it — avoids a brief "0s" re-render in the overlap window.
   if (phase !== "thinking" || thinkingStartedAt === null) return null;
 
   const elapsedMs =

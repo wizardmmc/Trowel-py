@@ -15,7 +15,7 @@ function turn(id: string, text: string): Turn {
   };
 }
 
-describe("RevertConfirmModal (slice-026)", () => {
+describe("RevertConfirmModal", () => {
   it("lists every lost turn's text", () => {
     render(
       <RevertConfirmModal
@@ -37,7 +37,6 @@ describe("RevertConfirmModal (slice-026)", () => {
         onCancel={() => {}}
       />,
     );
-    // truncated text ends with ellipsis
     expect(screen.getByText(/…/, { exact: false })).toBeTruthy();
   });
 

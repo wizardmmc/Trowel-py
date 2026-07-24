@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { postMessageStream, parseSseFrames } from "../api/ccStream";
 import type { AgentEvent } from "../api/agentTypes";
 
-/** Build an AgentEvent v1 envelope JSON string (slice-074 wire shape). */
 function env(partial: Partial<AgentEvent> & { type: string; seq: number }): string {
   return JSON.stringify({
     schema: "agent-event-v1",
@@ -15,10 +14,6 @@ function env(partial: Partial<AgentEvent> & { type: string; seq: number }): stri
   } satisfies AgentEvent);
 }
 
-/**
- * Build a ReadableStream that emits the given chunks as UTF-8 bytes, with
- * microtask gaps so the reader sees them as separate reads.
- */
 function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream({
@@ -68,8 +63,6 @@ describe("postMessageStream", () => {
   });
 
   it("parses chunked SSE across read boundaries and forwards events", async () => {
-    // Build real JSON via stringify, then split the text frame mid-value so the
-    // SSE frame boundary cuts across a read chunk (the carry-buffer case).
     const ss = env({
       type: "session_started",
       seq: 1,
@@ -81,7 +74,6 @@ describe("postMessageStream", () => {
       seq: 3,
       payload: { total_cost_usd: 0.01, num_turns: 1 },
     });
-    // split textJson into "...text\":\"he" | "llo\"}" (mid-value cut)
     const cut = textJson.indexOf("llo");
     const textHead = textJson.slice(0, cut);
     const textTail = textJson.slice(cut);
@@ -106,7 +98,6 @@ describe("postMessageStream", () => {
       "finished",
     ]);
     expect((received[1].payload as { text: string }).text).toBe("hello");
-    // seq passes through unchanged
     expect(received.map((e) => e.seq)).toEqual([1, 2, 3]);
   });
 
@@ -130,7 +121,7 @@ describe("postMessageStream", () => {
         });
       }) as never;
     });
-    void stream; // stream unused in this branch; satisfy lint
+    void stream;
 
     const ctrl = new AbortController();
     const promise = postMessageStream(
@@ -140,7 +131,6 @@ describe("postMessageStream", () => {
       { signal: ctrl.signal },
     );
     ctrl.abort();
-    // aborted fetch must not reject the outer promise (silent on user abort)
     await expect(promise).resolves.toBeUndefined();
   });
 });

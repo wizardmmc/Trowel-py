@@ -1,5 +1,3 @@
-/* SuggestionsModal — AI 校准建议模态 (slice-050). Scoped .suggestions-* so it
- * never collides with ProfileView's styles. Tokens from tokens.css. */
 
 .suggestions-backdrop {
   position: fixed;
@@ -257,7 +255,6 @@
   gap: var(--space-sm);
 }
 
-/* buttons (scoped, mirror ProfileView) */
 .suggestions-modal .btn {
   font-family: var(--font-sans);
   font-size: 0.85rem;

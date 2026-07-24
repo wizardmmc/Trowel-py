@@ -4,8 +4,6 @@ import { SlashAutocomplete } from "../components/cc/SlashAutocomplete";
 import { groupSlashItems, type SlashSource } from "../components/cc/slashGroups";
 import type { SlashItem } from "../api/cc";
 
-// Real-shaped items (cc 2.1.197): one per source. Plugin names carry the full
-// "mp:skill" name the backend emits.
 const items: readonly SlashItem[] = [
   { name: "model", description: "切换模型", source: "builtin", type: "command" },
   { name: "deep-research", description: "多源深研", source: "bundled", type: "skill" },
@@ -48,10 +46,9 @@ function renderPicker(
   );
 }
 
-describe("SlashAutocomplete (slice-042 P4: group by source)", () => {
+describe("SlashAutocomplete", () => {
   it("groups by source in fixed order when query is empty", () => {
     renderPicker("");
-    // one group-label button per source, in SLASH_SOURCE_ORDER
     const labels = screen
       .getAllByRole("button")
       .map((b) => b.textContent?.replace(/[▾▸]/g, "").trim());
@@ -69,22 +66,17 @@ describe("SlashAutocomplete (slice-042 P4: group by source)", () => {
     expect(screen.getByText(/deep-research/)).toBeInTheDocument();
     expect(screen.getByText(/grill-me/)).toBeInTheDocument();
     expect(screen.getByText(/deploy/)).toBeInTheDocument();
-    // plugin name shows its skill part
     expect(screen.getByText(/code-review/)).toBeInTheDocument();
   });
 
   it("collapsed plugin group hides its items but keeps the header", () => {
     renderPicker("", { collapsed: new Set(["plugin"]) });
-    // header still there
     expect(screen.getByRole("button", { name: /plugin 组/ })).toBeInTheDocument();
-    // item body hidden
     expect(screen.queryByText(/code-review/)).not.toBeInTheDocument();
-    // other sources still render
     expect(screen.getByText(/grill-me/)).toBeInTheDocument();
   });
 
   it("searching forces the plugin group open even if collapsed", () => {
-    // query "review" matches the plugin item only
     renderPicker("review", { collapsed: new Set(["plugin"]) });
     expect(screen.getByText(/code-review/)).toBeInTheDocument();
   });
@@ -97,8 +89,6 @@ describe("SlashAutocomplete (slice-042 P4: group by source)", () => {
   });
 
   it("marks the selected option via aria-selected (flat expanded order)", () => {
-    // empty query, nothing collapsed → flat order: model, deep-research,
-    // grill-me, deploy, code-review. Index 2 = grill-me.
     renderPicker("", { selectedIndex: 2 });
     const opts = screen.getAllByRole("option");
     expect(opts[2]).toHaveAttribute("aria-selected", "true");
@@ -118,7 +108,6 @@ describe("SlashAutocomplete (slice-042 P4: group by source)", () => {
     renderPicker("");
     expect(screen.getByText("切换模型")).toBeInTheDocument();
     expect(screen.getByText("Expert code review")).toBeInTheDocument();
-    // badges render the source text
     expect(screen.getByText("builtin")).toBeInTheDocument();
     expect(screen.getByText("user")).toBeInTheDocument();
     expect(screen.getByText("plugin")).toBeInTheDocument();

@@ -5,12 +5,6 @@ import { ReviewCompletion } from "./ReviewCompletion";
 import { FeynmanOverlay } from "./FeynmanOverlay";
 import "./ReviewSession.css";
 
-/**
- * Full-screen review session — mirrors the TS design (fixed inset:0 over a
- * solid bg-garden background), not a centered modal. The FeynmanOverlay sits
- * absolutely inside the card-wrapper so it covers the card, not the whole
- * screen.
- */
 export function ReviewSession() {
   const {
     phase,

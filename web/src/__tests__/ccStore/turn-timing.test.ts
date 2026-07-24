@@ -107,7 +107,6 @@ describe("reduceEvent — turn duration (用时)", () => {
   });
 });
 
-// 本地 slash command 会干净关闭 stream 却不发送 finished，必须单独结束乐观 turn。
 describe("endActiveTurnOnStreamClose — slash commands end the turn without a finished", () => {
   it("marks an active turn done on a clean stream close with no terminal event", () => {
     const before = withOpenTurn("/model glm-5.1");
@@ -166,7 +165,6 @@ describe("endActiveTurnOnStreamClose — slash commands end the turn without a f
   });
 });
 
-// CC jsonl 没有 result，历史回放结束后必须补齐只读视图的终态。
 describe("finalizeHistoryForView — history is a completed past session", () => {
   it("flips active turns to done and an in-progress phase to done", () => {
     let state = withOpenTurn("你好今天几号");

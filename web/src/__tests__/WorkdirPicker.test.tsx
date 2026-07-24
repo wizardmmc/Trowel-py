@@ -1,15 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-// Mock listDir so the tree fetches don't hit the network. Each test can
-// override the resolved value via vi.mocked(listDir).mockResolvedValue(...).
 vi.mock("../api/cc", () => ({
   listDir: vi.fn(async () => []),
 }));
 import { listDir } from "../api/cc";
 import { WorkdirPicker } from "../components/cc/WorkdirPicker";
 
-describe("WorkdirPicker (slice-027 C4, 方案 A)", () => {
+describe("WorkdirPicker", () => {
   it("renders recents as chips", () => {
     render(
       <WorkdirPicker
@@ -98,7 +96,7 @@ describe("WorkdirPicker (slice-027 C4, 方案 A)", () => {
   });
 });
 
-describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
+describe("WorkdirPicker tree + Tab completion", () => {
   beforeEach(() => {
     vi.mocked(listDir).mockReset();
   });
@@ -139,7 +137,6 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
     render(
       <WorkdirPicker initialPath="/x/wo" recents={[]} onSelect={() => {}} onCancel={() => {}} />,
     );
-    // wait for the siblings fetch to resolve before Tab'ing
     await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
     const input = screen.getByLabelText("工作目录") as HTMLInputElement;
     fireEvent.keyDown(input, { key: "Tab" });
@@ -157,7 +154,6 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
     await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
     const input = screen.getByLabelText("工作目录") as HTMLInputElement;
     fireEvent.keyDown(input, { key: "Tab" });
-    // common prefix of work-a / work-b is "work-" → input extends to /x/work-
     await waitFor(() => expect(input.value).toBe("/x/work-"));
   });
 
@@ -194,9 +190,7 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
     await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
     const input = screen.getByLabelText("工作目录") as HTMLInputElement;
     fireEvent.keyDown(input, { key: "Tab" });
-    // common prefix "work-" completed
     await waitFor(() => expect(input.value).toBe("/x/work-"));
-    // dropdown opened with both candidates
     expect(screen.getAllByRole("option")).toHaveLength(2);
   });
 
@@ -210,9 +204,9 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
     );
     await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
     const input = screen.getByLabelText("工作目录") as HTMLInputElement;
-    fireEvent.keyDown(input, { key: "Tab" }); // open dropdown (highlight work-a)
-    fireEvent.keyDown(input, { key: "ArrowDown" }); // → work-b
-    fireEvent.keyDown(input, { key: "Enter" }); // select (not submit)
+    fireEvent.keyDown(input, { key: "Tab" });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
     expect(input.value).toBe("/x/work-b/");
   });
 
@@ -241,16 +235,14 @@ describe("WorkdirPicker tree + Tab completion (slice-027)", () => {
     );
     await waitFor(() => expect(vi.mocked(listDir)).toHaveBeenCalledWith("/x"));
     const input = screen.getByLabelText("工作目录");
-    fireEvent.keyDown(input, { key: "Tab" }); // open dropdown
+    fireEvent.keyDown(input, { key: "Tab" });
     expect(screen.getAllByRole("option")).toHaveLength(2);
-    fireEvent.keyDown(input, { key: "Escape" }); // close dropdown
+    fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    expect(onCancel).not.toHaveBeenCalled(); // picker still open
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it("expand ~ to home is NOT done client-side (passed through as-is)", () => {
-    // ~ expansion is the backend's job (or a later slice); the picker just
-    // hands the raw string over. Pinning this so the contract is explicit.
     const onSelect = vi.fn();
     render(
       <WorkdirPicker recents={[]} onSelect={onSelect} onCancel={() => {}} />,

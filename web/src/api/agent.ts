@@ -1,34 +1,14 @@
-/**
- * REST client for /api/agent — the host-neutral Session Hub (slice-072).
- *
- * Mirrors trowel_py/agent_host/routes.py 1:1. Two runtimes (claude_code /
- * codex) live behind one endpoint family; the frontend never guesses runtime
- * from model or UI state — it reads it off the AgentSession binding (spec
- * C-3). Streaming (POST /messages) lives in ccStream.ts via
- * :func:`agentMessagesUrl` — the SSE frames are AgentEvent v1 envelopes; the
- * store unwraps them (agentEventToTrowel) and feeds ONE reducer (ccReducer),
- * since slice-074 unified both runtimes onto the TrowelEvent type vocabulary.
- *
- * Legacy /api/cc/* stays untouched (spec C-5); the CC history-replay path
- * (GET /api/cc/sessions/{id}/history) is still used for CC sessions created
- * via /api/agent, because they land in the same live _REGISTRY.
- */
 
 export type Runtime = "claude_code" | "codex";
 
-/** One row of GET /api/agent/sessions/{id} / POST /api/agent/sessions. */
 export interface AgentSession {
   readonly session_id: string;
   readonly runtime: Runtime;
-  /** cc_session_id / Codex thread_id, or null for a fresh session. */
   readonly native_session_id: string | null;
   readonly workdir: string;
-  /** Effective model once the host reports one; else null. */
   readonly model: string | null;
   readonly effort: string | null;
-  /** Runtime-specific effective policy string; null until reported. */
   readonly permission: string | null;
-  /** Requested preset and the effective facts reported by Codex app-server. */
   readonly permission_preset?: string | null;
   readonly effective_permission_profile?: string | null;
   readonly effective_sandbox?: string | null;
@@ -36,28 +16,21 @@ export interface AgentSession {
   readonly network_access?: boolean | null;
   readonly memory_enabled: boolean;
   readonly profile_enabled: boolean;
-  /** Runtime-declared capability tags (tools/approval/checkpoint/...). */
   readonly capabilities: readonly string[];
-  /** Display name (workdir basename + #N). */
   readonly name: string;
   readonly connected: boolean;
   readonly running: boolean;
 }
 
-/** Body for POST /api/agent/sessions. runtime is required at the wire level. */
 export interface CreateAgentSessionParams {
   readonly runtime: Runtime;
   readonly workdir: string;
   readonly resume_from?: string;
   readonly model?: string;
   readonly effort?: string;
-  /** CC only (--permission-mode). */
   readonly permission_mode?: string;
-  /** Codex only (approvalPolicy). */
   readonly approval_policy?: string;
-  /** Codex only (sandbox mode). */
   readonly sandbox?: string;
-  /** Codex-only UI preset; the backend owns the protocol mapping. */
   readonly permission_preset?:
     | "follow"
     | "read-only"
@@ -67,16 +40,13 @@ export interface CreateAgentSessionParams {
   readonly profile_enabled?: boolean;
 }
 
-/** One row of GET /api/agent/sessions?workdir (mixed history). */
 export interface AgentHistoryRow {
   readonly runtime: Runtime;
   readonly native_session_id: string | null;
   readonly title: string;
-  /** CC rows: epoch seconds (float); Codex rows: ISO timestamp string. */
   readonly updated_at: number | string;
 }
 
-/** One entry of GET /api/agent/runtimes. */
 export interface AgentRuntimeInfo {
   readonly runtime: Runtime;
   readonly label: string;
@@ -85,13 +55,11 @@ export interface AgentRuntimeInfo {
   readonly connected: boolean;
 }
 
-/** One native Codex reasoning effort. Values are deliberately open-ended. */
 export interface AgentEffort {
   readonly value: string;
   readonly description: string;
 }
 
-/** One row returned by Codex app-server model/list. */
 export interface AgentModel {
   readonly id: string;
   readonly model: string;
@@ -108,7 +76,6 @@ export interface AgentSettingsSelection {
   readonly adjusted: boolean;
 }
 
-/** Retained Codex server request returned by answer/reconnect endpoints. */
 export interface AgentPendingRequest {
   readonly request_id: string;
   readonly session_id: string;
@@ -149,7 +116,6 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return result.data as T;
 }
 
-/** POST /api/agent/sessions — create a session under the chosen runtime. */
 export async function createAgentSession(
   params: CreateAgentSessionParams,
 ): Promise<AgentSession> {
@@ -160,13 +126,11 @@ export async function createAgentSession(
   });
 }
 
-/** Result of GET /api/agent/sessions/active — the live mixed list + active id. */
 export interface ActiveAgentListResult {
   readonly sessions: readonly AgentSession[];
   readonly activeId: string | null;
 }
 
-/** GET /api/agent/sessions/active — list live sessions (CC + Codex) + active. */
 export async function listActiveAgentSessions(): Promise<ActiveAgentListResult> {
   const data = await request<{
     sessions: readonly AgentSession[];
@@ -175,7 +139,6 @@ export async function listActiveAgentSessions(): Promise<ActiveAgentListResult> 
   return { sessions: data.sessions, activeId: data.active_id };
 }
 
-/** POST /api/agent/sessions/{id}/activate — switch the active (view) session. */
 export async function activateAgentSession(
   sessionId: string,
 ): Promise<{ activeId: string }> {
@@ -186,12 +149,10 @@ export async function activateAgentSession(
   return { activeId: data.active_id };
 }
 
-/** GET /api/agent/sessions/{id} — one session's binding. */
 export async function getAgentSession(sessionId: string): Promise<AgentSession> {
   return request<AgentSession>(`${AGENT_API_BASE}/sessions/${sessionId}`);
 }
 
-/** DELETE /api/agent/sessions/{id} — close the host + drop the binding. */
 export async function deleteAgentSession(
   sessionId: string,
 ): Promise<{ closed: boolean }> {
@@ -200,7 +161,6 @@ export async function deleteAgentSession(
   });
 }
 
-/** POST /api/agent/sessions/{id}/interrupt — interrupt the running turn. */
 export async function interruptAgentSession(
   sessionId: string,
 ): Promise<{ interrupted: boolean }> {
@@ -210,7 +170,6 @@ export async function interruptAgentSession(
   );
 }
 
-/** POST one decision to its generation-scoped Codex pending request. */
 export async function answerAgentRequest(
   sessionId: string,
   requestId: string,
@@ -226,7 +185,6 @@ export async function answerAgentRequest(
   );
 }
 
-/** GET retained request states after a view switch or short SSE disconnect. */
 export async function listAgentRequests(
   sessionId: string,
 ): Promise<readonly AgentPendingRequest[]> {
@@ -236,12 +194,10 @@ export async function listAgentRequests(
   return data.requests;
 }
 
-/** GET /api/agent/runtimes — the two runtimes + capabilities + connection. */
 export async function listAgentRuntimes(): Promise<readonly AgentRuntimeInfo[]> {
   return request<readonly AgentRuntimeInfo[]>(`${AGENT_API_BASE}/runtimes`);
 }
 
-/** GET /api/agent/models — native Codex catalog in app-server order. */
 export async function listAgentModels(): Promise<readonly AgentModel[]> {
   const data = await request<{ readonly models: readonly AgentModel[] }>(
     `${AGENT_API_BASE}/models`,
@@ -249,7 +205,6 @@ export async function listAgentModels(): Promise<readonly AgentModel[]> {
   return data.models;
 }
 
-/** PATCH both next-turn settings atomically; the backend validates the pair. */
 export async function updateAgentSessionSettings(
   sessionId: string,
   selection: { readonly model: string; readonly effort: string },
@@ -264,7 +219,6 @@ export async function updateAgentSessionSettings(
   );
 }
 
-/** GET /api/agent/sessions?workdir=... — mixed history (CC jsonl + Codex). */
 export async function listAgentHistory(
   workdir: string,
 ): Promise<readonly AgentHistoryRow[]> {
@@ -273,18 +227,10 @@ export async function listAgentHistory(
   );
 }
 
-/** URL for POST /messages — passed to ccStream.postMessageStream. */
 export function agentMessagesUrl(sessionId: string): string {
   return `${AGENT_API_BASE}/sessions/${sessionId}/messages`;
 }
 
-/**
- * GET /api/agent/sessions/{id}/history — replay a session's stored events as
- * AgentEvent v1 envelopes (slice-074). CC history wraps cc_host's on-disk jsonl
- * scan through the CC adapter; Codex returns 501 until slice-079 wires
- * thread/items/list. The frontend unwraps each envelope and feeds the same
- * reducer the live path uses (spec C-2: live/history same reducer).
- */
 export async function getAgentHistory(
   sessionId: string,
 ): Promise<readonly AgentEventLike[]> {
@@ -293,8 +239,7 @@ export async function getAgentHistory(
   );
 }
 
-/** Minimal envelope shape getAgentHistory returns (avoid a circular import of
- * the full AgentEvent type from agentTypes.ts at module load). */
+/** 只声明 history 回放所需字段，避免与 agentTypes 形成运行时循环依赖。 */
 export interface AgentEventLike {
   readonly schema: "agent-event-v1";
   readonly session_id: string;

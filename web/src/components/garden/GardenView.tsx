@@ -41,9 +41,6 @@ export function GardenView({ onStartReview }: GardenViewProps) {
     fetchGarden();
   }, [fetchGarden]);
 
-  // On entering the garden, ask the backend to run one event cycle. The engine
-  // layer enforces cooldowns, so remounts won't spam-fire. Synchronous fetch —
-  // see docs/training-log-m2.md slice 016 (no SSE).
   useEffect(() => {
     void checkForEvent();
   }, [checkForEvent]);
@@ -87,7 +84,6 @@ export function GardenView({ onStartReview }: GardenViewProps) {
 
   return (
     <div className="garden-view" data-testid="garden-view">
-      {/* Header: search + sort + review CTA */}
       <div className="garden-header">
         <input
           className="garden-header__search"

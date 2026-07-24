@@ -241,7 +241,6 @@ describe("reduceEvent — tool lifecycle", () => {
     };
     expect(tool?.toolName).toBe("apply_patch");
     expect(tool?.nativeStatus).toBe("declined");
-    // nativeStatus 保留协议原值，展示状态必须同时转为 failed 以禁止成功标记。
     expect(tool?.status).toBe("failed");
   });
 

@@ -51,7 +51,6 @@ describe("EventModal", () => {
   });
 
   it("renders the item reward label when reward_item_id is set", () => {
-    // ITEM_CATALOG.food_basic.label = 基础食物
     render(
       <EventModal
         event={makeEvent({ reward_item_id: "food_basic" })}

@@ -1,23 +1,8 @@
 /**
- * Inline-math tokenizer — fork of `micromark-extension-math@3.1.0`
- * `lib/math-text.js`, with one behavioral patch.
- *
- * Why this fork exists: stock remark-math lets a `$` close inline math even
- * when whitespace precedes it, so `价格 $100 ... $5 优惠` pairs the two `$` and
- * swallows everything between (including Chinese) into a KaTeX span. The
- * upstream maintainer considers this intended and wontfix
- * (https://github.com/micromark/micromark-extension-math/issues/6), recommending
- * `singleDollarTextMath:false` instead. We want to keep inline `$x$` rendering,
- * so we adopt the GitHub/Obsidian rule: a `$` only closes math if the character
- * before it is NOT whitespace.
- *
- * Patch (in `between()`): track `lastWasSpace`; reject a closing `$` when it is
- * true. Everything else is verbatim from upstream so behavior stays aligned.
- *
- * Upgrade note: when bumping remark-math / micromark-extension-math, diff
- * upstream `lib/math-text.js` against this file and re-apply the `lastWasSpace`
- * patch. The block-math tokenizer (`math-flow.js`) is reused as-is via
- * `remarkMathGithub.ts`.
+ * 基于 `micromark-extension-math@3.1.0/lib/math-text.js` 的受控 fork。
+ * 上游允许空白前的 `$` 闭合，导致普通价格文本被吞入 KaTeX，且明确不修：
+ * https://github.com/micromark/micromark-extension-math/issues/6
+ * 本文件只用 `lastWasSpace` 拒绝这类闭合；升级依赖时必须与上游重新比对。
  */
 import type {
   Code,
@@ -32,16 +17,6 @@ import type {
 import { markdownLineEnding } from "micromark-util-character";
 import type { Options } from "micromark-extension-math";
 
-/**
- * Build a GitHub-style inline-math `Construct`.
- *
- * Args:
- *   options: micromark-extension-math options; `singleDollarTextMath` honored.
- *
- * Returns:
- *   A micromark text construct for `$...$` that rejects a closing `$` preceded
- *   by whitespace.
- */
 export function mathTextGithub(options?: Options | null): Construct {
   const options_ = options ?? {};
   let single = options_.singleDollarTextMath;
@@ -52,9 +27,6 @@ export function mathTextGithub(options?: Options | null): Construct {
     let sizeOpen = 0;
     let size: number;
     let token: Token;
-    // PATCH: was the last consumed char inside the span whitespace? A closing
-    // `$` preceded by whitespace is rejected so currency `$100 … $5` doesn't
-    // pair into one math span.
     let lastWasSpace = false;
     return start;
 
@@ -71,7 +43,6 @@ export function mathTextGithub(options?: Options | null): Construct {
         return sequenceOpen;
       }
 
-      // Not enough markers in the sequence.
       if (sizeOpen < 2 && !single) {
         return nok(code);
       }
@@ -84,7 +55,6 @@ export function mathTextGithub(options?: Options | null): Construct {
         return nok(code);
       }
       if (code === 36) {
-        // PATCH: closing `$` preceded by whitespace is not a math close.
         if (lastWasSpace) {
           return nok(code);
         }
@@ -93,7 +63,6 @@ export function mathTextGithub(options?: Options | null): Construct {
         return sequenceClose(code);
       }
 
-      // Tabs don't work, and virtual spaces don't make sense.
       if (code === 32) {
         effects.enter("space");
         effects.consume(code);
@@ -109,7 +78,6 @@ export function mathTextGithub(options?: Options | null): Construct {
         return between;
       }
 
-      // Data.
       lastWasSpace = false;
       effects.enter("mathTextData");
       return data(code);
@@ -125,21 +93,18 @@ export function mathTextGithub(options?: Options | null): Construct {
     }
 
     function sequenceClose(code: Code): State | undefined {
-      // More.
       if (code === 36) {
         effects.consume(code);
         size++;
         return sequenceClose;
       }
 
-      // Done!
       if (size === sizeOpen) {
         effects.exit("mathTextSequence");
         effects.exit("mathText");
         return ok(code);
       }
 
-      // More or less accents: mark as data.
       token.type = "mathTextData";
       return data(code);
     }
@@ -159,7 +124,6 @@ const resolveMathText: Resolver = function (events: Event[]): Event[] {
   let index: number;
   let enter: number | undefined;
 
-  // If we start and end with an EOL or a space.
   if (
     (events[headEnterIndex][1].type === "lineEnding" ||
       events[headEnterIndex][1].type === "space") &&
@@ -168,10 +132,8 @@ const resolveMathText: Resolver = function (events: Event[]): Event[] {
   ) {
     index = headEnterIndex;
 
-    // And we have data.
     while (++index < tailExitIndex) {
       if (events[index][1].type === "mathTextData") {
-        // Then we have padding.
         events[tailExitIndex][1].type = "mathTextPadding";
         events[headEnterIndex][1].type = "mathTextPadding";
         headEnterIndex += 2;
@@ -181,7 +143,6 @@ const resolveMathText: Resolver = function (events: Event[]): Event[] {
     }
   }
 
-  // Merge adjacent spaces and data.
   index = headEnterIndex - 1;
   tailExitIndex++;
   while (++index <= tailExitIndex) {
@@ -204,7 +165,6 @@ const resolveMathText: Resolver = function (events: Event[]): Event[] {
 };
 
 const previous: Previous = function (code: Code): boolean {
-  // If there is a previous code, there will always be a tail.
   return (
     code !== 36 ||
     this.events[this.events.length - 1][1].type === "characterEscape"

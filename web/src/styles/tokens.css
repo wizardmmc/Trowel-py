@@ -1,5 +1,4 @@
 :root {
-  /* Colors — aligned to docs/DESIGN.md */
   --garden-green: #4A7C59;
   --soil-brown: #8B7355;
   --sunshine: #E8B84B;
@@ -13,13 +12,10 @@
   --color-success: #4A7C59;
   --color-warning: #E8B84B;
   --color-error: #C45B4A;
-  /* Python-only: card/input border. TS uses --soil-brown directly. */
   --color-border: #d4c9b8;
-  /* sunshine 强调色衍生（slice021-web）：聚焦/活跃/选定 */
   --sunshine-soft: rgba(232, 184, 75, 0.18);
   --sunshine-ring: rgba(232, 184, 75, 0.45);
-  --sunshine-ink: #7a5a12; /* sunshine 浅底上的深色文字 */
-  /* 语义色浅底衍生（slice023-web）：状态徽标/软底块，复用既有 RGB，不引入新色 */
+  --sunshine-ink: #7a5a12;
   --garden-soft: rgba(74, 124, 89, 0.10);
   --neutral-soft: rgba(107, 107, 107, 0.12);
   --soil-brown-soft: rgba(139, 115, 85, 0.16);
@@ -27,24 +23,19 @@
   --error-soft-strong: rgba(196, 91, 74, 0.25);
   --sunshine-warn-soft: rgba(232, 184, 75, 0.25);
 
-  /* Radii */
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-pill: 24px;
 
-  /* Shadows */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.16);
 
-  /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
-  /* 标题/卡片标题用 LXGW WenKai（霞鹜文楷，本地打包，slice021-web） */
   --font-display: 'LXGW WenKai', 'Songti SC', 'STSong', serif;
 
-  /* Spacing */
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;

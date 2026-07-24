@@ -1,17 +1,7 @@
-/**
- * EffortPicker — modal effort picker for /effort (slice-027 C2).
- *
- * listbox semantics (same as ModelPicker): ArrowUp/Down moves the active row,
- * Enter/Space confirms, Esc cancels. cc's native /effort doesn't pop a picker
- * (it just prints the current value); trowel enhances it to a picker over the
- * 6 fixed levels. ultracode is cc 2.1.197+ (xhigh + auto multi-agent); flagged
- * "GLM unverified" so the user knows it may auto-downgrade on the backend.
- */
 import { useEffect, useRef, useState } from "react";
 import { EFFORT_OPTIONS } from "./effortOptions";
 
 interface EffortPickerProps {
-  /** Currently in-effect effort (from createSession params / ModelChangedEvent). */
   readonly currentEffort: string | null;
   readonly onSelect: (value: string) => void;
   readonly onCancel: () => void;

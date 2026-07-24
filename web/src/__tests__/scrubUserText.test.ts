@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { scrubUserText } from "../components/cc/scrubUserText";
 
-describe("scrubUserText (slice-035 bug4 FE defense)", () => {
+describe("scrubUserText", () => {
   it("passes real user input through unchanged", () => {
     expect(scrubUserText("修复重载渲染的几个 bug")).toBe("修复重载渲染的几个 bug");
   });

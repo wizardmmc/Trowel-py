@@ -1,4 +1,3 @@
-/** Inline Codex approval card backed by real app-server decisions. */
 import type { ApprovalDecision } from "../../api/ccTypes";
 import type { ApprovalItem } from "../../stores/ccStore";
 
@@ -8,14 +7,12 @@ interface ApprovalBlockProps {
   readonly disabled?: boolean;
 }
 
-/** Return the public key represented by one native decision value. */
 function decisionKey(decision: ApprovalDecision): string | null {
   if (typeof decision === "string") return decision;
   const keys = Object.keys(decision);
   return keys.length === 1 ? keys[0] : null;
 }
 
-/** Human label for the verified decision keys this UI can submit. */
 function decisionLabel(key: string): string | null {
   const labels: Readonly<Record<string, string>> = {
     accept: "仅这次允许",
@@ -27,7 +24,6 @@ function decisionLabel(key: string): string | null {
   return labels[key] ?? null;
 }
 
-/** Render a terminal request state without interactive controls. */
 function TerminalApproval({ item }: { readonly item: ApprovalItem }) {
   let title = "许可已处理";
   let detail = item.decision ?? "已结束";
@@ -69,7 +65,6 @@ function TerminalApproval({ item }: { readonly item: ApprovalItem }) {
   );
 }
 
-/** Render a pending command approval or its read-only terminal state. */
 export function ApprovalBlock({
   item,
   onDecision,

@@ -8,7 +8,7 @@ const models: readonly ModelOption[] = [
   { value: "sonnet", label: "Sonnet", real_model: "glm-5.1", description: "日常主力", is_default: true },
 ];
 
-describe("ModelPicker (slice-027 C2)", () => {
+describe("ModelPicker", () => {
   it("renders each alias with label + real_model + description", () => {
     render(<ModelPicker models={models} currentModel="opus" onSelect={() => {}} onCancel={() => {}} />);
     expect(screen.getByText("Opus")).toBeInTheDocument();
@@ -27,14 +27,12 @@ describe("ModelPicker (slice-027 C2)", () => {
     const onSelect = vi.fn();
     render(<ModelPicker models={models} currentModel="opus" onSelect={onSelect} onCancel={() => {}} />);
     const listbox = screen.getByRole("listbox");
-    fireEvent.keyDown(listbox, { key: "ArrowDown" }); // opus → sonnet
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
     fireEvent.keyDown(listbox, { key: "Enter" });
     expect(onSelect).toHaveBeenCalledWith("sonnet");
   });
 
   it("arrow keys do NOT immediately select (no onChange on navigate)", () => {
-    // listbox semantics: arrow moves highlight only; Enter confirms. This is
-    // the whole point of switching off native radio (whose arrows fire change).
     const onSelect = vi.fn();
     render(<ModelPicker models={models} currentModel="opus" onSelect={onSelect} onCancel={() => {}} />);
     const listbox = screen.getByRole("listbox");

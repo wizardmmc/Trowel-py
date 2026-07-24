@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MemoryProfileChip } from "./MemoryProfileChip";
-import {
-  ModelEffortChip,
-  type EffortControlOption,
-} from "./ModelEffortChip";
-import { PermissionFactsChip } from "./PermissionFactsChip";
+import { ComposerToolbar, type PermissionFacts } from "./ComposerToolbar";
+import type { EffortControlOption } from "./ModelEffortChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
 import {
   flatVisible,
@@ -13,35 +9,16 @@ import {
 } from "./slashGroups";
 import type { ModelOption, SlashItem } from "../../api/cc";
 
-/**
- * The message composer. Esc follows the CC-terminal convention with three
- * context-specific behaviors (most-specific first):
- *   1. if `/` autocomplete is open → close it (text kept)
- *   2. if the input has text → clear it
- *   3. if a turn is streaming → interrupt
- * Enter sends, Shift+Enter inserts a newline.
- *
- * slice-027: when `slashItems` is provided and input starts with `/`, a
- * SlashAutocomplete pops up above the textarea. ArrowUp/Down moves the
- * selection, Enter picks (fills `/<name> ` so the user can append args; the
- * backend input layer then expands the skill / custom command). Bare `/model`
- * or `/effort` + Enter opens the corresponding picker instead of sending.
- * Without `slashItems` the composer posts raw text (legacy slice022 path).
- */
 interface ComposerProps {
   readonly streaming: boolean;
   readonly disabled: boolean;
-  /** True while an AskUserQuestion awaits the user's answer (slice-025-c). */
   readonly awaitingInput?: boolean;
   readonly onSend: (text: string) => void;
   readonly onInterrupt: () => void;
-  /** slice-027 C1: slash items for `/` autocomplete. Omit = raw-post legacy. */
+  // 省略 slashItems 时保持原始文本直发。
   readonly slashItems?: readonly SlashItem[];
-  /** slice-027 C2: fired on bare `/model` + Enter (open the model picker). */
   readonly onRequestModelPicker?: () => void;
-  /** slice-027 C2: fired on bare `/effort` + Enter. */
   readonly onRequestEffortPicker?: () => void;
-  /** slice-034 feat 3: model/effort chips on the bottom bar. Omit = no chips. */
   readonly models?: readonly ModelOption[];
   readonly efforts?: readonly EffortControlOption[];
   readonly currentModelAlias?: string | null;
@@ -51,16 +28,7 @@ interface ComposerProps {
   readonly modelCatalogError?: string | null;
   readonly onRetryModelCatalog?: () => void;
   readonly settingsDisabled?: boolean;
-  readonly permissionFacts?: {
-    readonly requested: string | null;
-    readonly profile: string | null;
-    readonly sandbox: string | null;
-    readonly approval: string | null;
-    readonly network: boolean | null;
-    readonly label: string | null;
-  } | null;
-  /** slice-060: frozen memory/profile condition for the active session. When
-   * both are non-null, read-only chips render next to model/effort. */
+  readonly permissionFacts?: PermissionFacts | null;
   readonly memoryEnabled?: boolean | null;
   readonly profileEnabled?: boolean | null;
 }
@@ -90,11 +58,7 @@ export function Composer({
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
-  // slice-042 P4: which source groups the user has collapsed. Plugin starts
-  // collapsed so its ~200 skills don't drown the daily commands; any group is
-  // toggleable via its header. Owned here (not in SlashAutocomplete) because
-  // the keyboard index must skip collapsed rows — the component can't own the
-  // flat list the Composer navigates.
+  // 折叠状态必须与键盘索引同层维护，默认收起体量较大的 plugin 组。
   const [collapsedSources, setCollapsedSources] = useState<ReadonlySet<SlashSource>>(
     () => new Set<SlashSource>(["plugin"]),
   );
@@ -107,9 +71,7 @@ export function Composer({
   const query = acOpen ? text.slice(1) : "";
   const searching = query.trim() !== "";
 
-  // Shared with SlashAutocomplete via slashGroups: same filter + group order, so
-  // the flat index below lines up with the rows it renders. Recomputed cheaply
-  // (a few hundred items); memoized on its inputs.
+  // 键盘索引与菜单必须共享同一筛选和排序结果。
   const acGroups = useMemo(
     () => groupSlashItems(slashItems ?? [], query),
     [slashItems, query],
@@ -118,14 +80,10 @@ export function Composer({
     () => flatVisible(acGroups, searching, collapsedSources),
     [acGroups, searching, collapsedSources],
   );
-  // Always keep the highlighted index inside the visible rows. Collapsing a
-  // group (or the item set changing under a stale index) can shrink acFlat
-  // below acIndex; clamping the DISPLAYED index here means the highlight never
-  // points at a row that isn't rendered. (Typing resets acIndex to 0 already;
-  // toggleGroup clamps the stored index too so arrow nav stays tidy.)
+  // 折叠或数据变化后，高亮索引不能指向隐藏行。
   const safeIndex = Math.min(acIndex, Math.max(0, acFlat.length - 1));
 
-  // Auto-grow the textarea up to a cap.
+  // 输入框随内容增高，但最多 200px。
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
@@ -138,15 +96,12 @@ export function Composer({
     if (next.has(source)) next.delete(source);
     else next.add(source);
     setCollapsedSources(next);
-    // Collapsing shrinks the flat list; clamp the stored index into the new
-    // range right away so the next Arrow key starts from a valid row.
     const nextLen = flatVisible(acGroups, searching, next).length;
     setAcIndex((i) => Math.min(i, Math.max(0, nextLen - 1)));
   }
 
   function pickItem(item: SlashItem) {
-    // model/effort open their picker instead of filling the input — reached
-    // by Enter OR click, the user wants to choose, not type args.
+    // model/effort 命令直接打开选择器，不回填输入框。
     if (item.name === "model" && onRequestModelPicker) {
       onRequestModelPicker();
       setText("");
@@ -160,14 +115,11 @@ export function Composer({
       return;
     }
     setText(`/${item.name} `);
-    setDismissed(true); // close autocomplete so the user can type args
+    setDismissed(true);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (acOpen) {
-      // Clamp to the visible (expanded) rows so ArrowDown can't run past the
-      // list or onto a collapsed group's hidden rows. acFlat matches the order
-      // SlashAutocomplete renders, so the index tracks the highlighted row.
       const last = acFlat.length - 1;
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -182,7 +134,6 @@ export function Composer({
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         const trimmed = text.trim();
-        // bare /model /effort → picker (regardless of autocomplete contents)
         if (trimmed === "/model" && onRequestModelPicker) {
           onRequestModelPicker();
           setText("");
@@ -195,28 +146,22 @@ export function Composer({
           setDismissed(false);
           return;
         }
-        // bare /cost /status → send immediately (builtin local commands take
-        // no args; filling would just force a needless second Enter)
+        // 无参数内置命令一次 Enter 即发送。
         if (trimmed === "/cost" || trimmed === "/status") {
           onSend(trimmed);
           setText("");
           setDismissed(false);
           return;
         }
-        // otherwise pick the highlighted autocomplete row (model/effort rows
-        // open their picker via pickItem; skills/commands fill `/<name> `).
-        // safeIndex is already clamped to the visible rows (same value this
-        // inline min would compute) — read it directly instead of re-clamping.
         const item = acFlat[safeIndex];
         if (item) {
           pickItem(item);
           return;
         }
-        // no autocomplete match (e.g. "/monthly-etf args") → fall through to
-        // submit so the user's typed text is sent as-is
+        // 无匹配项时继续走普通提交，保留用户输入的命令参数。
       }
       if (e.key === "Escape") {
-        // most-specific: close autocomplete, keep the text
+        // Esc 优先关闭补全菜单，并保留已输入文本。
         e.preventDefault();
         setDismissed(true);
         return;
@@ -280,48 +225,24 @@ export function Composer({
           disabled={disabled}
           aria-label="CC 消息输入"
         />
-        <div className="cc-composer__bar">
-          {models && onPickModel && onPickEffort && (
-            <ModelEffortChip
-              models={models}
-              efforts={efforts}
-              currentModelAlias={currentModelAlias ?? null}
-              currentEffort={currentEffort ?? null}
-              onPickModel={onPickModel}
-              onPickEffort={onPickEffort}
-              catalogError={modelCatalogError}
-              onRetryCatalog={onRetryModelCatalog}
-              disabled={settingsDisabled}
-            />
-          )}
-          {permissionFacts && <PermissionFactsChip {...permissionFacts} />}
-          {memoryEnabled != null && profileEnabled != null && (
-            <MemoryProfileChip
-              memoryEnabled={memoryEnabled}
-              profileEnabled={profileEnabled}
-            />
-          )}
-          <span className="cc-composer__spacer" />
-          {/* slice-034 feat 2: 圆形箭头按钮（无文字）；streaming 变停止图标 */}
-          <button
-            type="button"
-            className={`cc-composer__send${streaming ? " cc-composer__send--stop" : ""}`}
-            onClick={streaming ? onInterrupt : submit}
-            disabled={!streaming && (disabled || text.trim().length === 0)}
-            aria-label={streaming ? "中断" : "发送"}
-            title={streaming ? "中断（Esc）" : "发送（Enter）"}
-          >
-            {streaming ? (
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 19V5M5 12l7-7 7 7" />
-              </svg>
-            )}
-          </button>
-        </div>
+        <ComposerToolbar
+          streaming={streaming}
+          sendDisabled={disabled || text.trim().length === 0}
+          onSend={submit}
+          onInterrupt={onInterrupt}
+          models={models}
+          efforts={efforts}
+          currentModelAlias={currentModelAlias}
+          currentEffort={currentEffort}
+          onPickModel={onPickModel}
+          onPickEffort={onPickEffort}
+          modelCatalogError={modelCatalogError}
+          onRetryModelCatalog={onRetryModelCatalog}
+          settingsDisabled={settingsDisabled}
+          permissionFacts={permissionFacts}
+          memoryEnabled={memoryEnabled}
+          profileEnabled={profileEnabled}
+        />
       </div>
     </div>
   );

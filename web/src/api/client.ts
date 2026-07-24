@@ -55,8 +55,6 @@ export async function extractCards(content: string): Promise<{ drafts: CardDraft
   });
 }
 
-/** POST /extract-conversation — extract cards from a CC JSONL conversation log.
- *  Backend parses the raw text (handles real CC format). */
 export async function extractConversation(
   content: string,
 ): Promise<{ drafts: CardDraft[] }> {
@@ -88,14 +86,6 @@ export async function findDuplicates(
   return request<{ duplicates: Card[] }>(`${API_BASE}/${draftId}/dedup`);
 }
 
-/**
- * POST /re-explain — regenerate a draft's explanation from a different angle
- * (slice 021). Stateless generator: no DB writes. The caller keeps candidate
- * versions in state and writes the chosen one back via reviewCard — accept for
- * the original, edit+{explanation} for a regenerated version.
- *
- * user_hint is optional; omitted/null means "regenerate freely".
- */
 export async function reExplain(
   explanation: string,
   title: string,
@@ -116,7 +106,6 @@ export async function getAllCards(
   return request(`${API_BASE}?page=${page}&limit=${limit}`);
 }
 
-// ── Review API types & functions ──
 
 export interface FSRSState {
   card_id: string;
@@ -181,7 +170,6 @@ export async function getSessionStats(since: string): Promise<SessionStats> {
   );
 }
 
-// ── Garden API types & functions ──
 
 export interface GardenPlant {
   card_id: string;
@@ -214,19 +202,15 @@ export async function searchCards(query: string): Promise<GardenPlant[]> {
   );
 }
 
-// ── Pet API types & functions ──
 
 const PET_API_BASE = "/api/pet";
 
 export type PetMood = "happy" | "excited" | "curious" | "normal";
 
 export interface Pet {
-  /** always 'default' in the single-user system */
   readonly player_id: string;
   readonly mood: PetMood;
-  /** satiety 0-100 */
   readonly hunger: number;
-  /** inventory row id of the worn hat, or null when bare-headed */
   readonly equipped_hat: string | null;
   readonly updated_at: string;
 }
@@ -241,12 +225,10 @@ export interface InteractResult {
   readonly pet: Pet;
 }
 
-/** GET /api/pet — the pet's current state */
 export async function fetchPet(): Promise<Pet> {
   return request<Pet>(PET_API_BASE);
 }
 
-/** POST /api/pet/feed — eat one food item, returns the updated pet */
 export async function feedPet(itemId: string): Promise<Pet> {
   return request<Pet>(`${PET_API_BASE}/feed`, {
     method: "POST",
@@ -255,7 +237,6 @@ export async function feedPet(itemId: string): Promise<Pet> {
   });
 }
 
-/** POST /api/pet/interact — pet the pet, returns a line + the updated pet */
 export async function interactPet(): Promise<InteractResult> {
   return request<InteractResult>(`${PET_API_BASE}/interact`, {
     method: "POST",
@@ -263,7 +244,6 @@ export async function interactPet(): Promise<InteractResult> {
   });
 }
 
-/** PUT /api/pet/equip — wear a hat, returns the updated pet */
 export async function equipHat(itemId: string): Promise<Pet> {
   return request<Pet>(`${PET_API_BASE}/equip`, {
     method: "PUT",
@@ -272,31 +252,26 @@ export async function equipHat(itemId: string): Promise<Pet> {
   });
 }
 
-// ── Player API types & functions ──
 
 const PLAYER_API_BASE = "/api/player";
 
 export interface PlayerProfile {
   readonly id: string;
   readonly xp: number;
-  /** spendable currency; buying food/hats deducts from this */
   readonly coins: number;
   readonly streak_days: number;
   readonly last_active: string;
   readonly created_at: string;
-  /** derived from xp by the backend (level n needs n*(n-1)*50 xp) */
   readonly level: number;
   readonly xp_to_next_level: number;
 }
 
 export interface InventoryItem {
-  /** inventory row id (uuid); this is what feed/equip expect, NOT item_id */
+  /** inventory 行 ID；feed/equip 接收它，而不是 item_id。 */
   readonly id: string;
   readonly player_id: string;
-  /** catalog id, e.g. food_basic / hat_straw */
   readonly item_id: string;
   readonly item_type: "food" | "hat";
-  /** 0 or 1 — whether a hat is currently worn */
   readonly equipped: number;
   readonly obtained_at: string;
 }
@@ -306,21 +281,15 @@ export interface BuyResult {
   readonly item_type: "food" | "hat";
 }
 
-/** GET /api/player — profile with computed level fields */
 export async function fetchPlayer(): Promise<PlayerProfile> {
   return request<PlayerProfile>(PLAYER_API_BASE);
 }
 
-/** GET /api/player/inventory — every owned item (food + hats) */
 export async function fetchInventory(): Promise<InventoryItem[]> {
   return request<InventoryItem[]>(`${PLAYER_API_BASE}/inventory`);
 }
 
-/**
- * POST /api/player/buy — spend coins, grant one item.
- * Returns only the catalog id + type (not the new row id), so callers must
- * re-fetch the inventory to resolve the granted row.
- */
+/** 购买响应不含 inventory 行 ID，调用方需重新读取背包。 */
 export async function buyItem(itemId: string): Promise<BuyResult> {
   return request<BuyResult>(`${PLAYER_API_BASE}/buy`, {
     method: "POST",
@@ -329,18 +298,11 @@ export async function buyItem(itemId: string): Promise<BuyResult> {
   });
 }
 
-// ── Profile API types & functions ──
 
 const PROFILE_API_BASE = "/api/profile";
 
-/** file-level provenance stamp: user-edit (hand edit, default) or ai-calibration
- * (the front-end passes this when merging accepted AI suggestions — slice-050). */
 export type ProfileSource = "user-edit" | "ai-calibration";
 
-/** PUT /api/profile body: the five editable dimensions. `updated` is always
- * server-stamped. `source` is optional (defaults to user-edit; pass
- * ai-calibration on the accept-merge path). Mirrors the five-dim Profile
- * dataclass (slice-047); `other` is always present. */
 export interface ProfileUpdate {
   readonly ability: string;
   readonly methodology: string;
@@ -350,7 +312,6 @@ export interface ProfileUpdate {
   readonly source?: ProfileSource;
 }
 
-/** GET/PUT /api/profile response: five dims + provenance. */
 export interface ProfileDTO {
   readonly ability: string;
   readonly methodology: string;
@@ -361,14 +322,10 @@ export interface ProfileDTO {
   readonly source: string;
 }
 
-/** GET /api/profile — the user self-description profile (empty dims on cold start). */
 export async function fetchProfile(): Promise<ProfileDTO> {
   return request<ProfileDTO>(PROFILE_API_BASE);
 }
 
-/** PUT /api/profile — write the five dims back to profile.md via the store.
- * Returns the freshly loaded profile (server-stamped updated/source), so the
- * caller need not re-GET. */
 export async function putProfile(input: ProfileUpdate): Promise<ProfileDTO> {
   return request<ProfileDTO>(PROFILE_API_BASE, {
     method: "PUT",
@@ -377,9 +334,7 @@ export async function putProfile(input: ProfileUpdate): Promise<ProfileDTO> {
   });
 }
 
-// ── Profile suggestions (slice-050) ──
 
-/** which of the five profile dims a suggestion targets (mirrors ProfileUpdate). */
 export type ProfileDimension =
   | "ability"
   | "methodology"
@@ -387,12 +342,8 @@ export type ProfileDimension =
   | "goal"
   | "other";
 
-/** lifecycle of a suggestion in the candidate queue. */
 export type SuggestionStatus = "pending" | "accepted" | "discarded";
 
-/** GET /api/profile/suggestions item: one AI-proposed profile addition (a
- * pending candidate the user accepts — merged into profile via PUT — or
- * discards). The agent never writes profile.md (C-1). */
 export interface Suggestion {
   readonly id: string;
   readonly dimension: ProfileDimension;
@@ -402,14 +353,10 @@ export interface Suggestion {
   readonly status: SuggestionStatus;
 }
 
-/** GET /api/profile/suggestions — the pending AI suggestions for the user. */
 export async function getSuggestions(): Promise<Suggestion[]> {
   return request<Suggestion[]>(`${PROFILE_API_BASE}/suggestions`);
 }
 
-/** PATCH /api/profile/suggestions/{id} — accept / discard one suggestion.
- * Accept does NOT write profile.md here; the caller merges the accepted body
- * into the profile and PUTs with source=ai-calibration. */
 export async function patchSuggestionStatus(
   id: string,
   status: "accepted" | "discarded",
@@ -421,7 +368,6 @@ export async function patchSuggestionStatus(
   });
 }
 
-// ── Events API types & functions ──
 
 const EVENTS_API_BASE = "/api/events";
 
@@ -437,18 +383,11 @@ export interface EventLog {
   readonly triggered_at: string;
 }
 
-/** GET /api/events/history — most recent event logs, newest first */
 export async function fetchEventHistory(limit: number): Promise<EventLog[]> {
   return request<EventLog[]>(`${EVENTS_API_BASE}/history?limit=${limit}`);
 }
 
-/**
- * POST /api/events/trigger — run one event cycle synchronously.
- * Returns the event log when something fired, or null when nothing was
- * eligible (cooldown / no candidate). This is a plain request/response, not
- * SSE — the py backend has no server-push source, so a synchronous fetch is
- * the right shape here (see docs/training-log-m2.md slice 016 rationale).
- */
+/** 事件引擎没有推送源，因此这里同步触发并返回本轮结果。 */
 export async function triggerEvent(): Promise<EventLog | null> {
   return request<EventLog | null>(`${EVENTS_API_BASE}/trigger`, {
     method: "POST",
@@ -456,19 +395,15 @@ export async function triggerEvent(): Promise<EventLog | null> {
   });
 }
 
-// ── Feynman API types & functions ──
 
 const FEYNMAN_API_BASE = "/api/feynman";
 
-/** Result from POST /generate — a fresh drill question + its session id */
 export interface FeynmanQuestion {
   readonly session_id: string;
   readonly question: string;
-  /** null when the LLM offers no hint */
   readonly hint: string | null;
 }
 
-/** Result from POST /evaluate — the LLM's scores for a user's answer */
 export interface FeynmanEvaluation {
   readonly session_id: string;
   readonly accuracy: number;
@@ -477,7 +412,6 @@ export interface FeynmanEvaluation {
   readonly missed_points: readonly string[];
 }
 
-/** One row of GET /history — a past (possibly unevaluated) session */
 export interface FeynmanHistoryItem {
   readonly id: string;
   readonly card_id: string;
@@ -490,7 +424,6 @@ export interface FeynmanHistoryItem {
   readonly created_at: string | null;
 }
 
-/** POST /api/feynman/generate — ask the LLM for a drill question on a card */
 export async function generateFeynmanQuestion(
   cardId: string,
 ): Promise<FeynmanQuestion> {
@@ -501,7 +434,6 @@ export async function generateFeynmanQuestion(
   });
 }
 
-/** POST /api/feynman/evaluate — grade a user's answer against the card */
 export async function evaluateFeynmanAnswer(
   sessionId: string,
   answer: string,
@@ -513,7 +445,6 @@ export async function evaluateFeynmanAnswer(
   });
 }
 
-/** GET /api/feynman/history/{cardId} — past sessions for a card, newest first */
 export async function getFeynmanHistory(
   cardId: string,
 ): Promise<FeynmanHistoryItem[]> {

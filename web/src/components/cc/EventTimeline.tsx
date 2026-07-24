@@ -1,307 +1,21 @@
-import { Fragment, type ReactNode, useState } from "react";
+import { Fragment, type ReactNode } from "react";
 
-import type {
-  InterruptedItem,
-  ErrorItem,
-  RetryingItem,
-  ThinkingItem,
-  CompactBoundaryItem,
-  ToolItem,
-  TurnItem,
-} from "../../stores/ccStore";
-import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
+import type { ToolItem, TurnItem } from "../../stores/ccStore";
 import { AssistantText } from "./AssistantText";
-import { SubagentBlock } from "./SubagentBlock";
-import { ToolBlock } from "./ToolBlock";
-import { ElicitationBlock } from "./ElicitationBlock";
-import { ApprovalBlock } from "./ApprovalBlock";
-import { WorkflowTree } from "./WorkflowTree";
 import { CodexExplorationGroup } from "./CodexExplorationGroup";
+import { EventTimelineRow } from "./EventTimelineRow";
 import { isCodexExploration } from "./codexCommandPresentation";
 
-/** slice-034 feat 5: task 类工具的语义已在右侧 TodoBar（task_* 事件）体现，
- * 对话流不再渲染成 ToolBlock（避免与代办栏重复显示）。
- * slice-036: Workflow 工具的 tool_use 不渲染成 ToolBlock——它的进度树由
- * 独立的 WorkflowTree 组件渲染（紧跟其后的 workflow item）。 */
-const HIDDEN_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "Workflow"]);
-
-/**
- * The turn body renderer. Walks `turn.items` in true order and interleaves:
- * consecutive text items merge into one AssistantText markdown block (a DOM
- * optimization — order is preserved), and process items (thinking / tool /
- * retrying / stalled / compact_boundary / error / interrupted / …) render as
- * bare rows at the position they actually occurred.
- *
- * slice-025-b B1: previously this component filtered text out and rendered only
- * a process-item sequence inside a `.cc-timeline` gutter; MessageList bucketed
- * all text in front. That hid the real order. Now text + process share one
- * in-order pass and the gutter is gone (terminal cc style: process rows sit
- * between text blocks, no global timeline rail).
- *
- * error + interrupted render here as the turn-tail block (red block / sunshine
- * soft-transition badge), with a conditional retry button on recoverable errors.
- */
 interface EventTimelineProps {
   readonly items: readonly TurnItem[];
   readonly onRetryLast?: () => void;
-  /** True when rendering a finalized (non-active) turn from history. Used so an
-   * Agent that never got a tool_result (e.g. stalled mid-Agent) doesn't spin
-   * forever in the replay view. */
-  readonly isReplay?: boolean;
-  /** Submit answers for a pending AskUserQuestion (slice-025-c). */
-  readonly onAnswer?: (answers: Record<string, string>) => void;
-  /** Decline a pending AskUserQuestion. */
-  readonly onCancel?: () => void;
-  /** Answer one pending Codex approval by its generation-scoped id. */
-  readonly onApprovalDecision?: (requestId: string, decision: string) => void;
-  /** slice-029: the session's cwd, so Edit/Write paths render project-relative
-   * (CC `getDisplayPath`) instead of full absolute. Optional — omit for tests. */
-  readonly workdir?: string;
-  /** Active agent runtime. Only Codex receives commandActions grouping. */
-  readonly runtime?: string;
-}
-
-function ChevronToggle({
-  open,
-  label,
-}: {
-  readonly open: boolean;
-  readonly label: string;
-}) {
-  return (
-    <span className="cc-timeline__chevron" aria-label={label}>
-      {open ? "▾" : "▸"}
-    </span>
-  );
-}
-
-function ThinkingRow({
-  item,
-  runtime,
-  completed,
-}: {
-  readonly item: ThinkingItem;
-  readonly runtime?: string;
-  readonly completed: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  // slice-025-a A2: show "Thought for Ns" when a heartbeat-measured duration is
-  // stamped on the item; fall back to a bare "思考" when no heartbeat preceded
-  // (e.g. non-GLM backend or history replay).
-  const codexVerb = completed ? "Reasoned" : "Reasoning";
-  const label = runtime === "codex"
-    ? item.thinkingDurationSeconds !== undefined
-      ? `${codexVerb} for ${item.thinkingDurationSeconds}s`
-      : codexVerb
-    : item.thinkingDurationSeconds !== undefined
-      ? `Thought for ${item.thinkingDurationSeconds}s`
-      : "思考";
-  return (
-    <div className="cc-timeline__row cc-timeline__row--thinking">
-      <button
-        type="button"
-        className="cc-timeline__summary"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span className="cc-timeline__dot" aria-hidden="true">●</span>
-        <span className="cc-timeline__label">{label}</span>
-        <ChevronToggle open={open} label={open ? "收起" : "展开"} />
-      </button>
-      {open && <pre className="cc-timeline__detail">{item.text}</pre>}
-    </div>
-  );
-}
-
-function RetryingRow({ item }: { readonly item: RetryingItem }) {
-  const [open, setOpen] = useState(false);
-  const delaySec =
-    item.retryDelayMs !== null ? (item.retryDelayMs / 1000).toFixed(0) : null;
-  const max = item.maxRetries !== null ? `/${item.maxRetries}` : "";
-  return (
-    <div className="cc-timeline__row cc-timeline__row--retrying">
-      <button
-        type="button"
-        className="cc-timeline__summary"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <svg className="cc-timeline__icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 12a9 9 0 1 0 3-6.7" />
-          <path d="M3 4v4h4" />
-        </svg>
-        <span className="cc-timeline__label">
-          {item.attempt > 0 ? `重试 ${item.attempt}${max}` : "重试中"}
-          {item.errorStatus !== null && ` (GLM ${item.errorStatus}`}
-          {delaySec && `，${delaySec}s 后)`}
-          {item.errorStatus !== null && !delaySec && ")"}
-        </span>
-        <ChevronToggle open={open} label={open ? "收起" : "展开"} />
-      </button>
-      {open && item.error && <pre className="cc-timeline__detail">{item.error}</pre>}
-    </div>
-  );
-}
-
-function CompactRow({ item }: { readonly item: CompactBoundaryItem }) {
-  void item;
-  return (
-    <div className="cc-timeline__divider" role="separator">
-      <span className="cc-timeline__divider-line" aria-hidden="true" />
-      <span className="cc-timeline__divider-label">自动压缩完成</span>
-      <span className="cc-timeline__divider-line" aria-hidden="true" />
-    </div>
-  );
-}
-
-function InterruptedRow({ item, runtime }: { readonly item: InterruptedItem; readonly runtime?: string }) {
-  void item;
-  const host = runtime === "codex" ? "Codex host" : runtime === "claude_code" ? "CC 进程" : "Agent 进程";
-  return (
-    <div className="cc-timeline__row cc-timeline__row--interrupted">
-      <span className="cc-timeline__label">已中断 · {host}已退出，发下一条会自动接上历史</span>
-    </div>
-  );
-}
-
-function ErrorRow({
-  item,
-  onRetryLast,
-}: {
-  readonly item: ErrorItem;
-  readonly onRetryLast?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const recoverable = RECOVERABLE_ERROR_SUBCLASSES.has(item.subclass);
-  return (
-    <div className="cc-timeline__row cc-timeline__row--error">
-      <div className="cc-timeline__error-head">
-        <span className="cc-timeline__error-msg">出错了，可以重试或换种问法。</span>
-        <span className="cc-timeline__error-subclass">{item.subclass}</span>
-      </div>
-      <button
-        type="button"
-        className="cc-timeline__error-toggle"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <ChevronToggle open={open} label={open ? "收起详情" : "展开详情"} />
-        <span>{open ? "收起详情" : "展开详情"}</span>
-      </button>
-      {open && item.errors.length > 0 && (
-        <pre className="cc-timeline__detail">{item.errors.join("\n")}</pre>
-      )}
-      {recoverable && onRetryLast && (
-        <button
-          type="button"
-          className="cc-timeline__retry-btn"
-          onClick={onRetryLast}
-        >
-          重试上一条
-        </button>
-      )}
-    </div>
-  );
-}
-
-/**
- * Render one process item. Text items are NOT rendered here — EventTimeline's
- * main loop merges consecutive text into AssistantText blocks before reaching
- * Row. The text case stays as a defensive null.
- */
-function Row({
-  item,
-  onRetryLast,
-  isReplay,
-  onAnswer,
-  onCancel,
-  onApprovalDecision,
-  workdir,
-  runtime,
-  thinkingComplete,
-}: {
-  readonly item: TurnItem;
-  readonly onRetryLast?: () => void;
+  // 历史中缺少 tool_result 的 Agent 也必须显示为已结束。
   readonly isReplay?: boolean;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
   readonly runtime?: string;
-  readonly thinkingComplete?: boolean;
-}) {
-  switch (item.kind) {
-    case "thinking":
-      return <ThinkingRow item={item} runtime={runtime} completed={Boolean(thinkingComplete)} />;
-    case "tool":
-      // slice-034 feat 5: task 类工具的语义在右侧 TodoBar 体现，对话流不渲染。
-      if (HIDDEN_TOOLS.has(item.toolName)) return null;
-      // Agent tool gets the dedicated sub-agent block. When no task_* progress
-      // has arrived (e.g. history replay — the cc interactive jsonl carries no
-      // task_* events), infer status from the ToolItem itself: a done tool_result
-      // means the Agent call finished -> completed; otherwise in-progress.
-      // The Agent's input (prompt) / result are NOT expanded here (mockup
-      // single-row design; a future slice can add a collapsible detail).
-      if (item.toolName === "Agent") {
-        const fallback =
-          item.status === "done" || isReplay ? "completed" : "progress";
-        return (
-          <SubagentBlock
-            subagent={item.subagent ?? { status: fallback }}
-            childTools={item.childTools}
-            workdir={workdir}
-          />
-        );
-      }
-      return <ToolBlock item={item} workdir={workdir} />;
-    case "subagent":
-      // Standalone degradation row (no matching Agent ToolItem — decision #10).
-      return <SubagentBlock subagent={item.subagent} workdir={workdir} />;
-    case "retrying":
-      return <RetryingRow item={item} />;
-    case "compact_boundary":
-      return <CompactRow item={item} />;
-    case "local_command":
-      return (
-        <div className="cc-timeline__row cc-timeline__row--local">
-          <pre className="cc-timeline__local-cmd">{item.content}</pre>
-        </div>
-      );
-    case "error":
-      return <ErrorRow item={item} onRetryLast={onRetryLast} />;
-    case "interrupted":
-      return <InterruptedRow item={item} runtime={runtime} />;
-    case "elicit":
-      return (
-        <ElicitationBlock
-          item={item}
-          onAnswer={onAnswer}
-          onCancel={onCancel}
-          disabled={isReplay}
-        />
-      );
-    case "approval":
-      // A live Codex request outlives a short SSE disconnect.  `isReplay`
-      // currently also covers that disconnected turn, so it must not disable
-      // the only control capable of resolving the still-owned host request.
-      // The backend registry remains the authority and rejects stale,
-      // cross-session, repeated, expired, or host-closed answers.
-      return (
-        <ApprovalBlock
-          item={item}
-          onDecision={onApprovalDecision}
-        />
-      );
-    case "workflow":
-      // slice-036: render the workflow progress tree (live + history share
-      // this component — invariant C-1).
-      return <WorkflowTree workflow={item} workdir={workdir} />;
-    case "text":
-      // Handled by EventTimeline's main loop (merged into AssistantText).
-      return null;
-    default:
-      return null;
-  }
 }
 
 export function EventTimeline({
@@ -314,13 +28,7 @@ export function EventTimeline({
   workdir,
   runtime,
 }: EventTimelineProps) {
-  // One in-order pass: consecutive text items merge into a single AssistantText
-  // markdown block; every other item renders via Row at its real position.
-  //
-  // Returns a Fragment (not a wrapper <div>): AssistantText and each Row become
-  // DIRECT children of .cc-msg__body, which is what lets the
-  // `.cc-msg--assistant .cc-msg__body > * + *` selector space them. Wrapping
-  // these blocks in a container div would break that rhythm — keep this透明.
+  // 必须返回 Fragment，消息块需保持为 .cc-msg__body 的直接子元素。
   const blocks: ReactNode[] = [];
   let textBuf = "";
   let key = 0;
@@ -333,13 +41,7 @@ export function EventTimeline({
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     if (item.kind === "text") {
-      // Join consecutive text items with a blank line. ccStore's text case
-      // already folds a same-run delta into one TextItem, so this branch
-      // normally runs once per text run. But if items ever carry two adjacent
-      // TextItems (two assistant envelopes with no tool between, or a future
-      // reducer change), a bare concat would collapse them into one paragraph.
-      // The blank-line join keeps the paragraph boundary → markdown renders two
-      // <p>. Zero effect on the normal single-item path.
+      // 相邻文本用空行连接，避免 Markdown 段落被合并。
       textBuf = textBuf ? `${textBuf}\n\n${item.text}` : item.text;
     } else if (
       runtime === "codex" &&
@@ -369,7 +71,7 @@ export function EventTimeline({
     } else {
       flushText();
       blocks.push(
-        <Row
+        <EventTimelineRow
           key={`p${key++}`}
           item={item}
           onRetryLast={onRetryLast}

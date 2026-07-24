@@ -8,11 +8,9 @@ import {
   type FeynmanHistoryItem,
 } from "../api/client";
 
-// Mock global fetch — same pattern as review-api-client.test.ts
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-/** Build a successful {success, data, error} envelope response */
 function mockResponse<T>(data: T, success = true, error: string | null = null) {
   return {
     ok: true,
@@ -20,7 +18,6 @@ function mockResponse<T>(data: T, success = true, error: string | null = null) {
   };
 }
 
-/** Build a non-2xx HTTP response (e.g. FastAPI 422 validation) */
 function mockHttpError(status: number) {
   return {
     ok: false,

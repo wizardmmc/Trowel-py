@@ -9,21 +9,15 @@ import {
   reExplain as reExplainApi,
 } from "../api/client";
 
-/** a regenerated explanation candidate. the original (V0) is NOT stored here —
- *  it is always the draft's own explanation, rendered separately. */
 export interface ReExplainCandidate {
-  /** "regen-1" / "regen-2" — also used as the selected-id value */
   readonly id: string;
-  /** display label, e.g. "重写 1" */
+  /** 界面标签，例如“重写 1”。 */
   readonly tag: string;
-  /** the regenerated explanation text */
   readonly text: string;
 }
 
-/** max regenerations per draft in one review session (slice 021 invariant 3). */
 export const MAX_RE_EXPLAINS = 2;
 
-/** selected-id value that represents the draft's original explanation. */
 export const ORIGINAL_ID = "original";
 
 interface CardState {
@@ -35,9 +29,7 @@ interface CardState {
   loading: boolean;
   error: string | null;
 
-  /** regenerated candidates for the draft under review (original not included). */
   reExplainRegens: ReExplainCandidate[];
-  /** which candidate is selected: ORIGINAL_ID (default) or a regen id. */
   reExplainSelectedId: string;
   reExplainLoading: boolean;
   reExplainError: string | null;
@@ -55,18 +47,11 @@ interface CardState {
   prevDraft: () => void;
   clearDrafts: () => void;
 
-  /** regenerate the given draft's explanation from a different angle. no-op once
-   *  MAX_RE_EXPLAINS regens already exist (frontend enforces the cap). */
   regenerateExplanation: (draft: CardDraft, hint?: string) => Promise<void>;
-  /** mark a candidate (original or a regen) as the selected one. */
   selectReExplain: (id: string) => void;
-  /** clear all regens and re-select the original. */
   resetReExplain: () => void;
 }
 
-/** shape reused on every draft switch / review / extract / clear so the
- *  candidate pool never leaks across drafts (invariant 2: candidates are
- *  per-session, in-memory only). */
 const RE_EXPLAIN_RESET = {
   reExplainRegens: [] as ReExplainCandidate[],
   reExplainSelectedId: ORIGINAL_ID,
@@ -161,10 +146,6 @@ export const useCardStore = create<CardState>((set, get) => ({
     set({ drafts: [], currentDraftIndex: 0, duplicates: [], ...RE_EXPLAIN_RESET }),
 
   regenerateExplanation: async (draft, hint) => {
-    // block concurrent calls AND cap: the UI disables the button while loading,
-    // but enforce it in the store too so id sequencing stays correct under rapid
-    // clicks (a second call before re-render would otherwise reuse count=0 and
-    // produce a duplicate "regen-1" id).
     if (
       get().reExplainLoading ||
       get().reExplainRegens.length >= MAX_RE_EXPLAINS

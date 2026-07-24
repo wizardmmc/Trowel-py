@@ -1,6 +1,4 @@
-/* CC session view — all visual tokens come from tokens.css (no hardcoded
-   colors / fonts). Line SVG symbols replace emoji; no left/right chat bubbles
-   (spec: A 混合 — shallow cards for dialogue text, bare rows for process). */
+
 
 .cc-view {
   display: flex;
@@ -10,7 +8,7 @@
   background: var(--bg-card);
   border-radius: var(--radius-md);
   overflow: hidden;
-  /* slice-035 bug2: anchor for the .cc-jump-latest button (absolute). */
+
   position: relative;
 }
 
@@ -31,18 +29,11 @@
   overflow-y: auto;
   padding: var(--space-md);
   min-height: 0;
-  /* slice-032: keep the tail of the stream (esp. the ✻ thinking row) visible
-     above the Composer. scrollIntoView({block:"end"}) aligns the sentinel to
-     the scroll container's bottom edge, which the Composer overlaps — so pad
-     the alignment by the Composer's live height (SessionView's ResizeObserver
-     writes it into --composer-h). Adapts automatically when the Composer
-     grows (more input rows, elicit box); falls back to 0 before first measure. */
+
   scroll-padding-bottom: calc(var(--composer-h, 0px) + var(--space-md));
 }
 
-/* slice-035 bug2: "回最新" sticky-bottom button — style C centered. Floats
-   above the Composer while the user is scrolled up; clicking smooth-scrolls
-   back to the bottom and re-arms auto-follow. */
+
 .cc-jump-latest {
   position: absolute;
   left: 50%;
@@ -84,7 +75,6 @@
   flex-shrink: 0;
 }
 
-/* ── StatusBar ── */
 
 .cc-status {
   display: flex;
@@ -173,7 +163,6 @@
   background: var(--error-soft);
 }
 
-/* ── SessionSwitcher ── */
 
 .cc-switcher {
   display: flex;
@@ -211,9 +200,7 @@
   position: absolute;
   right: 0;
   top: 100%;
-  /* slice-026 C3: cap the width so a long title can't shrink-to-fit the panel
-     wide open — without this the absolute container grows to max-content and
-     the per-item nowrap+ellipsis never triggers. */
+
   width: 340px;
   max-width: 340px;
   min-width: 280px;
@@ -230,7 +217,7 @@
   display: flex;
   flex-direction: column;
   width: 100%;
-  /* min-width:0 lets the title's nowrap+ellipsis clip inside a flex column. */
+
   min-width: 0;
   text-align: left;
   background: transparent;
@@ -261,7 +248,6 @@
   padding: var(--space-xs) var(--space-sm);
 }
 
-/* ── MessageList / turns ── */
 
 .cc-msglist {
   max-width: 1440px;
@@ -285,8 +271,7 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
-/* 每轮用时标签（Ran for …）：轮结束后贴在 assistant 卡片左下角的灰色小字。
-   turn 是 flex column，align-self: flex-start 左对齐；只在 done 且有时长时渲染。 */
+
 .cc-turn__duration {
   align-self: flex-start;
   margin-top: -2px;
@@ -325,22 +310,16 @@
   line-height: 1.6;
   color: var(--text-primary);
 }
-/* slice-033 feat 1: preserve the user's newlines/indentation. userText already
-   carries \n (Composer only trims ends); only CSS was missing. overflow-wrap
-   anywhere so a long URL/path can't force a horizontal scrollbar. Assistant
-   body is markdown (its own block layout) so is unaffected. */
+
 .cc-msg--user .cc-msg__body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* slice-025-b: assistant body interleaves markdown blocks and process rows in
-   true item order. Adjacent top-level blocks get vertical rhythm. User body is
-   a single text node so this only adds rhythm inside the assistant card. */
+
 .cc-msg--assistant .cc-msg__body > * + * {
   margin-top: var(--space-sm);
 }
 
-/* ── AssistantText markdown (slice-025-b B2) ── */
 .cc-md p { margin: 0 0 var(--space-sm) 0; }
 .cc-md p:last-child { margin-bottom: 0; }
 .cc-md strong { font-weight: 600; color: var(--text-primary); }
@@ -355,7 +334,7 @@
 .cc-md ol { margin: 0 0 var(--space-sm) 0; padding-left: 1.4em; }
 .cc-md li { margin: 2px 0; }
 .cc-md li::marker { color: var(--soil-brown); }
-/* inline code (the <code> that is NOT inside a fenced block) */
+
 .cc-md code {
   font-family: var(--font-mono);
   font-size: 0.85em;
@@ -379,9 +358,7 @@
 .cc-md h2:first-child,
 .cc-md h3:first-child { margin-top: 0; }
 
-/* Fenced code block: AssistantText.CodeBlock wraps <pre> in a container that
-   carries the language as a corner badge. Reset inline-code styling for the
-   <code> nested inside <pre> (it must look like plain mono text, not a chip). */
+
 .cc-md-codeblock {
   position: relative;
   margin: 0 0 var(--space-sm) 0;
@@ -429,13 +406,7 @@
 }
 .cc-md blockquote code { background: var(--bg-card); }
 
-/* ── EventTimeline rows (slice-025-b: no global gutter) ──
-   Process rows (thinking / retrying / stalled / error / …) interleave inside
-   the assistant card body between markdown blocks, in true item order. There
-   is no .cc-timeline container or left rail anymore — each row carries its own
-   affordance (ToolBlock keeps its status border-left; thinking/retrying rows
-   keep their summary styling). Vertical rhythm between blocks comes from
-   .cc-msg--assistant .cc-msg__body > * + *. */
+
 
 .cc-timeline__row {
   font-size: 0.8rem;
@@ -537,7 +508,6 @@
   white-space: pre-wrap;
 }
 
-/* ── error block ── */
 
 .cc-timeline__row--error {
   background: var(--error-soft);
@@ -588,7 +558,6 @@
   filter: brightness(1.05);
 }
 
-/* ── ToolBlock ── */
 
 .cc-tool {
   border-left: 2px solid var(--color-border);
@@ -603,9 +572,7 @@
 .cc-tool[data-status="failed"] {
   border-left-color: var(--color-error);
 }
-/* slice-074-b: Codex success is intentionally neutral. Native semantic state
-   is already carried by Ran/Read/List/Search; repeating a green rail + green
-   check made routine exploration visually louder than failures. */
+
 .cc-tool[data-codex-command="true"][data-status="done"] {
   border-left-color: color-mix(in srgb, var(--garden-green) 45%, var(--color-border));
 }
@@ -625,8 +592,7 @@
 .cc-tool__summary:hover {
   color: var(--text-primary);
 }
-/* slice-029: condensed (subagent children) renders a <div>, not a <button> —
-   drop the pointer cursor and hover color shift since it's non-interactive. */
+
 .cc-tool__summary--condensed {
   cursor: default;
 }
@@ -707,11 +673,11 @@
   gap: 2px;
   color: var(--garden-green);
 }
-/* slice-074: failed command (Codex nativeStatus failed/declined or non-zero exit) */
+
 .cc-tool__check--failed {
   color: var(--color-error);
 }
-/* slice-074: Codex command exit/duration/cwd meta line */
+
 .cc-tool__cmd-meta {
   margin-top: 4px;
   font-family: var(--font-mono);
@@ -766,7 +732,7 @@
   background: var(--error-soft);
 }
 
-/* ── slice-074-b: Codex native exploration cluster ── */
+
 .cc-exploration {
   border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
   border-radius: var(--radius-md);
@@ -871,19 +837,16 @@
   letter-spacing: 0.05em;
   color: var(--text-secondary);
 }
-/* slice-033 feat 4: the separator (; && || |) at the front of each split bash
-   line — dimmed + bold so the eye separates statements at a glance. */
+
 .cc-tool__bash-sep {
   color: var(--text-tertiary);
   font-weight: 600;
   user-select: none;
 }
 
-/* ── slice-029: Edit/Write diff rendering ──
-   New classes only — colors reuse existing tokens (--garden-green /
-   --color-error + their soft variants) so no new palette is introduced. */
 
-/* Summary stat pill: `· +N −M` between brief and check. */
+
+
 .cc-tool__stat {
   display: inline-flex;
   align-items: center;
@@ -901,7 +864,7 @@
 .cc-tool__stat-add { color: var(--garden-green); font-weight: 600; }
 .cc-tool__stat-rm  { color: var(--color-error);   font-weight: 600; }
 
-/* Running-state spinner ring (diff tools only — Edit/Write/MultiEdit). */
+
 .cc-tool__spinner {
   display: inline-block;
   width: 9px;
@@ -917,7 +880,7 @@
   .cc-tool__spinner { animation: none; }
 }
 
-/* "Added N lines, removed M lines" header above a diff. */
+
 .cc-tool__diff-stat {
   font-size: 0.78rem;
   color: var(--text-secondary);
@@ -929,7 +892,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Diff frame: mono, card bg, bordered. */
+
 .cc-tool__diff {
   font-family: var(--font-mono);
   font-size: 0.74rem;
@@ -941,7 +904,7 @@
 }
 .cc-tool__diff-hunk { display: flex; flex-direction: column; }
 
-/* Hunk separator — `···`, dim, non-selectable. */
+
 .cc-tool__diff-sep {
   text-align: center;
   color: var(--text-tertiary);
@@ -952,10 +915,7 @@
   user-select: none;
 }
 
-/* One diff line: gutter | marker | content.
-   slice-029: `pre-wrap` + `overflow-wrap` so long lines (minified code, long
-   paths) wrap inside the column instead of forcing a horizontal scrollbar —
-   the gutter/marker columns stay aligned via the grid. */
+
 .cc-tool__diff-line {
   display: grid;
   grid-template-columns: auto 1.5ch 1fr;
@@ -972,9 +932,7 @@
   color: var(--text-tertiary);
   text-align: right;
   user-select: none;
-  /* slice-033 补充: auto-size to the widest line number in the hunk (1–5 digits
-     all align), never wrap mid-number. Fixed 3.5ch split 4-digit numbers
-     (1000+) mid-digit once padding ate the room — same fix as Read (slice-032 A). */
+
   white-space: nowrap;
   padding-right: 8px;
   border-right: 1px solid var(--color-border);
@@ -993,7 +951,7 @@
 .cc-tool__diff-line[data-type="remove"]  .cc-tool__diff-content { color: var(--color-error); }
 .cc-tool__diff-line[data-type="context"] .cc-tool__diff-content { color: var(--text-secondary); }
 
-/* Write-create preview header: "Wrote N lines to <name>". */
+
 .cc-tool__create-lines {
   font-size: 0.78rem;
   color: var(--text-secondary);
@@ -1015,12 +973,7 @@
 .cc-tool__create-more,
 .cc-tool__create-more::before { user-select: none; }
 
-/* ── slice-032: Read tool rendering ──
-   Read's expanded detail is a gutter + content grid (no +/- markers — pure
-   content read). Visually mirrors the diff gutter (right-aligned line nums,
-   right border separator) but is a separate class so Read doesn't carry
-   diff's add/remove semantics. Line numbers come from CC's cat -n verbatim,
-   so offset reads keep their real file line numbers. */
+
 .cc-tool__read {
   font-family: var(--font-mono);
   font-size: 0.74rem;
@@ -1032,9 +985,7 @@
   overflow-y: auto;
 }
 .cc-tool__read-line {
-  /* auto gutter column: line numbers (1–5 digits) size themselves and the
-     whole column adopts the widest — fixed `3.5ch` split 3-digit numbers
-     mid-digit (100 → "10"+"0") once padding ate the room. */
+
   display: grid;
   grid-template-columns: auto 1fr;
   align-items: baseline;
@@ -1046,7 +997,7 @@
   color: var(--text-tertiary);
   text-align: right;
   user-select: none;
-  /* Numbers must never wrap mid-digit; the grid column auto-sizes to fit. */
+
   white-space: nowrap;
   padding-right: 8px;
   border-right: 1px solid var(--color-border);
@@ -1056,9 +1007,8 @@
   color: var(--text-primary);
 }
 
-/* ── Composer ── */
 
-/* slice-034 feat 2: AI Studio/Conductor 风——一个外壳包住 textarea + 底栏 */
+
 .cc-composer {
   width: 100%;
   max-width: 1440px;
@@ -1101,7 +1051,7 @@
 .cc-composer__spacer {
   flex: 1;
 }
-/* slice-034 feat 2: 圆形发送按钮（向上箭头，无文字）；streaming 变红色停止 */
+
 .cc-composer__send {
   width: 30px;
   height: 30px;
@@ -1133,7 +1083,7 @@
   cursor: not-allowed;
 }
 
-/* slice-034 feat 3: model/effort chip + 向上弹的 popover picker */
+
 .cc-chip-group {
   display: flex;
   align-items: center;
@@ -1189,7 +1139,7 @@
   font-size: 0.6rem;
   color: var(--text-tertiary);
 }
-/* popover：portal 到 body（避开 .cc-view overflow:hidden），fixed 定位由 inline 给 */
+
 .cc-picker-backdrop {
   position: fixed;
   inset: 0;
@@ -1307,18 +1257,14 @@
   text-align: left;
 }
 
-/* ============================================================
-   slice-025-a: SpinnerLine (A1) + SubagentBlock (A3)
-   ============================================================ */
 
-/* Rotating ring — cc-style 'in progress' indicator (design.md §1: rotating
-   ring and pulse-ring are both fine; a picks the ring). Used by the SpinnerLine
-   glyph, the subagent spin, and (later) todo/left-sidebar rows. */
+
+
 @keyframes cc-spin {
   to { transform: rotate(360deg); }
 }
 
-/* Thinking text shimmer — a slow opacity pulse, calm not flashy. */
+
 @keyframes cc-shimmer {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
@@ -1335,7 +1281,7 @@
   flex-shrink: 0;
 }
 
-/* SpinnerLine — the ✻ thinking… row at the message stream tail. */
+
 .cc-spinner {
   display: flex;
   align-items: center;
@@ -1372,14 +1318,11 @@
   animation: cc-shimmer 2s ease-in-out infinite;
 }
 
-/* StallWarning — phased heads-up under the spinner when cc has been silent
-   past threshold_mild (120s, 黄) / threshold_severe (300s, 红). The process is
-   NOT killed; the user interrupts manually. Mirrors the mockup in
-   docs/design/front-end/stall-warning-2026-07-05.html. */
+
 .cc-stall-warning {
   max-width: 680px;
   margin: 4px auto 0;
-  padding: 4px 10px 4px 28px; /* left pad aligns with spinner text (glyph + gap) */
+  padding: 4px 10px 4px 28px;
   font-size: 0.78rem;
   line-height: 1.5;
   display: flex;
@@ -1388,7 +1331,7 @@
 }
 .cc-stall-warning__icon {
   font-size: 0.75rem;
-  margin-left: -18px; /* pull icon into the left pad */
+  margin-left: -18px;
 }
 .cc-stall-warning--mild {
   color: var(--sunshine-ink);
@@ -1401,8 +1344,7 @@
   opacity: 0.85;
 }
 
-/* SubagentBlock — Agent tool inline block (soil-brown edge). Container holds
-   the header row + an indented, collapsible list of internal tool_uses. */
+
 .cc-subagent {
   display: flex;
   flex-direction: column;
@@ -1455,10 +1397,7 @@
   margin-left: auto;
 }
 
-/* Children region — the sub-agent's internal tool_uses, each rendered as a
-   ToolBlock (same summary line a top-level tool gets), indented under the
-   header by the soil-brown edge. Latest N visible (4 running / 1 done);
-   older scroll off until expanded. slice-025-a 阶段B. */
+
 .cc-subagent__children {
   display: flex;
   flex-direction: column;
@@ -1481,10 +1420,6 @@
   text-decoration: underline;
 }
 
-/* ============================================================
-   slice-025-c: ElicitationBlock (AskUserQuestion inline box)
-   Visual ref: docs/design/front-end/ask-user-question-20260704.html.
-   ============================================================ */
 .cc-elicit {
   margin: var(--space-md) 0;
   padding: var(--space-md);
@@ -1510,9 +1445,7 @@
   color: var(--text-secondary);
   padding-left: var(--space-md);
   white-space: pre-wrap;
-  /* slice-035 bug1: wrap long unbroken strings (Other custom input like a
-     long URL / token) instead of overflowing the elicit box. pre-wrap only
-     breaks on \n and spaces, not mid-word. */
+
   overflow-wrap: anywhere;
   font-size: 0.86rem;
 }
@@ -1612,9 +1545,7 @@
   font-size: 0.85rem;
   color: var(--text-primary);
   outline: none;
-  /* slice-035 bug1: render as a multi-line textarea — wrap long custom
-     answers and auto-grow vertically (height driven by the auto-resize
-     effect in OptionRow, which sets height = scrollHeight on every change). */
+
   display: block;
   resize: none;
   overflow: hidden;
@@ -1659,8 +1590,7 @@
   color: var(--garden-green);
   padding-left: 22px;
   font-weight: 600;
-  /* slice-035 bug1: wrap long unbroken strings in the SubmitView preview
-     ("→ {formatAnswer}") — mirrors .cc-elicit__result. */
+
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1700,7 +1630,7 @@
   cursor: not-allowed;
 }
 
-/* ── slice-026 E1: per-turn revert button (hover-reveal) ── */
+
 
 .cc-turn__revert {
   position: absolute;
@@ -1717,8 +1647,7 @@
   padding: 2px 9px;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  /* slice-026: always visible (not hover-only) — discoverability fix; the
-     button only renders for revertible turns anyway. */
+
   opacity: 0.7;
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   z-index: 2;
@@ -1734,7 +1663,7 @@
   background: var(--error-soft);
 }
 
-/* ── slice-026 E1: revert confirm modal ── */
+
 
 .cc-revert-scrim {
   position: fixed;
@@ -1827,7 +1756,7 @@
   font-family: inherit;
 }
 
-/* ── slice-026 E1: non-git workdir banner ── */
+
 
 .cc-nogit-banner {
   display: flex;
@@ -1840,7 +1769,7 @@
   padding: 6px 12px;
 }
 
-/* ── slice-074: Codex host degraded banner (page-inline, mockup-confirmed) ── */
+
 .cc-degraded-banner {
   display: flex;
   align-items: center;
@@ -1858,10 +1787,7 @@
   line-height: 1.5;
 }
 
-/* ── slice-077: Codex account rate-limit banner
-     (milestone-9-codex-advanced-events-20260720.html scenario 5, decision 5).
-     Two visible levels: near (sunshine, not terminal) and reached (error,
-     terminal). A low-usage rolling update never renders a banner. ── */
+
 
 .cc-rate-banner {
   display: flex;
@@ -1927,12 +1853,11 @@
   margin-top: 3px;
 }
 
-/* ═══ slice-027: slash autocomplete + pickers + workdir selector ═══ */
 
-/* Composer needs to anchor the autocomplete popup above itself. */
+
+
 .cc-composer { position: relative; }
 
-/* ── SlashAutocomplete (pops above the composer textarea) ── */
 .cc-ac {
   position: absolute;
   left: 0;
@@ -2015,10 +1940,7 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
-/* slice-042 P4: per-source badges, harmonized to the app's warm garden/soil
- * palette (the picker's own mockup said to follow cc.css's cc-ac__* language,
- * not introduce generic blue/purple). Plugin recedes — it's collapsed by
- * default and is the long tail. */
+
 .cc-ac__badge--builtin {
   background: var(--soil-brown-soft);
   color: var(--soil-brown);
@@ -2049,7 +1971,6 @@
   margin-top: 2px;
 }
 
-/* ── Modal backdrop + shell (shared by all pickers) ── */
 .cc-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -2113,7 +2034,6 @@
   margin-right: auto;
 }
 
-/* ── Option row (ModelPicker / EffortPicker radios) ── */
 .cc-opt {
   display: flex;
   align-items: flex-start;
@@ -2177,7 +2097,6 @@
   color: var(--color-error);
 }
 
-/* ── Buttons ── */
 .cc-btn {
   font-family: var(--font-sans);
   font-size: 0.85rem;
@@ -2199,7 +2118,6 @@
   font-weight: 500;
 }
 
-/* ── WorkdirPicker ── */
 .cc-wd__input-wrap {
   position: relative;
 }
@@ -2221,7 +2139,7 @@
   border-color: var(--garden-green);
   box-shadow: 0 0 0 3px var(--garden-soft);
 }
-/* fish-style ghost suggestion overlaid in the input */
+
 .cc-wd__ghost {
   position: absolute;
   left: 0;
@@ -2242,7 +2160,7 @@
 .cc-wd__ghost-rest {
   color: var(--text-tertiary);
 }
-/* zsh MENU_SELECT-style dropdown */
+
 .cc-wd__dropdown {
   position: absolute;
   left: 0;
@@ -2317,7 +2235,7 @@
   content: "★ ";
 }
 
-/* ── WorkdirPicker tree (方案 A: 纵向列表) ── */
+
 .cc-wd__tree {
   display: flex;
   flex-direction: column;
@@ -2393,7 +2311,6 @@
   font-style: italic;
 }
 
-/* ── Tab completion hint ── */
 .cc-wd__hint {
   font-size: 0.78rem;
   color: var(--text-secondary);
@@ -2415,7 +2332,6 @@
   color: var(--text-tertiary);
 }
 
-/* ── Workdir button in the SessionView top bar ── */
 .cc-workdir-btn {
   display: inline-flex;
   align-items: center;
@@ -2447,19 +2363,14 @@
   stroke-width: 1.6;
 }
 
-/* ============================================================
-   slice-028: three-column layout + MultiSessionBar + TodoBar
-   ============================================================ */
+
 
 :root {
   --col-multi-w: 200px;
   --col-todo-w: 240px;
 }
 
-/* The CC tool root is now a 3-column grid: multi-bar | center | todo-bar.
-   height:100% fills the AppLayout content area. Falls back to a single column
-   (center only) on narrow viewports so the message area never gets squeezed
-   past readable. */
+
 .cc-3col {
   display: grid;
   grid-template-columns: var(--col-multi-w) 1fr var(--col-todo-w);
@@ -2486,7 +2397,6 @@
   }
 }
 
-/* ── MultiSessionBar (left column) ── */
 
 .cc-multibar {
   display: flex;
@@ -2628,8 +2538,7 @@
   white-space: nowrap;
   min-width: 0;
 }
-/* slice-072: runtime badge — used by MultiSessionBar row + SessionSwitcher row.
-   The multibar row pushes it to the right (margin-left:auto in that context). */
+
 .cc-runtime-badge {
   display: inline-block;
   border: 1px solid var(--color-border);
@@ -2658,9 +2567,7 @@
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
-/* slice-072: NewSessionDialog runtime cards (mockup-confirmed). Two-column
-   grid, selected/hover/focus states; disabled only dulls the status copy, not
-   the whole card (review: 不可用态只弱化状态文字，别整张灰掉). */
+
 .cc-dialog__runtime-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2808,7 +2715,7 @@
   font-size: 0.72rem;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  padding-left: 15px; /* align with the name (dot width + gap) */
+  padding-left: 15px;
 }
 .cc-multibar__dot {
   width: 7px;
@@ -2845,7 +2752,6 @@
   font-weight: 600;
 }
 
-/* ── TodoBar (right column) ── */
 
 .cc-todobar {
   display: flex;
@@ -2951,7 +2857,7 @@
   background: var(--neutral-soft);
 }
 
-/* ── "no active session" center prompt ── */
+
 .cc-empty--noactive {
   display: flex;
   flex-direction: column;
@@ -2966,10 +2872,7 @@
   color: var(--text-tertiary);
 }
 
-/* ===== slice-036: workflow progress tree =====
-   三层嵌套，跟现有 cc 组件同一套色调（泥棕编排 / 金色阶段 / 花园绿完成 / 红错误）。
-   视觉层次：workflow（泥棕粗左 3px + 卡片底）> phase（金色细竖线）> agent（泥棕细 2px）。
-   折叠靠条件渲染（aria-expanded），不用 .collapsed class。 */
+
 .cc-workflow {
   border: 1px solid var(--color-border);
   border-left: 3px solid var(--soil-brown);
@@ -3050,11 +2953,9 @@
 
 @keyframes cc-pulse { 50% { box-shadow: 0 0 0 5px var(--sunshine-soft); } }
 
-/* =========================================================================
-   slice-060: memory/profile A/B switches — condition chips + new-session dialog
-   ========================================================================= */
 
-/* read-only condition chips on the Composer bottom bar (next to model/effort) */
+
+
 .cc-cond {
   display: inline-flex;
   align-items: center;
@@ -3076,7 +2977,7 @@
 .cc-cond--off .cc-cond__dot { background: var(--text-tertiary); }
 .cc-cond--off .cc-cond__val { color: var(--text-tertiary); }
 
-/* "+ 新会话" setup dialog — choose Memory/Profile before creating */
+
 .cc-dialog__backdrop {
   position: fixed; inset: 0;
   background: rgba(45, 40, 30, 0.35);
@@ -3131,7 +3032,6 @@
   .cc-dialog { max-height: calc(100vh - 16px); }
 }
 
-/* iOS-ish toggle switch */
 .cc-toggle {
   width: 38px; height: 22px; border-radius: var(--radius-pill);
   background: var(--color-border); border: none; cursor: pointer;
@@ -3147,7 +3047,7 @@
 .cc-toggle:focus-visible { outline: 2px solid var(--garden-green); outline-offset: 2px; }
 .cc-dialog__btn:focus-visible { outline: 2px solid var(--garden-green); outline-offset: 2px; }
 
-/* slice-075: Codex server-request approval card */
+
 .cc-approval {
   border: 1px solid color-mix(in srgb, var(--sunshine) 65%, var(--color-border));
   border-radius: var(--radius-md);
@@ -3217,7 +3117,7 @@
   .cc-approval__button--cancel { margin-left: 0; }
 }
 
-/* M·P condition marker on each multi-session row */
+
 .cc-multibar__cond { padding-left: 15px; font-size: 0.66rem; font-family: var(--font-mono); }
 .cc-multibar__cond-on { color: var(--garden-green); font-weight: 600; }
 .cc-multibar__cond-off { color: var(--text-tertiary); }

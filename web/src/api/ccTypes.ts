@@ -1,34 +1,19 @@
-/**
- * Trowel CC event contract — the ONLY event types the frontend consumes.
- *
- * Mirrors `trowel_py/schemas/cc_host.py` 1:1. The frontend never imports CC's
- * raw stream-json types (slice023-web invariant: "不耦合 CC 原始"). Every event
- * carries a literal `type` discriminator so a switch narrows it with no guess.
- *
- * `UserEvent` (type "user") is history-replay only — the live SSE stream never
- * carries user text, but GET /sessions/{id}/history emits it so the same
- * reducer renders history and live.
- */
 
+/**
+ * 前端消费的统一事件类型，不直接暴露 Claude Code 或 Codex 的原始事件。
+ * 字段必须与后端 adapter 的真实输出保持一致。
+ */
 export interface SessionStartedEvent {
   readonly type: "session_started";
   readonly model: string;
   readonly cwd: string;
   readonly cc_session_id: string;
   readonly tools: readonly string[];
-  /** slice-027 C1: bare-name rosters from cc init (z.array(z.string())) —
-   * the '/' autocomplete floor. Optional: older CC / minimal fixtures may omit.
-   * Descriptions are NOT here; they come from GET /cc/slash-items. */
   readonly slash_commands?: readonly string[];
   readonly skills?: readonly string[];
   readonly agents?: readonly string[];
 }
 
-/** Emitted at the start of each live turn (slice-026 E1). Carries the backend
- * turn_id (the checkpoint ref name) and whether this turn is revertible. The
- * reducer attaches both to the optimistic turn the store already created.
- * History-replay never emits this — replayed turns predate this trowel session
- * and have no checkpoint, so they are not revertible. */
 export interface TurnStartEvent {
   readonly type: "turn_start";
   readonly turn_id: string;
@@ -38,12 +23,6 @@ export interface TurnStartEvent {
 export interface UserEvent {
   readonly type: "user";
   readonly text: string;
-  /** Whole seconds this turn took — history-replay only. The live stream has
-   * no UserEvent (the FE renders the user's message optimistically and times
-   * the turn send→finished itself); history.py back-fills this from jsonl
-   * entry-timestamp deltas (no `result` line exists on disk). The reducer
-   * copies it onto the Turn so live + replay render the same "Ran for …" label.
-   * Absent/undefined → no label. */
   readonly duration_seconds?: number;
 }
 
@@ -55,9 +34,6 @@ export interface TextEvent {
 export interface ThinkingEvent {
   readonly type: "thinking";
   readonly text: string;
-  /** slice-031: reconstructed think duration in seconds, present on history
-   * replay (history.py back-fills it from entry-timestamp deltas). Absent on
-   * the live path, where the reducer derives duration from heartbeats. */
   readonly thinking_duration_seconds?: number;
 }
 
@@ -66,8 +42,6 @@ export interface ToolCallEvent {
   readonly tool_use_id: string;
   readonly tool_name: string;
   readonly input: Record<string, unknown>;
-  /** Set when this tool_use came from a sub-agent's envelope — points at the
-   * spawning Agent tool_call's id. Null/absent for top-level tool_use. */
   readonly parent_tool_use_id?: string | null;
 }
 
@@ -82,21 +56,11 @@ export interface ToolResultEvent {
   readonly type: "tool_result";
   readonly tool_use_id: string;
   readonly content: string | null;
-  /** slice-033 feat 2 (方案 F): present on Edit/MultiEdit/Write tool_results —
-   * converted by the BE from cc's own structuredPatch (carried in jsonl
-   * `toolUseResult` / stream-json `tool_use_result`). Real file line numbers,
-   * survives BE restart. Absent for other tools / failed edits → FE falls back
-   * to its fragment diff for Edit. */
   readonly write_diff?: WriteDiff;
-  /** slice-074: Codex commandExecution exit code (absent for CC tools). */
   readonly exit_code?: number | null;
-  /** slice-074: Codex commandExecution wall-clock duration in ms. */
   readonly duration_ms?: number | null;
-  /** slice-074: Codex commandExecution cwd (for command display). */
   readonly cwd?: string | null;
-  /** slice-074: Codex commandExecution shell command text. */
   readonly command?: string | null;
-  /** slice-074: Codex commandExecution native status (completed/failed/declined). */
   readonly status?: string | null;
 }
 
@@ -136,11 +100,6 @@ export interface FinishedEvent {
   readonly num_turns: number;
 }
 
-/** slice-028 bug3: the CC subprocess exited (user typed /exit, or it died after
- * a turn). Emitted after FinishedEvent when `proc.returncode` is set. The
- * frontend marks the session as exited in the multi-session bar (greyed out,
- * resumable) and, if it was the active session, returns the view to the
- * "no active session" state. Mirrors `SessionExitedEvent` in cc_host.py. */
 export interface SessionExitedEvent {
   readonly type: "session_exited";
   readonly returncode: number;
@@ -157,37 +116,21 @@ export interface InterruptedEvent {
   readonly type: "interrupted";
 }
 
-/** CC has been silent long enough for a non-fatal heads-up (the process is NOT
- * killed — on GLM's non-streaming backend long silence is usually legitimate
- * waiting, so stall detection now phases a heads-up rather than auto-killing).
- * severity=mild at 120s, severe at 300s. The frontend shows a "be patient" /
- * "may be stuck" line under the spinner; the user interrupts manually. The
- * 30-min hard cap surfaces as ErrorEvent(subclass="stalled"), not this event.
- * Mirrors `StalledWarningEvent` in cc_host.py. */
 export interface StalledWarningEvent {
   readonly type: "stalled_warning";
   readonly severity: "mild" | "severe";
   readonly elapsed_s: number;
 }
 
-/** A thinking-tokens heartbeat (slice-025-a A1). On the GLM backend this is the
- * only signal during thinking. Seconds/verb are client-side; only the cumulative
- * token estimate rides the event. */
 export interface ThinkingProgressEvent {
   readonly type: "thinking_progress";
   readonly estimated_tokens: number;
 }
 
-/** Sub-agent (Agent tool) progress, translated from task_started/progress/
- * notification (slice-025-a A3). task_updated is intentionally not mapped. */
 export interface SubagentProgressEvent {
   readonly type: "subagent_progress";
   readonly tool_use_id: string;
   readonly task_id: string;
-  // slice-077-prefix: task_notification surfaces CC's native terminal status
-  // verbatim — completed / failed / cancelled (confirmed values). "unknown"
-  // is the backend's marker for a notification that arrived without a status
-  // field. Treat anything that is not started/progress as terminal.
   readonly status:
     | "started"
     | "progress"
@@ -201,36 +144,19 @@ export interface SubagentProgressEvent {
   readonly usage?: Record<string, unknown> | null;
 }
 
-/** AskUserQuestion interactive prompt (slice-025-c). Translated from cc's
- * control_request(can_use_tool, tool_name=AskUserQuestion) — bypass +
- * --permission-prompt-tool stdio route. The frontend renders an inline
- * selection box (see docs/design/front-end/ask-user-question-20260704.html);
- * the user's answers are posted to POST /api/cc/sessions/:id/answer. */
 export interface ElicitationRequestEvent {
   readonly type: "elicit_request";
   readonly tool_use_id: string;
   readonly request_id: string;
-  /** questions carried verbatim from cc — each has {question, header,
-   * options:[{label, description?, preview?}], multiSelect}. Loose typing
-   * keeps coupling with cc's evolving schema minimal (mirror of the python
-   * ElicitationRequestEvent). */
   readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
 }
 
-/** slice-027 C2: emitted right after /model or /effort RestartSession so the
- * StatusBar syncs immediately. CC is lazy-restarted by the next send, so
- * without this the model/effort display would lag a full turn behind. null
- * fields mean trowel is deferring to cc settings.json (no flag passed). */
 export interface ModelChangedEvent {
   readonly type: "model_changed";
   readonly model: string | null;
   readonly effort: string | null;
 }
 
-/** One agent node in a workflow tree (slice-036). Sourced verbatim from cc's
- * wf_<runId>.json — cc already aggregates per-agent tokens/toolCalls here.
- * `state` is the wire enum (queued/running/done/failed); cc's internal
- * start/progress/error are normalized to running/running/failed on the BE. */
 export interface WorkflowAgentInfo {
   readonly agent_id: string;
   readonly label: string;
@@ -246,19 +172,11 @@ export interface WorkflowAgentInfo {
   readonly result_preview: string | null;
 }
 
-/** One phase group in a workflow tree (slice-036). From wf.json's top-level
- * phases[] (the only place `detail` appears). Order is array order; the FE
- * renders NO numeric badge (mockup decision). */
 export interface WorkflowPhaseInfo {
   readonly title: string;
   readonly detail: string | null;
 }
 
-/** A full snapshot of one workflow run (slice-036). cc runs Workflows in the
- * background and pushes nothing about them to its stream-json stdout, so the
- * BE reads the on-disk wf_<runId>.json and emits this. Each push is a FULL
- * snapshot (replace by run_id) — the reducer swaps the matching workflow item.
- * Same shape on the live path (WorkflowWatcher) and history replay (C-1). */
 export interface WorkflowTreeEvent {
   readonly type: "workflow_tree";
   readonly run_id: string;
@@ -276,9 +194,6 @@ export interface WorkflowTreeEvent {
   readonly error: string | null;
 }
 
-/** slice-074: Codex token-usage breakdown — the real shape on the wire (from
- * the 0.144.0 `thread/tokenUsage/updated` fixture). Both `total` (cumulative)
- * and `last` (this turn) carry the same field set. */
 export interface TokenUsageBreakdown {
   readonly totalTokens?: number | null;
   readonly inputTokens?: number | null;
@@ -287,23 +202,13 @@ export interface TokenUsageBreakdown {
   readonly reasoningOutputTokens?: number | null;
 }
 
-/** slice-074: Codex per-turn token usage (thread/tokenUsage/updated). CC has no
- * equivalent — usage rides on FinishedEvent for CC. Stored on meta.usage so the
- * UI (multi-session bar / future views) can show it without a second reducer. */
 export interface UsageUpdatedEvent {
   readonly type: "usage_updated";
-  /** Cumulative token breakdown (object, not a bare number — see fixture). */
   readonly total?: Readonly<TokenUsageBreakdown> | null;
-  /** This-turn token breakdown. */
   readonly last?: Readonly<TokenUsageBreakdown> | null;
   readonly model_context_window?: number | null;
 }
 
-/** slice-074: Codex manager lifecycle (ready / degraded / host_exited). CC has
- * no equivalent — a CC process exiting surfaces as session_exited (row drop).
- * host_exited is a TURN terminal (the running turn errors) AND marks the
- * session degraded so the UI shows a reconnect banner; the binding survives so
- * the next send can resume (spec §4). */
 export interface HostStatusEvent {
   readonly type: "host_status";
   readonly status: "ready" | "degraded" | "host_exited";
@@ -311,36 +216,20 @@ export interface HostStatusEvent {
   readonly exit_code?: number | null;
 }
 
-/** slice-077: One rate-limit window from a Codex
- * ``account/rateLimits/updated`` snapshot. Field names and camelCase are the
- * protocol's own (``account.rs`` ``RateLimitWindow``) — the BE translator
- * passes the nested object through verbatim, only the snapshot's top-level
- * fields are snake-cased. ``resetsAt`` is a unix timestamp in seconds. */
 export interface RateLimitWindow {
   readonly usedPercent: number | null;
   readonly windowDurationMins: number | null;
   readonly resetsAt: number | null;
 }
 
-/** slice-077: ``RateLimitReachedType`` wire values (``account.rs``). The set is
- * open in practice — a value outside this list is rendered as-is rather than
- * dropped, so an unknown tag surfaces instead of being hidden as "no limit". */
 export type RateLimitReachedType =
   | "rate_limit_reached"
   | "workspace_owner_credits_depleted"
   | "workspace_member_credits_depleted"
   | "workspace_owner_usage_limit_reached"
   | "workspace_member_usage_limit_reached"
-  | (string & {}); // forward-compatible: unknown future tags render verbatim
+  | (string & {});
 
-/** slice-077: Codex account rate-limit snapshot
- * (``account/rateLimits/updated``). Account-scoped — no per-thread binding —
- * so the BE fans it out to every active Codex session. The reducer stores the
- * latest snapshot on ``meta.rateLimit`` and the RateLimitBanner decides
- * near/reached from ``rate_limit_reached_type`` + ``primary.usedPercent``
- * (decision 5: UI unfolds only those; ``credits`` / ``individual_limit`` /
- * ``spend_control_reached`` stay in the payload for a later UI pass, never
- * thrown away — spec C-4). */
 export interface RateLimitSnapshot {
   readonly limit_id: string | null;
   readonly limit_name: string | null;
@@ -353,11 +242,6 @@ export interface RateLimitSnapshot {
   readonly rate_limit_reached_type: RateLimitReachedType | null;
 }
 
-/** slice-077: Codex account rate-limit update (extension). CC has no
- * equivalent — CC surfaces 429s as retrying/error events. Sparse rolling
- * update: the BE emits one event per ``account/rateLimits/updated``
- * notification, so most turns see none and a rate-limited turn sees several
- * as the window rolls. */
 export interface RateLimitUpdatedEvent {
   readonly type: "rate_limit_updated";
   readonly limit_id: string | null;
@@ -371,10 +255,8 @@ export interface RateLimitUpdatedEvent {
   readonly rate_limit_reached_type: RateLimitReachedType | null;
 }
 
-/** One decision exactly as Codex advertised it for this request. */
 export type ApprovalDecision = string | Readonly<Record<string, unknown>>;
 
-/** slice-075: manager-owned lifecycle for a Codex app-server approval request. */
 export interface ApprovalRequestEvent {
   readonly type: "approval_request";
   readonly turn_id?: string;
@@ -391,7 +273,6 @@ export interface ApprovalRequestEvent {
   readonly resolution_reason: string | null;
 }
 
-/** One question in an AskUserQuestion elicitation (spec/04 A.1). */
 export interface QuestionInput {
   readonly question: string;
   readonly header: string;
@@ -400,18 +281,14 @@ export interface QuestionInput {
   readonly annotations?: { preview?: string; notes?: string };
 }
 
-/** One option within a question. */
 export interface QuestionOption {
   readonly label: string;
   readonly description?: string;
   readonly preview?: string;
 }
 
-/** Answer payload for POST /api/cc/sessions/:id/answer. */
 export interface AnswerElicitBody {
-  /** {questionText: answerStr}; multi-select answers are comma-separated. */
   readonly answers: Readonly<Record<string, string>>;
-  /** true = decline (writes control_response behavior=deny). */
   readonly cancel: boolean;
 }
 
@@ -444,24 +321,16 @@ export type TrowelEvent =
   | ApprovalRequestEvent
   | RateLimitUpdatedEvent;
 
-/** Error subclasses that are recoverable — the "retry last" button is enabled. */
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([
   "error_during_execution",
 ]);
 
-/** Error subclasses that mean "CC hit a hard stop" — no retry, only guidance. */
 export const TERMINAL_ERROR_SUBCLASSES = new Set([
   "error_max_turns",
   "error_max_budget_usd",
   "error_max_structured_output_retries",
 ]);
 
-/**
- * Diff hunk — jsdiff StructuredPatchHunk shape (matches CC `utils/diff.ts`).
- * `lines` carry the leading marker char: `' ctx'`, `'+add'`, `'-rm'`. Used by
- * both Edit (FE-computed) and Write-overwrite (BE-computed) diffs so the same
- * render component handles both (slice-029 reload-consistency contract).
- */
 export interface DiffHunk {
   readonly oldStart: number;
   readonly oldLines: number;
@@ -470,13 +339,6 @@ export interface DiffHunk {
   readonly lines: readonly string[];
 }
 
-/**
- * BE-computed diff for a Write tool_use (slice-029 Phase 2). cc-host snapshots
- * the file at tool_use time (before cc writes), computes hunks, and attaches
- * this. `type='create'` (new file) carries no hunks; `type='update'` carries
- * the real diff. Stored in `CCHost._write_diffs` so live SSE and replay both
- * carry identical data (reload consistency).
- */
 export interface WriteDiff {
   readonly type: "create" | "update" | "delete";
   readonly hunks: readonly DiffHunk[];

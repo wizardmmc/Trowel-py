@@ -11,9 +11,6 @@ import type {
   EventLog,
 } from "../api/client";
 
-// Mock the HTTP layer: PetPanel calls fetchEventHistory directly. The store
-// actions it triggers (fetchProfile / fetchInventory / interact / feed / equip)
-// are replaced with spies via setState below, so they never reach the network.
 vi.mock("../api/client", () => ({
   fetchEventHistory: vi.fn(),
 }));
@@ -24,7 +21,6 @@ const testPet: Pet = {
   player_id: "default",
   mood: "happy",
   hunger: 70,
-  // row id of the worn hat — NOT a catalog id (py backend stores the row id)
   equipped_hat: "hat-row-1",
   updated_at: "2026-06-22T00:00:00",
 };
@@ -130,21 +126,16 @@ describe("PetPanel", () => {
   it("shows mood and hunger from the pet state", () => {
     usePetStore.setState({ pet: { ...testPet, mood: "happy", hunger: 70 } });
     render(<PetPanel open={true} onClose={vi.fn()} />);
-    // MOOD_LABELS.happy.text = 开心
     expect(screen.getByText(/开心/)).toBeInTheDocument();
     expect(screen.getByText("70%")).toBeInTheDocument();
   });
 
   it("maps the equipped_hat row id to the hat catalog label", () => {
-    // equipped_hat is a row id; the panel must resolve it via the inventory
     usePetStore.setState({ pet: { ...testPet, equipped_hat: "hat-row-1" } });
     usePlayerStore.setState({
       inventory: [makeItem({ id: "hat-row-1", item_id: "hat_straw", item_type: "hat", equipped: 1 })],
     });
     render(<PetPanel open={true} onClose={vi.fn()} />);
-    // ITEM_CATALOG.hat_straw.label = 小草帽. It shows in BOTH the status
-    // "装备" line and the hat inventory list — either way, the row-id ->
-    // catalog mapping resolved correctly.
     expect(screen.getAllByText(/小草帽/).length).toBeGreaterThanOrEqual(1);
   });
 
@@ -168,8 +159,6 @@ describe("PetPanel", () => {
 
   it("buys then feeds with the new row id when the food is not owned", async () => {
     const feed = vi.fn().mockResolvedValue(undefined);
-    // simulate the store refreshing inventory after a successful buy: the new
-    // food row appears, and the panel must read it back to feed by row id.
     const buyItem = vi.fn().mockImplementation(async () => {
       usePlayerStore.setState({
         inventory: [makeItem({ id: "new-food-row", item_id: "food_basic", item_type: "food" })],
@@ -205,7 +194,6 @@ describe("PetPanel", () => {
   it("renders the recent event log with type label and rewards", async () => {
     vi.mocked(fetchEventHistory).mockResolvedValue(testEvents);
     render(<PetPanel open={true} onClose={vi.fn()} />);
-    // EVENT_TYPE_LABELS.sign_in = 签到
     await waitFor(() => expect(screen.getByText("签到")).toBeInTheDocument());
     expect(screen.getByText(/\+20XP/)).toBeInTheDocument();
   });

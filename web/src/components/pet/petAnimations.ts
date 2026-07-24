@@ -1,13 +1,7 @@
 import type { Variants } from "framer-motion";
 
-// The four background behaviors the pet cycles through. Picked at random on a
-// 25-35s timer (see PetOverlay); each maps to a Framer Motion variant below.
 export type PetBehavior = "idle" | "wander" | "nap" | "lookAtPlant";
 
-// idle: gentle vertical float, loops forever.
-// wander: float plus a one-shot horizontal stroll keyframe sequence.
-// nap: shrink + dim + slight tilt, held still.
-// lookAtPlant: turn left toward the garden grid, held still.
 export const petVariants: Variants = {
   idle: {
     y: [0, -8, 0],
@@ -36,7 +30,6 @@ export const petVariants: Variants = {
   },
 };
 
-// Enter/exit animation for the speech bubble, used with AnimatePresence.
 export const speechBubbleVariants: Variants = {
   hidden: { opacity: 0, y: 10, scale: 0.8 },
   visible: {

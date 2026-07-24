@@ -4,8 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { ProfileView } from "../components/profile/ProfileView";
 import type { ProfileDTO } from "../api/client";
 
-// Mock the HTTP layer; the store under the view runs for real, orchestrating
-// state against these mocked responses.
 vi.mock("../api/client", () => ({
   fetchProfile: vi.fn(),
   putProfile: vi.fn(),
@@ -111,11 +109,10 @@ describe("ProfileView", () => {
     });
     render(<ProfileView />);
     await waitFor(() => expect(screen.getByText("能力水平")).toBeInTheDocument());
-    // all five titles present even when empty (cold-start: empty sections shown)
     expect(screen.getByText("其他")).toBeInTheDocument();
   });
 
-  it("shows the 查看建议 entry when there are pending suggestions and opens the modal on click (slice-050)", async () => {
+  it("shows the 查看建议 entry when there are pending suggestions and opens the modal on click", async () => {
     vi.mocked(getSuggestionsApi).mockResolvedValue([
       {
         id: "s1",

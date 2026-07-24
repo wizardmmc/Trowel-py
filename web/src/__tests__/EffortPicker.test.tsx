@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { EffortPicker } from "../components/cc/EffortPicker";
 
-describe("EffortPicker (slice-027 C2)", () => {
+describe("EffortPicker", () => {
   it("lists all 6 fixed effort levels", () => {
     render(<EffortPicker currentEffort="medium" onSelect={() => {}} onCancel={() => {}} />);
     for (const v of ["low", "medium", "high", "max", "auto", "ultracode"]) {
@@ -21,7 +21,7 @@ describe("EffortPicker (slice-027 C2)", () => {
     const onSelect = vi.fn();
     render(<EffortPicker currentEffort="medium" onSelect={onSelect} onCancel={() => {}} />);
     const listbox = screen.getByRole("listbox");
-    fireEvent.keyDown(listbox, { key: "ArrowDown" }); // medium → high
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
     fireEvent.keyDown(listbox, { key: "Enter" });
     expect(onSelect).toHaveBeenCalledWith("high");
   });

@@ -2,17 +2,7 @@ import { useEffect, useRef } from "react";
 
 import type { Turn } from "../../stores/ccStore";
 
-/**
- * Destructive-action confirm dialog for reverting a turn (slice-026 E1).
- *
- * Lists the turns that will be lost (the reverted turn and every later one),
- * spells out that file changes are also rolled back, and that CC re-resumes
- * from the shorter history. Pure props — the parent owns open/close + fires
- * the revert. See docs/design/front-end/slice-026-checkpoint-revert-20260704.html.
- */
 interface RevertConfirmModalProps {
-  /** All turns from the reverted one onward — shown as "will be lost". The
-   * first entry's turnId is what the parent posts to /revert. */
   readonly lostTurns: readonly Turn[];
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
@@ -23,8 +13,6 @@ export function RevertConfirmModal({
   onConfirm,
   onCancel,
 }: RevertConfirmModalProps) {
-  // Autofocus the cancel button on open (safer default for a destructive
-  // dialog) + close on Escape.
   const cancelRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     cancelRef.current?.focus();

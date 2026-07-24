@@ -5,8 +5,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // dev: vite :5173 proxies /api to the uvicorn backend on :8000. Release
-    // build is same-origin so this is irrelevant there.
+    // 开发环境由 Vite 把 /api 转发到 :8000；生产构建使用同源请求。
     proxy: { "/api": "http://localhost:8000" },
   },
   test: {

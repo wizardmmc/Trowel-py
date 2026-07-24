@@ -120,7 +120,6 @@ describe("ReviewCard", () => {
     const dueCard = makeDueCard();
     render(<ReviewCard dueCard={dueCard} onRate={onRate} disabled={false} />);
 
-    // Must flip first
     fireEvent.keyDown(window, { code: "Space" });
 
     fireEvent.keyDown(window, { key: "3" });

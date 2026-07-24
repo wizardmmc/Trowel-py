@@ -4,9 +4,6 @@ import { PetOverlay } from "../components/pet/PetOverlay";
 import { usePetStore } from "../stores/petStore";
 import type { Pet, PetResponse } from "../api/client";
 
-// Mock the HTTP layer so PetOverlay's mount-time fetch and the interact call
-// never hit the network. fetchPet is a no-op spy here because each test injects
-// the pet state directly via setState.
 vi.mock("../api/client", () => ({
   fetchPet: vi.fn(),
   interactPet: vi.fn(),
@@ -33,7 +30,6 @@ describe("PetOverlay", () => {
       lastResponse: null,
       loading: false,
       error: null,
-      // neutralize the mount-time fetch so injected state is not overwritten
       fetchPet: vi.fn(),
     });
   });
@@ -82,9 +78,6 @@ describe("PetOverlay", () => {
     act(() => {
       vi.advanceTimersByTime(3000);
     });
-    // after the 3s dismiss timer the bubble is no longer visible — either
-    // unmounted by AnimatePresence or held at its exit state (opacity 0).
-    // Whether the node leaves the DOM is an animation-timing detail.
     expect(screen.queryByText("Hello!")).not.toBeVisible();
   });
 });

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useGardenStore } from "../stores/gardenStore";
 import type { GardenPlant, GardenStatsData } from "../api/client";
 
-// Mock the API client
 vi.mock("../api/client", () => ({
   getGardenPlants: vi.fn(),
   getGardenStats: vi.fn(),
@@ -67,7 +66,6 @@ describe("gardenStore", () => {
     expect(state.loading).toBe(false);
     expect(state.error).toBeNull();
 
-    // stats are fetched async
     await vi.waitFor(() => {
       expect(useGardenStore.getState().stats).toEqual(mockStats);
     });
@@ -99,7 +97,6 @@ describe("gardenStore", () => {
     await useGardenStore.getState().searchPlants("   ");
 
     expect(searchCards).not.toHaveBeenCalled();
-    // clearSearch sets searchQuery to "" and re-fetches
     expect(useGardenStore.getState().searchQuery).toBe("");
   });
 

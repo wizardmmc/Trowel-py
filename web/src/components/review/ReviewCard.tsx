@@ -7,7 +7,6 @@ interface ReviewCardProps {
   dueCard: DueCard;
   onRate: (rating: number) => void;
   disabled: boolean;
-  /** optional Feynman entry; when omitted, no Feynman button is shown */
   readonly onOpenFeynman?: () => void;
 }
 
@@ -21,16 +20,12 @@ const RATING_OPTIONS = [
 const DIFFICULTY_LABELS = ["", "Trivial", "Easy", "Medium", "Hard", "Expert"];
 
 export function ReviewCard({ dueCard, onRate, disabled, onOpenFeynman }: ReviewCardProps) {
-  // flipped resets via remount: ReviewSession renders this with key={card.id},
-  // so switching cards creates a fresh component with useState(false).
   const [flipped, setFlipped] = useState(false);
 
   const handleFlip = useCallback(() => {
     setFlipped(true);
   }, []);
 
-  // Space = flip, 1-4 = rate (only when flipped). Disabled locks the whole
-  // handler so typing in the Feynman textarea can't flip/rate the card.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (disabled) return;

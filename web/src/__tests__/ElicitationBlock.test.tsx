@@ -23,7 +23,7 @@ const singlePending: ElicitationItem = {
   ],
 };
 
-describe("ElicitationBlock (slice-025-c)", () => {
+describe("ElicitationBlock", () => {
   it("renders the question title and numbered options when pending", () => {
     render(<ElicitationBlock item={singlePending} />);
     expect(screen.getByText("A or B?")).toBeTruthy();
@@ -101,16 +101,12 @@ describe("ElicitationBlock (slice-025-c)", () => {
       ],
     };
     render(<ElicitationBlock item={twoQ} onAnswer={onAnswer} />);
-    // NavBar shows both header chips (sliced to 3 chars).
     expect(screen.getByText(/Pre/)).toBeTruthy();
     expect(screen.getByText(/Aut/)).toBeTruthy();
-    // Q1: choose A1, then Next.
     fireEvent.click(screen.getByText("A1"));
     fireEvent.click(screen.getByRole("button", { name: "Next →" }));
-    // Q2: choose A2, then Next → (last question, !hideSubmitTab) routes into SubmitView.
     fireEvent.click(screen.getByText("A2"));
     fireEvent.click(screen.getByRole("button", { name: "Next →" }));
-    // SubmitView review + final submit.
     fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
     expect(onAnswer).toHaveBeenCalledWith({ "Q1?": "A1", "Q2?": "A2" });
   });

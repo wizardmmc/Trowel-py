@@ -4,7 +4,6 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { WorkflowTree } from "../components/cc/WorkflowTree";
 import type { WorkflowItem } from "../stores/ccReducer";
 
-/** A completed 2-phase / 2-agent workflow item (camelCase, reducer shape). */
 function completed(): WorkflowItem {
   return {
     kind: "workflow",
@@ -56,16 +55,15 @@ function completed(): WorkflowItem {
   };
 }
 
-describe("WorkflowTree (slice-036)", () => {
+describe("WorkflowTree", () => {
   it("renders the workflow name, status, progress, and stats", () => {
     render(<WorkflowTree workflow={completed()} />);
     expect(screen.getByText("Workflow · baseline")).toBeTruthy();
     expect(screen.getByText(/✓ completed/)).toBeTruthy();
-    expect(screen.getByText("2/2")).toBeTruthy(); // progress done/total
-    // stats use <b>N</b> unit markup; assert on the container's textContent
+    expect(screen.getByText("2/2")).toBeTruthy();
     const stats = document.querySelector(".cc-wf-stats");
-    expect(stats?.textContent ?? "").toMatch(/1\.2k/); // 1234 → 1.2k
-    expect(stats?.textContent ?? "").toMatch(/3/); // 3 tool calls
+    expect(stats?.textContent ?? "").toMatch(/1\.2k/);
+    expect(stats?.textContent ?? "").toMatch(/3/);
     expect(stats?.textContent ?? "").toMatch(/tools/);
   });
 
@@ -80,7 +78,6 @@ describe("WorkflowTree (slice-036)", () => {
     render(<WorkflowTree workflow={completed()} />);
     expect(screen.getByText("scope")).toBeTruthy();
     expect(screen.getByText("run:a")).toBeTruthy();
-    // 100 tokens → "100 tok", 200 → "200 tok"
     expect(screen.getByText("100 tok")).toBeTruthy();
     expect(screen.getByText("200 tok")).toBeTruthy();
   });
@@ -105,9 +102,7 @@ describe("WorkflowTree (slice-036)", () => {
 
   it("expands an agent head to show its prompt/result previews", () => {
     render(<WorkflowTree workflow={completed()} />);
-    // previews are hidden until the agent head is clicked
     expect(screen.queryByText("decompose prompt")).toBeNull();
-    // the scope agent is the first agent head with role=button (has previews)
     const scopeHead = screen.getByText("scope").closest('[role="button"]');
     expect(scopeHead).not.toBeNull();
     fireEvent.click(scopeHead!);
@@ -119,6 +114,6 @@ describe("WorkflowTree (slice-036)", () => {
     render(<WorkflowTree workflow={completed()} />);
     expect(screen.getByText("Scope")).toBeTruthy();
     fireEvent.click(screen.getByText("Workflow · baseline"));
-    expect(screen.queryByText("Scope")).toBeNull(); // body unmounted
+    expect(screen.queryByText("Scope")).toBeNull();
   });
 });

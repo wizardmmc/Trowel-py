@@ -4,7 +4,6 @@ import { useProfileStore } from "../../stores/profileStore";
 import type { ProfileDimension, Suggestion } from "../../api/client";
 import "./SuggestionsModal.css";
 
-/** the five dims in canonical order (mirrors ProfileView + backend titles). */
 const DIMENSIONS: { readonly key: ProfileDimension; readonly title: string }[] = [
   { key: "ability", title: "能力水平" },
   { key: "methodology", title: "方法论偏好" },
@@ -14,20 +13,10 @@ const DIMENSIONS: { readonly key: ProfileDimension; readonly title: string }[] =
 ];
 
 interface SuggestionsModalProps {
-  /** whether the modal is shown (rendered); closed → renders nothing */
   open: boolean;
   onClose: () => void;
 }
 
-/**
- * SuggestionsModal — the AI calibration suggestion review (slice-050).
- *
- * Lists pending suggestions grouped by dimension. The user checks the ones to
- * keep (optionally editing the body first), then「采纳选中」appends each to the
- * matching dimension's existing content — never replacing what the user wrote
- * (C-1). Acceptance PUTs the profile with source=ai-calibration, then marks the
- * suggestions accepted. Discard marks one discarded without touching the profile.
- */
 export function SuggestionsModal({ open, onClose }: SuggestionsModalProps) {
   const { suggestions, patchStatus } = useSuggestionsStore();
   const { profile, updateProfile } = useProfileStore();
@@ -37,7 +26,6 @@ export function SuggestionsModal({ open, onClose }: SuggestionsModalProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Escape closes the modal (a11y). Listener is active only while open.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent): void => {
@@ -64,8 +52,6 @@ export function SuggestionsModal({ open, onClose }: SuggestionsModalProps) {
     setError(null);
     try {
       const accepted = suggestions.filter((s) => selected.has(s.id));
-      // PUT FIRST: write the merged profile. If PUT fails, nothing is marked —
-      // suggestions stay pending and the user retries cleanly.
       const dims: Record<ProfileDimension, string> = {
         ability: profile.ability,
         methodology: profile.methodology,
@@ -79,12 +65,6 @@ export function SuggestionsModal({ open, onClose }: SuggestionsModalProps) {
         dims[s.dimension] = current ? `${current}\n${body}` : body;
       }
       await updateProfile({ ...dims, source: "ai-calibration" });
-      // Then mark accepted with allSettled. A failed mark does NOT undo the
-      // PUT (the body is already in profile.md); it leaves that suggestion
-      // pending + visible, so the user SEES the mismatch and can discard the
-      // duplicate — instead of silently losing data. (code-review [4]: a
-      // visible duplicate risk beats a silent loss; the earlier "mark-first"
-      // order lost data when PUT failed after marks succeeded.)
       const results = await Promise.allSettled(
         accepted.map((s) => patchStatus(s.id, "accepted")),
       );
@@ -96,7 +76,7 @@ export function SuggestionsModal({ open, onClose }: SuggestionsModalProps) {
         setError(
           `${accepted.length - failed.length}/${accepted.length} 条已写入画像；${failed.length} 条标记失败（内容已在画像里，列表仍显示，请丢弃重复的）`,
         );
-        return; // keep the modal open so the user sees the error + leftovers
+        return;
       }
       onClose();
     } catch (err) {

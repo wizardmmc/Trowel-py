@@ -1,7 +1,3 @@
-/**
- * slice-072: /api/agent client — mirrors the host-neutral Session Hub routes.
- * Each test pins one endpoint's URL + method + body shape.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import {

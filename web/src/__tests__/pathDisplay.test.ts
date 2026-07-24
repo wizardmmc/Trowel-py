@@ -25,8 +25,6 @@ describe("getDisplayPath", () => {
   });
 
   it("does NOT mis-strip a workdir that is a string prefix but not a parent", () => {
-    // workdir=/a/b, file=/a/beta/x.ts — "/a/b" is a prefix but "/a/b"+" "/""
-    // must not match. The file is outside; expect absolute.
     expect(getDisplayPath("/a/beta/x.ts", "/a/b")).toBe("/a/beta/x.ts");
   });
 

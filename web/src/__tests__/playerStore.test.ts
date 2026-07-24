@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { usePlayerStore } from "../stores/playerStore";
 import type { PlayerProfile, InventoryItem } from "../api/client";
 
-// Mock the HTTP layer; the store under test orchestrates state, not network.
 vi.mock("../api/client", () => ({
   fetchPlayer: vi.fn(),
   fetchInventory: vi.fn(),
@@ -96,8 +95,6 @@ describe("playerStore", () => {
     await usePlayerStore.getState().buyItem("food_basic");
 
     expect(buyItem).toHaveBeenCalledWith("food_basic");
-    // after buying, the store re-fetches profile + inventory so the UI sees
-    // the spent coins and the newly granted row.
     expect(fetchPlayer).toHaveBeenCalled();
     expect(fetchInventory).toHaveBeenCalled();
     expect(usePlayerStore.getState().player?.coins).toBe(190);

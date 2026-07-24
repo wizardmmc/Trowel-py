@@ -1,4 +1,3 @@
-/* Mirrors TS ReviewCard.css — large two-faced card with colored rate buttons. */
 
 .review-card {
   display: flex;
@@ -32,7 +31,6 @@
   gap: var(--space-md);
 }
 
-/* Front */
 
 .review-card__category {
   font-size: 0.75rem;
@@ -79,7 +77,6 @@
   font-size: 0.8rem;
 }
 
-/* Back */
 
 .review-card__back-title {
   font-size: 1.25rem;
@@ -123,8 +120,6 @@
   color: var(--text-primary);
 }
 
-/* Feynman entry — inherits .btn .btn--secondary outline style; just nudge
-   alignment so it sits between explanation and the rate buttons. */
 .review-card__feynman-btn {
   align-self: center;
   margin-top: var(--space-sm);
@@ -143,7 +138,6 @@
   stroke-linejoin: round;
 }
 
-/* Rate buttons */
 
 .review-card__rate-actions {
   display: flex;

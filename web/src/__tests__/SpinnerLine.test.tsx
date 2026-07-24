@@ -11,7 +11,6 @@ import {
 
 const SID = "s1";
 
-/** Build a minimal active session record (slice-028 multi-session shape). */
 function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
   return {
     ...INITIAL_REDUCER_STATE,
@@ -74,7 +73,7 @@ function setThinking(over: {
   setActive(session);
 }
 
-describe("SpinnerLine (slice-025-a A1)", () => {
+describe("SpinnerLine", () => {
   it("renders nothing when phase is not thinking", () => {
     setActive(makeSession({ phase: "idle" }));
     render(<SpinnerLine />);
@@ -92,18 +91,15 @@ describe("SpinnerLine (slice-025-a A1)", () => {
     render(<SpinnerLine />);
     const spinner = screen.getByTestId("cc-spinner");
     expect(spinner).toBeInTheDocument();
-    // a verb followed by an ellipsis
     expect(spinner.textContent).toMatch(/[A-Za-z]+…/);
   });
 
   it("hides seconds/tokens before 5s and shows them after", () => {
     setThinking({ startedAt: 10000, tokens: 5 });
     render(<SpinnerLine />);
-    // now == startedAt -> 0s elapsed, stats hidden
     expect(screen.queryByText(/tokens/)).toBeNull();
     expect(screen.queryByText(/^\d+s$/)).toBeNull();
 
-    // advance to 6s and tick the interval
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
@@ -125,7 +121,6 @@ describe("SpinnerLine (slice-025-a A1)", () => {
   it("shows 'thinking with <effort> effort' only when effort is set", () => {
     setThinking({ startedAt: 10000, effort: "high" });
     render(<SpinnerLine />);
-    // before 5s, the effort text is part of the hidden stats block
     expect(screen.queryByText(/effort/)).toBeNull();
     act(() => {
       vi.setSystemTime(16000);
@@ -141,7 +136,6 @@ describe("SpinnerLine (slice-025-a A1)", () => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    // bare thinking, no 'with ... effort'
     expect(screen.getByText(/thinking/).textContent).not.toMatch(/with/);
   });
 });

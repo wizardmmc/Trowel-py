@@ -1,4 +1,3 @@
-/** Map category names to accent colors for plant tinting. Mirrors TS. */
 
 const CATEGORY_COLORS: Record<string, string> = {
   javascript: "#4A7C59",
@@ -17,12 +16,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   architecture: "#7F8C8D",
 };
 
-/** Match a category against known keywords (substring, case-insensitive),
- *  falling back to a default earth-green. */
 export function getCategoryColor(category: string): string {
   const key = category.toLowerCase();
   for (const [k, v] of Object.entries(CATEGORY_COLORS)) {
     if (key.includes(k)) return v;
   }
-  return "#5D8A5E"; // default earth-green
+  return "#5D8A5E";
 }

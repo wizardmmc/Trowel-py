@@ -2,13 +2,9 @@ import type { PetMood } from "../../api/client";
 
 interface PetSVGProps {
   readonly mood: PetMood;
-  /** catalog id of the worn hat (hat_straw / hat_scholar / hat_wreath); omit when bare-headed */
   readonly equippedHat?: string;
 }
 
-// vscode-pets-inspired shiba/fox: warm orange body, cream snout, dark brown
-// outline, pink blush, big triangular ears. Smooth vector paths (not chunky
-// pixel blocks) for a clean, cute look.
 const ORANGE = "#E89B4C";
 const ORANGE_DARK = "#C9772B";
 const CREAM = "#FBF3E4";
@@ -18,30 +14,22 @@ const BLUSH = "#F4A8A0";
 const GOLD = "#E8B84B";
 const GREEN = "#5B8C3E";
 
-/** Ears, head, cream snout, blush, nose — fixed regardless of mood. */
 function BodyParts() {
   return (
     <>
-      {/* left ear */}
       <path d="M13 17 L17 4 L23 16 Z" fill={ORANGE} stroke={OUTLINE} strokeWidth="1.6" strokeLinejoin="round" />
       <path d="M16 14 L17.6 8 L20.6 13 Z" fill={ORANGE_DARK} />
-      {/* right ear */}
       <path d="M25 16 L31 4 L35 17 Z" fill={ORANGE} stroke={OUTLINE} strokeWidth="1.6" strokeLinejoin="round" />
       <path d="M27.4 13 L30.4 8 L32 14 Z" fill={ORANGE_DARK} />
-      {/* head */}
       <circle cx="24" cy="27" r="15" fill={ORANGE} stroke={OUTLINE} strokeWidth="2" />
-      {/* cream snout / lower face */}
       <ellipse cx="24" cy="34" rx="10" ry="6.5" fill={CREAM} />
-      {/* blush */}
       <circle cx="14" cy="30" r="2.2" fill={BLUSH} opacity="0.55" />
       <circle cx="34" cy="30" r="2.2" fill={BLUSH} opacity="0.55" />
-      {/* nose */}
       <ellipse cx="24" cy="30" rx="1.8" ry="1.3" fill={EYE} />
     </>
   );
 }
 
-/** Eyes per mood. */
 function Eyes({ mood }: { mood: PetMood }) {
   switch (mood) {
     case "excited":
@@ -79,7 +67,6 @@ function Eyes({ mood }: { mood: PetMood }) {
   }
 }
 
-/** Mouth per mood. */
 function Mouth({ mood }: { mood: PetMood }) {
   switch (mood) {
     case "excited":
@@ -99,7 +86,6 @@ function Mouth({ mood }: { mood: PetMood }) {
   }
 }
 
-/** Hat per catalog id. Unknown ids fall back to the straw hat. */
 function Hat({ id }: { id: string }) {
   switch (id) {
     case "hat_scholar":

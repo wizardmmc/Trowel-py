@@ -17,27 +17,24 @@ describe("AssistantText", () => {
     const { container } = render(<AssistantText text={md} />);
     const root = container.querySelector(".cc-md") as HTMLElement;
     expect(root).toBeTruthy();
-    expect(root.querySelector("code")).toBeTruthy(); // inline code
-    expect(root.querySelector("strong")).toBeTruthy(); // **bold**
+    expect(root.querySelector("code")).toBeTruthy();
+    expect(root.querySelector("strong")).toBeTruthy();
     const link = root.querySelector("a");
     expect(link?.getAttribute("href")).toBe("https://x.io");
-    expect(root.querySelectorAll("li")).toHaveLength(2); // list
-    expect(root.querySelector("pre")).toBeTruthy(); // fenced code block
+    expect(root.querySelectorAll("li")).toHaveLength(2);
+    expect(root.querySelector("pre")).toBeTruthy();
   });
 
   it("surfaces the fenced code block's language as a corner badge", () => {
     const md = "```python\nprint(1)\n```";
     const { container } = render(<AssistantText text={md} />);
     expect(container.querySelector(".cc-md-codeblock__lang")?.textContent).toBe("python");
-    // the code element itself keeps react-markdown's language class
     expect(container.querySelector("pre code")?.className).toContain("language-python");
   });
 
   it("escapes raw HTML — no script / onerror / onload XSS vectors", () => {
     const md = "<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>";
     const { container } = render(<AssistantText text={md} />);
-    // react-markdown default (no rehype-raw) never materializes raw HTML
-    // into real elements/attributes.
     expect(container.querySelectorAll("script, [onerror], [onload]")).toHaveLength(0);
   });
 
@@ -54,7 +51,6 @@ describe("AssistantText", () => {
   });
 
   it("does not swallow currency $...$ into math (GitHub closing rule)", () => {
-    // `$50` has a space before it → not a math close → no .katex span.
     const md = "价格 $100 优惠，恢复 $50。";
     const { container } = render(<AssistantText text={md} />);
     expect(container.querySelector(".katex")).toBeNull();

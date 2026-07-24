@@ -2,18 +2,6 @@ import { useState } from "react";
 
 import { useActiveSession, type Task } from "../../stores/ccStore";
 
-/**
- * slice-028 D1 TodoBar — renders the active session's V2 task list
- * (TaskCreate/TaskUpdate, maintained in ccStore).
- *
- * Layout B1 (mockup): flat list ordered by taskId; in-progress surfaced,
- * completed collapse to the bottom behind a "已完成 N 项" toggle. Scope is
- * session-level (cross-turn) — switching sessions swaps the list (each
- * PerSessionState carries its own tasks).
- *
- * Renders an idle hint when there is no active session or no tasks yet, so the
- * column is never an empty white pane.
- */
 function statusIcon(status: Task["status"]): string {
   switch (status) {
     case "in_progress":

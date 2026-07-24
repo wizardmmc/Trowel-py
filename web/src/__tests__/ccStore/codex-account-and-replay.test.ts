@@ -70,7 +70,6 @@ describe("reduceEvent — Codex rate-limit", () => {
         rate_limit_reached_type: null,
       },
     ]);
-    // 稀疏滚动更新中的 null 是协议事实，不能伪造成 0 或空对象。
     expect(state.meta.rateLimit?.secondary).toBeNull();
     expect(state.meta.rateLimit?.rate_limit_reached_type).toBeNull();
     expect(state.meta.rateLimit?.primary?.usedPercent).toBe(20);
@@ -174,7 +173,7 @@ describe("reduceEvent — Codex live/history deep-equal", () => {
     ] as TrowelEvent[];
 
     const live = run(codexStream);
-    // 生成的 turn id 也必须从相同起点比较，才能验证 reducer 状态深相等。
+    // 两次回放必须从同一 turn id 起点比较。
     _resetTurnIdCounterForTests();
     const history = run(codexStream);
     expect(history.turns).toEqual(live.turns);

@@ -2,21 +2,15 @@ import { useState } from "react";
 import type { SubagentState, ToolItem } from "../../stores/ccStore";
 import { ToolBlock } from "./ToolBlock";
 
-/** Max child rows shown while a sub-agent is still running (slice-025-a 阶段B). */
 const CC_VISIBLE_RUNNING_TOOLS = 4;
-/** Child rows shown once the sub-agent completes (latest one; older collapse). */
 const CC_VISIBLE_DONE_TOOLS = 1;
 
 interface SubagentBlockProps {
   readonly subagent: SubagentState;
-  /** Internal tool_uses the sub-agent spawned (envelope parent_tool_use_id
-   * pointed at this Agent). Absent for the standalone degradation row. */
   readonly childTools?: readonly ToolItem[];
-  /** slice-029: forwarded to child ToolBlocks for project-relative path display. */
   readonly workdir?: string;
 }
 
-/** Read total_tokens off the usage dict (number | undefined). */
 function tokenCount(usage: SubagentState["usage"]): number | null {
   if (!usage) return null;
   const t = (usage as Record<string, unknown>).total_tokens;
@@ -35,9 +29,6 @@ function formatDuration(ms: number): string {
   return rs ? `${m}m ${rs}s` : `${m}m`;
 }
 
-/** Completion summary, e.g. " (15 tool uses · 64.8k tokens · 5m 8s)". Only
- * fields actually present (>0) are shown — GLM backend reports total_tokens=0
- * for sub-agents, so tokens are omitted when zero rather than showing "0 tokens". */
 function formatUsage(usage: SubagentState["usage"]): string {
   if (!usage) return "";
   const u = usage as Record<string, unknown>;
@@ -56,26 +47,8 @@ function brief(text: string, max = 40): string {
   return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
 }
 
-/**
- * Sub-agent (Agent tool) inline block — soil-brown edge, shows description /
- * type / last tool / token spend / progress (slice-025-a A3), plus a collapsible
- * list of the sub-agent's internal tool_uses indented underneath (阶段B).
- *
- * Each child renders via `<ToolBlock>` — the same summary line a top-level tool
- * gets (gear + name + input brief, e.g. "Bash printf … > /path") — so a child
- * call reads exactly like a normal tool call, just nested under the brown edge.
- *
- * Children region: shows the latest N ToolBlocks (N=4 running / 1 completed);
- * older scroll off the top. Click '+N more' or the header to expand all.
- *
- * Note: history replay cannot populate childTools — cc's persisted jsonl drops
- * the parent_tool_use_id envelope field (live stream only).
- */
 export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockProps) {
   const [expanded, setExpanded] = useState(false);
-  // slice-077-prefix: a subagent is in-progress ONLY on started/progress.
-  // Terminal statuses (completed/failed/cancelled/unknown) all stop the
-  // spinner — 失败测试 6: failed/cancelled 不留永久 spinner.
   const inProgress =
     subagent.status === "started" || subagent.status === "progress";
   const tokens = tokenCount(subagent.usage);
@@ -87,8 +60,6 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
     : CC_VISIBLE_DONE_TOOLS;
   const visibleCount = expanded ? kids.length : Math.min(autoCount, kids.length);
   const hiddenCount = kids.length - visibleCount;
-  // Latest N: slice from the tail (new tools append at the end; the oldest
-  // scroll off the top — "bottom-up scroll" per spec).
   const visibleChildren = kids.slice(-visibleCount);
   const toggle = (): void => setExpanded((e) => !e);
 
@@ -138,9 +109,6 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
       {hasKids && (
         <div className="cc-subagent__children">
           {visibleChildren.map((c) => (
-            // slice-029: sub-agent children render condensed (summary stat
-            // only, no expandable diff) — a chain of sub-agent Edit diffs
-            // would drown the timeline. Matches CC `style:'condensed'`.
             <ToolBlock key={c.toolUseId} item={c} condensed workdir={workdir} />
           ))}
           {hiddenCount > 0 && (

@@ -1,23 +1,8 @@
-/**
- * ModelPicker — modal alias picker for /model (slice-027 C2).
- *
- * listbox semantics: ArrowUp/Down moves the active (highlighted) row,
- * Enter/Space confirms, Esc cancels. This matches cc's Ink ModelPicker and
- * the SlashAutocomplete interaction — NOT native <input type=radio>, whose
- * arrow keys change `checked` and fire onChange immediately (which would send
- * /model on every arrow press). "当前" badges the currently in-effect alias
- * (distinct from the keyboard-active row).
- *
- * Lists cc model aliases from GET /cc/models. Choosing fires onSelect(alias);
- * the parent sends `/model <alias>` and the backend turns it into a
- * RestartSession + ModelChangedEvent (lazy restart on next send).
- */
 import { useEffect, useRef, useState } from "react";
 import type { ModelOption } from "../../api/cc";
 
 interface ModelPickerProps {
   readonly models: readonly ModelOption[];
-  /** Currently in-effect alias (from SessionStartedEvent / ModelChangedEvent). */
   readonly currentModel: string | null;
   readonly onSelect: (aliasValue: string) => void;
   readonly onCancel: () => void;
@@ -29,14 +14,11 @@ export function ModelPicker({
   onSelect,
   onCancel,
 }: ModelPickerProps) {
-  // initial active row = the current model if present, else the first
   const initialActive = (() => {
     const idx = models.findIndex((m) => m.value === currentModel);
     return idx >= 0 ? idx : 0;
   })();
   const [activeIndex, setActiveIndex] = useState(initialActive);
-  // autoFocus on a <div> is unreliable across browsers — focus imperatively
-  // so arrow keys + Esc work the moment the picker opens.
   const listboxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     listboxRef.current?.focus();

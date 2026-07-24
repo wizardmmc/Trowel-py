@@ -112,8 +112,6 @@ describe("MessageList", () => {
       ".cc-msg--assistant .cc-msg__body",
     ) as HTMLElement;
     expect(body).toBeTruthy();
-    // squash body's top-level children into a kind sequence. Two consecutive
-    // text items ("中间"+"段") must merge into one .cc-md block.
     const seq = Array.from(body.children).map((el) => {
       const cls = (el as HTMLElement).className || "";
       if (cls.includes("cc-md")) return "text";
@@ -160,7 +158,7 @@ describe("MessageList", () => {
   });
 });
 
-describe("MessageList — revert button (slice-026)", () => {
+describe("MessageList — revert button", () => {
   it("shows a revert button for a revertible turn when idle", () => {
     const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true, status: "done" });
     render(<MessageList turns={[t]} streaming={false} />);

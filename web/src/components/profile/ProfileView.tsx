@@ -5,8 +5,6 @@ import type { ProfileDTO, ProfileUpdate } from "../../api/client";
 import { SuggestionsModal } from "./SuggestionsModal";
 import "./ProfileView.css";
 
-/** the five dimensions, in canonical order (mirrors profile._FIELD_TO_TITLE
- * in the backend, so the front-end titles match the injected ## headings). */
 const DIMENSIONS: { readonly key: keyof ProfileUpdate; readonly title: string }[] = [
   { key: "ability", title: "能力水平" },
   { key: "methodology", title: "方法论偏好" },
@@ -19,7 +17,6 @@ function emptyDraft(): ProfileUpdate {
   return { ability: "", methodology: "", expression: "", goal: "", other: "" };
 }
 
-/** copy the five editable dims out of the loaded profile into an edit draft */
 function profileToDraft(p: ProfileDTO): ProfileUpdate {
   return {
     ability: p.ability,
@@ -30,19 +27,6 @@ function profileToDraft(p: ProfileDTO): ProfileUpdate {
   };
 }
 
-/**
- * ProfileView — the fifth sidebar tab (方案 B single-pane document).
- *
- * Renders the five-dim profile as a centered "about me" document. Read mode
- * shows each section's body; clicking 编辑画像 flips all five into textareas
- * (editor-shell sunshine ring) and saves them in one PUT. Save failure is
- * shown explicitly (C-6) and keeps the draft so the user can retry. Cold
- * start (empty profile) shows five empty sections + the edit button.
- *
- * slice-050: the doc-toolbar shows a 「查看 AI 建议」 entry when there are
- * pending suggestions, opening the SuggestionsModal (accept appends to the
- * dims, never replacing).
- */
 export function ProfileView() {
   const { profile, loading, error, fetchProfile, updateProfile } =
     useProfileStore();
@@ -52,8 +36,6 @@ export function ProfileView() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
-  // fetchProfile / fetchSuggestions are stable zustand actions (defined once at
-  // create), so this effect runs once on mount.
   useEffect(() => {
     fetchProfile();
     fetchSuggestions();
@@ -76,7 +58,6 @@ export function ProfileView() {
       setEditing(false);
       setSaveError(null);
     } catch (err) {
-      // C-6: surface the failure explicitly, keep the draft so the user can retry
       setSaveError(err instanceof Error ? err.message : "保存失败");
     }
   };

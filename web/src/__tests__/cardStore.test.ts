@@ -7,7 +7,6 @@ import {
 import type { CardDraft } from "../api/client";
 import * as client from "../api/client";
 
-// Mock the API client module — store actions must not hit the network.
 vi.mock("../api/client", () => ({
   extractCards: vi.fn(),
   extractConversation: vi.fn(),
@@ -96,7 +95,7 @@ describe("cardStore re-explain state machine", () => {
     const { regenerateExplanation } = useCardStore.getState();
     await regenerateExplanation(draft);
     await regenerateExplanation(draft);
-    await regenerateExplanation(draft); // 3rd — must be a no-op (invariant 3)
+    await regenerateExplanation(draft);
 
     expect(useCardStore.getState().reExplainRegens).toHaveLength(MAX_RE_EXPLAINS);
     expect(mockReExplain).toHaveBeenCalledTimes(MAX_RE_EXPLAINS);
@@ -149,7 +148,6 @@ describe("cardStore re-explain state machine", () => {
 
   it("review wipes the candidate pool (the draft is gone)", async () => {
     mockReExplain.mockResolvedValue({ explanation: "x" });
-    // review doesn't read the return value — only the state reset matters here
     mockReviewCard.mockResolvedValue({} as never);
     useCardStore.setState({ drafts: [makeDraft("d1")], currentDraftIndex: 0 });
     await useCardStore
@@ -170,8 +168,8 @@ describe("cardStore re-explain state machine", () => {
     const draft = makeDraft("d1");
     const { regenerateExplanation } = useCardStore.getState();
 
-    const first = regenerateExplanation(draft); // pending → loading=true
-    await regenerateExplanation(draft); // must no-op (loading), not add regen-2
+    const first = regenerateExplanation(draft);
+    await regenerateExplanation(draft);
 
     expect(useCardStore.getState().reExplainLoading).toBe(true);
     expect(mockReExplain).toHaveBeenCalledTimes(1);
@@ -189,7 +187,7 @@ describe("cardStore re-explain state machine", () => {
     await regenerateExplanation(draft);
     useCardStore.getState().selectReExplain("regen-1");
 
-    await regenerateExplanation(draft); // produces regen-2
+    await regenerateExplanation(draft);
 
     expect(useCardStore.getState().reExplainRegens).toHaveLength(2);
     expect(useCardStore.getState().reExplainSelectedId).toBe("regen-1");

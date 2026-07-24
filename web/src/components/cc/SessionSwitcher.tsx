@@ -1,16 +1,7 @@
 import type { AgentHistoryRow } from "../../api/agent";
 
-/**
- * slice-072: history session dropdown — pick a past session to resume. Each
- * row carries its runtime (CC jsonl or Codex thread); onPick receives the
- * whole row so the store resumes through the originating runtime only (spec
- * C-2: cross-runtime resume is forbidden). A row whose native_session_id is
- * null (a fresh Codex binding with no thread yet) is rendered but disabled —
- * there is nothing to resume.
- */
 interface SessionSwitcherProps {
   readonly history: readonly AgentHistoryRow[];
-  /** total sessions on disk; history.length is the capped list shown. */
   readonly total: number;
   readonly loading: boolean;
   readonly onPick: (row: AgentHistoryRow) => void;
@@ -35,8 +26,6 @@ export function SessionSwitcher({
   onPick,
   onNew,
 }: SessionSwitcherProps) {
-  // When the list is capped (more on disk than shown), surface both numbers so
-  // the count isn't misleading; otherwise just show the total.
   const capped = total > history.length;
   const countLabel = capped ? `共 ${total} · 最近 ${history.length}` : `共 ${total}`;
   return (

@@ -26,7 +26,6 @@
   margin-bottom: var(--space-md);
 }
 
-/* sunshine badge（slice021-web：替代 emoji 图标） */
 .feynman-overlay__badge-wrap {
   display: flex;
   justify-content: center;
@@ -74,7 +73,6 @@
   margin: 0 0 var(--space-sm) 0;
 }
 
-/* ---------- Question phase ---------- */
 
 .feynman-overlay__question-text {
   font-size: 1rem;
@@ -122,7 +120,6 @@
   margin: var(--space-xs) 0 0 0;
 }
 
-/* ---------- Evaluating phase ---------- */
 
 .feynman-overlay__spinner {
   width: 36px;
@@ -146,7 +143,6 @@
   margin: 0;
 }
 
-/* ---------- Feedback phase ---------- */
 
 .feynman-overlay__scores {
   display: flex;

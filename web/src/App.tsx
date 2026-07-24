@@ -12,9 +12,6 @@ import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
 
-// slice-027: the CC workdir is user-selected. On load we default to the most
-// recently used workdir (persisted to localStorage); first run has none, so
-// the user picks via WorkdirPicker. No hardcoded machine path.
 const WORKDIR_STORAGE_KEY = "trowel.cc.workdirs.recent";
 
 function loadRecentWorkdirs(): string[] {
@@ -25,7 +22,6 @@ function loadRecentWorkdirs(): string[] {
       return arr as string[];
     }
   } catch {
-    // fall through to default
   }
   return [];
 }
@@ -36,7 +32,6 @@ function saveRecentWorkdir(p: string): string[] {
   try {
     localStorage.setItem(WORKDIR_STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // storage unavailable — in-memory only this session
   }
   return next;
 }
@@ -65,7 +60,6 @@ function App() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<Tool>("garden");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // slice-027: CC workdir is user-selectable; recent workdirs persist locally.
   const [ccWorkdir, setCcWorkdir] = useState<string>(
     () => loadRecentWorkdirs()[0] ?? "",
   );

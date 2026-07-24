@@ -4,21 +4,6 @@ import { createPortal } from "react-dom";
 import type { ModelOption } from "../../api/cc";
 import { EFFORT_OPTIONS } from "./effortOptions";
 
-/**
- * slice-034 feat 3 — the model + effort chips on the Composer's bottom bar.
- *
- * Two independent chips; each opens an upward popover listing the options.
- * This replaces the old top-bar "未连接" / model display: the model chip
- * always shows a value — the session's current alias, or the cc default
- * fallback (``is_default``) when meta hasn't come back yet. Effort falls back
- * to ``auto`` (model-default intensity) when unset.
- *
- * The popover is rendered through a React portal to ``document.body`` so it
- * escapes ``.cc-view { overflow: hidden }`` (the float-card clip that would
- * otherwise truncate an upward-absolute popover). Position is `fixed` against
- * the chip button's ``getBoundingClientRect()``. A transparent backdrop closes
- * the popover on outside click.
- */
 export interface EffortControlOption {
   readonly value: string;
   readonly description: string;
@@ -27,11 +12,8 @@ export interface EffortControlOption {
 
 interface ModelEffortChipProps {
   readonly models: readonly ModelOption[];
-  /** Omit for CC's existing static effort list; Codex passes native values. */
   readonly efforts?: readonly EffortControlOption[];
-  /** Current model alias, or null when meta hasn't arrived (show the default). */
   readonly currentModelAlias: string | null;
-  /** Current effort, or null when unset (show ``auto``). */
   readonly currentEffort: string | null;
   readonly onPickModel: (alias: string) => void;
   readonly onPickEffort: (value: string) => void;
@@ -96,7 +78,6 @@ export function ModelEffortChip({
   }, [open]);
   function popoverStyle(): CSSProperties | undefined {
     if (!anchor) return undefined;
-    // fixed: bottom = distance from chip top to viewport bottom + 6px gap.
     return {
       position: "fixed",
       bottom: `${window.innerHeight - anchor.top + 6}px`,

@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { SubagentBlock } from "../components/cc/SubagentBlock";
 import type { SubagentState, ToolItem } from "../stores/ccStore";
 
-describe("SubagentBlock (slice-025-a A3)", () => {
+describe("SubagentBlock", () => {
   it("renders type + description + last tool + tokens while in progress", () => {
     const sub: SubagentState = {
       status: "progress",
@@ -38,12 +38,10 @@ describe("SubagentBlock (slice-025-a A3)", () => {
   });
 
   it.each(["failed", "cancelled", "unknown"] as const)(
-    "slice-077-prefix: status %s stops the spinner (no permanent spinner, 失败测试 6)",
+    "status %s stops the spinner",
     (status) => {
       render(<SubagentBlock subagent={{ status }} />);
-      // terminal-but-not-completed statuses must NOT keep the spinner running
       expect(screen.queryByLabelText("进行中")).toBeNull();
-      // they render the terminal ("Done") branch, not the in-progress ring
       expect(screen.getByText(/Done/)).toBeInTheDocument();
     },
   );
@@ -65,7 +63,6 @@ describe("SubagentBlock (slice-025-a A3)", () => {
 
   it("hides optional fields when absent", () => {
     render(<SubagentBlock subagent={{ status: "progress" }} />);
-    // bare "Agent" name, no type/desc/last/tokens
     expect(screen.getByText(/^Agent$/)).toBeInTheDocument();
     expect(screen.queryByText(/tok/)).toBeNull();
     expect(screen.queryByText(/last:/)).toBeNull();
@@ -100,7 +97,7 @@ function makeTool(overrides: Partial<ToolItem> = {}): ToolItem {
   };
 }
 
-describe("SubagentBlock — childTools children region (slice-025-a 阶段B)", () => {
+describe("SubagentBlock — childTools children region", () => {
   it("running with 5 childTools shows latest 4 + '+1 more', hides the oldest", () => {
     const children = [1, 2, 3, 4, 5].map((n) =>
       makeTool({ toolUseId: `c${n}`, input: { command: `echo cmd${n}` }, elapsedSeconds: n }),
@@ -178,7 +175,6 @@ describe("SubagentBlock — childTools children region (slice-025-a 阶段B)", (
       />,
     );
     expect(screen.getByText(/^Bash$/)).toBeInTheDocument();
-    // ToolBlock's BashSummary renders the command brief — not just the tool name
     expect(screen.queryAllByText(/printf.*placeholder/).length).toBeGreaterThan(0);
   });
 });

@@ -1,7 +1,3 @@
-/* PetOverlay — the floating pet in the garden's bottom-right corner.
-   Pinned inside .garden-view (position: relative), 120x120 hit area with an
-   80x80 SVG centered in it. will-change: transform smooths the Framer Motion
-   float/wander animations. */
 
 .pet-overlay {
   position: absolute;
@@ -29,7 +25,6 @@
   flex-shrink: 0;
 }
 
-/* Speech bubble — sits above the SVG, points down at it via ::after. */
 .pet-overlay__speech-bubble {
   position: absolute;
   bottom: 100%;

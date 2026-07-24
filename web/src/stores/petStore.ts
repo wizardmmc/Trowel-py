@@ -9,9 +9,7 @@ import {
 } from "../api/client";
 
 export interface PetState {
-  /** the single pet owned by the default player, or null before first load */
   readonly pet: Pet | null;
-  /** the pet's last spoken line, shown in the speech bubble */
   readonly lastResponse: PetResponse | null;
   readonly loading: boolean;
   readonly error: string | null;
@@ -22,8 +20,6 @@ export interface PetState {
   equipHat: (itemId: string) => Promise<void>;
 }
 
-// API functions are imported with an `Api` suffix so the store actions
-// (fetchPet, equipHat, ...) don't shadow them inside the action bodies.
 export const usePetStore = create<PetState>((set) => ({
   pet: null,
   lastResponse: null,

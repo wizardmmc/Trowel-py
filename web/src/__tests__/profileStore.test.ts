@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useProfileStore } from "../stores/profileStore";
 import type { ProfileDTO, ProfileUpdate } from "../api/client";
 
-// Mock the HTTP layer; the store under test orchestrates state, not network.
 vi.mock("../api/client", () => ({
   fetchProfile: vi.fn(),
   putProfile: vi.fn(),
@@ -63,8 +62,6 @@ describe("profileStore", () => {
     await useProfileStore.getState().updateProfile(testUpdate);
 
     expect(putProfileApi).toHaveBeenCalledWith(testUpdate);
-    // PUT returns the freshly loaded profile (server-stamped updated/source),
-    // so the store uses it directly — no second GET needed.
     expect(useProfileStore.getState().profile).toEqual(saved);
     expect(useProfileStore.getState().loading).toBe(false);
   });

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { splitBashCommand } from "../components/cc/bashCommand";
 
-describe("splitBashCommand (slice-033 feat 4)", () => {
+describe("splitBashCommand", () => {
   it("a single command → one segment with empty sep", () => {
     expect(splitBashCommand("ls -la")).toEqual([{ sep: "", body: "ls -la" }]);
   });
@@ -103,8 +103,6 @@ describe("splitBashCommand (slice-033 feat 4)", () => {
       body: "ls docs/*.md 2>/dev/null",
     });
     expect(segs[3]).toEqual({ sep: ";", body: 'echo ""' });
-    // the '|' inside "typecheck|mypy" is quoted → NOT split; the trailing
-    // '| head' is top-level → its own segment.
     expect(segs[4]).toEqual({
       sep: ";",
       body: 'grep -rEn "typecheck|mypy" pyproject.toml 2>/dev/null',

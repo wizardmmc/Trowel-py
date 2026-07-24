@@ -16,7 +16,6 @@ body {
   color: var(--text-primary);
 }
 
-/* ── Buttons ── */
 
 .btn {
   display: inline-flex;
@@ -52,7 +51,6 @@ body {
   background: var(--bg-card);
 }
 
-/* ── NotificationBanner ── */
 
 .notification-banner {
   display: flex;
@@ -75,7 +73,6 @@ body {
   font-size: 0.8125rem;
 }
 
-/* ── ExtractionInput ── */
 
 .extraction-input {
   background-color: var(--bg-card);
@@ -189,7 +186,6 @@ body {
   border: 1px solid var(--color-error);
 }
 
-/* ── ReviewModal ── */
 
 .review-modal__overlay {
   position: fixed;
@@ -276,7 +272,6 @@ body {
   cursor: not-allowed;
 }
 
-/* ── CardDetail ── */
 
 .card-detail__title {
   font-size: 1.25rem;
@@ -298,7 +293,6 @@ body {
   font-size: 0.95rem;
   line-height: 1.65;
   margin-bottom: var(--space-sm);
-  /* 「可打磨主角」视觉权重（slice021-web） */
   padding-left: 12px;
   border-left: 3px solid var(--color-border);
 }
@@ -332,13 +326,8 @@ body {
   color: var(--text-secondary);
 }
 
-/* ReviewSession styles → components/review/ReviewSession.css
-   (full-screen immersive, mirrors TS). */
 
-/* ReviewCard styles → components/review/ReviewCard.css
-   (face card + colored rate-btn, mirrors TS). */
 
-/* ── ReviewCompletion ── */
 
 .review-completion {
   text-align: center;
@@ -397,7 +386,6 @@ body {
   opacity: 0.9;
 }
 
-/* ── Garden View ── */
 
 .garden-view {
   position: relative;
@@ -444,7 +432,6 @@ body {
   cursor: pointer;
 }
 
-/* ── Garden Header ── */
 
 .garden-header {
   display: flex;
@@ -507,7 +494,6 @@ body {
   background-color: var(--bg-garden);
 }
 
-/* ── Garden Stats ── */
 
 .garden-stats {
   display: flex;
@@ -553,7 +539,6 @@ body {
   margin: var(--space-xs) 0;
 }
 
-/* ── Empty Garden ── */
 
 .empty-garden {
   display: flex;
@@ -596,7 +581,6 @@ body {
   line-height: 1.5;
 }
 
-/* ── Garden Grid ── */
 
 .garden-grid {
   display: flex;
@@ -681,7 +665,6 @@ body {
   }
 }
 
-/* ── Plant Card (80×80) ── */
 
 .plant-card {
   width: 80px;
@@ -750,7 +733,6 @@ body {
   stroke-linejoin: round;
 }
 
-/* ── Plant Detail Modal ── */
 
 .plant-modal__overlay {
   position: fixed;
@@ -853,11 +835,6 @@ body {
   color: var(--text-primary);
 }
 
-/* ───────────────────────────────────────────────────────────
-   re-explain 候选 UI（slice021-web 视觉层）
-   DOM 由 slice 021（re-explain 行为）提供；此处先备好样式，
-   021 前端接上后即生效。选定态用 sunshine 高亮，未选中性。
-   ─────────────────────────────────────────────────────────── */
 
 .re-explain {
   border-top: 1px dashed var(--color-border);
@@ -1006,7 +983,7 @@ body {
   margin-top: var(--space-sm);
 }
 
-/* sunshine 描边的「再生成」次操作按钮 */
+
 .btn--ghost-sun {
   background: var(--sunshine-soft);
   border: 1px solid var(--sunshine);

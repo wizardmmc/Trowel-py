@@ -2,8 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useEventStore } from "../stores/eventStore";
 import type { EventLog } from "../api/client";
 
-// Mock the HTTP layer so the store never hits the network. triggerEvent is the
-// only client call the store makes.
 vi.mock("../api/client", () => ({
   triggerEvent: vi.fn(),
 }));

@@ -44,7 +44,7 @@ describe("EventTimeline", () => {
     expect(screen.getByText(/2s 后/)).toBeTruthy();
   });
 
-  it("retrying row with attempt=0 shows '重试中' without a number (slice-035 bug3)", () => {
+  it("retrying row with attempt=0 shows '重试中' without a number", () => {
     const items: TurnItem[] = [
       {
         kind: "retrying",
@@ -104,18 +104,12 @@ describe("EventTimeline", () => {
   it("renders text items as an AssistantText markdown block (B2)", () => {
     const items: TurnItem[] = [{ kind: "text", text: "# hello\n\n`code`" }];
     const { container } = render(<EventTimeline items={items} />);
-    // slice-025-b: EventTimeline now owns turn-body rendering — text items
-    // land here, rendered as markdown (not filtered out).
     expect(container.querySelector(".cc-md")).toBeTruthy();
     expect(container.querySelector("h1")?.textContent).toContain("hello");
     expect(container.querySelector("code")).toBeTruthy();
   });
 
   it("keeps a paragraph break between adjacent text items (no collapse)", () => {
-    // ccStore's text case normally folds same-run deltas into one TextItem,
-    // so two adjacent TextItems is a defensive path (two envelopes with no
-    // tool between, or a future reducer change). A bare concat would merge
-    // them into one paragraph; the join must preserve the boundary.
     const items: TurnItem[] = [
       { kind: "text", text: "para1" },
       { kind: "text", text: "para2" },
@@ -127,7 +121,7 @@ describe("EventTimeline", () => {
     expect(ps[1].textContent).toBe("para2");
   });
 
-  it("Agent tool renders SubagentBlock with the childTools region (阶段B)", () => {
+  it("Agent tool renders SubagentBlock with the childTools region", () => {
     const items: TurnItem[] = [
       {
         kind: "tool",
@@ -156,8 +150,7 @@ describe("EventTimeline", () => {
     expect(screen.getByText(/Bash/)).toBeInTheDocument();
   });
 
-  it("hides TaskCreate/TaskUpdate/TodoWrite tools (slice-034 feat 5)", () => {
-    // 这些工具的语义已在右侧 TodoBar（task_* 事件）体现，对话流不再渲染
+  it("hides TaskCreate/TaskUpdate/TodoWrite tools", () => {
     const items: TurnItem[] = [
       { kind: "tool", toolUseId: "1", toolName: "TaskCreate", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },
       { kind: "tool", toolUseId: "2", toolName: "TaskUpdate", input: {}, status: "done", elapsedSeconds: 1, result: "ok", childTools: [] },

@@ -15,8 +15,6 @@ import {
 } from "../stores/ccStore";
 import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../api/agent";
 
-/** Default `connected: true` (a live cc process) so the row renders; override
- * with `connected: false` to test the "not yet sent" filtering. */
 function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSessionState {
   return {
     ...INITIAL_REDUCER_STATE,
@@ -57,7 +55,7 @@ beforeEach(() => {
   setSessions({}, null);
 });
 
-describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
+describe("MultiSessionBar", () => {
   it("renders the empty hint when there are no connections", () => {
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     expect(screen.getByText(/暂无连接/)).toBeInTheDocument();
@@ -74,12 +72,11 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     expect(screen.getByText("trowel-py")).toBeInTheDocument();
     expect(screen.getByText("wiki")).toBeInTheDocument();
-    // active row carries the active class on the item container
     const activeItem = screen.getByText("trowel-py").closest(".cc-multibar__item");
     expect(activeItem?.className).toMatch(/--active/);
   });
 
-  it("shows the M·P condition marker per session (slice-060)", () => {
+  it("shows the M·P condition marker per session", () => {
     setSessions(
       { s1: makeSession({ name: "A", memoryEnabled: false, profileEnabled: true }) },
       "s1",
@@ -89,13 +86,11 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
     );
     const cond = container.querySelector(".cc-multibar__cond");
     expect(cond).not.toBeNull();
-    // M off (dim), P on (green) — so four experiment sessions stay distinguishable
     expect(cond?.querySelectorAll(".cc-multibar__cond-off")).toHaveLength(1);
     expect(cond?.querySelectorAll(".cc-multibar__cond-on")).toHaveLength(1);
   });
 
   it("does NOT render sessions that haven't sent a message (connected=false)", () => {
-    // s1 is a live connection; s2 is a "+" / load-history state (no cc process yet)
     setSessions(
       {
         s1: makeSession({ name: "live" }),
@@ -155,7 +150,6 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
     );
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     fireEvent.click(screen.getByText("b"));
-    // activate is async (awaits dropTempActive + apiActivateSession)
     await waitFor(() => {
       expect(apiActivateSession).toHaveBeenCalledWith("s2");
     });
@@ -184,8 +178,6 @@ describe("MultiSessionBar (slice-028 v2: only live connections)", () => {
   });
 
   it("+ is always enabled (cap is enforced on send, not on create)", () => {
-    // even at the connected cap, + must stay enabled — it only prepares a new
-    // chat (connected=false); the cap fires when the user actually sends.
     const sessions: Record<string, PerSessionState> = {};
     for (let i = 0; i < 20; i++) {
       sessions[`s${i}`] = makeSession({ name: `s${i}` });

@@ -1,4 +1,3 @@
-/* Overlay */
 .pet-panel-overlay {
   position: fixed;
   inset: 0;
@@ -8,7 +7,6 @@
   justify-content: flex-end;
 }
 
-/* Panel */
 .pet-panel {
   width: 320px;
   height: 100vh;
@@ -20,7 +18,6 @@
   gap: 0;
 }
 
-/* Header */
 .pet-panel__header {
   display: flex;
   align-items: center;
@@ -56,7 +53,6 @@
   outline-offset: 2px;
 }
 
-/* Pet display area */
 .pet-panel__pet-area {
   display: flex;
   flex-direction: column;
@@ -82,7 +78,6 @@
   box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
 }
 
-/* Sections */
 .pet-panel__section {
   padding: var(--space-md, 16px) var(--space-lg, 24px);
   border-top: 1px solid var(--soil-brown, #8b7355);
@@ -97,7 +92,6 @@
   margin: 0 0 var(--space-sm, 8px) 0;
 }
 
-/* Status items */
 .pet-panel__status-list {
   display: flex;
   flex-direction: column;
@@ -117,7 +111,6 @@
   min-width: 48px;
 }
 
-/* Hunger bar */
 .pet-panel__hunger-bar {
   flex: 1;
   height: 8px;
@@ -140,7 +133,6 @@
   text-align: right;
 }
 
-/* Food buttons */
 .pet-panel__food-list {
   display: flex;
   flex-direction: column;
@@ -199,7 +191,6 @@
   color: var(--sunshine, #e8b84b);
 }
 
-/* Hat list */
 .pet-panel__hat-list {
   display: flex;
   flex-direction: column;
@@ -248,7 +239,6 @@
   padding: var(--space-sm, 8px) 0;
 }
 
-/* Event log */
 .pet-panel__event-list {
   display: flex;
   flex-direction: column;
@@ -277,7 +267,6 @@
   font-size: 0.75rem;
 }
 
-/* Error message */
 .pet-panel__error {
   font-size: 0.8rem;
   color: var(--color-error, #c45b4a);

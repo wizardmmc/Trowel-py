@@ -47,7 +47,6 @@ describe("cc REST client", () => {
     const session = await createSession({ workdir: "/wd", effort: "low" });
 
     expect(session.session_id).toBe("s1");
-    // slice-028: backend now returns the multi-session display name
     expect(session.name).toBe("trowel-py");
     const call = vi.mocked(fetch).mock.calls[0];
     const body = JSON.parse((call?.[1]?.body as string) ?? "{}");
@@ -55,7 +54,7 @@ describe("cc REST client", () => {
     expect(call?.[1]?.method).toBe("POST");
   });
 
-  it("createSession forwards memory_enabled/profile_enabled (slice-060)", async () => {
+  it("createSession forwards memory_enabled/profile_enabled", async () => {
     vi.stubGlobal(
       "fetch",
       mockFetchEnvelope({
@@ -82,7 +81,7 @@ describe("cc REST client", () => {
     });
   });
 
-  it("listActiveSessions returns the active list + active_id (slice-028 D2)", async () => {
+  it("listActiveSessions returns the active list + active_id", async () => {
     vi.stubGlobal(
       "fetch",
       mockFetchEnvelope({
@@ -101,7 +100,7 @@ describe("cc REST client", () => {
     expect(url).toBe("/api/cc/sessions/active");
   });
 
-  it("activateSession POSTs to /sessions/:id/activate (slice-028 D2)", async () => {
+  it("activateSession POSTs to /sessions/:id/activate", async () => {
     const mock = mockFetchEnvelope({ active_id: "s2" });
     vi.stubGlobal("fetch", mock);
     await activateSession("s2");

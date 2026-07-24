@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useSuggestionsStore } from "../stores/suggestionsStore";
 import type { Suggestion } from "../api/client";
 
-// Mock the HTTP layer; the store under test orchestrates state, not network.
 vi.mock("../api/client", () => ({
   getSuggestions: vi.fn(),
   patchSuggestionStatus: vi.fn(),
@@ -74,7 +73,6 @@ describe("suggestionsStore", () => {
       useSuggestionsStore.getState().patchStatus("s1", "discarded"),
     ).rejects.toThrow("nope");
 
-    // not dropped on failure — the user can retry
     expect(useSuggestionsStore.getState().suggestions).toHaveLength(1);
   });
 });

@@ -10,9 +10,6 @@ interface PermissionFactsChipProps {
   readonly label: string | null;
 }
 
-/** Read-only Codex permission control: requested intent stays separate from
- * app-server's effective policy facts, so "follow" can never masquerade as
- * desktop Full access. */
 export function PermissionFactsChip({
   requested,
   profile,

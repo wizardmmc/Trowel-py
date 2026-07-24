@@ -59,7 +59,6 @@ export const useGardenStore = create<GardenState>((set, get) => ({
     }
     set({ loading: true, error: null });
     try {
-      // searchCards returns Card[] from /api/cards/search — convert to GardenPlant[]
       const cards = await searchCards(trimmed) as unknown as Array<{
         id: string;
         title: string;
@@ -109,7 +108,6 @@ export const useGardenStore = create<GardenState>((set, get) => ({
       const stats = await getGardenStats();
       set({ stats });
     } catch {
-      // stats are non-critical, silently ignore
     }
   },
 }));

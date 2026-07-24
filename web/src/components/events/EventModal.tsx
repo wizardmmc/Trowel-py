@@ -4,23 +4,15 @@ import { EVENT_ICONS, ITEM_CATALOG } from "../pet/itemCatalog";
 import "./EventModal.css";
 
 interface EventModalProps {
-  /** the event to display, or null to render nothing */
   readonly event: EventLog | null;
-  /** called when the user claims the reward / dismisses the modal */
   readonly onClaim: () => void;
 }
 
-/** render a catalog id (food_basic / hat_straw) as "emoji label", or the raw id when unknown */
 function formatItemLabel(itemId: string): string {
   const entry = ITEM_CATALOG[itemId];
   return entry ? `${entry.emoji} ${entry.label}` : itemId;
 }
 
-/**
- * Slide-up modal that announces a fired event and its rewards. Pure
- * request/response — the event is handed in via props (the store fetched it
- * synchronously via POST /api/events/trigger); no SSE involvement.
- */
 export function EventModal({ event, onClaim }: EventModalProps) {
   return (
     <AnimatePresence>

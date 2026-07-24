@@ -8,9 +8,6 @@ import {
   type SlashSource,
 } from "../components/cc/slashGroups";
 
-// Real-shaped names drawn from the cc-init-291 fixture (cc 2.1.197): one item
-// per source so every grouping branch is exercised. Plugin names carry the
-// "mp:skill" full name the backend emits (C-4).
 const items: readonly SlashItem[] = [
   { name: "model", description: "切换模型", source: "builtin", type: "command" },
   { name: "deep-research", description: "多源深研", source: "bundled", type: "skill" },
@@ -30,7 +27,7 @@ const items: readonly SlashItem[] = [
   },
 ];
 
-describe("groupSlashItems (slice-042 P4)", () => {
+describe("groupSlashItems", () => {
   it("groups by source in SLASH_SOURCE_ORDER and drops empty groups", () => {
     const groups = groupSlashItems(items, "");
     expect(groups.map((g) => g.source)).toEqual([
@@ -63,9 +60,6 @@ describe("groupSlashItems (slice-042 P4)", () => {
 
   it("filters by name substring across all groups (case-insensitive)", () => {
     const groups = groupSlashItems(items, "code");
-    // "code" matches inside both plugin names: "codex" contains "code", and
-    // "...code-review" too. No other source's name contains "code", so only the
-    // plugin bucket survives — demonstrating substring (not prefix) matching.
     const sources = groups.map((g) => g.source);
     expect(sources).toEqual(["plugin"]);
     const plugin = groups.find((g) => g.source === "plugin");
@@ -90,7 +84,7 @@ describe("groupSlashItems (slice-042 P4)", () => {
   });
 });
 
-describe("isGroupExpanded (slice-042 P4)", () => {
+describe("isGroupExpanded", () => {
   const collapsed = new Set<SlashSource>(["plugin"]);
 
   it("searching expands every group (matches-only are present anyway)", () => {
@@ -108,11 +102,9 @@ describe("isGroupExpanded (slice-042 P4)", () => {
   });
 });
 
-describe("flatVisible (slice-042 P4)", () => {
+describe("flatVisible", () => {
   it("flattens only expanded groups, in group order — matches render order", () => {
     const groups = groupSlashItems(items, "");
-    // plugin collapsed, rest expanded → plugin's 2 items dropped from the flat
-    // keyboard list. This is the order SlashAutocomplete renders expanded rows.
     const flat = flatVisible(groups, false, new Set(["plugin"]));
     expect(flat.map((i) => i.name)).toEqual([
       "model",
@@ -134,7 +126,6 @@ describe("flatVisible (slice-042 P4)", () => {
   it("aligns with groupSlashItems order (no reordering)", () => {
     const groups = groupSlashItems(items, "");
     const flat = flatVisible(groups, false, new Set());
-    // same as walking every group's items in order
     const expected = groups.flatMap((g) => g.items).map((i) => i.name);
     expect(flat.map((i) => i.name)).toEqual(expected);
   });

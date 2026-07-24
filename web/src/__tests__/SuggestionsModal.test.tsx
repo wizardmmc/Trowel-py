@@ -6,7 +6,6 @@ import { useSuggestionsStore } from "../stores/suggestionsStore";
 import { useProfileStore } from "../stores/profileStore";
 import type { ProfileDTO, Suggestion } from "../api/client";
 
-// Mock the HTTP layer; the stores under the modal run for real against these.
 vi.mock("../api/client", () => ({
   getSuggestions: vi.fn(),
   patchSuggestionStatus: vi.fn(),
@@ -88,7 +87,6 @@ describe("SuggestionsModal", () => {
     await userEvent.click(screen.getByTestId("suggestions-accept"));
 
     await waitFor(() => expect(putApi).toHaveBeenCalled());
-    // append, not replace: existing content first, then the suggestion body
     expect(putApi).toHaveBeenCalledWith(
       expect.objectContaining({
         ability: "已有能力\n新增能力",
@@ -133,7 +131,7 @@ describe("SuggestionsModal", () => {
     ) as HTMLTextAreaElement;
     await userEvent.clear(editor);
     await userEvent.type(editor, "改过的");
-    await userEvent.click(screen.getByTestId("suggestion-edit-s1")); // 完成
+    await userEvent.click(screen.getByTestId("suggestion-edit-s1"));
     await userEvent.click(screen.getByTestId("suggestion-check-s1"));
     await userEvent.click(screen.getByTestId("suggestions-accept"));
 
@@ -158,9 +156,7 @@ describe("SuggestionsModal", () => {
     expect(screen.getByTestId("suggestions-error")).toHaveTextContent("写回失败");
   });
 
-  it("if a mark fails after PUT, body stays written + error shows + suggestion stays visible (code-review [4])", async () => {
-    // 先 PUT 后 patch(allSettled)：PUT 成功内容已写画像；patch 失败则建议
-    // 残留可见 + 报错，用户看到不一致能丢弃重复——而非无声丢数据
+  it("if a mark fails after PUT, body stays written + error shows + suggestion stays visible", async () => {
     vi.mocked(patchApi).mockRejectedValue(new Error("标记失败"));
     vi.mocked(putApi).mockResolvedValue(profile);
     useSuggestionsStore.setState({ suggestions: [sug({ id: "s1" })] });
@@ -170,12 +166,9 @@ describe("SuggestionsModal", () => {
     await userEvent.click(screen.getByTestId("suggestion-check-s1"));
     await userEvent.click(screen.getByTestId("suggestions-accept"));
 
-    // PUT ran first (body written to profile) — order is PUT-first now
     await waitFor(() => expect(putApi).toHaveBeenCalled());
     expect(patchApi).toHaveBeenCalledWith("s1", "accepted");
-    // error surfaces the partial-mark failure (visible, not silent loss)
     expect(screen.getByTestId("suggestions-error")).toBeInTheDocument();
-    // the suggestion stays visible (mark failed → not removed from the store)
     expect(screen.getByTestId("suggestion-body-s1")).toBeInTheDocument();
   });
 });

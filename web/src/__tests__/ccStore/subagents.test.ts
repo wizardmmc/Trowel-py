@@ -129,7 +129,6 @@ describe("reduceEvent — subagent_progress", () => {
   });
 
   it("attaches to a NESTED Agent (subagent calling subagent), not a top-level standalone row", () => {
-    // 进度匹配必须递归 childTools；只查顶层会把每次更新都溢出成独立行。
     let state = withOpenTurn("use agent");
     state = reduceEvent(state, {
       type: "tool_call",

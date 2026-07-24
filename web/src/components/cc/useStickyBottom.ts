@@ -1,43 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/**
- * slice-035 bug2: sticky-bottom (auto-follow) for the dialogue scroll area.
- *
- * Behavior:
- * - When the user is near the bottom, `sticky` is true and new content
- *   auto-scrolls into view (the list follows the stream).
- * - When the user scrolls up to read history, `sticky` flips false and new
- *   content stops yanking the viewport back down.
- * - A "回最新" button (rendered by SessionView when `sticky` is false) calls
- *   `jumpToBottom()` to smooth-scroll back and re-arm stickiness.
- * - `unread` counts turns that arrived while away from the bottom (for the
- *   button's badge).
- *
- * `stickyRef` mirrors `sticky` as a ref so MessageList's scroll effect can
- * read the latest value without resubscribing each flip.
- */
-
-/** Within this many px of the bottom counts as "at the bottom". */
 const THRESHOLD_PX = 32;
 
 export interface StickyBottom {
-  /** Whether the viewport currently follows the bottom (re-renders on flip). */
   readonly sticky: boolean;
-  /** Turns that arrived while away from the bottom (badge count). */
   readonly unread: number;
-  /** Latest `sticky` as a ref (for effects that must not resubscribe). */
   readonly stickyRef: React.MutableRefObject<boolean>;
-  /** Smooth-scroll to the bottom and re-arm stickiness / clear unread. */
   readonly jumpToBottom: () => void;
 }
 
-/**
- * Track sticky-bottom state for a scroll container.
- *
- * Args:
- *   scrollRef: ref to the scrollable element (.cc-view__scroll).
- *   turnsCount: current turn count (drives unread while away from bottom).
- */
+/** 用户离开底部后停止自动跟随，并按新增 turn 计算未读数。 */
 export function useStickyBottom(
   scrollRef: React.RefObject<HTMLElement | null>,
   turnsCount: number,
@@ -48,7 +20,6 @@ export function useStickyBottom(
   const turnsCountRef = useRef(turnsCount);
   const leftAtTurnsRef = useRef(0);
 
-  // Scroll listener: flip sticky as the user crosses the bottom threshold.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -62,7 +33,6 @@ export function useStickyBottom(
           setUnread(0);
         }
       } else if (stickyRef.current) {
-        // Just left the bottom — record the turn baseline for unread.
         stickyRef.current = false;
         leftAtTurnsRef.current = turnsCountRef.current;
         setSticky(false);
@@ -72,7 +42,6 @@ export function useStickyBottom(
     return () => el.removeEventListener("scroll", onScroll);
   }, [scrollRef]);
 
-  // Track turnsCount; while away from the bottom, unread = new turns since leaving.
   useEffect(() => {
     turnsCountRef.current = turnsCount;
     if (!stickyRef.current) {
@@ -83,8 +52,6 @@ export function useStickyBottom(
   const jumpToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // jsdom has no scrollTo; guard so tests don't blow up. Sticky/unread
-    // still update regardless.
     if (typeof el.scrollTo === "function") {
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }

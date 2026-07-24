@@ -6,7 +6,6 @@ import {
   type DueCard,
 } from "../api/client";
 
-// Mock global fetch
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { usePetStore } from "../stores/petStore";
 import type { Pet, PetResponse } from "../api/client";
 
-// Mock the HTTP layer; the store under test orchestrates state, not network.
 vi.mock("../api/client", () => ({
   fetchPet: vi.fn(),
   interactPet: vi.fn(),

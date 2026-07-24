@@ -54,9 +54,6 @@ function parseActions(input: Record<string, unknown>): readonly NativeAction[] {
   return actions;
 }
 
-/** Remove only the app-server's outer shell wrapper for a compact preview.
- * This never decides action semantics; Read/List/Search still come exclusively
- * from command_actions. */
 function commandPreview(command: string): string {
   const matched = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/.exec(command.trim());
   if (matched === null) return command.trim();
@@ -75,9 +72,6 @@ function fallback(action: NativeAction, fullCommand: string): string {
   return action.command ?? commandPreview(fullCommand);
 }
 
-/** Preserve the useful range encoded by native sed read actions. Semantics
- * still come from commandActions.type; this only disambiguates repeated reads
- * of the same path in Explore. */
 function readRange(command: string | null): string | null {
   if (command === null) return null;
   const matched = /\bsed\s+-n\s+['"]?(\d+),(\d+)p['"]?/.exec(command);
@@ -111,7 +105,6 @@ function explorationRow(
   };
 }
 
-/** Present a Codex command using only its native commandActions semantics. */
 export function getCodexCommandPresentation(
   item: ToolItem,
   workdir?: string,

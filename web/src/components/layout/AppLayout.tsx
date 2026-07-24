@@ -11,7 +11,6 @@ interface AppLayoutProps {
   readonly onToggleSidebar: () => void;
 }
 
-// 线条 SVG 图标（slice021-web：替代原 emoji 🌿📋✅🌱，跨平台渲染一致）
 function IconGarden() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -51,7 +50,6 @@ function IconSprout() {
 }
 
 function IconCC() {
-  // terminal-style prompt — CC is the "shell out to Claude Code" tool
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -62,7 +60,6 @@ function IconCC() {
 }
 
 function IconProfile() {
-  // person silhouette — the "who you are" self-description tab (slice-049)
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="8" r="4" />

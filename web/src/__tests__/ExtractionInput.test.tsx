@@ -3,8 +3,6 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ExtractionInput } from "../components/cards/ExtractionInput";
 
-/** Build a File, optionally overriding `.size` (to test the 10MB cap without
- *  actually allocating a huge string in memory). */
 function makeFile(
   name: string,
   content: string,
@@ -141,7 +139,6 @@ describe("ExtractionInput", () => {
         loading={false}
       />,
     );
-    // override size to 11MB without allocating the bytes
     await userEvent.upload(
       screen.getByTestId("file-input"),
       makeFile("big.jsonl", "{}", "application/json", 11 * 1024 * 1024),
