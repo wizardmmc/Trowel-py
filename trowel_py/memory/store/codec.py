@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import yaml
 
+from trowel_py.memory.provenance import derivation_from_dict
 from trowel_py.memory.types import CoreItem, Diary, Note, NoteStatus
 
 _NOTE_KEY_ORDER = (
@@ -38,6 +39,8 @@ _NOTE_KEY_ORDER = (
     "do_not_use_when",
     "sources",
     "source_sessions",
+    "source_segments",
+    "derivations",
     "content_hash",
 )
 
@@ -134,6 +137,12 @@ def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
         do_not_use_when=str(fm.get("do_not_use_when", "")),
         sources=tuple(fm.get("sources") or ()),
         source_sessions=tuple(fm.get("source_sessions") or ()),
+        source_segments=tuple(fm.get("source_segments") or ()),
+        derivations=tuple(
+            parsed
+            for value in (fm.get("derivations") or ())
+            if (parsed := derivation_from_dict(value)) is not None
+        ),
         content_hash=str(fm.get("content_hash", "")),
         body=body,
     )

@@ -64,7 +64,13 @@ def _validate_note(fm: dict[str, Any], errors: list[str]) -> None:
     conflicts = fm.get("conflicts_with")
     if conflicts is not None and not isinstance(conflicts, list):
         errors.append("note: 'conflicts_with' must be a list when present")
-    for key in ("supersedes", "sources", "source_sessions"):
+    for key in (
+        "supersedes",
+        "sources",
+        "source_sessions",
+        "source_segments",
+        "derivations",
+    ):
         val = fm.get(key)
         if val is not None and not isinstance(val, list):
             errors.append(f"note: '{key}' must be a list when present")

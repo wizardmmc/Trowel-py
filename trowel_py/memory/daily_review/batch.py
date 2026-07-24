@@ -15,6 +15,12 @@ from trowel_py.memory.draft import procedure_warnings
 from trowel_py.memory.dualtrack import audit_draft
 from trowel_py.memory.judge import judge_session
 from trowel_py.memory.persist import persist_draft
+from trowel_py.memory.provenance import (
+    CcJsonlSource,
+    CompletedSegment,
+    DerivationProvenance,
+    extract_cc_source_models,
+)
 from trowel_py.memory.sessions_repo import (
     SessionRecord,
     create_sessions_repository,
@@ -61,6 +67,12 @@ async def run_daily_review_locked(
 
         for segment in segments:
             session = segment.session
+            derivation: DerivationProvenance | None = None
+
+            def capture_derivation(value: DerivationProvenance) -> None:
+                nonlocal derivation
+                derivation = value
+
             try:
                 draft = await run_one_session(
                     session,
@@ -69,6 +81,7 @@ async def run_daily_review_locked(
                     host_factory=host_factory,
                     start_offset=segment.start,
                     end_offset=segment.end,
+                    derivation_sink=capture_derivation,
                 )
             except DistillError as exc:
                 logger.warning(
@@ -118,9 +131,14 @@ async def run_daily_review_locked(
                 date_str,
                 segment.start,
                 segment.end,
+                trowel_session_ids=tuple(
+                    binding.trowel_session_id
+                    for binding in repo.find_trowels_by_cc(session.cc_session_id)
+                ),
                 activity_dates=activity.dates,
                 date_basis=activity.basis,
                 processed_date=datetime.now().date().isoformat(),
+                derivation=derivation,
             )
             try:
                 report = persist_draft(store, draft, context)
@@ -221,12 +239,34 @@ def _context_for(
     start: int,
     end: int,
     *,
+    trowel_session_ids: tuple[str, ...] = (),
     activity_dates: tuple[str, ...] = (),
     date_basis: str = "",
     processed_date: str = "",
+    derivation: DerivationProvenance | None = None,
 ) -> PersistContext:
+    segment_id = f"{session.cc_session_id}:{start}:{end}"
+    resolved_trowel_ids = trowel_session_ids or (
+        (session.trowel_session_id,) if session.trowel_session_id else ()
+    )
+    completed_segment = CompletedSegment(
+        segment_id=segment_id,
+        host_kind="claude_code",
+        native_session_id=session.cc_session_id,
+        trowel_session_ids=resolved_trowel_ids,
+        session_kind=session.session_kind,
+        workdir=session.workdir,
+        registered_at=session.registered_at,
+        completed_at=session.last_completed_at or "",
+        source=CcJsonlSource(
+            locator=session.jsonl_path,
+            start_offset=start,
+            end_offset=end,
+        ),
+        source_models=extract_cc_source_models(session.jsonl_path, start, end),
+    )
     return PersistContext(
-        segment_id=f"{session.cc_session_id}:{start}:{end}",
+        segment_id=segment_id,
         cc_session_id=session.cc_session_id,
         workdir=session.workdir,
         registered_at=session.registered_at,
@@ -237,6 +277,8 @@ def _context_for(
         activity_dates=activity_dates,
         date_basis=date_basis,
         processed_date=processed_date,
+        completed_segment=completed_segment,
+        derivation=derivation,
     )
 
 

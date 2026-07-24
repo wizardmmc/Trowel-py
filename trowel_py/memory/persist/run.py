@@ -7,6 +7,7 @@ from datetime import datetime
 
 from trowel_py.memory.draft import Draft
 from trowel_py.memory.store import MemoryStore
+from trowel_py.memory.provenance import completed_segment_to_dict, derivation_to_dict
 from trowel_py.memory.types import PersistContext
 
 from .artifacts import _write_meta
@@ -106,6 +107,10 @@ def persist_draft(
             else None
         ),
     }
+    if context.completed_segment is not None:
+        manifest["source"] = completed_segment_to_dict(context.completed_segment)
+    if context.derivation is not None:
+        manifest["derivation"] = derivation_to_dict(context.derivation)
     segment_meta.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),

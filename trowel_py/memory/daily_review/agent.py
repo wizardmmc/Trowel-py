@@ -3,16 +3,20 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from trowel_py.memory.cost import SessionCost, extract_cost_from_jsonl
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
+from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
 from trowel_py.memory.daily_review.workspace import ensure_review_workdir
 from trowel_py.memory.sessions_repo import SessionRecord
 
 HostFactory = Callable[[SessionRecord, Path], Any]
+DerivationSink = Callable[[DerivationProvenance], None]
+_REFINE_PIPELINE_VERSION = 1
 
 
 class DistillError(Exception):
@@ -73,6 +77,32 @@ def _create_host(
     )
 
 
+def _derivation_for_host(host: Any) -> DerivationProvenance:
+    model = getattr(host, "model", None)
+    effort = getattr(host, "effort", None)
+    generator = (
+        ModelIdentity(
+            model=str(model or ""),
+            effort=str(effort or ""),
+            basis="host_config",
+        )
+        if any(
+            isinstance(value, str) and value.strip()
+            for value in (model, effort)
+        )
+        else None
+    )
+    run_id = getattr(host, "session_id", None)
+    return DerivationProvenance(
+        pipeline="memory.refine",
+        pipeline_version=_REFINE_PIPELINE_VERSION,
+        run_id=str(run_id or uuid.uuid4().hex),
+        generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        generator_runtime="claude_code",
+        generator=generator,
+    )
+
+
 async def run_one_session(
     session: SessionRecord,
     date_str: str,
@@ -81,6 +111,7 @@ async def run_one_session(
     host_factory: HostFactory | None = None,
     start_offset: int | None = None,
     end_offset: int | None = None,
+    derivation_sink: DerivationSink | None = None,
 ) -> Draft:
     """驱动一个提炼 session，并返回通过门禁的 draft。
 
@@ -110,6 +141,8 @@ async def run_one_session(
         for attempt in range(2):
             draft, errors = _read_draft(draft_path)
             if draft is not None and not errors:
+                if derivation_sink is not None:
+                    derivation_sink(_derivation_for_host(host))
                 return draft
             if attempt == 0 and not await _drive_host(host, _revision_prompt(errors)):
                 raise DistillError(

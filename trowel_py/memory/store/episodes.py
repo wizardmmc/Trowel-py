@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.memory.draft import DraftDiary
+from trowel_py.memory.provenance import (
+    derivation_to_dict,
+    model_identity_to_dict,
+    segment_source_to_dict,
+)
 from trowel_py.memory.types import PersistContext
 
 from .codec import _coerce_meta_str, _dump_frontmatter, _split_frontmatter
@@ -64,6 +69,16 @@ class _EpisodeStore(_DiaryStore):
         }
         if empty_reason:
             seg_meta["empty_reason"] = empty_reason
+        if context.completed_segment is not None:
+            seg_meta["source"] = segment_source_to_dict(
+                context.completed_segment.source
+            )
+            seg_meta["source_models"] = [
+                model_identity_to_dict(identity)
+                for identity in context.completed_segment.source_models
+            ]
+        if context.derivation is not None:
+            seg_meta["derivation"] = derivation_to_dict(context.derivation)
         new_segs: list[dict[str, Any]] = []
         replaced = False
         for s in segs:
@@ -85,6 +100,16 @@ class _EpisodeStore(_DiaryStore):
             "source_jsonl": context.source_jsonl,
             "segments": new_segs,
         }
+        if context.completed_segment is not None:
+            fm_out["host_kind"] = context.completed_segment.host_kind
+            fm_out["native_session_id"] = context.completed_segment.native_session_id
+            fm_out["trowel_session_ids"] = list(
+                context.completed_segment.trowel_session_ids
+            )
+        else:
+            for key in ("host_kind", "native_session_id", "trowel_session_ids"):
+                if key in fm:
+                    fm_out[key] = fm[key]
         body_out = "".join(blocks.values())
         path.write_text(_dump_frontmatter(fm_out, body_out), encoding="utf-8")
         return context.cc_session_id

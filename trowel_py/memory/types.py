@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from trowel_py.memory.provenance import CompletedSegment, DerivationProvenance
+
 # NoteId 是可读文件 stem；跨重命名身份与纠错链使用 Note.memory_id。
 NoteId = str
 
@@ -107,6 +109,8 @@ class Note:
     do_not_use_when: str = ""
     sources: tuple[str, ...] = ()
     source_sessions: tuple[str, ...] = ()
+    source_segments: tuple[str, ...] = ()
+    derivations: tuple[DerivationProvenance, ...] = ()
     content_hash: str = ""
     body: str = ""
 
@@ -147,3 +151,5 @@ class PersistContext:
     activity_dates: tuple[str, ...] = ()
     date_basis: str = ""
     processed_date: str = ""
+    completed_segment: CompletedSegment | None = None
+    derivation: DerivationProvenance | None = None
