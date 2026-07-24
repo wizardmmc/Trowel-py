@@ -1,7 +1,3 @@
-"""
-feynman HTTP routes: question generation, answer evaluation
-"""
-
 from __future__ import annotations
 
 import logging
@@ -23,23 +19,20 @@ router = APIRouter()
 
 
 class GenerateRequest(BaseModel):
-    """
-    body for Post /generate
-    """
+    """指定需要生成费曼问题的卡片。"""
 
     card_id: str = Field(min_length=1)
 
 
 class EvaluateRequest(BaseModel):
-    """
-    body for Post /evaluate
-    """
+    """提交待评估的练习会话与用户回答。"""
 
     session_id: str = Field(min_length=1)
     answer: str = Field(min_length=1)
 
 
 def _get_conn():
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -71,9 +64,7 @@ def generate(
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
     llm_service: LLMService = Depends(_get_llm_service),
 ) -> dict:
-    """
-    generate a feynman question for a card
-    """
+    """为指定卡片生成费曼问题并创建练习会话。"""
     logger.info("feynman generate for card: %s", request.card_id)
     result = generate_question(request.card_id, card_repo, feynman_repo, llm_service)
     if result is None:
@@ -89,7 +80,7 @@ def evaluate(
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
     llm_service: LLMService = Depends(_get_llm_service),
 ) -> dict:
-    """evaluate a user's answer for a feynman session"""
+    """评估用户在费曼练习会话中的回答。"""
     logger.info("feynman evaluate for session: %s", request.session_id)
     result = evaluate_answer(
         request.session_id, request.answer, card_repo, feynman_repo, llm_service
@@ -107,9 +98,7 @@ def history(
     card_id: str,
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
 ) -> dict:
-    """
-    return all feynman sessions for a card, newest first
-    """
+    """按时间倒序返回指定卡片的费曼练习会话。"""
     logger.info("feynman history for card: %s", card_id)
     sessions = feynman_repo.find_by_card_id(card_id)
     return {

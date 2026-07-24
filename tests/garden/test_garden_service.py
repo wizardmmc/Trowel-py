@@ -1,6 +1,8 @@
 import sqlite3
+from unittest.mock import MagicMock, patch
+
 from trowel_py.db.migrate import run_migrations
-from trowel_py.garden.repository import create_garden_repository
+from trowel_py.garden.repository import GardenRepository, create_garden_repository
 from trowel_py.garden.service import get_plants, get_stats
 
 
@@ -59,6 +61,43 @@ def test_get_plants_returns_empty_when_no_cards(db_connection: sqlite3.Connectio
     repo = create_garden_repository(db_connection)
     plants = get_plants(repo)
     assert plants == []
+
+
+def test_get_plants_maps_repository_row_without_mutating_it():
+    row = {
+        "id": "c1",
+        "title": "Python Decorators",
+        "category": "python",
+        "explanation": "Decorators wrap functions",
+        "state": 3,
+        "stability": 2.5,
+        "reps": None,
+        "due": "2099-01-01T00:00:00+00:00",
+    }
+    original_row = row.copy()
+    repo = MagicMock(spec=GardenRepository)
+    repo.get_all_plants.return_value = [row]
+
+    with patch(
+        "trowel_py.garden.service.get_plant_stage",
+        return_value="wilting",
+    ) as get_stage:
+        plants = get_plants(repo)
+
+    assert plants == [
+        {
+            "card_id": "c1",
+            "title": "Python Decorators",
+            "category": "python",
+            "explanation": "Decorators wrap functions",
+            "plant_stage": "wilting",
+            "fsrs_state": 3,
+            "due": "2099-01-01T00:00:00+00:00",
+            "reps": 0,
+        }
+    ]
+    assert row == original_row
+    get_stage.assert_called_once_with(3)
 
 
 def test_get_stats_passes_through(db_connection: sqlite3.Connection):

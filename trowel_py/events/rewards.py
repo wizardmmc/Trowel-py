@@ -1,6 +1,3 @@
-"""
-reward service: turn a handler's EventResult into persisted state changes
-"""
 import logging
 from datetime import datetime
 
@@ -11,11 +8,13 @@ from trowel_py.schemas.event import EventLog
 
 logger = logging.getLogger(__name__)
 
-def distribute(result: EventResult, player_repo: PlayerRepository, event_repo: EventRepository, now: datetime) -> EventLog:
-    """
-    grant a handler's result atomically: rewards + log + cooldown on one connection
-    """
-    # operate
+
+def distribute(
+    result: EventResult,
+    player_repo: PlayerRepository,
+    event_repo: EventRepository,
+    now: datetime,
+) -> EventLog:
     if result.xp:
         player_repo.update_xp(result.xp)
     if result.coins:
@@ -23,21 +22,26 @@ def distribute(result: EventResult, player_repo: PlayerRepository, event_repo: E
     if result.item_id:
         player_repo.add_item(result.item_id, _infer_item_type(result.item_id))
 
-    # record log
     log = event_repo.record_event(
-        result.event_type, result.description, result.xp,
-        result.coins, result.item_id, result.card_id, now
+        result.event_type,
+        result.description,
+        result.xp,
+        result.coins,
+        result.item_id,
+        result.card_id,
+        now,
     )
-    
-    # mark cooldown
+
     event_repo.upsert_cooldown(result.event_type, now)
-    
-    logger.info("reward distributed %s xp=%d coins=%d", result.event_type, result.xp, result.coins)
+
+    logger.info(
+        "reward distributed %s xp=%d coins=%d",
+        result.event_type,
+        result.xp,
+        result.coins,
+    )
     return log
 
 
 def _infer_item_type(item_id: str) -> str:
-    """
-    map a catalog id to its storage type
-    """
     return "hat" if item_id.startswith("hat_") else "food"

@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 def _get_conn():
-    """Yield a DB connection; commit and close after the request."""
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -34,16 +34,13 @@ def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRep
 
 
 def _get_brain() -> PetBrain:
-    """the pet's personality — TemplateBrain now, swap to an LlmBrain later."""
     return TemplateBrain()
 
 
 @router.get("")
 @router.get("/")
 def get_pet_route(pet_repo: PetRepository = Depends(_get_pet_repo)) -> dict:
-    """
-    return the pet's current state.
-    """
+    """返回宠物当前状态。"""
     logger.info("GET /api/pet")
     pet = get_pet(pet_repo)
     return {"success": True, "data": pet.model_dump(), "error": None}
@@ -55,14 +52,12 @@ def feed_route(
     pet_repo: PetRepository = Depends(_get_pet_repo),
     player_repo: PlayerRepository = Depends(_get_player_repo),
 ) -> dict:
-    """
-    feed the pet one food item from the inventory.
-    """
+    """消耗一件库存食物喂养宠物。"""
     logger.info("POST /api/pet/feed item=%s", request.item_id)
     try:
         pet = feed(request.item_id, pet_repo, player_repo)
     except ValueError as e:
-        # user error (wrong item / not food / unknown): not a server fault
+        # 商品不存在、类型错误等输入问题沿用成功状态码的错误 envelope。
         logger.warning("feed failed: %s", e)
         return {"success": False, "data": None, "error": str(e)}
     return {"success": True, "data": pet.model_dump(), "error": None}
@@ -73,12 +68,10 @@ def interact_route(
     pet_repo: PetRepository = Depends(_get_pet_repo),
     brain: PetBrain = Depends(_get_brain),
 ) -> dict:
-    """
-    pet the pet — mood goes happy and it says one line.
-    """
+    """与宠物互动，使其心情变好并返回一句回应。"""
     logger.info("POST /api/pet/interact")
     result = interact(pet_repo, brain, random.Random())
-    response = result["response"]  # PetResponse (frozen dataclass, not pydantic)
+    response = result["response"]
     pet = result["pet"]
     return {
         "success": True,
@@ -96,9 +89,7 @@ def equip_route(
     pet_repo: PetRepository = Depends(_get_pet_repo),
     player_repo: PlayerRepository = Depends(_get_player_repo),
 ) -> dict:
-    """
-    equip a hat from the inventory.
-    """
+    """为宠物装备一件库存帽子。"""
     logger.info("PUT /api/pet/equip item=%s", request.item_id)
     try:
         pet = equip_hat(request.item_id, pet_repo, player_repo)

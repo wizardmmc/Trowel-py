@@ -1,7 +1,3 @@
-"""
-system prompts for the feynman flow
-"""
-
 from pathlib import Path
 
 _DIR = Path(__file__).parent

@@ -19,6 +19,24 @@ def _seed_player(
     )
 
 
+def _seed_inventory(
+    conn: sqlite3.Connection,
+    row_id: str,
+    item_id: str,
+    item_type: str,
+    *,
+    player_id: str = "default",
+    equipped: int = 0,
+    obtained_at: str = "2026-06-15T11:00:00",
+) -> None:
+    conn.execute(
+        "insert into inventory "
+        "(id, player_id, item_id, item_type, equipped, obtained_at) "
+        "values (?, ?, ?, ?, ?, ?)",
+        (row_id, player_id, item_id, item_type, equipped, obtained_at),
+    )
+
+
 def test_find_or_create_inserts_on_first_call(db_connection: sqlite3.Connection):
     run_migrations(db_connection)
     repo = create_player_repository(db_connection)
@@ -53,6 +71,34 @@ def test_find_or_create_returns_existing(db_connection: sqlite3.Connection):
     assert player.xp == 150
     assert player.coins == 200
     assert player.streak_days == 3
+
+
+def test_find_or_create_decodes_all_player_fields(
+    db_connection: sqlite3.Connection,
+):
+    run_migrations(db_connection)
+    _seed_player(
+        db_connection,
+        last_active="2026-06-15T10:00:00",
+        xp=150,
+        coins=200,
+        streak_days=3,
+    )
+    db_connection.execute(
+        "update players set created_at = ? where id = 'default'",
+        ("2026-06-01T09:00:00",),
+    )
+
+    player = create_player_repository(db_connection).find_or_create()
+
+    assert player.model_dump() == {
+        "id": "default",
+        "xp": 150,
+        "coins": 200,
+        "streak_days": 3,
+        "last_active": datetime(2026, 6, 15, 10, 0),
+        "created_at": datetime(2026, 6, 1, 9, 0),
+    }
 
 
 def test_update_xp_increments(db_connection: sqlite3.Connection):
@@ -128,6 +174,90 @@ def test_add_item_then_find(db_connection: sqlite3.Connection):
     assert items[0].item_id == "food_basic"
     assert items[0].item_type == "food"
     assert items[0].player_id == "default"
+    assert len(items[0].id) == 12
+
+
+def test_find_inventory_decodes_all_fields(db_connection: sqlite3.Connection):
+    run_migrations(db_connection)
+    _seed_player(db_connection)
+    _seed_inventory(
+        db_connection,
+        "row-1",
+        "hat_straw",
+        "hat",
+        equipped=1,
+    )
+    repo = create_player_repository(db_connection)
+
+    items = repo.find_inventory()
+
+    assert [item.model_dump() for item in items] == [
+        {
+            "id": "row-1",
+            "player_id": "default",
+            "item_id": "hat_straw",
+            "item_type": "hat",
+            "equipped": 1,
+            "obtained_at": datetime(2026, 6, 15, 11, 0),
+        }
+    ]
+
+
+def test_find_item_by_id_requires_default_player_ownership(
+    db_connection: sqlite3.Connection,
+):
+    run_migrations(db_connection)
+    _seed_player(db_connection)
+    db_connection.execute(
+        "insert into players (id, last_active) values (?, ?)",
+        ("other", "2026-06-15T10:00:00"),
+    )
+    _seed_inventory(
+        db_connection,
+        "other-row",
+        "hat_straw",
+        "hat",
+        player_id="other",
+    )
+    repo = create_player_repository(db_connection)
+
+    assert repo.find_item_by_id("other-row") is None
+
+
+def test_set_equipped_updates_requested_row(db_connection: sqlite3.Connection):
+    run_migrations(db_connection)
+    _seed_player(db_connection)
+    _seed_inventory(db_connection, "hat-1", "hat_straw", "hat")
+    repo = create_player_repository(db_connection)
+
+    repo.set_equipped("hat-1", 1)
+
+    assert repo.find_item_by_id("hat-1").equipped == 1
+
+
+def test_unequip_all_hats_keeps_food_state(db_connection: sqlite3.Connection):
+    run_migrations(db_connection)
+    _seed_player(db_connection)
+    _seed_inventory(
+        db_connection,
+        "hat-1",
+        "hat_straw",
+        "hat",
+        equipped=1,
+    )
+    _seed_inventory(
+        db_connection,
+        "food-1",
+        "food_basic",
+        "food",
+        equipped=1,
+    )
+    repo = create_player_repository(db_connection)
+
+    repo.unequip_all_hats()
+
+    assert repo.find_item_by_id("hat-1").equipped == 0
+    assert repo.find_item_by_id("food-1").equipped == 1
 
 
 def test_remove_item(db_connection: sqlite3.Connection):

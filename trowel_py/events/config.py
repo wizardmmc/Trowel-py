@@ -1,11 +1,6 @@
-"""
-default event configs: base weights / cooldowns / card thresholds.
-"""
-
 from __future__ import annotations
 from trowel_py.events.types import EventConfig
 
-# tuple: the default config set is immutable
 DEFAULT_EVENT_CONFIGS: tuple[EventConfig, ...] = (
     EventConfig(type="sign_in", weight=100, cooldown_minutes=1440, min_cards=0),
     EventConfig(type="challenge", weight=40, cooldown_minutes=60, min_cards=3),

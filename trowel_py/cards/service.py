@@ -1,55 +1,61 @@
 import uuid
+from datetime import datetime
+
+from trowel_py.cards.jsonl_parser import ChatMessage
+from trowel_py.cards.repository import CardRepository
 from trowel_py.llm.client import LLMService
-from trowel_py.schemas.extracted_card import ExtractOutput
+from trowel_py.review.repository import ReviewRepository
 from trowel_py.schemas.api import CardDraft, ReviewRequest
 from trowel_py.schemas.card import Card
-from trowel_py.schemas.review import FSRSState
-from trowel_py.cards.repository import CardRepository
-from trowel_py.review.repository import ReviewRepository
-from datetime import datetime
-from trowel_py.cards.jsonl_parser import ChatMessage
+from trowel_py.schemas.extracted_card import ExtractedCard, ExtractOutput
 from trowel_py.schemas.re_explain import ReExplainResultSchema
+from trowel_py.schemas.review import FSRSState
+
+
+def _draft_from_extracted(extracted: ExtractedCard) -> CardDraft:
+    return CardDraft(
+        id=uuid.uuid4().hex[:12],
+        title=extracted.title,
+        category=extracted.category,
+        explanation=extracted.explanation,
+        example=extracted.example,
+        difficulty=extracted.difficulty,
+        tags=extracted.tags,
+        confidence=extracted.confidence,
+        source_type=extracted.source_type,
+        source=extracted.source_type,
+    )
+
+
+def _card_from_review(
+    draft: CardDraft,
+    edits: dict | None,
+) -> Card:
+    card_data = draft.model_dump()
+    if edits:
+        card_data.update(edits)
+
+    return Card(
+        id=uuid.uuid4().hex[:12],
+        title=card_data["title"],
+        category=card_data["category"],
+        explanation=card_data["explanation"],
+        example=card_data.get("example"),
+        difficulty=card_data["difficulty"],
+        source=card_data.get("source"),
+        tags=card_data.get("tags", []),
+        status="active",
+    )
 
 
 def extract_cards(content: str, llm_service: LLMService) -> list[CardDraft]:
-    """
-    extract draft card from content using llm_service
-    """
     result = llm_service.structured_call(content, ExtractOutput)
-
-    # convert ExtractCard into CardDraft
-    drafts = []
-    for extracted in result.cards:
-        draft = CardDraft(
-            id=uuid.uuid4().hex[:12],
-            title=extracted.title,
-            category=extracted.category,
-            explanation=extracted.explanation,
-            example=extracted.example,
-            difficulty=extracted.difficulty,
-            tags=extracted.tags,
-            confidence=extracted.confidence,
-            source_type=extracted.source_type,
-            source=extracted.source_type,
-        )
-        drafts.append(draft)
-
-    return drafts
+    return [_draft_from_extracted(extracted) for extracted in result.cards]
 
 
 def extract_from_conversation(
     messages: list[ChatMessage], llm_service: LLMService
 ) -> list[CardDraft]:
-    """
-    extract card draft from a parsed conversation
-
-    Args:
-        messages: parsed user/assistant turns from a JSONL log
-        llm_service: the LLM service used for extraction
-
-    Returns:
-        card drafts ready for the review flow
-    """
     text = "\n".join(f"{m.role}: {m.content}" for m in messages)
     return extract_cards(text, llm_service)
 
@@ -60,67 +66,32 @@ def review_card(
     card_repo: CardRepository,
     review_repo: ReviewRepository,
 ) -> Card | None:
-    """
-    process a draft with user's request and return a Card
-    """
     if request.action == "reject":
         return None
 
-    # convert draft to dict, easily for revise
-    card_data = draft.model_dump()  # model_dump is a pydantic method
-    card_data["status"] = "active"
-
-    if request.action == "edit" and request.edits:
-        card_data.update(
-            request.edits
-        )  # update like auto revise, 'card_data["example"] = edits["example"]'
-
-    card = Card(
-        id=uuid.uuid4().hex[
-            :12
-        ],  # draft card's id is temp in bussiness logic, but Card's id is enduring
-        title=card_data["title"],
-        category=card_data["category"],
-        explanation=card_data["explanation"],
-        example=card_data.get(
-            "example"
-        ),  # use get method, because example might be None
-        difficulty=card_data["difficulty"],
-        source=card_data.get("source"),
-        tags=card_data.get("tags", []),
-        status="active",
-    )
-
-    # store into database
+    edits = request.edits if request.action == "edit" else None
+    card = _card_from_review(draft, edits)
     card_repo.create(card)
-
-    fsrs_state = FSRSState(
-        card_id=card.id,
-        state=0,
-        due=datetime.now(),  # this card can be reivew right now
+    review_repo.save_fsrs_state(
+        FSRSState(
+            card_id=card.id,
+            state=0,
+            due=datetime.now(),
+        )
     )
-    review_repo.save_fsrs_state(fsrs_state)
-
     return card
 
 
 def find_duplicates(title: str, card_repo: CardRepository) -> list[Card]:
-    """
-    avoid generated draft is highly dupilicate (check by title, using FTS5 search and precise search)
-    """
     duplicates: list[Card] = []
-    seen_ids: set[str] = set()  # avoid repeat visit card
+    seen_ids: set[str] = set()
 
-    # precise search by title
-    all_cards = card_repo.find_all()
-    for card in all_cards:
+    for card in card_repo.find_all():
         if card.title == title:
             duplicates.append(card)
             seen_ids.add(card.id)
 
-    # fts5 search
-    fts_results = card_repo.search_by_fts5(title)
-    for card in fts_results:
+    for card in card_repo.search_by_fts5(title):
         if card.id not in seen_ids:
             duplicates.append(card)
             seen_ids.add(card.id)
@@ -135,24 +106,7 @@ def re_explain(
     llm_service: LLMService,
     user_hint: str | None = None,
 ) -> str:
-    """
-    regenerate a card explanation from a different angle (slice 021).
-
-    Pure generator: builds the user_prompt, calls the LLM, returns the new
-    explanation. No DB writes, no state mutation — the caller (frontend)
-    keeps candidate versions in state and writes the chosen one back through
-    the existing POST /{draft_id}/review endpoint.
-
-    Args:
-        explanation: the current explanation to improve.
-        title: the card title, for LLM context.
-        category: the card category, for LLM context.
-        llm_service: the LLM service used for generation.
-        user_hint: optional direction/feeling from the user. None = free regen.
-
-    Returns:
-        the newly generated explanation.
-    """
+    """只生成候选解释；选中版本仍由审核接口持久化。"""
     user_prompt = f"标题：{title}\n分类：{category}\n当前解释：{explanation}\n"
     if user_hint:
         user_prompt += f"用户希望的方向：{user_hint}\n"

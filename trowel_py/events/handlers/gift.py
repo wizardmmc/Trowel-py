@@ -1,10 +1,12 @@
-"""
-gift handler: the pet hands the player a small random gift
-"""
 from trowel_py.events.types import GameState
-from trowel_py.events.handlers.types import EventHandler, EventDependencies, EventResult
+from trowel_py.events.handlers.types import (
+    EventDependencies,
+    EventHandler as EventHandler,
+    EventResult,
+)
 
 _GIFT_ITEMS = ("food_basic", "food_premium", "hat_straw")
+
 
 class GiftHandler:
     def can_trigger(self, state: GameState) -> bool:

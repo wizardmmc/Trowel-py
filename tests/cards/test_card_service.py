@@ -1,14 +1,14 @@
 import sqlite3
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
-from trowel_py.cards.repository import create_card_repository
+from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.cards.service import extract_cards, review_card, find_duplicates
 from trowel_py.db.migrate import run_migrations
 from trowel_py.llm.client import LLMService
-from trowel_py.review.repository import create_review_repository
+from trowel_py.review.repository import ReviewRepository, create_review_repository
 from trowel_py.schemas.api import CardDraft, ReviewRequest
 from trowel_py.schemas.card import Card
 from trowel_py.schemas.extracted_card import ExtractedCard, ExtractOutput
@@ -107,6 +107,58 @@ class TestExtractCards:
         drafts = extract_cards("nothing useful", mock_service)
         assert drafts == []
 
+    def test_preserves_extracted_fields_and_maps_source(self):
+        mock_service = MagicMock(spec=LLMService)
+        mock_service.structured_call.return_value = ExtractOutput(
+            cards=[
+                ExtractedCard(
+                    title="Python Decorators",
+                    category="Python",
+                    explanation="A decorator wraps a function to extend its behavior",
+                    example="@cache",
+                    difficulty=4,
+                    tags=["python", "functions"],
+                    confidence=5,
+                    source_type="git_diff",
+                ),
+                ExtractedCard(
+                    title="Context Managers",
+                    category="Python",
+                    explanation="A context manager controls resource cleanup",
+                    tags=["python"],
+                    source_type="chat",
+                ),
+            ]
+        )
+
+        drafts = extract_cards("some diff text", mock_service)
+
+        assert [draft.model_dump(exclude={"id"}) for draft in drafts] == [
+            {
+                "title": "Python Decorators",
+                "category": "Python",
+                "explanation": ("A decorator wraps a function to extend its behavior"),
+                "example": "@cache",
+                "difficulty": 4,
+                "tags": ["python", "functions"],
+                "confidence": 5,
+                "source_type": "git_diff",
+                "source": "git_diff",
+            },
+            {
+                "title": "Context Managers",
+                "category": "Python",
+                "explanation": "A context manager controls resource cleanup",
+                "example": None,
+                "difficulty": 3,
+                "tags": ["python"],
+                "confidence": 3,
+                "source_type": "chat",
+                "source": "chat",
+            },
+        ]
+        assert drafts[0].id != drafts[1].id
+
 
 class TestReviewCard:
     def _make_draft(self):
@@ -149,6 +201,22 @@ class TestReviewCard:
         assert result is None
         assert card_repo.find_all() == []
 
+    def test_reject_does_not_call_repositories(self):
+        draft = self._make_draft()
+        card_repo = MagicMock(spec=CardRepository)
+        review_repo = MagicMock(spec=ReviewRepository)
+
+        result = review_card(
+            draft,
+            ReviewRequest(action="reject"),
+            card_repo,
+            review_repo,
+        )
+
+        assert result is None
+        card_repo.create.assert_not_called()
+        review_repo.save_fsrs_state.assert_not_called()
+
     def test_edit_applies_user_changes(self, conn, card_repo, review_repo):
         draft = self._make_draft()
         request = ReviewRequest(action="edit", edits={"title": "Decorators in Python"})
@@ -160,6 +228,30 @@ class TestReviewCard:
 
         db_card = card_repo.find_by_id(card.id)
         assert db_card.title == "Decorators in Python"
+
+    def test_accept_uses_new_persistent_id_and_saves_card_before_state(self):
+        draft = self._make_draft()
+        operations = MagicMock()
+        card_repo = MagicMock()
+        review_repo = MagicMock()
+        operations.attach_mock(card_repo, "cards")
+        operations.attach_mock(review_repo, "reviews")
+
+        card = review_card(
+            draft,
+            ReviewRequest(action="accept"),
+            card_repo,
+            review_repo,
+        )
+
+        assert card is not None
+        assert card.id != draft.id
+        saved_state = review_repo.save_fsrs_state.call_args.args[0]
+        assert saved_state.card_id == card.id
+        assert operations.mock_calls == [
+            call.cards.create(card),
+            call.reviews.save_fsrs_state(saved_state),
+        ]
 
 
 class TestFindDuplicates:
@@ -192,3 +284,24 @@ class TestFindDuplicates:
         ids = [c.id for c in results]
 
         assert len(ids) == len(set(ids))
+
+    def test_exact_matches_precede_unique_fts_results(self):
+        exact = Card(
+            id="exact",
+            title="Python Decorators",
+            category="Python",
+            explanation="A decorator wraps a function to extend its behavior",
+        )
+        fuzzy = Card(
+            id="fuzzy",
+            title="Python Decorators Introduction",
+            category="Python",
+            explanation="An introduction to decorators and wrapped functions",
+        )
+        card_repo = MagicMock()
+        card_repo.find_all.return_value = [fuzzy, exact]
+        card_repo.search_by_fts5.return_value = [exact, fuzzy]
+
+        results = find_duplicates("Python Decorators", card_repo)
+
+        assert results == [exact, fuzzy]

@@ -1,8 +1,3 @@
-"""
-event service tests — the orchestration: trigger_event picks an off-cooldown
-event, runs its handler, distributes rewards. covers the None paths too
-(nothing eligible, handler declines).
-"""
 from __future__ import annotations
 
 import random
@@ -36,7 +31,7 @@ def _cooldown_all_except(db, keep: str) -> None:
 def test_picks_off_cooldown_event_and_grants(db):
     for i in range(3):
         seed_card(db, f"c{i}")
-    _cooldown_all_except(db, "gift")  # only gift is eligible -> must pick it
+    _cooldown_all_except(db, "gift")
 
     player_repo, card_repo, review_repo, ev = _repos(db)
     log = trigger_event(player_repo, card_repo, review_repo, ev, NOW, random.Random(0))
@@ -44,7 +39,6 @@ def test_picks_off_cooldown_event_and_grants(db):
     assert log is not None
     assert log.event_type == "gift"
     assert log.reward_xp == 10
-    # side effects actually happened
     assert len(player_repo.find_inventory()) == 1
     assert "gift" in ev.get_last_triggered_map()
 
@@ -52,18 +46,22 @@ def test_picks_off_cooldown_event_and_grants(db):
 def test_returns_none_when_all_on_cooldown(db):
     for i in range(3):
         seed_card(db, f"c{i}")
-    _cooldown_all_except(db, "__none__")  # cooldown literally everything
+    _cooldown_all_except(db, "__none__")
 
     player_repo, card_repo, review_repo, ev = _repos(db)
-    assert trigger_event(player_repo, card_repo, review_repo, ev, NOW, random.Random(0)) is None
+    assert (
+        trigger_event(player_repo, card_repo, review_repo, ev, NOW, random.Random(0))
+        is None
+    )
 
 
 def test_returns_none_when_handler_declines(db):
-    # 3 cards -> feynman min_cards=3 met; cooldown all except feynman -> picks feynman,
-    # but feynman.can_trigger() is False -> None
     for i in range(3):
         seed_card(db, f"c{i}")
     _cooldown_all_except(db, "feynman")
 
     player_repo, card_repo, review_repo, ev = _repos(db)
-    assert trigger_event(player_repo, card_repo, review_repo, ev, NOW, random.Random(0)) is None
+    assert (
+        trigger_event(player_repo, card_repo, review_repo, ev, NOW, random.Random(0))
+        is None
+    )

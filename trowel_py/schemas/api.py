@@ -3,37 +3,38 @@ from typing import Literal
 from trowel_py.schemas.card import Card
 from trowel_py.schemas.extracted_card import ExtractedCard
 
+
 class ExtractRequest(BaseModel):
-    """
-    pydantic model
-    """
+    """提交给卡片提取流程的原始内容。"""
+
     content: str = Field(min_length=1)
 
+
 class CardDraft(ExtractedCard):
-    """
-    pydantic model
-    """
-    id: str = Field(min_length=1, max_length=64)    # draft card's id
+    """尚未持久化的卡片草稿。"""
+
+    id: str = Field(min_length=1, max_length=64)
     source: str | None = None
 
+
 class ReviewRequest(BaseModel):
-    """
-    pydantic model
-    """
+    """审核卡片草稿并携带可选字段修改。"""
+
     action: Literal["accept", "edit", "reject"]
-    edits: dict | None = None   # like {"title": "新标题", "difficulty": 4}
+    edits: dict | None = None  # 例如 {"title": "新标题", "difficulty": 4}
+
 
 class SubmitRequest(BaseModel):
-    """Request body for submitting a card review rating."""
+    """提交卡片复习评分。"""
+
     card_id: str = Field(min_length=1)
-    rating: int = Field(ge=1, le=4)  # 1=Again, 2=Hard, 3=Good, 4=Easy
+    rating: int = Field(ge=1, le=4)  # 评分值：1=Again，2=Hard，3=Good，4=Easy
+
 
 class CardListResponse(BaseModel):
-    """
-    pydantic model, all responsed cards
-    """
+    """卡片分页列表。"""
+
     data: list[Card]
     total: int
     page: int
     limit: int
-

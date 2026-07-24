@@ -5,7 +5,12 @@ import pytest
 import json
 
 from trowel_py.llm.filter import filter_secrets
-from trowel_py.llm.client import LLMService, _extract_json
+from trowel_py.llm.client import (
+    LLMConfig,
+    LLMService,
+    _extract_json,
+    create_llm_service,
+)
 from trowel_py.schemas.extracted_card import ExtractOutput
 
 
@@ -156,3 +161,34 @@ def test_extract_json_no_json_raises():
 def test_extract_json_empty_raises():
     with pytest.raises(ValueError):
         _extract_json("")
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "selected_class", "other_class"),
+    [
+        ("openai", "OpenAIProvider", "AnthropicProvider"),
+        ("anthropic", "AnthropicProvider", "OpenAIProvider"),
+    ],
+)
+def test_create_llm_service_selects_configured_provider(
+    provider_name,
+    selected_class,
+    other_class,
+):
+    config = LLMConfig(
+        provider=provider_name,
+        model="test-model",
+        api_key="test-key",
+    )
+
+    with (
+        patch(f"trowel_py.llm.client.{selected_class}") as selected,
+        patch(f"trowel_py.llm.client.{other_class}") as other,
+        patch("trowel_py.llm.client.LLMService") as service_class,
+    ):
+        service = create_llm_service(config)
+
+    selected.assert_called_once_with(config)
+    other.assert_not_called()
+    service_class.assert_called_once_with(selected.return_value)
+    assert service is service_class.return_value

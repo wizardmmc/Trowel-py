@@ -1,13 +1,5 @@
-"""Tests for the six-step todo expansion layer (slice-054 命门).
+"""使用 fake host 验证 todo 六步扩展，不启动真实 Claude。"""
 
-The CC host is mocked — never spawns a real ``claude`` (#46416 / test isolation).
-The three real todos (图片输入 / ExitPlanMode / 重构后端) are fixtures so the
-test corpus mirrors what was validated in the 2026-07-16 spike.
-
-Note: build_expansion_prompt does NOT take a profile — trowel's launcher injects
-profile + memory into cc's system prompt (slice-039/048), so re-injecting here
-would be redundant. The prompt only tells cc to USE its already-injected profile.
-"""
 from __future__ import annotations
 
 import json
@@ -24,8 +16,6 @@ from trowel_py.todo_loop.expansion import (
 
 
 class FakeHost:
-    """Minimal CC host double: returns a canned reply, records the prompt."""
-
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.last_prompt: str | None = None
@@ -36,7 +26,6 @@ class FakeHost:
 
 
 def _cc_json(**overrides: object) -> str:
-    """A well-formed cc JSON reply, with optional field overrides."""
     payload: dict[str, object] = {
         "recap": "我理解你要在 tcc 里发图给 cc",
         "candidates": ["tcc 发图", "独立 chat 发图", "复习卡片带图"],
@@ -52,37 +41,25 @@ def _cc_json(**overrides: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-# --- build_expansion_prompt ---
-
-
 def test_prompt_embeds_todo_and_six_steps() -> None:
     prompt = build_expansion_prompt("增加图片输入的功能")
-    # todo 原文必须在
     assert "增加图片输入的功能" in prompt
-    # 提示用 cc 已注入的画像（不重注入 profile_body）
     assert "画像" in prompt and "system" in prompt
-    # 六步流程关键词
     assert "识别歧义" in prompt
     assert "记忆反证" in prompt
     assert "枚举" in prompt
-    # 要求结构化输出
     assert "candidates" in prompt or "候选" in prompt
 
 
 def test_prompt_forbids_locking_first_interpretation() -> None:
-    """C-1 命门：不许锁第一个解释（spike 教训：李四锁第一个就全错）。"""
     prompt = build_expansion_prompt("重构后端")
     assert "锁" in prompt
 
 
 def test_prompt_carries_three_tier_collection_shape() -> None:
-    """收口形态（高执行计划/中待确认/低镜像）写进 prompt，不只六步。"""
     prompt = build_expansion_prompt("x")
-    assert "镜像" in prompt  # low 置信 → 产镜像
-    assert "执行计划" in prompt  # high 置信 → 给执行计划
-
-
-# --- parse_expansion: well-formed + happy path ---
+    assert "镜像" in prompt
+    assert "执行计划" in prompt
 
 
 def test_parse_well_formed_output() -> None:
@@ -96,42 +73,31 @@ def test_parse_well_formed_output() -> None:
     assert r.acceptance_criteria == ("粘贴截图 cc 能读出报错文字",)
 
 
-# --- parse_expansion: C-2 invariant — confidence must be exactly one of three ---
-
-
 @pytest.mark.parametrize(
     "bad_confidence",
     [None, True, False, 3, 0, "", "very high", "HIGH", {"a": "b"}, [1]],
 )
 def test_parse_confidence_only_three_levels(bad_confidence: object) -> None:
-    """C-2 命门：任何非法 confidence（None/bool/int/空串/未知串/非 str）一律降 low。"""
     r = parse_expansion(_cc_json(confidence=bad_confidence))
     assert r.confidence == "low"
 
 
 def test_parse_strips_whitespace_around_confidence() -> None:
-    """合法 confidence 带首尾空格仍被接受（strip 容忍，区分于大写/拼错的 HIGH）。"""
     r = parse_expansion(_cc_json(confidence="  high  "))
     assert r.confidence == "high"
 
 
 def test_parse_assumption_missing_anchor_defaults_pure_guess() -> None:
-    """假设条目缺 has_anchor → 当纯猜（False），不丢条目。"""
     r = parse_expansion(_cc_json(assumptions=[{"text": "没标 anchor 的假设"}]))
     assert r.assumptions == (Assumption("没标 anchor 的假设", False),)
 
 
 def test_parse_assumption_string_false_not_treated_as_true() -> None:
-    """``has_anchor: "false"`` 不能被当 True（``bool("false")`` 是 True 的陷阱）。"""
     r = parse_expansion(_cc_json(assumptions=[{"text": "x", "has_anchor": "false"}]))
     assert r.assumptions == (Assumption("x", False),)
 
 
-# --- parse_expansion: lenient degradation (never raises, never dirty-coerces) ---
-
-
 def test_parse_broken_json_does_not_raise() -> None:
-    """坏 JSON 不抛，降级低置信（呼应 profile lenient 解析哲学）。"""
     r = parse_expansion("这不是 json {{{")
     assert r.confidence == "low"
     assert "失败" in r.confidence_reason
@@ -166,11 +132,7 @@ def test_parse_missing_fields_default_empty_and_low() -> None:
     assert r.confidence == "low"
 
 
-# --- parse_expansion: non-string items skipped, never str()-coerced (no dirty data) ---
-
-
 def test_parse_candidates_non_str_items_skipped() -> None:
-    """candidates 里混 int/None/空串 → 跳过，绝不 str() 成 "42"/"None" 脏条目。"""
     r = parse_expansion(_cc_json(candidates=["tcc 发图", 42, None, "独立 chat", ""]))
     assert r.candidates == ("tcc 发图", "独立 chat")
 
@@ -195,9 +157,6 @@ def test_parse_recap_non_str_defaults_empty() -> None:
     assert r.recap == ""
 
 
-# --- expand_todo end-to-end (fake host) ---
-
-
 def test_expand_wires_prompt_to_parse() -> None:
     host = FakeHost(_cc_json())
     r = expand_todo("增加图片输入的功能", host)
@@ -208,7 +167,6 @@ def test_expand_wires_prompt_to_parse() -> None:
 
 
 def test_expand_real_fixture_exit_plan_mode_bug() -> None:
-    """真 todo #2：用户真实遇到的 bug。fake host 回实锤诊断。"""
     diagnosis = json.dumps(
         {
             "recap": "ExitPlanMode 的 control_request 被 translator 吞掉，cc 卡死等超时",
@@ -218,7 +176,10 @@ def test_expand_real_fixture_exit_plan_mode_bug() -> None:
                 "cc 自身 bug",
             ],
             "assumptions": [
-                {"text": "translator.py:480 硬过滤非 AskUserQuestion", "has_anchor": True}
+                {
+                    "text": "translator.py:480 硬过滤非 AskUserQuestion",
+                    "has_anchor": True,
+                }
             ],
             "acceptance_criteria": ["ExitPlanMode 时 cc 不再卡死"],
             "confidence": "high",
@@ -232,7 +193,6 @@ def test_expand_real_fixture_exit_plan_mode_bug() -> None:
 
 
 def test_expand_real_fixture_refactor_backend_low_confidence_mirror() -> None:
-    """真 todo #3：范围爆炸，应诚实低置信（镜像 report）。"""
     mirror = json.dumps(
         {
             "recap": "「重构后端」范围太大，可能指拆大文件/memory 重组/补测试等",
@@ -246,4 +206,4 @@ def test_expand_real_fixture_refactor_backend_low_confidence_mirror() -> None:
     )
     r = expand_todo("重构后端", FakeHost(mirror))
     assert r.confidence == "low"
-    assert len(r.candidates) >= 3  # 范围大也要枚举多个候选，不锁第一个
+    assert len(r.candidates) >= 3

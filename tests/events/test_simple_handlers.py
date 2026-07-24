@@ -1,7 +1,3 @@
-"""
-simple handlers: discovery/gift (rng item drop), story/growth (learned-card gate),
-feynman (placeholder). these share the handler shape; each gets a focused test.
-"""
 from __future__ import annotations
 
 from trowel_py.events.handlers.discovery import DiscoveryHandler, _DISCOVERY_ITEMS
@@ -29,7 +25,9 @@ class TestDiscovery:
         assert DiscoveryHandler().can_trigger(_state()) is True
 
     def test_picks_from_pool(self, db):
-        result = DiscoveryHandler().execute(_state(), make_deps(db, rng=FakeRng(choice_index=0)))
+        result = DiscoveryHandler().execute(
+            _state(), make_deps(db, rng=FakeRng(choice_index=0))
+        )
         assert result.event_type == "discovery"
         assert result.xp == 10
         assert result.item_id == _DISCOVERY_ITEMS[0]
@@ -37,7 +35,9 @@ class TestDiscovery:
 
 class TestGift:
     def test_picks_from_pool(self, db):
-        result = GiftHandler().execute(_state(), make_deps(db, rng=FakeRng(choice_index=1)))
+        result = GiftHandler().execute(
+            _state(), make_deps(db, rng=FakeRng(choice_index=1))
+        )
         assert result.event_type == "gift"
         assert result.xp == 10
         assert result.item_id == _GIFT_ITEMS[1]
@@ -67,7 +67,7 @@ class TestGrowth:
 
     def test_execute_reports_growth(self, db):
         seed_card(db, "c1", title="Recursion")
-        seed_state(db, "c1", reps=1)  # state defaults to 1 -> plant stage "sprout"
+        seed_state(db, "c1", reps=1)
         result = GrowthHandler().execute(
             _state(learned=("c1",)), make_deps(db, rng=FakeRng(choice_index=0))
         )
@@ -79,7 +79,6 @@ class TestGrowth:
 
 class TestFeynman:
     def test_can_trigger_false(self):
-        # placeholder: disabled until M3
         assert FeynmanHandler().can_trigger(_state()) is False
 
     def test_execute_returns_placeholder(self, db):

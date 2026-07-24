@@ -2,17 +2,10 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from trowel_py.pet.types import PetMood
 
-class Pet(BaseModel):
-    """
-    mapping to the table pets -- the single pet owned by the default player
 
-    Attributes:
-        player_id: always 'default' (single-user system).
-        mood: current mood, one of PetMood.
-        hunger: satiety 0-100; below 20 the pet looks hungry.
-        equipped_hat: inventory row id of the worn hat, or None when bare-headed.
-        updated_at: last time any pet field changed.
-    """
+class Pet(BaseModel):
+    """默认玩家的宠物状态；饱食度低于 20 时展示为饥饿，帽子字段保存库存行 ID。"""
+
     player_id: str = Field(min_length=1, max_length=64)
     mood: PetMood = Field(default="normal")
     hunger: int = Field(default=80)
@@ -21,20 +14,12 @@ class Pet(BaseModel):
 
 
 class FeedRequest(BaseModel):
-    """
-    request body for POST /api/pet/feed.
+    """使用库存行 ID 指定要消耗的食物，而不是商品目录 ID。"""
 
-    Attributes:
-        item_id: inventory row id of the food to eat (not the catalog id).
-    """
     item_id: str = Field(min_length=1)
 
 
 class EquipRequest(BaseModel):
-    """
-    request body for PUT /api/pet/equip.
+    """使用库存行 ID 指定要装备的帽子，而不是商品目录 ID。"""
 
-    Attributes:
-        item_id: inventory row id of the hat to wear (not the catalog id).
-    """
     item_id: str = Field(min_length=1)

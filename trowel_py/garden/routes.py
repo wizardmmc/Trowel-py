@@ -9,8 +9,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 def _get_conn():
-    """Yield a DB connection; commit and close after the request."""
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -18,31 +19,22 @@ def _get_conn():
         conn.commit()
         conn.close()
 
+
 def _get_garden_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> GardenRepository:
     return create_garden_repository(conn)
 
+
 @router.get("/plants")
 def plants(garden_repo: GardenRepository = Depends(_get_garden_repo)):
-    """
-    return all plants with their card data and computed plant stage.
-    """
+    """返回所有植物及其卡片数据和派生生长阶段。"""
     logger.info("get /api/garden/plants")
     plant_list = get_plants(garden_repo)
-    return {
-        "success": True, 
-        "data": plant_list,
-        "error": None
-    }
+    return {"success": True, "data": plant_list, "error": None}
+
 
 @router.get("/stats")
 def stats(garden_repo: GardenRepository = Depends(_get_garden_repo)):
-    """
-    return aggregated garden statistics
-    """
+    """返回花园聚合统计。"""
     logger.info("get /api/garden/stats")
     stats = get_stats(garden_repo)
-    return {
-        "success": True, 
-        "data": stats,
-        "error": None
-    }
+    return {"success": True, "data": stats, "error": None}

@@ -1,9 +1,13 @@
 import sqlite3
 from unittest.mock import MagicMock
 
-from trowel_py.cards.repository import create_card_repository
+from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.db.migrate import run_migrations
-from trowel_py.feynman.repository import create_feynman_repository
+from trowel_py.feynman.repository import (
+    FeynmanRepository,
+    FeynmanSession,
+    create_feynman_repository,
+)
 from trowel_py.feynman.service import evaluate_answer, generate_question
 from trowel_py.schemas.feynman import FeynmanEvaluationSchema, FeynmanQuestionSchema
 
@@ -76,11 +80,28 @@ def test_generate_question_passes_card_content_and_call_type(
 
     assert llm.structured_call.called
     args, kwargs = llm.structured_call.call_args
-    user_prompt = args[0]
-    assert "useEffect" in user_prompt
-    assert "runs side effects after render" in user_prompt
-    assert "useEffect(() => { ... }, [])" in user_prompt
+    assert args[0] == (
+        "卡片标题：useEffect\n"
+        "卡片解释：runs side effects after render\n"
+        "示例： useEffect(() => { ... }, [])"
+    )
     assert kwargs.get("call_type") == "feynman-question"
+
+
+def test_generate_question_omits_empty_example_from_prompt(
+    db_connection: sqlite3.Connection,
+):
+    run_migrations(db_connection)
+    _seed_card(db_connection)
+    db_connection.execute("update cards set example = null where id = ?", ("card-1",))
+    card_repo = create_card_repository(db_connection)
+    feynman_repo = create_feynman_repository(db_connection)
+    llm = _fake_question_llm()
+
+    generate_question("card-1", card_repo, feynman_repo, llm)
+
+    args, _ = llm.structured_call.call_args
+    assert args[0] == ("卡片标题：useEffect\n卡片解释：runs side effects after render")
 
 
 def test_generate_question_none_when_card_missing(db_connection: sqlite3.Connection):
@@ -136,10 +157,11 @@ def test_evaluate_answer_passes_three_parts_and_call_type(
     evaluate_answer(gen.session_id, "my explanation", card_repo, feynman_repo, llm)
 
     args, kwargs = llm.structured_call.call_args
-    user_prompt = args[0]
-    assert gen.question in user_prompt
-    assert "runs side effects after render" in user_prompt
-    assert "my explanation" in user_prompt
+    assert args[0] == (
+        "问题：when does the cleanup function run?\n"
+        "卡片解释：runs side effects after render\n"
+        "用户回答：my explanation"
+    )
     assert kwargs.get("call_type") == "feynman-eval"
 
 
@@ -156,3 +178,23 @@ def test_evaluate_answer_none_when_session_missing(
 
     assert result is None
     assert not llm.structured_call.called
+
+
+def test_evaluate_answer_none_when_session_card_missing():
+    card_repo = MagicMock(spec=CardRepository)
+    card_repo.find_by_id.return_value = None
+    feynman_repo = MagicMock(spec=FeynmanRepository)
+    feynman_repo.find_by_id.return_value = FeynmanSession(
+        id="session-1",
+        card_id="missing-card",
+        question="what happens?",
+    )
+    llm = _fake_eval_llm()
+
+    result = evaluate_answer(
+        "session-1", "my explanation", card_repo, feynman_repo, llm
+    )
+
+    assert result is None
+    llm.structured_call.assert_not_called()
+    feynman_repo.update_with_evaluation.assert_not_called()

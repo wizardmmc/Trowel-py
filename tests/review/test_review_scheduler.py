@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from trowel_py.schemas.review import FSRSState
 from trowel_py.review.scheduler import schedule_review, get_plant_stage
 
@@ -74,6 +76,12 @@ class TestScheduleReview:
 
         assert new_state.stability > 0
         assert new_state.difficulty > 0
+
+    def test_invalid_rating_preserves_mapping_error(self):
+        state = _new_state()
+
+        with pytest.raises(KeyError, match="5"):
+            schedule_review(state, 5)
 
 
 class TestGetPlantStage:

@@ -21,13 +21,14 @@ def _entry(
     card_id: str = "card-1",
     explanation: str = "an explanation",
     source: str = "llm",
+    created_at: str = "",
 ) -> ExplanationHistoryEntry:
     return ExplanationHistoryEntry(
         id=entry_id,
         card_id=card_id,
         explanation=explanation,
         source=source,
-        created_at="",
+        created_at=created_at,
     )
 
 
@@ -43,6 +44,18 @@ def test_create_and_read_back(db_connection: sqlite3.Connection):
     assert rows[0].explanation == "first version"
     assert rows[0].source == "llm"
     assert rows[0].created_at != ""
+
+
+def test_create_uses_database_timestamp(db_connection: sqlite3.Connection):
+    run_migrations(db_connection)
+    _seed_card(db_connection)
+    repo = create_explanation_history_repository(db_connection)
+
+    repo.create(_entry("h-1", created_at="2000-01-01 00:00:00"))
+
+    stored = repo.find_latest("card-1")
+    assert stored is not None
+    assert stored.created_at != "2000-01-01 00:00:00"
 
 
 def test_find_by_card_id_orders_oldest_first(db_connection: sqlite3.Connection):

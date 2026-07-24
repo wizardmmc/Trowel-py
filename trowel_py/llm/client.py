@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 
-# Protocol in python like interface in Java
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 from trowel_py.llm.filter import filter_secrets
 from trowel_py.llm.prompts.registry import PROMPTS
 from trowel_py.llm.types import CallType
@@ -11,6 +10,8 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 class LLMConfig(BaseModel):
@@ -22,10 +23,6 @@ class LLMConfig(BaseModel):
 
 
 class CostEntry(BaseModel):
-    """
-    a single record about the cost of one functional call
-    """
-
     call_type: CallType
     tokens_in: int
     tokens_out: int
@@ -34,23 +31,18 @@ class CostEntry(BaseModel):
 
 
 class CostReport(BaseModel):
-    """
-    summary all cost entry
-    """
-
     total_cost: float
-    by_type: dict[
-        str, dict[str, float | int]
-    ]  # {"extract": {"calls": 5, "cost": 0.03}}
+    by_type: dict[str, dict[str, float | int]]
 
 
 class LLMProvider(Protocol):
     def complete(self, system_prompt: str, user_prompt: str) -> str: ...
 
 
+# SDK 在各自构造器内延迟导入，未选中的 provider 不成为启动时依赖。
 class OpenAIProvider(LLMProvider):
     def __init__(self, config: LLMConfig):
-        from openai import OpenAI  # lazy import
+        from openai import OpenAI
 
         self._client = OpenAI(api_key=config.api_key, base_url=config.base_url)
         self._model = config.model
@@ -92,9 +84,6 @@ class AnthropicProvider(LLMProvider):
 def _call_with_retry(
     provider: LLMProvider, system_prompt: str, user_prompt: str, max_retries: int
 ) -> dict:
-    """
-    increase stability
-    """
     last_error: Exception = RuntimeError("All retries exhausted.")
     for attempt in range(max_retries):
         try:
@@ -110,18 +99,7 @@ def _call_with_retry(
 
 
 def _extract_json(raw: str) -> str:
-    """
-    pull the JSON object out of an LLM raw response
-
-    Args:
-        raw: raw text from the LLM provider.
-
-    Returns:
-        the substring that should be valid JSON.
-
-    Raises:
-        ValueError: no '{' or '}' found (model returned no JSON at all).
-    """
+    """截取首个 `{` 到末个 `}`；缺少完整边界时抛出 `ValueError`。"""
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end < start:
@@ -135,16 +113,13 @@ class LLMService:
         self._cost_log: list[CostEntry] = []
 
     def structured_call(
-        self, user_prompt: str, schema: type[BaseModel], call_type: CallType = "extract"
-    ) -> BaseModel:
-        """
-        call provider, like Interface encapsulation
-        """
+        self, user_prompt: str, schema: type[_ModelT], call_type: CallType = "extract"
+    ) -> _ModelT:
         filtered_user_prompt = filter_secrets(user_prompt)
         response = _call_with_retry(
             self._provider, PROMPTS[call_type], filtered_user_prompt, 3
         )
-        result = schema.model_validate(response)  # convert dict to basemodel
+        result = schema.model_validate(response)
         self._cost_log.append(
             CostEntry(
                 call_type=call_type,
@@ -160,13 +135,8 @@ class LLMService:
         return result
 
     def get_cost_report(self) -> CostReport:
-        """
-        Iterate through cost_log, grouping by call_type to count the number of calls and calculate costs
-        """
         total = sum(e.cost_used for e in self._cost_log)
-        by_type: dict[
-            str, dict[str, float | int]
-        ] = {}  # {"extract": {"calls": 5, "cost": 0.03}}
+        by_type: dict[str, dict[str, float | int]] = {}
         for entry in self._cost_log:
             if entry.call_type not in by_type:
                 by_type[entry.call_type] = {"calls": 0, "cost": 0.0}
@@ -175,12 +145,13 @@ class LLMService:
         return CostReport(total_cost=total, by_type=by_type)
 
 
-def create_llm_service(config: LLMConfig) -> LLMService:
-    """
-    factory function, easily create llm service
-    """
+def _provider_from_config(config: LLMConfig) -> LLMProvider:
+    """根据配置创建唯一对应的 LLM provider。"""
     if config.provider == "openai":
-        provider = OpenAIProvider(config)
-    else:
-        provider = AnthropicProvider(config)
-    return LLMService(provider)
+        return OpenAIProvider(config)
+    return AnthropicProvider(config)
+
+
+def create_llm_service(config: LLMConfig) -> LLMService:
+    """使用配置创建 LLM 服务。"""
+    return LLMService(_provider_from_config(config))

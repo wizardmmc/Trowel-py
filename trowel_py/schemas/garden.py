@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Literal
-from datetime import datetime
-from trowel_py.schemas.card import Card
+from datetime import datetime as datetime
+from trowel_py.schemas.card import Card as Card
+
 
 class PlantInfo(BaseModel):
     card_id: str = Field(min_length=1)
@@ -9,14 +10,16 @@ class PlantInfo(BaseModel):
     category: str = Field(min_length=1)
     explanation: str = Field(min_length=10)
     plant_stage: Literal["seed", "sprout", "tree", "wilting"] = "seed"
-    fsrs_state: Literal[0, 1, 2, 3] | None = None # 0:new, 1:learning, 2:review, 3:relearning
+    fsrs_state: Literal[0, 1, 2, 3] | None = (
+        None  # FSRS 状态：0=New，1=Learning，2=Review，3=Relearning
+    )
     due: str | None = None
     reps: int = Field(default=0)
 
+
 class GardenStats(BaseModel):
-    """
-    aggregate statistics
-    """
+    """花园聚合统计。"""
+
     total_plants: int = 0
-    due_count: int = 0  # number of cards waited to due
-    flowering_rate: float = 0.0 # tree num / total num
+    due_count: int = 0
+    flowering_rate: float = 0.0

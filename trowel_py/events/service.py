@@ -17,11 +17,13 @@ from trowel_py.schemas.event import EventLog
 
 logger = logging.getLogger(__name__)
 
-def build_game_state(player_repo: PlayerRepository, card_repo: CardRepository,
-                     review_repo: ReviewRepository, now: datetime) -> GameState:
-    """
-    aggregate the current numbers the engine needs to pick an event
-    """
+
+def build_game_state(
+    player_repo: PlayerRepository,
+    card_repo: CardRepository,
+    review_repo: ReviewRepository,
+    now: datetime,
+) -> GameState:
     player = player_repo.find_or_create()
     all_cards = card_repo.find_all()
     due = review_repo.find_due(now.isoformat())
@@ -35,24 +37,22 @@ def build_game_state(player_repo: PlayerRepository, card_repo: CardRepository,
         learned_card_ids=learned,
     )
 
+
 def trigger_event(
     player_repo: PlayerRepository,
     card_repo: CardRepository,
     review_repo: ReviewRepository,
     event_repo: EventRepository,
     now: datetime,
-    rng: random.Random
+    rng: random.Random,
 ) -> EventLog | None:
-    """
-    run one full event cycle, or None if nothing fires
-    """
     state = build_game_state(player_repo, card_repo, review_repo, now)
     cooldowns = event_repo.get_last_triggered_map()
     event_type = select_event(state, DEFAULT_EVENT_CONFIGS, cooldowns, now, rng)
     if event_type is None:
         logger.info("no eligible event this turn")
         return None
-    
+
     handler = HANDLERS[event_type]
     deps = EventDependencies(
         player_repo=player_repo,
@@ -61,19 +61,17 @@ def trigger_event(
         garden_repo=None,
         event_repo=event_repo,
         now=now,
-        rng=rng
+        rng=rng,
     )
     if not handler.can_trigger(state):
         logger.info("event %s fired but handler declined", event_type)
         return None
-    
+
     result = handler.execute(state, deps)
     log = distribute(result, player_repo, event_repo, now)
     logger.info("event %s fired: xp=%d coins=%d", event_type, result.xp, result.coins)
     return log
 
+
 def get_history(event_repo: EventRepository, limit: int = 20) -> list[EventLog]:
-    """
-    return recent events, newest first
-    """
     return event_repo.get_recent(limit)

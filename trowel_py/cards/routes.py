@@ -1,4 +1,3 @@
-# intermediate layer between service layer and HTTP request
 from fastapi import APIRouter, Depends
 from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.cards.service import (
@@ -13,7 +12,7 @@ from trowel_py.llm.client import LLMService, create_llm_service
 from trowel_py.review.repository import ReviewRepository, create_review_repository
 from trowel_py.schemas.api import CardDraft, ExtractRequest, ReviewRequest
 from trowel_py.schemas.re_explain import ReExplainRequest
-from trowel_py.schemas.card import Card
+from trowel_py.schemas.card import Card as Card
 from trowel_py.db.connection import create_db
 import sqlite3
 import logging
@@ -21,12 +20,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-_draft_store: dict[str, CardDraft] = {} # {id: CardDraft}
+_draft_store: dict[str, CardDraft] = {}
 
 
-# inject function, convence test
 def _get_conn():
-    """Yield a DB connection; commit and close after the request."""
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -49,9 +47,10 @@ def _get_llm_service() -> LLMService:
     return create_llm_service(load_llm_config())
 
 
-# route
 @router.post("/extract")
-def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)) -> dict:
+def extract(
+    request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)
+) -> dict:
     logger.info("Extract request received, content length: %d", len(request.content))
     drafts = extract_cards(request.content, llm_service)
     logger.info("Extraction complete, %d drafts generated", len(drafts))
@@ -59,19 +58,20 @@ def extract(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_
         _draft_store[draft.id] = draft
     return {
         "success": True,
-        "data": {
-            "drafts": [d.model_dump() for d in drafts]    # convert pydantic to dict, to convert to json
-        },
-        "error": None
+        "data": {"drafts": [d.model_dump() for d in drafts]},
+        "error": None,
     }
 
 
 @router.post("/extract-conversation")
-def extract_conversation(request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)) -> dict:
-    """
-    extract card drafts from an uploaded CC JSONL conversation log
-    """
-    logger.info("extract-conversation request received, content length: %d", len(request.content))
+def extract_conversation(
+    request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)
+) -> dict:
+    """从上传的 Claude Code JSONL 对话记录中提取卡片草稿。"""
+    logger.info(
+        "extract-conversation request received, content length: %d",
+        len(request.content),
+    )
     messages = parse_jsonl(request.content)
     logger.info("Parsed %d message from JSONL", len(messages))
     drafts = extract_from_conversation(messages, llm_service)
@@ -92,12 +92,7 @@ def re_explain_card(
     request: ReExplainRequest,
     llm_service: LLMService = Depends(_get_llm_service),
 ) -> dict:
-    """
-    regenerate a draft's explanation from a different angle (slice 021).
-
-    Stateless generator: no DB writes. The caller keeps candidate versions in
-    frontend state and writes the chosen one back via POST /{draft_id}/review.
-    """
+    """换一个角度重新生成草稿解释，不写入数据库。候选版本由调用方保存。"""
     logger.info(
         "re-explain request, title: %s, has hint: %s",
         request.title,
@@ -118,55 +113,36 @@ def re_explain_card(
 
 
 @router.post("/{draft_id}/review")
-def review(draft_id: str,
-           request: ReviewRequest,
-           card_repo: CardRepository = Depends(_get_card_repo),
-           review_repo: ReviewRepository = Depends(_get_review_repo)) -> dict:
+def review(
+    draft_id: str,
+    request: ReviewRequest,
+    card_repo: CardRepository = Depends(_get_card_repo),
+    review_repo: ReviewRepository = Depends(_get_review_repo),
+) -> dict:
     logger.info("Review request for draft: %s, action: %s", draft_id, request.action)
     draft = _draft_store.get(draft_id)
     if draft is None:
         logger.warning("Draft not found: %s", draft_id)
-        return {
-            "success": False,
-            "data": None,
-            "error": "Draft not found"
-        }
+        return {"success": False, "data": None, "error": "Draft not found"}
     card = review_card(draft, request, card_repo, review_repo)
     if card is None:
         logger.info("Draft %s rejected", draft_id)
-        return {
-            "success": True,
-            "data": {
-                "rejected": True
-            },
-            "error": None
-        }
+        return {"success": True, "data": {"rejected": True}, "error": None}
     else:
         logger.info("Draft %s accepted as card: %s", draft_id, card.id)
-        return {
-            "success": True,
-            "data": {
-                "card": card.model_dump()
-            },
-            "error": None
-        }
-    
+        return {"success": True, "data": {"card": card.model_dump()}, "error": None}
+
 
 @router.get("/{draft_id}/dedup")
-def de_duplicate(draft_id: str,
-                 card_repo: CardRepository = Depends(_get_card_repo),):
-    """
-    find duplicate cards for a draft (the draft is not persisted yet, so the
-    path param is a draft id, not a card id)
-    """
+def de_duplicate(
+    draft_id: str,
+    card_repo: CardRepository = Depends(_get_card_repo),
+):
+    """为尚未持久化的草稿查找重复卡片；路径参数是草稿 ID，不是卡片 ID。"""
     draft = _draft_store.get(draft_id)
     if draft is None:
         logger.warning("Dedup request for unknown draft: %s", draft_id)
-        return {
-            "success": False, 
-            "data": None, 
-            "error": "Draft not found"
-        }
+        return {"success": False, "data": None, "error": "Draft not found"}
     duplicates = find_duplicates(draft.title, card_repo)
     return {
         "success": True,
@@ -176,9 +152,8 @@ def de_duplicate(draft_id: str,
 
 
 @router.get("/search")
-def search_cards(q: str,
-                 card_repo: CardRepository = Depends(_get_card_repo)) -> dict:
-    """FTS5 full-text search for cards."""
+def search_cards(q: str, card_repo: CardRepository = Depends(_get_card_repo)) -> dict:
+    """使用 FTS5 全文检索卡片。"""
     logger.info("Search cards, query: %s", q)
     cards = card_repo.search_by_fts5(q)
     return {
@@ -190,12 +165,15 @@ def search_cards(q: str,
 
 @router.get("")
 @router.get("/")
-def get_all_cards(page: int = 1,
-            limit: int = 20,
-            card_repo: CardRepository = Depends(_get_card_repo),) -> dict:
+def get_all_cards(
+    page: int = 1,
+    limit: int = 20,
+    card_repo: CardRepository = Depends(_get_card_repo),
+) -> dict:
     cards = card_repo.find_all()
-    logger.info("Get all cards, page: %d, limit: %d, total: %d", page, limit, len(cards))
-    # manual pagination
+    logger.info(
+        "Get all cards, page: %d, limit: %d, total: %d", page, limit, len(cards)
+    )
     start = (page - 1) * limit
     end = start + limit
     page_cards = cards[start:end]

@@ -1,10 +1,5 @@
-"""
-shared fixtures for event tests.
+"""事件测试共用已迁移的内存连接；默认玩家满足 ``event_log.player_id`` 外键。"""
 
-`db` builds a migrated in-memory database with the default player seeded
-(event_log.player_id FK needs that row). helpers seed cards / fsrs state.
-everything stays on one connection, so writes are visible without commit.
-"""
 from __future__ import annotations
 
 import random
@@ -23,20 +18,17 @@ from trowel_py.schemas.card import Card
 from trowel_py.schemas.review import FSRSState
 
 NOW = datetime(2026, 6, 19, 10, 0, 0)
-FAR_FUTURE = datetime(2099, 1, 1, 0, 0, 0)  # default due: not due
+FAR_FUTURE = datetime(2099, 1, 1, 0, 0, 0)
 
 
 @pytest.fixture
 def db(db_connection):
-    """migrated db + default player row (satisfies event_log.player_id FK)."""
     run_migrations(db_connection)
     create_player_repository(db_connection).find_or_create()
     return db_connection
 
 
 class FakeRng:
-    """test double for random.Random: fixed random() value + controllable choice()."""
-
     def __init__(self, rand_value: float = 0.5, choice_index: int = 0) -> None:
         self._rand = rand_value
         self._choice_index = choice_index
@@ -49,7 +41,6 @@ class FakeRng:
 
 
 def make_deps(conn, now: datetime = NOW, rng=None):
-    """build EventDependencies bound to one connection (atomicity preserved)."""
     return EventDependencies(
         player_repo=create_player_repository(conn),
         review_repo=create_review_repository(conn),
@@ -61,8 +52,9 @@ def make_deps(conn, now: datetime = NOW, rng=None):
     )
 
 
-def seed_card(conn, card_id: str, title: str | None = None, explanation: str | None = None) -> Card:
-    """insert one card; returns it."""
+def seed_card(
+    conn, card_id: str, title: str | None = None, explanation: str | None = None
+) -> Card:
     card = Card(
         id=card_id,
         title=title or card_id,
@@ -73,8 +65,9 @@ def seed_card(conn, card_id: str, title: str | None = None, explanation: str | N
     return card
 
 
-def seed_state(conn, card_id: str, reps: int = 0, lapses: int = 0, due: datetime | None = None) -> FSRSState:
-    """insert fsrs_state for a card; due defaults to far future (not due)."""
+def seed_state(
+    conn, card_id: str, reps: int = 0, lapses: int = 0, due: datetime | None = None
+) -> FSRSState:
     fsrs = FSRSState(
         card_id=card_id,
         stability=1.0,

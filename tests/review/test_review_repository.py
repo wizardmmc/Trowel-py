@@ -1,4 +1,6 @@
 import sqlite3
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from trowel_py.cards.repository import create_card_repository
 from trowel_py.db.migrate import run_migrations
@@ -75,6 +77,116 @@ class TestReviewLogs:
         assert row["rating"] == 3
         assert row["card_id"] == "card-1"
 
+    def test_save_review_log_persists_all_fields_and_returns_input(
+        self, db_connection: sqlite3.Connection
+    ):
+        card_repo, review_repo = _setup_repositories(db_connection)
+        _insert_card(card_repo)
+        created_at = datetime(2026, 7, 23, 12, 30, tzinfo=timezone.utc)
+        log = ReviewLog(
+            id="log-1",
+            card_id="card-1",
+            rating=2,
+            state=1,
+            elapsed_days=4,
+            scheduled_days=6,
+            duration_ms=850,
+            created_at=created_at,
+        )
+
+        result = review_repo.save_review_log(log)
+
+        assert result is log
+        row = db_connection.execute(
+            "SELECT * FROM review_logs WHERE id = ?", ("log-1",)
+        ).fetchone()
+        assert dict(row) == {
+            "id": "log-1",
+            "card_id": "card-1",
+            "rating": 2,
+            "state": 1,
+            "elapsed_days": 4,
+            "scheduled_days": 6,
+            "duration_ms": 850,
+            "created_at": created_at.isoformat(),
+        }
+
+    def test_save_review_log_encodes_model_dump_datetime(
+        self, db_connection: sqlite3.Connection
+    ):
+        card_repo, review_repo = _setup_repositories(db_connection)
+        _insert_card(card_repo)
+        log = ReviewLog(id="log-1", card_id="card-1", rating=3, state=0)
+        dumped = log.model_dump()
+        dumped_at = datetime(2030, 1, 2, 3, 4, tzinfo=timezone.utc)
+        dumped["created_at"] = dumped_at
+
+        with patch.object(ReviewLog, "model_dump", return_value=dumped):
+            review_repo.save_review_log(log)
+
+        row = db_connection.execute(
+            "SELECT created_at FROM review_logs WHERE id = ?", ("log-1",)
+        ).fetchone()
+        assert row["created_at"] == dumped_at.isoformat()
+
+
+class TestSaveFsrsState:
+    def test_round_trips_all_fields_and_returns_input(
+        self, db_connection: sqlite3.Connection
+    ):
+        card_repo, review_repo = _setup_repositories(db_connection)
+        _insert_card(card_repo)
+        due = datetime(2026, 8, 1, 8, 30, tzinfo=timezone.utc)
+        last_review = datetime(2026, 7, 23, 12, 30, tzinfo=timezone.utc)
+        state = FSRSState(
+            card_id="card-1",
+            stability=4.5,
+            difficulty=6.25,
+            elapsed_days=2,
+            scheduled_days=9,
+            reps=7,
+            lapses=1,
+            state=2,
+            due=due,
+            last_review=last_review,
+        )
+
+        result = review_repo.save_fsrs_state(state)
+
+        assert result is state
+        assert review_repo.find_by_card_id("card-1") == state
+
+    def test_encodes_model_dump_datetime_values(
+        self, db_connection: sqlite3.Connection
+    ):
+        card_repo, review_repo = _setup_repositories(db_connection)
+        _insert_card(card_repo)
+        state = FSRSState(card_id="card-1")
+        dumped = state.model_dump()
+        dumped_due = datetime(2030, 1, 3, 4, 5, tzinfo=timezone.utc)
+        dumped_last_review = datetime(2030, 1, 2, 3, 4, tzinfo=timezone.utc)
+        dumped["due"] = dumped_due
+        dumped["last_review"] = dumped_last_review
+
+        with patch.object(FSRSState, "model_dump", return_value=dumped):
+            review_repo.save_fsrs_state(state)
+
+        row = db_connection.execute(
+            "SELECT due, last_review FROM fsrs_state WHERE card_id = ?",
+            ("card-1",),
+        ).fetchone()
+        assert row["due"] == dumped_due.isoformat()
+        assert row["last_review"] == dumped_last_review.isoformat()
+
+    def test_round_trips_missing_last_review(self, db_connection: sqlite3.Connection):
+        card_repo, review_repo = _setup_repositories(db_connection)
+        _insert_card(card_repo)
+        state = FSRSState(card_id="card-1", last_review=None)
+
+        review_repo.save_fsrs_state(state)
+
+        assert review_repo.find_by_card_id("card-1") == state
+
 
 class TestFindDue:
     def test_returns_card_due_before_cutoff(self, db_connection: sqlite3.Connection):
@@ -141,11 +253,11 @@ class TestUpdateFsrsState:
 
     def test_missing_card_is_a_noop(self, db_connection: sqlite3.Connection):
         _, review_repo = _setup_repositories(db_connection)
+        state = FSRSState(card_id="missing-card", reps=1, state=1)
 
-        review_repo.update_fsrs_state(
-            FSRSState(card_id="missing-card", reps=1, state=1)
-        )
+        result = review_repo.update_fsrs_state(state)
 
+        assert result is state
         assert review_repo.find_by_card_id("missing-card") is None
 
 

@@ -1,7 +1,3 @@
-"""
-registry mapping each llm call type to its system prompt
-"""
-
 from trowel_py.llm.types import CallType
 from trowel_py.llm.prompts.extract import EXTRACT_SYSTEM_PROMPT
 from trowel_py.llm.prompts.feynman import (

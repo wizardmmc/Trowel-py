@@ -1,25 +1,17 @@
 from pydantic import BaseModel, Field
-from typing import Literal
-from datetime import datetime
+from typing import Literal as Literal
+from datetime import datetime as datetime
 
 
 class FeynmanQuestionSchema(BaseModel):
-    """
-    output contract for the 'LLM poses a question' call (019).
-
-    Attributes:
-        question: the question the model asks about the card.
-        hint: an optional nudge; not every question needs one.
-    """
+    """费曼提问的结构化输出；``hint`` 可为空。"""
 
     question: str = Field(min_length=1)
     hint: str | None = None
 
 
 class FeynmanEvaluationSchema(BaseModel):
-    """
-    output contract for the 'llm judges the answer' call
-    """
+    """费曼回答评估的结构化输出。"""
 
     accuracy: int = Field(ge=0, le=100)
     completeness: int = Field(ge=0, le=100)

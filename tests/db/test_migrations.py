@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
 
 
@@ -52,13 +53,174 @@ def test_run_migrations_is_idempotent(
 ):
     (tmp_path / "001_test.sql").write_text("create table foo (id integer primary key)")
 
-    run_migrations(db_connection, migrations_dir=tmp_path)
-    run_migrations(db_connection, migrations_dir=tmp_path)
+    run_migrations(db_connection, migrations_dir=str(tmp_path))
+    run_migrations(db_connection, migrations_dir=str(tmp_path))
 
     applied = db_connection.execute(
         "select count(*) as count from _migrations"
     ).fetchone()["count"]
     assert applied == 1
+
+
+def test_run_migrations_applies_only_sql_files_in_filename_order(
+    db_connection: sqlite3.Connection,
+    tmp_path: Path,
+):
+    (tmp_path / "002_append.sql").write_text(
+        "insert into migration_order (position) values (2)"
+    )
+    (tmp_path / "001_create.sql").write_text(
+        "create table migration_order (position integer);"
+        "insert into migration_order (position) values (1)"
+    )
+    (tmp_path / "003_ignore.txt").write_text("this is not valid SQL")
+
+    run_migrations(db_connection, migrations_dir=str(tmp_path))
+
+    positions = db_connection.execute(
+        "select position from migration_order order by rowid"
+    ).fetchall()
+    applied = db_connection.execute(
+        "select name from _migrations order by name"
+    ).fetchall()
+    assert [row["position"] for row in positions] == [1, 2]
+    assert [row["name"] for row in applied] == [
+        "001_create.sql",
+        "002_append.sql",
+    ]
+
+
+def test_run_migrations_persists_tracking_across_reopen(tmp_path: Path):
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "001_create.sql").write_text(
+        "create table restart_safe (id integer primary key)"
+    )
+    db_path = tmp_path / "restart.db"
+
+    conn = create_db(str(db_path))
+    run_migrations(conn, migrations_dir=str(migrations_dir))
+    conn.close()
+
+    reopened = create_db(str(db_path))
+    try:
+        applied = reopened.execute(
+            "select name from _migrations order by name"
+        ).fetchall()
+        run_migrations(reopened, migrations_dir=str(migrations_dir))
+    finally:
+        reopened.close()
+
+    assert [row["name"] for row in applied] == ["001_create.sql"]
+
+
+def test_run_migrations_rolls_back_partial_schema_on_failure(tmp_path: Path):
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "001_broken.sql").write_text(
+        "create table partial_schema (id integer primary key);"
+        "insert into missing_table (id) values (1)"
+    )
+    db_path = tmp_path / "failure.db"
+
+    conn = create_db(str(db_path))
+    with pytest.raises(sqlite3.OperationalError):
+        run_migrations(conn, migrations_dir=str(migrations_dir))
+    conn.close()
+
+    reopened = create_db(str(db_path))
+    try:
+        tables = _table_names(reopened)
+        applied = reopened.execute("select name from _migrations").fetchall()
+    finally:
+        reopened.close()
+
+    assert "partial_schema" not in tables
+    assert applied == []
+
+
+def test_run_migrations_quotes_tracking_name(tmp_path: Path):
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    migration_name = "001_owner's_table.sql"
+    (migrations_dir / migration_name).write_text(
+        "create table quoted_name (id integer primary key)"
+    )
+    db_path = tmp_path / "quoted.db"
+
+    conn = create_db(str(db_path))
+    try:
+        run_migrations(conn, migrations_dir=str(migrations_dir))
+        applied = conn.execute("select name from _migrations").fetchone()["name"]
+    finally:
+        conn.close()
+
+    assert applied == migration_name
+
+
+def test_run_migrations_rejects_existing_transaction(
+    db_connection: sqlite3.Connection,
+    tmp_path: Path,
+):
+    db_connection.execute("create table caller_data (value text)")
+    db_connection.execute("insert into caller_data (value) values ('pending')")
+    (tmp_path / "001_create.sql").write_text(
+        "create table migration_data (id integer primary key)"
+    )
+
+    with pytest.raises(RuntimeError, match="active transaction"):
+        run_migrations(db_connection, migrations_dir=str(tmp_path))
+
+    assert db_connection.in_transaction is True
+    db_connection.rollback()
+    remaining = db_connection.execute("select * from caller_data").fetchall()
+    assert remaining == []
+
+
+@pytest.mark.parametrize(
+    "transaction_statement",
+    [
+        "BEGIN",
+        "COMMIT",
+        "END",
+        "ROLLBACK",
+        "SAVEPOINT nested",
+        "RELEASE nested",
+        "-- leading comment\nCOMMIT",
+        "/* leading comment */ ROLLBACK",
+        "\ufeffBEGIN",
+        "\ufeffCOMMIT",
+        "\ufeffEND",
+        "\ufeffROLLBACK",
+        "\ufeffSAVEPOINT nested",
+        "\ufeffRELEASE nested",
+    ],
+)
+def test_run_migrations_rejects_transaction_control(
+    tmp_path: Path,
+    transaction_statement: str,
+):
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "001_escaped.sql").write_text(
+        f"create table escaped_schema (id integer primary key);{transaction_statement};"
+    )
+    db_path = tmp_path / "escaped.db"
+
+    conn = create_db(str(db_path))
+    with pytest.raises(ValueError, match="transaction control"):
+        run_migrations(conn, migrations_dir=str(migrations_dir))
+    conn.close()
+
+    reopened = create_db(str(db_path))
+    try:
+        tables = _table_names(reopened)
+        applied = reopened.execute("select name from _migrations").fetchall()
+    finally:
+        reopened.close()
+
+    assert "escaped_schema" not in tables
+    assert applied == []
 
 
 def test_cards_migration_creates_schema_and_fts_index(

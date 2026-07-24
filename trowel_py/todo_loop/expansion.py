@@ -1,31 +1,9 @@
-"""Six-step todo expansion layer — slice-054 命门.
+"""在 CC 会话中执行 todo 六步理解，并解析为结构化结果。
 
-This is the M8 "understanding" core: take a one-line todo, run the six-step
-expansion (识别歧义 → 记忆反证 → 候选枚举+查现状 → web search 业界 → 收敛 →
-不锁第一个) on a cc session, and parse the reply into a structured
-ExpansionResult.
-
-Design (grill 2026-07-16, see docs/slices/activate/slice-054.md「执行编排六步」):
-- the CC host is an injected Protocol (``send -> str``); tests mock it and never
-  spawn a real ``claude`` (#46416 / test isolation). Production wires the real
-  CCHost (cc_host/service.py) later.
-- the prompt does NOT re-inject the user profile: trowel's launcher already
-  injects profile + memory into cc's system prompt via ``--append-system-prompt``
-  (memory/injection.build_memory_injection, slice-039/048). Re-injecting here
-  would be redundant. If expand_todo ever runs against a standalone cc WITHOUT
-  that injection, the caller must get the profile into cc another way.
-- parse is lenient: broken JSON / missing fields / illegal confidence degrade to
-  a low-confidence result, never raise (mirrors memory/profile body_to_profile).
-  Lenient means bad data does not crash — NOT that bad data is silently str()-coerced
-  into plausible-looking dirty entries (a "None" candidate is meaningless).
-- confidence is a three-level Literal; anything outside {high,medium,low} → low
-  (honest self-assessment, C-2; never pretend to know).
-
-Out of scope (下游未就绪，留桩给后续 slice): 自主执行+自修循环 (slice-055 沙箱),
-收口 report 落库 + cc_session_id (slice-056), 调度 (slice-056). This module is
-only the understanding layer — the命门 spike-validated as the difference between
-李四 (locks first interpretation) and 张三 (enumerates, 反证, converges honestly).
+调用方负责提供已注入 profile 与 memory 的 host。解析失败、字段缺失或非法
+confidence 只降级为低置信结果；宽松解析不能把非字符串脏值强制转成字符串。
 """
+
 from __future__ import annotations
 
 import json
@@ -41,14 +19,7 @@ _VALID_CONFIDENCE: frozenset[str] = frozenset({"high", "medium", "low"})
 
 @dataclass(frozen=True)
 class Assumption:
-    """One explicit assumption, tagged by whether it has a code anchor.
-
-    Attributes:
-        text: the assumption stated in plain words.
-        has_anchor: True only if backed by a real code/memory anchor; False for
-            pure guesses. Uses ``is True`` so only a genuine boolean True counts
-            (``"false"`` / ``1`` from a malformed reply do not sneak in as True).
-    """
+    """显式假设；只有真正的布尔 ``True`` 才表示存在代码或 memory 锚点。"""
 
     text: str
     has_anchor: bool
@@ -56,18 +27,6 @@ class Assumption:
 
 @dataclass(frozen=True)
 class ExpansionResult:
-    """Structured output of the six-step expansion (命门 layer).
-
-    Attributes:
-        recap: plain-word restatement "我理解你要做的是 X".
-        candidates: the指代 candidates enumerated in step 1 (non-empty = did NOT
-            lock the first interpretation, C-1). Empty signals a violation.
-        assumptions: explicit assumptions, each tagged has_anchor.
-        acceptance_criteria: observable, checkable done-conditions.
-        confidence: high (无人执行) / medium (待一句话) / low (产镜像).
-        confidence_reason: why this confidence — ambiguity, anchor sufficiency.
-    """
-
     recap: str
     candidates: tuple[str, ...]
     assumptions: tuple[Assumption, ...]
@@ -77,25 +36,11 @@ class ExpansionResult:
 
 
 class CCHost(Protocol):
-    """Minimal contract for something that sends a prompt and returns cc's reply."""
-
     def send(self, message: str) -> str: ...
 
 
 def build_expansion_prompt(todo_text: str) -> str:
-    """Build the six-step expansion prompt for cc.
-
-    Relies on the cc session ALREADY carrying the user profile + memory in its
-    system prompt — trowel's launcher injects them via ``--append-system-prompt``
-    (memory/injection.build_memory_injection, slice-039/048). So this prompt does
-    NOT re-inject the profile; it adds only the six-step flow + the output shape.
-
-    Args:
-        todo_text: the user's one-line todo, verbatim.
-
-    Returns:
-        the full prompt to send to cc.
-    """
+    """依赖 CC system prompt 中已有的 profile 与 memory，不在此重复注入。"""
     return (
         "你在模拟 trowel 张六步理解层的一次执行。你 system prompt 里已有用户画像和 "
         "memory——按它理解用户意图。\n\n"
@@ -125,21 +70,7 @@ def build_expansion_prompt(todo_text: str) -> str:
 
 
 def parse_expansion(cc_output: str) -> ExpansionResult:
-    """Parse cc's JSON reply into an ExpansionResult (lenient, never raises).
-
-    Broken JSON, a non-object top level, missing fields, or an illegal confidence
-    all degrade to a low-confidence result rather than raising — a bad expansion
-    must not crash the todo loop. An illegal confidence (e.g. "very high", None,
-    an int) is coerced to "low" (honest self-assessment, C-2). Non-string values
-    where strings are expected are skipped/defaulted, never str()-coerced.
-
-    Args:
-        cc_output: the raw text cc returned.
-
-    Returns:
-        an ExpansionResult; on any parse trouble, a low-confidence one whose
-        confidence_reason explains the failure.
-    """
+    """宽松解析 CC JSON；任何结构问题都降级，且不字符串化类型错误的字段。"""
     try:
         data = json.loads(cc_output)
     except (json.JSONDecodeError, TypeError):
@@ -155,7 +86,9 @@ def parse_expansion(cc_output: str) -> ExpansionResult:
     acceptance_criteria = _to_str_tuple(data.get("acceptance_criteria"))
     confidence = _coerce_confidence(data.get("confidence"))
     reason_raw = data.get("confidence_reason", "")
-    reason = (reason_raw.strip() if isinstance(reason_raw, str) else "") or "cc 未给出置信度理由"
+    reason = (
+        reason_raw.strip() if isinstance(reason_raw, str) else ""
+    ) or "cc 未给出置信度理由"
     return ExpansionResult(
         recap=recap,
         candidates=candidates,
@@ -167,32 +100,14 @@ def parse_expansion(cc_output: str) -> ExpansionResult:
 
 
 def expand_todo(todo_text: str, host: CCHost) -> ExpansionResult:
-    """Run the six-step expansion on one todo: build prompt → send to cc → parse.
-
-    The cc session is expected to already carry the user profile + memory in its
-    system prompt (trowel launcher injection, slice-039/048), so no profile is
-    passed here. If the host is a standalone cc WITHOUT that injection, the
-    caller must get the profile into cc another way.
-
-    Args:
-        todo_text: the user's one-line todo, verbatim.
-        host: a CCHost (Protocol) whose send returns cc's reply. Tests inject a
-            fake; production wires the real CCHost (cc_host/service.py).
-
-    Returns:
-        the parsed ExpansionResult.
-    """
+    """通过已注入上下文的 host 执行六步扩展。"""
     prompt = build_expansion_prompt(todo_text)
     raw = host.send(prompt)
     return parse_expansion(raw)
 
 
 def _low(*, recap: str, reason: str) -> ExpansionResult:
-    """Build a low-confidence fallback result (used on parse trouble).
-
-    candidates is left empty — an empty candidates tuple signals a C-1 violation
-    (locked first interpretation) that callers can detect downstream.
-    """
+    """空 candidates 明确表示未完成候选枚举，供下游识别降级结果。"""
     return ExpansionResult(
         recap=recap,
         candidates=(),
@@ -204,12 +119,7 @@ def _low(*, recap: str, reason: str) -> ExpansionResult:
 
 
 def _to_str_tuple(value: object) -> tuple[str, ...]:
-    """Coerce a JSON list into a tuple of non-empty stripped strings.
-
-    Non-string items are SKIPPED, not str()-coerced: lenient means bad data does
-    not crash, not that bad data silently becomes a plausible-looking dirty entry
-    (str(None) -> "None" as a candidate would be meaningless to a human reader).
-    """
+    """只接收非空字符串项，不能把脏值通过 ``str()`` 伪装成有效内容。"""
     if not isinstance(value, list):
         return ()
     return tuple(
@@ -218,12 +128,7 @@ def _to_str_tuple(value: object) -> tuple[str, ...]:
 
 
 def _to_assumptions(value: object) -> tuple[Assumption, ...]:
-    """Coerce a JSON list of {text, has_anchor} into Assumptions (lenient).
-
-    A non-dict item is skipped; an empty text is skipped; a missing has_anchor
-    defaults to False (pure guess). has_anchor uses ``is True`` so only a genuine
-    boolean True counts (a malformed ``"false"`` string is not treated as True).
-    """
+    """跳过非法项；缺失 ``has_anchor`` 时按无锚点处理。"""
     if not isinstance(value, list):
         return ()
     out: list[Assumption] = []
@@ -240,7 +145,7 @@ def _to_assumptions(value: object) -> tuple[Assumption, ...]:
 
 
 def _coerce_confidence(value: object) -> Confidence:
-    """Coerce a confidence value to {high,medium,low}; anything else → low."""
+    """非法 confidence 一律降级为 ``low``。"""
     if isinstance(value, str) and value.strip() in _VALID_CONFIDENCE:
         return value.strip()  # type: ignore[return-value]
     return "low"

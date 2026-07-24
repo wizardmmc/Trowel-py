@@ -1,6 +1,6 @@
 
 create table if not exists players(
-    id text primary key default 'default', -- trowel is a single-user system.
+    id text primary key default 'default', -- 单用户系统固定使用默认玩家。
     level integer default 1,
     xp integer default 0,
     coins integer default 0,
@@ -20,7 +20,7 @@ create table if not exists pets(
 create table if not exists inventory(
     id text primary key,
     player_id text not null references players(id) on delete cascade,
-    item_id text not null, --e.g. apple, orange
+    item_id text not null,
     item_type text not null check(item_type in ('hat', 'food')),
     equipped integer default 0,
     obtained_at text default (datetime('now'))
@@ -33,12 +33,12 @@ create table if not exists event_log(
     reward_xp integer default 0,
     reward_coin integer default 0,
     reward_item_id text,
-    triggered_at text default (datetime('now')) -- used to sort event or calculate due time
+    triggered_at text default (datetime('now'))
 );
 
-create index if not exists idx_event_log_type on event_log(event_type, triggered_at); -- like "find all daily_logon type event and sort by time"
+create index if not exists idx_event_log_type on event_log(event_type, triggered_at);
 
-create table if not exists event_cooldowns( -- anti-brush, like 'daily login'
+create table if not exists event_cooldowns( -- 记录各事件最后触发时间，用于冷却判断。
     event_type text primary key,
     last_triggered text
 );
@@ -47,10 +47,10 @@ create table if not exists user_preferences(
     card_id text references cards(id) on delete cascade,
     liked integer default 0,
     created_at text default (datetime('now')),
-    primary key (card_id) -- equivalent notion on primary key
+    primary key (card_id)
 );
 
-create table if not exists cold_start_answers( -- used for record q-a when user first used trowel?
+create table if not exists cold_start_answers(
     id text primary key,
     question text not null,
     answer text not null,

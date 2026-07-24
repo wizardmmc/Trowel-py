@@ -1,8 +1,3 @@
-"""
-reward service tests — the atomic grant: xp/coins/item written, log recorded,
-cooldown set, all from one EventResult. boundary: zero rewards skip writes but
-still log.
-"""
 from __future__ import annotations
 
 from trowel_py.events.handlers.types import EventResult
@@ -16,7 +11,9 @@ from tests.events.conftest import NOW
 def test_grants_xp_coins_and_logs(db):
     repo = create_player_repository(db)
     ev = create_event_repository(db)
-    result = EventResult(event_type="challenge", description="q", xp=30, coins=15, card_id="c1")
+    result = EventResult(
+        event_type="challenge", description="q", xp=30, coins=15, card_id="c1"
+    )
 
     log = distribute(result, repo, ev, NOW)
 
@@ -25,7 +22,6 @@ def test_grants_xp_coins_and_logs(db):
     assert player.coins == 15
     assert log.event_type == "challenge"
     assert log.reward_xp == 30
-    # side effects: logged + cooldown set
     assert any(item.id == log.id for item in ev.get_recent(5))
     assert "challenge" in ev.get_last_triggered_map()
 
@@ -33,14 +29,16 @@ def test_grants_xp_coins_and_logs(db):
 def test_grants_item_with_inferred_type(db):
     repo = create_player_repository(db)
     ev = create_event_repository(db)
-    result = EventResult(event_type="discovery", description="d", xp=10, item_id="hat_straw")
+    result = EventResult(
+        event_type="discovery", description="d", xp=10, item_id="hat_straw"
+    )
 
     distribute(result, repo, ev, NOW)
 
     inv = repo.find_inventory()
     assert len(inv) == 1
     assert inv[0].item_id == "hat_straw"
-    assert inv[0].item_type == "hat"  # inferred from hat_ prefix
+    assert inv[0].item_type == "hat"
 
 
 def test_skips_zero_rewards_but_still_logs(db):
@@ -50,11 +48,9 @@ def test_skips_zero_rewards_but_still_logs(db):
 
     distribute(result, repo, ev, NOW)
 
-    # no rewards written...
     assert repo.find_or_create().xp == 0
     assert repo.find_or_create().coins == 0
     assert repo.find_inventory() == []
-    # ...but the event is still logged
     assert len(ev.get_recent(5)) == 1
 
 

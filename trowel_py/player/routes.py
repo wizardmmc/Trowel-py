@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 def _get_conn():
-    """Yield a DB connection; commit and close after the request."""
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -28,54 +28,38 @@ def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRep
 @router.get("")
 @router.get("/")
 def get_player(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
-    """
-    return the default player's profile with the computed level fields.
-    """
+    """返回默认玩家资料及派生等级字段。"""
     logger.info("get /api/player")
     profile = get_profile(player_repo)
-    return {
-        "success": True,
-        "data": profile.model_dump(),
-        "error": None
-    }
+    return {"success": True, "data": profile.model_dump(), "error": None}
 
 
 @router.get("/inventory")
 def inventory(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
-    """
-    return every item in the default player's inventory.
-    """
+    """返回默认玩家的全部库存物品。"""
     logger.info("get /api/player/inventory")
     items = get_inventory(player_repo)
     return {
         "success": True,
         "data": [item.model_dump() for item in items],
-        "error": None
+        "error": None,
     }
 
 
 @router.post("/buy")
-def buy(request: BuyItemRequest,
-        player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
-    """
-    buy an item: spend coins and grant it to the inventory.
-    """
+def buy(
+    request: BuyItemRequest, player_repo: PlayerRepository = Depends(_get_player_repo)
+) -> dict:
+    """扣除金币购买商品并加入库存。"""
     logger.info("buy item: %s", request.item_id)
     try:
         item_type = spend_coins(request.item_id, player_repo)
     except ValueError as e:
-        # user error (unknown item or not enough coins): not a server fault
+        # 商品不存在或余额不足沿用成功状态码的错误 envelope。
         logger.warning("buy failed for %s: %s", request.item_id, e)
-        return {
-            "success": False,
-            "data": None,
-            "error": str(e)
-        }
+        return {"success": False, "data": None, "error": str(e)}
     return {
         "success": True,
-        "data": {
-            "item_id": request.item_id,
-            "item_type": item_type
-        },
-        "error": None
+        "data": {"item_id": request.item_id, "item_type": item_type},
+        "error": None,
     }

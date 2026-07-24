@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import random
+from unittest.mock import MagicMock, call
 
 import pytest
 
 from trowel_py.pet.brain import TemplateBrain
+from trowel_py.pet.repository import PetRepository
 from trowel_py.pet.service import (
     HUNGER_MAX,
     _clamp_hunger,
@@ -15,6 +17,9 @@ from trowel_py.pet.service import (
     tick_hunger,
     update_mood,
 )
+from trowel_py.player.repository import PlayerRepository
+from trowel_py.schemas.pet import Pet
+from trowel_py.schemas.player import InventoryItem
 
 
 class TestResolveMood:
@@ -72,6 +77,34 @@ class TestFeed:
         with pytest.raises(ValueError, match="unknown food"):
             feed(mystery_id, pet_repo, player_repo)
 
+    def test_preserves_inventory_and_pet_write_order(self):
+        pet_repo = MagicMock(spec=PetRepository)
+        pet_repo.find_or_create.side_effect = [
+            Pet(player_id="default", hunger=50),
+            Pet(player_id="default", hunger=70),
+        ]
+        player_repo = MagicMock(spec=PlayerRepository)
+        player_repo.find_item_by_id.return_value = InventoryItem(
+            id="inventory-food",
+            player_id="default",
+            item_id="food_basic",
+            item_type="food",
+        )
+        calls = MagicMock()
+        calls.attach_mock(player_repo, "player")
+        calls.attach_mock(pet_repo, "pet")
+
+        result = feed("inventory-food", pet_repo, player_repo)
+
+        assert result.hunger == 70
+        assert calls.mock_calls == [
+            call.player.find_item_by_id("inventory-food"),
+            call.pet.find_or_create(),
+            call.player.remove_item("inventory-food"),
+            call.pet.update_hunger(70),
+            call.pet.find_or_create(),
+        ]
+
 
 class TestEquipHat:
     def test_equips_and_syncs_pet(self, pet_repo, player_repo, stock_item):
@@ -98,6 +131,34 @@ class TestEquipHat:
         food_id = stock_item("food_basic", "food")
         with pytest.raises(ValueError, match="not a hat"):
             equip_hat(food_id, pet_repo, player_repo)
+
+    def test_preserves_inventory_and_pet_write_order(self):
+        pet_repo = MagicMock(spec=PetRepository)
+        pet_repo.find_or_create.return_value = Pet(
+            player_id="default",
+            equipped_hat="inventory-hat",
+        )
+        player_repo = MagicMock(spec=PlayerRepository)
+        player_repo.find_item_by_id.return_value = InventoryItem(
+            id="inventory-hat",
+            player_id="default",
+            item_id="hat_straw",
+            item_type="hat",
+        )
+        calls = MagicMock()
+        calls.attach_mock(player_repo, "player")
+        calls.attach_mock(pet_repo, "pet")
+
+        result = equip_hat("inventory-hat", pet_repo, player_repo)
+
+        assert result.equipped_hat == "inventory-hat"
+        assert calls.mock_calls == [
+            call.player.find_item_by_id("inventory-hat"),
+            call.player.unequip_all_hats(),
+            call.player.set_equipped("inventory-hat", 1),
+            call.pet.update_equipped_hat("inventory-hat"),
+            call.pet.find_or_create(),
+        ]
 
 
 class TestInteract:

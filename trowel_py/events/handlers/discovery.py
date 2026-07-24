@@ -1,21 +1,30 @@
-"""
-discovery handler: the player stumbles on a random item while exploring
-"""
 from trowel_py.events.types import GameState
-from trowel_py.events.handlers.types import EventHandler, EventDependencies, EventResult
+from trowel_py.events.handlers.types import (
+    EventDependencies,
+    EventHandler as EventHandler,
+    EventResult,
+)
 
-# keep ids in sync with player.service.ITEM_PRICES
-_DISCOVERY_ITEMS = ("food_basic", "food_premium", "hat_straw", "hat_scholar", "hat_wreath")
+# 商品 ID 必须与 player.service.ITEM_PRICES 同步。
+_DISCOVERY_ITEMS = (
+    "food_basic",
+    "food_premium",
+    "hat_straw",
+    "hat_scholar",
+    "hat_wreath",
+)
+
 
 class DiscoveryHandler:
     def can_trigger(self, state: GameState) -> bool:
-        return True # engine's cooldown/min_cards is the only filter
-    
+        # 冷却与卡片数量门槛统一由事件引擎判断。
+        return True
+
     def execute(self, state: GameState, deps: EventDependencies) -> EventResult:
         item_id = deps.rng.choice(_DISCOVERY_ITEMS)
         return EventResult(
             event_type="discovery",
             description=f"你在角落里发现了一个{item_id}",
             xp=10,
-            item_id=item_id
+            item_id=item_id,
         )

@@ -1,7 +1,3 @@
-"""
-sign_in handler tests — streak boundaries (first / consecutive / cap / broken).
-bonus formula: xp = 20 + min((streak - 1) * 5, 50).
-"""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -23,25 +19,24 @@ def _seed_streak(db, streak_days: int, last_active) -> None:
 
 class TestSignInXp:
     def test_first_sign_in(self, db):
-        _seed_streak(db, 0, NOW - timedelta(days=1))  # yesterday, streak 0
+        _seed_streak(db, 0, NOW - timedelta(days=1))
         result = SignInHandler().execute(_state(), make_deps(db, now=NOW))
-        assert result.xp == 20  # 20 + min(0, 50)
+        assert result.xp == 20
         assert "第 1 天" in result.description
 
     def test_consecutive_day(self, db):
         _seed_streak(db, 1, NOW - timedelta(days=1))
         result = SignInHandler().execute(_state(), make_deps(db, now=NOW))
-        assert result.xp == 25  # 20 + min(5, 50)
+        assert result.xp == 25
         assert "第 2 天" in result.description
 
     def test_bonus_caps_at_50(self, db):
-        # streak 10 yesterday -> 11 today -> bonus = min(50, 50) -> xp 70
         _seed_streak(db, 10, NOW - timedelta(days=1))
         result = SignInHandler().execute(_state(), make_deps(db, now=NOW))
         assert result.xp == 70
 
     def test_broken_streak_resets(self, db):
-        _seed_streak(db, 5, NOW - timedelta(days=3))  # 3-day gap -> reset
+        _seed_streak(db, 5, NOW - timedelta(days=3))
         result = SignInHandler().execute(_state(), make_deps(db, now=NOW))
         assert result.xp == 20
         assert "第 1 天" in result.description

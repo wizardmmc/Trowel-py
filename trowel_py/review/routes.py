@@ -1,6 +1,10 @@
-"""Review API routes — HTTP endpoints for the FSRS review system."""
 from fastapi import APIRouter, Depends
-from trowel_py.review.service import get_due_cards, submit_review, get_session_stats, get_review_stats
+from trowel_py.review.service import (
+    get_due_cards,
+    submit_review,
+    get_session_stats,
+    get_review_stats,
+)
 from trowel_py.db.connection import create_db
 from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.review.repository import ReviewRepository, create_review_repository
@@ -14,7 +18,7 @@ router = APIRouter()
 
 
 def _get_conn():
-    """Yield a DB connection; commit and close after the request."""
+    """请求结束时提交并关闭连接，异常路径也不回滚。"""
     conn = create_db()
     try:
         yield conn
@@ -36,17 +40,19 @@ def due(
     card_repo: CardRepository = Depends(_get_card_repo),
     review_repo: ReviewRepository = Depends(_get_review_repo),
 ) -> dict:
-    """Fetch all cards that are due for review, sorted by due date."""
+    """返回所有到期复习卡片。"""
     results = get_due_cards(review_repo, card_repo)
     logger.info("Fetched %d due cards", len(results))
 
     res = []
     for result in results:
-        res.append({
-            "card": result["card"].model_dump(),
-            "fsrs_state": result["fsrs_state"].model_dump(),
-            "plant_stage": result["plant_stage"],
-        })
+        res.append(
+            {
+                "card": result["card"].model_dump(),
+                "fsrs_state": result["fsrs_state"].model_dump(),
+                "plant_stage": result["plant_stage"],
+            }
+        )
 
     return {"success": True, "data": res, "error": None}
 
@@ -57,7 +63,7 @@ def submit(
     card_repo: CardRepository = Depends(_get_card_repo),
     review_repo: ReviewRepository = Depends(_get_review_repo),
 ) -> dict:
-    """Submit a review rating for a card (1=Again, 2=Hard, 3=Good, 4=Easy)."""
+    """提交卡片复习评分：1=重来，2=困难，3=良好，4=简单。"""
     logger.info("Submit review for card %s, rating=%d", request.card_id, request.rating)
     result = submit_review(request.card_id, request.rating, review_repo, card_repo)
 
@@ -83,7 +89,7 @@ def session_stats(
     since: str,
     review_repo: ReviewRepository = Depends(_get_review_repo),
 ) -> dict:
-    """Get aggregated review statistics since a given ISO timestamp."""
+    """返回指定 ISO 时间之后的复习聚合统计。"""
     logger.info("Session stats request since: %s", since)
     stats = get_session_stats(review_repo, since)
     return {"success": True, "data": stats, "error": None}
@@ -93,7 +99,7 @@ def session_stats(
 def stats(
     review_repo: ReviewRepository = Depends(_get_review_repo),
 ) -> dict:
-    """Get overall review statistics (all time)."""
+    """返回全部历史复习统计。"""
     logger.info("Overall stats request")
     stats = get_review_stats(review_repo)
     return {"success": True, "data": stats, "error": None}

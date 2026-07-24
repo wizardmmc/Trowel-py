@@ -1,7 +1,5 @@
-"""
-event handler contracts: the interface every handler implements
-and the value objects that flow through the pipeline
-"""
+"""事件 handler 的输入依赖、纯结果与行为协议。"""
+
 from __future__ import annotations
 import random
 from dataclasses import dataclass
@@ -15,12 +13,11 @@ from trowel_py.review.repository import ReviewRepository
 from trowel_py.cards.repository import CardRepository
 from trowel_py.garden.repository import GardenRepository
 
+
 @dataclass(frozen=True)
 class EventResult:
-    """
-    a handler's verdict: what happend, and what rewards it wants granted
-    the handler computes this but does not write it to the db - RewardService does
-    """
+    """只描述事件与奖励意图；handler 不在此阶段写数据库。"""
+
     event_type: EventType
     description: str
     xp: int = 0
@@ -28,22 +25,18 @@ class EventResult:
     item_id: str | None = None
     card_id: str | None = None
 
+
 @dataclass(frozen=True)
 class EventDependencies:
-    """
-    the bag of collaborators every handler is allowed to touch
-    """
     player_repo: PlayerRepository
     review_repo: ReviewRepository
     card_repo: CardRepository
-    garden_repo: GardenRepository
+    garden_repo: GardenRepository | None
     event_repo: EventRepository
     now: datetime
     rng: random.Random
 
+
 class EventHandler(Protocol):
-    """
-    every event type implements this - strategy pattern
-    """
     def can_trigger(self, state: GameState) -> bool: ...
     def execute(self, state: GameState, deps: EventDependencies) -> EventResult: ...
