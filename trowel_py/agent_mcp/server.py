@@ -451,9 +451,9 @@ def _interactive_tools() -> list[types.Tool]:
         types.Tool(
             name=_TOOL_DELEGATE_START,
             description=(
-                "Start a Claude delegation and return when it asks for guidance "
-                "or reaches a terminal state. The child remains live until "
-                "delegate_close."
+                "Start a Claude delegation in the background and immediately return "
+                "its delegation_id. Poll delegate_status for guidance or completion; "
+                "the child remains live until delegate_close."
             ),
             inputSchema={
                 "type": "object",
@@ -473,8 +473,9 @@ def _interactive_tools() -> list[types.Tool]:
         types.Tool(
             name=_TOOL_DELEGATE_RESPOND,
             description=(
-                "Answer a pending Claude AskUserQuestion and wait for the same "
-                "child to ask again or finish."
+                "Answer a pending Claude AskUserQuestion and immediately return once "
+                "the answer is accepted. Poll delegate_status while the same child "
+                "continues."
             ),
             inputSchema={
                 "type": "object",
@@ -482,6 +483,10 @@ def _interactive_tools() -> list[types.Tool]:
                     "delegation_id": {"type": "string", "minLength": 1},
                     "answers": {
                         "type": "object",
+                        "description": (
+                            "Map every pending question's full question text or unique "
+                            "header to its selected answer."
+                        ),
                         "additionalProperties": {"type": "string"},
                     },
                 },
@@ -491,11 +496,20 @@ def _interactive_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name=_TOOL_DELEGATE_STATUS,
-            description="Read a live interactive delegation from this MCP process.",
+            description=(
+                "Read a live interactive delegation from this MCP process. Optionally "
+                "wait up to 240 seconds for a version change to avoid rapid polling."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "delegation_id": {"type": "string", "minLength": 1}
+                    "delegation_id": {"type": "string", "minLength": 1},
+                    "after_version": {"type": "integer", "minimum": 0},
+                    "wait_seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 240,
+                    },
                 },
                 "required": ["delegation_id"],
                 "additionalProperties": False,
@@ -617,7 +631,24 @@ def _build_server(broker: InteractiveBroker) -> Server:
             return _text(await broker.respond(delegation_id, raw_answers))
         if name == _TOOL_DELEGATE_STATUS:
             _interactive_parent(broker, delegation_id)
-            return _text(broker.status(delegation_id))
+            raw_after_version = arguments.get("after_version")
+            if raw_after_version is not None and (
+                isinstance(raw_after_version, bool)
+                or not isinstance(raw_after_version, int)
+            ):
+                raise ValueError("after_version must be an integer")
+            raw_wait_seconds = arguments.get("wait_seconds", 0)
+            if isinstance(raw_wait_seconds, bool) or not isinstance(
+                raw_wait_seconds, (int, float)
+            ):
+                raise ValueError("wait_seconds must be a number")
+            return _text(
+                await broker.wait_status(
+                    delegation_id,
+                    after_version=raw_after_version,
+                    wait_seconds=float(raw_wait_seconds),
+                )
+            )
         if name == _TOOL_DELEGATE_CLOSE:
             _interactive_parent(broker, delegation_id)
             return _text(await broker.close(delegation_id))

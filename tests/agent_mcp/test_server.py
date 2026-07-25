@@ -143,6 +143,55 @@ async def test_mcp_dispatch_revalidates_parent_before_responding(
     assert verified == ["parent-1"]
 
 
+@pytest.mark.anyio
+async def test_mcp_status_supports_bounded_version_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+
+    class Broker:
+        def parent_session_id(self, delegation_id: str) -> str:
+            assert delegation_id == "delegation-1"
+            return "parent-1"
+
+        async def wait_status(
+            self,
+            delegation_id: str,
+            *,
+            after_version: int | None,
+            wait_seconds: float,
+        ) -> dict[str, object]:
+            assert delegation_id == "delegation-1"
+            assert after_version == 7
+            assert wait_seconds == 20.0
+            return {
+                "delegation_id": delegation_id,
+                "version": 8,
+                "status": "needs_guidance",
+            }
+
+    monkeypatch.setattr(server, "_parent_context", lambda: context)
+    handler = server._build_server(Broker()).request_handlers[types.CallToolRequest]
+
+    result = await handler(
+        _request(
+            "delegate_status",
+            {
+                "delegation_id": "delegation-1",
+                "after_version": 7,
+                "wait_seconds": 20,
+            },
+        )
+    )
+
+    assert _tool_payload(result) == {
+        "delegation_id": "delegation-1",
+        "version": 8,
+        "status": "needs_guidance",
+    }
+
+
 def test_parent_context_fails_closed_for_non_full_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
