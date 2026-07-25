@@ -9,6 +9,7 @@
 | `README.md` | 产品介绍与运行方式 |
 | `pyproject.toml` / `uv.lock` | Python 包、依赖和测试配置 |
 | `config.example.toml` | 不含真实凭据的配置样例 |
+| `.github/` | CI workflow、Issue/PR 模板、CODEOWNERS 与 dependabot 配置 |
 | `trowel_py/` | FastAPI 后端与本地运行时 |
 | `web/` | React 前端 |
 | `tests/` | Python 测试与公开契约快照 |
