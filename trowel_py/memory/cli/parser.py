@@ -199,4 +199,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--root",
         help="memory root (default: resolved from config.toml)",
     )
+
+    regenerate = sub.add_parser(
+        "regenerate",
+        help="plan, stage, or explicitly apply daily/weekly/monthly regeneration",
+    )
+    action = regenerate.add_mutually_exclusive_group()
+    action.add_argument("--run", metavar="PLAN_ID", help="run a saved plan in staging")
+    action.add_argument(
+        "--apply",
+        metavar="RUN_ID",
+        help="explicitly publish a completed staged run to live memory",
+    )
+    regenerate.add_argument(
+        "--layer",
+        choices=["daily", "weekly", "monthly"],
+        help="lowest layer to plan",
+    )
+    regenerate.add_argument(
+        "--from",
+        dest="from_period",
+        metavar="PERIOD",
+        help="inclusive start period for a new plan",
+    )
+    regenerate.add_argument(
+        "--to",
+        dest="to_period",
+        metavar="PERIOD",
+        help="inclusive end period for a new plan",
+    )
+    regenerate.add_argument(
+        "--mode",
+        choices=["missing", "failed", "stale", "all"],
+        help="which derived artifacts a new plan selects",
+    )
+    regenerate.add_argument(
+        "--root",
+        help="memory root (default: resolved from config.toml)",
+    )
     return parser

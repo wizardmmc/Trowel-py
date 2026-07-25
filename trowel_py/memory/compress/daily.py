@@ -92,7 +92,11 @@ def _write_fallback_body(
 
 
 def compress_daily(
-    root: Path | str, date_str: str, provider: LLMProvider
+    root: Path | str,
+    date_str: str,
+    provider: LLMProvider,
+    *,
+    force: bool = False,
 ) -> str:
     """生成一天的结构化摘要；没有 episode 时不伪造空日记。"""
     root_path = Path(root)
@@ -102,7 +106,7 @@ def compress_daily(
         return ""
     source_segments = sorted({seg_id for seg_id, _reg, _entry in sources})
     shash = _source_hash(sources)
-    if _existing_daily_ok(root_path, date_str, shash):
+    if not force and _existing_daily_ok(root_path, date_str, shash):
         return date_str
     preserve_on_failure = _existing_daily_usable(root_path, date_str, shash)
 

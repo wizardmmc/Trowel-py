@@ -67,7 +67,10 @@
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
 | `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
 | `memory/profile_distill/` | gate、agent 驱动、批处理、prompt、独立水位、重校准与应用内调度 |
-| `memory/compress/` | daily 生成与缓存生命周期、weekly/monthly rollup 和兼容入口 |
+| `memory/compress/` | daily、weekly、monthly 的生成、来源校验、预算与缓存生命周期 |
+| `memory/compress/weekly_generation.py` | Weekly v3 结构化输出、source day/section 覆盖与 800 字完整 item 预算 |
+| `memory/compress/rollup_sources.py` / `monthly_generation.py` | 周月上游来源/hash 与月记完整句分层生成 |
+| `memory/regeneration/` | 日周月重生成的只读计划、staging 续跑、manifest 与显式原子发布 |
 | `memory/persist/` | draft 落盘报告、note 更新、meta 产物与完成 manifest 编排 |
 | `memory/mcp_server.py` / `memory/mcp/` | memory MCP 稳定入口、请求分发与搜索/读取/反馈处理器 |
 | `memory/judgements/` | judgement 冻结模型、严格 codec、文件仓储与未知 ID 过滤 |

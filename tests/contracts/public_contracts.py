@@ -36,6 +36,7 @@ _CLI_COMMANDS = (
     ("memory", "metrics"),
     ("memory", "promotion"),
     ("memory", "profile-recalibrate"),
+    ("memory", "regenerate"),
 )
 
 _FTS_SHADOW_TABLES = {

@@ -138,6 +138,42 @@ def _run_profile_recalibration(args: Namespace, root: Path) -> int:
     return 0
 
 
+def _run_regeneration(args: Namespace, root: Path) -> int:
+    from trowel_py.memory.regeneration import (
+        apply_regeneration,
+        plan_regeneration,
+        run_regeneration,
+    )
+
+    if args.run:
+        run_report = run_regeneration(root, args.run)
+        print(json.dumps(run_report.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if args.apply:
+        apply_report = apply_regeneration(root, args.apply)
+        print(json.dumps(apply_report, ensure_ascii=False, indent=2))
+        return 0
+    required = {
+        "--layer": args.layer,
+        "--from": args.from_period,
+        "--to": args.to_period,
+        "--mode": args.mode,
+    }
+    missing = [flag for flag, value in required.items() if not value]
+    if missing:
+        print(f"[memory] regenerate plan needs {', '.join(missing)}")
+        return 2
+    plan = plan_regeneration(
+        root,
+        layer=args.layer,
+        from_period=args.from_period,
+        to_period=args.to_period,
+        mode=args.mode,
+    )
+    print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def run_domain_command(
     args: Namespace,
     root: Path,
@@ -155,4 +191,6 @@ def run_domain_command(
         return _run_promotion(args, root)
     if args.cmd == "profile-recalibrate":
         return _run_profile_recalibration(args, root)
+    if args.cmd == "regenerate":
+        return _run_regeneration(args, root)
     return 2

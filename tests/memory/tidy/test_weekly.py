@@ -169,7 +169,18 @@ def test_run_weekly_tidy_compresses_and_applies(tmp_path: Path) -> None:
         updated="2026-07-08",
         conflicts_with=("mid-old",),
     )
-    weekly_json = json.dumps({"weekly": "周记", "bypass": {}})
+    weekly_json = json.dumps(
+        {
+            "items": [
+                {
+                    "type": "outcome",
+                    "text": "周记",
+                    "source_days": ["2026-07-08"],
+                }
+            ],
+            "bypass": {},
+        }
+    )
     plan_json = json.dumps(
         {
             "operations": [
@@ -203,7 +214,18 @@ def test_run_weekly_tidy_no_ops_skips_apply(tmp_path: Path) -> None:
         }
     )
     _note(tmp_path, "mid-a", "A", created="2026-07-08")
-    weekly_json = json.dumps({"weekly": "周记", "bypass": {}})
+    weekly_json = json.dumps(
+        {
+            "items": [
+                {
+                    "type": "outcome",
+                    "text": "周记",
+                    "source_days": ["2026-07-08"],
+                }
+            ],
+            "bypass": {},
+        }
+    )
     plan_json = json.dumps({"operations": []})
     provider = FakeProvider(weekly_json, plan_json)
     report = run_weekly_tidy(tmp_path, "2026-W28", provider)
