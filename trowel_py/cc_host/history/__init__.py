@@ -139,11 +139,11 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
 def _load_workflow_snapshots(
     transcript_dir: Path,
 ) -> list[WorkflowTreeEvent]:
-    """读取并按开始时间排列已持久化的 Workflow 完成态。"""
+    """按开始时间和文件名排列已持久化的 Workflow 完成态。"""
     workflow_dir = transcript_dir / "workflows"
     if not workflow_dir.is_dir():
         return []
-    snapshots: list[tuple[int, WorkflowTreeEvent]] = []
+    snapshots: list[tuple[int, str, WorkflowTreeEvent]] = []
     for path in workflow_dir.glob("wf_*.json"):
         try:
             workflow = json.loads(path.read_text(encoding="utf-8"))
@@ -167,9 +167,9 @@ def _load_workflow_snapshots(
             if isinstance(start_raw, (int, float)) and not isinstance(start_raw, bool)
             else 0
         )
-        snapshots.append((start, event))
-    snapshots.sort(key=lambda item: item[0])
-    return [event for _, event in snapshots]
+        snapshots.append((start, path.name, event))
+    snapshots.sort(key=lambda item: (item[0], item[1]))
+    return [event for _, _, event in snapshots]
 
 
 def _translate_line(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent]:
