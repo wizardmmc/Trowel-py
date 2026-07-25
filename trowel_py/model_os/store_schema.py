@@ -6,6 +6,8 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from trowel_py.model_os.signal_projection import CREATE_PROJECTION_SQL
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -73,6 +75,8 @@ CREATE TABLE IF NOT EXISTS projection_checkpoints (
     created_at TEXT NOT NULL,
     PRIMARY KEY (projection_name, projection_version, event_seq, decision_seq)
 );
+
+""" + CREATE_PROJECTION_SQL + """
 
 CREATE TABLE IF NOT EXISTS leases (
     lease_id TEXT PRIMARY KEY,

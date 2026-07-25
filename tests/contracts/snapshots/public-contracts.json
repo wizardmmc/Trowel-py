@@ -212,6 +212,30 @@
     "model_os": [
       {
         "type": "index",
+        "name": "idx_cognitive_signals_attempt",
+        "table": "cognitive_signal_projection",
+        "sql": "CREATE INDEX idx_cognitive_signals_attempt ON cognitive_signal_projection(attempt_id, event_seq)"
+      },
+      {
+        "type": "index",
+        "name": "idx_cognitive_signals_comparison",
+        "table": "cognitive_signal_projection",
+        "sql": "CREATE INDEX idx_cognitive_signals_comparison ON cognitive_signal_projection(comparison_key_hash, event_seq)"
+      },
+      {
+        "type": "index",
+        "name": "idx_cognitive_signals_episode_page",
+        "table": "cognitive_signal_projection",
+        "sql": "CREATE INDEX idx_cognitive_signals_episode_page ON cognitive_signal_projection(episode_id, event_seq)"
+      },
+      {
+        "type": "index",
+        "name": "idx_cognitive_signals_task_page",
+        "table": "cognitive_signal_projection",
+        "sql": "CREATE INDEX idx_cognitive_signals_task_page ON cognitive_signal_projection(task_id, event_seq)"
+      },
+      {
+        "type": "index",
         "name": "idx_decisions_journal_page",
         "table": "decisions",
         "sql": "CREATE INDEX idx_decisions_journal_page ON decisions(decided_at, seq)"
@@ -224,6 +248,12 @@
       },
       {
         "type": "index",
+        "name": "idx_events_reducer_page",
+        "table": "events",
+        "sql": "CREATE INDEX idx_events_reducer_page ON events(seq) WHERE kind NOT IN ('cognitive_signal.recorded', 'cognitive_signal.late_signal_rejected')"
+      },
+      {
+        "type": "index",
         "name": "idx_leases_active",
         "table": "leases",
         "sql": "CREATE UNIQUE INDEX idx_leases_active ON leases(resource_type, resource_id) WHERE released_at IS NULL"
@@ -233,6 +263,12 @@
         "name": "idx_leases_idem",
         "table": "leases",
         "sql": "CREATE UNIQUE INDEX idx_leases_idem ON leases(resource_type, resource_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND released_at IS NULL"
+      },
+      {
+        "type": "table",
+        "name": "cognitive_signal_projection",
+        "table": "cognitive_signal_projection",
+        "sql": "CREATE TABLE cognitive_signal_projection ( signal_id TEXT PRIMARY KEY, event_seq INTEGER NOT NULL UNIQUE, task_id TEXT, episode_id TEXT, attempt_id TEXT NOT NULL, comparison_key_hash TEXT NOT NULL, kind TEXT NOT NULL, subtype TEXT NOT NULL, provenance TEXT NOT NULL, observed_at TEXT NOT NULL, recorded_at TEXT NOT NULL, validity_kind TEXT NOT NULL, valid_until TEXT, signal_json TEXT NOT NULL )"
       },
       {
         "type": "table",

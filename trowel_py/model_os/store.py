@@ -45,6 +45,37 @@ from trowel_py.model_os.explain import (
     DecisionExplanation,
     read_decision_explanation as _run_read_decision_explanation,
 )
+from trowel_py.model_os.cognitive_signals import (
+    AttemptBinding,
+    AttemptRef,
+    CognitiveSignalDraft,
+    EpisodeRef,
+    EvidenceAuthority,
+    EvidenceRef,
+    ExecutionOutcomePayload,
+    LateSignalRejected,
+    ModelReportPayload,
+    PendingLostPayload,
+    PendingState,
+    RecordedSignal,
+    Reliability,
+    RegisteredEvidence,
+    SignalAuthorityRegistry,
+    SignalCommandError,
+    SignalFamily,
+    SignalPage,
+    TaskRef,
+    ToolFailureCategory,
+    TurnOutcomePayload,
+    UserFeedbackPayload,
+    ValidatorOutcomePayload,
+    build_signal,
+    draft_with_persisted_evidence,
+    hash_text,
+    signal_id_for,
+    signal_payload_evidence_refs,
+    signal_to_dict,
+)
 from trowel_py.model_os.journal import (
     JournalBoundary,
     JournalFilter,
@@ -72,6 +103,13 @@ from trowel_py.model_os.reducer import (
     initial_snapshot,
     reduce_decision,
     reduce_event,
+)
+from trowel_py.model_os.signal_projection import (
+    insert_projection_row as _run_insert_signal_projection,
+    migrate_v6_to_v7 as _run_migrate_v6_to_v7,
+    read_signal_from_event_payload as _run_read_signal_from_event_payload,
+    read_signal_page as _run_read_signal_page,
+    rebuild_projection as _run_rebuild_signal_projection,
 )
 from trowel_py.model_os.store_journal_codec import (
     decision_from_row as _run_decision_from_row,
@@ -117,6 +155,11 @@ from trowel_py.model_os.store_schema import SCHEMA_SQL as _SCHEMA_SQL
 from trowel_py.model_os.store_schema import migrate_v4_to_v5 as _run_migrate_v4_to_v5
 from trowel_py.model_os.store_schema import migrate_v5_to_v6 as _run_migrate_v5_to_v6
 from trowel_py.model_os.task_commands import TaskCommands
+from trowel_py.model_os.validator_intent import (
+    match_validator_intent_from_argv,
+    normalize_validator_target,
+    validator_persistence_argv,
+)
 from trowel_py.model_os.types import (
     ArtifactRef,
     DecisionRecord,
@@ -148,7 +191,7 @@ from trowel_py.model_os.context_observer import (
     context_sample_to_dict,
 )
 
-_SCHEMA_VERSION = 6  # 双水位读取与可删除 Snapshot projection checkpoint。
+_SCHEMA_VERSION = 7  # 认知信号历史使用独立、可重建的 projection。
 _DEFAULT_POLICY_VERSION = "v0"
 
 _LOGGER = logging.getLogger(__name__)
@@ -223,6 +266,10 @@ _EPISODE_FENCED_KINDS = frozenset(
         EventKind.EPISODE_RECOVERING,
         EventKind.EPISODE_SIDE_EFFECT_RECORDED,
     }
+)
+
+_COGNITIVE_SIGNAL_KINDS = frozenset(
+    {EventKind.COGNITIVE_SIGNAL_RECORDED, EventKind.LATE_SIGNAL_REJECTED}
 )
 
 
@@ -463,6 +510,7 @@ class ModelOsStore:
         *,
         policy_version: str = _DEFAULT_POLICY_VERSION,
         warm_limit: int = 3,
+        signal_authority: SignalAuthorityRegistry | None = None,
     ) -> None:
         """保存数据库路径与策略配置；调用 ``open()`` 后才建立连接。
 
@@ -473,6 +521,7 @@ class ModelOsStore:
         self._path = Path(db_path)
         self._policy_version = policy_version
         self._warm_limit = warm_limit
+        self._signal_authority = signal_authority
         self._conn: sqlite3.Connection | None = None
         # SQLite 的事务状态属于连接而非线程；该锁串行化共享连接的命令，避免两个
         # 请求处理器交错进入同一事务。
@@ -526,15 +575,14 @@ class ModelOsStore:
     def _bootstrap(self) -> None:
         """创建缺失的表和索引，并写入 schema 版本。
 
-        DDL 通过带 ``IF NOT EXISTS`` 的 ``executescript`` 幂等执行；版本用参数化
-        ``execute`` 单独写入。旧库随后由 ``_migrate_schema`` 显式添加列或重建索引。
+        DDL 在同一显式事务中逐条幂等执行；版本用参数化 ``execute`` 写入。
+        旧库随后由 ``_migrate_schema`` 显式添加列或重建索引。
         """
 
         assert self._conn is not None
-        # ``executescript`` 自行管理事务，因此 bootstrap 直接使用连接上下文，不能与
-        # ``_tx`` 发出的显式 ``BEGIN`` 叠加。
-        with self._conn:
-            self._conn.executescript(_SCHEMA_SQL)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._execute_schema_script_in_tx(_SCHEMA_SQL)
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                 ("schema_version", str(_SCHEMA_VERSION)),
@@ -545,11 +593,31 @@ class ModelOsStore:
                 "INSERT OR IGNORE INTO foreground_claim (id, task_id) VALUES (1, NULL)"
             )
             self._migrate_schema()
+            self._conn.execute("COMMIT")
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+            raise
+
+    def _execute_schema_script_in_tx(self, script: str) -> None:
+        """逐条执行 schema，避免 ``executescript`` 在迁移前隐式提交。"""
+
+        assert self._conn is not None
+        pending = ""
+        for line in script.splitlines(keepends=True):
+            pending += line
+            if sqlite3.complete_statement(pending):
+                statement = pending.strip()
+                if statement:
+                    self._conn.execute(statement)
+                pending = ""
+        if pending.strip():
+            raise ValueError("incomplete Model OS schema SQL")
 
     def _migrate_schema(self) -> None:
         """按 ``meta.schema_version`` 对旧库执行前向迁移。
 
-        新库已由 ``executescript`` 写入当前版本，此处不操作；旧库保留较小版本号，
+        新库已由 bootstrap schema 写入当前版本，此处不操作；旧库保留较小版本号，
         需要在这里显式执行 ``ALTER`` 或重建索引。
         """
 
@@ -619,6 +687,9 @@ class ModelOsStore:
             current = 5
         if current < 6:
             self._migrate_v5_to_v6()
+            current = 6
+        if current < 7:
+            self._migrate_v6_to_v7()
 
     def _migrate_v4_to_v5(self) -> None:
         """旧 Decision 只标历史未知，不根据自由文本猜 disposition。"""
@@ -635,6 +706,10 @@ class ModelOsStore:
     def _migrate_v5_to_v6(self) -> None:
         assert self._conn is not None
         _run_migrate_v5_to_v6(self._conn)
+
+    def _migrate_v6_to_v7(self) -> None:
+        assert self._conn is not None
+        _run_migrate_v6_to_v7(self._conn)
 
     def _schema_version(self) -> int:
         """返回 ``meta`` 中记录的 schema 版本。"""
@@ -922,6 +997,10 @@ class ModelOsStore:
                 f"event kind {event.kind!r} is an Episode lifecycle event; "
                 f"use the corresponding structured command (slice-087)"
             )
+        if event.kind in _COGNITIVE_SIGNAL_KINDS:
+            raise SignalCommandError(
+                f"event kind {event.kind!r} requires a cognitive signal authority entry"
+            )
         if event.kind == EventKind.COMMAND_INTENT:
             raise ValueError("command.intent must be appended with its decision")
         if event.kind in (EventKind.COMMAND_RESULT, EventKind.COMMAND_UNKNOWN):
@@ -1023,6 +1102,531 @@ class ModelOsStore:
             native_session_id=native_session_id,
         )
         return self.append_event(event)
+
+    def record_runtime_observation(
+        self,
+        draft: CognitiveSignalDraft,
+        *,
+        adapter_identity: str,
+        binding_generation: str,
+    ) -> RecordedSignal:
+        """校验 adapter 和 binding generation 后记录机器观察。"""
+
+        with self._tx():
+            binding = self._require_signal_binding_in_tx(draft)
+            authority = self._require_signal_authority(draft)
+            if authority.adapter_runtime(adapter_identity) != binding.runtime:
+                self._reject_signal(draft, "untrusted_adapter")
+            if binding_generation != binding.binding_generation:
+                self._reject_signal(draft, "binding_generation_mismatch")
+            self._require_machine_family(draft)
+            existing = self._existing_signal_in_tx(
+                draft, Provenance.MACHINE_OBSERVATION
+            )
+            if existing is not None:
+                return existing
+            return self._insert_signal_in_tx(
+                draft,
+                binding=binding,
+                provenance=Provenance.MACHINE_OBSERVATION,
+                source=f"runtime_adapter:{adapter_identity}",
+            )
+
+    def record_fenced_episode_signal(
+        self,
+        draft: CognitiveSignalDraft,
+        *,
+        episode_id: str,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> RecordedSignal:
+        """只在 Episode lease 仍有效时记录 runner 观察。"""
+
+        with self._tx():
+            binding = self._require_signal_binding_in_tx(draft)
+            if binding.episode_id != episode_id:
+                self._reject_signal(draft, "episode_binding_mismatch")
+            snap = self.replay()
+            episode = snap.episode_by_id(episode_id)
+            if episode is None or episode.task_id != binding.task_id:
+                self._reject_signal(draft, "cross_task_episode_binding")
+            try:
+                self._check_ownership_in_tx(
+                    episode_id, expected_lease_id, expected_owner, expected_token
+                )
+            except StaleWriterRejected:
+                self._reject_signal(draft, "stale_episode_owner")
+            self._require_machine_family(draft)
+            existing = self._existing_signal_in_tx(
+                draft, Provenance.MACHINE_OBSERVATION
+            )
+            if existing is not None:
+                return existing
+            return self._insert_signal_in_tx(
+                draft,
+                binding=binding,
+                provenance=Provenance.MACHINE_OBSERVATION,
+                source="episode_runner",
+                lease_id=expected_lease_id,
+                owner=expected_owner,
+                fencing_token=expected_token,
+            )
+
+    def record_structured_user_signal(
+        self,
+        draft: CognitiveSignalDraft,
+        *,
+        user_action_ref: EvidenceRef,
+    ) -> RecordedSignal:
+        """只从已存在的结构化用户动作记录反馈。"""
+
+        with self._tx():
+            binding = self._require_signal_binding_in_tx(draft)
+            if (
+                draft.kind.family is not SignalFamily.USER_FEEDBACK
+                or not isinstance(draft.payload, UserFeedbackPayload)
+                or draft.payload.user_action_ref != user_action_ref
+                or draft.reliability.value != "reliable"
+            ):
+                self._reject_signal(draft, "invalid_user_signal_source")
+            user_metadata = self._reference_metadata_in_tx(user_action_ref, binding)
+            if (
+                user_metadata is None
+                or user_metadata.authority is not EvidenceAuthority.STRUCTURED_USER_ACTION
+                or user_metadata.action_subtype != draft.kind.subtype
+            ):
+                self._reject_signal(draft, "unknown_user_action_ref")
+            existing = self._existing_signal_in_tx(draft, Provenance.USER_DECISION)
+            if existing is not None:
+                return existing
+            return self._insert_signal_in_tx(
+                draft,
+                binding=binding,
+                provenance=Provenance.USER_DECISION,
+                source="structured_user_action",
+            )
+
+    def record_model_report(
+        self,
+        draft: CognitiveSignalDraft,
+        *,
+        native_message_ref: EvidenceRef,
+    ) -> RecordedSignal:
+        """记录弱模型假设，但不保存原消息正文。"""
+
+        with self._tx():
+            binding = self._require_signal_binding_in_tx(draft)
+            if (
+                draft.kind.family is not SignalFamily.MODEL_REPORT
+                or not isinstance(draft.payload, ModelReportPayload)
+                or draft.payload.native_message_ref != native_message_ref
+                or draft.reliability.value != "weak"
+            ):
+                self._reject_signal(draft, "invalid_model_report_source")
+            message_metadata = self._reference_metadata_in_tx(
+                native_message_ref, binding
+            )
+            if (
+                message_metadata is None
+                or message_metadata.authority
+                is not EvidenceAuthority.NATIVE_MODEL_MESSAGE
+            ):
+                self._reject_signal(draft, "unknown_native_message_ref")
+            existing = self._existing_signal_in_tx(
+                draft, Provenance.MODEL_HYPOTHESIS
+            )
+            if existing is not None:
+                return existing
+            return self._insert_signal_in_tx(
+                draft,
+                binding=binding,
+                provenance=Provenance.MODEL_HYPOTHESIS,
+                source="native_model_message",
+            )
+
+    def signals_for_task(
+        self,
+        task_id: str,
+        *,
+        as_of: str,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> SignalPage:
+        assert self._conn is not None
+        with self._read_tx():
+            return _run_read_signal_page(
+                self._conn,
+                task_id=task_id,
+                as_of=as_of,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    def rebuild_cognitive_signal_projection(self) -> int:
+        """从 journal 事件原子重建可删除的信号查询视图。"""
+
+        assert self._conn is not None
+        with self._tx():
+            return _run_rebuild_signal_projection(
+                self._conn, event_kind=EventKind.COGNITIVE_SIGNAL_RECORDED
+            )
+
+    def _require_signal_authority(
+        self, draft: CognitiveSignalDraft
+    ) -> SignalAuthorityRegistry:
+        if self._signal_authority is None:
+            self._reject_signal(draft, "signal_authority_unavailable")
+        assert self._signal_authority is not None
+        return self._signal_authority
+
+    def _require_signal_binding_in_tx(
+        self, draft: CognitiveSignalDraft
+    ) -> AttemptBinding:
+        authority = self._require_signal_authority(draft)
+        binding = authority.attempt_binding(draft.attempt_id)
+        if binding is None:
+            self._reject_signal(draft, "unknown_attempt")
+        assert binding is not None
+        if binding.runtime != draft.comparison_key.runtime:
+            self._reject_signal(draft, "runtime_binding_mismatch")
+        if binding.task_id != draft.comparison_key.task_id:
+            self._reject_signal(draft, "task_binding_mismatch")
+        if isinstance(draft.subject, AttemptRef):
+            valid_subject = draft.subject.attempt_id == binding.attempt_id
+        elif isinstance(draft.subject, EpisodeRef):
+            valid_subject = draft.subject.episode_id == binding.episode_id
+        elif isinstance(draft.subject, TaskRef):
+            valid_subject = draft.subject.task_id == binding.task_id
+        else:
+            valid_subject = False
+        if not valid_subject:
+            self._reject_signal(draft, "subject_binding_mismatch")
+        supplied = {
+            (ref.namespace, ref.ref_id, ref.runtime, ref.invocation_id)
+            for ref in draft.evidence_refs
+        }
+        for payload_ref in signal_payload_evidence_refs(draft.payload):
+            identity = (
+                payload_ref.namespace,
+                payload_ref.ref_id,
+                payload_ref.runtime,
+                payload_ref.invocation_id,
+            )
+            if identity not in supplied:
+                self._reject_signal(draft, "payload_evidence_not_declared")
+        for reference in draft.evidence_refs:
+            metadata = self._reference_metadata_in_tx(reference, binding)
+            if metadata is None:
+                self._reject_signal(draft, "unknown_or_cross_entity_evidence")
+            assert metadata is not None
+            if (
+                draft.kind.family
+                in {
+                    SignalFamily.VALIDATOR_OUTCOME,
+                    SignalFamily.EXECUTION_OBSERVATION,
+                    SignalFamily.TURN_OUTCOME,
+                }
+                and metadata.authority
+                not in {
+                    EvidenceAuthority.RUNTIME_OBSERVATION,
+                    EvidenceAuthority.VALIDATOR_EXIT,
+                    EvidenceAuthority.VALIDATOR_OUTPUT,
+                    EvidenceAuthority.JOURNAL_EVENT,
+                }
+            ):
+                self._reject_signal(draft, "machine_evidence_authority_mismatch")
+        if isinstance(draft.payload, ValidatorOutcomePayload):
+            exit_metadata = self._reference_metadata_in_tx(
+                draft.payload.exit_event_ref, binding
+            )
+            output_metadata = (
+                self._reference_metadata_in_tx(draft.payload.output_ref, binding)
+                if draft.payload.output_ref is not None
+                else None
+            )
+            if (
+                exit_metadata is None
+                or exit_metadata.authority is not EvidenceAuthority.VALIDATOR_EXIT
+                or output_metadata is None
+                or output_metadata.authority is not EvidenceAuthority.VALIDATOR_OUTPUT
+            ):
+                self._reject_signal(draft, "validator_evidence_authority_mismatch")
+            invocation = authority.validator_invocation(
+                draft.payload.native_tool_item_id
+            )
+            matched_intent = match_validator_intent_from_argv(
+                draft.payload.normalized_argv
+            )
+            normalized_target = (
+                normalize_validator_target(
+                    matched_intent, draft.payload.normalized_argv
+                )
+                if matched_intent is not None
+                else None
+            )
+            if invocation is None or (
+                matched_intent is None
+                or matched_intent.intent_id != draft.payload.intent_id
+                or invocation.intent_id != draft.payload.intent_id
+                or invocation.attempt_id != binding.attempt_id
+                or invocation.runtime != binding.runtime
+                or invocation.normalized_argv != draft.payload.normalized_argv
+                or invocation.exit_event_ref != draft.payload.exit_event_ref
+                or invocation.output_ref != draft.payload.output_ref
+                or invocation.exit_code != draft.payload.exit_code
+                or invocation.completed != draft.payload.completed
+            ):
+                self._reject_signal(draft, "validator_invocation_mismatch")
+            if (
+                draft.comparison_key.validator_intent_id
+                != draft.payload.intent_id
+                or draft.comparison_key.attempt_category
+                != f"validator:{draft.payload.intent_id}"
+                or draft.comparison_key.target_ref != normalized_target
+            ):
+                self._reject_signal(draft, "validator_comparison_key_mismatch")
+        if isinstance(draft.payload, PendingLostPayload) and (
+            draft.payload.native_binding_generation is not None
+            and draft.payload.native_binding_generation != binding.binding_generation
+        ):
+            self._reject_signal(draft, "pending_binding_generation_mismatch")
+        if (
+            draft.kind.family is SignalFamily.EXECUTION_OBSERVATION
+            and draft.kind.subtype == "retry"
+            and isinstance(draft.payload, ExecutionOutcomePayload)
+        ):
+            retry_values = (
+                draft.payload.retry_attempt,
+                draft.payload.retry_max,
+                draft.payload.retry_delay_ms,
+            )
+            invalid_retry = (
+                draft.payload.category is not ToolFailureCategory.NETWORK
+                or (
+                    binding.runtime == "cc"
+                    and draft.reliability is not Reliability.RELIABLE
+                )
+                or (
+                    binding.runtime == "codex"
+                    and (
+                        draft.reliability is not Reliability.WEAK
+                        or any(item is not None for item in retry_values)
+                    )
+                )
+            )
+            if invalid_retry:
+                self._reject_signal(draft, "runtime_retry_contract_mismatch")
+        if isinstance(draft.validity, PendingState) and (
+            draft.validity.terminal_event_ref is not None
+        ):
+            self._reject_signal(draft, "pending_terminal_must_be_derived")
+        if isinstance(draft.payload, TurnOutcomePayload) and (
+            binding.runtime == "cc" and draft.payload.effective_effort is not None
+        ):
+            self._reject_signal(draft, "cc_effective_effort_unavailable")
+        if draft.causal_parent_ref is not None:
+            assert self._conn is not None
+            parent = self._conn.execute(
+                "SELECT kind, task_id, episode_id, payload FROM events WHERE event_id=?",
+                (draft.causal_parent_ref.parent_signal_id,),
+            ).fetchone()
+            parent_signal = (
+                _run_read_signal_from_event_payload(json.loads(parent["payload"]))
+                if parent is not None
+                and parent["kind"] == EventKind.COGNITIVE_SIGNAL_RECORDED
+                else None
+            )
+            if (
+                parent_signal is None
+                or parent["task_id"] != binding.task_id
+                or parent["episode_id"] != binding.episode_id
+                or parent_signal.attempt_id != binding.attempt_id
+            ):
+                self._reject_signal(draft, "causal_parent_binding_mismatch")
+        return binding
+
+    def _reference_metadata_in_tx(
+        self, reference: EvidenceRef, binding: AttemptBinding
+    ) -> RegisteredEvidence | None:
+        assert self._conn is not None
+        if reference.namespace == "journal":
+            row = self._conn.execute(
+                "SELECT task_id, episode_id FROM events WHERE event_id=?",
+                (reference.ref_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["task_id"] != binding.task_id:
+                return None
+            if row["episode_id"] != binding.episode_id:
+                return None
+            return RegisteredEvidence(
+                reference=reference,
+                authority=EvidenceAuthority.JOURNAL_EVENT,
+                attempt_id=binding.attempt_id,
+                runtime=binding.runtime,
+                task_id=binding.task_id,
+                episode_id=binding.episode_id,
+            )
+        authority = self._signal_authority
+        metadata = authority.reference_metadata(reference) if authority else None
+        if metadata is None or (
+            metadata.attempt_id != binding.attempt_id
+            or metadata.runtime != binding.runtime
+            or metadata.task_id != binding.task_id
+            or metadata.episode_id != binding.episode_id
+            or reference.runtime not in (None, binding.runtime)
+        ):
+            return None
+        return metadata
+
+    def _require_machine_family(self, draft: CognitiveSignalDraft) -> None:
+        if draft.kind.family not in {
+            SignalFamily.VALIDATOR_OUTCOME,
+            SignalFamily.EXECUTION_OBSERVATION,
+            SignalFamily.TURN_OUTCOME,
+        }:
+            self._reject_signal(draft, "machine_entry_family_mismatch")
+
+    def _existing_signal_in_tx(
+        self, draft: CognitiveSignalDraft, provenance: Provenance
+    ) -> RecordedSignal | None:
+        assert self._conn is not None
+        draft = self._signal_draft_for_persistence(draft)
+        signal_id = signal_id_for(
+            runtime=draft.comparison_key.runtime,
+            native_event_id=draft.native_event_id,
+            kind=draft.kind,
+            observation_ordinal=draft.observation_ordinal,
+            normalizer_version=draft.normalizer_version,
+        )
+        row = self._conn.execute(
+            "SELECT seq, kind, payload FROM events WHERE event_id=?", (signal_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row["kind"] != EventKind.COGNITIVE_SIGNAL_RECORDED:
+            raise JournalIdentityConflict("event", signal_id)
+        event_payload = json.loads(row["payload"])
+        existing = _run_read_signal_from_event_payload(event_payload)
+        candidate = build_signal(
+            draft,
+            provenance=provenance,
+            recorded_at=existing.recorded_at,
+            policy_version=existing.policy_version,
+        )
+        if redact_payload(signal_to_dict(candidate)) != event_payload["signal"]:
+            raise JournalIdentityConflict("event", signal_id)
+        _run_insert_signal_projection(
+            self._conn, event_seq=int(row["seq"]), event_payload=event_payload
+        )
+        return RecordedSignal(existing, int(row["seq"]), False)
+
+    def _insert_signal_in_tx(
+        self,
+        draft: CognitiveSignalDraft,
+        *,
+        binding: AttemptBinding,
+        provenance: Provenance,
+        source: str,
+        lease_id: str | None = None,
+        owner: str | None = None,
+        fencing_token: int | None = None,
+    ) -> RecordedSignal:
+        assert self._conn is not None
+        draft = self._signal_draft_for_persistence(draft)
+        signal = build_signal(
+            draft,
+            provenance=provenance,
+            recorded_at=_now_iso(),
+            policy_version=self._policy_version,
+        )
+        event_payload = {
+            "signal": signal_to_dict(signal),
+            "binding": {
+                "task_id": binding.task_id,
+                "episode_id": binding.episode_id,
+                "native_session_id": hash_text(binding.native_session_id),
+                "binding_generation": hash_text(binding.binding_generation),
+            },
+        }
+        safe_payload = redact_payload(event_payload)
+        if not isinstance(safe_payload, dict):
+            raise SignalCommandError("signal payload must remain an object after redaction")
+        # 在事务写入前验证脱敏后的最终字节仍能按同一身份解码。
+        safe_signal = _run_read_signal_from_event_payload(safe_payload)
+        if safe_signal.signal_id != signal.signal_id:
+            raise SignalCommandError("redaction changed cognitive signal identity")
+        event = EventEnvelope(
+            event_id=signal.signal_id,
+            kind=EventKind.COGNITIVE_SIGNAL_RECORDED,
+            occurred_at=signal.observed_at,
+            source=source,
+            provenance=provenance,
+            policy_version=self._policy_version,
+            payload=safe_payload,
+            task_id=binding.task_id,
+            episode_id=binding.episode_id,
+            native_session_id=hash_text(binding.native_session_id),
+            lease_id=lease_id,
+            owner=owner,
+            fencing_token=fencing_token,
+        )
+        seq = self._insert_event_in_tx(event)
+        assert seq is not None
+        _run_insert_signal_projection(
+            self._conn, event_seq=seq, event_payload=safe_payload
+        )
+        return RecordedSignal(signal, seq, True)
+
+    def _signal_draft_for_persistence(
+        self, draft: CognitiveSignalDraft
+    ) -> CognitiveSignalDraft:
+        if not isinstance(draft.payload, ValidatorOutcomePayload):
+            return draft_with_persisted_evidence(draft)
+        intent = match_validator_intent_from_argv(draft.payload.normalized_argv)
+        target = (
+            normalize_validator_target(intent, draft.payload.normalized_argv)
+            if intent is not None
+            else None
+        )
+        safe_argv = (
+            validator_persistence_argv(intent, draft.payload.normalized_argv)
+            if intent is not None
+            else None
+        )
+        if target is None or safe_argv is None:
+            self._reject_signal(draft, "validator_persistence_shape_mismatch")
+        assert target is not None
+        assert safe_argv is not None
+        return draft_with_persisted_evidence(replace(
+            draft,
+            comparison_key=replace(
+                draft.comparison_key,
+                target_ref=hash_text(target),
+            ),
+            payload=replace(draft.payload, normalized_argv=safe_argv),
+        ))
+
+    def _reject_signal(self, draft: CognitiveSignalDraft, reason: str) -> None:
+        signal_id = signal_id_for(
+            runtime=draft.comparison_key.runtime,
+            native_event_id=draft.native_event_id,
+            kind=draft.kind,
+            observation_ordinal=draft.observation_ordinal,
+            normalizer_version=draft.normalizer_version,
+        )
+        subject_episode_id = (
+            draft.subject.episode_id if isinstance(draft.subject, EpisodeRef) else None
+        )
+        raise LateSignalRejected(
+            signal_id,
+            reason,
+            attempt_id=draft.attempt_id,
+            task_id=draft.comparison_key.task_id,
+            episode_id=subject_episode_id,
+        )
 
     def append_decision(self, decision: DecisionRecord) -> int:
         """按 ``decision_id`` 幂等追加决策并返回 seq。
@@ -1183,7 +1787,9 @@ class ModelOsStore:
     ) -> list[tuple[int, EventEnvelope]]:
         assert self._conn is not None
         rows = self._conn.execute(
-            "SELECT * FROM events WHERE seq > ? AND seq <= ? ORDER BY seq",
+            "SELECT * FROM events WHERE seq > ? AND seq <= ? "
+            "AND kind NOT IN ('cognitive_signal.recorded', "
+            "'cognitive_signal.late_signal_rejected') ORDER BY seq",
             (after_seq, through_seq),
         ).fetchall()
         return [(int(row["seq"]), _event_from_row(row)) for row in rows]
@@ -1287,7 +1893,20 @@ class ModelOsStore:
                     self._conn.execute("ROLLBACK")
                 # 陈旧写入事务回滚后，仍须在独立事务中持久化
                 # ``late_write_rejected``；审计失败不能掩盖原始拒绝异常。
-                if isinstance(exc, StaleWriterRejected):
+                if isinstance(exc, LateSignalRejected):
+                    try:
+                        self._conn.execute("BEGIN IMMEDIATE")
+                        self._reject_signal_in_tx(exc)
+                        self._conn.execute("COMMIT")
+                    except BaseException:
+                        _LOGGER.warning(
+                            "late_signal_rejected audit failed; the original "
+                            "LateSignalRejected is preserved",
+                            exc_info=True,
+                        )
+                        if self._conn.in_transaction:
+                            self._conn.execute("ROLLBACK")
+                elif isinstance(exc, StaleWriterRejected):
                     attempted = getattr(exc, "attempted_event", None)
                     if attempted is not None:
                         try:
@@ -1794,6 +2413,28 @@ class ModelOsStore:
         self._conn.execute(
             _EVENT_INSERT_SQL, _event_params(audit, payload_text, payload_hash)
         )
+
+    def _reject_signal_in_tx(self, exc: LateSignalRejected) -> None:
+        """记录拒绝审计，但不复制不可信的信号 payload。"""
+
+        audit = EventEnvelope(
+            event_id=f"late_signal.{uuid4().hex}",
+            kind=EventKind.LATE_SIGNAL_REJECTED,
+            occurred_at=_now_iso(),
+            source="kernel",
+            provenance=Provenance.MACHINE_OBSERVATION,
+            policy_version=self._policy_version,
+            payload={
+                "signal_id": exc.signal_id,
+                "reason": exc.reason,
+                "attempt_id": (
+                    hash_text(exc.attempt_id) if exc.attempt_id is not None else None
+                ),
+            },
+            task_id=exc.task_id,
+            episode_id=exc.episode_id,
+        )
+        self._insert_event_in_tx(audit)
 
     def _append_fenced_event_in_tx(self, event: EventEnvelope) -> int:
         """追加受 fencing 保护的 Episode 事件。

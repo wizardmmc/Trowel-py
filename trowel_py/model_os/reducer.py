@@ -519,6 +519,8 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.COMMAND_INTENT,
         EventKind.COMMAND_RESULT,
         EventKind.COMMAND_UNKNOWN,
+        EventKind.COGNITIVE_SIGNAL_RECORDED,
+        EventKind.LATE_SIGNAL_REJECTED,
     ):
         return snap
     if event.kind not in snap.unrecognized_event_kinds:
