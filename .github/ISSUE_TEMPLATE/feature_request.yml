@@ -1,0 +1,69 @@
+name: 功能建议
+description: 提议新的用户能力或现有行为改进
+title: ""
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已搜索现有 Issue，未发现相同建议
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 说明当前工作流中的具体困难，以及受影响的使用场景。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望行为
+      description: 从使用者视角说明完成后的可观察行为，不要求预先设计实现。
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围
+      description: 列出本 Issue 需要包含和明确不包含的内容。
+      placeholder: |
+        包含：
+        -
+
+        不包含：
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 使用可以观察或执行的结果说明何时算完成。
+      placeholder: |
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
+      description: 记录试过的办法、现有绕行方式或不采用其他方案的原因。
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 可附相关截图、链接、原型或讨论记录。
+    validations:
+      required: false

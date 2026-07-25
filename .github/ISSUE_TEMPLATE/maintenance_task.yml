@@ -1,0 +1,51 @@
+name: 维护任务
+description: 记录重构、文档、工程配置或其他明确待办
+title: ""
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已搜索现有 Issue，未发现重复任务
+          required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 说明要完成的结果以及现在处理的原因。
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 工作范围
+      description: 列出允许修改的模块、配置或文档，以及明确不处理的相邻问题。
+      placeholder: |
+        包含：
+        -
+
+        不包含：
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 列出可检查的完成条件。
+      placeholder: |
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖与风险
+      description: 记录前置任务、兼容性约束或需要维护者决定的事项。
+    validations:
+      required: false
