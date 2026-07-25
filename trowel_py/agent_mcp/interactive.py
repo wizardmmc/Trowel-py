@@ -13,8 +13,12 @@ from typing import Any, TypeVar
 
 import httpx
 
-_ACTIONABLE_STATES = frozenset({"needs_guidance", "completed", "failed"})
+_LONG_POLL_STATES = frozenset(
+    {"starting", "running", "unknown_requires_reconcile"}
+)
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
+# Codex 0.144.0 在 300 秒终止 tools/call；预留 60 秒给传输与父模型调度。
+_MAX_STATUS_WAIT_SECONDS = 240.0
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -62,16 +66,27 @@ class _InteractiveDelegation:
             self.condition.notify_all()
             return self.version
 
-    async def wait_actionable(self, *, after_version: int = -1) -> None:
+    async def wait_for_update(
+        self, *, after_version: int, timeout: float
+    ) -> None:
         async with self.condition:
-            await self.condition.wait_for(
-                lambda: self.version > after_version
-                and self.status in _ACTIONABLE_STATES
-            )
+            if self.version > after_version or self.status not in _LONG_POLL_STATES:
+                return
+            try:
+                await asyncio.wait_for(
+                    self.condition.wait_for(
+                        lambda: self.version > after_version
+                        or self.status not in _LONG_POLL_STATES
+                    ),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                pass
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "delegation_id": self.delegation_id,
+            "version": self.version,
             "parent": {"trowel_session_id": self.parent_session_id},
             "child": {
                 "trowel_session_id": self.child_session_id,
@@ -141,11 +156,6 @@ class InteractiveBroker:
         record.consumer = asyncio.create_task(
             self._consume(record, task=task, create_body=create_body)
         )
-        try:
-            await record.wait_actionable()
-        except asyncio.CancelledError:
-            await self.close(record.delegation_id)
-            raise
         return record.snapshot()
 
     async def respond(
@@ -157,12 +167,13 @@ class InteractiveBroker:
                 f"delegation {delegation_id} is not waiting for guidance"
             )
         pending_question = record.question
-        baseline = await record.transition("running")
+        normalized_answers = _normalize_answers(pending_question, answers)
+        await record.transition("running")
         try:
             async with self._client() as client:
                 response = await client.post(
                     f"/api/cc/sessions/{record.child_session_id}/answer",
-                    json={"answers": answers, "cancel": False},
+                    json={"answers": normalized_answers, "cancel": False},
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -177,11 +188,30 @@ class InteractiveBroker:
                 error=str(exc),
             )
             raise
-        await record.wait_actionable(after_version=baseline)
         return record.snapshot()
 
     def status(self, delegation_id: str) -> dict[str, Any]:
         return self._require(delegation_id).snapshot()
+
+    async def wait_status(
+        self,
+        delegation_id: str,
+        *,
+        after_version: int | None = None,
+        wait_seconds: float = 0,
+    ) -> dict[str, Any]:
+        if after_version is not None and after_version < 0:
+            raise ValueError("after_version must be non-negative")
+        if not 0 <= wait_seconds <= _MAX_STATUS_WAIT_SECONDS:
+            raise ValueError("wait_seconds must be between 0 and 240")
+        record = self._require(delegation_id)
+        if wait_seconds > 0:
+            baseline = record.version if after_version is None else after_version
+            await record.wait_for_update(
+                after_version=baseline,
+                timeout=wait_seconds,
+            )
+        return record.snapshot()
 
     def parent_session_id(self, delegation_id: str) -> str:
         return self._require(delegation_id).parent_session_id
@@ -231,6 +261,33 @@ class InteractiveBroker:
         async with record.close_lock:
             if record.cleanup_status == "deleted":
                 return record.snapshot()
+            if not record.child_session_id and record.status == "starting":
+                baseline = record.version
+                await record.wait_for_update(
+                    after_version=baseline,
+                    timeout=self._cleanup_timeout,
+                )
+                if not record.child_session_id and record.status == "starting":
+                    error = (
+                        "child creation did not resolve; no binding id is available "
+                        "for cleanup"
+                    )
+                    record.cleanup_status = "preserved"
+                    record.cleanup_error = error
+                    await record.transition(
+                        "unknown_requires_reconcile",
+                        error=error,
+                    )
+                    raise InteractiveDelegationCleanupError(error)
+            if (
+                not record.child_session_id
+                and record.status == "unknown_requires_reconcile"
+            ):
+                raise InteractiveDelegationCleanupError(
+                    record.cleanup_error
+                    or "child creation did not resolve; no binding id is available "
+                    "for cleanup"
+                )
             async with self._client() as client:
                 if record.child_session_id and record.terminal_event is None:
                     try:
@@ -408,6 +465,57 @@ def _event_error(event: dict[str, Any]) -> str:
         if payload.get("error"):
             return str(payload["error"])
     return f"delegated session ended with {event.get('type', 'unknown')}"
+
+
+def _normalize_answers(
+    pending_question: dict[str, Any], answers: dict[str, str]
+) -> dict[str, str]:
+    raw_questions = pending_question.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise InteractiveDelegationError("pending guidance has no questions")
+
+    questions: list[str] = []
+    headers: dict[str, list[str]] = {}
+    for raw in raw_questions:
+        if not isinstance(raw, dict):
+            raise InteractiveDelegationError("pending guidance has an invalid question")
+        question = raw.get("question")
+        if not isinstance(question, str) or not question:
+            raise InteractiveDelegationError("pending guidance has an invalid question")
+        if question in questions:
+            raise InteractiveDelegationError(
+                f"duplicate pending guidance question: {question}"
+            )
+        questions.append(question)
+        header = raw.get("header")
+        if isinstance(header, str) and header:
+            headers.setdefault(header, []).append(question)
+
+    normalized: dict[str, str] = {}
+    for key, value in answers.items():
+        if key in questions:
+            question = key
+        else:
+            matches = headers.get(key, [])
+            if not matches:
+                raise InteractiveDelegationError(f"unknown guidance answer key: {key}")
+            if len(matches) != 1:
+                raise InteractiveDelegationError(
+                    f"ambiguous guidance answer header: {key}"
+                )
+            question = matches[0]
+        if question in normalized:
+            raise InteractiveDelegationError(
+                f"duplicate guidance answer for question: {question}"
+            )
+        normalized[question] = value
+
+    missing = [question for question in questions if question not in normalized]
+    if missing:
+        raise InteractiveDelegationError(
+            "missing guidance answer for question(s): " + ", ".join(missing)
+        )
+    return normalized
 
 
 async def _read_child_binding(
