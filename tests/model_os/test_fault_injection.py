@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.types import (
     DecisionRecord,
+    DecisionDisposition,
     EventEnvelope,
     EventKind,
     Provenance,
@@ -22,12 +24,29 @@ from trowel_py.model_os.types import (
 def _note(event_id: str) -> EventEnvelope:
     return EventEnvelope(
         event_id=event_id,
-        kind=EventKind.NOTE,
+        kind=EventKind.COMMAND_INTENT,
         occurred_at="2026-07-21T00:00:00Z",
         source="test",
         provenance=Provenance.MACHINE_OBSERVATION,
         policy_version="v0",
+        payload={
+            "command_kind": "route.select",
+            "target_ref": "episode.1",
+            "idempotency_key_hash": "sha256:idem123",
+            "args_hash": "sha256:args123",
+        },
+        cause_id=event_id.replace("evt", "dec"),
+        correlation_id=event_id.replace("evt", "command"),
+    )
+
+
+def _occupied_note(event_id: str) -> EventEnvelope:
+    return replace(
+        _note(event_id),
+        kind=EventKind.NOTE,
         payload={"i": 1},
+        cause_id=None,
+        correlation_id=None,
     )
 
 
@@ -35,17 +54,19 @@ def _decision(decision_id: str) -> DecisionRecord:
     return DecisionRecord(
         decision_id=decision_id,
         kind="route",
+        disposition=DecisionDisposition.EXECUTE,
         decided_at="2026-07-21T00:00:00Z",
-        signals={"usage_ratio": 0.8},
+        signals={"refs": ["event.usage.high"]},
         candidates=["fast", "deep"],
         choice="deep",
-        reason="validator failed",
+        reason="validator_failed",
         policy_version="v0",
+        correlation_id=decision_id.replace("dec", "command"),
     )
 
 
 def test_crash_during_atomic_pair_leaves_nothing(store: ModelOsStore) -> None:
-    store.append_event(_note("evt-crash"))  # 在独立事务预占 event_id
+    store.append_event(_occupied_note("evt-crash"))  # 在独立事务预占 event_id
     baseline_events = len(store.list_events())
     baseline_decisions = len(store.list_decisions())
 
@@ -60,7 +81,7 @@ def test_crash_during_atomic_pair_leaves_nothing(store: ModelOsStore) -> None:
 
 
 def test_crash_does_not_advance_seq(store: ModelOsStore) -> None:
-    store.append_event(_note("evt-crash"))  # 事件 seq 为 1
+    store.append_event(_occupied_note("evt-crash"))  # 事件 seq 为 1
     with pytest.raises(sqlite3.IntegrityError):
         store.append_decision_with_intent(
             _decision("dec-crash"),

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
+from trowel_py.model_os.journal import JournalBoundary
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.types import (
     DecisionRecord,
+    DecisionDisposition,
     EventEnvelope,
     EventKind,
     MemoryEligibility,
@@ -49,11 +53,12 @@ def test_append_decision_persists_and_replays(store: ModelOsStore) -> None:
     decision = DecisionRecord(
         decision_id="dec-1",
         kind="route",
+        disposition=DecisionDisposition.NO_ACTION,
         decided_at="2026-07-21T00:00:00Z",
-        signals={"usage_ratio": 0.82},
+        signals={"refs": ["event.usage.high"]},
         candidates=["fast", "deep"],
         choice="deep",
-        reason="validator failed twice",
+        reason="validator_failed_twice",
         policy_version="v0",
         budget_before={"tokens": 1000},
         budget_after={"tokens": 4000},
@@ -95,7 +100,7 @@ def test_replay_twice_yields_equal_snapshot(store: ModelOsStore) -> None:
     assert first == second
 
 
-def test_replay_from_seq_only_folds_tail(store: ModelOsStore) -> None:
+def test_incremental_replay_requires_base_at_same_boundary(store: ModelOsStore) -> None:
     s0 = store.append_event(
         EventEnvelope(
             event_id="evt-0",
@@ -118,5 +123,10 @@ def test_replay_from_seq_only_folds_tail(store: ModelOsStore) -> None:
             payload={"i": 1},
         )
     )
-    tail = store.replay(from_seq=s0)
+    boundary = JournalBoundary(event_seq=s0, decision_seq=0)
+    with pytest.raises(ValueError):
+        store.replay(after=boundary)
+
+    base = store.replay(through=boundary)
+    tail = store.replay(base_snapshot=base, after=boundary)
     assert tail.last_seq == s0 + 1

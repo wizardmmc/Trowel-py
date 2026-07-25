@@ -7,6 +7,7 @@ import pytest
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.types import (
     DecisionRecord,
+    DecisionDisposition,
     EventEnvelope,
     EventKind,
     Provenance,
@@ -16,68 +17,73 @@ from trowel_py.model_os.types import (
 def test_store_redacts_decision_signals_before_persisting(
     store: ModelOsStore,
 ) -> None:
-    # 结构化字段按键名脱敏；自由文本只识别整个值形似 token 的情况。
+    # Decision v2 只持久化结构引用；任意正文在进入 SQLite 前被拒绝。
     decision = DecisionRecord(
         decision_id="dec-secret",
         kind="route",
+        disposition=DecisionDisposition.NO_ACTION,
         decided_at="2026-07-21T00:00:00Z",
-        signals={
-            "api_key": "sk-LEAK-1234567890abcdef",
-            "prompt": "user said: my password is hunter2",
-        },
+        signals={"refs": ["event.usage.high"]},
         candidates=["fast", "deep"],
         choice="deep",
-        reason="decided because the validator failed twice",
+        reason="validator_failed_twice",
         policy_version="v0",
-        budget_before={"https_proxy": "http://127.0.0.1:7897"},
+        budget_before={"calls": 2},
     )
     store.append_decision(decision)
 
     decisions = store.list_decisions()
     assert len(decisions) == 1
     stored = decisions[0][1]
-    assert "sk-LEAK" not in str(stored.signals)
-    assert "hunter2" not in str(stored.signals)
-    assert "127.0.0.1:7897" not in str(stored.budget_before)
+    assert stored.signals == {"refs": ["event.usage.high"]}
+    assert stored.budget_before == {"calls": 2}
     assert stored.choice == "deep"
     assert stored.candidates == ["fast", "deep"]
-    assert stored.reason == "decided because the validator failed twice"
+    assert stored.reason == "validator_failed_twice"
 
     token_decision = DecisionRecord(
         decision_id="dec-token-reason",
         kind="route",
+        disposition=DecisionDisposition.NO_ACTION,
         decided_at="2026-07-21T00:00:00Z",
-        signals={},
+        signals={"refs": []},
         candidates=["fast"],
         choice="fast",
-        reason="sk-LEAK-1234567890abcdef",
+        reason="sk-leak-1234567890abcdef",
         policy_version="v0",
     )
-    store.append_decision(token_decision)
-    stored_token = store.list_decisions()[1][1]
-    assert stored_token.reason != "sk-LEAK-1234567890abcdef"
-    assert "sk-LEAK" not in str(stored_token.reason)
+    with pytest.raises(ValueError):
+        store.append_decision(token_decision)
 
 
 def test_append_decision_with_intent_is_idempotent(store: ModelOsStore) -> None:
     decision = DecisionRecord(
         decision_id="dec-idem",
         kind="route",
+        disposition=DecisionDisposition.EXECUTE,
         decided_at="2026-07-21T00:00:00Z",
-        signals={"u": 0.8},
+        signals={"refs": ["event.usage.high"]},
         candidates=["fast"],
         choice="fast",
-        reason="ok",
+        reason="usage_high",
         policy_version="v0",
+        correlation_id="command.idem",
     )
     intent = EventEnvelope(
         event_id="evt-idem",
-        kind=EventKind.NOTE,
+        kind=EventKind.COMMAND_INTENT,
         occurred_at="2026-07-21T00:00:00Z",
         source="kernel",
         provenance=Provenance.MACHINE_OBSERVATION,
         policy_version="v0",
-        payload={"k": 1},
+        payload={
+            "command_kind": "route.select",
+            "target_ref": "episode.1",
+            "idempotency_key_hash": "sha256:idem123",
+            "args_hash": "sha256:args123",
+        },
+        cause_id="dec-idem",
+        correlation_id="command.idem",
     )
 
     first_d, first_e = store.append_decision_with_intent(decision, intent)
@@ -105,21 +111,30 @@ def test_append_decision_with_intent_partial_pair_raises(
     decision = DecisionRecord(
         decision_id="dec-fresh",
         kind="route",
+        disposition=DecisionDisposition.EXECUTE,
         decided_at="2026-07-21T00:00:00Z",
-        signals={"u": 0.5},
+        signals={"refs": ["event.usage.mid"]},
         candidates=["fast"],
         choice="fast",
-        reason="ok",
+        reason="usage_mid",
         policy_version="v0",
+        correlation_id="command.fresh",
     )
     intent = EventEnvelope(
         event_id="evt-orphan",
-        kind=EventKind.NOTE,
+        kind=EventKind.COMMAND_INTENT,
         occurred_at="2026-07-21T00:00:00Z",
         source="t",
         provenance=Provenance.MACHINE_OBSERVATION,
         policy_version="v0",
-        payload={"i": 2},
+        payload={
+            "command_kind": "route.select",
+            "target_ref": "episode.1",
+            "idempotency_key_hash": "sha256:idem456",
+            "args_hash": "sha256:args456",
+        },
+        cause_id="dec-fresh",
+        correlation_id="command.fresh",
     )
     with pytest.raises(sqlite3.IntegrityError):
         store.append_decision_with_intent(decision, intent)

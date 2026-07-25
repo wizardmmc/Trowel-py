@@ -17,7 +17,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 from uuid import uuid4
 
 from contextlib import contextmanager
@@ -41,12 +41,36 @@ from trowel_py.model_os.episode_snapshot_codec import (
 from trowel_py.model_os.episode_recovery import (
     build_recovery_partial as _run_build_recovery_partial,
 )
+from trowel_py.model_os.explain import (
+    DecisionExplanation,
+    read_decision_explanation as _run_read_decision_explanation,
+)
+from trowel_py.model_os.journal import (
+    JournalBoundary,
+    JournalFilter,
+    JournalPage,
+    JournalIdentityConflict,
+    capture_journal_boundary,
+    decision_fingerprint,
+    read_journal_page as _run_read_journal_page,
+    validate_command_event,
+    validate_decision,
+    validate_decision_intent_pair,
+    validate_event_metadata,
+)
+from trowel_py.model_os.projection import (
+    load_snapshot_checkpoint as _run_load_snapshot_checkpoint,
+    snapshot_hash,
+    snapshot_to_json,
+    upsert_snapshot_checkpoint as _run_upsert_snapshot_checkpoint,
+)
 from trowel_py.model_os.redaction import redact_payload
 from trowel_py.model_os.reducer import (
     EpisodeState,
     Snapshot,
     TaskState,
     initial_snapshot,
+    reduce_decision,
     reduce_event,
 )
 from trowel_py.model_os.store_journal_codec import (
@@ -90,10 +114,13 @@ from trowel_py.model_os.store_projection import (
     project_task_state as _run_project_task_state,
 )
 from trowel_py.model_os.store_schema import SCHEMA_SQL as _SCHEMA_SQL
+from trowel_py.model_os.store_schema import migrate_v4_to_v5 as _run_migrate_v4_to_v5
+from trowel_py.model_os.store_schema import migrate_v5_to_v6 as _run_migrate_v5_to_v6
 from trowel_py.model_os.task_commands import TaskCommands
 from trowel_py.model_os.types import (
     ArtifactRef,
     DecisionRecord,
+    DecisionDisposition,
     Episode,
     EpisodeSnapshot,
     EpisodeStatus,
@@ -121,7 +148,7 @@ from trowel_py.model_os.context_observer import (
     context_sample_to_dict,
 )
 
-_SCHEMA_VERSION = 4  # 活跃 lease 才占用幂等 key，释放后允许新 grant。
+_SCHEMA_VERSION = 6  # 双水位读取与可删除 Snapshot projection checkpoint。
 _DEFAULT_POLICY_VERSION = "v0"
 
 _LOGGER = logging.getLogger(__name__)
@@ -315,10 +342,10 @@ _EVENT_INSERT_SQL = (
 )
 
 _DECISION_INSERT_SQL = (
-    "INSERT INTO decisions (decision_id, kind, decided_at, work_item_id, "
+    "INSERT INTO decisions (decision_id, kind, disposition, decided_at, work_item_id, "
     "task_id, episode_id, cause_id, correlation_id, policy_version, "
-    "signals, candidates, choice, reason, budget_before, budget_after) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "signals, candidates, choice, reason, budget_before, budget_after, identity_hash) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -343,6 +370,7 @@ def _decision_params(decision: DecisionRecord) -> tuple:
         decision,
         dumps_fn=_dumps,
         redact_fn=redact_payload,
+        identity_hash=decision_fingerprint(decision, redact_fn=redact_payload),
     )
 
 
@@ -585,6 +613,28 @@ class ModelOsStore:
                 "UPDATE meta SET value=? WHERE key='schema_version'",
                 ("4",),
             )
+            current = 4
+        if current < 5:
+            self._migrate_v4_to_v5()
+            current = 5
+        if current < 6:
+            self._migrate_v5_to_v6()
+
+    def _migrate_v4_to_v5(self) -> None:
+        """旧 Decision 只标历史未知，不根据自由文本猜 disposition。"""
+
+        assert self._conn is not None
+        _run_migrate_v4_to_v5(
+            self._conn,
+            decode_decision=_decision_from_row,
+            fingerprint=lambda decision: decision_fingerprint(
+                decision, redact_fn=redact_payload
+            ),
+        )
+
+    def _migrate_v5_to_v6(self) -> None:
+        assert self._conn is not None
+        _run_migrate_v5_to_v6(self._conn)
 
     def _schema_version(self) -> int:
         """返回 ``meta`` 中记录的 schema 版本。"""
@@ -860,6 +910,7 @@ class ModelOsStore:
         """
 
         assert self._conn is not None
+        validate_event_metadata(event)
         if event.kind in _TASK_LIFECYCLE_KINDS:
             raise TaskCommandError(
                 f"event kind {event.kind!r} is a Task lifecycle event; use "
@@ -871,6 +922,10 @@ class ModelOsStore:
                 f"event kind {event.kind!r} is an Episode lifecycle event; "
                 f"use the corresponding structured command (slice-087)"
             )
+        if event.kind == EventKind.COMMAND_INTENT:
+            raise ValueError("command.intent must be appended with its decision")
+        if event.kind in (EventKind.COMMAND_RESULT, EventKind.COMMAND_UNKNOWN):
+            validate_command_event(event)
         payload_text, payload_hash = _payload_json(event.payload)
         try:
             with self._tx():
@@ -885,13 +940,13 @@ class ModelOsStore:
                 "SELECT * FROM events WHERE event_id=?",
                 (event.event_id,),
             ).fetchone()
-            if existing is None or _event_row_identity(
-                existing, payload_hash
-            ) != _event_identity(event, payload_hash):
-                raise ValueError(
-                    f"event_id {event.event_id!r} already exists with "
-                    f"different content (identity mismatch)"
-                )
+            if (
+                existing is None
+                or existing["payload"] != payload_text
+                or _event_row_identity(existing, payload_hash)
+                != _event_identity(event, payload_hash)
+            ):
+                raise JournalIdentityConflict("event", event.event_id)
         row = self._conn.execute(
             "SELECT seq FROM events WHERE event_id=?", (event.event_id,)
         ).fetchone()
@@ -977,11 +1032,22 @@ class ModelOsStore:
         """
 
         assert self._conn is not None
+        validate_decision(decision)
+        if decision.disposition == DecisionDisposition.EXECUTE:
+            raise ValueError("execute decision must be appended with command.intent")
+        identity_hash = decision_fingerprint(decision, redact_fn=redact_payload)
         try:
             with self._tx():
                 self._conn.execute(_DECISION_INSERT_SQL, _decision_params(decision))
         except sqlite3.IntegrityError:
-            pass
+            existing = self._conn.execute(
+                "SELECT identity_hash FROM decisions WHERE decision_id=?",
+                (decision.decision_id,),
+            ).fetchone()
+            if existing is None:
+                raise
+            if existing["identity_hash"] != identity_hash:
+                raise JournalIdentityConflict("decision", decision.decision_id) from None
         row = self._conn.execute(
             "SELECT seq FROM decisions WHERE decision_id=?",
             (decision.decision_id,),
@@ -1012,7 +1078,10 @@ class ModelOsStore:
                 f"lifecycle event; use the corresponding structured command "
                 f"(slice-087)"
             )
+        validate_decision_intent_pair(decision, intent_event)
+        validate_event_metadata(intent_event)
         payload_text, payload_hash = _payload_json(intent_event.payload)
+        decision_hash = decision_fingerprint(decision, redact_fn=redact_payload)
         try:
             with self._tx():
                 self._conn.execute(_DECISION_INSERT_SQL, _decision_params(decision))
@@ -1021,10 +1090,22 @@ class ModelOsStore:
                     _event_params(intent_event, payload_text, payload_hash),
                 )
         except sqlite3.IntegrityError:
-            if not self._pair_already_present(
-                decision.decision_id, intent_event.event_id
-            ):
+            d_row = self._conn.execute(
+                "SELECT * FROM decisions WHERE decision_id=?", (decision.decision_id,)
+            ).fetchone()
+            e_row = self._conn.execute(
+                "SELECT * FROM events WHERE event_id=?", (intent_event.event_id,)
+            ).fetchone()
+            if (d_row is None) != (e_row is None):
                 raise
+            if d_row is None or e_row is None:
+                raise
+            if d_row["identity_hash"] != decision_hash:
+                raise JournalIdentityConflict("decision", decision.decision_id) from None
+            if e_row["payload"] != payload_text or _event_row_identity(
+                e_row, payload_hash
+            ) != _event_identity(intent_event, payload_hash):
+                raise JournalIdentityConflict("event", intent_event.event_id) from None
         d_row = self._conn.execute(
             "SELECT seq FROM decisions WHERE decision_id=?",
             (decision.decision_id,),
@@ -1034,16 +1115,6 @@ class ModelOsStore:
         ).fetchone()
         assert d_row is not None and e_row is not None
         return int(d_row["seq"]), int(e_row["seq"])
-
-    def _pair_already_present(self, decision_id: str, event_id: str) -> bool:
-        assert self._conn is not None
-        d = self._conn.execute(
-            "SELECT 1 FROM decisions WHERE decision_id=?", (decision_id,)
-        ).fetchone()
-        e = self._conn.execute(
-            "SELECT 1 FROM events WHERE event_id=?", (event_id,)
-        ).fetchone()
-        return d is not None and e is not None
 
     def list_events(self, from_seq: int = 0) -> list[tuple[int, EventEnvelope]]:
         """按序返回满足 ``seq > from_seq`` 的 ``(seq, event)``。"""
@@ -1065,18 +1136,128 @@ class ModelOsStore:
         ).fetchall()
         return [(int(row["seq"]), _decision_from_row(row)) for row in rows]
 
-    def replay(self, from_seq: int = 0) -> Snapshot:
-        """归约 ``from_seq`` 之后的事件并返回派生快照。
+    def journal_boundary(self) -> JournalBoundary:
+        """在同一 SQLite read transaction 中捕获 Event/Decision 双水位。"""
 
-        ``from_seq`` 表示已经归约的最后一个 seq，默认为 0，即完整回放。实时表中的
-        ``active_leases`` 不在此装载，由 ``read_snapshot`` 合并。
-        """
+        assert self._conn is not None
+        with self._read_tx():
+            return capture_journal_boundary(self._conn)
 
-        snap = initial_snapshot(schema_version=self._schema_version())
-        for seq, event in self.list_events(from_seq=from_seq):
+    def read_journal_page(
+        self,
+        *,
+        journal_filter: JournalFilter | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> JournalPage:
+        assert self._conn is not None
+        with self._read_tx():
+            return _run_read_journal_page(
+                self._conn,
+                journal_filter=journal_filter or JournalFilter(),
+                limit=limit,
+                cursor=cursor,
+            )
+
+    def explain_decision(
+        self,
+        decision_id: str,
+        *,
+        boundary: JournalBoundary | None = None,
+    ) -> DecisionExplanation:
+        """在固定双水位内按结构引用解释一条 Decision。"""
+
+        assert self._conn is not None
+        with self._read_tx():
+            fixed = boundary or capture_journal_boundary(self._conn)
+            return _run_read_decision_explanation(
+                self._conn,
+                decision_id=decision_id,
+                boundary=fixed,
+                decode_decision=_decision_from_row,
+                decode_event=_event_from_row,
+            )
+
+    def _read_event_range(
+        self, after_seq: int, through_seq: int
+    ) -> list[tuple[int, EventEnvelope]]:
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT * FROM events WHERE seq > ? AND seq <= ? ORDER BY seq",
+            (after_seq, through_seq),
+        ).fetchall()
+        return [(int(row["seq"]), _event_from_row(row)) for row in rows]
+
+    def _read_decision_range(
+        self, after_seq: int, through_seq: int
+    ) -> list[tuple[int, DecisionRecord]]:
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT * FROM decisions WHERE seq > ? AND seq <= ? ORDER BY seq",
+            (after_seq, through_seq),
+        ).fetchall()
+        return [(int(row["seq"]), _decision_from_row(row)) for row in rows]
+
+    @overload
+    def replay(self, from_seq: int = 0) -> Snapshot: ...
+
+    @overload
+    def replay(
+        self,
+        *,
+        base_snapshot: Snapshot | None = None,
+        after: JournalBoundary = JournalBoundary(),
+        through: JournalBoundary | None = None,
+    ) -> Snapshot: ...
+
+    def replay(
+        self,
+        from_seq: int = 0,
+        *,
+        base_snapshot: Snapshot | None = None,
+        after: JournalBoundary = JournalBoundary(),
+        through: JournalBoundary | None = None,
+    ) -> Snapshot:
+        """从匹配双水位的 base 归约固定边界内的 journal tail。"""
+
+        assert self._conn is not None
+        if from_seq != 0:
+            raise ValueError("incremental replay requires a base snapshot")
+        if min(after.event_seq, after.decision_seq) < 0:
+            raise ValueError("replay boundary must be non-negative")
+        if after != JournalBoundary():
+            if base_snapshot is None:
+                raise ValueError("incremental replay requires a base snapshot")
+            if (
+                base_snapshot.last_seq != after.event_seq
+                or base_snapshot.last_decision_seq != after.decision_seq
+            ):
+                raise ValueError("base snapshot watermarks do not match replay start")
+        elif base_snapshot is not None and (
+            base_snapshot.last_seq != 0 or base_snapshot.last_decision_seq != 0
+        ):
+            raise ValueError("non-empty base requires a matching after boundary")
+        boundary = through or capture_journal_boundary(self._conn)
+        if (
+            boundary.event_seq < after.event_seq
+            or boundary.decision_seq < after.decision_seq
+        ):
+            raise ValueError("replay end precedes start")
+        snap = base_snapshot or initial_snapshot(schema_version=self._schema_version())
+        for seq, event in self._read_event_range(after.event_seq, boundary.event_seq):
             snap = reduce_event(snap, event)
             snap = replace(snap, last_seq=seq)
-        return snap
+        for seq, decision in self._read_decision_range(
+            after.decision_seq, boundary.decision_seq
+        ):
+            snap = reduce_decision(snap, decision)
+            snap = replace(snap, last_decision_seq=seq)
+        return replace(
+            snap,
+            schema_version=self._schema_version(),
+            last_seq=boundary.event_seq,
+            last_decision_seq=boundary.decision_seq,
+        )
 
     # Task 结构化命令在一个 IMMEDIATE 事务内完成回放、校验、journal 追加以及必要的
     # foreground_claim 更新。门禁依据命令身份而非 provenance。随机 event_id 使崩溃
@@ -3525,6 +3706,44 @@ class ModelOsStore:
                     )
                 )
 
+    def _load_projection_checkpoint(
+        self, boundary: JournalBoundary
+    ) -> tuple[Snapshot, JournalBoundary] | None:
+        assert self._conn is not None
+        return _run_load_snapshot_checkpoint(self._conn, boundary)
+
+    def _insert_projection_checkpoint(
+        self,
+        *,
+        boundary: JournalBoundary,
+        state_json: str,
+        state_hash: str,
+    ) -> None:
+        assert self._conn is not None
+        with self._tx():
+            _run_upsert_snapshot_checkpoint(
+                self._conn,
+                boundary=boundary,
+                state_json=state_json,
+                state_hash=state_hash,
+                created_at=_now_iso(),
+            )
+
+    def rebuild_snapshot_projection(self) -> Snapshot:
+        """从固定 journal 边界重建并原子发布可删除 projection checkpoint。"""
+
+        assert self._conn is not None
+        with self._read_tx():
+            boundary = capture_journal_boundary(self._conn)
+            snapshot = self.replay(through=boundary)
+        state_json = snapshot_to_json(snapshot)
+        self._insert_projection_checkpoint(
+            boundary=boundary,
+            state_json=state_json,
+            state_hash=snapshot_hash(state_json),
+        )
+        return replace(snapshot, active_leases=(), foreground_task_id=None)
+
     def read_snapshot(self) -> Snapshot:
         """返回派生快照，并合并实时 lease 与 foreground。
 
@@ -3533,8 +3752,19 @@ class ModelOsStore:
         割裂快照。
         """
 
+        assert self._conn is not None
         with self._read_tx():
-            snap = self.replay()
+            boundary = capture_journal_boundary(self._conn)
+            checkpoint = self._load_projection_checkpoint(boundary)
+            if checkpoint is None:
+                snap = self.replay(through=boundary)
+            else:
+                base, after = checkpoint
+                snap = self.replay(
+                    base_snapshot=base,
+                    after=after,
+                    through=boundary,
+                )
             return replace(
                 snap,
                 active_leases=self._read_active_leases(),

@@ -212,6 +212,18 @@
     "model_os": [
       {
         "type": "index",
+        "name": "idx_decisions_journal_page",
+        "table": "decisions",
+        "sql": "CREATE INDEX idx_decisions_journal_page ON decisions(decided_at, seq)"
+      },
+      {
+        "type": "index",
+        "name": "idx_events_journal_page",
+        "table": "events",
+        "sql": "CREATE INDEX idx_events_journal_page ON events(occurred_at, seq)"
+      },
+      {
+        "type": "index",
         "name": "idx_leases_active",
         "table": "leases",
         "sql": "CREATE UNIQUE INDEX idx_leases_active ON leases(resource_type, resource_id) WHERE released_at IS NULL"
@@ -226,7 +238,7 @@
         "type": "table",
         "name": "decisions",
         "table": "decisions",
-        "sql": "CREATE TABLE decisions ( seq INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, decided_at TEXT NOT NULL, work_item_id TEXT, task_id TEXT, episode_id TEXT, cause_id TEXT, correlation_id TEXT, policy_version TEXT NOT NULL, signals TEXT NOT NULL, candidates TEXT NOT NULL, choice TEXT NOT NULL, reason TEXT NOT NULL, budget_before TEXT, budget_after TEXT )"
+        "sql": "CREATE TABLE decisions ( seq INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, disposition TEXT NOT NULL, decided_at TEXT NOT NULL, work_item_id TEXT, task_id TEXT, episode_id TEXT, cause_id TEXT, correlation_id TEXT, policy_version TEXT NOT NULL, signals TEXT NOT NULL, candidates TEXT NOT NULL, choice TEXT NOT NULL, reason TEXT NOT NULL, budget_before TEXT, budget_after TEXT, identity_hash TEXT NOT NULL )"
       },
       {
         "type": "table",
@@ -269,6 +281,12 @@
         "name": "meta",
         "table": "meta",
         "sql": "CREATE TABLE meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "projection_checkpoints",
+        "table": "projection_checkpoints",
+        "sql": "CREATE TABLE projection_checkpoints ( projection_name TEXT NOT NULL, projection_version INTEGER NOT NULL, event_seq INTEGER NOT NULL, decision_seq INTEGER NOT NULL, state_json TEXT NOT NULL, state_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (projection_name, projection_version, event_seq, decision_seq) )"
       },
       {
         "type": "table",

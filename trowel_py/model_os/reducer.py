@@ -515,6 +515,12 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
     if event.kind == EventKind.CONTEXT_GENERATION_BOUNDARY:
         # generation 已在 ContextSample 上，边界事件只保留审计轨迹。
         return snap
+    if event.kind in (
+        EventKind.COMMAND_INTENT,
+        EventKind.COMMAND_RESULT,
+        EventKind.COMMAND_UNKNOWN,
+    ):
+        return snap
     if event.kind not in snap.unrecognized_event_kinds:
         return replace(
             snap,

@@ -9,6 +9,20 @@ Scheduler、Router、Episode Runner 及 memory scheduler 接入不属于本包�
 """
 
 from trowel_py.model_os.redaction import redact_payload
+from trowel_py.model_os.journal import (
+    InvalidJournalCursor,
+    JournalBoundary,
+    JournalCursor,
+    JournalEntrySummary,
+    JournalFilter,
+    JournalIdentityConflict,
+    JournalPage,
+)
+from trowel_py.model_os.explain import (
+    CommandExplanation,
+    DecisionExplanation,
+    DecisionNotFound,
+)
 from trowel_py.model_os.reducer import (
     EpisodeState,
     Snapshot,
@@ -31,6 +45,7 @@ from trowel_py.model_os.types import (
     ArtifactRef,
     CompletionEvidence,
     DecisionRecord,
+    DecisionDisposition,
     Episode,
     EpisodeSnapshot,
     EpisodeStatus,
@@ -79,8 +94,12 @@ __all__ = [
     "BrokerPolicy",
     "BudgetDimensions",
     "CatchupPolicy",
+    "CommandExplanation",
     "CompletionEvidence",
+    "DecisionExplanation",
+    "DecisionNotFound",
     "DecisionRecord",
+    "DecisionDisposition",
     "DenialReason",
     "Episode",
     "EpisodeCommandError",
@@ -93,6 +112,13 @@ __all__ = [
     "ForegroundConflict",
     "IdempotencyConflict",
     "Lease",
+    "JournalIdentityConflict",
+    "InvalidJournalCursor",
+    "JournalBoundary",
+    "JournalCursor",
+    "JournalEntrySummary",
+    "JournalFilter",
+    "JournalPage",
     "LeaseConflict",
     "MemoryEligibility",
     "ModelTier",

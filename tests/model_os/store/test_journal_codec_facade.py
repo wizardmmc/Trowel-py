@@ -39,6 +39,7 @@ def _decision_row(**overrides: Any) -> dict[str, Any]:
     row = {
         "decision_id": "decision-example",
         "kind": "choose",
+        "disposition": "legacy_unknown",
         "decided_at": "2026-01-01T00:00:00+00:00",
         "signals": "{}",
         "candidates": "[]",
@@ -124,6 +125,7 @@ def test_journal_codec_facades_inject_current_store_globals(
     decision_type = object()
     provenance_type = object()
     decision_dumps = object()
+    decision_hash = object()
     monkeypatch.setattr(store, "redact_payload", redact_fn)
     monkeypatch.setattr(
         store,
@@ -137,6 +139,7 @@ def test_journal_codec_facades_inject_current_store_globals(
     monkeypatch.setattr(store, "EventEnvelope", event_type)
     monkeypatch.setattr(store, "DecisionRecord", decision_type)
     monkeypatch.setattr(store, "Provenance", provenance_type)
+    monkeypatch.setattr(store, "decision_fingerprint", lambda *args, **kwargs: decision_hash)
 
     payload: dict[str, Any] = {}
     value = object()
@@ -178,7 +181,11 @@ def test_journal_codec_facades_inject_current_store_globals(
         "event_row_identity": ((row, "hash"), {"int_fn": int_fn}),
         "decision_params": (
             (decision,),
-            {"dumps_fn": decision_dumps, "redact_fn": redact_fn},
+            {
+                "dumps_fn": decision_dumps,
+                "redact_fn": redact_fn,
+                "identity_hash": decision_hash,
+            },
         ),
         "lease_from_row": (
             (row,),

@@ -43,11 +43,11 @@ _SENSITIVE_KEYS: frozenset[str] = frozenset(
 
 # 不匹配裸长十六进制串：UUID 和内容 hash 是回放所需的结构 ID。
 _SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^sk-[A-Za-z0-9_\-]{8,}"),  # OpenAI 风格的密钥
-    re.compile(r"^Bearer\s+\S"),  # bearer 令牌
-    re.compile(r"^eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),  # JWT 凭据
+    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),  # OpenAI 风格的密钥
+    re.compile(r"Bearer\s+\S+", re.IGNORECASE),  # bearer 令牌
+    re.compile(r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),  # JWT 凭据
     re.compile(
-        r"^(https?|socks[45])://"  # 代理或私有 URL
+        r"(https?|socks[45])://"  # 代理或私有 URL
         r"(127\.0\.0\.1|localhost|0\.0\.0\.0|::1|"
         r"192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)",
         re.IGNORECASE,
@@ -69,6 +69,14 @@ def _looks_like_secret_value(value: Any) -> bool:
     return any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS)
 
 
+def _redact_all_leaves(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_all_leaves(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_all_leaves(item) for item in value]
+    return _marker(value)
+
+
 def redact_payload(payload: Any) -> Any:
     """递归返回脱敏副本，不修改输入或非敏感结构。"""
 
@@ -76,9 +84,8 @@ def redact_payload(payload: Any) -> Any:
         out: dict[str, Any] = {}
         for key, value in payload.items():
             if isinstance(key, str) and key.lower() in _SENSITIVE_KEYS:
-                # 结构值保留容器形状，只在叶子处脱敏，便于审计 payload 结构。
                 if isinstance(value, (dict, list)):
-                    out[key] = redact_payload(value)
+                    out[key] = _redact_all_leaves(value)
                 else:
                     out[key] = _marker(value)
             else:

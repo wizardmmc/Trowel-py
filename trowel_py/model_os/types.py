@@ -150,6 +150,9 @@ class EventKind:
     CONTEXT_SAMPLE_OBSERVED = "context.sample_observed"
     # 必须先于新一代样本入 journal；reducer 不从该事件单独派生状态。
     CONTEXT_GENERATION_BOUNDARY = "context.generation_boundary"
+    COMMAND_INTENT = "command.intent"
+    COMMAND_RESULT = "command.result"
+    COMMAND_UNKNOWN = "command.unknown"
 
 
 @dataclass(frozen=True)
@@ -178,12 +181,20 @@ class EventEnvelope:
     fencing_token: int | None = None
 
 
+class DecisionDisposition(str, Enum):
+    EXECUTE = "execute"
+    NO_ACTION = "no_action"
+    SHADOW = "shadow"
+    LEGACY_UNKNOWN = "legacy_unknown"
+
+
 @dataclass(frozen=True)
 class DecisionRecord:
     """自动决策必须先于对应命令持久化，policy_version 用于解释策略差异。"""
 
     decision_id: str
     kind: str
+    disposition: DecisionDisposition
     decided_at: str
     signals: dict[str, Any]
     candidates: list[Any]
@@ -197,6 +208,14 @@ class DecisionRecord:
     episode_id: str | None = None
     cause_id: str | None = None
     correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, DecisionDisposition):
+            object.__setattr__(
+                self,
+                "disposition",
+                DecisionDisposition(self.disposition),
+            )
 
 
 @dataclass(frozen=True)

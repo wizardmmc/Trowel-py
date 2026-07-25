@@ -5,6 +5,7 @@ import pytest
 from trowel_py.model_os.store import EpisodeCommandError, ModelOsStore
 from trowel_py.model_os.types import (
     DecisionRecord,
+    DecisionDisposition,
     EventEnvelope,
     EventKind,
     Provenance,
@@ -15,12 +16,14 @@ def _decision(decision_id: str) -> DecisionRecord:
     return DecisionRecord(
         decision_id=decision_id,
         kind="route",
+        disposition=DecisionDisposition.EXECUTE,
         decided_at="2026-07-21T00:00:00Z",
-        signals={"usage_ratio": 0.8},
+        signals={"refs": ["event.usage.high"]},
         candidates=["fast", "deep"],
         choice="deep",
-        reason="validator failed",
+        reason="validator_failed",
         policy_version="v0",
+        correlation_id=f"command.{decision_id}",
     )
 
 

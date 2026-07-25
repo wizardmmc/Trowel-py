@@ -1,4 +1,10 @@
-"""Model OS Store 的 SQLite schema。"""
+"""Model OS Store 的 SQLite schema 与前向迁移步骤。"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable
+from typing import Any
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -34,6 +40,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     decision_id TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,
+    disposition TEXT NOT NULL,
     decided_at TEXT NOT NULL,
     work_item_id TEXT,
     task_id TEXT,
@@ -46,7 +53,25 @@ CREATE TABLE IF NOT EXISTS decisions (
     choice TEXT NOT NULL,
     reason TEXT NOT NULL,
     budget_before TEXT,
-    budget_after TEXT
+    budget_after TEXT,
+    identity_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_journal_page
+    ON events(occurred_at, seq);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_journal_page
+    ON decisions(decided_at, seq);
+
+CREATE TABLE IF NOT EXISTS projection_checkpoints (
+    projection_name TEXT NOT NULL,
+    projection_version INTEGER NOT NULL,
+    event_seq INTEGER NOT NULL,
+    decision_seq INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    state_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (projection_name, projection_version, event_seq, decision_seq)
 );
 
 CREATE TABLE IF NOT EXISTS leases (
@@ -120,3 +145,58 @@ CREATE TABLE IF NOT EXISTS episode_create_keys (
     created_at TEXT NOT NULL
 );
 """
+
+
+def migrate_v4_to_v5(
+    conn: sqlite3.Connection,
+    *,
+    decode_decision: Callable[[sqlite3.Row], Any],
+    fingerprint: Callable[[Any], str],
+) -> None:
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(decisions)").fetchall()
+    }
+    if "disposition" not in columns:
+        conn.execute(
+            "ALTER TABLE decisions ADD COLUMN disposition TEXT NOT NULL "
+            "DEFAULT 'legacy_unknown'"
+        )
+    if "identity_hash" not in columns:
+        conn.execute("ALTER TABLE decisions ADD COLUMN identity_hash TEXT")
+    rows = conn.execute("SELECT * FROM decisions ORDER BY seq").fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE decisions SET disposition='legacy_unknown', identity_hash=? "
+            "WHERE seq=?",
+            (fingerprint(decode_decision(row)), int(row["seq"])),
+        )
+    conn.execute(
+        "UPDATE meta SET value=? WHERE key='schema_version'",
+        ("5",),
+    )
+
+
+def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_journal_page "
+        "ON events(occurred_at, seq)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decisions_journal_page "
+        "ON decisions(decided_at, seq)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS projection_checkpoints ("
+        "projection_name TEXT NOT NULL, "
+        "projection_version INTEGER NOT NULL, "
+        "event_seq INTEGER NOT NULL, "
+        "decision_seq INTEGER NOT NULL, "
+        "state_json TEXT NOT NULL, "
+        "state_hash TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, "
+        "PRIMARY KEY (projection_name, projection_version, event_seq, decision_seq))"
+    )
+    conn.execute(
+        "UPDATE meta SET value=? WHERE key='schema_version'",
+        ("6",),
+    )

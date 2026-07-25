@@ -119,10 +119,12 @@ def decision_params(
     *,
     dumps_fn: Callable[[Any], str],
     redact_fn: Callable[[Any], Any],
+    identity_hash: str,
 ) -> tuple[Any, ...]:
     return (
         decision.decision_id,
         decision.kind,
+        decision.disposition.value,
         decision.decided_at,
         decision.work_item_id,
         decision.task_id,
@@ -144,6 +146,7 @@ def decision_params(
             if decision.budget_after is not None
             else None
         ),
+        identity_hash,
     )
 
 
@@ -205,6 +208,7 @@ def decision_from_row(
     return decision_type(
         decision_id=row["decision_id"],
         kind=row["kind"],
+        disposition=row["disposition"],
         decided_at=row["decided_at"],
         signals=json_loads(row["signals"]),
         candidates=json_loads(row["candidates"]),
