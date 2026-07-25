@@ -2,6 +2,7 @@ import type { ModelOption, SlashItem } from "../../api/cc";
 import type { AgentModel } from "../../api/agent";
 import type { PerSessionState } from "../../stores/ccStore";
 import { Composer } from "./Composer";
+import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
 
 interface SessionComposerProps {
   readonly active: PerSessionState | null;
@@ -15,6 +16,7 @@ interface SessionComposerProps {
   readonly onSend: (text: string) => void;
   readonly onInterrupt: () => void;
   readonly onUpdateSettings: (model: string, effort: string) => void;
+  readonly onSelectPermissionPreset?: (preset: PermissionPreset) => void;
   readonly onRequestModelPicker: () => void;
   readonly onRequestEffortPicker: () => void;
 }
@@ -31,6 +33,7 @@ export function SessionComposer({
   onSend,
   onInterrupt,
   onUpdateSettings,
+  onSelectPermissionPreset,
   onRequestModelPicker,
   onRequestEffortPicker,
 }: SessionComposerProps) {
@@ -149,8 +152,18 @@ export function SessionComposer({
               approval: active.effectiveApproval ?? null,
               network: active.networkAccess ?? null,
               label: active.permission,
+              selectedPreset:
+                (active.permissionPreset as PermissionPreset | null) ?? null,
+              // 活动会话菜单不含 follow：sticky turn override 后 Follow 没有
+              // 确定的恢复语义。
+              selectablePresets: ACTIVE_SESSION_PRESETS,
             }
           : null
+      }
+      onSelectPermissionPreset={
+        codexControls && onSelectPermissionPreset && !streaming
+          ? onSelectPermissionPreset
+          : undefined
       }
       onRequestModelPicker={
         ccControls ? onRequestModelPicker : undefined

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -590,6 +591,60 @@ class SessionHub:
             "effort": selected.effort,
             "adjusted": selected.adjusted,
         }
+
+    async def update_codex_permission(
+        self,
+        session_id: str,
+        *,
+        permission_preset: str,
+    ) -> dict[str, Any]:
+        """暂存下一个 Codex turn 的 permission override，requested preset 立即持久化。
+
+        approval/sandbox 取自 ``_CODEX_PERMISSION_PRESETS``，由 session 在下次
+        ``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 发出。
+        ``binding.permission_preset`` 立即写回 store，让 UI 反映用户请求；
+        ``session.apply_permission_override`` 同步更新 live ``CodexSession.config``，
+        避免 host 重连时 ``thread_resume_params`` 仍输出旧 preset 覆盖新选择。
+        effective sandbox/approval 仍以原生响应为准，不在这里推断。
+
+        ``follow`` 没有 sticky 恢复语义——thread/start·resume 上等价于"不发送
+        override"，无法撤销已生效的 Full access；PATCH 直接拒绝，避免给 UI
+        假成功。session 内部 queue/apply 仍接受 ``(None, None)``，那是 session
+        层契约，与 PATCH 的对外语义分开。
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise SessionOperationError("permission PATCH is Codex-only")
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        if permission_preset == "follow":
+            raise SessionOperationError(
+                "permission PATCH cannot switch to 'follow'; "
+                "follow has no sticky revoke semantics"
+            )
+        try:
+            approval, sandbox = _CODEX_PERMISSION_PRESETS[permission_preset]
+        except KeyError as exc:
+            raise SessionOperationError(
+                f"unknown permission preset {permission_preset!r}"
+            ) from exc
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        if not session.can_queue_permission_override:
+            # 先做只读检查，避免持久化已写盘后 queue 才抛错的部分成功。
+            raise SessionConflictError(
+                f"session {session_id} cannot change permission in state "
+                f"{session.state.name}"
+            )
+        updated = replace(binding, permission_preset=permission_preset)
+        # 持久化必须先于内存改动：put 失败时 queue/apply 都未执行，
+        # session 的 pending override 与 live config 保持原状。
+        self._store.put(updated)
+        session.queue_permission_override(approval=approval, sandbox=sandbox)
+        session.apply_permission_override(approval=approval, sandbox=sandbox)
+        return {"permission_preset": permission_preset}
 
     def validate_resume(
         self,

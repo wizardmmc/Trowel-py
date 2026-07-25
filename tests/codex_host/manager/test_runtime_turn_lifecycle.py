@@ -169,3 +169,54 @@ async def test_interrupt_sends_request_and_closes_turn_interrupted() -> None:
     assert _has(events, CodexEventType.INTERRUPTED)
     assert any(m["method"] == "turn/interrupt" for m in fake2.received)
     await manager2.close()
+
+
+async def test_send_carries_queued_permission_override_into_turn_start() -> None:
+    """manager.send 必须把 session 暂存的 permission override 发给原生 turn/start。
+
+    turn/start 的权限字段是 ``sandboxPolicy``（SandboxPolicy 对象）和
+    ``approvalPolicy``（字符串），不是 thread/start·resume 的 ``sandbox``
+    （SandboxMode 字符串）。本测试确保 manager.send 的 wiring 正确：queue 出的
+    Full access preset 在原生请求里变成 ``{"type": "dangerFullAccess"}``。
+    """
+
+    captured: list[dict] = []
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-1")})
+        msg = yield Step.recv()
+        assert msg["method"] == "turn/start"
+        captured.append(msg["params"])
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
+        yield Step.hold(0.01)
+        yield Step.send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t-1",
+                    "turn": {"id": "turn-1", "status": "completed", "durationMs": 1},
+                },
+            }
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    session.queue_permission_override(
+        approval="never", sandbox="danger-full-access"
+    )
+
+    await manager.send(session, "hi")
+
+    assert captured, "turn/start request must be captured"
+    params = captured[0]
+    assert params["approvalPolicy"] == "never"
+    assert params["sandboxPolicy"] == {"type": "dangerFullAccess"}
+    assert "sandbox" not in params
+    await manager.close()

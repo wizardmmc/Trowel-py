@@ -130,6 +130,66 @@ async def test_attach_resumes_thread_without_starting_turn() -> None:
     await manager.close()
 
 
+async def test_attach_resume_carries_full_access_override_to_native_thread() -> None:
+    """恢复 Full access 会话时，thread/resume 请求必须带上 override 与 cwd。
+
+    Codex app-server 的 thread/resume 不传 sandbox/approvalPolicy 时回退默认
+    workspace-write/on-request（openai/codex app-server README）。本测试模拟
+    原 native thread 在 Full access 下创建，恢复时 Trowel 必须把 danger 全量
+    override 重新发给原生端，binding 才能拿到 danger-full-access 的有效事实。
+    """
+
+    danger_result = {
+        "thread": {"id": "thread-existing"},
+        "model": "gpt-5.6-sol",
+        "modelProvider": "openai",
+        "cwd": "/tmp/x",
+        "sandbox": {"mode": "dangerFullAccess"},
+        "approvalPolicy": {"policy": "never"},
+        "serviceTier": None,
+        "reasoningEffort": "high",
+    }
+
+    received_resume: list[dict] = []
+
+    async def behavior():
+        initialize = yield Step.recv()
+        yield _init_resp(initialize["id"])
+        yield Step.recv()
+        resume = yield Step.recv()
+        assert resume["method"] == "thread/resume"
+        received_resume.append(resume["params"])
+        yield Step.send({"id": resume["id"], "result": danger_result})
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(
+        CodexSessionConfig(
+            "resume-full-access",
+            "/tmp/x",
+            initial_thread_id="thread-existing",
+            approval_policy="never",
+            sandbox="danger-full-access",
+        )
+    )
+    manager.register(session)
+
+    binding = await manager.attach(session)
+
+    assert received_resume == [
+        {
+            "threadId": "thread-existing",
+            "cwd": "/tmp/x",
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+        }
+    ]
+    assert binding.effective_sandbox == "danger-full-access"
+    assert binding.effective_approval == "never"
+    await manager.close()
+
+
 async def test_live_sessions_cannot_share_one_native_thread() -> None:
 
     fake = FakeAppServer(_behavior_server(on_turn=_deltas))

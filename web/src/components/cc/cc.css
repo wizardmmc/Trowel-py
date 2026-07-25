@@ -1363,6 +1363,68 @@
   font-size: 0.72rem;
 }
 .cc-permission-facts__row code { color: var(--text-primary); }
+/* 请求权限 / 原生 facts 两个区块；section 之间留分隔，title 用次要文本。 */
+.cc-permission-facts__section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+.cc-permission-facts__section + .cc-permission-facts__section {
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-xs);
+  padding-top: var(--space-xs);
+}
+.cc-permission-facts__section-title {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  padding: 2px 8px;
+}
+/* preset 选项按钮沿用 picker__item 风格，避免退化为浏览器默认按钮。 */
+.cc-permission-facts__option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 6px var(--space-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+.cc-permission-facts__option:hover {
+  background: var(--sunshine-soft);
+}
+.cc-permission-facts__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.cc-permission-facts__option--sel {
+  background: var(--garden-soft);
+}
+.cc-permission-facts__option-name {
+  font-weight: 500;
+}
+/* Full access 二次确认按钮：danger 边框，与 warning 同色系。 */
+.cc-permission-facts__confirm {
+  margin: 4px var(--space-sm) 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: var(--error-soft);
+  color: var(--color-error);
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.cc-permission-facts__confirm:hover {
+  background: var(--color-error);
+  color: var(--bg-card);
+}
 .cc-settings-notice {
   padding: 3px 18px;
   color: var(--text-tertiary);

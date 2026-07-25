@@ -61,6 +61,9 @@ export function SessionView({
   const refreshHistory = useCcStore((s) => s.refreshHistory);
   const loadMoreHistory = useCcStore((s) => s.loadMoreHistory);
   const updateSessionSettings = useCcStore((s) => s.updateSessionSettings);
+  const selectSessionPermissionPreset = useCcStore(
+    (s) => s.selectSessionPermissionPreset,
+  );
 
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -262,6 +265,9 @@ export function SessionView({
             onInterrupt={() => void interrupt()}
             onUpdateSettings={(model, nextEffort) =>
               void updateSessionSettings(model, nextEffort)
+            }
+            onSelectPermissionPreset={(preset) =>
+              void selectSessionPermissionPreset(preset)
             }
             onRequestModelPicker={() => setShowModelPicker(true)}
             onRequestEffortPicker={() => setShowEffortPicker(true)}

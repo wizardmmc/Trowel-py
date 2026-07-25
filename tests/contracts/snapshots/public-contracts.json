@@ -2330,7 +2330,7 @@
         },
         "patch": {
           "summary": "Patch Session",
-          "description": "拒绝修改 runtime；model/effort 仅为下一次 Codex turn 排队。",
+          "description": "拒绝修改 runtime；model/effort/permission_preset 仅为下一次 Codex turn 排队。\n\n``permission_preset`` 立即写回 binding 的 requested 字段，下个 turn/start\n作为 override 生效；其余字段按原契约排队。任一字段被处理时返回合并后的\n``data``，否则 ``data`` 为 ``None``。",
           "operationId": "patch_session_api_agent_sessions__session_id__patch",
           "parameters": [
             {
@@ -3183,11 +3183,28 @@
                 }
               ],
               "title": "Effort"
+            },
+            "permission_preset": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "follow",
+                    "read-only",
+                    "workspace-write",
+                    "danger-full-access"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Preset"
             }
           },
           "type": "object",
           "title": "PatchAgentSessionRequest",
-          "description": "``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。"
+          "description": "``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。\n\n``permission_preset`` 立即写入 binding 的 requested 字段，并在下一次\n``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 生效。"
         },
         "ProfileUpdate": {
           "properties": {

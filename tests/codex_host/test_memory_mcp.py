@@ -161,5 +161,5 @@ def test_thread_resume_params_omits_config_when_memory_off() -> None:
         )
     )
     params = manager._thread_resume_params(session)  # noqa: SLF001
-    assert params == {"threadId": "thr-existing"}
+    assert params == {"threadId": "thr-existing", "cwd": "/tmp/x"}
     assert "config" not in params

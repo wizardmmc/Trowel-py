@@ -40,11 +40,16 @@ class CreateAgentSessionRequest(BaseModel):
 
 
 class PatchAgentSessionRequest(BaseModel):
-    """``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。"""
+    """``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。
+
+    ``permission_preset`` 立即写入 binding 的 requested 字段，并在下一次
+    ``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 生效。
+    """
 
     runtime: str | None = None
     model: str | None = None
     effort: str | None = None
+    permission_preset: PermissionPreset | None = None
 
 
 class SendMessageBody(BaseModel):

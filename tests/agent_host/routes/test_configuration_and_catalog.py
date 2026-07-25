@@ -147,3 +147,86 @@ def test_get_history_returns_native_codex_threads_for_workdir(
     assert codex_rows
     assert codex_rows[0]["native_session_id"] == "thread-native-1"
     assert response.json()["meta"] == {"limit": 20, "next_cursor": None}
+
+
+def test_patch_codex_permission_preset_returns_200_and_persists(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    created = create_session(
+        client,
+        codex_payload(workdir, permission_preset="workspace-write"),
+    )
+    response = client.patch(
+        f"/api/agent/sessions/{created['session_id']}",
+        json={"permission_preset": "danger-full-access"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"permission_preset": "danger-full-access"}
+
+    got = client.get(f"/api/agent/sessions/{created['session_id']}").json()["data"]
+    assert got["permission_preset"] == "danger-full-access"
+
+
+def test_patch_codex_permission_preset_follow_rejected_422(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    """follow 没有 sticky 恢复语义，PATCH 必须拒绝且不改变已持久化的 preset。"""
+
+    created = create_session(
+        client,
+        codex_payload(workdir, permission_preset="danger-full-access"),
+    )
+    response = client.patch(
+        f"/api/agent/sessions/{created['session_id']}",
+        json={"permission_preset": "follow"},
+    )
+
+    assert response.status_code == 422
+    got = client.get(f"/api/agent/sessions/{created['session_id']}").json()["data"]
+    assert got["permission_preset"] == "danger-full-access"
+
+
+def test_patch_codex_permission_updates_live_config_for_resume(
+    client: TestClient,
+    workdir: Path,
+    hub: SessionHub,
+) -> None:
+    """PATCH 必须立即更新 live ``CodexSession.config``，让重连读取新 preset。
+
+    AIRC Critical 2 实测：原实现只更新 pending override 和持久 binding，
+    ``thread_resume_params`` 仍从 ``session.config`` 读旧值；host 重连会用
+    旧 approval/sandbox 覆盖用户刚选的权限。本测试直接断言会话内 live
+    config 已切换，``thread_resume_params`` 链路由
+    ``tests/codex_host/session/test_permission_override.py`` 覆盖。
+    """
+
+    created = create_session(
+        client,
+        codex_payload(workdir, permission_preset="workspace-write"),
+    )
+    response = client.patch(
+        f"/api/agent/sessions/{created['session_id']}",
+        json={"permission_preset": "danger-full-access"},
+    )
+
+    assert response.status_code == 200
+    session = hub._codex.get_session(created["session_id"])  # noqa: SLF001
+    assert session is not None
+    assert session.config.approval_policy == "never"
+    assert session.config.sandbox == "danger-full-access"
+
+
+def test_patch_codex_permission_preset_rejects_cc_with_422(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    created = create_session(client, cc_payload(workdir))
+    response = client.patch(
+        f"/api/agent/sessions/{created['session_id']}",
+        json={"permission_preset": "danger-full-access"},
+    )
+
+    assert response.status_code == 422

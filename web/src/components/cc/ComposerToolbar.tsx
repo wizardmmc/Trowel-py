@@ -4,7 +4,7 @@ import {
   ModelEffortChip,
   type EffortControlOption,
 } from "./ModelEffortChip";
-import { PermissionFactsChip } from "./PermissionFactsChip";
+import { PermissionFactsChip, type PermissionPreset } from "./PermissionFactsChip";
 
 export interface PermissionFacts {
   readonly requested: string | null;
@@ -13,6 +13,10 @@ export interface PermissionFacts {
   readonly approval: string | null;
   readonly network: boolean | null;
   readonly label: string | null;
+  readonly selectedPreset?: PermissionPreset | null;
+  // 不传时 PermissionFactsChip 回退到含 follow 的完整列表；活动会话应显式
+  // 传入不含 follow 的列表。
+  readonly selectablePresets?: readonly PermissionPreset[];
 }
 
 interface ComposerToolbarProps {
@@ -30,6 +34,7 @@ interface ComposerToolbarProps {
   readonly onRetryModelCatalog?: () => void;
   readonly settingsDisabled: boolean;
   readonly permissionFacts?: PermissionFacts | null;
+  readonly onSelectPermissionPreset?: (preset: PermissionPreset) => void;
   readonly memoryEnabled?: boolean | null;
   readonly profileEnabled?: boolean | null;
 }
@@ -49,6 +54,7 @@ export function ComposerToolbar({
   onRetryModelCatalog,
   settingsDisabled,
   permissionFacts,
+  onSelectPermissionPreset,
   memoryEnabled,
   profileEnabled,
 }: ComposerToolbarProps) {
@@ -67,7 +73,13 @@ export function ComposerToolbar({
           disabled={settingsDisabled}
         />
       )}
-      {permissionFacts && <PermissionFactsChip {...permissionFacts} />}
+      {permissionFacts && (
+        <PermissionFactsChip
+          {...permissionFacts}
+          onSelectPreset={onSelectPermissionPreset}
+          disabled={settingsDisabled}
+        />
+      )}
       {memoryEnabled != null && profileEnabled != null && (
         <MemoryProfileChip
           memoryEnabled={memoryEnabled}

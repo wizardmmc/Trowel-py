@@ -378,6 +378,7 @@ class CodexHostManager:
                 before_turn_start(session)
             self._require_registered(session)
             model, effort = session.next_turn_settings()
+            approval, sandbox = session.next_turn_permission_override()
             turn_result = await client.request(
                 "turn/start",
                 self._turn_start_params(
@@ -385,6 +386,8 @@ class CodexHostManager:
                     text,
                     model=model,
                     effort=effort,
+                    approval=approval,
+                    sandbox=sandbox,
                 ),
                 timeout=_REQUEST_TIMEOUT_S,
             )
@@ -718,12 +721,16 @@ class CodexHostManager:
         *,
         model: str | None = None,
         effort: str | None = None,
+        approval: str | None = None,
+        sandbox: str | None = None,
     ) -> dict[str, Any]:
         return manager_params.turn_start_params(
             thread_id,
             text,
             model=model,
             effort=effort,
+            approval=approval,
+            sandbox=sandbox,
         )
 
 

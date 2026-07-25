@@ -253,6 +253,30 @@ export async function updateAgentSessionSettings(
   );
 }
 
+export type PermissionPreset =
+  | "follow"
+  | "read-only"
+  | "workspace-write"
+  | "danger-full-access";
+
+export interface AgentPermissionSelection {
+  readonly permission_preset: PermissionPreset;
+}
+
+export async function updateAgentPermissionPreset(
+  sessionId: string,
+  preset: PermissionPreset,
+): Promise<AgentPermissionSelection> {
+  return request<AgentPermissionSelection>(
+    `${AGENT_API_BASE}/sessions/${sessionId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ permission_preset: preset }),
+    },
+  );
+}
+
 export async function listAgentHistory(
   workdir: string,
   options: { readonly limit?: number; readonly cursor?: string | null } = {},

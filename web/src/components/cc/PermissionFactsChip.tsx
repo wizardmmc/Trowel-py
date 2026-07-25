@@ -1,6 +1,34 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
+export type PermissionPreset =
+  | "follow"
+  | "read-only"
+  | "workspace-write"
+  | "danger-full-access";
+
+const PRESET_LABELS: Record<PermissionPreset, string> = {
+  follow: "Follow",
+  "read-only": "Read only",
+  "workspace-write": "Workspace write",
+  "danger-full-access": "Full access",
+};
+
+const PRESET_ORDER: readonly PermissionPreset[] = [
+  "follow",
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+];
+
+// 活动会话菜单不含 follow：会话内 Follow 在 sticky turn override 后没有
+// 确定的恢复语义。新会话对话框仍允许 follow 作为初始 preset。
+export const ACTIVE_SESSION_PRESETS: readonly PermissionPreset[] = [
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+];
+
 interface PermissionFactsChipProps {
   readonly requested: string | null;
   readonly profile: string | null;
@@ -8,6 +36,15 @@ interface PermissionFactsChipProps {
   readonly approval: string | null;
   readonly network: boolean | null;
   readonly label: string | null;
+  /**
+   * 可选 preset 选择器；不传 ``onSelectPreset`` 时 popover 只展示 effective facts，
+   * 保持旧只读行为。传 ``onSelectPreset`` 后用户可在 popover 内改变下一 turn 的
+   * requested permission，下个 turn/start 作为 override 生效。
+   */
+  readonly selectablePresets?: readonly PermissionPreset[];
+  readonly selectedPreset?: PermissionPreset | null;
+  readonly onSelectPreset?: (preset: PermissionPreset) => void;
+  readonly disabled?: boolean;
 }
 
 export function PermissionFactsChip({
@@ -17,28 +54,40 @@ export function PermissionFactsChip({
   approval,
   network,
   label,
+  selectablePresets,
+  selectedPreset,
+  onSelectPreset,
+  disabled,
 }: PermissionFactsChipProps) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  // Full access 必须二次确认；pendingDanger 标记用户已选中但未确认的切换。
+  const [pendingDanger, setPendingDanger] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const effectiveDanger =
     sandbox === "danger-full-access" && approval === "never";
   const requestedDanger = requested === "danger-full-access";
   const danger = effectiveDanger || requestedDanger;
-  const display =
-    label ??
-    (requested === "danger-full-access"
-      ? "Full access"
-      : requested ?? "follow");
-  const accessibleDisplay =
-    label ??
-    (requested === "danger-full-access"
-      ? "Full access（待 native 确认）"
-      : requested ?? "follow");
+  // requested 指向 Full access 但 native effective 还没跟上时，aria 后缀提示
+  // "待 native 确认"，避免 chip 假装 effective 已到 Full access。
+  const pendingNativeConfirm = requestedDanger && !effectiveDanger;
+  // chip 主显示优先反映用户请求的 preset；effective label 只在 requested
+  // 缺失时兜底，避免 PATCH 后 chip 仍显旧 effective、看上去没改成功。
+  const requestedLabel = presetDisplayLabel(requested);
+  const baseDisplay = requestedLabel ?? label ?? "follow";
+  const display = baseDisplay;
+  const accessibleDisplay = pendingNativeConfirm
+    ? `${baseDisplay}（待 native 确认）`
+    : baseDisplay;
+  const presets =
+    selectablePresets ?? (onSelectPreset ? PRESET_ORDER : []);
+  const canSelect = Boolean(onSelectPreset) && !disabled;
+  const ariaAction = canSelect ? "点开修改请求权限" : "查看 effective policy";
 
   function close(): void {
     setOpen(false);
     setAnchor(null);
+    setPendingDanger(false);
   }
 
   function toggle(): void {
@@ -49,6 +98,22 @@ export function PermissionFactsChip({
     const rect = buttonRef.current?.getBoundingClientRect();
     if (rect) setAnchor({ top: rect.top, left: rect.left });
     setOpen(true);
+  }
+
+  function selectPreset(preset: PermissionPreset): void {
+    if (!canSelect) return;
+    if (preset === "danger-full-access") {
+      // Full access 不立即下发；先弹出确认按钮，避免误触静默放宽权限。
+      setPendingDanger(true);
+      return;
+    }
+    setPendingDanger(false);
+    onSelectPreset?.(preset);
+  }
+
+  function confirmDanger(): void {
+    setPendingDanger(false);
+    onSelectPreset?.("danger-full-access");
   }
 
   useEffect(() => {
@@ -77,7 +142,7 @@ export function PermissionFactsChip({
         type="button"
         className={`cc-chip__btn${danger ? " cc-chip__btn--danger" : ""}`}
         onClick={toggle}
-        aria-label={`permission: ${accessibleDisplay}（查看 effective policy）`}
+        aria-label={`permission: ${accessibleDisplay}（${ariaAction}）`}
         title={accessibleDisplay}
       >
         <span className="cc-chip__label">permission</span>
@@ -101,20 +166,71 @@ export function PermissionFactsChip({
                     : "已请求 Full access；native thread 启动后会在下方显示实际 sandbox 与 approval。"}
                 </div>
               )}
-              <Fact label="requested" value={requested} />
-              <Fact label="profile" value={profile} />
-              <Fact label="sandbox" value={sandbox} />
-              <Fact label="approval" value={approval} />
-              <Fact
-                label="network"
-                value={network === null ? null : network ? "enabled" : "disabled"}
-              />
+              {canSelect && presets.length > 0 && (
+                <div
+                  className="cc-permission-facts__section"
+                  role="group"
+                  aria-label="请求权限（下个 turn 生效）"
+                >
+                  <div className="cc-permission-facts__section-title">
+                    请求权限（下个 turn 生效）
+                  </div>
+                  {presets.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={`cc-permission-facts__option${
+                        preset === selectedPreset
+                          ? " cc-permission-facts__option--sel"
+                          : ""
+                      }`}
+                      onClick={() => selectPreset(preset)}
+                      disabled={disabled}
+                    >
+                      <span className="cc-permission-facts__option-name">
+                        {PRESET_LABELS[preset]}
+                      </span>
+                    </button>
+                  ))}
+                  {pendingDanger && (
+                    <button
+                      type="button"
+                      className="cc-permission-facts__confirm"
+                      onClick={confirmDanger}
+                    >
+                      确认切换到 Full access
+                    </button>
+                  )}
+                </div>
+              )}
+              <div
+                className="cc-permission-facts__section"
+                role="group"
+                aria-label="原生 effective facts"
+              >
+                <div className="cc-permission-facts__section-title">
+                  原生 effective facts
+                </div>
+                <Fact label="profile" value={profile} />
+                <Fact label="sandbox" value={sandbox} />
+                <Fact label="approval" value={approval} />
+                <Fact
+                  label="network"
+                  value={network === null ? null : network ? "enabled" : "disabled"}
+                />
+              </div>
             </div>
           </>,
           document.body,
         )}
     </div>
   );
+}
+
+function presetDisplayLabel(requested: string | null): string | null {
+  if (!requested) return null;
+  const known = (PRESET_LABELS as Record<string, string>)[requested];
+  return known ?? requested;
 }
 
 function Fact({ label, value }: { readonly label: string; readonly value: string | null }) {

@@ -92,6 +92,9 @@ class CodexSession:
         self._pending: list[TranslatedItem] = []
         self._queue: asyncio.Queue[CodexEvent] = asyncio.Queue()
         self._pending_turn_settings: tuple[str, str] | None = None
+        # 暂存 (approval, sandbox) preset 字符串对，在下次 turn/start 作为 override
+        # 发送；permission 与 model/effort 是独立维度，不与 _pending_turn_settings 合并。
+        self._pending_permission_override: tuple[str | None, str | None] | None = None
 
     @property
     def config(self) -> CodexSessionConfig:
@@ -156,12 +159,78 @@ class CodexSession:
             return self._config.model, self._config.effort
         return None, None
 
+    @property
+    def can_queue_permission_override(self) -> bool:
+        """当前是否允许排队 permission override（活动 turn 期间不允许）。
+
+        供 PATCH 路径在持久化前做只读检查，避免 ``BindingStore.put`` 已写盘、
+        ``queue_permission_override`` 再抛错的部分成功。
+        """
+
+        return not self._sending and self._state in _SENDABLE_STATES
+
+    def queue_permission_override(
+        self, *, approval: str | None, sandbox: str | None
+    ) -> None:
+        """为下一个 turn 暂存 permission preset；活动 turn 期间拒绝修改。
+
+        ``approval`` 与 ``sandbox`` 取自 ``_CODEX_PERMISSION_PRESETS`` 映射，
+        保持 preset 的原子语义；``follow`` preset 排队 ``(None, None)`` 覆盖
+        之前的非空请求。override 在 ``commit_turn_settings`` 后清空。
+        """
+
+        if not self.can_queue_permission_override:
+            raise TurnConflictError(
+                f"session {self.session_id} cannot change permission in state "
+                f"{self._state.name}"
+            )
+        self._pending_permission_override = (approval, sandbox)
+
+    def next_turn_permission_override(self) -> tuple[str | None, str | None]:
+        """返回下一个 turn 的 permission override。
+
+        首次发送回退到会话配置的 approval/sandbox；已有活动 turn 且未暂存时
+        返回 ``(None, None)``，表示不向原生发送 override 字段。
+        """
+
+        if self._pending_permission_override is not None:
+            return self._pending_permission_override
+        if not self._has_started_turn:
+            return self._config.approval_policy, self._config.sandbox
+        return None, None
+
+    def apply_permission_override(
+        self, *, approval: str | None, sandbox: str | None
+    ) -> None:
+        """同步替换 live ``config`` 的 approval/sandbox，让重连读取新值。
+
+        与 ``queue_permission_override`` 互补：queue 写 ``_pending`` 供下次
+        ``turn/start`` override 使用、活动 turn 期间拒绝；apply 直接替换
+        ``_config``，影响 ``thread_resume_params``（重连路径）的输出，不参与
+        活动 turn 的并发仲裁——只在 PATCH 路径成功 queue 之后调用。
+
+        重连路径只读 ``_config``：若只更新 ``_pending`` 与持久 binding，
+        ``thread_resume_params`` 仍输出旧值，host 重连会用旧 approval/sandbox
+        覆盖用户刚选的权限。``None`` 入参表示清空，让重连不再发送 override。
+        """
+
+        self._config = replace(
+            self._config,
+            approval_policy=approval,
+            sandbox=sandbox,
+        )
+
     def commit_turn_settings(
         self, *, model: str | None, effort: str | None
     ) -> CodexEvent | None:
         """仅在 turn/start 被接受后提交设置，并按需发出 model_changed。"""
 
-        if self._binding is None or (model is None and effort is None):
+        if self._binding is None:
+            return None
+        # turn/start 已被原生接受，permission override 已随请求生效；无论本次
+        # 是否修改 model/effort，pending permission 都必须在提交窗口清空。
+        self._pending_permission_override = None
+        if model is None and effort is None:
             return None
         self._binding = replace(
             self._binding,

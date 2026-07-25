@@ -16,7 +16,9 @@ import {
   listAgentHistory as listSessions,
   listAgentRequests,
   updateAgentSessionSettings as apiUpdateSessionSettings,
+  updateAgentPermissionPreset as apiUpdatePermissionPreset,
   type AgentEventLike,
+  type PermissionPreset,
   type AgentHistoryRow,
   type AgentPendingRequest,
   type AgentSession,
@@ -69,6 +71,7 @@ interface CcState {
   refreshHistory: (workdir: string) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
   updateSessionSettings: (model: string, effort: string) => Promise<void>;
+  selectSessionPermissionPreset: (preset: PermissionPreset) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -397,6 +400,35 @@ export function createCcStore() {
                   settingsNotice: selection.adjusted
                     ? `当前模型不支持所选 effort，已改为 ${selection.effort}`
                     : "将在下一轮生效",
+                  transportError: null,
+                },
+              },
+            };
+          });
+        } catch (err) {
+          patchActive(() => ({ transportError: (err as Error).message }));
+        }
+      },
+
+      selectSessionPermissionPreset: async (preset) => {
+        const sid = get().activeSid;
+        if (!sid) return;
+        const current = get().sessions[sid];
+        if (!current || current.runtime !== "codex" || current.abort) return;
+        try {
+          const result = await apiUpdatePermissionPreset(sid, preset);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  // requested preset 立即更新；effective facts 仍以原生响应为准。
+                  permissionPreset: result.permission_preset,
+                  settingsNotice: "将在下一轮生效",
                   transportError: null,
                 },
               },

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ComposerToolbar, type PermissionFacts } from "./ComposerToolbar";
+import type { PermissionPreset } from "./PermissionFactsChip";
 import type { EffortControlOption } from "./ModelEffortChip";
 import { SlashAutocomplete } from "./SlashAutocomplete";
 import {
@@ -29,6 +30,7 @@ interface ComposerProps {
   readonly onRetryModelCatalog?: () => void;
   readonly settingsDisabled?: boolean;
   readonly permissionFacts?: PermissionFacts | null;
+  readonly onSelectPermissionPreset?: (preset: PermissionPreset) => void;
   readonly memoryEnabled?: boolean | null;
   readonly profileEnabled?: boolean | null;
 }
@@ -52,6 +54,7 @@ export function Composer({
   onRetryModelCatalog,
   settingsDisabled = false,
   permissionFacts,
+  onSelectPermissionPreset,
   memoryEnabled,
   profileEnabled,
 }: ComposerProps) {
@@ -240,6 +243,7 @@ export function Composer({
           onRetryModelCatalog={onRetryModelCatalog}
           settingsDisabled={settingsDisabled}
           permissionFacts={permissionFacts}
+          onSelectPermissionPreset={onSelectPermissionPreset}
           memoryEnabled={memoryEnabled}
           profileEnabled={profileEnabled}
         />

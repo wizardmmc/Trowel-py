@@ -167,7 +167,12 @@ async def patch_session(
     body: PatchAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """拒绝修改 runtime；model/effort 仅为下一次 Codex turn 排队。"""
+    """拒绝修改 runtime；model/effort/permission_preset 仅为下一次 Codex turn 排队。
+
+    ``permission_preset`` 立即写回 binding 的 requested 字段，下个 turn/start
+    作为 override 生效；其余字段按原契约排队。任一字段被处理时返回合并后的
+    ``data``，否则 ``data`` 为 ``None``。
+    """
 
     _call_hub(
         hub.patch,
@@ -175,15 +180,24 @@ async def patch_session(
         runtime=body.runtime,
         model=body.model,
         effort=body.effort,
+        permission_preset=body.permission_preset,
     )
-    data = None
+    data: dict[str, Any] | None = None
     if body.model is not None or body.effort is not None:
-        data = await _await_hub(
+        settings = await _await_hub(
             hub.update_codex_settings,
             session_id,
             model=body.model,
             effort=body.effort,
         )
+        data = {**settings}
+    if body.permission_preset is not None:
+        permission = await _await_hub(
+            hub.update_codex_permission,
+            session_id,
+            permission_preset=body.permission_preset,
+        )
+        data = {**(data or {}), **permission}
     return {"success": True, "data": data, "error": None}
 
 
