@@ -14,6 +14,8 @@ from trowel_py.memory.tidy_state import (
     enumerate_pending_weeks,
     load_state,
 )
+from trowel_py.memory.maintenance_work import MaintenanceLeaseGate
+from trowel_py.model_os.work_broker import WorkBroker
 
 from .report import _extract_failure, tidy_succeeded
 from .timing import seconds_until_next_monthday, seconds_until_next_weekday
@@ -53,6 +55,7 @@ class TidyScheduler:
         sleep_fn: SleepFn | None = None,
         weekly_fn: TidyFn | None = None,
         monthly_fn: TidyFn | None = None,
+        broker: WorkBroker | None = None,
     ) -> None:
         self._memory_root = memory_root
         self._provider_factory = provider_factory
@@ -62,6 +65,7 @@ class TidyScheduler:
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
         self._weekly_fn: TidyFn = weekly_fn or self._default_weekly
         self._monthly_fn: TidyFn = monthly_fn or self._default_monthly
+        self._work_gate = MaintenanceLeaseGate(broker)
         self._tasks: list[asyncio.Task[None]] = []
         self._started = False
         self._stopping = False
@@ -162,45 +166,49 @@ class TidyScheduler:
                         watermark,
                     )
                     return
-                started = self._now()
-                try:
-                    report = fn(period)
-                except Exception:
-                    logger.exception(
-                        "[memory] %s tidy (%s) raised — watermark stays at %s, "
-                        "stopping scope",
+                with self._work_gate.claim(f"memory.tidy.{scope}", period) as claim:
+                    if not claim.granted:
+                        return
+                    started = self._now()
+                    try:
+                        report = fn(period)
+                    except Exception:
+                        logger.exception(
+                            "[memory] %s tidy (%s) raised — watermark stays at %s, "
+                            "stopping scope",
+                            scope,
+                            period,
+                            watermark,
+                        )
+                        return
+                    elapsed = (self._now() - started).total_seconds()
+                    if not tidy_succeeded(report):
+                        reason = _extract_failure(report) or "unknown"
+                        logger.warning(
+                            "[memory] %s tidy (%s) not succeeded (%s) — watermark "
+                            "stays at %s, stopping scope",
+                            scope,
+                            period,
+                            reason,
+                            watermark,
+                        )
+                        return
+                    stamp = self._now().isoformat()
+                    state = (
+                        state.with_weekly(period, stamp)
+                        if scope == "weekly"
+                        else state.with_monthly(period, stamp)
+                    )
+                    _save_state(self._memory_root, state)
+                    claim.complete()
+                    watermark = period
+                    logger.info(
+                        "[memory] %s tidy (%s) done in %.1fs — watermark → %s",
                         scope,
                         period,
-                        watermark,
-                    )
-                    return
-                elapsed = (self._now() - started).total_seconds()
-                if not tidy_succeeded(report):
-                    reason = _extract_failure(report) or "unknown"
-                    logger.warning(
-                        "[memory] %s tidy (%s) not succeeded (%s) — watermark "
-                        "stays at %s, stopping scope",
-                        scope,
+                        elapsed,
                         period,
-                        reason,
-                        watermark,
                     )
-                    return
-                stamp = self._now().isoformat()
-                state = (
-                    state.with_weekly(period, stamp)
-                    if scope == "weekly"
-                    else state.with_monthly(period, stamp)
-                )
-                _save_state(self._memory_root, state)
-                watermark = period
-                logger.info(
-                    "[memory] %s tidy (%s) done in %.1fs — watermark → %s",
-                    scope,
-                    period,
-                    elapsed,
-                    period,
-                )
         finally:
             self._catchup_lock.release()
 
@@ -220,6 +228,8 @@ class TidyScheduler:
                     task.get_name(),
                 )
         self._tasks.clear()
+        if not await asyncio.to_thread(self._work_gate.wait_for_idle, 1.0):
+            logger.warning("[memory] tidy worker still running after shutdown drain")
         self._started = False
         # to_thread 中已开始的同步调用不能被 task.cancel() 终止，因此这里必须
         # 保持 True，让残留线程在下一个 period 前退出；下次 start() 再复位。

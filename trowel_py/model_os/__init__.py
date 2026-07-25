@@ -5,7 +5,8 @@
 WorkBroker 仲裁 foreground/default/maintenance 的 provider、预算和并发资源，并以
 lease/fencing 约束崩溃恢复和用量归因。
 
-Scheduler、Router、Episode Runner 及 memory scheduler 接入不属于本包当前实现。
+Attention Scheduler、Router 与 Episode Runner 尚未接入；三个 memory scheduler 已通过
+WorkBroker 领取 maintenance 资源租约。
 """
 
 from trowel_py.model_os.redaction import redact_payload

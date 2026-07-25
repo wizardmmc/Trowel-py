@@ -9,6 +9,7 @@ import pytest
 
 from trowel_py.memory.tidy_scheduler import TidyScheduler
 from trowel_py.memory.tidy_state import TidyState, load_state, save_state
+from trowel_py.model_os.work_broker import BrokerPolicy, WorkBroker, WorkKind
 
 from .support import (
     HangingSleep,
@@ -208,3 +209,64 @@ class TestCrashRecovery:
         scheduler._catchup_scope_sync("weekly", now)
         assert calls == ["2026-W30", "2026-W30"]
         assert load_state(tmp_path).weekly_last == "2026-W30"
+
+
+class TestWorkBrokerIntegration:
+    def test_completes_broker_period_only_after_tidy_watermark(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[str] = []
+        save_state(tmp_path, TidyState(weekly_last="2026-W29"))
+        broker = WorkBroker(
+            tmp_path / "model-os.db",
+            policy=BrokerPolicy(glm_account_order=("glm",)),
+        )
+        broker.open()
+        try:
+            scheduler = TidyScheduler(
+                tmp_path,
+                noop_provider,
+                now_fn=now_w31,
+                sleep_fn=HangingSleep(),
+                weekly_fn=recording_success(calls),
+                monthly_fn=ok_report,
+                broker=broker,
+            )
+
+            scheduler._catchup_scope_sync("weekly", now_w31())
+            scheduler._catchup_scope_sync("weekly", now_w31())
+
+            assert calls == ["2026-W30"]
+            assert load_state(tmp_path).weekly_last == "2026-W30"
+            assert broker.usage_totals(work_kind=WorkKind.MAINTENANCE).calls == 1
+        finally:
+            broker.close()
+
+    def test_failed_tidy_releases_broker_period_for_retry(self, tmp_path: Path) -> None:
+        calls: list[str] = []
+        save_state(tmp_path, TidyState(weekly_last="2026-W29"))
+        broker = WorkBroker(
+            tmp_path / "model-os.db",
+            policy=BrokerPolicy(glm_account_order=("glm",)),
+        )
+        broker.open()
+        try:
+            scheduler = TidyScheduler(
+                tmp_path,
+                noop_provider,
+                now_fn=now_w31,
+                sleep_fn=HangingSleep(),
+                weekly_fn=lambda period: calls.append(period) or error_report(period),
+                monthly_fn=ok_report,
+                broker=broker,
+            )
+
+            scheduler._catchup_scope_sync("weekly", now_w31())
+            scheduler._weekly_fn = recording_success(calls)
+            scheduler._catchup_scope_sync("weekly", now_w31())
+
+            assert calls == ["2026-W30", "2026-W30"]
+            assert load_state(tmp_path).weekly_last == "2026-W30"
+            assert broker.usage_totals(work_kind=WorkKind.MAINTENANCE).calls == 2
+        finally:
+            broker.close()

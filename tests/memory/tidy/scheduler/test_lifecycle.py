@@ -195,4 +195,35 @@ class TestLifespanIntegration:
             assert scheduler is not None
             assert scheduler._started is True
             assert len(scheduler.tasks) == 3
+            assert app.state.work_broker is not None
+            assert scheduler._work_gate._broker is app.state.work_broker
+            assert (
+                app.state.memory_scheduler._work_gate._broker is app.state.work_broker
+            )
+            assert (
+                app.state.distill_scheduler._work_gate._broker is app.state.work_broker
+            )
         assert app.state.tidy_scheduler.tasks == ()
+        assert app.state.work_broker._conn is None
+
+    def test_broker_failure_keeps_model_maintenance_off(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from trowel_py.app import create_app
+        from trowel_py.memory import paths as memory_paths
+        from trowel_py.model_os.work_broker import WorkBroker
+
+        monkeypatch.setattr(memory_paths, "resolve_memory_root", lambda: tmp_path)
+
+        def fail_open(_self: WorkBroker) -> int:
+            raise RuntimeError("cannot open broker")
+
+        monkeypatch.setattr(WorkBroker, "open_recover", fail_open)
+        app = create_app()
+        with TestClient(app):
+            assert app.state.work_broker is None
+            assert app.state.memory_scheduler is None
+            assert app.state.distill_scheduler is None
+            assert app.state.tidy_scheduler is None

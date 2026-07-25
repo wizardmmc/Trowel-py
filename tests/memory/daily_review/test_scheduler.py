@@ -13,6 +13,7 @@ from trowel_py.memory.daily_review.scheduler import (
     load_review_config,
 )
 from trowel_py.memory.scheduling import seconds_until
+from trowel_py.model_os.work_broker import BrokerPolicy, WorkBroker, WorkKind
 
 
 @pytest.fixture(autouse=True)
@@ -25,13 +26,19 @@ def _reset_register_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestSecondsUntil:
     def test_same_day_when_target_ahead(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 1, 0)) == pytest.approx(5400)
+        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 1, 0)) == pytest.approx(
+            5400
+        )
 
     def test_cross_midnight_when_target_passed(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 3, 0)) == pytest.approx(84600)
+        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 3, 0)) == pytest.approx(
+            84600
+        )
 
     def test_exact_now_rolls_to_tomorrow(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 2, 30, 0)) == pytest.approx(86400)
+        assert seconds_until(
+            time(2, 30), datetime(2026, 7, 13, 2, 30, 0)
+        ) == pytest.approx(86400)
 
 
 class TestLoadReviewConfig:
@@ -143,11 +150,39 @@ class TestSchedulerRunOnce:
         sched = MemoryReviewScheduler(_cfg(), tmp_path, dispatch_fn=boom)
         await sched._run_once()
 
+    async def test_run_once_uses_broker_and_merges_same_date(self, tmp_path):
+        calls: list[dict] = []
+        broker = WorkBroker(
+            tmp_path / "model-os.db",
+            policy=BrokerPolicy(glm_account_order=("glm",)),
+        )
+        broker.open()
+        try:
+            sched = MemoryReviewScheduler(
+                _cfg(),
+                tmp_path,
+                dispatch_fn=calls.append,
+                now_fn=lambda: datetime(2026, 7, 24, 9, 15),
+                broker=broker,
+            )
+
+            await sched._run_once(label="catchup")
+            await sched._run_once(label="daily")
+
+            assert len(calls) == 1
+            assert broker.usage_totals(work_kind=WorkKind.MAINTENANCE).calls == 1
+            assert broker.active_leases() == ()
+        finally:
+            broker.close()
+
 
 class TestSchedulerStartStop:
     async def test_disabled_creates_no_tasks(self, tmp_path):
         sched = MemoryReviewScheduler(
-            _cfg(enabled=False), tmp_path, dispatch_fn=lambda _e: None, sleep_fn=_HangingSleep()
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=lambda _e: None,
+            sleep_fn=_HangingSleep(),
         )
         await sched.start()
         assert sched.tasks == ()
@@ -231,6 +266,7 @@ class TestLifespanIntegration:
             assert sched is not None
             assert sched._started is True
             assert len(sched.tasks) == 2
+            assert app.state.work_broker.policy.concurrency_per_account == 2
         assert app.state.memory_scheduler.tasks == ()
 
     def test_disabled_does_not_start(self, tmp_path, monkeypatch):
@@ -244,7 +280,9 @@ class TestLifespanIntegration:
         monkeypatch.setattr(
             rs_mod,
             "load_review_config",
-            lambda *_a, **_k: rs_mod.ReviewScheduleConfig(rs_mod.DEFAULT_REVIEW_TIME, False),
+            lambda *_a, **_k: rs_mod.ReviewScheduleConfig(
+                rs_mod.DEFAULT_REVIEW_TIME, False
+            ),
         )
         app = create_app()
         with TestClient(app):

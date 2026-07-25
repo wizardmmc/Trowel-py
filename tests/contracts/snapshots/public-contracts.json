@@ -265,6 +265,24 @@
         "sql": "CREATE UNIQUE INDEX idx_leases_idem ON leases(resource_type, resource_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND released_at IS NULL"
       },
       {
+        "type": "index",
+        "name": "idx_work_leases_active",
+        "table": "work_leases",
+        "sql": "CREATE UNIQUE INDEX idx_work_leases_active ON work_leases(slot) WHERE released_at IS NULL"
+      },
+      {
+        "type": "index",
+        "name": "idx_work_usage_dim",
+        "table": "work_usage",
+        "sql": "CREATE INDEX idx_work_usage_dim ON work_usage(work_kind, provider, account_id, day)"
+      },
+      {
+        "type": "index",
+        "name": "idx_work_usage_obs",
+        "table": "work_usage",
+        "sql": "CREATE UNIQUE INDEX idx_work_usage_obs ON work_usage(lease_id, observation_id) WHERE observation_id IS NOT NULL"
+      },
+      {
         "type": "table",
         "name": "cognitive_signal_projection",
         "table": "cognitive_signal_projection",
@@ -329,6 +347,36 @@
         "name": "task_create_keys",
         "table": "task_create_keys",
         "sql": "CREATE TABLE task_create_keys ( idempotency_key TEXT PRIMARY KEY NOT NULL CHECK (length(trim(idempotency_key)) > 0), task_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "work_catchup_watermark",
+        "table": "work_catchup_watermark",
+        "sql": "CREATE TABLE work_catchup_watermark ( scope TEXT NOT NULL, period TEXT NOT NULL, work_kind TEXT NOT NULL, lease_id TEXT, state TEXT NOT NULL, claimed_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (scope, period, work_kind) )"
+      },
+      {
+        "type": "table",
+        "name": "work_fence_counters",
+        "table": "work_fence_counters",
+        "sql": "CREATE TABLE work_fence_counters ( slot TEXT PRIMARY KEY, last_token INTEGER NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "work_idempotency_keys",
+        "table": "work_idempotency_keys",
+        "sql": "CREATE TABLE work_idempotency_keys ( idempotency_key TEXT PRIMARY KEY, lease_id TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "work_leases",
+        "table": "work_leases",
+        "sql": "CREATE TABLE work_leases ( lease_id TEXT PRIMARY KEY, slot TEXT NOT NULL, provider TEXT NOT NULL, account_id TEXT NOT NULL, work_kind TEXT NOT NULL, model_tier TEXT NOT NULL, task_id TEXT, work_item_id TEXT, granted_cap TEXT, started INTEGER NOT NULL DEFAULT 0, in_critical INTEGER NOT NULL DEFAULT 0, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, fencing_token INTEGER NOT NULL, idempotency_key TEXT, policy_version TEXT NOT NULL, released_at TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "work_usage",
+        "table": "work_usage",
+        "sql": "CREATE TABLE work_usage ( seq INTEGER PRIMARY KEY AUTOINCREMENT, observation_id TEXT, lease_id TEXT, provider TEXT NOT NULL, account_id TEXT NOT NULL, work_kind TEXT NOT NULL, model_tier TEXT NOT NULL, task_id TEXT, work_item_id TEXT, calls INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cost REAL, wall_seconds INTEGER, occurred_at TEXT NOT NULL, day TEXT NOT NULL, policy_version TEXT NOT NULL )"
       }
     ]
   },

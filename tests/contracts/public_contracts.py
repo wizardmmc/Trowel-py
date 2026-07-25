@@ -14,6 +14,7 @@ from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
 from trowel_py.memory.sessions_repo import SessionsRepository
 from trowel_py.model_os.store import ModelOsStore
+from trowel_py.model_os.work_broker import WorkBroker
 from trowel_py.schemas.agent_host import AGENT_EVENT_TYPES
 from trowel_py.schemas.cc_host import EVENT_TYPES
 
@@ -137,6 +138,9 @@ def _database_schemas() -> dict[str, list[dict[str, str]]]:
         model_os_store = ModelOsStore(model_os_path)
         model_os_store.open()
         model_os_store.close()
+        work_broker = WorkBroker(model_os_path)
+        work_broker.open()
+        work_broker.close()
         model_os_conn = sqlite3.connect(model_os_path)
         model_os_schema = _schema_objects(model_os_conn)
         model_os_conn.close()
@@ -166,9 +170,7 @@ def capture_public_contracts() -> dict[str, Any]:
 
 def main() -> None:
     if sys.argv[1:] != ["--update"]:
-        raise SystemExit(
-            "usage: python -m tests.contracts.public_contracts --update"
-        )
+        raise SystemExit("usage: python -m tests.contracts.public_contracts --update")
     SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT_PATH.write_text(
         json.dumps(capture_public_contracts(), ensure_ascii=False, indent=2) + "\n",

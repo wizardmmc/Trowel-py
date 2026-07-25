@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -44,72 +45,20 @@ async def lifespan(app: FastAPI):
     )
     if bootstrap_layer_one():
         logger.info("[memory] seeded layer-one core.md (试用期)")
-    # 可选后台组件必须隔离启动失败，避免局部配置或依赖问题阻断应用。
+    from trowel_py.memory import paths as _memory_paths
+
+    memory_root = None
     try:
-        from trowel_py.memory import paths as _mem_paths
-        from trowel_py.memory.daily_review.scheduler import (
-            MemoryReviewScheduler,
-            load_review_config,
-        )
-
-        scheduler = MemoryReviewScheduler(
-            load_review_config(), _mem_paths.resolve_memory_root()
-        )
-        await scheduler.start()
-        app.state.memory_scheduler = scheduler
+        memory_root = _memory_paths.resolve_memory_root()
     except Exception:
-        logger.warning("[memory] review scheduler failed to start", exc_info=True)
-        app.state.memory_scheduler = None
-    # 后台提炼启动失败不能阻断应用。
-    try:
-        from trowel_py.memory import paths as _distill_paths
-        from trowel_py.memory.profile_distill.scheduler import (
-            ProfileDistillScheduler,
-            load_distill_config,
-        )
-
-        distill_scheduler = ProfileDistillScheduler(
-            load_distill_config(),
-            _distill_paths.resolve_memory_root(),
-            app.state.proxy_base_url,
-            app.state.cc_settings_path,
-        )
-        await distill_scheduler.start()
-        app.state.distill_scheduler = distill_scheduler
-    except Exception:
-        logger.warning(
-            "[memory] profile distill scheduler failed to start", exc_info=True
-        )
-        app.state.distill_scheduler = None
-    try:
-        from trowel_py.memory import paths as _tidy_paths
-        from trowel_py.memory.tidy_scheduler import TidyScheduler
-
-        def _tidy_provider_factory():
-            from trowel_py.config import load_llm_config
-            from trowel_py.llm.client import AnthropicProvider
-
-            return AnthropicProvider(load_llm_config())
-
-        tidy_scheduler = TidyScheduler(
-            _tidy_paths.resolve_memory_root(), _tidy_provider_factory
-        )
-        await tidy_scheduler.start()
-        app.state.tidy_scheduler = tidy_scheduler
-    except Exception:
-        logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
-        app.state.tidy_scheduler = None
-    # manager 延迟拉起 app-server；未使用 Codex 时不创建子进程。
-    try:
-        from trowel_py.codex_host import CodexHostManager
-
-        app.state.codex_host_manager = CodexHostManager()
-    except Exception:
-        logger.warning("[codex] host manager init failed", exc_info=True)
-        app.state.codex_host_manager = None
+        logger.warning("[memory] root resolution failed", exc_info=True)
     app.state.quota_read_model = None
     app.state.quota_scheduler = None
     app.state.quota_http_client = None
+    app.state.work_broker = None
+    app.state.memory_scheduler = None
+    app.state.distill_scheduler = None
+    app.state.tidy_scheduler = None
     quota_observer = None
     try:
         from trowel_py.quota.codex import make_codex_observer
@@ -140,6 +89,102 @@ async def lifespan(app: FastAPI):
             logger.info("[quota] GLM poller off (set TROWEL_QUOTA_POLL=1 to enable)")
     except Exception:
         logger.warning("[quota] read model failed to start", exc_info=True)
+    work_broker = None
+    try:
+        from trowel_py.model_os.work_broker import BrokerPolicy, WorkBroker
+
+        if memory_root is None:
+            raise RuntimeError("memory root is unavailable")
+        broker_path = memory_root / "meta" / "model-os.db"
+        broker_path.parent.mkdir(parents=True, exist_ok=True)
+        work_broker = WorkBroker(
+            broker_path,
+            policy=BrokerPolicy(
+                glm_account_order=("glm",),
+                concurrency_per_account=2,
+            ),
+            read_model=app.state.quota_read_model,
+        )
+        recovered = work_broker.open_recover()
+        if recovered:
+            logger.info("[workbroker] recovered %d expired lease(s)", recovered)
+        app.state.work_broker = work_broker
+    except Exception:
+        logger.warning("[workbroker] failed to start", exc_info=True)
+        if work_broker is not None:
+            work_broker.close()
+
+    # 三套模型型 maintenance 在 Broker 不可用时保持关闭，不能静默绕过仲裁。
+    try:
+        from trowel_py.memory.daily_review.scheduler import (
+            MemoryReviewScheduler,
+            load_review_config,
+        )
+
+        if app.state.work_broker is None:
+            raise RuntimeError("WorkBroker is unavailable")
+        assert memory_root is not None
+        scheduler = MemoryReviewScheduler(
+            load_review_config(),
+            memory_root,
+            broker=app.state.work_broker,
+        )
+        await scheduler.start()
+        app.state.memory_scheduler = scheduler
+    except Exception:
+        logger.warning("[memory] review scheduler failed to start", exc_info=True)
+    try:
+        from trowel_py.memory.profile_distill.scheduler import (
+            ProfileDistillScheduler,
+            load_distill_config,
+        )
+
+        if app.state.work_broker is None:
+            raise RuntimeError("WorkBroker is unavailable")
+        assert memory_root is not None
+        distill_scheduler = ProfileDistillScheduler(
+            load_distill_config(),
+            memory_root,
+            app.state.proxy_base_url,
+            app.state.cc_settings_path,
+            broker=app.state.work_broker,
+        )
+        await distill_scheduler.start()
+        app.state.distill_scheduler = distill_scheduler
+    except Exception:
+        logger.warning(
+            "[memory] profile distill scheduler failed to start", exc_info=True
+        )
+    try:
+        from trowel_py.memory.tidy_scheduler import TidyScheduler
+
+        if app.state.work_broker is None:
+            raise RuntimeError("WorkBroker is unavailable")
+        assert memory_root is not None
+
+        def _tidy_provider_factory():
+            from trowel_py.config import load_llm_config
+            from trowel_py.llm.client import AnthropicProvider
+
+            return AnthropicProvider(load_llm_config())
+
+        tidy_scheduler = TidyScheduler(
+            memory_root,
+            _tidy_provider_factory,
+            broker=app.state.work_broker,
+        )
+        await tidy_scheduler.start()
+        app.state.tidy_scheduler = tidy_scheduler
+    except Exception:
+        logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
+    # manager 延迟拉起 app-server；未使用 Codex 时不创建子进程。
+    try:
+        from trowel_py.codex_host import CodexHostManager
+
+        app.state.codex_host_manager = CodexHostManager()
+    except Exception:
+        logger.warning("[codex] host manager init failed", exc_info=True)
+        app.state.codex_host_manager = None
     try:
         from trowel_py.agent_host import (
             BindingStore,
@@ -178,6 +223,22 @@ async def lifespan(app: FastAPI):
             await _tidy.stop()
         except Exception:
             logger.warning("[memory] tidy scheduler stop failed", exc_info=True)
+    _work_broker = getattr(app.state, "work_broker", None)
+    if _work_broker is not None:
+        try:
+            for _ in range(100):
+                if not _work_broker.active_leases():
+                    break
+                await asyncio.sleep(0.01)
+            if _work_broker.active_leases():
+                logger.warning(
+                    "[workbroker] shutdown left an in-flight maintenance lease; "
+                    "connection stays open until process exit"
+                )
+            else:
+                _work_broker.close()
+        except Exception:
+            logger.warning("[workbroker] close failed", exc_info=True)
     _codex_mgr = getattr(app.state, "codex_host_manager", None)
     if _codex_mgr is not None:
         try:
