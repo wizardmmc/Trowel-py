@@ -7,7 +7,7 @@ from trowel_py.model_os.context_observer import (
     NormalizedCcEvent,
 )
 
-FIXTURES_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "context_observer"
+FIXTURES_ROOT = Path(__file__).resolve().parent / "fixtures"
 FIXTURES_CC = FIXTURES_ROOT / "cc"
 FIXTURES_CODEX = FIXTURES_ROOT / "codex"
 
