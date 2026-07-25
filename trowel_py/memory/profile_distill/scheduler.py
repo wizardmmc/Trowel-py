@@ -1,21 +1,23 @@
 """在应用生命周期内调度每日 profile distill。"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import tomllib
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from trowel_py.memory import paths
+from trowel_py.memory.maintenance_work import MaintenanceLeaseGate
 from trowel_py.memory.scheduling import seconds_until
+from trowel_py.model_os.work_broker import WorkBroker
 
 logger = logging.getLogger("trowel_py.memory.profile_distill_scheduler")
 
-# 默认比 daily review 晚 20 分钟，降低两个 CC 任务争抢额度的概率。
-DEFAULT_DISTILL_TIME: time = time(2, 50)
+DEFAULT_DISTILL_TIME: time = time(2, 30)
 DEFAULT_DISTILL_ENABLED: bool = True
 
 DispatchFn = Callable[[dict[str, Any]], None]
@@ -80,7 +82,8 @@ def _default_dispatch(event: dict[str, Any]) -> None:
     """直接调用 distill job；并发锁和水位幂等由 job 自身负责。"""
     from trowel_py.memory.profile_distill_job import run_daily_distill_sync
 
-    run_daily_distill_sync(event)
+    if not run_daily_distill_sync(event):
+        raise RuntimeError("profile distill skipped because its process lock is busy")
 
 
 class ProfileDistillScheduler:
@@ -96,6 +99,7 @@ class ProfileDistillScheduler:
         dispatch_fn: DispatchFn | None = None,
         now_fn: NowFn | None = None,
         sleep_fn: SleepFn | None = None,
+        broker: WorkBroker | None = None,
     ) -> None:
         self._config = config
         self._memory_root = memory_root
@@ -104,6 +108,7 @@ class ProfileDistillScheduler:
         self._dispatch: DispatchFn = dispatch_fn or _default_dispatch
         self._now: NowFn = now_fn or datetime.now
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
+        self._work_gate = MaintenanceLeaseGate(broker)
         self._tasks: list[asyncio.Task[None]] = []
         self._started = False
 
@@ -143,6 +148,8 @@ class ProfileDistillScheduler:
                     task.get_name(),
                 )
         self._tasks.clear()
+        if not await asyncio.to_thread(self._work_gate.wait_for_idle, 1.0):
+            logger.warning("[memory] distill worker still running after shutdown drain")
         self._started = False
 
     async def _catchup(self) -> None:
@@ -161,13 +168,26 @@ class ProfileDistillScheduler:
 
     async def _run_once(self, *, label: str = "run") -> None:
         """在线程中派发一次提炼；代理信息随事件传递，失败不影响应用。"""
+        now = self._now()
+        if now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        period = (cutoff.date() - timedelta(days=1)).isoformat()
         event = {
-            "date": date.today().isoformat(),
+            "date": now.date().isoformat(),
+            "eligible_before": cutoff.isoformat(),
             "root": str(self._memory_root),
             "proxy_base_url": self._proxy_base_url,
             "settings_path": str(self._settings_path) if self._settings_path else None,
         }
         try:
-            await asyncio.to_thread(self._dispatch, event)
+            await asyncio.to_thread(self._dispatch_with_lease, event, period)
         except Exception:
             logger.exception("[memory] profile distill dispatch (%s) failed", label)
+
+    def _dispatch_with_lease(self, event: dict[str, Any], period: str) -> None:
+        with self._work_gate.claim("profile.distill", period) as claim:
+            if not claim.granted:
+                return
+            self._dispatch(event)
+            claim.complete()

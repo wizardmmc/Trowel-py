@@ -66,6 +66,7 @@
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
 | `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
+| `memory/maintenance_work.py` | 三套 memory scheduler 共用的 WorkLease 领取、续租与结算门禁 |
 | `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
 | `memory/profile_distill/` | gate、agent 驱动、批处理、prompt、独立水位、重校准与应用内调度 |
 | `memory/compress/` | daily、weekly、monthly 的生成、来源校验、预算与缓存生命周期 |

@@ -1,4 +1,5 @@
 """在应用生命周期内调度 daily memory review。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +12,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from trowel_py.memory import paths
+from trowel_py.memory.maintenance_work import MaintenanceLeaseGate
 from trowel_py.memory.scheduling import seconds_until
+from trowel_py.model_os.work_broker import WorkBroker
 
 logger = logging.getLogger("trowel_py.memory.review_scheduler")
 
@@ -40,7 +43,9 @@ def _parse_time(raw: str | None) -> time:
         return time(int(hh), int(mm))
     except (ValueError, AttributeError):
         logger.warning(
-            "[memory] invalid review_time %r, using default %s", raw, DEFAULT_REVIEW_TIME
+            "[memory] invalid review_time %r, using default %s",
+            raw,
+            DEFAULT_REVIEW_TIME,
         )
         return DEFAULT_REVIEW_TIME
 
@@ -81,13 +86,19 @@ def _default_dispatch(event: dict[str, Any]) -> None:
     """首次调用时注册 review job，随后走与 CLI 相同的 hook 链。"""
     global _REVIEW_JOB_REGISTERED
     from trowel_py.memory import hooks
-    from trowel_py.memory.review_job import run_daily_review_sync
 
     with _REG_LOCK:
         if not _REVIEW_JOB_REGISTERED:
-            hooks.default.register_write_job(run_daily_review_sync)
+            hooks.default.register_write_job(_run_scheduled_review)
             _REVIEW_JOB_REGISTERED = True
     hooks.default.dispatch_write_job(event)
+
+
+def _run_scheduled_review(event: Any) -> None:
+    from trowel_py.memory.review_job import run_daily_review_sync
+
+    if not run_daily_review_sync(event):
+        raise RuntimeError("daily review skipped because its process lock is busy")
 
 
 class MemoryReviewScheduler:
@@ -101,12 +112,14 @@ class MemoryReviewScheduler:
         dispatch_fn: DispatchFn | None = None,
         now_fn: NowFn | None = None,
         sleep_fn: SleepFn | None = None,
+        broker: WorkBroker | None = None,
     ) -> None:
         self._config = config
         self._memory_root = memory_root
         self._dispatch: DispatchFn = dispatch_fn or _default_dispatch
         self._now: NowFn = now_fn or datetime.now
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
+        self._work_gate = MaintenanceLeaseGate(broker)
         self._tasks: list[asyncio.Task[None]] = []
         self._started = False
 
@@ -124,8 +137,12 @@ class MemoryReviewScheduler:
             self._config.review_time,
             self._memory_root,
         )
-        self._tasks.append(asyncio.create_task(self._catchup(), name="memory-review-catchup"))
-        self._tasks.append(asyncio.create_task(self._daily_loop(), name="memory-review-daily"))
+        self._tasks.append(
+            asyncio.create_task(self._catchup(), name="memory-review-catchup")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._daily_loop(), name="memory-review-daily")
+        )
 
     async def stop(self) -> None:
         """取消调度 task；线程中已开始的 review 不会被强制终止。"""
@@ -141,6 +158,8 @@ class MemoryReviewScheduler:
                     "[memory] scheduler task %s raised on shutdown", task.get_name()
                 )
         self._tasks.clear()
+        if not await asyncio.to_thread(self._work_gate.wait_for_idle, 1.0):
+            logger.warning("[memory] review worker still running after shutdown drain")
         self._started = False
 
     async def _catchup(self) -> None:
@@ -169,6 +188,17 @@ class MemoryReviewScheduler:
             "root": str(self._memory_root),
         }
         try:
-            await asyncio.to_thread(self._dispatch, event)
+            await asyncio.to_thread(
+                self._dispatch_with_lease,
+                event,
+                (cutoff.date() - timedelta(days=1)).isoformat(),
+            )
         except Exception:
             logger.exception("[memory] review dispatch (%s) failed", label)
+
+    def _dispatch_with_lease(self, event: dict[str, Any], period: str) -> None:
+        with self._work_gate.claim("memory.review", period) as claim:
+            if not claim.granted:
+                return
+            self._dispatch(event)
+            claim.complete()

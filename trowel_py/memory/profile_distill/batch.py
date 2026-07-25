@@ -54,7 +54,8 @@ async def run_daily_distill(
     settings_path: Path | str | None = None,
     host_factory: HostFactory | None = None,
     date_str: str | None = None,
-) -> None:
+    completed_before: str | None = None,
+) -> bool:
     """串行提炼有新内容的 session；失败项不推进独立水位。"""
     root = memory_root if memory_root is not None else resolve_memory_root()
     if date_str is None:
@@ -62,10 +63,17 @@ async def run_daily_distill(
     try:
         with _distill_lock(root):
             await _run_daily_distill_locked(
-                root, proxy_base_url, settings_path, host_factory, date_str
+                root,
+                proxy_base_url,
+                settings_path,
+                host_factory,
+                date_str,
+                completed_before,
             )
+        return True
     except BlockingIOError:
         logger.warning("profile distill already running; skipping this run")
+        return False
 
 
 async def _run_daily_distill_locked(
@@ -74,11 +82,12 @@ async def _run_daily_distill_locked(
     settings_path: Path | str | None,
     host_factory: HostFactory | None,
     date_str: str,
+    completed_before: str | None,
 ) -> None:
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        candidates = repo.find_all_completed_sessions()
+        candidates = repo.find_all_completed_sessions(completed_before=completed_before)
         processed = load_processed(root)
         backlog: list[tuple[SessionRecord, int, int]] = []
         for session in candidates:
@@ -132,7 +141,7 @@ async def _run_daily_distill_locked(
         conn.close()
 
 
-def run_daily_distill_sync(event: Any = None) -> None:
+def run_daily_distill_sync(event: Any = None) -> bool:
     """把 scheduler event 映射为异步批处理参数。"""
     import asyncio
 
@@ -140,17 +149,20 @@ def run_daily_distill_sync(event: Any = None) -> None:
     date_str = None
     proxy_base_url = ""
     settings_path = None
+    completed_before = None
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
         proxy_base_url = event.get("proxy_base_url", "")
         settings_path = event.get("settings_path")
+        completed_before = event.get("eligible_before")
     root_path = Path(root) if root else None
-    asyncio.run(
+    return asyncio.run(
         run_daily_distill(
             root_path,
             proxy_base_url,
             settings_path=settings_path,
             date_str=date_str,
+            completed_before=completed_before,
         )
     )

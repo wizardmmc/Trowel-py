@@ -65,6 +65,18 @@ def test_find_all_completed_returns_sessions_with_completed_offset() -> None:
     assert {session.cc_session_id for session in found} == {"a", "b"}
 
 
+def test_find_all_completed_only_returns_sessions_completed_before_cutoff() -> None:
+    repo = repository()
+    repo.register(session_record(cc_session_id="yesterday"))
+    repo.register(session_record(cc_session_id="today"))
+    repo.update_completed("yesterday", 100, when="2026-07-23T23:59:59")
+    repo.update_completed("today", 100, when="2026-07-24T00:00:00")
+
+    found = repo.find_all_completed_sessions(completed_before="2026-07-24T00:00:00")
+
+    assert [session.cc_session_id for session in found] == ["yesterday"]
+
+
 def test_find_all_completed_only_includes_user_kind_by_default() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="user", session_kind="user"))

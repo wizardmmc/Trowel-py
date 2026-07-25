@@ -277,6 +277,8 @@ class SessionsRepository:
     def find_all_completed_sessions(
         self,
         exclude_kinds: list[str] | None = None,
+        *,
+        completed_before: str | None = None,
     ) -> list[SessionRecord]:
         """返回已完成 session；默认只允许用户会话进入提炼。"""
         if exclude_kinds is None:
@@ -284,14 +286,18 @@ class SessionsRepository:
             params: list[str] = []
         else:
             placeholders = ",".join("?" * len(exclude_kinds))
-            where_kind = (
-                "COALESCE(session_kind, 'user') NOT IN " f"({placeholders})"
-            )
-            params = exclude_kinds
+            where_kind = f"COALESCE(session_kind, 'user') NOT IN ({placeholders})"
+            params = list(exclude_kinds)
+        cutoff_sql = ""
+        if completed_before is not None:
+            cutoff_sql = " AND last_completed_at < ?"
+            params.append(completed_before)
         rows = self._conn.execute(
             "SELECT * FROM sessions WHERE "
             + where_kind
-            + " AND last_completed_offset IS NOT NULL ORDER BY registered_at",
+            + " AND last_completed_offset IS NOT NULL"
+            + cutoff_sql
+            + " ORDER BY registered_at",
             params,
         ).fetchall()
         return [row_to_record(row) for row in rows]

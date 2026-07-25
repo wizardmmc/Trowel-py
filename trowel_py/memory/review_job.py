@@ -57,7 +57,7 @@ async def run_daily_review(
     host_factory: HostFactory | None = None,
     provider: Any = None,
     eligible_before: str | None = None,
-) -> None:
+) -> bool:
     """提炼所有已完成但尚未推进 extracted 水位的增量 segment。
 
     并发调用无法取得锁时直接跳过。``date_str`` 只作为 review workdir 和
@@ -82,11 +82,13 @@ async def run_daily_review(
                 provider,
                 eligible_before,
             )
+        return True
     except BlockingIOError:
         logger.warning("daily review already running; skipping this run")
+        return False
 
 
-def run_daily_review_sync(event: Any = None) -> None:
+def run_daily_review_sync(event: Any = None) -> bool:
     """为同步 hook 运行异步 daily review。"""
     import asyncio
 
@@ -98,7 +100,7 @@ def run_daily_review_sync(event: Any = None) -> None:
         date_str = event.get("date")
         eligible_before = event.get("eligible_before")
     root_path = Path(root) if root else None
-    asyncio.run(
+    return asyncio.run(
         run_daily_review(
             event,
             memory_root=root_path,

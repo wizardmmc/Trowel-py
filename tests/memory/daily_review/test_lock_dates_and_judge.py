@@ -62,6 +62,14 @@ def test_review_lock_is_mutually_exclusive(tmp_path: Path) -> None:
         os.close(holder)
 
 
+async def test_review_reports_busy_lock_without_running(tmp_path: Path) -> None:
+    if fcntl is None:
+        pytest.skip("当前平台不支持 flock")
+    memory_root = tmp_path / "memory"
+    with _review_lock(memory_root):
+        assert await run_daily_review(memory_root=memory_root) is False
+
+
 async def test_each_distilled_session_is_judged(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tests.memory.profile_distill.support import (
     ERROR,
     FINISHED,
@@ -14,7 +16,11 @@ from tests.memory.profile_distill.support import (
     session_record,
 )
 from trowel_py.memory.profile_distill.state import load_processed, mark_processed
-from trowel_py.memory.profile_distill_job import run_daily_distill
+from trowel_py.memory.profile_distill.batch import _distill_lock, fcntl
+from trowel_py.memory.profile_distill_job import (
+    run_daily_distill,
+    run_daily_distill_sync,
+)
 from trowel_py.memory.profile_suggestions import (
     PROFILE_DISTILL_POLICY_VERSION,
     load_suggestions,
@@ -41,6 +47,72 @@ async def test_run_daily_distill_appends_and_marks(tmp_path: Path) -> None:
     processed = load_processed(root)
     assert "s1" in processed
     assert processed["s1"].end_offset == 1000
+
+
+async def test_run_daily_distill_only_processes_sessions_before_cutoff(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    seed_session(root, "yesterday", completed=1000)
+    seed_session(root, "today", completed=1000)
+    conn = open_sessions_db(root)
+    try:
+        repo = create_sessions_repository(conn)
+        repo.update_completed("yesterday", 1000, when="2026-07-14T23:59:59")
+        repo.update_completed("today", 1000, when="2026-07-15T00:00:00")
+    finally:
+        conn.close()
+    calls: list[str] = []
+
+    def factory(session: SessionRecord, workdir: Path) -> FakeHost:
+        calls.append(session.cc_session_id)
+        (workdir / "suggestions-draft.json").write_text(
+            VALID_DRAFT,
+            encoding="utf-8",
+        )
+        return FakeHost([FINISHED])
+
+    await run_daily_distill(
+        root,
+        "http://x",
+        host_factory=factory,
+        date_str="2026-07-15",
+        completed_before="2026-07-15T00:00:00",
+    )
+
+    assert calls == ["yesterday"]
+    assert set(load_processed(root)) == {"yesterday"}
+
+
+def test_run_daily_distill_sync_forwards_completed_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trowel_py.memory.profile_distill.batch as batch
+
+    received: dict = {}
+
+    async def fake_run(*args, **kwargs) -> bool:
+        received.update(kwargs)
+        return True
+
+    monkeypatch.setattr(batch, "run_daily_distill", fake_run)
+
+    assert run_daily_distill_sync(
+        {
+            "root": str(tmp_path),
+            "date": "2026-07-14",
+            "eligible_before": "2026-07-15T00:00:00",
+        }
+    )
+    assert received["completed_before"] == "2026-07-15T00:00:00"
+
+
+async def test_run_daily_distill_reports_busy_lock(tmp_path: Path) -> None:
+    if fcntl is None:
+        pytest.skip("当前平台不支持 flock")
+    root = tmp_path / "memory"
+    with _distill_lock(root):
+        assert await run_daily_distill(root, "http://x") is False
 
 
 async def test_run_daily_distill_failed_session_not_marked(tmp_path: Path) -> None:
@@ -114,8 +186,7 @@ async def test_run_daily_distill_only_processes_user_sessions(
             "UPDATE sessions SET session_kind='distill' WHERE cc_session_id='dist'"
         )
         conn.execute(
-            "UPDATE sessions SET session_kind='delegate' "
-            "WHERE cc_session_id='delegate'"
+            "UPDATE sessions SET session_kind='delegate' WHERE cc_session_id='delegate'"
         )
         conn.commit()
     finally:

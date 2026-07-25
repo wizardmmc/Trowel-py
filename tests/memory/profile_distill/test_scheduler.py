@@ -13,6 +13,7 @@ from trowel_py.memory.profile_distill.scheduler import (
     ProfileDistillScheduler,
     load_distill_config,
 )
+from trowel_py.model_os.work_broker import BrokerPolicy, WorkBroker, WorkKind
 
 
 class _BlockingSleep:
@@ -35,6 +36,9 @@ async def _poll(predicate, *, tries: int = 50, delay: float = 0.01) -> bool:
 
 
 class TestLoadDistillConfig:
+    def test_default_time_matches_daily_review(self) -> None:
+        assert DEFAULT_DISTILL_TIME == time(2, 30)
+
     def test_defaults_when_no_memory_section(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
         cfg.write_text('[llm]\nactive = "x"\n')
@@ -79,6 +83,7 @@ class TestSchedulerDispatch:
             assert catchup["proxy_base_url"] == "http://127.0.0.1:8000"
             assert catchup["root"] == str(tmp_path)
             assert "date" in catchup
+            assert catchup["eligible_before"] == "2026-07-15T00:00:00"
         finally:
             await sched.stop()
 
@@ -135,3 +140,37 @@ class TestSchedulerDispatch:
         await asyncio.sleep(0.02)
         assert sched._started is True
         await sched.stop()
+
+    async def test_run_once_uses_broker_and_merges_same_date(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[dict] = []
+        current = [datetime(2026, 7, 25, 1, 0)]
+        broker = WorkBroker(
+            tmp_path / "model-os.db",
+            policy=BrokerPolicy(glm_account_order=("glm",)),
+        )
+        broker.open()
+        try:
+            sched = ProfileDistillScheduler(
+                DistillScheduleConfig(DEFAULT_DISTILL_TIME, True),
+                tmp_path,
+                "http://x",
+                dispatch_fn=calls.append,
+                now_fn=lambda: current[0],
+                broker=broker,
+            )
+
+            await sched._run_once(label="catchup")
+            await sched._run_once(label="daily")
+            assert len(calls) == 1
+            assert calls[0]["date"] == "2026-07-25"
+
+            current[0] = datetime(2026, 7, 25, 3, 0)
+            await sched._run_once(label="scheduled")
+            await sched._run_once(label="duplicate")
+
+            assert len(calls) == 1
+            assert broker.usage_totals(work_kind=WorkKind.MAINTENANCE).calls == 1
+        finally:
+            broker.close()
