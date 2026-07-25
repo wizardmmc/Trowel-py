@@ -1,0 +1,88 @@
+name: Bug 报告
+description: 报告可以复现的错误或行为异常
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 Issue。日志和截图不得包含凭据、私人会话正文或本机路径。
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已搜索现有 Issue，未发现相同问题
+          required: true
+        - label: 已移除凭据、私人会话正文和其他敏感信息
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 说明发生了什么，以及该问题造成的影响。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 提供能够稳定触发问题的最短步骤。
+      placeholder: |
+        1. 启动……
+        2. 执行……
+        3. 观察到……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 说明正常情况下应当发生什么。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 相关运行时
+      options:
+        - Claude Code
+        - Codex
+        - 两者都相关
+        - 不确定或无关
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      value: |
+        - 操作系统：
+        - Python 版本：
+        - Trowel commit 或版本：
+        - 浏览器（如相关）：
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志或截图
+      description: 粘贴经过脱敏的日志，或直接拖入截图。没有时填写“无”。
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 完成条件
+      description: 如已有明确判断方式，说明修复后如何确认问题已经解决。
+    validations:
+      required: false

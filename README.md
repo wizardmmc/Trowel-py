@@ -15,7 +15,7 @@ Trowel 是本地桌面工具。它托管 Claude Code 会话，从会话中提炼
 
 ## 本地运行
 
-需要 Python 3.13、[uv](https://docs.astral.sh/uv/) 和 Node.js。
+需要 Python 3.13、[uv](https://docs.astral.sh/uv/) 和 [Bun](https://bun.sh/)。
 
 后端：
 
@@ -30,11 +30,32 @@ uv run trowel-py
 
 ```bash
 cd web
-npm install
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
 前端开发服务器会把 `/api` 转发到 `http://localhost:8000`。
+
+单进程运行需要先构建前端。以下命令在已激活的 Python 3.13 环境中执行
+editable install：
+
+```bash
+./scripts/build-package.sh
+python -m pip install -e .
+trowel-py
+```
+
+更新已有的 `main` 副本时，使用快进更新保留本地改动保护：
+
+```bash
+git switch main
+git fetch origin
+git merge --ff-only origin/main
+./scripts/build-package.sh
+python -m pip install -e .
+```
+
+`git reset --hard origin/main` 会永久丢弃未提交改动，不作为常规更新方式。
 
 ## 技术栈
 
@@ -42,6 +63,6 @@ npm run dev
 - 前端：React 19、Vite、Zustand、framer-motion；
 - 模型：Anthropic 兼容 API。
 
-项目优先服务作者自己的本地工作流，当前不承诺开箱即用或完整覆盖 Claude Code 的全部能力。
+开发与提交规则见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 MIT License，见 [LICENSE](./LICENSE)。
