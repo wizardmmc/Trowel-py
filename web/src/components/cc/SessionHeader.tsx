@@ -4,6 +4,7 @@ import type {
   Phase,
   SessionMeta,
 } from "../../stores/ccStore";
+import { SessionIdCopyButton } from "./SessionIdCopyButton";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";
 
@@ -34,6 +35,7 @@ interface SessionHeaderProps {
   readonly historyHasMore: boolean;
   readonly historyError: string | null;
   readonly workdir: string;
+  readonly nativeSessionId: string | null;
   readonly onInterrupt: () => void;
   readonly onPickHistory: (row: AgentHistoryRow) => void;
   readonly onLoadMoreHistory: () => void;
@@ -53,6 +55,7 @@ export function SessionHeader({
   historyHasMore,
   historyError,
   workdir,
+  nativeSessionId,
   onInterrupt,
   onPickHistory,
   onLoadMoreHistory,
@@ -91,18 +94,30 @@ export function SessionHeader({
         onPick={onPickHistory}
         onNew={onNew}
       />
-      {onRequestChangeWorkdir && (
-        <button
-          type="button"
-          className="cc-workdir-btn"
-          onClick={onRequestChangeWorkdir}
-          title={`工作目录：${workdir}（点击切换）`}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-          </svg>
-          {workdir.split("/").pop() || workdir}
-        </button>
+      {(nativeSessionId || onRequestChangeWorkdir) && (
+        <div className="cc-session-context">
+          {nativeSessionId && (
+            <SessionIdCopyButton
+              key={nativeSessionId}
+              sessionId={nativeSessionId}
+            />
+          )}
+          {onRequestChangeWorkdir && (
+            <button
+              type="button"
+              className="cc-workdir-btn"
+              onClick={onRequestChangeWorkdir}
+              title={`工作目录：${workdir}（点击切换）`}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+              <span className="cc-workdir-btn__value">
+                {workdir.split("/").pop() || workdir}
+              </span>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

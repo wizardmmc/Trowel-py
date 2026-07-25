@@ -61,6 +61,13 @@ export function reduceAgentEvent(
     };
   }
 
+  if (event.type === "session_started") {
+    const nativeSessionId = event.payload.cc_session_id;
+    if (typeof nativeSessionId === "string" && nativeSessionId) {
+      next = { ...next, nativeSessionId };
+    }
+  }
+
   if (event.type === "session_started" && event.runtime === "codex") {
     const profile = event.payload.permission_profile;
     const sandbox = event.payload.effective_sandbox;

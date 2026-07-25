@@ -13,15 +13,14 @@
 }
 
 .cc-view__top {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-md);
   min-height: 44px;
   border-bottom: 1px solid var(--color-border);
   background: var(--bg-card);
-  flex-wrap: wrap;
 }
 
 .cc-view__scroll {
@@ -2507,6 +2506,17 @@
   color: var(--text-tertiary);
 }
 
+.cc-session-context {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  justify-self: end;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cc-session-id-copy,
 .cc-workdir-btn {
   display: inline-flex;
   align-items: center;
@@ -2524,11 +2534,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cc-session-id-copy {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.cc-workdir-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.cc-session-id-copy:hover,
+.cc-session-id-copy:focus-visible,
 .cc-workdir-btn:hover {
   background: var(--garden-soft);
   color: var(--garden-green);
   border-color: var(--garden-green);
 }
+.cc-session-id-copy:focus-visible,
+.cc-workdir-btn:focus-visible {
+  outline: 2px solid var(--garden-green);
+  outline-offset: 1px;
+}
+.cc-session-id-copy[data-state="copied"] {
+  background: var(--garden-soft);
+  color: var(--garden-green);
+  border-color: var(--garden-green);
+}
+.cc-session-id-copy svg,
 .cc-workdir-btn svg {
   width: 12px;
   height: 12px;
@@ -2536,6 +2567,42 @@
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
+}
+.cc-session-id-copy__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-workdir-btn__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-session-id-copy__check {
+  display: none;
+}
+.cc-session-id-copy[data-state="copied"] .cc-session-id-copy__copy {
+  display: none;
+}
+.cc-session-id-copy[data-state="copied"] .cc-session-id-copy__check {
+  display: block;
+}
+
+@media (max-width: 640px) {
+  .cc-view__top {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .cc-session-context {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .cc-session-id-copy {
+    flex: 1 1 0;
+  }
+  .cc-workdir-btn {
+    flex: 0 1 40%;
+  }
 }
 
 
