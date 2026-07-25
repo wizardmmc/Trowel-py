@@ -25,6 +25,8 @@ class FakeCcHost:
         self.is_dead = False
         self.memory_enabled = True
         self.profile_enabled = True
+        self.session_kind = "user"
+        self.agent_mcp_enabled = True
         self.closed = False
         self.interrupted = False
         self.cc_session_id: str | None = None
@@ -192,6 +194,8 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
             effort=req.effort,
             permission_mode=req.permission_mode or "bypassPermissions",
         )
+        host.session_kind = req.session_kind
+        host.agent_mcp_enabled = req.agent_mcp_enabled
         target = reg if reg is not None else registry
         target[sid] = host
         registry[sid] = host

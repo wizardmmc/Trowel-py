@@ -68,3 +68,31 @@ async def test_stream_cc_writes_back_effective_effort_and_permission(
     assert persisted.model == "opus"
     assert persisted.effort == "max"
     assert persisted.permission == "acceptEdits"
+
+
+async def test_stream_cc_writes_back_native_before_consumer_closes(
+    hub: SessionHub, workdir: Path
+) -> None:
+    binding = hub.create(cc_req(workdir))
+    host = hub._cc_registry[binding.session_id]
+
+    async def send(_text: str):
+        host.cc_session_id = "native-before-terminal"
+        yield {
+            "type": "session_started",
+            "model": "glm-5.2",
+            "cwd": str(workdir),
+            "cc_session_id": "native-before-terminal",
+            "tools": [],
+        }
+        yield {"type": "finished", "duration_ms": 1}
+
+    host.send = send
+    stream = hub.stream(binding.session_id, "hello")
+    first = await anext(stream)
+    assert first["type"] == "session_started"
+    await stream.aclose()
+
+    persisted = hub.get(binding.session_id)
+    assert persisted is not None
+    assert persisted.native_session_id == "native-before-terminal"

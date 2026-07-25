@@ -24,6 +24,7 @@
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
+| `agent_mcp/` | 跨 runtime MCP 工具、blocking delegation 与进程内 live guidance 生命周期 |
 | `agent_host/events.py` | 两种 runtime 共用的 AgentEvent wire contract |
 | `agent_host/codex_settings.py` | Codex model 与 reasoning effort 的无 I/O 选择规则 |
 | `agent_host/codex_launch.py` | Codex session 启动配置与注入装配，不注册 manager 或持久化 binding |

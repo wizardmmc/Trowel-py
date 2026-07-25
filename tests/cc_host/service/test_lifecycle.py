@@ -65,6 +65,39 @@ class TestExitSession:
 
 
 class TestLocalAndRestart:
+    async def test_init_updates_effective_model(self, tmp_path: Path):
+        proc = FakeProc(
+            [line(init_event(model="glm-effective")), line(result_ok())]
+        )
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        await collect(host.send("hi"))
+
+        assert host.model is None
+        assert host.effective_model == "glm-effective"
+
+    async def test_assistant_model_supersedes_init_model(self, tmp_path: Path):
+        assistant = {
+            "type": "assistant",
+            "message": {
+                "model": "glm-actual",
+                "content": [{"type": "text", "text": "done"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        }
+        proc = FakeProc(
+            [
+                line(init_event(model="glm-init")),
+                line(assistant),
+                line(result_ok()),
+            ]
+        )
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        await collect(host.send("hi"))
+
+        assert host.effective_model == "glm-actual"
+
     async def test_cost_does_not_hit_cc(self, tmp_path: Path):
         proc = FakeProc([line(init_event()), line(result_ok())])
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
@@ -95,6 +128,7 @@ class TestLocalAndRestart:
         await collect(host.send("hi"))
         events = await collect(host.send("/model opus"))
         assert host.model == "opus"
+        assert host.effective_model is None
         types = [e.type for e in events]
         assert "model_changed" in types
         mc = next(e for e in events if e.type == "model_changed")

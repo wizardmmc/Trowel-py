@@ -197,7 +197,7 @@ def _context_for_codex(
         host_kind="codex",
         native_session_id=turn.thread_id,
         trowel_session_ids=(turn.trowel_session_id,),
-        session_kind="user",
+        session_kind=turn.session_kind,
         workdir=turn.workdir,
         registered_at=turn.registered_at,
         completed_at=turn.completed_at or "",

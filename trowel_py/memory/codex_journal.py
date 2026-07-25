@@ -33,6 +33,7 @@ class CodexTurnJournal:
         workdir: str,
         memory_enabled: bool,
         profile_enabled: bool,
+        session_kind: str = "user",
         now_fn: NowFn | None = None,
     ) -> None:
         self._root = memory_root
@@ -40,6 +41,7 @@ class CodexTurnJournal:
         self._workdir = workdir
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
+        self._session_kind = session_kind
         self._now = now_fn or datetime.now
         self._registered: set[tuple[str, str]] = set()
         self._failed: set[tuple[str, str]] = set()
@@ -122,6 +124,7 @@ class CodexTurnJournal:
                 provider=provider,
                 memory_enabled=self._memory_enabled,
                 profile_enabled=self._profile_enabled,
+                session_kind=self._session_kind,
             )
         finally:
             conn.close()

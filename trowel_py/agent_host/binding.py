@@ -48,6 +48,11 @@ class SessionBinding:
     injection_hash: str = ""
     declared_mcp_roster: tuple[str, ...] = ()
     self_enabled: bool = True
+    session_kind: str = "user"
+    memory_eligibility: bool = True
+    agent_mcp_enabled: bool = True
+    parent_session_id: str | None = None
+    delegation_depth: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -74,6 +79,11 @@ class SessionBinding:
             "injection_hash": self.injection_hash,
             "declared_mcp_roster": list(self.declared_mcp_roster),
             "self_enabled": self.self_enabled,
+            "session_kind": self.session_kind,
+            "memory_eligibility": self.memory_eligibility,
+            "agent_mcp_enabled": self.agent_mcp_enabled,
+            "parent_session_id": self.parent_session_id,
+            "delegation_depth": self.delegation_depth,
         }
 
 
@@ -100,6 +110,11 @@ def make_binding(
     injection_hash: str = "",
     declared_mcp_roster: Iterable[str] = (),
     self_enabled: bool = True,
+    session_kind: str = "user",
+    memory_eligibility: bool = True,
+    agent_mcp_enabled: bool = True,
+    parent_session_id: str | None = None,
+    delegation_depth: int = 0,
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。"""
 
@@ -126,6 +141,11 @@ def make_binding(
         injection_hash=injection_hash,
         declared_mcp_roster=tuple(declared_mcp_roster),
         self_enabled=self_enabled,
+        session_kind=session_kind,
+        memory_eligibility=memory_eligibility,
+        agent_mcp_enabled=agent_mcp_enabled,
+        parent_session_id=parent_session_id,
+        delegation_depth=delegation_depth,
         created_at=now,
         updated_at=now,
     )
@@ -136,6 +156,13 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
 
     capabilities = data.get("capabilities", ())
     declared_mcp_roster = data.get("declared_mcp_roster", ())
+    raw_delegation_depth = data.get("delegation_depth", 0)
+    delegation_depth = (
+        raw_delegation_depth
+        if isinstance(raw_delegation_depth, int)
+        and not isinstance(raw_delegation_depth, bool)
+        else 0
+    )
     return SessionBinding(
         session_id=str(data["session_id"]),
         runtime=Runtime(str(data["runtime"])),
@@ -188,4 +215,13 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(declared_mcp_roster, (list, tuple))
         else (),
         self_enabled=bool(data.get("self_enabled", True)),
+        session_kind=str(data.get("session_kind", "user")),
+        memory_eligibility=bool(data.get("memory_eligibility", True)),
+        agent_mcp_enabled=bool(data.get("agent_mcp_enabled", True)),
+        parent_session_id=(
+            str(data["parent_session_id"])
+            if data.get("parent_session_id") is not None
+            else None
+        ),
+        delegation_depth=delegation_depth,
     )

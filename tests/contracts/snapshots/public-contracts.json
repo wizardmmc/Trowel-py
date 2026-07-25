@@ -193,7 +193,7 @@
         "type": "table",
         "name": "codex_turns",
         "table": "codex_turns",
-        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (thread_id, turn_id) )"
+        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, session_kind TEXT NOT NULL DEFAULT 'user', PRIMARY KEY (thread_id, turn_id) )"
       },
       {
         "type": "table",
@@ -2918,6 +2918,43 @@
               "type": "boolean",
               "title": "Self Enabled",
               "default": true
+            },
+            "session_kind": {
+              "type": "string",
+              "enum": [
+                "user",
+                "delegate"
+              ],
+              "title": "Session Kind",
+              "default": "user"
+            },
+            "memory_eligibility": {
+              "type": "boolean",
+              "title": "Memory Eligibility",
+              "default": true
+            },
+            "agent_mcp_enabled": {
+              "type": "boolean",
+              "title": "Agent Mcp Enabled",
+              "default": true
+            },
+            "parent_session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent Session Id"
+            },
+            "delegation_depth": {
+              "type": "integer",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Delegation Depth",
+              "default": 0
             }
           },
           "type": "object",
@@ -2987,6 +3024,27 @@
               "type": "boolean",
               "title": "Self Enabled",
               "default": true
+            },
+            "session_kind": {
+              "type": "string",
+              "enum": [
+                "user",
+                "delegate"
+              ],
+              "title": "Session Kind",
+              "default": "user"
+            },
+            "agent_mcp_enabled": {
+              "type": "boolean",
+              "title": "Agent Mcp Enabled",
+              "default": true
+            },
+            "delegation_depth": {
+              "type": "integer",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Delegation Depth",
+              "default": 0
             }
           },
           "type": "object",

@@ -65,7 +65,7 @@ def test_find_all_completed_returns_sessions_with_completed_offset() -> None:
     assert {session.cc_session_id for session in found} == {"a", "b"}
 
 
-def test_find_all_completed_excludes_review_and_distill_kinds() -> None:
+def test_find_all_completed_only_includes_user_kind_by_default() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="user", session_kind="user"))
     repo.register(session_record(cc_session_id="rev", session_kind="review"))
@@ -75,7 +75,9 @@ def test_find_all_completed_excludes_review_and_distill_kinds() -> None:
             session_kind="distill",
         )
     )
-    complete(repo, "user", "rev", "dist")
+    repo.register(session_record(cc_session_id="delegate", session_kind="delegate"))
+    repo.register(session_record(cc_session_id="future", session_kind="future-agent"))
+    complete(repo, "user", "rev", "dist", "delegate", "future")
     found = repo.find_all_completed_sessions()
     assert {session.cc_session_id for session in found} == {"user"}
 

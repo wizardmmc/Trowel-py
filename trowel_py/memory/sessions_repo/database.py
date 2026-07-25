@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS codex_turns (
     provider            TEXT NOT NULL DEFAULT '',
     memory_enabled      INTEGER NOT NULL DEFAULT 1,
     profile_enabled     INTEGER NOT NULL DEFAULT 1,
+    session_kind        TEXT NOT NULL DEFAULT 'user',
     PRIMARY KEY (thread_id, turn_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
@@ -68,6 +69,12 @@ _ADD_COLUMN_SQL = {
     "last_extracted_at": ("ALTER TABLE sessions ADD COLUMN last_extracted_at TEXT"),
 }
 
+_CODEX_ADD_COLUMN_SQL = {
+    "session_kind": (
+        "ALTER TABLE codex_turns ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'user'"
+    ),
+}
+
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
     """建表后补齐旧库列，最后创建依赖新增列的索引。"""
@@ -80,6 +87,12 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     for column, sql in _ADD_COLUMN_SQL.items():
         if column not in existing:
+            conn.execute(sql)
+    codex_existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(codex_turns)")
+    }
+    for column, sql in _CODEX_ADD_COLUMN_SQL.items():
+        if column not in codex_existing:
             conn.execute(sql)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_incremental"
@@ -149,4 +162,5 @@ def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
         provider=row["provider"] or "",
         memory_enabled=bool(row["memory_enabled"]),
         profile_enabled=bool(row["profile_enabled"]),
+        session_kind=row["session_kind"] or "user",
     )

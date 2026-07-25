@@ -93,3 +93,22 @@ def test_build_spawn_env_no_identity_without_mcp_config(tmp_path: Path) -> None:
     host = CCHost("session-id", tmp_path, proxy_base_url=None)
 
     assert host._build_spawn_env() is None
+
+
+def test_agent_mcp_startup_timeouts_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MCP_CONNECT_TIMEOUT_MS", "999999")
+    monkeypatch.setenv("MCP_TIMEOUT", "999999")
+    host = CCHost(
+        "session-id",
+        tmp_path,
+        mcp_config=str(tmp_path / "agent-mcp.json"),
+        agent_mcp_enabled=True,
+    )
+
+    env = host._build_spawn_env()
+
+    assert env is not None
+    assert env["MCP_CONNECT_TIMEOUT_MS"] == "5000"
+    assert env["MCP_TIMEOUT"] == "10000"

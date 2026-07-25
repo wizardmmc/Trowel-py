@@ -100,6 +100,33 @@ def test_open_facade_reads_current_route_state(
     assert routes.get_active_session_id() == "new-session"
 
 
+def test_open_cleans_owned_mcp_config_when_host_construction_fails(
+    tmp_path: Path,
+) -> None:
+    config_path: Path | None = None
+
+    def failing_factory(*args: Any, **kwargs: Any) -> None:
+        nonlocal config_path
+        config_path = Path(kwargs["mcp_config"])
+        assert config_path.is_file()
+        raise RuntimeError("host construction failed")
+
+    with pytest.raises(RuntimeError, match="host construction failed"):
+        session_lifecycle.open_session(
+            CreateSessionRequest(workdir=str(tmp_path)),
+            {},
+            proxy_base_url=None,
+            settings_path=None,
+            workdir_index={},
+            session_names={},
+            max_connections=1,
+            host_factory=failing_factory,
+        )
+
+    assert config_path is not None
+    assert not config_path.exists()
+
+
 async def test_close_facade_reads_current_route_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -76,6 +76,7 @@ class CodexTurnRecord:
     provider: str = ""
     memory_enabled: bool = True
     profile_enabled: bool = True
+    session_kind: str = "user"
 
 
 @dataclass(frozen=True)

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
+from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
+
+TROWEL_AGENTS_SERVER_NAME = "trowel_agents"
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,72 @@ class TrowelMemoryMcpConfig:
         }
 
 
+@dataclass(frozen=True)
+class TrowelAgentMcpConfig:
+    """附加到 Codex thread 的 Trowel agent delegation MCP 配置。"""
+
+    trowel_session_id: str
+    workdir: str
+    permission: str
+    base_url: str
+    memory_enabled: bool
+    profile_enabled: bool
+    self_enabled: bool
+    delegation_depth: int = 0
+    server_name: str = TROWEL_AGENTS_SERVER_NAME
+
+    def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
+        return {
+            self.server_name: {
+                "command": sys.executable,
+                "args": ["-m", "trowel_py.agent_mcp.server"],
+                "env": {
+                    "TROWEL_AGENT_BASE_URL": self.base_url,
+                    "TROWEL_PARENT_SESSION_ID": self.trowel_session_id,
+                    "TROWEL_PARENT_RUNTIME": "codex",
+                    "TROWEL_PARENT_WORKDIR": self.workdir,
+                    "TROWEL_PARENT_PERMISSION": self.permission,
+                    "TROWEL_PARENT_MEMORY_ENABLED": str(
+                        self.memory_enabled
+                    ).lower(),
+                    "TROWEL_PARENT_PROFILE_ENABLED": str(
+                        self.profile_enabled
+                    ).lower(),
+                    "TROWEL_PARENT_SELF_ENABLED": str(self.self_enabled).lower(),
+                    "TROWEL_DELEGATION_DEPTH": str(self.delegation_depth),
+                    "TROWEL_NATIVE_SESSION_ID": native_session_id,
+                },
+                "required": True,
+                "startup_timeout_sec": 10.0,
+                "enabled_tools": list(AGENT_MCP_TOOL_NAMES),
+                "default_tools_approval_mode": "approve",
+            }
+        }
+
+
+def build_default_trowel_agent_mcp(
+    *,
+    trowel_session_id: str,
+    workdir: str,
+    permission: str,
+    base_url: str,
+    memory_enabled: bool,
+    profile_enabled: bool,
+    self_enabled: bool,
+    delegation_depth: int = 0,
+) -> TrowelAgentMcpConfig:
+    return TrowelAgentMcpConfig(
+        trowel_session_id=trowel_session_id,
+        workdir=workdir,
+        permission=permission,
+        base_url=base_url,
+        memory_enabled=memory_enabled,
+        profile_enabled=profile_enabled,
+        self_enabled=self_enabled,
+        delegation_depth=delegation_depth,
+    )
+
+
 def build_default_trowel_memory_mcp(
     *,
     trowel_session_id: str,
@@ -51,8 +121,6 @@ def build_default_trowel_memory_mcp(
     server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
 ) -> TrowelMemoryMcpConfig:
     """用当前解释器构造标准 Trowel memory MCP 配置。"""
-
-    import sys
 
     return TrowelMemoryMcpConfig(
         server_name=server_name,
@@ -82,6 +150,7 @@ class CodexSessionConfig:
     ephemeral: bool = False
     initial_thread_id: str | None = None
     trowel_memory_mcp: TrowelMemoryMcpConfig | None = None
+    trowel_agent_mcp: TrowelAgentMcpConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -206,8 +275,10 @@ def parse_thread_binding(result: Mapping[str, Any]) -> ThreadBinding:
 _PUBLIC_SESSION_MODULE = "trowel_py.codex_host.session"
 for _public_symbol in (
     TrowelMemoryMcpConfig,
+    TrowelAgentMcpConfig,
     CodexSessionConfig,
     ThreadBinding,
+    build_default_trowel_agent_mcp,
     build_default_trowel_memory_mcp,
     parse_thread_binding,
 ):

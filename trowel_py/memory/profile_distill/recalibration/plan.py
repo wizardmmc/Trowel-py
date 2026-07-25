@@ -12,7 +12,6 @@ from trowel_py.memory.sessions_repo import (
 )
 
 from .models import (
-    _EXCLUDE_KINDS,
     _LIVE_PROFILE,
     _LIVE_SUGGESTIONS,
     _LIVE_WATERMARK,
@@ -70,7 +69,7 @@ def plan_recalibration(
         )
     try:
         repo = create_sessions_repository(conn, migrate=False)
-        records = repo.find_all_completed_sessions(exclude_kinds=_EXCLUDE_KINDS)
+        records = repo.find_all_completed_sessions()
     finally:
         conn.close()
 

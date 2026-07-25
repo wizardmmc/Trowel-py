@@ -21,8 +21,13 @@ def thread_start_params(session: CodexSession) -> dict[str, Any]:
         params["model"] = config.model
     if config.developer_instructions is not None:
         params["developerInstructions"] = config.developer_instructions
+    servers: dict[str, Any] = {}
     if config.trowel_memory_mcp is not None:
-        params["config"] = {"mcp_servers": config.trowel_memory_mcp.to_thread_config()}
+        servers.update(config.trowel_memory_mcp.to_thread_config())
+    if config.trowel_agent_mcp is not None:
+        servers.update(config.trowel_agent_mcp.to_thread_config())
+    if servers:
+        params["config"] = {"mcp_servers": servers}
     return params
 
 
@@ -30,12 +35,21 @@ def thread_resume_params(session: CodexSession) -> dict[str, Any]:
     # app-server 不持久化 MCP 配置，恢复线程时必须重新挂载并写入真实 thread id。
     assert session.binding is not None
     params: dict[str, Any] = {"threadId": session.binding.thread_id}
+    servers: dict[str, Any] = {}
     if session.config.trowel_memory_mcp is not None:
-        params["config"] = {
-            "mcp_servers": session.config.trowel_memory_mcp.to_thread_config(
+        servers.update(
+            session.config.trowel_memory_mcp.to_thread_config(
                 native_session_id=session.binding.thread_id
             )
-        }
+        )
+    if session.config.trowel_agent_mcp is not None:
+        servers.update(
+            session.config.trowel_agent_mcp.to_thread_config(
+                native_session_id=session.binding.thread_id
+            )
+        )
+    if servers:
+        params["config"] = {"mcp_servers": servers}
     return params
 
 

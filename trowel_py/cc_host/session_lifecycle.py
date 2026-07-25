@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 from typing import Any, cast
@@ -50,21 +51,45 @@ def open_session(
 
     from trowel_py.memory.mcp_config import write_mcp_config
 
-    mcp_config = str(write_mcp_config()) if req.memory_enabled else None
-    host = host_factory(
-        sid,
-        req.workdir,
-        model=req.model,
-        effort=req.effort,
-        permission_mode=req.permission_mode,
-        resume_from=req.resume_from,
-        proxy_base_url=proxy_base_url,
-        settings_path=settings_path,
-        mcp_config=mcp_config,
-        memory_enabled=req.memory_enabled,
-        profile_enabled=req.profile_enabled,
-        self_enabled=req.self_enabled,
+    from trowel_py.memory.paths import resolve_memory_root
+
+    port = os.environ.get("TROWEL_SERVER_PORT", "8000")
+    mcp_config = str(
+        write_mcp_config(
+            trowel_session_id=sid,
+            runtime="claude_code",
+            workdir=req.workdir,
+            permission=req.permission_mode,
+            memory_enabled=req.memory_enabled,
+            agent_mcp_enabled=req.agent_mcp_enabled,
+            memory_root=str(resolve_memory_root()),
+            base_url=f"http://127.0.0.1:{port}",
+            profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
+            delegation_depth=req.delegation_depth,
+        )
     )
+    try:
+        host = host_factory(
+            sid,
+            req.workdir,
+            model=req.model,
+            effort=req.effort,
+            permission_mode=req.permission_mode,
+            resume_from=req.resume_from,
+            proxy_base_url=proxy_base_url,
+            settings_path=settings_path,
+            mcp_config=mcp_config,
+            owned_mcp_config=True,
+            session_kind=req.session_kind,
+            agent_mcp_enabled=req.agent_mcp_enabled,
+            memory_enabled=req.memory_enabled,
+            profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
+        )
+    except BaseException:
+        Path(mcp_config).unlink(missing_ok=True)
+        raise
     registry[sid] = host
     name = _display_name(req.workdir, workdir_index)
     workdir_index.setdefault(req.workdir, set()).add(sid)

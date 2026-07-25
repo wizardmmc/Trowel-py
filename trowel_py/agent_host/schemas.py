@@ -32,6 +32,11 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
+    session_kind: Literal["user", "delegate"] = "user"
+    memory_eligibility: bool = Field(default=True, strict=True)
+    agent_mcp_enabled: bool = Field(default=True, strict=True)
+    parent_session_id: str | None = None
+    delegation_depth: int = Field(default=0, ge=0, le=1)
 
 
 class PatchAgentSessionRequest(BaseModel):

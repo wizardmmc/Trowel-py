@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from trowel_py.cc_host import routes as cc_routes
@@ -83,7 +84,7 @@ class TestSessionSwitches:
         assert sessions[0]["memory_enabled"] is False
         assert sessions[0]["profile_enabled"] is True
 
-    def test_memory_off_session_has_no_mcp_config(self, tmp_path: Path):
+    def test_memory_off_session_keeps_agent_mcp_config(self, tmp_path: Path):
         reg: dict = {}
         client = _mini_app(reg)
         sid = client.post(
@@ -91,8 +92,45 @@ class TestSessionSwitches:
             json={"workdir": str(tmp_path), "memory_enabled": False},
         ).json()["data"]["session_id"]
         host = reg[sid]
-        assert host._mcp_config is None
+        assert host._mcp_config is not None
+        config = json.loads(Path(host._mcp_config).read_text(encoding="utf-8"))
+        assert set(config["mcpServers"]) == {"trowel_agents"}
         assert host.memory_enabled is False
+
+    def test_delete_removes_owned_session_mcp_config(self, tmp_path: Path):
+        reg: dict = {}
+        client = _mini_app(reg)
+        sid = client.post(
+            "/api/cc/sessions", json={"workdir": str(tmp_path)}
+        ).json()["data"]["session_id"]
+        config_path = Path(reg[sid]._mcp_config)
+        assert config_path.is_file()
+
+        response = client.delete(f"/api/cc/sessions/{sid}")
+
+        assert response.status_code == 200
+        assert not config_path.exists()
+
+    def test_delegate_without_memory_gets_strict_empty_mcp_roster(
+        self, tmp_path: Path
+    ):
+        reg: dict = {}
+        client = _mini_app(reg)
+        sid = client.post(
+            "/api/cc/sessions",
+            json={
+                "workdir": str(tmp_path),
+                "memory_enabled": False,
+                "agent_mcp_enabled": False,
+                "session_kind": "delegate",
+                "delegation_depth": 1,
+            },
+        ).json()["data"]["session_id"]
+
+        config_path = Path(reg[sid]._mcp_config)
+        assert json.loads(config_path.read_text(encoding="utf-8")) == {
+            "mcpServers": {}
+        }
 
 
 class TestMultiSession:

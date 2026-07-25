@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -41,7 +42,10 @@ def prepare_codex_session(
     fingerprint: Callable[[str], str],
 ) -> PreparedCodexSession:
     from trowel_py.codex_host import CodexSession, CodexSessionConfig
-    from trowel_py.codex_host.session import build_default_trowel_memory_mcp
+    from trowel_py.codex_host.session import (
+        build_default_trowel_agent_mcp,
+        build_default_trowel_memory_mcp,
+    )
     from trowel_py.memory.injection import build_memory_injection
     from trowel_py.memory.codex_journal import CodexTurnJournal
     from trowel_py.memory.paths import resolve_memory_root
@@ -102,7 +106,26 @@ def prepare_codex_session(
         if req.memory_enabled
         else None
     )
-    declared_mcp_roster = (trowel_memory_mcp.server_name,) if trowel_memory_mcp else ()
+    port = os.environ.get("TROWEL_SERVER_PORT", "8000")
+    trowel_agent_mcp = (
+        build_default_trowel_agent_mcp(
+            trowel_session_id=session_id,
+            workdir=req.workdir,
+            permission=preset,
+            base_url=f"http://127.0.0.1:{port}",
+            memory_enabled=req.memory_enabled,
+            profile_enabled=req.profile_enabled,
+            self_enabled=req.self_enabled,
+            delegation_depth=req.delegation_depth,
+        )
+        if req.agent_mcp_enabled
+        else None
+    )
+    declared_mcp_roster = tuple(
+        config.server_name
+        for config in (trowel_memory_mcp, trowel_agent_mcp)
+        if config is not None
+    )
     config = CodexSessionConfig(
         trowel_session_id=session_id,
         workdir=req.workdir,
@@ -113,6 +136,7 @@ def prepare_codex_session(
         initial_thread_id=req.resume_from,
         developer_instructions=injection_text or None,
         trowel_memory_mcp=trowel_memory_mcp,
+        trowel_agent_mcp=trowel_agent_mcp,
     )
     journal = CodexTurnJournal(
         memory_root,
@@ -120,6 +144,7 @@ def prepare_codex_session(
         workdir=req.workdir,
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,
+        session_kind=req.session_kind,
     )
     session = CodexSession(config, event_sink=journal.record)
     return PreparedCodexSession(

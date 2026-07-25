@@ -92,7 +92,7 @@ async def test_run_daily_distill_redistills_new_offset(tmp_path: Path) -> None:
     assert load_processed(root)["s1"].end_offset == 2000
 
 
-async def test_run_daily_distill_excludes_review_and_distill_kinds(
+async def test_run_daily_distill_only_processes_user_sessions(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "memory"
@@ -102,14 +102,20 @@ async def test_run_daily_distill_excludes_review_and_distill_kinds(
         repo.register(session_record("user"))
         repo.register(session_record("rev"))
         repo.register(session_record("dist"))
+        repo.register(session_record("delegate"))
         repo.update_completed("user", 1000)
         repo.update_completed("rev", 1000)
         repo.update_completed("dist", 1000)
+        repo.update_completed("delegate", 1000)
         conn.execute(
             "UPDATE sessions SET session_kind='review' WHERE cc_session_id='rev'"
         )
         conn.execute(
             "UPDATE sessions SET session_kind='distill' WHERE cc_session_id='dist'"
+        )
+        conn.execute(
+            "UPDATE sessions SET session_kind='delegate' "
+            "WHERE cc_session_id='delegate'"
         )
         conn.commit()
     finally:

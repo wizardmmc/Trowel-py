@@ -128,7 +128,9 @@ class CCHost:
         stalled_tick: float = 1.0,
         session_registrar: Any = None,
         session_kind: str = "user",
+        agent_mcp_enabled: bool = False,
         mcp_config: str | None = None,
+        owned_mcp_config: bool = False,
         memory_enabled: bool = True,
         profile_enabled: bool = True,
         self_enabled: bool = True,
@@ -140,6 +142,7 @@ class CCHost:
         # 事件循环只弱引用 task；必须持有 drain，直到它在 finally 中自行释放。
         self._drain_task: asyncio.Task | None = None
         self._model = model or DEFAULT_MODEL
+        self._effective_model: str | None = None
         self.effort = effort or DEFAULT_EFFORT
         self.permission_mode = permission_mode
         self._permission_prompt_tool = permission_prompt_tool
@@ -154,12 +157,19 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        self.agent_mcp_enabled = agent_mcp_enabled
         # 三个开关彼此独立，并在整个会话及重启期间保持不变。
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
         self._self_enabled = self_enabled
-        # memory 关闭时在宿主边界丢弃配置，重启也不能重新接入 MCP 读路径。
-        self._mcp_config = mcp_config if memory_enabled else None
+        # 会话独占的 composite roster 即使为空也走 strict mode；旧的共享 memory-only
+        # 配置仍在 memory-off 时丢弃，保持独立 review host 的隔离语义。
+        self._mcp_config = (
+            mcp_config
+            if memory_enabled or agent_mcp_enabled or owned_mcp_config
+            else None
+        )
+        self._owned_mcp_config = owned_mcp_config
 
         self._proc: Any = None
         self._started = False
@@ -193,6 +203,10 @@ class CCHost:
     @property
     def model(self) -> str | None:
         return self._model
+
+    @property
+    def effective_model(self) -> str | None:
+        return self._effective_model
 
     @property
     def _model_for_display(self) -> str:
@@ -285,6 +299,10 @@ class CCHost:
             if self._cc_session_id:
                 env["CC_SESSION_ID"] = self._cc_session_id
                 env["TROWEL_NATIVE_SESSION_ID"] = self._cc_session_id
+        if self.agent_mcp_enabled:
+            env = dict(env) if env is not None else dict(os.environ)
+            env["MCP_CONNECT_TIMEOUT_MS"] = "5000"
+            env["MCP_TIMEOUT"] = "10000"
         return env
 
     async def _ensure_process(self) -> None:
@@ -349,6 +367,8 @@ class CCHost:
             self._drain_task = None
         self._workflow_watcher.close()
         await self._kill()
+        if self._owned_mcp_config and self._mcp_config:
+            Path(self._mcp_config).unlink(missing_ok=True)
 
     async def reload(self) -> None:
         """丢弃进程内旧上下文，使 revert 后的下一轮从截断 jsonl 恢复。"""
@@ -541,6 +561,7 @@ class CCHost:
                 self.effort = action.effort
             if action.model:
                 self._model = action.model
+                self._effective_model = None
             await self._kill()
             stage = self._restart_stage(action)
             yield StatusEvent(type="status", stage=stage)
@@ -722,6 +743,9 @@ class CCHost:
                         detector.record_retry(self._now(), float(delay))
                 if ev.get("type") == "system" and ev.get("subtype") == "init":
                     sid = ev.get("session_id")
+                    effective_model = ev.get("model")
+                    if isinstance(effective_model, str) and effective_model:
+                        self._effective_model = effective_model
                     _wf_debug(f"INIT sid={sid}")
                     if sid:
                         self._cc_session_id = sid
@@ -733,6 +757,13 @@ class CCHost:
                         _wf_debug(f"  watcher set_transcript_dir={tdir}")
                         if tdir is not None:
                             self._workflow_watcher.set_transcript_dir(tdir)
+                if ev.get("type") == "assistant":
+                    message = ev.get("message")
+                    effective_model = (
+                        message.get("model") if isinstance(message, dict) else None
+                    )
+                    if isinstance(effective_model, str) and effective_model:
+                        self._effective_model = effective_model
                 self._update_bg_tracker(ev)
                 for tev in translator.translate(ev):
                     if isinstance(tev, ElicitationRequestEvent):

@@ -112,6 +112,18 @@ def test_create_codex_allows_when_user_config_has_unrelated_mcp(
     assert binding.session_id in codex_mgr.sessions
 
 
+def test_create_codex_rejects_user_trowel_agents_collision(
+    hub: SessionHub,
+    workdir: Path,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "config.toml").write_text(
+        "[mcp_servers.trowel_agents]\ncommand = 'other'\n", encoding="utf-8"
+    )
+    with pytest.raises(SessionConflictError, match="trowel_agents"):
+        hub.create(codex_req(workdir))
+
+
 @pytest.mark.parametrize(
     ("memory_enabled", "profile_enabled"),
     [(True, True), (True, False), (False, True), (False, False)],
@@ -157,10 +169,12 @@ def test_create_codex_four_mp_combinations_wire_injection_and_mcp(
     assert binding.memory_enabled == memory_enabled
     assert binding.profile_enabled == profile_enabled
 
-    if memory_enabled:
-        assert binding.declared_mcp_roster == ("trowel_note_search",)
-    else:
-        assert binding.declared_mcp_roster == ()
+    expected_roster = (
+        ("trowel_note_search", "trowel_agents")
+        if memory_enabled
+        else ("trowel_agents",)
+    )
+    assert binding.declared_mcp_roster == expected_roster
 
 
 def test_create_codex_empty_injection_maps_to_none_developer_instructions(

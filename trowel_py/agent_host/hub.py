@@ -305,6 +305,9 @@ class SessionHub:
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            session_kind=req.session_kind,
+            agent_mcp_enabled=req.agent_mcp_enabled,
+            delegation_depth=req.delegation_depth,
         )
         try:
             opened = self._cc_opener(
@@ -324,10 +327,15 @@ class SessionHub:
             workdir=req.workdir,
             model=req.model,
             effort=req.effort,
-            permission=req.permission_mode,
+            permission=cc_req.permission_mode,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            session_kind=req.session_kind,
+            memory_eligibility=req.memory_eligibility,
+            agent_mcp_enabled=req.agent_mcp_enabled,
+            parent_session_id=req.parent_session_id,
+            delegation_depth=req.delegation_depth,
             capabilities=CC_CAPABILITIES,
             name=opened.name,
         )
@@ -340,7 +348,7 @@ class SessionHub:
 
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
-        self._refuse_on_memory_mcp_collision(req.workdir)
+        self._refuse_on_trowel_mcp_collision(req.workdir)
         prepared = prepare_codex_session(
             req,
             session_id_factory=lambda: uuid.uuid4().hex,
@@ -361,6 +369,11 @@ class SessionHub:
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            session_kind=req.session_kind,
+            memory_eligibility=req.memory_eligibility,
+            agent_mcp_enabled=req.agent_mcp_enabled,
+            parent_session_id=req.parent_session_id,
+            delegation_depth=req.delegation_depth,
             capabilities=CODEX_CAPABILITIES,
             name=self._display_name(req.workdir),
             permission_preset=prepared.permission_preset,
@@ -371,22 +384,29 @@ class SessionHub:
         self._active_id = sid
         return binding
 
-    def _refuse_on_memory_mcp_collision(self, workdir: str) -> None:
-        """任一受检配置层存在同名 MCP 时都无法保证 memory-off 隔离。"""
+    def _refuse_on_trowel_mcp_collision(self, workdir: str) -> None:
+        """任一受检配置层存在同名 MCP 时都无法保证 Trowel roster 隔离。"""
 
         from trowel_py.codex_host.mcp_isolation import find_conflicting_mcp_server
+        from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
+        from trowel_py.codex_host.session_types import TROWEL_AGENTS_SERVER_NAME
 
-        conflict = find_conflicting_mcp_server(
-            codex_home=self._codex_config_home,
-            workdir=workdir,
-        )
-        if conflict is not None:
-            raise SessionConflictError(
-                f"a Codex MCP server named {conflict.server_name!r} is "
-                f"already declared in {conflict.config_path}; trowel "
-                f"cannot guarantee memory-off isolation. Rename or remove "
-                f"that entry and retry."
+        for server_name in (
+            TROWEL_NOTE_SEARCH_SERVER_NAME,
+            TROWEL_AGENTS_SERVER_NAME,
+        ):
+            conflict = find_conflicting_mcp_server(
+                server_name,
+                codex_home=self._codex_config_home,
+                workdir=workdir,
             )
+            if conflict is not None:
+                raise SessionConflictError(
+                    f"a Codex MCP server named {conflict.server_name!r} is "
+                    f"already declared in {conflict.config_path}; trowel "
+                    f"cannot guarantee its managed MCP roster. Rename or remove "
+                    f"that entry and retry."
+                )
 
     def _display_name(self, workdir: str) -> str:
         basename = Path(workdir).name or str(workdir)
@@ -704,6 +724,11 @@ class SessionHub:
                 raw = dict(event) if isinstance(event, dict) else event.model_dump()
                 envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
                 self._observe(envelope)
+                if raw.get("type") == "session_started" or raw.get("type") in (
+                    _TURN_TERMINAL_TYPES | {"session_exited"}
+                ):
+                    # Client 可能在终态后立即关闭 SSE；原生身份必须先于 yield 落盘。
+                    self._writeback_cc_native(session_id, host)
                 yield envelope
             self._writeback_cc_native(session_id, host)
             return
@@ -781,7 +806,7 @@ class SessionHub:
 
     def _writeback_cc_native(self, session_id: str, host: Any) -> None:
         cc_session_id = getattr(host, "cc_session_id", None)
-        model = getattr(host, "model", None)
+        model = getattr(host, "effective_model", None) or getattr(host, "model", None)
         if cc_session_id is None and model is None:
             return
         try:

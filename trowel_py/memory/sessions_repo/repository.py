@@ -173,6 +173,7 @@ class SessionsRepository:
         provider: str,
         memory_enabled: bool,
         profile_enabled: bool,
+        session_kind: str = "user",
     ) -> None:
         """首次事件登记 turn；重放同一原生 turn 时不覆盖原始身份。"""
 
@@ -180,7 +181,7 @@ class SessionsRepository:
             "INSERT OR IGNORE INTO codex_turns"
             " (thread_id, turn_id, trowel_session_id, workdir, journal_path,"
             " registered_at, model, effort, provider, memory_enabled,"
-            " profile_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " profile_enabled, session_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 turn_id,
@@ -193,6 +194,7 @@ class SessionsRepository:
                 provider,
                 int(memory_enabled),
                 int(profile_enabled),
+                session_kind,
             ),
         )
         self._conn.commit()
@@ -229,6 +231,7 @@ class SessionsRepository:
         rows = self._conn.execute(
             "SELECT * FROM codex_turns"
             " WHERE completed_at IS NOT NULL AND extracted_at IS NULL"
+            " AND session_kind = 'user'"
             + cutoff_sql
             + " ORDER BY completed_at, registered_at, thread_id, turn_id",
             params,
@@ -275,15 +278,21 @@ class SessionsRepository:
         self,
         exclude_kinds: list[str] | None = None,
     ) -> list[SessionRecord]:
-        """返回全部已完成 session，不受 review 提炼水位影响。"""
-        excluded = exclude_kinds if exclude_kinds is not None else ["review", "distill"]
-        placeholders = ",".join("?" * len(excluded))
+        """返回已完成 session；默认只允许用户会话进入提炼。"""
+        if exclude_kinds is None:
+            where_kind = "COALESCE(session_kind, 'user') = 'user'"
+            params: list[str] = []
+        else:
+            placeholders = ",".join("?" * len(exclude_kinds))
+            where_kind = (
+                "COALESCE(session_kind, 'user') NOT IN " f"({placeholders})"
+            )
+            params = exclude_kinds
         rows = self._conn.execute(
-            "SELECT * FROM sessions"
-            " WHERE COALESCE(session_kind, 'user') NOT IN ({placeholders})"
-            " AND last_completed_offset IS NOT NULL"
-            " ORDER BY registered_at".format(placeholders=placeholders),
-            excluded,
+            "SELECT * FROM sessions WHERE "
+            + where_kind
+            + " AND last_completed_offset IS NOT NULL ORDER BY registered_at",
+            params,
         ).fetchall()
         return [row_to_record(row) for row in rows]
 
