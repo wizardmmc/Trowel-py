@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from trowel_py.cc_host import history
 from trowel_py.schemas.cc_host import (
     ToolCallEvent,
@@ -143,12 +145,24 @@ def test_parse_history_drops_task_notification_user_row(
     assert not any("task-notification" in t for t in user_texts)
 
 
-def test_parse_history_each_tool_use_gets_own_workflow(fake_projects: Path) -> None:
+def test_parse_history_each_tool_use_gets_own_workflow(
+    fake_projects: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sid = "abc-multi-turn"
     sid_dir = fake_projects / sid
     sid_dir.mkdir()
     _write_workflow_json(sid_dir, run_id="wf_1", name="first")
     _write_workflow_json(sid_dir, run_id="wf_2", name="second")
+    workflow_dir = sid_dir / "workflows"
+    paths = sorted(workflow_dir.glob("wf_*.json"), reverse=True)
+
+    def reverse_workflow_glob(path: Path, pattern: str):
+        assert path == workflow_dir
+        assert pattern == "wf_*.json"
+        return iter(paths)
+
+    monkeypatch.setattr(Path, "glob", reverse_workflow_glob)
     _write_jsonl(
         fake_projects / f"{sid}.jsonl",
         [
