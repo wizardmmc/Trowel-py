@@ -60,7 +60,7 @@ def test_v4_decision_migrates_without_guessing_or_changing_rows(tmp_path: Path) 
         assert decision.reason == "free text legacy reason"
         assert decision.signals == {"prompt": "private legacy body"}
         assert decision.disposition == DecisionDisposition.LEGACY_UNKNOWN
-        assert store._schema_version() == 6
+        assert store._schema_version() == 7
         assert store._conn is not None
         row = store._conn.execute(
             "SELECT identity_hash FROM decisions WHERE seq=1"
@@ -72,7 +72,7 @@ def test_v4_decision_migrates_without_guessing_or_changing_rows(tmp_path: Path) 
     reopened = ModelOsStore(path)
     reopened.open()
     try:
-        assert reopened._schema_version() == 6
+        assert reopened._schema_version() == 7
         assert len(reopened.list_decisions()) == 1
     finally:
         reopened.close()
@@ -135,5 +135,41 @@ def test_failed_v5_to_v6_migration_does_not_advance_schema_version(
         assert conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()[0] == "5"
+    finally:
+        conn.close()
+
+
+def test_failed_v6_to_v7_migration_does_not_advance_schema_version(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "broken-v6.db"
+    prepared = ModelOsStore(path)
+    prepared.open()
+    assert prepared._conn is not None
+    prepared._conn.execute("DROP TABLE cognitive_signal_projection")
+    prepared._conn.execute(
+        "UPDATE meta SET value='6' WHERE key='schema_version'"
+    )
+    prepared._conn.commit()
+    prepared.close()
+
+    class FailingStore(ModelOsStore):
+        def _migrate_v6_to_v7(self) -> None:
+            assert self._conn is not None
+            self._conn.execute("CREATE TABLE signal_migration_partial (value TEXT)")
+            raise RuntimeError("injected v7 migration failure")
+
+    with pytest.raises(RuntimeError, match="injected v7 migration failure"):
+        FailingStore(path).open()
+
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()[0] == "6"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='cognitive_signal_projection'"
+        ).fetchone() is None
     finally:
         conn.close()

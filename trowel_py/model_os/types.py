@@ -153,6 +153,8 @@ class EventKind:
     COMMAND_INTENT = "command.intent"
     COMMAND_RESULT = "command.result"
     COMMAND_UNKNOWN = "command.unknown"
+    COGNITIVE_SIGNAL_RECORDED = "cognitive_signal.recorded"
+    LATE_SIGNAL_REJECTED = "cognitive_signal.late_signal_rejected"
 
 
 @dataclass(frozen=True)
