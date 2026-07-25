@@ -1,0 +1,4 @@
+{"type":"usage_updated","turn_id":"turn-1","payload":{"last":{"totalTokens":15111},"total":{"totalTokens":15111},"model_context_window":258400}}
+{"type":"compaction","turn_id":"turn-1","payload":{"phase":"completed"}}
+{"type":"usage_updated","turn_id":"turn-3","payload":{"last":{"totalTokens":4495},"total":{"totalTokens":15111},"model_context_window":258400}}
+{"type":"usage_updated","turn_id":"turn-2","payload":{"last":{"totalTokens":15160},"total":{"totalTokens":30271},"model_context_window":258400}}

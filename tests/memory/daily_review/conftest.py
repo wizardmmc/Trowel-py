@@ -34,7 +34,8 @@ def _review_environment(
                 }
             )
 
-    # daily 压缩和 dictionary 同时复用 provider，测试必须彻底隔离网络。
+    # config 加载和 provider 都必须隔离，clean clone 没有私人 config.toml。
+    monkeypatch.setattr("trowel_py.config.load_llm_config", lambda: object())
     monkeypatch.setattr(
         "trowel_py.llm.client.AnthropicProvider",
         lambda _config: FakeProvider(),
