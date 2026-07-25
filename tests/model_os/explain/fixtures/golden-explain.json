@@ -1,0 +1,185 @@
+[
+  {
+    "decision_id": "decision.route.success",
+    "decision_kind": "route",
+    "disposition": "execute",
+    "policy_version": "router-v1",
+    "signal_refs": ["event.validator.failed"],
+    "candidates": ["fast", "deep"],
+    "choice": "deep",
+    "reason_code": "validator_failed",
+    "budget_before": {"calls": 8},
+    "budget_after": {"calls": 7},
+    "command": {
+      "correlation_id": "command.route.success",
+      "intent_event_id": "event.command.intent.success",
+      "terminal_event_id": "event.command.result.success",
+      "status": "succeeded",
+      "evidence_refs": ["evidence.test.report"],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.budget.deny",
+    "decision_kind": "budget",
+    "disposition": "no_action",
+    "policy_version": "broker-v1",
+    "signal_refs": ["event.quota.observed"],
+    "candidates": ["grant", "deny"],
+    "choice": "deny",
+    "reason_code": "budget_exhausted",
+    "budget_before": {"calls": 0},
+    "budget_after": {"calls": 0},
+    "command": {
+      "correlation_id": null,
+      "intent_event_id": null,
+      "terminal_event_id": null,
+      "status": "not_applicable",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.wake.pending",
+    "decision_kind": "wake",
+    "disposition": "execute",
+    "policy_version": "wake-v1",
+    "signal_refs": ["event.timer.fired"],
+    "candidates": ["wake", "skip"],
+    "choice": "wake",
+    "reason_code": "waiting_condition_satisfied",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": "command.wake.pending",
+      "intent_event_id": "event.command.intent.pending",
+      "terminal_event_id": null,
+      "status": "pending",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.route.failed",
+    "decision_kind": "route",
+    "disposition": "execute",
+    "policy_version": "router-v1",
+    "signal_refs": ["event.validator.failed"],
+    "candidates": ["fast", "deep"],
+    "choice": "deep",
+    "reason_code": "validator_failed",
+    "budget_before": {"calls": 8},
+    "budget_after": {"calls": 7},
+    "command": {
+      "correlation_id": "command.route.failed",
+      "intent_event_id": "event.command.intent.failed",
+      "terminal_event_id": "event.command.result.failed",
+      "status": "failed",
+      "evidence_refs": ["evidence.error.classification"],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.switch.unknown",
+    "decision_kind": "switch",
+    "disposition": "execute",
+    "policy_version": "scheduler-v1",
+    "signal_refs": ["event.user.priority_changed"],
+    "candidates": ["stay", "switch"],
+    "choice": "switch",
+    "reason_code": "user_priority",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": "command.switch.unknown",
+      "intent_event_id": "event.command.intent.unknown",
+      "terminal_event_id": "event.command.unknown",
+      "status": "unknown_requires_reconcile",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.start.user-restart",
+    "decision_kind": "start",
+    "disposition": "execute",
+    "policy_version": "episode-v1",
+    "signal_refs": ["event.host.restarted"],
+    "candidates": ["resume", "user_restart"],
+    "choice": "resume",
+    "reason_code": "pending_channel_lost",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": "command.start.user-restart",
+      "intent_event_id": "event.command.intent.user-restart",
+      "terminal_event_id": "event.command.unknown.user-restart",
+      "status": "unknown_requires_user_restart",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.route.shadow",
+    "decision_kind": "route",
+    "disposition": "shadow",
+    "policy_version": "router-v1",
+    "signal_refs": ["event.task.observed"],
+    "candidates": ["fast", "deep"],
+    "choice": "deep",
+    "reason_code": "shadow_would_escalate",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": null,
+      "intent_event_id": null,
+      "terminal_event_id": null,
+      "status": "not_applicable",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  },
+  {
+    "decision_id": "decision.route.inconsistent",
+    "decision_kind": "route",
+    "disposition": "execute",
+    "policy_version": "router-v1",
+    "signal_refs": [],
+    "candidates": ["fast", "deep"],
+    "choice": "fast",
+    "reason_code": "default_fast",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": "command.route.inconsistent",
+      "intent_event_id": "event.command.intent.inconsistent",
+      "terminal_event_id": null,
+      "status": "inconsistent",
+      "evidence_refs": [],
+      "conflict_event_ids": [
+        "event.command.result.inconsistent",
+        "event.command.unknown.inconsistent"
+      ]
+    }
+  },
+  {
+    "decision_id": "decision.legacy",
+    "decision_kind": "route",
+    "disposition": "legacy_unknown",
+    "policy_version": "v0",
+    "signal_refs": [],
+    "candidates": [],
+    "choice": "unknown",
+    "reason_code": "legacy_unavailable",
+    "budget_before": null,
+    "budget_after": null,
+    "command": {
+      "correlation_id": null,
+      "intent_event_id": null,
+      "terminal_event_id": null,
+      "status": "legacy_unknown",
+      "evidence_refs": [],
+      "conflict_event_ids": []
+    }
+  }
+]
