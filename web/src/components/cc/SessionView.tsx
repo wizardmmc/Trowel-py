@@ -118,6 +118,7 @@ export function SessionView({
       });
       await loadHistoryIntoView();
     } catch {
+      return;
     }
   }
 
@@ -185,6 +186,7 @@ export function SessionView({
           historyHasMore={historyHasMore}
           historyError={historyError}
           workdir={active?.workdir ?? workdir}
+          nativeSessionId={active?.nativeSessionId ?? null}
           onInterrupt={() => void interrupt()}
           onPickHistory={(row) => void handlePick(row)}
           onLoadMoreHistory={() => void loadMoreHistory()}

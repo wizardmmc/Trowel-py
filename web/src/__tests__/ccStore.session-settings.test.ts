@@ -232,6 +232,7 @@ describe("createCcStore — Codex next-turn settings", () => {
       ),
     );
     expect(store.getState().sessions.s1).toMatchObject({
+      nativeSessionId: "thread-1",
       permission: "Read only · on-request",
       permissionPreset: "follow",
       effectivePermissionProfile: ":read-only",

@@ -41,6 +41,7 @@ vi.mock("../api/cc", () => ({
 
 import { SessionView } from "../components/cc/SessionView";
 import { useCcStore } from "../stores/ccStore";
+import { createNewSessionState } from "../stores/ccStore/sessionState";
 import {
   createAgentSession as createSession,
   getAgentSessionDefaults,
@@ -91,6 +92,43 @@ describe("SessionView", () => {
     expect(container.querySelector(".cc-empty--noactive")).not.toBeNull();
     expect(container.querySelector(".cc-empty--noactive")?.textContent)
       .toMatch(/未选择 session/);
+  });
+
+  it("shows the active native session id immediately left of the workdir button", () => {
+    const nativeSessionId = "019c1f22-96f2-7341-b85a-2f7244e63526";
+    useCcStore.setState({
+      sessions: {
+        s1: createNewSessionState(
+          {
+            session_id: "s1",
+            runtime: "codex",
+            native_session_id: nativeSessionId,
+            workdir: "/wd",
+            model: "gpt-5.6-sol",
+            effort: "high",
+            permission: "Full access · never",
+            memory_enabled: true,
+            profile_enabled: true,
+            capabilities: ["tools", "approval"],
+            name: "wd",
+            connected: true,
+            running: false,
+          },
+          { workdir: "/wd", runtime: "codex" },
+        ),
+      },
+      activeSid: "s1",
+    });
+
+    render(
+      <SessionView workdir="/wd" onRequestChangeWorkdir={() => {}} />,
+    );
+
+    const copyButton = screen.getByRole("button", {
+      name: `复制会话 ID ${nativeSessionId}`,
+    });
+    const workdirButton = screen.getByTitle("工作目录：/wd（点击切换）");
+    expect(copyButton.nextElementSibling).toBe(workdirButton);
   });
 
   it("reconcile 时按后端 connected 字段标记，temp(connected=false) 不进多开栏", async () => {
