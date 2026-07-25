@@ -17,10 +17,7 @@ from trowel_py.model_os.types import (
 )
 
 
-GOLDEN_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "spikes/model-os-observation-20260723/golden-explain.json"
-)
+GOLDEN_PATH = Path(__file__).with_name("fixtures") / "golden-explain.json"
 
 
 def _decision(case: dict[str, object]) -> DecisionRecord:
