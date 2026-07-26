@@ -95,6 +95,27 @@ export interface AgentSettingsSelection {
   readonly adjusted: boolean;
 }
 
+export type CodexCommandAction = "status" | "compact" | "review" | "goal" | "diff";
+
+export interface CodexCommand {
+  readonly name: string;
+  readonly description: string;
+  readonly source: "codex";
+  readonly action: CodexCommandAction;
+  readonly available_while_running: boolean;
+}
+
+export type CodexReviewTarget =
+  | { readonly type: "uncommittedChanges" }
+  | { readonly type: "baseBranch"; readonly branch: string }
+  | { readonly type: "commit"; readonly sha: string; readonly title?: string }
+  | { readonly type: "custom"; readonly instructions: string };
+
+export interface CodexReviewStartResult {
+  readonly reviewThreadId: string;
+  readonly turnId: string;
+}
+
 export interface AgentPendingRequest {
   readonly request_id: string;
   readonly session_id: string;
@@ -130,13 +151,29 @@ async function requestEnvelope<T, M = unknown>(
 ): Promise<ApiEnvelope<T, M>> {
   const response = await fetch(url, options);
   if (!response.ok) {
-    throw new Error(`Agent API error: ${response.status}`);
+    throw new Error(await readApiError(response));
   }
   const result: ApiEnvelope<T, M> = await response.json();
   if (!result.success || result.error) {
     throw new Error(result.error ?? "Agent API call failed");
   }
   return result;
+}
+
+async function readApiError(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object") {
+      const payload = body as Record<string, unknown>;
+      for (const key of ["error", "detail"] as const) {
+        const value = payload[key];
+        if (typeof value === "string" && value.trim()) return value;
+      }
+    }
+  } catch {
+    // 非 JSON 错误页不应遮蔽 HTTP 状态。
+  }
+  return `Agent API error: ${response.status}`;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -237,6 +274,41 @@ export async function listAgentModels(): Promise<readonly AgentModel[]> {
     `${AGENT_API_BASE}/models`,
   );
   return data.models;
+}
+
+export async function listCodexCommands(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<readonly CodexCommand[]> {
+  const data = await request<{ readonly commands: readonly CodexCommand[] }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/commands`,
+    { signal },
+  );
+  return data.commands;
+}
+
+export async function compactCodexSession(
+  sessionId: string,
+): Promise<{ readonly started: boolean }> {
+  return request<{ readonly started: boolean }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/commands/compact`,
+    { method: "POST" },
+  );
+}
+
+export async function startCodexReview(
+  sessionId: string,
+  target: CodexReviewTarget,
+): Promise<CodexReviewStartResult> {
+  const data = await request<{
+    readonly review_thread_id: string;
+    readonly turn_id: string;
+  }>(`${AGENT_API_BASE}/sessions/${sessionId}/commands/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  return { reviewThreadId: data.review_thread_id, turnId: data.turn_id };
 }
 
 export async function updateAgentSessionSettings(

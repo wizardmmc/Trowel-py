@@ -34,6 +34,30 @@ def test_thread_status_changed_translates_to_status() -> None:
     assert item.payload["active_flags"] == tuple(msg["params"]["status"]["activeFlags"])
 
 
+def test_turn_diff_updated_keeps_the_aggregated_snapshot() -> None:
+    # 字段来自 0.144.0 生成的 TurnDiffUpdatedNotification schema。
+    params = {
+        "threadId": "t-1",
+        "turnId": "turn-9",
+        "diff": "diff --git a/a.py b/a.py\n+print('ok')\n",
+    }
+
+    item = CodexTranslator().translate("turn/diff/updated", params)[0]
+
+    assert item.type is CodexEventType.TURN_DIFF_UPDATED
+    assert item.thread_id == "t-1"
+    assert item.turn_id == "turn-9"
+    assert item.payload["diff"] == params["diff"]
+
+
+def test_turn_diff_updated_rejects_non_string_diff() -> None:
+    with pytest.raises(ProtocolViolationError):
+        CodexTranslator().translate(
+            "turn/diff/updated",
+            {"threadId": "t-1", "turnId": "turn-9", "diff": None},
+        )
+
+
 def test_turn_completed_interrupted_translates_to_interrupted() -> None:
 
     # 以下 shape 来自 Codex 0.144.0 的 v2/turn.rs、v2/item.rs 与 v2/notification.rs。

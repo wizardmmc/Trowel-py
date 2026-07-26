@@ -230,6 +230,12 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
         },
       };
 
+    case "turn_diff_updated":
+      return {
+        ...prev,
+        turnDiff: { turnId: event.turn_id, diff: event.diff },
+      };
+
     default:
       return prev;
   }

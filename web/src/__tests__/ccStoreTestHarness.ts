@@ -13,6 +13,11 @@ vi.mock("../api/agent", () => ({
   setCodexGoal: vi.fn(),
   clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
   startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
+  compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
+  startCodexReview: vi.fn().mockResolvedValue({
+    reviewThreadId: "thread-1",
+    turnId: "review-turn-1",
+  }),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   getAgentHistory: vi.fn().mockResolvedValue([]),
@@ -63,6 +68,8 @@ import {
   setCodexGoal,
   clearCodexGoal,
   startCodexTurn,
+  compactCodexSession,
+  startCodexReview,
   updateAgentSessionSettings,
 } from "../api/agent";
 import { getEventStream } from "../api/ccStream";
@@ -76,6 +83,8 @@ export const apiGetCodexGoal = vi.mocked(getCodexGoal);
 export const apiSetCodexGoal = vi.mocked(setCodexGoal);
 export const apiClearCodexGoal = vi.mocked(clearCodexGoal);
 export const apiStartCodexTurn = vi.mocked(startCodexTurn);
+export const apiCompactCodexSession = vi.mocked(compactCodexSession);
+export const apiStartCodexReview = vi.mocked(startCodexReview);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
 export const apiGetEventStream = vi.mocked(getEventStream);
 

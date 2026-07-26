@@ -37,6 +37,7 @@ from trowel_py.agent_host.schemas import (
     PatchAgentSessionRequest,
     SetCodexGoalRequest,
     SendMessageBody,
+    StartCodexReviewRequest,
 )
 
 router = APIRouter()
@@ -342,6 +343,44 @@ async def clear_codex_goal(
 
     cleared = await _await_hub(hub.clear_codex_goal, session_id)
     return {"success": True, "data": {"cleared": cleared}, "error": None}
+
+
+@router.get("/sessions/{session_id}/commands")
+async def list_codex_commands(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """返回当前 CLI 版本经过验证的 session-scoped 命令 roster。"""
+
+    commands = await _await_hub(hub.list_codex_commands, session_id)
+    return {"success": True, "data": {"commands": commands}, "error": None}
+
+
+@router.post("/sessions/{session_id}/commands/compact")
+async def compact_codex_session(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """调用 ``thread/compact/start``，不创建普通用户消息。"""
+
+    await _await_hub(hub.compact_codex, session_id)
+    return {"success": True, "data": {"started": True}, "error": None}
+
+
+@router.post("/sessions/{session_id}/commands/review")
+async def start_codex_review(
+    session_id: str,
+    body: StartCodexReviewRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """按 0.144.0 ReviewTarget schema 启动 inline 原生审查。"""
+
+    result = await _await_hub(
+        hub.start_codex_review,
+        session_id,
+        body.target.model_dump(exclude_none=True),
+    )
+    return {"success": True, "data": result, "error": None}
 
 
 @router.get("/sessions/{session_id}/events")

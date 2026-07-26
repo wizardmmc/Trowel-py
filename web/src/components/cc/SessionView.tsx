@@ -5,7 +5,11 @@ import {
   useCcStore,
   useActiveSession,
 } from "../../stores/ccStore";
-import type { AgentHistoryRow } from "../../api/agent";
+import type {
+  AgentHistoryRow,
+  CodexCommand,
+  CodexReviewTarget,
+} from "../../api/agent";
 import { getAgentSessionDefaults } from "../../api/agent";
 import type { NewSessionConfig } from "./NewSessionDialog";
 import {
@@ -18,11 +22,16 @@ import { SessionBanners } from "./SessionBanners";
 import { SessionComposer } from "./SessionComposer";
 import { SessionHeader } from "./SessionHeader";
 import { SessionOverlays } from "./SessionOverlays";
+import {
+  CodexCommandDialogs,
+  type CodexCommandDialogKind,
+} from "./CodexCommandDialogs";
 import { TodoBar } from "./TodoBar";
 import { useElementHeight } from "./useElementHeight";
 import { useSessionCatalogs } from "./useSessionCatalogs";
 import { useSessionLifecycle } from "./useSessionLifecycle";
 import { useStickyBottom } from "./useStickyBottom";
+import { useCodexCommandRoster } from "./useCodexCommandRoster";
 import "./cc.css";
 
 interface SessionViewProps {
@@ -64,12 +73,24 @@ export function SessionView({
   const selectSessionPermissionPreset = useCcStore(
     (s) => s.selectSessionPermissionPreset,
   );
+  const compactCodex = useCcStore((s) => s.compactCodex);
+  const startCodexReview = useCcStore((s) => s.startCodexReview);
 
   const [revertTarget, setRevertTarget] = useState<Turn | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [workRailOpen, setWorkRailOpen] = useState(false);
+  const [commandDialog, setCommandDialog] =
+    useState<CodexCommandDialogKind>(null);
+  const [reviewPending, setReviewPending] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const reviewRequestRef = useRef<symbol | null>(null);
+  const [commandNotice, setCommandNotice] = useState<{
+    readonly sessionId: string;
+    readonly level: "loading" | "success" | "error";
+    readonly text: string;
+  } | null>(null);
   const [newSessionInitialConfig, setNewSessionInitialConfig] =
     useState<NewSessionConfig | null>(null);
   const {
@@ -81,6 +102,10 @@ export function SessionView({
     loadRuntimes,
     loadCodexModels,
   } = useSessionCatalogs(workdir);
+  const commandRoster = useCodexCommandRoster(
+    activeSid,
+    active?.runtime ?? null,
+  );
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
@@ -100,7 +125,17 @@ export function SessionView({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
     setWorkRailOpen(false);
+    setCommandDialog(null);
+    setReviewPending(false);
+    setReviewError(null);
+    reviewRequestRef.current = null;
   }, [activeSid]);
+
+  useEffect(() => {
+    if (commandNotice?.level !== "success") return;
+    const timer = window.setTimeout(() => setCommandNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [commandNotice]);
 
   useSessionLifecycle({
     workdir,
@@ -172,6 +207,79 @@ export function SessionView({
     const turnId = revertTarget.turnId;
     setRevertTarget(null);
     await revertTurn(turnId);
+  }
+
+  function handleCodexCommand(command: CodexCommand, rawText: string) {
+    if (!activeSid) return;
+    if (rawText.trim() !== `/${command.name}`) {
+      setCommandNotice({
+        sessionId: activeSid,
+        level: "error",
+        text: `/${command.name} 不接受文本参数，请从面板中选择目标`,
+      });
+      return;
+    }
+    setReviewError(null);
+    if (command.action === "status") setCommandDialog("status");
+    if (command.action === "diff") setCommandDialog("diff");
+    if (command.action === "goal") setWorkRailOpen(true);
+    if (command.action === "review") setCommandDialog("review");
+    if (command.action === "compact") void handleCompact(activeSid);
+  }
+
+  async function handleCompact(sessionId: string) {
+    setCommandNotice({
+      sessionId,
+      level: "loading",
+      text: "正在启动上下文压缩…",
+    });
+    try {
+      await compactCodex();
+      setCommandNotice({
+        sessionId,
+        level: "success",
+        text: "上下文压缩已启动",
+      });
+    } catch (error) {
+      setCommandNotice({
+        sessionId,
+        level: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function handleStartReview(target: CodexReviewTarget) {
+    const sessionId = activeSid;
+    if (!sessionId) return;
+    const requestId = Symbol("codex-review");
+    reviewRequestRef.current = requestId;
+    setReviewPending(true);
+    setReviewError(null);
+    try {
+      await startCodexReview(target);
+      if (
+        reviewRequestRef.current === requestId &&
+        useCcStore.getState().activeSid === sessionId
+      ) {
+        setCommandDialog(null);
+      }
+    } catch (error) {
+      if (
+        reviewRequestRef.current === requestId &&
+        useCcStore.getState().activeSid === sessionId
+      ) {
+        setReviewError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (
+        reviewRequestRef.current === requestId &&
+        useCcStore.getState().activeSid === sessionId
+      ) {
+        reviewRequestRef.current = null;
+        setReviewPending(false);
+      }
+    }
   }
 
   return (
@@ -259,6 +367,23 @@ export function SessionView({
           </button>
         )}
         <div ref={composerRef}>
+          {commandNotice && commandNotice.sessionId === activeSid && (
+            <div
+              className={`cc-command-notice cc-command-notice--${commandNotice.level}`}
+              role={commandNotice.level === "error" ? "alert" : "status"}
+            >
+              <span>{commandNotice.text}</span>
+              {commandNotice.level !== "loading" && (
+                <button
+                  type="button"
+                  onClick={() => setCommandNotice(null)}
+                  aria-label="关闭命令提示"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          )}
           {active?.settingsNotice && (
             <div className="cc-settings-notice" role="status">
               {active.settingsNotice}
@@ -272,6 +397,11 @@ export function SessionView({
             ccModels={models}
             codexModels={codexModels}
             codexCatalogError={codexCatalogError}
+            codexCommands={commandRoster.commands}
+            codexCommandsLoading={commandRoster.loading}
+            codexCommandsError={commandRoster.error}
+            onRetryCodexCommands={commandRoster.retry}
+            onCodexCommand={handleCodexCommand}
             onRetryCodexCatalog={loadCodexModels}
             onSend={(text) => {
               void send(text);
@@ -352,6 +482,16 @@ export function SessionView({
                 }
               : null
           }
+        />
+        <CodexCommandDialogs
+          kind={commandDialog}
+          active={active}
+          onClose={() => {
+            if (!reviewPending) setCommandDialog(null);
+          }}
+          onStartReview={(target) => void handleStartReview(target)}
+          reviewPending={reviewPending}
+          reviewError={reviewError}
         />
       </div>
       <TodoBar

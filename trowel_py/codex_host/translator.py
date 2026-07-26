@@ -82,6 +82,8 @@ _ITEM_FILE_CHANGE = "fileChange"
 _ITEM_MCP_TOOL = "mcpToolCall"
 _ITEM_SUBAGENT = "subAgentActivity"  # started/completed 均未启用
 _ITEM_COMPACT = "contextCompaction"  # 仅 completed 形成边界
+_ITEM_REVIEW_ENTERED = "enteredReviewMode"
+_ITEM_REVIEW_EXITED = "exitedReviewMode"
 
 _FC_ADD = "add"
 _FC_DELETE = "delete"
@@ -193,6 +195,7 @@ class CodexTranslator:
             "thread/goal/updated": self._on_goal_updated,
             "thread/goal/cleared": self._on_goal_cleared,
             "turn/plan/updated": self._on_plan_updated,
+            "turn/diff/updated": self._on_turn_diff_updated,
             "warning": self._on_warning,
             "guardianWarning": self._on_warning,
         }
@@ -351,6 +354,8 @@ class CodexTranslator:
         if item_type == _ITEM_COMPACT:
             # completed 是唯一可信的上下文代际边界。
             return [self._compaction_item(params, item)]
+        if item_type in (_ITEM_REVIEW_ENTERED, _ITEM_REVIEW_EXITED):
+            return [self._review_mode_item(params, item)]
         # reasoning 已通过 delta 输出；其他类型尚无稳定映射。
         return []
 
@@ -687,6 +692,47 @@ class CodexTranslator:
             item_id=_as_str(item.get("id")),
             payload=immutable_payload(),
         )
+
+    def _review_mode_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        review = _require(item, "review", "review mode item")
+        if not isinstance(review, str):
+            raise ProtocolViolationError(
+                "review mode item.review is not a string", payload=dict(item)
+            )
+        return TranslatedItem(
+            type=CodexEventType.REVIEW_MODE,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(_require(item, "id", "review mode item")),
+            payload=immutable_payload(
+                phase=(
+                    "entered"
+                    if item.get("type") == _ITEM_REVIEW_ENTERED
+                    else "exited"
+                ),
+                review=review,
+            ),
+        )
+
+    def _on_turn_diff_updated(
+        self, params: Mapping[str, Any]
+    ) -> list[TranslatedItem]:
+        method = "turn/diff/updated"
+        diff = _require(params, "diff", method)
+        if not isinstance(diff, str):
+            raise ProtocolViolationError(
+                "turn/diff/updated.diff is not a string", payload=dict(params)
+            )
+        return [
+            TranslatedItem(
+                type=CodexEventType.TURN_DIFF_UPDATED,
+                thread_id=_as_str(_require(params, "threadId", method)),
+                turn_id=_as_str(_require(params, "turnId", method)),
+                payload=immutable_payload(diff=diff),
+            )
+        ]
 
     def _on_warning(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
         """翻译尚未启用的 warning/guardianWarning shape。

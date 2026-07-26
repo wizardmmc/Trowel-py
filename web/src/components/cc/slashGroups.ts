@@ -1,8 +1,9 @@
 import type { SlashItem } from "../../api/cc";
 
-export type SlashSource = "builtin" | "bundled" | "user" | "project" | "plugin";
+export type SlashSource = "codex" | "builtin" | "bundled" | "user" | "project" | "plugin";
 
 export const SLASH_SOURCE_ORDER: readonly SlashSource[] = [
+  "codex",
   "builtin",
   "bundled",
   "user",
@@ -67,4 +68,3 @@ export function flatVisible(
   }
   return out;
 }
-

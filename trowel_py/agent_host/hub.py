@@ -33,6 +33,7 @@ from trowel_py.codex_host.pending_requests import (
     PendingRequestNotFoundError,
     PendingRequestOwnershipError,
 )
+from trowel_py.codex_host.commands import reserved_command_name
 from trowel_py.codex_host.session import TurnConflictError
 from trowel_py.cc_host.session_lifecycle import (
     CcCapacityError,
@@ -77,6 +78,14 @@ class SessionConflictError(SessionHubError):
 
 class SessionOperationError(SessionHubError):
     """命令不适用于当前 runtime 或参数组合。"""
+
+
+def _reject_reserved_codex_command(text: str) -> None:
+    reserved = reserved_command_name(text)
+    if reserved is not None:
+        raise SessionOperationError(
+            f"/{reserved} is a local command and cannot start a Codex turn"
+        )
 
 
 class RuntimeUnavailableError(SessionHubError):
@@ -686,6 +695,54 @@ class SessionHub:
         except Exception as exc:  # noqa: BLE001 - 统一为 runtime 失败边界。
             raise RuntimeTurnError(f"codex goal get failed: {exc}") from exc
 
+    async def list_codex_commands(self, session_id: str) -> list[dict[str, Any]]:
+        self._require_codex_session(session_id)
+        try:
+            return await self._require_codex_runtime().list_commands()
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex command roster failed: {exc}") from exc
+
+    async def compact_codex(self, session_id: str) -> None:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            await codex.compact(
+                session,
+                before_start=lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
+                ),
+            )
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex compact failed: {exc}") from exc
+
+    async def start_codex_review(
+        self, session_id: str, target: dict[str, Any]
+    ) -> dict[str, str]:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            result = await codex.start_review(
+                session,
+                target,
+                before_start=lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
+                ),
+            )
+            self._writeback_codex_native(session_id, session)
+            return result
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex review failed: {exc}") from exc
+
     async def set_codex_goal(
         self,
         session_id: str,
@@ -875,6 +932,7 @@ class SessionHub:
         session = self._codex.get_session(session_id)
         if session is None:
             raise SessionNotFoundError(f"codex session {session_id} not live")
+        _reject_reserved_codex_command(text)
         queue = self._add_codex_event_subscriber(session_id, session)
         turn_id: str | None = None
         try:
@@ -913,6 +971,7 @@ class SessionHub:
 
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
+        _reject_reserved_codex_command(text)
         try:
             turn_id = await codex.send(
                 session,

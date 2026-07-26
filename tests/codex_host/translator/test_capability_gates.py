@@ -96,6 +96,28 @@ def test_compaction_item_carries_only_id() -> None:
     assert dict(item.payload) == {}
 
 
+@pytest.mark.parametrize(
+    ("item_type", "phase"),
+    [("enteredReviewMode", "entered"), ("exitedReviewMode", "exited")],
+)
+def test_review_mode_completed_item_keeps_native_review(
+    item_type: str, phase: str
+) -> None:
+    # item 字段来自 0.144.0 生成的 ThreadItem schema。
+    items = CodexTranslator().translate(
+        "item/completed",
+        {
+            "threadId": "t-1",
+            "turnId": "turn-1",
+            "item": {"type": item_type, "id": "review-1", "review": "Review changes"},
+        },
+    )
+
+    assert len(items) == 1
+    assert items[0].type is CodexEventType.REVIEW_MODE
+    assert items[0].payload == {"phase": phase, "review": "Review changes"}
+
+
 def test_warning_translates_message_with_optional_thread() -> None:
 
     # notification.rs 将 warning.threadId 定义为 Optional，全局告警允许缺失。

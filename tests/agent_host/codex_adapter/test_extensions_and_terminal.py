@@ -111,6 +111,30 @@ def test_compaction_marks_completed_phase(adapter) -> None:
     assert event.payload == {"kind": "contextCompaction", "phase": "completed"}
 
 
+def test_turn_diff_and_review_mode_reach_shared_vocabulary(adapter) -> None:
+    diff = adapter.wrap(
+        make_codex_event(
+            CodexEventType.TURN_DIFF_UPDATED,
+            seq=6,
+            turn_id="turn-1",
+            payload={"diff": "diff --git a/a b/a\n+x\n"},
+        )
+    )
+    review = adapter.wrap(
+        make_codex_event(
+            CodexEventType.REVIEW_MODE,
+            seq=7,
+            turn_id="turn-1",
+            payload={"phase": "entered", "review": "Review uncommitted changes"},
+        )
+    )
+
+    assert diff.type == "turn_diff_updated"
+    assert diff.payload["diff"].startswith("diff --git")
+    assert review.type == "local_command"
+    assert review.payload["content"] == "开始代码审查：Review uncommitted changes"
+
+
 def test_goal_and_plan_keep_native_snapshots(adapter) -> None:
     goal = adapter.wrap(
         make_codex_event(

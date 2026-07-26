@@ -23,6 +23,14 @@ export function admitSessionSend(
   if (!session || session.abort) {
     return { accepted: false, sessions };
   }
+  if (session.commandPending) {
+    return rejectWithError(
+      sessions,
+      sid,
+      session,
+      `/${session.commandPending} 正在启动，请等待当前操作完成`,
+    );
+  }
 
   const running = Object.values(sessions).filter(
     (candidate) => candidate.abort !== null,

@@ -29,6 +29,7 @@ export interface PerSessionState extends ReducerState {
   readonly pendingModel?: string | null;
   readonly pendingEffort?: string | null;
   readonly settingsNotice?: string | null;
+  readonly commandPending?: "compact" | "review" | null;
   readonly capabilities: readonly string[];
   readonly lastSeq: number | null;
   readonly needsReplay: boolean;
@@ -115,6 +116,7 @@ function createSessionState(
     pendingModel: null,
     pendingEffort: null,
     settingsNotice: null,
+    commandPending: null,
     capabilities: session.capabilities,
     lastSeq: null,
     needsReplay: false,
