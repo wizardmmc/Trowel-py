@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -128,6 +128,9 @@ class SessionHub:
         cc_settings_path: str | Path | None = None,
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
+        model_os_observer: (
+            Callable[[Mapping[str, Any]], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self._store = store
         self._codex = codex_manager
@@ -141,6 +144,7 @@ class SessionHub:
             Path(codex_config_home) if codex_config_home is not None else None
         )
         self._event_observer = event_observer
+        self._model_os_observer = model_os_observer
         self._active_id: str | None = None
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
         self._cc_adapters: dict[str, CcEventAdapter] = {}
@@ -153,6 +157,12 @@ class SessionHub:
     @property
     def codex_available(self) -> bool:
         return self._codex is not None
+
+    def set_model_os_observer(
+        self,
+        observer: Callable[[Mapping[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        self._model_os_observer = observer
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
         req = self._inherit_resume_config(req)
@@ -190,6 +200,7 @@ class SessionHub:
             ("memory_enabled", "memory_enabled"),
             ("profile_enabled", "profile_enabled"),
             ("self_enabled", "self_enabled"),
+            ("model_os_mcp_enabled", "model_os_mcp_enabled"),
         ):
             if request_field not in explicit:
                 updates[request_field] = getattr(previous, binding_field)
@@ -308,6 +319,7 @@ class SessionHub:
             self_enabled=req.self_enabled,
             session_kind=req.session_kind,
             agent_mcp_enabled=req.agent_mcp_enabled,
+            model_os_mcp_enabled=req.model_os_mcp_enabled,
             delegation_depth=req.delegation_depth,
         )
         try:
@@ -335,6 +347,7 @@ class SessionHub:
             session_kind=req.session_kind,
             memory_eligibility=req.memory_eligibility,
             agent_mcp_enabled=req.agent_mcp_enabled,
+            model_os_mcp_enabled=req.model_os_mcp_enabled,
             parent_session_id=req.parent_session_id,
             delegation_depth=req.delegation_depth,
             capabilities=CC_CAPABILITIES,
@@ -373,6 +386,7 @@ class SessionHub:
             session_kind=req.session_kind,
             memory_eligibility=req.memory_eligibility,
             agent_mcp_enabled=req.agent_mcp_enabled,
+            model_os_mcp_enabled=req.model_os_mcp_enabled,
             parent_session_id=req.parent_session_id,
             delegation_depth=req.delegation_depth,
             capabilities=CODEX_CAPABILITIES,
@@ -390,11 +404,15 @@ class SessionHub:
 
         from trowel_py.codex_host.mcp_isolation import find_conflicting_mcp_server
         from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
-        from trowel_py.codex_host.session_types import TROWEL_AGENTS_SERVER_NAME
+        from trowel_py.codex_host.session_types import (
+            TROWEL_AGENTS_SERVER_NAME,
+            TROWEL_MODEL_OS_SERVER_NAME,
+        )
 
         for server_name in (
             TROWEL_NOTE_SEARCH_SERVER_NAME,
             TROWEL_AGENTS_SERVER_NAME,
+            TROWEL_MODEL_OS_SERVER_NAME,
         ):
             conflict = find_conflicting_mcp_server(
                 server_name,
@@ -654,6 +672,7 @@ class SessionHub:
         memory_enabled: bool | None = None,
         profile_enabled: bool | None = None,
         self_enabled: bool | None = None,
+        model_os_mcp_enabled: bool | None = None,
     ) -> None:
         """恢复已有原生 id 时保持 runtime 与显式注入开关不变。
 
@@ -692,6 +711,16 @@ class SessionHub:
                     f"self_enabled={binding.self_enabled}; cannot resume as "
                     f"self_enabled={self_enabled} (C-2)"
                 )
+            if (
+                model_os_mcp_enabled is not None
+                and binding.model_os_mcp_enabled != model_os_mcp_enabled
+            ):
+                raise ConditionMismatchError(
+                    f"native session {native_session_id!r} is frozen with "
+                    f"model_os_mcp_enabled={binding.model_os_mcp_enabled}; "
+                    f"cannot resume as model_os_mcp_enabled="
+                    f"{model_os_mcp_enabled} (C-2)"
+                )
 
     async def interrupt(self, session_id: str) -> None:
         binding = self._require(session_id)
@@ -707,6 +736,55 @@ class SessionHub:
         if session is None:
             raise SessionNotFoundError(f"codex session {session_id} not live")
         await self._codex.interrupt(session)
+
+    def runtime_generation(self, session_id: str) -> str:
+        """返回 steer/interrupt CAS 使用的当前 runtime 连接代际。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            host = self._cc_registry.get(session_id)
+            if host is None:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+            generation = getattr(host, "process_generation", None)
+            if not generation:
+                raise SessionConflictError(f"cc session {session_id} has no process")
+            return str(generation)
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        return str(self._codex.connection_generation)
+
+    async def steer(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        expected_turn_id: str,
+        expected_generation: str,
+    ) -> None:
+        """把 Kernel 控制消息送入匹配的 active turn。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            host = self._cc_registry.get(session_id)
+            if host is None:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+            await host.steer(
+                text,
+                expected_turn_id=expected_turn_id,
+                expected_generation=expected_generation,
+            )
+            return
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        await self._codex.steer(
+            session,
+            text,
+            expected_turn_id=expected_turn_id,
+            expected_generation=expected_generation,
+        )
 
     def answer_request(
         self, session_id: str, request_id: str, decision: str
@@ -779,6 +857,7 @@ class SessionHub:
                 raw = dict(event) if isinstance(event, dict) else event.model_dump()
                 envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
                 self._observe(envelope)
+                await self._observe_model_os(envelope)
                 if raw.get("type") == "session_started" or raw.get("type") in (
                     _TURN_TERMINAL_TYPES | {"session_exited"}
                 ):
@@ -818,6 +897,7 @@ class SessionHub:
                 continue
             payload = codex_event.model_dump(by_alias=True)
             self._observe(payload)
+            await self._observe_model_os(payload)
             yield payload
             if _is_terminal(payload):
                 break
@@ -831,6 +911,16 @@ class SessionHub:
             self._event_observer(payload)
         except Exception:
             _log.warning("[hub] event observer raised; ignored", exc_info=True)
+
+    async def _observe_model_os(self, payload: Mapping[str, Any]) -> None:
+        """Model OS observer 可等待同 turn 控制写入，失败仍与用户流隔离。"""
+
+        if self._model_os_observer is None:
+            return
+        try:
+            await self._model_os_observer(payload)
+        except Exception:
+            _log.warning("[hub] Model OS observer raised; ignored", exc_info=True)
 
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
         """从会话自身序号空间构造终止错误。

@@ -62,6 +62,11 @@ from trowel_py.model_os.self_assembler import build_session_injection
 
 logger = logging.getLogger(__name__)
 
+
+class CcSteerError(RuntimeError):
+    pass
+
+
 def _wf_debug(msg: str) -> None:
     """保留调用位作为诊断接缝，默认不产生 I/O。"""
     pass
@@ -129,6 +134,7 @@ class CCHost:
         session_registrar: Any = None,
         session_kind: str = "user",
         agent_mcp_enabled: bool = False,
+        model_os_mcp_enabled: bool = False,
         mcp_config: str | None = None,
         owned_mcp_config: bool = False,
         memory_enabled: bool = True,
@@ -158,6 +164,7 @@ class CCHost:
         self._session_registrar = session_registrar
         self._session_kind = session_kind
         self.agent_mcp_enabled = agent_mcp_enabled
+        self.model_os_mcp_enabled = model_os_mcp_enabled
         # 三个开关彼此独立，并在整个会话及重启期间保持不变。
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
@@ -166,13 +173,16 @@ class CCHost:
         # 配置仍在 memory-off 时丢弃，保持独立 review host 的隔离语义。
         self._mcp_config = (
             mcp_config
-            if memory_enabled or agent_mcp_enabled or owned_mcp_config
+            if memory_enabled or agent_mcp_enabled or model_os_mcp_enabled or owned_mcp_config
             else None
         )
         self._owned_mcp_config = owned_mcp_config
 
         self._proc: Any = None
         self._started = False
+        self._process_generation = 0
+        self._active_process_generation: str | None = None
+        self._active_turn_id: str | None = None
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
         # 锁保证同一 AskUserQuestion 只写入一次 answer 或 cancel。
@@ -207,6 +217,14 @@ class CCHost:
     @property
     def effective_model(self) -> str | None:
         return self._effective_model
+
+    @property
+    def process_generation(self) -> str | None:
+        return self._active_process_generation
+
+    @property
+    def current_turn_id(self) -> str | None:
+        return self._active_turn_id
 
     @property
     def _model_for_display(self) -> str:
@@ -313,7 +331,10 @@ class CCHost:
             resume = self._cc_session_id
         elif self._resume_from:
             resume = self._resume_from
-        self._proc = await self._spawn(resume_from=resume)
+        proc = await self._spawn(resume_from=resume)
+        self._process_generation += 1
+        self._active_process_generation = f"cc-process-{self._process_generation}"
+        self._proc = proc
         self._started = True
 
     async def _kill(self) -> None:
@@ -354,6 +375,27 @@ class CCHost:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass
+
+    async def steer(
+        self,
+        text: str,
+        *,
+        expected_turn_id: str,
+        expected_generation: str,
+    ) -> None:
+        """向匹配的 active turn 写入后续 user message，不读取第二遍 stdout。"""
+
+        if self._active_turn_id is None:
+            raise CcSteerError("CC session has no active turn")
+        if expected_turn_id != self._active_turn_id:
+            raise CcSteerError("stale turn cannot be steered")
+        if expected_generation != self._active_process_generation:
+            raise CcSteerError("stale process generation cannot be steered")
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            raise CcSteerError("CC process is unavailable for steer")
+        if not await self._safe_write(_user_msg(text)):
+            raise CcSteerError("CC process did not accept steer input")
 
     async def close(self) -> None:
         """关闭后台 drain 和会话子进程。"""
@@ -584,6 +626,7 @@ class CCHost:
         self.running = True
         payload = _user_msg(action.text)
         turn_id, revertible = await self._prepare_checkpoint()
+        self._active_turn_id = turn_id
         yield TurnStartEvent(
             type="turn_start", turn_id=turn_id, revertible=revertible
         )
@@ -855,6 +898,8 @@ class CCHost:
             raise
         finally:
             self.running = False
+            if not cancelled:
+                self._active_turn_id = None
             # 取消路径由 drain 接管；其他非干净退出必须同步杀进程。
             if not normal_end and not cancelled:
                 self._sync_kill()
@@ -959,6 +1004,7 @@ class CCHost:
                     return
         finally:
             self.running = False
+            self._active_turn_id = None
             self._drain_task = None
 
     # end_session 最多等待三秒；超时后强杀，避免关闭流程卡住。

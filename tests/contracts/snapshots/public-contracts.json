@@ -2798,6 +2798,57 @@
           }
         }
       },
+      "/api/model-os/sessions/{session_id}/yield": {
+        "post": {
+          "summary": "Propose Yield",
+          "operationId": "propose_yield_api_model_os_sessions__session_id__yield_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YieldProposalBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Propose Yield Api Model Os Sessions  Session Id  Yield Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/quota": {
         "get": {
           "summary": "List Quota",
@@ -3041,6 +3092,11 @@
               "title": "Agent Mcp Enabled",
               "default": true
             },
+            "model_os_mcp_enabled": {
+              "type": "boolean",
+              "title": "Model Os Mcp Enabled",
+              "default": false
+            },
             "parent_session_id": {
               "anyOf": [
                 {
@@ -3141,6 +3197,11 @@
               "type": "boolean",
               "title": "Agent Mcp Enabled",
               "default": true
+            },
+            "model_os_mcp_enabled": {
+              "type": "boolean",
+              "title": "Model Os Mcp Enabled",
+              "default": false
             },
             "delegation_depth": {
               "type": "integer",
@@ -3541,6 +3602,112 @@
             "type"
           ],
           "title": "ValidationError"
+        },
+        "YieldProposalBody": {
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Reason"
+            },
+            "suggested_task_state": {
+              "type": "string",
+              "enum": [
+                "ready",
+                "waiting_event",
+                "waiting_user",
+                "done"
+              ],
+              "title": "Suggested Task State"
+            },
+            "waiting_condition": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/YieldWaitingConditionBody"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "current_judgment": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Current Judgment"
+            },
+            "next_steps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "maxItems": 3,
+              "title": "Next Steps"
+            },
+            "continue_same_task": {
+              "type": "boolean",
+              "title": "Continue Same Task"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "reason",
+            "suggested_task_state",
+            "current_judgment",
+            "next_steps",
+            "continue_same_task"
+          ],
+          "title": "YieldProposalBody"
+        },
+        "YieldWaitingConditionBody": {
+          "properties": {
+            "cause": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Cause"
+            },
+            "condition_kind": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Condition Kind"
+            },
+            "target_ref": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Target Ref"
+            },
+            "match_params": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Match Params"
+            },
+            "deadline": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Deadline"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "cause",
+            "condition_kind",
+            "target_ref"
+          ],
+          "title": "YieldWaitingConditionBody"
         }
       }
     }

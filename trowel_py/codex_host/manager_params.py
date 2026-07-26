@@ -26,6 +26,8 @@ def thread_start_params(session: CodexSession) -> dict[str, Any]:
         servers.update(config.trowel_memory_mcp.to_thread_config())
     if config.trowel_agent_mcp is not None:
         servers.update(config.trowel_agent_mcp.to_thread_config())
+    if config.trowel_model_os_mcp is not None:
+        servers.update(config.trowel_model_os_mcp.to_thread_config())
     if servers:
         params["config"] = {"mcp_servers": servers}
     return params
@@ -56,6 +58,12 @@ def thread_resume_params(session: CodexSession) -> dict[str, Any]:
     if session.config.trowel_agent_mcp is not None:
         servers.update(
             session.config.trowel_agent_mcp.to_thread_config(
+                native_session_id=session.binding.thread_id
+            )
+        )
+    if session.config.trowel_model_os_mcp is not None:
+        servers.update(
+            session.config.trowel_model_os_mcp.to_thread_config(
                 native_session_id=session.binding.thread_id
             )
         )

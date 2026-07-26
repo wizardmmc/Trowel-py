@@ -237,6 +237,7 @@ _EPISODE_LIFECYCLE_KINDS = frozenset(
         EventKind.EPISODE_WAIT_RESOLVED,
         EventKind.EPISODE_ACTIVATED,
         EventKind.EPISODE_RECONCILE_REQUIRED,
+        EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
         EventKind.EPISODE_RECONCILE_RESOLVED,
         EventKind.EPISODE_RECOVERING,
         EventKind.EPISODE_SIDE_EFFECT_RECORDED,
@@ -265,6 +266,7 @@ _EPISODE_FENCED_KINDS = frozenset(
         EventKind.EPISODE_ACTIVATED,
         EventKind.EPISODE_RECOVERING,
         EventKind.EPISODE_SIDE_EFFECT_RECORDED,
+        EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
     }
 )
 
@@ -3094,6 +3096,144 @@ class ModelOsStore:
                     (_now_iso(), expected_lease_id),
                 )
 
+    def settle_closed_episode(self, episode_id: str) -> None:
+        """按 Episode 绑定原子释放 foreground，并把父对象恢复为 READY。"""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.CLOSED:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be CLOSED before parent "
+                    f"settlement (got {ep.status.value})"
+                )
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if work_item is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} references missing WorkItem "
+                    f"{ep.work_item_id!r}"
+                )
+            task = None
+            if ep.task_id is not None:
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
+                if task is None:
+                    raise EpisodeCommandError(
+                        f"episode {episode_id!r} references missing task "
+                        f"{ep.task_id!r}"
+                    )
+                already_ready = (
+                    task.status == TaskStatus.READY
+                    and work_item.status == WorkItemStatus.READY
+                    and self._read_foreground_task_id() != task.task_id
+                )
+                if already_ready:
+                    return
+                if task.status != TaskStatus.RUNNING:
+                    raise EpisodeCommandError(
+                        f"task {task.task_id!r} must be RUNNING before closed "
+                        f"Episode settlement (got {task.status.value})"
+                    )
+                if self._read_foreground_task_id() != task.task_id:
+                    raise EpisodeCommandError(
+                        f"task {task.task_id!r} no longer owns foreground; "
+                        "refusing to release another Task"
+                    )
+            elif work_item.status == WorkItemStatus.READY:
+                return
+            if work_item.status != WorkItemStatus.RUNNING:
+                raise EpisodeCommandError(
+                    f"WorkItem {work_item.work_item_id!r} must be RUNNING before "
+                    f"closed Episode settlement (got {work_item.status.value})"
+                )
+            if task is not None:
+                self._release_foreground_in_tx(task.task_id)
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_STATUS_CHANGED,
+                        task.task_id,
+                        {"new_status": TaskStatus.READY.value},
+                    )
+                )
+            self._insert_event_in_tx(
+                self._work_item_status_event(
+                    work_item.work_item_id,
+                    WorkItemStatus.READY,
+                    ep.task_id,
+                    _now_iso(),
+                )
+            )
+
+    def settle_closed_episode_waiting_event(
+        self,
+        episode_id: str,
+        *,
+        cause: str,
+        condition_kind: str,
+        target_ref: str,
+        match_params: dict[str, Any] | None = None,
+        deadline: str | None = None,
+    ) -> None:
+        """按已关闭 Episode 原子提交可验证等待条件，且允许同条件重试。"""
+
+        assert self._conn is not None
+        waiting = WaitingCondition(
+            kind=TaskStatus.WAITING_EVENT.value,
+            cause=cause,
+            episode_id=episode_id,
+            deadline=deadline,
+            condition_kind=condition_kind,
+            target_ref=target_ref,
+            match_params=match_params,
+        )
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.CLOSED:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be CLOSED before waiting "
+                    f"settlement (got {ep.status.value})"
+                )
+            if ep.task_id is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} has no Task for waiting settlement"
+                )
+            task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if task is None or work_item is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} has missing parent state"
+                )
+            if (
+                task.status == TaskStatus.WAITING_EVENT
+                and task.waiting_condition == waiting
+                and work_item.status == WorkItemStatus.SUSPENDED
+                and self._read_foreground_task_id() != task.task_id
+            ):
+                return
+            if task.status != TaskStatus.RUNNING:
+                raise EpisodeCommandError(
+                    f"task {task.task_id!r} must be RUNNING before waiting "
+                    f"settlement (got {task.status.value})"
+                )
+            if work_item.status != WorkItemStatus.RUNNING:
+                raise EpisodeCommandError(
+                    f"WorkItem {work_item.work_item_id!r} must be RUNNING before "
+                    f"waiting settlement (got {work_item.status.value})"
+                )
+            if self._read_foreground_task_id() != task.task_id:
+                raise EpisodeCommandError(
+                    f"task {task.task_id!r} no longer owns foreground; refusing "
+                    "to release another Task"
+                )
+            self._set_waiting_in_tx(task.task_id, waiting, snap=snap)
+
     def fail_episode(
         self,
         episode_id: str,
@@ -3878,10 +4018,6 @@ class ModelOsStore:
         with self._tx():
             snap = self.replay()
             ep = self._require_episode(snap, episode_id)
-            if ep.status.is_terminal:
-                raise EpisodeCommandError(
-                    f"episode {episode_id!r} is terminal ({ep.status.value})"
-                )
             existing = self._conn.execute(
                 "SELECT episode_id, version, payload_hash, committed_event_id "
                 "FROM episode_snapshots WHERE checkpoint_key=?",
@@ -3899,6 +4035,19 @@ class ModelOsStore:
                     version=int(existing["version"]),
                     committed_event_id=existing["committed_event_id"],
                     payload_hash=existing["payload_hash"],
+                )
+            if ep.status.is_terminal:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} is terminal ({ep.status.value})"
+                )
+            if ep.status not in {
+                EpisodeStatus.ACTIVE,
+                EpisodeStatus.YIELD_REQUESTED,
+                EpisodeStatus.RECOVERING,
+            }:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} cannot checkpoint recovery_partial "
+                    f"from {ep.status.value}"
                 )
             prev_snapshot = None
             if ep.last_snapshot_ref is not None:
@@ -3961,7 +4110,11 @@ class ModelOsStore:
                         "journal_through_seq": recovery.journal_through_seq,
                         "committed_event_id": committed_event_id,
                         "recovery_reason": reason,
-                        "new_status": ep.status.value,
+                        "new_status": (
+                            EpisodeStatus.RECOVERING.value
+                            if ep.status == EpisodeStatus.RECOVERING
+                            else EpisodeStatus.CHECKPOINTING.value
+                        ),
                     },
                     work_item_id=ep.work_item_id,
                     task_id=ep.task_id,
@@ -3977,6 +4130,110 @@ class ModelOsStore:
                 committed_event_id=committed_event_id,
                 payload_hash=payload_hash,
             )
+
+    def require_reconcile_after_interrupt(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        reason: str,
+    ) -> None:
+        """把已有 recovery_partial 的强停 Episode 转入阻塞核查态。"""
+
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            ep = self._require_episode(snap, episode_id)
+            if ep.status != EpisodeStatus.CHECKPOINTING:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be CHECKPOINTING before "
+                    f"interrupt reconcile (got {ep.status.value})"
+                )
+            if ep.last_snapshot_ref is None:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} has no recovery snapshot"
+                )
+            recovery = self.read_episode_snapshot(ep.last_snapshot_ref)
+            if recovery.source != SnapshotSource.RECOVERY_PARTIAL:
+                raise EpisodeCommandError(
+                    "interrupt reconcile requires a recovery_partial snapshot"
+                )
+            work_item = next(
+                (w for w in snap.work_items if w.work_item_id == ep.work_item_id),
+                None,
+            )
+            if work_item is None or work_item.status != WorkItemStatus.RUNNING:
+                actual = work_item.status.value if work_item is not None else "missing"
+                raise EpisodeCommandError(
+                    f"WorkItem {ep.work_item_id!r} must be RUNNING before "
+                    f"interrupt reconcile (got {actual})"
+                )
+            task = None
+            if ep.task_id is not None:
+                task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
+                if task is None or task.status != TaskStatus.RUNNING:
+                    actual = task.status.value if task is not None else "missing"
+                    raise EpisodeCommandError(
+                        f"task {ep.task_id!r} must be RUNNING before interrupt "
+                        f"reconcile (got {actual})"
+                    )
+                if self._read_foreground_task_id() != task.task_id:
+                    raise EpisodeCommandError(
+                        f"task {task.task_id!r} must still own foreground before "
+                        "interrupt reconcile"
+                    )
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
+                new_status=EpisodeStatus.RECONCILE_REQUIRED,
+                expected_lease_id=expected_lease_id,
+                expected_owner=expected_owner,
+                expected_token=expected_token,
+                extra_payload={
+                    "reason": ReconcileReason.UNKNOWN_SIDE_EFFECT.value,
+                    "cause": reason,
+                },
+                work_item_id=ep.work_item_id,
+                task_id=ep.task_id,
+            )
+            if task is not None:
+                self._release_foreground_in_tx(task.task_id)
+                self._insert_event_in_tx(
+                    self._make_task_event(
+                        EventKind.TASK_WAITING_SET,
+                        task.task_id,
+                        {
+                            "kind": TaskStatus.WAITING_USER.value,
+                            "cause": reason,
+                            "subtype": WaitingSubtype.RECONCILE.value,
+                            "episode_id": episode_id,
+                            "correlation_id": None,
+                            "deadline": None,
+                            "condition_kind": None,
+                            "target_ref": None,
+                            "match_params": None,
+                            "open_question": None,
+                            "preparation_snapshot_ref": None,
+                            "earliest_review_at": None,
+                        },
+                    )
+                )
+            self._insert_event_in_tx(
+                self._work_item_status_event(
+                    work_item.work_item_id,
+                    WorkItemStatus.SUSPENDED,
+                    ep.task_id,
+                    _now_iso(),
+                )
+            )
+            row = self._read_episode_lease_row(episode_id)
+            if row is not None and row["lease_id"] == expected_lease_id:
+                self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE lease_id=?",
+                    (_now_iso(), expected_lease_id),
+                )
 
     def _recover_ownership_in_tx(
         self,

@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from trowel_py.memory.source_filter import is_kernel_control_record
+
 
 @dataclass(frozen=True)
 class NumberedSource:
@@ -29,7 +31,11 @@ def materialize_numbered_source(
     with source_path.open("rb") as handle:
         handle.seek(start)
         raw = handle.read() if end_offset is None else handle.read(end_offset - start)
-    lines = [line for line in raw.splitlines() if line.strip()]
+    lines = [
+        line
+        for line in raw.splitlines()
+        if line.strip() and not is_kernel_control_record(line)
+    ]
     refs = tuple(f"L{index:06d}" for index in range(1, len(lines) + 1))
     rendered = b"".join(
         ref.encode("ascii") + b"\t" + line + b"\n"

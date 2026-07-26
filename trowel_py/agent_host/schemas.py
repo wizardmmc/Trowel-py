@@ -35,6 +35,7 @@ class CreateAgentSessionRequest(BaseModel):
     session_kind: Literal["user", "delegate"] = "user"
     memory_eligibility: bool = Field(default=True, strict=True)
     agent_mcp_enabled: bool = Field(default=True, strict=True)
+    model_os_mcp_enabled: bool = Field(default=False, strict=True)
     parent_session_id: str | None = None
     delegation_depth: int = Field(default=0, ge=0, le=1)
 

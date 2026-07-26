@@ -15,6 +15,7 @@ from trowel_py.memory.profile_suggestions import (
     PROFILE_DISTILL_POLICY_VERSION,
     load_suggestions,
 )
+from trowel_py.memory.source_filter import materialize_memory_safe_source
 from trowel_py.memory.sessions_repo import SessionRecord
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Suggestion
@@ -118,17 +119,21 @@ async def run_one_session(
         s for s in all_suggestions
         if s.policy_version == PROFILE_DISTILL_POLICY_VERSION
     ]
+    base_workdir = _ensure_distill_workdir(date_str, memory_root)
+    workdir = base_workdir / session.cc_session_id
+    workdir.mkdir(parents=True, exist_ok=True)
+    raw_source_path = session.jsonl_path or ""
+    source_path = Path(raw_source_path)
+    prompt_path = raw_source_path
+    if source_path.is_file():
+        prompt_path = str(materialize_memory_safe_source(source_path, workdir))
     prompt = build_distill_prompt(
-        session.jsonl_path or "",
+        prompt_path,
         existing,
         store.load_profile(),
         start_offset=start_offset,
         end_offset=end_offset,
     )
-
-    base_workdir = _ensure_distill_workdir(date_str, memory_root)
-    workdir = base_workdir / session.cc_session_id
-    workdir.mkdir(parents=True, exist_ok=True)
 
     gated = await drive_and_gate(
         session,

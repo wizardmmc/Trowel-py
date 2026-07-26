@@ -1,0 +1,48 @@
+{
+  "schema": "model-os-runtime-control-golden-v1",
+  "source": "spikes/model-os-runtime-control-20260723/golden-traces.json",
+  "traces": [
+    {
+      "name": "interrupt_without_active_turn",
+      "runtime": "both",
+      "input": ["command.interrupt", "session.no_active_turn"],
+      "normalize": ["command.no_action:no_active_turn"],
+      "requires_reconcile": false
+    },
+    {
+      "name": "cc_cooperative_stream_interrupt",
+      "runtime": "cc",
+      "input": ["turn.active", "stream.progress", "command.interrupt.intent", "adapter.error:error_during_execution"],
+      "normalize": ["turn.interrupted_by_correlated_command", "episode.recoverable_same_binding"],
+      "requires_reconcile": false
+    },
+    {
+      "name": "cc_tool_interrupt_unknown_effect",
+      "runtime": "cc",
+      "input": ["turn.active", "tool.call_closed", "command.interrupt.intent", "adapter.error:error_during_execution"],
+      "normalize": ["turn.interrupted_by_correlated_command", "tool.outcome_unknown", "episode.reconcile_required"],
+      "requires_reconcile": true
+    },
+    {
+      "name": "codex_native_interrupt",
+      "runtime": "codex",
+      "input": ["turn.active", "command.interrupt.intent", "turn.interrupt.ack", "turn.completed:interrupted"],
+      "normalize": ["turn.interrupted_by_correlated_command", "episode.recoverable_same_binding"],
+      "requires_reconcile": false
+    },
+    {
+      "name": "host_exit_active_turn",
+      "runtime": "both",
+      "input": ["turn.active", "host.exited"],
+      "normalize": ["turn.host_failed", "command.unknown_requires_reconcile"],
+      "requires_reconcile": true
+    },
+    {
+      "name": "late_interrupt_after_terminal",
+      "runtime": "both",
+      "input": ["turn.terminal_durable", "command.interrupt.arrives_late"],
+      "normalize": ["command.no_action:stale_turn"],
+      "requires_reconcile": false
+    }
+  ]
+}

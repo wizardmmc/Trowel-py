@@ -141,6 +141,9 @@ class EventKind:
     EPISODE_WAIT_RESOLVED = "episode.wait_resolved"
     EPISODE_ACTIVATED = "episode.activated"
     EPISODE_RECONCILE_REQUIRED = "episode.reconcile_required"
+    EPISODE_INTERRUPT_RECONCILE_REQUIRED = (
+        "episode.interrupt_reconcile_required"
+    )
     EPISODE_RECONCILE_RESOLVED = "episode.reconcile_resolved"
     EPISODE_RECOVERING = "episode.recovering"
     EPISODE_SIDE_EFFECT_RECORDED = "episode.side_effect_recorded"

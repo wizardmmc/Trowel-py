@@ -12,6 +12,7 @@ from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
 from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
 
 TROWEL_AGENTS_SERVER_NAME = "trowel_agents"
+TROWEL_MODEL_OS_SERVER_NAME = "trowel_model_os"
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,33 @@ class TrowelAgentMcpConfig:
         }
 
 
+@dataclass(frozen=True)
+class TrowelModelOsMcpConfig:
+    """附加到 Model OS 托管 Codex thread 的 yield MCP。"""
+
+    trowel_session_id: str
+    base_url: str
+    server_name: str = TROWEL_MODEL_OS_SERVER_NAME
+
+    def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
+        return {
+            self.server_name: {
+                "command": sys.executable,
+                "args": ["-m", "trowel_py.model_os.mcp_server"],
+                "env": {
+                    "TROWEL_MODEL_OS_BASE_URL": self.base_url,
+                    "TROWEL_SESSION_ID": self.trowel_session_id,
+                    "TROWEL_PARENT_RUNTIME": "codex",
+                    "TROWEL_NATIVE_SESSION_ID": native_session_id,
+                },
+                "required": True,
+                "startup_timeout_sec": 10.0,
+                "enabled_tools": ["yield"],
+                "default_tools_approval_mode": "approve",
+            }
+        }
+
+
 def build_default_trowel_agent_mcp(
     *,
     trowel_session_id: str,
@@ -111,6 +139,15 @@ def build_default_trowel_agent_mcp(
         profile_enabled=profile_enabled,
         self_enabled=self_enabled,
         delegation_depth=delegation_depth,
+    )
+
+
+def build_default_trowel_model_os_mcp(
+    *, trowel_session_id: str, base_url: str
+) -> TrowelModelOsMcpConfig:
+    return TrowelModelOsMcpConfig(
+        trowel_session_id=trowel_session_id,
+        base_url=base_url,
     )
 
 
@@ -151,6 +188,7 @@ class CodexSessionConfig:
     initial_thread_id: str | None = None
     trowel_memory_mcp: TrowelMemoryMcpConfig | None = None
     trowel_agent_mcp: TrowelAgentMcpConfig | None = None
+    trowel_model_os_mcp: TrowelModelOsMcpConfig | None = None
 
 
 @dataclass(frozen=True)

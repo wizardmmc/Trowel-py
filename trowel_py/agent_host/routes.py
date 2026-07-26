@@ -101,6 +101,11 @@ async def create_session(
                 req.profile_enabled if "profile_enabled" in explicit else None
             ),
             self_enabled=req.self_enabled if "self_enabled" in explicit else None,
+            model_os_mcp_enabled=(
+                req.model_os_mcp_enabled
+                if "model_os_mcp_enabled" in explicit
+                else None
+            ),
         )
     binding = _call_hub(hub.create, req)
     if req.resume_from is not None and req.runtime == "codex":

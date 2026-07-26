@@ -124,6 +124,19 @@ def test_create_codex_rejects_user_trowel_agents_collision(
         hub.create(codex_req(workdir))
 
 
+def test_create_codex_rejects_user_trowel_model_os_collision(
+    hub: SessionHub, workdir: Path
+) -> None:
+    config_dir = workdir / ".codex"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        "[mcp_servers.trowel_model_os]\ncommand = 'other'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SessionConflictError, match="trowel_model_os"):
+        hub.create(codex_req(workdir, model_os_mcp_enabled=True))
+
+
 @pytest.mark.parametrize(
     ("memory_enabled", "profile_enabled"),
     [(True, True), (True, False), (False, True), (False, False)],

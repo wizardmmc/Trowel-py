@@ -498,7 +498,10 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         return _apply_episode_suspended(snap, event)
     if event.kind == EventKind.EPISODE_WAIT_RESOLVED:
         return _apply_episode_wait_resolved(snap, event)
-    if event.kind == EventKind.EPISODE_RECONCILE_REQUIRED:
+    if event.kind in (
+        EventKind.EPISODE_RECONCILE_REQUIRED,
+        EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
+    ):
         return _apply_episode_reconcile_required(snap, event)
     if event.kind == EventKind.EPISODE_RECONCILE_RESOLVED:
         return _apply_episode_reconcile_resolved(snap, event)

@@ -44,6 +44,7 @@ def prepare_codex_session(
     from trowel_py.codex_host import CodexSession, CodexSessionConfig
     from trowel_py.codex_host.session import (
         build_default_trowel_agent_mcp,
+        build_default_trowel_model_os_mcp,
         build_default_trowel_memory_mcp,
     )
     from trowel_py.memory.injection import build_memory_injection
@@ -121,9 +122,17 @@ def prepare_codex_session(
         if req.agent_mcp_enabled
         else None
     )
+    trowel_model_os_mcp = (
+        build_default_trowel_model_os_mcp(
+            trowel_session_id=session_id,
+            base_url=f"http://127.0.0.1:{port}",
+        )
+        if req.model_os_mcp_enabled
+        else None
+    )
     declared_mcp_roster = tuple(
         config.server_name
-        for config in (trowel_memory_mcp, trowel_agent_mcp)
+        for config in (trowel_memory_mcp, trowel_agent_mcp, trowel_model_os_mcp)
         if config is not None
     )
     config = CodexSessionConfig(
@@ -137,6 +146,7 @@ def prepare_codex_session(
         developer_instructions=injection_text or None,
         trowel_memory_mcp=trowel_memory_mcp,
         trowel_agent_mcp=trowel_agent_mcp,
+        trowel_model_os_mcp=trowel_model_os_mcp,
     )
     journal = CodexTurnJournal(
         memory_root,

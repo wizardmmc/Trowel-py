@@ -39,6 +39,8 @@
 | `cc_host/workflow_tree.py` | CC workflow 磁盘快照到 wire tree 的纯转换 |
 | `codex_host/file_change_codec.py` | Codex fileChange 到前端 diff shape 的纯转换 |
 | `model_os/` | Task、Episode、租约、事件日志与模型资源仲裁 |
+| `model_os/yielding/` | 协作 yield、soft request、强制 interrupt、terminal race 与安全收口的唯一实现和导入入口 |
+| `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP 与本地 HTTP 登记边界 |
 | `model_os/episode_fold.py` / `work_item_fold.py` / `context_fold.py` | Reducer 的无 I/O 事件折叠策略 |
 | `model_os/store_event_factory.py` / `store_projection.py` | Store 事件构造与公开状态投影 |
 | `model_os/task_commands.py` | Task 创建、warm/foreground、等待与终态命令编排 |

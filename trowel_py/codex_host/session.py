@@ -28,7 +28,9 @@ from trowel_py.codex_host.session_types import (
     ThreadBinding,
     TrowelMemoryMcpConfig as TrowelMemoryMcpConfig,
     TrowelAgentMcpConfig as TrowelAgentMcpConfig,
+    TrowelModelOsMcpConfig as TrowelModelOsMcpConfig,
     build_default_trowel_agent_mcp as build_default_trowel_agent_mcp,
+    build_default_trowel_model_os_mcp as build_default_trowel_model_os_mcp,
     build_default_trowel_memory_mcp as build_default_trowel_memory_mcp,
     parse_thread_binding,
 )

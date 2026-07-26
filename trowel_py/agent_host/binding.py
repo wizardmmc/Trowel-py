@@ -51,6 +51,7 @@ class SessionBinding:
     session_kind: str = "user"
     memory_eligibility: bool = True
     agent_mcp_enabled: bool = True
+    model_os_mcp_enabled: bool = False
     parent_session_id: str | None = None
     delegation_depth: int = 0
 
@@ -82,6 +83,7 @@ class SessionBinding:
             "session_kind": self.session_kind,
             "memory_eligibility": self.memory_eligibility,
             "agent_mcp_enabled": self.agent_mcp_enabled,
+            "model_os_mcp_enabled": self.model_os_mcp_enabled,
             "parent_session_id": self.parent_session_id,
             "delegation_depth": self.delegation_depth,
         }
@@ -113,6 +115,7 @@ def make_binding(
     session_kind: str = "user",
     memory_eligibility: bool = True,
     agent_mcp_enabled: bool = True,
+    model_os_mcp_enabled: bool = False,
     parent_session_id: str | None = None,
     delegation_depth: int = 0,
 ) -> SessionBinding:
@@ -144,6 +147,7 @@ def make_binding(
         session_kind=session_kind,
         memory_eligibility=memory_eligibility,
         agent_mcp_enabled=agent_mcp_enabled,
+        model_os_mcp_enabled=model_os_mcp_enabled,
         parent_session_id=parent_session_id,
         delegation_depth=delegation_depth,
         created_at=now,
@@ -218,6 +222,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         session_kind=str(data.get("session_kind", "user")),
         memory_eligibility=bool(data.get("memory_eligibility", True)),
         agent_mcp_enabled=bool(data.get("agent_mcp_enabled", True)),
+        model_os_mcp_enabled=bool(data.get("model_os_mcp_enabled", False)),
         parent_session_id=(
             str(data["parent_session_id"])
             if data.get("parent_session_id") is not None

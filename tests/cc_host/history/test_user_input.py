@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trowel_py.cc_host import history
+from trowel_py.kernel_messages import KERNEL_SOFT_YIELD_MARKER
 from trowel_py.schemas.cc_host import UserEvent
 from tests.cc_host.history._support import (
     _user_list_text,
@@ -68,6 +69,19 @@ def test_parse_history_local_command_stdout_not_rendered(
             _user_list_text(
                 "<local-command-stdout>Set model to glm-5.1 and saved as "
                 "your default for new sessions</local-command-stdout>"
+            )
+        ],
+    )
+    events = history.parse_history("/workdir", "abc-123")
+    assert [e for e in events if isinstance(e, UserEvent)] == []
+
+
+def test_parse_history_kernel_soft_yield_not_rendered(fake_projects: Path) -> None:
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [
+            _user_list_text(
+                f"{KERNEL_SOFT_YIELD_MARKER}\ncontext_generation=0"
             )
         ],
     )

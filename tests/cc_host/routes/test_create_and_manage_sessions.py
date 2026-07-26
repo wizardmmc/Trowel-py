@@ -31,6 +31,14 @@ class TestCreateSession:
         resp = client.post("/api/cc/sessions", json={"workdir": "/no/such/dir/here"})
         assert resp.status_code == 400
 
+    def test_legacy_route_rejects_model_os_managed_session(self, tmp_path: Path):
+        client = _mini_app({})
+        resp = client.post(
+            "/api/cc/sessions",
+            json={"workdir": str(tmp_path), "model_os_mcp_enabled": True},
+        )
+        assert resp.status_code == 409
+
 
 class TestSessionSwitches:
     def test_defaults_to_both_on(self, tmp_path: Path):

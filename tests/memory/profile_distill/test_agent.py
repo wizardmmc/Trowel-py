@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from tests.memory.profile_distill.support import (
 )
 from trowel_py.memory.profile_distill_job import DistillError, run_one_session
 from trowel_py.memory.profile_suggestions import PROFILE_DISTILL_POLICY_VERSION
+from trowel_py.memory.source_filter import KERNEL_SOFT_YIELD_MARKER
 
 
 async def test_run_one_session_parses_draft(tmp_path: Path) -> None:
@@ -177,3 +179,47 @@ async def test_run_one_session_feeds_only_current_policy_queue_to_dedup(
         host_factory=fake_host_factory([FINISHED], VALID_DRAFT),
     )
     assert captured["pvs"] == [PROFILE_DISTILL_POLICY_VERSION]
+
+
+async def test_run_one_session_points_profile_agent_at_memory_safe_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "session.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"{KERNEL_SOFT_YIELD_MARKER}\ncontext_generation=0",
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, str] = {}
+    real_build = agent_module.build_distill_prompt
+
+    def spy(jsonl_path: str, existing, profile, **kwargs):
+        captured["path"] = jsonl_path
+        return real_build(jsonl_path, existing, profile, **kwargs)
+
+    monkeypatch.setattr(agent_module, "build_distill_prompt", spy)
+    await run_one_session(
+        replace(session_record(), jsonl_path=str(source)),
+        "2026-07-17",
+        tmp_path / "memory",
+        proxy_base_url="http://x",
+        host_factory=fake_host_factory([FINISHED], VALID_DRAFT),
+    )
+
+    safe = Path(captured["path"])
+    assert safe != source
+    assert safe.stat().st_size == source.stat().st_size
+    assert KERNEL_SOFT_YIELD_MARKER not in safe.read_text(encoding="utf-8")

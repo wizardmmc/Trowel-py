@@ -438,6 +438,40 @@ class CodexHostManager:
         ):
             self._emit_request_event(session, request)
 
+    async def steer(
+        self,
+        session: CodexSession,
+        text: str,
+        *,
+        expected_turn_id: str,
+        expected_generation: str,
+    ) -> None:
+        """把控制消息追加到匹配的原生 active turn。"""
+
+        binding = session.binding
+        turn_id = session.current_turn_id
+        if binding is None or turn_id is None:
+            raise TurnConflictError("Codex session has no active turn")
+        if expected_turn_id != turn_id:
+            raise TurnConflictError("stale turn cannot be steered")
+        if expected_generation != str(self._active_generation):
+            raise TurnConflictError("stale connection generation cannot be steered")
+        client = await self.ensure_ready()
+        result = await client.request(
+            "turn/steer",
+            {
+                "threadId": binding.thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": text}],
+            },
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        if result.get("turnId") != turn_id:
+            raise ProtocolViolationError(
+                "turn/steer response changed the active turn identity",
+                payload=result,
+            )
+
     def answer_request(
         self, session_id: str, request_id: str, decision: str
     ) -> PendingRequest:
