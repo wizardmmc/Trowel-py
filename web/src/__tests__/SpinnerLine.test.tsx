@@ -30,6 +30,7 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     lastSeq: null,
     needsReplay: false,
     ...over,
+    codexSubagents: over.codexSubagents ?? {},
   };
 }
 

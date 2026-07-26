@@ -181,6 +181,9 @@ export interface SubagentProgressEvent {
   readonly subagent_type?: string | null;
   readonly last_tool_name?: string | null;
   readonly usage?: Record<string, unknown> | null;
+  readonly agent_thread_id?: string | null;
+  readonly parent_thread_id?: string | null;
+  readonly agent_path?: string | null;
 }
 
 export interface ElicitationRequestEvent {

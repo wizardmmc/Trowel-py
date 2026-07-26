@@ -16,6 +16,7 @@ def test_validated_version_exposes_only_supported_native_commands() -> None:
         "review",
         "goal",
         "diff",
+        "agent",
     ]
     assert roster[0]["available_while_running"] is True
     assert roster[1]["available_while_running"] is False
@@ -35,6 +36,7 @@ def test_reserved_command_detection_never_treats_prefixes_as_commands() -> None:
         "review",
         "goal",
         "diff",
+        "agent",
     }
     assert reserved_command_name("/review") == "review"
     assert reserved_command_name("  /review   ") == "review"

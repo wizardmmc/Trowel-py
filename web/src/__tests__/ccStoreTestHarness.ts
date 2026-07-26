@@ -21,6 +21,7 @@ vi.mock("../api/agent", () => ({
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   getAgentHistory: vi.fn().mockResolvedValue([]),
+  getCodexSubagentHistory: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
   agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
@@ -62,6 +63,8 @@ import {
   answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
+  getAgentHistory,
+  getCodexSubagentHistory,
   listActiveAgentSessions,
   listAgentHistory,
   getCodexGoal,
@@ -77,6 +80,8 @@ import { getEventStream } from "../api/ccStream";
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
 export const apiCreateSession = vi.mocked(createAgentSession);
 export const apiDeleteSession = vi.mocked(deleteAgentSession);
+export const apiGetAgentHistory = vi.mocked(getAgentHistory);
+export const apiGetCodexSubagentHistory = vi.mocked(getCodexSubagentHistory);
 export const listActiveSessions = vi.mocked(listActiveAgentSessions);
 export const listHistory = vi.mocked(listAgentHistory);
 export const apiGetCodexGoal = vi.mocked(getCodexGoal);
@@ -102,6 +107,7 @@ export function ev(
     runtime: "claude_code",
     seq: seqCounter,
     type,
+    thread_id: null,
     turn_id: null,
     item_id: null,
     payload,

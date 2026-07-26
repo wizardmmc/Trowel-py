@@ -55,6 +55,9 @@ export function SessionView({
   const active = useActiveSession();
   const startSession = useCcStore((s) => s.startSession);
   const loadHistoryIntoView = useCcStore((s) => s.loadHistoryIntoView);
+  const loadCodexSubagentHistory = useCcStore(
+    (s) => s.loadCodexSubagentHistory,
+  );
   const send = useCcStore((s) => s.send);
   const interrupt = useCcStore((s) => s.interrupt);
   const answerElicit = useCcStore((s) => s.answerElicit);
@@ -81,6 +84,7 @@ export function SessionView({
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [workRailOpen, setWorkRailOpen] = useState(false);
+  const [openedSubagentId, setOpenedSubagentId] = useState<string | null>(null);
   const [commandDialog, setCommandDialog] =
     useState<CodexCommandDialogKind>(null);
   const [reviewPending, setReviewPending] = useState(false);
@@ -112,24 +116,53 @@ export function SessionView({
 
   const phase = active?.phase ?? "idle";
   const turns = active?.turns ?? [];
+  const openedSubagent = openedSubagentId
+    ? active?.codexSubagents[openedSubagentId] ?? null
+    : null;
+  const viewPhase = openedSubagent?.state.phase ?? phase;
+  const viewTurns = openedSubagent?.state.turns ?? turns;
   const scrollRef = useRef<HTMLDivElement>(null);
   const { sticky, unread, pauseFollowing, jumpToBottom } = useStickyBottom(
     scrollRef,
-    turns.length,
-    activeSid,
+    viewTurns.length,
+    `${activeSid ?? "none"}:${openedSubagentId ?? "root"}`,
   );
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
   const streaming = ACTIVE_PHASES.has(phase);
+  const viewStreaming = openedSubagent
+    ? openedSubagent.status === "started" ||
+      openedSubagent.status === "progress"
+    : streaming;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
     setWorkRailOpen(false);
+    setOpenedSubagentId(null);
     setCommandDialog(null);
     setReviewPending(false);
     setReviewError(null);
     reviewRequestRef.current = null;
   }, [activeSid]);
+
+  function openSubagent(threadId: string) {
+    setOpenedSubagentId(threadId);
+    void loadCodexSubagentHistory(threadId);
+  }
+
+  function locateSubagent(threadId: string) {
+    setCommandDialog(null);
+    setOpenedSubagentId(null);
+    requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(
+        `[data-subagent-thread-id="${CSS.escape(threadId)}"]`,
+      );
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.dataset.highlight = "true";
+      window.setTimeout(() => delete target.dataset.highlight, 1800);
+    });
+  }
 
   useEffect(() => {
     if (commandNotice?.level !== "success") return;
@@ -224,6 +257,7 @@ export function SessionView({
     if (command.action === "diff") setCommandDialog("diff");
     if (command.action === "goal") setWorkRailOpen(true);
     if (command.action === "review") setCommandDialog("review");
+    if (command.action === "agent") setCommandDialog("agent");
     if (command.action === "compact") void handleCompact(activeSid);
   }
 
@@ -318,25 +352,50 @@ export function SessionView({
           style={{ "--composer-h": `${composerH}px` } as CSSProperties}
         >
           {active ? (
-            <MessageList
-              key={activeSid}
-              turns={turns}
-              streaming={streaming}
-              phase={phase}
-              scrollRef={scrollRef}
-              sticky={sticky}
-              onLeaveBottom={pauseFollowing}
-              onRetryLast={handleRetryLast}
-              onAnswer={(answers) => void answerElicit(answers)}
-              onCancel={() => void cancelElicit()}
-              onApprovalDecision={(requestId, decision) =>
-                void answerApproval(requestId, decision)
-              }
-              onRevert={(t) => setRevertTarget(t)}
-              workdir={active?.workdir ?? workdir}
-              runtime={active.runtime}
-              sessionId={activeSid ?? undefined}
-            />
+            <>
+              {openedSubagent && (
+                <nav className="cc-child-breadcrumb" aria-label="Subagent 路径">
+                  <button type="button" onClick={() => setOpenedSubagentId(null)}>
+                    {active.name}
+                  </button>
+                  <span aria-hidden="true">/</span>
+                  <span>{openedSubagent.agentPath ?? openedSubagent.threadId}</span>
+                </nav>
+              )}
+              {openedSubagent?.historyError && (
+                <div className="cc-child-history-error" role="alert">
+                  {openedSubagent.historyError}
+                </div>
+              )}
+              <MessageList
+                key={`${activeSid}:${openedSubagentId ?? "root"}`}
+                turns={viewTurns}
+                streaming={viewStreaming}
+                phase={viewPhase}
+                scrollRef={scrollRef}
+                sticky={sticky}
+                onLeaveBottom={pauseFollowing}
+                onRetryLast={openedSubagent ? undefined : handleRetryLast}
+                onAnswer={(answers) => void answerElicit(answers)}
+                onCancel={() => void cancelElicit()}
+                onApprovalDecision={(requestId, decision) =>
+                  void answerApproval(requestId, decision)
+                }
+                onRevert={openedSubagent ? undefined : (t) => setRevertTarget(t)}
+                workdir={active.workdir ?? workdir}
+                runtime={active.runtime}
+                sessionId={activeSid ?? undefined}
+                codexSubagents={active.codexSubagents}
+                onOpenSubagent={openSubagent}
+                emptyLabel={
+                  openedSubagent
+                    ? openedSubagent.historyLoading
+                      ? "正在读取 Subagent 记录…"
+                      : "尚未收到 Subagent 输出。"
+                    : undefined
+                }
+              />
+            </>
           ) : (
             <div className="cc-empty cc-empty--noactive">
               <div>未选择 session</div>
@@ -367,6 +426,8 @@ export function SessionView({
           </button>
         )}
         <div ref={composerRef}>
+          {!openedSubagent && (
+            <>
           {commandNotice && commandNotice.sessionId === activeSid && (
             <div
               className={`cc-command-notice cc-command-notice--${commandNotice.level}`}
@@ -417,6 +478,8 @@ export function SessionView({
             onRequestModelPicker={() => setShowModelPicker(true)}
             onRequestEffortPicker={() => setShowEffortPicker(true)}
           />
+            </>
+          )}
         </div>
         <SessionOverlays
           revert={
@@ -492,6 +555,7 @@ export function SessionView({
           onStartReview={(target) => void handleStartReview(target)}
           reviewPending={reviewPending}
           reviewError={reviewError}
+          onLocateSubagent={locateSubagent}
         />
       </div>
       <TodoBar

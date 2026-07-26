@@ -7,6 +7,17 @@ import {
   type ReducerState,
 } from "../ccReducer";
 
+export interface CodexSubagentThread {
+  readonly threadId: string;
+  readonly parentThreadId: string;
+  readonly agentPath: string | null;
+  readonly status: "started" | "progress" | "completed" | "failed" | "cancelled";
+  readonly state: ReducerState;
+  readonly historyLoaded: boolean;
+  readonly historyLoading: boolean;
+  readonly historyError: string | null;
+}
+
 /** 单个会话的 reducer 状态，以及 store 管理的身份和传输字段。 */
 export interface PerSessionState extends ReducerState {
   readonly workdir: string;
@@ -33,6 +44,7 @@ export interface PerSessionState extends ReducerState {
   readonly capabilities: readonly string[];
   readonly lastSeq: number | null;
   readonly needsReplay: boolean;
+  readonly codexSubagents: Readonly<Record<string, CodexSubagentThread>>;
 }
 
 /** 新建会话参数；未指定 runtime 时沿用 Claude Code。 */
@@ -120,6 +132,7 @@ function createSessionState(
     capabilities: session.capabilities,
     lastSeq: null,
     needsReplay: false,
+    codexSubagents: {},
   };
 }
 

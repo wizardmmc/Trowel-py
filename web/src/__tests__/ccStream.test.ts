@@ -11,6 +11,7 @@ function env(partial: Partial<AgentEvent> & { type: string; seq: number }): stri
     schema: "agent-event-v1",
     session_id: "s1",
     runtime: "claude_code",
+    thread_id: null,
     turn_id: null,
     item_id: null,
     payload: {},

@@ -470,6 +470,11 @@ class CodexSession:
         self._apply_terminal_state(item)
         return event
 
+    def emit_child_translated(self, item: TranslatedItem) -> CodexEvent:
+        """Emit a child-thread event without mutating the root turn state machine."""
+
+        return self._emit(item)
+
     def mark_host_exited(
         self, reason: str, *, exit_code: int | None = None
     ) -> CodexEvent:

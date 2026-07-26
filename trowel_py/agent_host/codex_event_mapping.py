@@ -314,6 +314,7 @@ _MAPPERS: dict[CodexEventType, Mapper] = {
     CodexEventType.ERROR: _error,
     CodexEventType.HOST_STATUS: _passthrough,
     CodexEventType.COMPACTION: _compaction,
+    CodexEventType.SUBAGENT_ACTIVITY: _passthrough,
 }
 
 

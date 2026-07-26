@@ -38,6 +38,7 @@ def test_codex_command_roster_is_session_scoped(
         "review",
         "goal",
         "diff",
+        "agent",
     ]
     assert rejected.status_code == 422
 

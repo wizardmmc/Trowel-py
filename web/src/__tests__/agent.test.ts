@@ -9,6 +9,7 @@ import {
   deleteAgentSession,
   getAgentSessionDefaults,
   getAgentSession,
+  getCodexSubagentHistory,
   interruptAgentSession,
   listActiveAgentSessions,
   listAgentHistory,
@@ -223,6 +224,18 @@ describe("api/agent", () => {
 
   it("agentMessagesUrl builds the SSE endpoint", () => {
     expect(agentMessagesUrl("s1")).toBe("/api/agent/sessions/s1/messages");
+  });
+
+  it("loads a Codex child history with an encoded native thread id", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockEnvelope([]));
+
+    await getCodexSubagentHistory("s1", "child/thread 1");
+
+    expect(spy.mock.calls[0][0]).toBe(
+      "/api/agent/sessions/s1/subagents/child%2Fthread%201/history",
+    );
   });
 
   it("builds the Codex event endpoint and normalizes Goal CRUD", async () => {

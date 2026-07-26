@@ -29,6 +29,7 @@ async def test_manager_lists_commands_for_connected_validated_version() -> None:
         "review",
         "goal",
         "diff",
+        "agent",
     ]
     await manager.close()
 

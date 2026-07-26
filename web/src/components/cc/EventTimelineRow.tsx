@@ -8,6 +8,7 @@ import type {
   RetryingItem,
   ThinkingItem,
   TurnItem,
+  PerSessionState,
 } from "../../stores/ccStore";
 import { ApprovalBlock } from "./ApprovalBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
@@ -33,6 +34,8 @@ interface EventTimelineRowProps {
   readonly workdir?: string;
   readonly runtime?: string;
   readonly thinkingComplete?: boolean;
+  readonly codexSubagents?: PerSessionState["codexSubagents"];
+  readonly onOpenSubagent?: (threadId: string) => void;
 }
 
 export function EventTimelineRow({
@@ -45,6 +48,8 @@ export function EventTimelineRow({
   workdir,
   runtime,
   thinkingComplete,
+  codexSubagents,
+  onOpenSubagent,
 }: EventTimelineRowProps) {
   switch (item.kind) {
     case "thinking":
@@ -66,13 +71,22 @@ export function EventTimelineRow({
             subagent={item.subagent ?? { status: fallback }}
             childTools={item.childTools}
             workdir={workdir}
+            codexSubagents={codexSubagents}
+            onOpen={onOpenSubagent}
           />
         );
       }
       return <ToolBlock item={item} workdir={workdir} />;
     }
     case "subagent":
-      return <SubagentBlock subagent={item.subagent} workdir={workdir} />;
+      return (
+        <SubagentBlock
+          subagent={item.subagent}
+          workdir={workdir}
+          codexSubagents={codexSubagents}
+          onOpen={onOpenSubagent}
+        />
+      );
     case "retrying":
       return <RetryingRow item={item} />;
     case "compact_boundary":

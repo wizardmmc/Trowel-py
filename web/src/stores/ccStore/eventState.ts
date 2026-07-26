@@ -2,6 +2,7 @@ import type { AgentEvent } from "../../api/agentTypes";
 import { agentEventToTrowel } from "../../api/agentTypes";
 import { reduceEvent } from "../ccReducer";
 import type { PerSessionState } from "./sessionState";
+import { reduceCodexSubagentEvent } from "./codexSubagents";
 
 export type AgentEventReduction =
   | { readonly kind: "duplicate" }
@@ -39,6 +40,18 @@ export function reduceAgentEvent(
   // Claude Code 进程退出会删除连接行；Codex host_exited 仍保留绑定。
   if (event.type === "session_exited") {
     return { kind: "session_exited" };
+  }
+
+  const childReduced = reduceCodexSubagentEvent(baseline, event);
+  if (childReduced !== null) {
+    return {
+      kind: "updated",
+      session: {
+        ...childReduced,
+        lastSeq: event.seq,
+        needsReplay: baseline.needsReplay || gapped,
+      },
+    };
   }
 
   const flat = agentEventToTrowel(event);

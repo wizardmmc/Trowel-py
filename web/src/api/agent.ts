@@ -95,7 +95,13 @@ export interface AgentSettingsSelection {
   readonly adjusted: boolean;
 }
 
-export type CodexCommandAction = "status" | "compact" | "review" | "goal" | "diff";
+export type CodexCommandAction =
+  | "status"
+  | "compact"
+  | "review"
+  | "goal"
+  | "diff"
+  | "agent";
 
 export interface CodexCommand {
   readonly name: string;
@@ -470,6 +476,15 @@ export async function getAgentHistory(
   );
 }
 
+export async function getCodexSubagentHistory(
+  sessionId: string,
+  threadId: string,
+): Promise<readonly AgentEventLike[]> {
+  return request<readonly AgentEventLike[]>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/subagents/${encodeURIComponent(threadId)}/history`,
+  );
+}
+
 /** 只声明 history 回放所需字段，避免与 agentTypes 形成运行时循环依赖。 */
 export interface AgentEventLike {
   readonly schema: "agent-event-v1";
@@ -477,6 +492,7 @@ export interface AgentEventLike {
   readonly runtime: Runtime;
   readonly seq: number;
   readonly type: string;
+  readonly thread_id: string | null;
   readonly turn_id: string | null;
   readonly item_id: string | null;
   readonly payload: Readonly<Record<string, unknown>>;

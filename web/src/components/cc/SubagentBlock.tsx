@@ -1,5 +1,9 @@
 import { useState } from "react";
-import type { SubagentState, ToolItem } from "../../stores/ccStore";
+import type {
+  PerSessionState,
+  SubagentState,
+  ToolItem,
+} from "../../stores/ccStore";
 import { ToolBlock } from "./ToolBlock";
 
 const CC_VISIBLE_RUNNING_TOOLS = 4;
@@ -9,6 +13,8 @@ interface SubagentBlockProps {
   readonly subagent: SubagentState;
   readonly childTools?: readonly ToolItem[];
   readonly workdir?: string;
+  readonly onOpen?: (threadId: string) => void;
+  readonly codexSubagents?: PerSessionState["codexSubagents"];
 }
 
 function tokenCount(usage: SubagentState["usage"]): number | null {
@@ -47,7 +53,13 @@ function brief(text: string, max = 40): string {
   return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
 }
 
-export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockProps) {
+export function SubagentBlock({
+  subagent,
+  childTools,
+  workdir,
+  onOpen,
+  codexSubagents,
+}: SubagentBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const inProgress =
     subagent.status === "started" || subagent.status === "progress";
@@ -62,21 +74,47 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
   const hiddenCount = kids.length - visibleCount;
   const visibleChildren = kids.slice(-visibleCount);
   const toggle = (): void => setExpanded((e) => !e);
+  const threadId = subagent.agentThreadId ?? null;
+  const nested = threadId
+    ? Object.values(codexSubagents ?? {}).filter(
+        (candidate) => candidate.parentThreadId === threadId,
+      )
+    : [];
+  const hasNested = nested.length > 0;
+  const interactive = Boolean(threadId && onOpen) || hasKids;
+  const activate = (): void => {
+    if (threadId && onOpen) onOpen(threadId);
+    else if (hasKids) toggle();
+  };
+
+  const stateLabel =
+    inProgress
+      ? "Running"
+      : subagent.status === "failed"
+        ? "Failed"
+        : subagent.status === "cancelled"
+          ? "Interrupted"
+          : "Done";
 
   return (
-    <div className="cc-subagent" data-status={subagent.status}>
+    <div
+      className="cc-subagent"
+      data-status={subagent.status}
+      data-subagent-thread-id={threadId ?? undefined}
+      data-testid={threadId ? `subagent-${threadId}` : undefined}
+    >
       <div
         className="cc-subagent__header"
-        role={hasKids ? "button" : undefined}
-        tabIndex={hasKids ? 0 : undefined}
+        role={interactive ? "button" : undefined}
+        tabIndex={interactive ? 0 : undefined}
         aria-expanded={hasKids ? expanded : undefined}
-        onClick={hasKids ? toggle : undefined}
+        onClick={interactive ? activate : undefined}
         onKeyDown={
-          hasKids
+          interactive
             ? (e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  toggle();
+                  activate();
                 }
               }
             : undefined
@@ -87,7 +125,12 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
           <path d="M9 9h6M9 13h6M9 17h4" />
         </svg>
         <span className="cc-subagent__name">
-          Agent{subagent.subagent_type ? ` · ${subagent.subagent_type}` : ""}
+          Agent
+          {subagent.agentPath
+            ? ` · ${subagent.agentPath}`
+            : subagent.subagent_type
+              ? ` · ${subagent.subagent_type}`
+              : ""}
         </span>
         {subagent.description && (
           <span className="cc-subagent__desc">{brief(subagent.description)}</span>
@@ -101,12 +144,14 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
         {inProgress ? (
           <span className="cc-subagent__spin cc-spin-ring" aria-label="进行中" />
         ) : (
-          <span className="cc-subagent__done">
-            Done{formatUsage(subagent.usage)}
+          <span
+            className={`cc-subagent__done${subagent.status === "failed" ? " cc-subagent__done--failed" : ""}`}
+          >
+            {stateLabel}{formatUsage(subagent.usage)}
           </span>
         )}
       </div>
-      {hasKids && (
+      {(hasKids || hasNested) && (
         <div className="cc-subagent__children">
           {visibleChildren.map((c) => (
             <ToolBlock key={c.toolUseId} item={c} condensed workdir={workdir} />
@@ -120,6 +165,20 @@ export function SubagentBlock({ subagent, childTools, workdir }: SubagentBlockPr
               +{hiddenCount} more
             </button>
           )}
+          {nested.map((child) => (
+            <SubagentBlock
+              key={child.threadId}
+              subagent={{
+                status: child.status,
+                agentThreadId: child.threadId,
+                parentThreadId: child.parentThreadId,
+                agentPath: child.agentPath,
+              }}
+              workdir={workdir}
+              codexSubagents={codexSubagents}
+              onOpen={onOpen}
+            />
+          ))}
         </div>
       )}
     </div>

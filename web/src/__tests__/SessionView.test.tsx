@@ -32,6 +32,7 @@ vi.mock("../api/agent", () => ({
   }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
   getCodexGoal: vi.fn().mockResolvedValue(null),
+  getCodexSubagentHistory: vi.fn().mockResolvedValue([]),
   setCodexGoal: vi.fn(),
   clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
   startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
@@ -67,6 +68,8 @@ vi.mock("../api/cc", () => ({
 import { SessionView } from "../components/cc/SessionView";
 import { useCcStore } from "../stores/ccStore";
 import { createNewSessionState } from "../stores/ccStore/sessionState";
+import { reduceAgentEvent } from "../stores/ccStore/eventState";
+import type { AgentEvent } from "../api/agentTypes";
 import {
   createAgentSession as createSession,
   getAgentSessionDefaults,
@@ -75,6 +78,7 @@ import {
   listAgentRuntimes,
   listCodexCommands,
   compactCodexSession,
+  getCodexSubagentHistory,
 } from "../api/agent";
 import {
   loadNewSessionPreferences,
@@ -99,6 +103,76 @@ beforeEach(() => {
 });
 
 describe("SessionView", () => {
+  it("opens a Codex child timeline without a composer and returns to the parent", async () => {
+    installCodexSession();
+    let current = useCcStore.getState().sessions.s1;
+    const apply = (event: AgentEvent) => {
+      const result = reduceAgentEvent(current, event);
+      if (result.kind === "updated") current = result.session;
+    };
+    apply({
+      schema: "agent-event-v1",
+      session_id: "s1",
+      runtime: "codex",
+      seq: 1,
+      type: "user",
+      thread_id: "thread-1",
+      turn_id: "parent-turn-1",
+      item_id: null,
+      payload: { text: "delegate" },
+    });
+    apply({
+      schema: "agent-event-v1",
+      session_id: "s1",
+      runtime: "codex",
+      seq: 2,
+      type: "subagent_activity",
+      thread_id: "thread-1",
+      turn_id: "parent-turn-1",
+      item_id: "activity-1",
+      payload: {
+        source: "subagent_activity",
+        kind: "started",
+        agent_thread_id: "child-thread-1",
+        agent_path: "/root/probe",
+      },
+    });
+    useCcStore.setState({ sessions: { s1: current }, activeSid: "s1" });
+    vi.mocked(getCodexSubagentHistory).mockResolvedValueOnce([
+      {
+        schema: "agent-event-v1",
+        session_id: "s1",
+        runtime: "codex",
+        seq: 1,
+        type: "turn_start",
+        thread_id: "child-thread-1",
+        turn_id: "child-turn-1",
+        item_id: null,
+        payload: { autonomous: true, revertible: false },
+      },
+      {
+        schema: "agent-event-v1",
+        session_id: "s1",
+        runtime: "codex",
+        seq: 2,
+        type: "text",
+        thread_id: "child-thread-1",
+        turn_id: "child-turn-1",
+        item_id: "message-1",
+        payload: { text: "child result" },
+      },
+    ]);
+
+    render(<SessionView workdir="/wd" />);
+    fireEvent.click(screen.getByRole("button", { name: /root\/probe/ }));
+
+    expect(await screen.findByText("child result")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Subagent 路径" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "wd" }));
+    expect(screen.getAllByText("delegate").length).toBeGreaterThan(0);
+  });
+
   function installCodexSession() {
     useCcStore.setState({
       sessions: {
@@ -351,6 +425,7 @@ describe("SessionView", () => {
           goal: null,
           plan: null,
           turnDiff: null,
+          codexSubagents: {},
           meta: {
             model: "gpt-5.6-sol",
             ccSessionId: "thr-1",
