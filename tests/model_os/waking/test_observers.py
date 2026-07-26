@@ -108,7 +108,7 @@ def test_process_observer_refuses_condition_without_start_identity(
     assert (
         SystemObserver().observe(
             _condition(store, task.task_id),
-            observed_at="2026-07-26T09:00:00Z",
+            observed_at="2099-01-01T09:00:00Z",
         )
         is None
     )
@@ -150,12 +150,12 @@ async def test_due_time_catchup_is_merged_once(store: ModelOsStore) -> None:
         cause="明早继续",
         condition_kind="time",
         target_ref="timer:morning",
-        deadline="2026-07-26T09:00:00Z",
+        deadline="2099-01-01T09:00:00Z",
     )
     service = WakeService(
         store,
         observer=SystemObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=None,
     )
 
@@ -182,7 +182,7 @@ async def test_wake_service_forwards_each_consumed_event_to_scheduler(
         cause="定时继续",
         condition_kind="time",
         target_ref="timer:schedule",
-        deadline="2026-07-26T09:00:00Z",
+        deadline="2099-01-01T09:00:00Z",
     )
     seen = []
 
@@ -192,7 +192,7 @@ async def test_wake_service_forwards_each_consumed_event_to_scheduler(
     service = WakeService(
         store,
         observer=SystemObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=None,
         on_wake=on_wake,
     )
@@ -209,7 +209,7 @@ async def test_24h_without_conditions_has_no_wake_or_background_work(
     service = WakeService(
         store,
         observer=SystemObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=None,
     )
 
@@ -233,7 +233,7 @@ async def test_service_start_and_stop_leave_no_background_task(
     service = WakeService(
         store,
         observer=SystemObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=None,
         sleep=wait_forever,
     )
@@ -255,7 +255,7 @@ async def test_host_observer_failure_does_not_block_due_timer(
         cause="定时继续",
         condition_kind="time",
         target_ref="timer:once",
-        deadline="2026-07-26T09:00:00Z",
+        deadline="2099-01-01T09:00:00Z",
     )
 
     class FailingHostDetector:
@@ -265,7 +265,7 @@ async def test_host_observer_failure_does_not_block_due_timer(
     service = WakeService(
         store,
         observer=SystemObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=FailingHostDetector(),
     )
 
@@ -293,7 +293,7 @@ async def test_one_condition_observer_failure_does_not_block_others(
         cause="定时继续",
         condition_kind="time",
         target_ref="timer:once",
-        deadline="2026-07-26T09:00:00Z",
+        deadline="2099-01-01T09:00:00Z",
     )
 
     class PartlyFailingObserver(SystemObserver):
@@ -305,7 +305,7 @@ async def test_one_condition_observer_failure_does_not_block_others(
     service = WakeService(
         store,
         observer=PartlyFailingObserver(),
-        now=lambda: "2026-07-26T12:00:00Z",
+        now=lambda: "2099-01-01T12:00:00Z",
         host_detector=None,
     )
 
