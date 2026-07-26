@@ -6,9 +6,11 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from trowel_py.model_os.default_work.schema import SCHEMA_SQL as DEFAULT_WORK_SCHEMA_SQL
 from trowel_py.model_os.signal_projection import CREATE_PROJECTION_SQL
 
-SCHEMA_SQL = """
+SCHEMA_SQL = (
+    """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -76,7 +78,9 @@ CREATE TABLE IF NOT EXISTS projection_checkpoints (
     PRIMARY KEY (projection_name, projection_version, event_seq, decision_seq)
 );
 
-""" + CREATE_PROJECTION_SQL + """
+"""
+    + CREATE_PROJECTION_SQL
+    + """
 
 CREATE TABLE IF NOT EXISTS leases (
     lease_id TEXT PRIMARY KEY,
@@ -149,6 +153,8 @@ CREATE TABLE IF NOT EXISTS episode_create_keys (
     created_at TEXT NOT NULL
 );
 """
+    + DEFAULT_WORK_SCHEMA_SQL
+)
 
 
 def migrate_v4_to_v5(
@@ -182,8 +188,7 @@ def migrate_v4_to_v5(
 
 def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_events_journal_page "
-        "ON events(occurred_at, seq)"
+        "CREATE INDEX IF NOT EXISTS idx_events_journal_page ON events(occurred_at, seq)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_decisions_journal_page "

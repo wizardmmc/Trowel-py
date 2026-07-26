@@ -28,6 +28,7 @@ def build_args(
     resume_from: str | None = None,
     append_system_prompt: str | None = None,
     mcp_config: str | None = None,
+    native_tools: tuple[str, ...] | None = None,
 ) -> list[str]:
     """构造 CC argv；workdir 只由子进程 cwd 承载，不进入 argv。"""
     args = [
@@ -57,6 +58,8 @@ def build_args(
     # strict 模式隔离项目、用户和插件中的额外 MCP 配置。
     if mcp_config:
         args += ["--mcp-config", mcp_config, "--strict-mcp-config"]
+    if native_tools is not None:
+        args += ["--tools", ",".join(native_tools)]
     return args
 
 

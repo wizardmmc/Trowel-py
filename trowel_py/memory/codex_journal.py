@@ -17,9 +17,7 @@ from trowel_py.memory.sessions_repo import (
 )
 
 NowFn = Callable[[], datetime]
-_TERMINAL_TYPES = frozenset(
-    {CodexEventType.FINISHED, CodexEventType.INTERRUPTED}
-)
+_TERMINAL_TYPES = frozenset({CodexEventType.FINISHED, CodexEventType.INTERRUPTED})
 
 
 class CodexTurnJournal:
@@ -34,6 +32,7 @@ class CodexTurnJournal:
         memory_enabled: bool,
         profile_enabled: bool,
         session_kind: str = "user",
+        memory_eligibility: str = "eligible",
         now_fn: NowFn | None = None,
     ) -> None:
         self._root = memory_root
@@ -42,6 +41,7 @@ class CodexTurnJournal:
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
         self._session_kind = session_kind
+        self._memory_eligibility = memory_eligibility
         self._now = now_fn or datetime.now
         self._registered: set[tuple[str, str]] = set()
         self._failed: set[tuple[str, str]] = set()
@@ -125,6 +125,7 @@ class CodexTurnJournal:
                 memory_enabled=self._memory_enabled,
                 profile_enabled=self._profile_enabled,
                 session_kind=self._session_kind,
+                memory_eligibility=self._memory_eligibility,
             )
         finally:
             conn.close()
@@ -166,7 +167,10 @@ class CodexTurnJournal:
 def _terminal_status(event: CodexEvent) -> str | None:
     if event.type in _TERMINAL_TYPES:
         return str(event.payload.get("status") or event.type.value)
-    if event.type is CodexEventType.ERROR and event.payload.get("kind") != "native_error":
+    if (
+        event.type is CodexEventType.ERROR
+        and event.payload.get("kind") != "native_error"
+    ):
         return str(event.payload.get("status") or "failed")
     return None
 
@@ -196,7 +200,9 @@ def recover_sealed_codex_turns(memory_root: Path) -> int:
     try:
         repo = create_sessions_repository(conn)
         for turn in repo.find_unsealed_codex_turns():
-            terminal = _read_terminal(Path(turn.journal_path), turn.thread_id, turn.turn_id)
+            terminal = _read_terminal(
+                Path(turn.journal_path), turn.thread_id, turn.turn_id
+            )
             if terminal is None:
                 continue
             status, completed_at = terminal

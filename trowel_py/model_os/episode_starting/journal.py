@@ -48,6 +48,10 @@ def _hash(value: str) -> str:
 
 def _command_fingerprint(command: StartEpisodeCommand) -> str:
     payload = asdict(command)
+    first_turn_text = payload.pop("first_turn_text", None)
+    payload["first_turn_text_hash"] = (
+        _hash(first_turn_text) if isinstance(first_turn_text, str) else None
+    )
     if command.schedule_decision_id is None:
         payload.pop("schedule_decision_id")
     payload["session_purpose"] = command.session_purpose.value

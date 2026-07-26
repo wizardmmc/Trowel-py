@@ -51,6 +51,7 @@ class AgentEpisodeRuntimeAdapter:
         self, command: StartEpisodeCommand, episode: Episode
     ) -> NativeSessionIdentity:
         del episode
+        isolated = command.session_purpose.value == "default"
         binding = self._hub.create(
             CreateAgentSessionRequest(
                 runtime=cast(RuntimeWire, command.runtime),
@@ -63,20 +64,27 @@ class AgentEpisodeRuntimeAdapter:
                 ),
                 permission_preset=(
                     cast(PermissionPreset, command.permission)
-                    if command.runtime == "codex"
+                    if command.runtime == "codex" and not isolated
                     else None
                 ),
-                memory_enabled=command.memory_enabled,
-                profile_enabled=command.profile_enabled,
-                self_enabled=True,
-                session_kind="user",
+                approval_policy=(
+                    "never" if command.runtime == "codex" and isolated else None
+                ),
+                sandbox=(
+                    "read-only" if command.runtime == "codex" and isolated else None
+                ),
+                memory_enabled=False if isolated else command.memory_enabled,
+                profile_enabled=False if isolated else command.profile_enabled,
+                self_enabled=not isolated,
+                session_kind="default" if isolated else "user",
                 session_purpose=command.session_purpose.value,
                 memory_eligibility=(
                     command.memory_eligibility is not MemoryEligibility.INELIGIBLE
                 ),
                 memory_eligibility_mode=command.memory_eligibility.value,
-                agent_mcp_enabled=True,
-                model_os_mcp_enabled=True,
+                agent_mcp_enabled=not isolated,
+                model_os_mcp_enabled=not isolated,
+                native_tools_mode="none" if isolated else "default",
             )
         )
         return _model_identity(await self._hub.start_native(binding.session_id))

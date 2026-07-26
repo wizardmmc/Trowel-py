@@ -83,6 +83,8 @@ def open_session(
             mcp_config=mcp_config,
             owned_mcp_config=True,
             session_kind=req.session_kind,
+            memory_eligibility_mode=req.memory_eligibility_mode,
+            native_tools_mode=req.native_tools_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
             memory_enabled=req.memory_enabled,

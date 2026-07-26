@@ -57,6 +57,8 @@ class StartEpisodeCommand:
     route_input_fact_refs: tuple[str, ...] = ()
     route_decision_id: str | None = None
     selected_model_tier: ModelTier | None = None
+    # 系统工作可携带只存在于当前进程的首轮正文；journal 只保存其指纹。
+    first_turn_text: str | None = None
 
     def __post_init__(self) -> None:
         if self.runtime not in {"claude_code", "codex"}:
@@ -91,6 +93,8 @@ class StartEpisodeCommand:
             raise ValueError(
                 "StartEpisodeCommand always starts fresh; resume is forbidden"
             )
+        if self.first_turn_text is not None and not self.first_turn_text.strip():
+            raise ValueError("first_turn_text must be non-empty when provided")
         paired = self.previous_episode_id is not None
         if paired != (self.previous_snapshot_ref is not None):
             raise ValueError(

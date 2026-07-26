@@ -32,16 +32,15 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate"] = "user"
+    session_kind: Literal["user", "delegate", "default"] = "user"
     session_purpose: Literal[
         "foreground", "default", "incubation", "maintenance", "experiment"
     ] = "foreground"
     memory_eligibility: bool = Field(default=True, strict=True)
-    memory_eligibility_mode: Literal["eligible", "ineligible", "adopted"] = (
-        "eligible"
-    )
+    memory_eligibility_mode: Literal["eligible", "ineligible", "adopted"] = "eligible"
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     model_os_mcp_enabled: bool = Field(default=False, strict=True)
+    native_tools_mode: Literal["default", "none"] = "default"
     parent_session_id: str | None = None
     delegation_depth: int = Field(default=0, ge=0, le=1)
 

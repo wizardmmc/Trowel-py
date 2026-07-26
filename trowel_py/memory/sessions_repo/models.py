@@ -18,6 +18,7 @@ class SessionRecord:
     registered_at: str = ""
     extracted_at: str | None = None
     session_kind: str = "user"
+    memory_eligibility: str = "eligible"
     last_completed_offset: int | None = None
     last_completed_at: str | None = None
     last_extracted_offset: int | None = None
@@ -33,6 +34,7 @@ class SessionBinding:
     session_kind: str
     workdir: str
     bound_at: str
+    memory_eligibility: str = "eligible"
 
 
 @runtime_checkable
@@ -77,6 +79,7 @@ class CodexTurnRecord:
     memory_enabled: bool = True
     profile_enabled: bool = True
     session_kind: str = "user"
+    memory_eligibility: str = "eligible"
 
 
 @dataclass(frozen=True)

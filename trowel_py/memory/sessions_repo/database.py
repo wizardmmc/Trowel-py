@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     registered_at         TEXT NOT NULL,
     extracted_at          TEXT,
     session_kind          TEXT DEFAULT 'user',
+    memory_eligibility    TEXT NOT NULL DEFAULT 'eligible',
     last_completed_offset INTEGER,
     last_completed_at     TEXT,
     last_extracted_offset INTEGER,
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS session_bindings (
     cc_session_id     TEXT NOT NULL,
     session_kind      TEXT NOT NULL,
     workdir           TEXT NOT NULL,
-    bound_at          TEXT NOT NULL
+    bound_at          TEXT NOT NULL,
+    memory_eligibility TEXT NOT NULL DEFAULT 'eligible'
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
 CREATE TABLE IF NOT EXISTS codex_turns (
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS codex_turns (
     memory_enabled      INTEGER NOT NULL DEFAULT 1,
     profile_enabled     INTEGER NOT NULL DEFAULT 1,
     session_kind        TEXT NOT NULL DEFAULT 'user',
+    memory_eligibility  TEXT NOT NULL DEFAULT 'eligible',
     PRIMARY KEY (thread_id, turn_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
@@ -56,6 +59,10 @@ CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
 """
 
 _ADD_COLUMN_SQL = {
+    "memory_eligibility": (
+        "ALTER TABLE sessions ADD COLUMN memory_eligibility TEXT NOT NULL "
+        "DEFAULT 'eligible'"
+    ),
     "session_kind": (
         "ALTER TABLE sessions ADD COLUMN session_kind TEXT DEFAULT 'user'"
     ),
@@ -70,6 +77,10 @@ _ADD_COLUMN_SQL = {
 }
 
 _CODEX_ADD_COLUMN_SQL = {
+    "memory_eligibility": (
+        "ALTER TABLE codex_turns ADD COLUMN memory_eligibility TEXT NOT NULL "
+        "DEFAULT 'eligible'"
+    ),
     "session_kind": (
         "ALTER TABLE codex_turns ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'user'"
     ),
@@ -94,6 +105,14 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
     for column, sql in _CODEX_ADD_COLUMN_SQL.items():
         if column not in codex_existing:
             conn.execute(sql)
+    binding_existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(session_bindings)")
+    }
+    if "memory_eligibility" not in binding_existing:
+        conn.execute(
+            "ALTER TABLE session_bindings ADD COLUMN memory_eligibility TEXT "
+            "NOT NULL DEFAULT 'eligible'"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_incremental"
         " ON sessions(last_completed_offset, last_extracted_offset)"
@@ -129,6 +148,7 @@ def row_to_record(row: sqlite3.Row) -> SessionRecord:
         registered_at=row["registered_at"],
         extracted_at=row["extracted_at"],
         session_kind=row["session_kind"] or "user",
+        memory_eligibility=row["memory_eligibility"] or "eligible",
         last_completed_offset=row["last_completed_offset"],
         last_completed_at=row["last_completed_at"],
         last_extracted_offset=row["last_extracted_offset"],
@@ -143,6 +163,7 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
         session_kind=row["session_kind"],
         workdir=row["workdir"],
         bound_at=row["bound_at"],
+        memory_eligibility=row["memory_eligibility"] or "eligible",
     )
 
 
@@ -163,4 +184,5 @@ def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
         memory_enabled=bool(row["memory_enabled"]),
         profile_enabled=bool(row["profile_enabled"]),
         session_kind=row["session_kind"] or "user",
+        memory_eligibility=row["memory_eligibility"] or "eligible",
     )

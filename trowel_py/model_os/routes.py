@@ -7,10 +7,14 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from trowel_py.model_os.episode_starting import StartEpisodeCommand
+from trowel_py.model_os.default_work.models import (
+    DefaultWorkError,
+    RunDefaultPilotCommand,
+)
 from trowel_py.model_os.routing import (
     RouteMarker,
     RouteReviewClass,
@@ -133,6 +137,151 @@ class RequestForegroundBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str = Field(min_length=1)
+
+
+class RunDefaultPilotBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(min_length=1)
+    runtime: Literal["claude_code", "codex"]
+    source_refs: tuple[str, ...]
+
+
+class CandidateOutcomeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(min_length=1)
+    outcome: Literal["adopted", "dismissed", "invalid"]
+    reason: str | None = None
+
+
+def _candidate_payload(candidate) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "generation_id": candidate.generation_id,
+        "content": candidate.content,
+        "source_refs": list(candidate.source_refs),
+        "related_question": candidate.related_question,
+        "why_useful": candidate.why_useful,
+        "verification": candidate.verification,
+        "uncertainty": candidate.uncertainty,
+        "runtime": candidate.runtime,
+        "effective_model": candidate.effective_model,
+        "tier": candidate.tier,
+        "policy_version": candidate.policy_version,
+        "status": candidate.status.value,
+        "created_at": candidate.created_at,
+        "shown_at": candidate.shown_at,
+        "outcome_at": candidate.outcome_at,
+        "outcome_reason": candidate.outcome_reason,
+        "expires_at": candidate.expires_at,
+    }
+
+
+def _default_error(code: str, message: str, *, status_code: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "data": None,
+            "error": {"code": code, "message": message},
+        },
+    )
+
+
+@router.post("/default/pilot")
+async def run_default_pilot(body: RunDefaultPilotBody, request: Request) -> Any:
+    service = getattr(request.app.state, "model_os_default_work", None)
+    if service is None:
+        return _default_error(
+            "default_work_unavailable", "Default work unavailable", status_code=503
+        )
+    try:
+        result = await service.run(
+            RunDefaultPilotCommand(body.command_id, body.runtime, body.source_refs)
+        )
+    except DefaultWorkError as exc:
+        return _default_error(exc.code, exc.detail, status_code=409)
+    return {
+        "success": True,
+        "data": {
+            "work_item_id": result.work_item_id,
+            "episode_id": result.episode_id,
+            "generation_id": result.generation_id,
+            "candidate_ids": list(result.candidate_ids),
+            "candidates": [_candidate_payload(item) for item in result.candidates],
+        },
+        "error": None,
+    }
+
+
+@router.post("/default/candidates/{candidate_id}/outcome")
+async def record_default_candidate_outcome(
+    candidate_id: str,
+    body: CandidateOutcomeBody,
+    request: Request,
+) -> Any:
+    service = getattr(request.app.state, "model_os_default_work", None)
+    if service is None:
+        return _default_error(
+            "default_work_unavailable", "Default work unavailable", status_code=503
+        )
+    try:
+        candidate = service.repository.record_outcome(
+            command_id=body.command_id,
+            candidate_id=candidate_id,
+            outcome=body.outcome,
+            reason=body.reason,
+            occurred_at=datetime.now(timezone.utc),
+        )
+    except (DefaultWorkError, ValueError) as exc:
+        code = exc.code if isinstance(exc, DefaultWorkError) else "outcome_invalid"
+        return _default_error(code, str(exc), status_code=409)
+    return {"success": True, "data": _candidate_payload(candidate), "error": None}
+
+
+@router.get("/default/gate")
+async def default_gate(request: Request) -> Any:
+    service = getattr(request.app.state, "model_os_default_work", None)
+    if service is None:
+        return _default_error(
+            "default_work_unavailable", "Default work unavailable", status_code=503
+        )
+    report = service.repository.gate_report()
+    return {
+        "success": True,
+        "data": {
+            "status": report.status,
+            "outcome_count": report.outcome_count,
+            "adopted": report.adopted,
+            "invalid": report.invalid,
+            "dismissed": report.dismissed,
+            "adoption_rate": report.adoption_rate,
+            "invalid_rate": report.invalid_rate,
+            "total_input_tokens": report.total_input_tokens,
+            "total_output_tokens": report.total_output_tokens,
+            "known_cost": report.known_cost,
+            "unknown_cost_generations": report.unknown_cost_generations,
+            "automatic_default": report.automatic_default,
+        },
+        "error": None,
+    }
+
+
+@router.get("/default/generations/{generation_id}")
+async def read_default_generation(generation_id: str, request: Request) -> Any:
+    service = getattr(request.app.state, "model_os_default_work", None)
+    if service is None:
+        return _default_error(
+            "default_work_unavailable", "Default work unavailable", status_code=503
+        )
+    try:
+        generation = service.repository.generation_view(generation_id)
+    except KeyError:
+        return _default_error(
+            "generation_missing", "Default generation not found", status_code=404
+        )
+    return {"success": True, "data": generation, "error": None}
 
 
 def _outcome_payload(outcome) -> dict[str, Any]:

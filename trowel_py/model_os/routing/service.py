@@ -22,9 +22,11 @@ from trowel_py.model_os.routing.models import (
     ROUTE_POLICY_VERSION,
     RouteInput,
     RouteMarker,
+    RouteMode,
     RouteReason,
     UserRoutePreference,
 )
+from trowel_py.model_os.work_broker import ModelTier
 from trowel_py.model_os.routing.policy import decide_route
 from trowel_py.model_os.routing.read_model import build_route_gate
 from trowel_py.model_os.signal_assessment import (
@@ -48,6 +50,13 @@ class CognitiveRouter:
     def __init__(self, store, config: RoutingConfig) -> None:
         self._store = store
         self._config = config
+
+    def deep_candidate(self, runtime: str):
+        """返回 catalog 校验后的当前 runtime deep；Router off 时不可用。"""
+
+        if self._config.mode_for(runtime) is RouteMode.OFF:
+            return None
+        return self._config.candidate(runtime, ModelTier.DEEP)
 
     def route(
         self,

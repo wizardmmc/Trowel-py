@@ -17,6 +17,7 @@ def register_session(
     workdir: str | os.PathLike[str],
     jsonl_path: str,
     session_kind: str,
+    memory_eligibility: str = "eligible",
     registrar: SessionRegistrar | None,
 ) -> None:
     from trowel_py.memory.sessions_repo import SessionRecord
@@ -29,6 +30,7 @@ def register_session(
         jsonl_path=jsonl_path,
         registered_at=now.isoformat(),
         session_kind=session_kind,
+        memory_eligibility=memory_eligibility,
         trowel_session_id=trowel_session_id,
     )
     if registrar is not None:

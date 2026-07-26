@@ -86,7 +86,7 @@ def _command(workdir: Path, memory: bool, profile: bool) -> StartEpisodeCommand:
     ("memory", "profile"),
     [(True, True), (True, False), (False, True), (False, False)],
 )
-async def test_adapter_preserves_four_mp_combinations(
+async def test_default_adapter_forces_memory_profile_and_mcp_off(
     tmp_path: Path, memory: bool, profile: bool
 ) -> None:
     hub = FakeHub()
@@ -98,9 +98,10 @@ async def test_adapter_preserves_four_mp_combinations(
 
     request = hub.requests[0]
     assert request.resume_from is None
-    assert request.memory_enabled is memory
-    assert request.profile_enabled is profile
-    assert request.model_os_mcp_enabled is True
+    assert request.memory_enabled is False
+    assert request.profile_enabled is False
+    assert request.model_os_mcp_enabled is False
+    assert request.agent_mcp_enabled is False
     assert request.memory_eligibility is False
     assert identity.native_session_id == "thread-1"
 

@@ -260,7 +260,8 @@ class StartEpisodeCoordinator:
             work_lease_id=lease.lease_id,
         )
         self._fault_hook(StartStage.FIRST_TURN_REQUESTED)
-        async for event in self._adapter.start_first_turn(identity, context.render()):
+        first_turn_text = command.first_turn_text or context.render()
+        async for event in self._adapter.start_first_turn(identity, first_turn_text):
             event_type = str(event.get("type", ""))
             raw_turn_id = event.get("turn_id")
             if isinstance(raw_turn_id, str) and raw_turn_id:
