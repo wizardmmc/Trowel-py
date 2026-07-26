@@ -50,6 +50,11 @@ def test_managed_codex_answer_is_queued_without_resuming_runtime(
     hub: SessionHub,
 ) -> None:
     created = create_session(client, codex_payload(workdir))
+    triggered = []
+
+    class Scheduler:
+        async def trigger(self, wake_id):
+            triggered.append(wake_id)
 
     class Wake:
         def manages(self, session_id):
@@ -59,9 +64,10 @@ def test_managed_codex_answer_is_queued_without_resuming_runtime(
             assert session_id == created["session_id"]
             assert kwargs["correlation_id"] == "7-0"
             assert kwargs["payload"] == {"request_id": "7-0", "decision": "cancel"}
-            return SimpleNamespace(episode_id="episode-1")
+            return SimpleNamespace(episode_id="episode-1", wake_id="wake-codex-1")
 
     client.app.state.model_os_wake_controller = Wake()
+    client.app.state.model_os_attention_scheduler = Scheduler()
     response = client.post(
         f"/api/agent/sessions/{created['session_id']}/requests/7-0/answer",
         json={"decision": "cancel"},
@@ -75,6 +81,7 @@ def test_managed_codex_answer_is_queued_without_resuming_runtime(
     manager = hub._codex  # noqa: SLF001
     assert isinstance(manager, FakeCodexManager)
     assert manager.answered_requests == []
+    assert triggered == ["wake-codex-1"]
 
 
 def test_post_answer_request_rejects_cc_session(

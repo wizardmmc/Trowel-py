@@ -62,6 +62,7 @@ from trowel_py.model_os.task_fold import (
     _apply_task_completed,
     _apply_task_constraint_appended,
     _apply_task_error_recorded,
+    _apply_task_priority_changed,
     _apply_task_status_change,
     _apply_task_waiting_cleared,
     _apply_task_waiting_set,
@@ -464,6 +465,8 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         return _apply_task_warm_changed(snap, event)
     if event.kind == EventKind.TASK_WARM_RANK_SET:
         return _apply_task_warm_rank_set(snap, event)
+    if event.kind == EventKind.TASK_PRIORITY_CHANGED:
+        return _apply_task_priority_changed(snap, event)
     if event.kind == EventKind.TASK_WAITING_SET:
         return _apply_task_waiting_set(snap, event)
     if event.kind == EventKind.TASK_WAITING_CLEARED:
@@ -532,6 +535,11 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.COGNITIVE_SIGNAL_RECORDED,
         EventKind.LATE_SIGNAL_REJECTED,
         EventKind.WAKE_CONSUMED,
+        EventKind.ATTENTION_FOREGROUND_REQUESTED,
+        EventKind.ATTENTION_FOREGROUND_RESOLVED,
+        EventKind.ATTENTION_RESOURCE_DEFERRED,
+        EventKind.SWITCH_RECOVERY_STARTED,
+        EventKind.SWITCH_RECOVERY_OBSERVED,
     ):
         return snap
     if event.kind not in snap.unrecognized_event_kinds:

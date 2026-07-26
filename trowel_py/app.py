@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
     app.state.model_os_command_gate = None
     app.state.model_os_wake_service = None
     app.state.model_os_wake_controller = None
+    app.state.model_os_attention_scheduler = None
+    app.state.model_os_recovery_observer = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -271,6 +273,16 @@ async def lifespan(app: FastAPI):
                 session_id = str(payload.get("session_id", ""))
                 if not session_id:
                     return
+                store = app.state.model_os_store
+                recovery = app.state.model_os_recovery_observer
+                if store is not None and recovery is not None:
+                    binding = store.episode_runtime_binding_for_session(session_id)
+                    if binding is not None:
+                        episode = store.read_snapshot().episode_by_id(
+                            binding.episode_id
+                        )
+                        if episode is not None and episode.task_id is not None:
+                            recovery.observe_task_event(episode.task_id, payload)
                 if not app.state.model_os_yield_coordinator.has_registered_turn(
                     session_id
                 ):
@@ -280,12 +292,18 @@ async def lifespan(app: FastAPI):
                     observe_runtime_event,
                 )
 
-                await observe_runtime_event(
+                receipt = await observe_runtime_event(
                     app.state.model_os_yield_coordinator,
                     session_id,
                     payload,
                     generation=generation,
                 )
+                scheduler = app.state.model_os_attention_scheduler
+                if receipt is not None and scheduler is not None:
+                    seq = payload.get("seq", 0)
+                    await scheduler.trigger(
+                        f"runtime.{session_id}.{seq}.{receipt.status}"
+                    )
 
             app.state.agent_hub.set_model_os_observer(_observe_model_os_event)
 
@@ -298,6 +316,71 @@ async def lifespan(app: FastAPI):
             )
 
             runtime_adapter = AgentEpisodeRuntimeAdapter(app.state.agent_hub)
+            from trowel_py.model_os.waking.controller import WakeController
+
+            wake_controller = WakeController(app.state.model_os_store)
+            app.state.model_os_wake_controller = wake_controller
+
+            from trowel_py.model_os.scheduling import (
+                AttentionScheduler,
+                SuspendedEpisodeResumer,
+            )
+            from trowel_py.model_os.scheduling.recovery import (
+                SwitchRecoveryObserver,
+            )
+            from trowel_py.model_os.yielding import ForceYieldReason
+
+            async def _request_user_preempt(
+                current_task_id: str,
+                _target_task_id: str,
+            ) -> str:
+                snapshot = app.state.model_os_store.read_snapshot()
+                episode = next(
+                    (
+                        item
+                        for item in snapshot.episodes
+                        if item.task_id == current_task_id
+                        and item.status.value in {"active", "yield_requested"}
+                    ),
+                    None,
+                )
+                if episode is None:
+                    return "deferred:foreground_reconcile"
+                binding = app.state.model_os_store.episode_runtime_binding(
+                    episode.episode_id
+                )
+                if binding is None:
+                    return "deferred:runtime_binding_missing"
+                turn_id = app.state.agent_hub.current_turn_id(binding.agent_session_id)
+                if turn_id is None:
+                    return "deferred:no_active_turn"
+                generation = app.state.agent_hub.runtime_generation(
+                    binding.agent_session_id
+                )
+                receipt = await app.state.model_os_yield_coordinator.request_forced(
+                    binding.agent_session_id,
+                    ForceYieldReason.USER_PREEMPT,
+                    expected_turn_id=turn_id,
+                    expected_generation=generation,
+                )
+                return receipt.status
+
+            resumer = SuspendedEpisodeResumer(
+                app.state.model_os_store,
+                broker=app.state.work_broker,
+                wake_controller=wake_controller,
+                runtime_adapter=runtime_adapter,
+                yield_coordinator=app.state.model_os_yield_coordinator,
+            )
+            attention_scheduler = AttentionScheduler(
+                app.state.model_os_store,
+                request_user_preempt=_request_user_preempt,
+                resume_suspended=resumer.resume,
+            )
+            app.state.model_os_attention_scheduler = attention_scheduler
+            app.state.model_os_recovery_observer = SwitchRecoveryObserver(
+                app.state.model_os_store
+            )
             app.state.model_os_episode_starter = StartEpisodeCoordinator(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
@@ -320,8 +403,13 @@ async def lifespan(app: FastAPI):
                     "[model-os] reconciled %d pending runtime binding(s)",
                     len(reconciled),
                 )
+            await attention_scheduler.reconcile()
         except Exception:
-            logger.warning("[model-os] yield coordinator failed to start", exc_info=True)
+            app.state.model_os_attention_scheduler = None
+            app.state.model_os_recovery_observer = None
+            logger.warning(
+                "[model-os] yield coordinator failed to start", exc_info=True
+            )
     if app.state.model_os_store is not None:
         try:
             from trowel_py.model_os.waking.controller import WakeController
@@ -336,21 +424,28 @@ async def lifespan(app: FastAPI):
                 host_detector = HostSuspendDetector(default_host_clock_sample)
                 host_detector.poll()
             except Exception:
-                logger.info("[model-os] host suspend observer unavailable", exc_info=True)
+                logger.info(
+                    "[model-os] host suspend observer unavailable", exc_info=True
+                )
                 host_detector = None
+            scheduler = app.state.model_os_attention_scheduler
             wake_service = WakeService(
                 app.state.model_os_store,
                 observer=SystemObserver(),
-                now=lambda: datetime.now(timezone.utc).isoformat().replace(
-                    "+00:00", "Z"
+                now=lambda: (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 ),
                 host_detector=host_detector,
+                on_wake=(lambda event: scheduler.trigger(event.wake_id))
+                if scheduler is not None
+                else None,
             )
             await wake_service.start()
             app.state.model_os_wake_service = wake_service
-            app.state.model_os_wake_controller = WakeController(
-                app.state.model_os_store
-            )
+            if app.state.model_os_wake_controller is None:
+                app.state.model_os_wake_controller = WakeController(
+                    app.state.model_os_store
+                )
         except Exception:
             logger.warning("[model-os] wake service failed to start", exc_info=True)
     yield

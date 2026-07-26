@@ -2798,6 +2798,108 @@
           }
         }
       },
+      "/api/model-os/tasks/{task_id}/priority": {
+        "post": {
+          "summary": "Set Task Priority",
+          "operationId": "set_task_priority_api_model_os_tasks__task_id__priority_post",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Task Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetTaskPriorityBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Set Task Priority Api Model Os Tasks  Task Id  Priority Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/tasks/{task_id}/foreground": {
+        "post": {
+          "summary": "Request Foreground",
+          "operationId": "request_foreground_api_model_os_tasks__task_id__foreground_post",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Task Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestForegroundBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Request Foreground Api Model Os Tasks  Task Id  Foreground Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/episodes/start": {
         "post": {
           "summary": "Start Episode",
@@ -3548,6 +3650,21 @@
           "title": "ReExplainRequest",
           "description": "草稿尚未持久化，因此直接携带内容；``user_hint`` 为空时自由生成。"
         },
+        "RequestForegroundBody": {
+          "properties": {
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Idempotency Key"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "idempotency_key"
+          ],
+          "title": "RequestForegroundBody"
+        },
         "RevertRequest": {
           "properties": {
             "turn_id": {
@@ -3622,6 +3739,26 @@
           ],
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。"
+        },
+        "SetTaskPriorityBody": {
+          "properties": {
+            "priority": {
+              "type": "integer",
+              "title": "Priority"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Idempotency Key"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "priority",
+            "idempotency_key"
+          ],
+          "title": "SetTaskPriorityBody"
         },
         "StartEpisodeBody": {
           "properties": {
@@ -3734,6 +3871,18 @@
               "type": "string",
               "minLength": 1,
               "title": "Idempotency Key"
+            },
+            "schedule_decision_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Schedule Decision Id"
             }
           },
           "additionalProperties": false,

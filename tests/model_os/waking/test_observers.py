@@ -164,9 +164,42 @@ async def test_due_time_catchup_is_merged_once(store: ModelOsStore) -> None:
 
     assert len(first) == 1
     assert second == ()
-    assert len(
-        [event for _, event in store.list_events() if event.kind == "wake.consumed"]
-    ) == 1
+    assert (
+        len(
+            [event for _, event in store.list_events() if event.kind == "wake.consumed"]
+        )
+        == 1
+    )
+
+
+@pytest.mark.anyio
+async def test_wake_service_forwards_each_consumed_event_to_scheduler(
+    store: ModelOsStore,
+) -> None:
+    task = running_task(store)
+    store.set_waiting_event(
+        task.task_id,
+        cause="定时继续",
+        condition_kind="time",
+        target_ref="timer:schedule",
+        deadline="2026-07-26T09:00:00Z",
+    )
+    seen = []
+
+    async def on_wake(event):
+        seen.append(event)
+
+    service = WakeService(
+        store,
+        observer=SystemObserver(),
+        now=lambda: "2026-07-26T12:00:00Z",
+        host_detector=None,
+        on_wake=on_wake,
+    )
+
+    events = await service.run_once()
+
+    assert seen == list(events)
 
 
 @pytest.mark.anyio

@@ -167,6 +167,19 @@ def _apply_task_warm_rank_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
     )
 
 
+def _apply_task_priority_changed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    current = _find_task(snap, event.task_id)
+    if current is None:
+        return snap
+    return _update_task(
+        snap,
+        event.task_id,
+        current,
+        priority=int(event.payload["priority"]),
+        updated_at=event.occurred_at,
+    )
+
+
 def _apply_task_waiting_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
     current = _find_task(snap, event.task_id)
     if current is None:

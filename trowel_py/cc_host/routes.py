@@ -37,12 +37,14 @@ _HISTORY_DROPDOWN_LIMIT = 10
 # registry 与派生索引由本模块持有；进程重启只清运行中状态，不影响磁盘历史。
 _REGISTRY: dict[str, CCHost] = {}
 
-_WORKDIR_INDEX: dict[str, set[str]] = {}   # workdir → {sid}（命名序号 + 按 workdir 查询）
-_SESSION_NAMES: dict[str, str] = {}         # sid → 显示名（basename + #N）
-_ACTIVE_SID: str | None = None              # 当前活跃 session（多开切换）
+_WORKDIR_INDEX: dict[
+    str, set[str]
+] = {}  # workdir → {sid}（命名序号 + 按 workdir 查询）
+_SESSION_NAMES: dict[str, str] = {}  # sid → 显示名（basename + #N）
+_ACTIVE_SID: str | None = None  # 当前活跃 session（多开切换）
 # MAX_RUNNING 仅保留公开兼容；当前路由只执行连接数门禁。
 MAX_RUNNING = 5
-MAX_CONNECTIONS = 20                        # 已创建 session 总数上限
+MAX_CONNECTIONS = 20  # 已创建 session 总数上限
 
 
 def get_registry() -> dict[str, CCHost]:
@@ -251,9 +253,7 @@ async def interrupt(
     gate = getattr(request.app.state, "model_os_command_gate", None)
     hub = getattr(request.app.state, "agent_hub", None)
     handled = (
-        gate is not None
-        and hub is not None
-        and await gate.interrupt(sid, hub=hub)
+        gate is not None and hub is not None and await gate.interrupt(sid, hub=hub)
     )
     if not handled:
         await host.interrupt()
@@ -275,9 +275,7 @@ async def answer_elicit(
         try:
             try:
                 generation = (
-                    hub.runtime_generation(sid)
-                    if hub is not None
-                    else "unavailable"
+                    hub.runtime_generation(sid) if hub is not None else "unavailable"
                 )
             except Exception:
                 generation = "unavailable"
@@ -287,6 +285,9 @@ async def answer_elicit(
                 runtime_generation=generation,
                 payload={"cancel": body.cancel, "answers": body.answers},
             )
+            scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+            if scheduler is not None:
+                await scheduler.trigger(queued.wake_id)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
@@ -303,7 +304,9 @@ async def answer_elicit(
         gate.before_control(
             sid,
             command_kind="episode.approval_answer",
-            args=("cancel" if body.cancel else json.dumps(body.answers, sort_keys=True)),
+            args=(
+                "cancel" if body.cancel else json.dumps(body.answers, sort_keys=True)
+            ),
         )
         if gate is not None
         else None
@@ -319,7 +322,11 @@ async def answer_elicit(
         raise
     if gate is not None:
         gate.complete(ticket, result_code="runtime_accepted")
-    return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
+    return {
+        "success": ok,
+        "data": {"answered": ok},
+        "error": None if ok else "no_pending_elicit",
+    }
 
 
 @router.post("/sessions/{sid}/revert")
@@ -336,7 +343,9 @@ async def revert_turn(
     except checkpoint.NotAGitRepoError:
         raise HTTPException(status_code=400, detail="workdir is not a git repo")
     except checkpoint.UnknownCheckpointError:
-        raise HTTPException(status_code=404, detail=f"checkpoint {body.turn_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"checkpoint {body.turn_id} not found"
+        )
     # reload 丢弃内存进程；下一次发送从截断后的 jsonl 恢复。
     await host.reload()
     return {
@@ -386,9 +395,7 @@ def list_models_endpoint() -> dict:
     return {"success": True, "data": items, "error": None}
 
 
-def _init_roster_for_workdir(
-    workdir: str, registry: dict[str, CCHost]
-) -> list[str]:
+def _init_roster_for_workdir(workdir: str, registry: dict[str, CCHost]) -> list[str]:
     """返回 workdir 的初始化命令表，优先使用该目录的 active session。
 
     active 不属于该 workdir 或无可用 roster 时，回退到同目录其他 session。

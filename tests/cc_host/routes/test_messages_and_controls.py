@@ -134,6 +134,11 @@ class TestAnswer:
     def test_managed_answer_is_queued_without_resuming_runtime(self):
         fake = FakeHost([])
         client = _mini_app({"s1": fake})
+        triggered = []
+
+        class Scheduler:
+            async def trigger(self, wake_id):
+                triggered.append(wake_id)
 
         class Wake:
             def manages(self, session_id):
@@ -146,9 +151,10 @@ class TestAnswer:
                     "cancel": False,
                     "answers": {"A or B?": "A"},
                 }
-                return SimpleNamespace(episode_id="episode-1")
+                return SimpleNamespace(episode_id="episode-1", wake_id="wake-cc-1")
 
         client.app.state.model_os_wake_controller = Wake()
+        client.app.state.model_os_attention_scheduler = Scheduler()
         response = client.post(
             "/api/cc/sessions/s1/answer",
             json={"answers": {"A or B?": "A"}, "cancel": False},
@@ -160,6 +166,7 @@ class TestAnswer:
             "episode_id": "episode-1",
         }
         assert fake.answered is None
+        assert triggered == ["wake-cc-1"]
 
     def test_answer_unknown_404(self):
         client = _mini_app({})

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from contextlib import AbstractContextManager
 from collections.abc import Callable
@@ -588,6 +590,52 @@ class TaskCommands:
                     {"warm_rank": warm_rank},
                 )
             )
+
+    def set_task_priority(
+        self,
+        task_id: str,
+        *,
+        priority: int,
+        idempotency_key: str,
+    ) -> str:
+        store = self._store
+        assert store._conn is not None
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise self._task_error("priority must be an integer")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise self._task_error("idempotency_key must be a non-empty string")
+        identity = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
+        with store._tx():
+            event_id = f"task.priority.changed.{identity}"
+            existing = store._conn.execute(
+                "SELECT task_id, payload FROM events WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["task_id"] != task_id or json.loads(
+                    existing["payload"]
+                ) != {"priority": priority}:
+                    raise self._task_error(
+                        "idempotency key was already used with different content"
+                    )
+                return event_id
+            snap = store.replay()
+            task = store._require_task(snap, task_id)
+            store._require_non_terminal(task)
+            store._insert_event_in_tx(
+                self._event_type(
+                    event_id=event_id,
+                    kind=EventKind.TASK_PRIORITY_CHANGED,
+                    occurred_at=self._now(),
+                    source="user",
+                    provenance=Provenance.USER_DECISION,
+                    policy_version=store._policy_version,
+                    payload={"priority": priority},
+                    work_item_id=task.primary_work_item_id,
+                    task_id=task_id,
+                )
+            )
+            return event_id
 
     def change_authorization(
         self,

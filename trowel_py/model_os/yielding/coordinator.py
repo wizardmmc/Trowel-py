@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
+from dataclasses import replace
 
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.types import EpisodeStatus
@@ -91,9 +92,7 @@ class YieldCoordinator:
                 raise YieldControlError(
                     f"session {registration.session_id!r} already has an active turn"
                 )
-            current = self._store.read_snapshot().episode_by_id(
-                registration.episode_id
-            )
+            current = self._store.read_snapshot().episode_by_id(registration.episode_id)
             if current is None or current.status != EpisodeStatus.ACTIVE:
                 raise YieldControlError("turn registration requires an ACTIVE Episode")
             self._soft.cancel(registration.session_id)
@@ -104,11 +103,47 @@ class YieldCoordinator:
             )
             self._soft.arm_from_latest(self._turns[registration.session_id])
 
+    async def resume_suspended_episode(
+        self,
+        *,
+        episode_id: str,
+        ownership_lease_id: str,
+        ownership_owner: str,
+        ownership_token: int,
+        work_lease_id: str,
+    ) -> None:
+        async with self._lock:
+            state = next(
+                (
+                    item
+                    for item in self._turns.values()
+                    if item.registration.episode_id == episode_id
+                ),
+                None,
+            )
+            if state is None or state.final_receipt is None:
+                raise YieldControlError("suspended Episode has no resumable turn")
+            current = self._store.read_snapshot().episode_by_id(episode_id)
+            if current is None or current.status is not EpisodeStatus.ACTIVE:
+                raise YieldControlError("turn resume requires an ACTIVE Episode")
+            state.registration = replace(
+                state.registration,
+                ownership_lease_id=ownership_lease_id,
+                ownership_owner=ownership_owner,
+                ownership_token=ownership_token,
+                work_lease_id=work_lease_id,
+            )
+            state.final_receipt = None
+            state.pending_descriptor = None
+            state.work_lease_released = False
+
     async def propose(self, session_id: str, proposal: YieldProposal) -> YieldReceipt:
         async with self._lock:
             state = self._active_state(session_id)
             if state.terminal_type is not None:
-                return YieldReceipt("no_action:stale_turn", state.registration.episode_id)
+                return YieldReceipt(
+                    "no_action:stale_turn", state.registration.episode_id
+                )
             if state.proposal is not None:
                 return YieldReceipt("already_registered", state.registration.episode_id)
             record_no_action(
@@ -200,9 +235,7 @@ class YieldCoordinator:
             if soft_receipt is not None:
                 return soft_receipt
             if event_type in {"approval_request", "elicit_request"}:
-                return await self._finalizer.suspend_pending(
-                    state, event_type, payload
-                )
+                return await self._finalizer.suspend_pending(state, event_type, payload)
             if event_type in {"finished", "interrupted", "error", "session_exited"}:
                 self._soft.cancel(session_id)
                 return await self._handle_terminal(state, event_type, payload)
@@ -210,15 +243,15 @@ class YieldCoordinator:
                 await self._dispatch_interrupt(state)
             return None
 
-    async def connection_lost(self, session_id: str, *, generation: str) -> YieldReceipt:
+    async def connection_lost(
+        self, session_id: str, *, generation: str
+    ) -> YieldReceipt:
         async with self._lock:
             self._soft.cancel(session_id)
             state = self._turns.get(session_id)
             if state is None:
                 return YieldReceipt("no_action:no_active_turn", None)
-            return await self._finalizer.connection_lost(
-                state, generation=generation
-            )
+            return await self._finalizer.connection_lost(state, generation=generation)
 
     def context_generation(self, session_id: str) -> int:
         return self._soft.context_generation(session_id)

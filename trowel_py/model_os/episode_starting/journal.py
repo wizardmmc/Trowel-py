@@ -1,4 +1,4 @@
-"""StartEpisode 的 command 链与 crash-stage 回放。"""
+"""StartEpisode 的命令账本与崩溃阶段回放。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from trowel_py.model_os.types import (
 from trowel_py.model_os.yielding.journal import now_iso
 
 _STAGE_KINDS = {
+    StartStage.OWNERSHIP_ACQUIRED: "episode.start.ownership_acquired",
     StartStage.NATIVE_REQUESTED: "episode.start.native_requested",
     StartStage.NATIVE_RESPONDED: "episode.start.native_responded",
     StartStage.BINDING_PERSISTED: "episode.start.binding_persisted",
@@ -47,6 +48,8 @@ def _hash(value: str) -> str:
 
 def _command_fingerprint(command: StartEpisodeCommand) -> str:
     payload = asdict(command)
+    if command.schedule_decision_id is None:
+        payload.pop("schedule_decision_id")
     payload["session_purpose"] = command.session_purpose.value
     payload["memory_eligibility"] = command.memory_eligibility.value
     ref = command.previous_snapshot_ref
@@ -210,9 +213,7 @@ def record_native_compact_degraded(
 def read_progress(store: ModelOsStore, idempotency_key: str) -> StartProgress | None:
     corr = correlation_id(idempotency_key)
     matching = [
-        event
-        for _, event in store.list_events()
-        if event.correlation_id == corr
+        event for _, event in store.list_events() if event.correlation_id == corr
     ]
     if not matching:
         return None

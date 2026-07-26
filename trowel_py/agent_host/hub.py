@@ -231,10 +231,7 @@ class SessionHub:
         for field in ("model", "effort"):
             if field not in explicit and getattr(prepared, field) is None:
                 updates[field] = getattr(native, field)
-        if (
-            "permission_mode" not in explicit
-            and prepared.permission_mode is None
-        ):
+        if "permission_mode" not in explicit and prepared.permission_mode is None:
             updates["permission_mode"] = native.permission_mode
         return prepared.model_copy(update=updates)
 
@@ -472,9 +469,7 @@ class SessionHub:
         except HistoryCursorError as exc:
             raise InvalidSessionRequestError(str(exc)) from exc
         required = offset + limit + 1
-        cc_summaries = await asyncio.to_thread(
-            scan_cc_history, workdir, limit=required
-        )
+        cc_summaries = await asyncio.to_thread(scan_cc_history, workdir, limit=required)
         codex_threads: list[dict[str, Any]] = []
         if self._codex is not None:
             codex_threads = await self._codex.list_threads(cwd=workdir, limit=required)
@@ -785,9 +780,7 @@ class SessionHub:
             model=previous.model,
             effort=previous.effort,
             permission_mode=(
-                previous.permission
-                if previous.runtime is Runtime.CLAUDE_CODE
-                else None
+                previous.permission if previous.runtime is Runtime.CLAUDE_CODE else None
             ),
             permission_preset=(
                 previous.permission_preset
@@ -854,7 +847,9 @@ class SessionHub:
             or current.runtime_pid != identity.runtime_pid
             or current.runtime_pgid != identity.runtime_pgid
         ):
-            raise SessionConflictError("runtime identity changed before binding persisted")
+            raise SessionConflictError(
+                "runtime identity changed before binding persisted"
+            )
         if identity.native_session_id is not None:
             self._store.update_native(
                 identity.agent_session_id,
@@ -947,6 +942,32 @@ class SessionHub:
         except PendingRequestConflictError as exc:
             raise SessionConflictError(str(exc)) from exc
         return request.to_payload()
+
+    async def answer_managed_pending(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> object:
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CODEX:
+            request_id = payload.get("request_id")
+            decision = payload.get("decision")
+            if not isinstance(request_id, str) or not isinstance(decision, str):
+                raise SessionOperationError("invalid Codex pending answer payload")
+            return self.answer_request(session_id, request_id, decision)
+        host = self._cc_registry.get(session_id)
+        if host is None:
+            raise SessionNotFoundError(f"cc session {session_id} not live")
+        cancel = payload.get("cancel")
+        answers = payload.get("answers")
+        if not isinstance(cancel, bool) or not isinstance(answers, dict):
+            raise SessionOperationError("invalid CC pending answer payload")
+        accepted = (
+            await host.cancel_elicit() if cancel else await host.answer_elicit(answers)
+        )
+        if not accepted:
+            raise SessionConflictError("CC pending request is no longer active")
+        return accepted
 
     def list_requests(self, session_id: str) -> list[dict[str, Any]]:
         """返回保留中的 Codex 请求，使短暂断线不会丢失待决策状态。"""
