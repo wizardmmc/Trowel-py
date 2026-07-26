@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   activateAgentSession,
   agentMessagesUrl,
+  agentEventsUrl,
   answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
@@ -14,6 +15,10 @@ import {
   listAgentModels,
   listAgentRequests,
   listAgentRuntimes,
+  getCodexGoal,
+  setCodexGoal,
+  clearCodexGoal,
+  startCodexTurn,
   updateAgentSessionSettings,
 } from "../api/agent";
 
@@ -215,6 +220,37 @@ describe("api/agent", () => {
 
   it("agentMessagesUrl builds the SSE endpoint", () => {
     expect(agentMessagesUrl("s1")).toBe("/api/agent/sessions/s1/messages");
+  });
+
+  it("builds the Codex event endpoint and normalizes Goal CRUD", async () => {
+    const goal = {
+      threadId: "t1",
+      objective: "Ship the rail",
+      status: "active",
+      tokenBudget: 12000,
+      tokensUsed: 7448,
+      timeUsedSeconds: 9,
+      createdAt: 10,
+      updatedAt: 11,
+    };
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEnvelope({ goal }))
+      .mockResolvedValueOnce(mockEnvelope({ goal }))
+      .mockResolvedValueOnce(mockEnvelope({ cleared: true }))
+      .mockResolvedValueOnce(mockEnvelope({ turn_id: "turn-1" }));
+
+    expect(agentEventsUrl("s1")).toBe("/api/agent/sessions/s1/events");
+    expect((await getCodexGoal("s1"))?.tokensUsed).toBe(7448);
+    await setCodexGoal("s1", { objective: "Ship the rail", token_budget: 12000 });
+    expect(await clearCodexGoal("s1")).toEqual({ cleared: true });
+    expect(await startCodexTurn("s1", "continue")).toEqual({ turnId: "turn-1" });
+    expect(spy.mock.calls.map(([url]) => url)).toEqual([
+      "/api/agent/sessions/s1/goal",
+      "/api/agent/sessions/s1/goal",
+      "/api/agent/sessions/s1/goal",
+      "/api/agent/sessions/s1/turns",
+    ]);
   });
 
   it("answers a pending Codex request through the host-neutral API", async () => {

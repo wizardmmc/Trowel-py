@@ -10,6 +10,9 @@ RuntimeWire = Literal["claude_code", "codex"]
 PermissionPreset = Literal[
     "follow", "read-only", "workspace-write", "danger-full-access"
 ]
+GoalStatus = Literal[
+    "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"
+]
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -62,6 +65,12 @@ class PatchAgentSessionRequest(BaseModel):
 
 class SendMessageBody(BaseModel):
     text: str = Field(min_length=1)
+
+
+class SetCodexGoalRequest(BaseModel):
+    objective: str | None = Field(default=None, min_length=1)
+    status: GoalStatus | None = None
+    token_budget: int | None = Field(default=None, ge=1)
 
 
 class AnswerAgentRequest(BaseModel):

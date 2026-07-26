@@ -204,6 +204,32 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     case "rate_limit_updated":
       return applyRateLimitUpdated(prev, event);
 
+    case "goal_updated":
+      return {
+        ...prev,
+        goal: {
+          objective: event.objective,
+          status: event.status,
+          tokenBudget: event.token_budget,
+          tokensUsed: event.tokens_used,
+          timeUsedSeconds: event.time_used_seconds,
+          createdAt: event.created_at,
+          updatedAt: event.updated_at,
+        },
+      };
+
+    case "goal_cleared":
+      return { ...prev, goal: null };
+
+    case "plan_updated":
+      return {
+        ...prev,
+        plan: {
+          explanation: event.explanation,
+          steps: event.steps.map((step) => ({ ...step })),
+        },
+      };
+
     default:
       return prev;
   }

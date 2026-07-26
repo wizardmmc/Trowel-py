@@ -263,6 +263,92 @@ export interface AgentPermissionSelection {
   readonly permission_preset: PermissionPreset;
 }
 
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface CodexGoalSnapshot {
+  readonly objective: string;
+  readonly status: CodexGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+interface CodexGoalWire {
+  readonly objective: string;
+  readonly status: CodexGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface SetCodexGoalInput {
+  readonly objective?: string;
+  readonly status?: CodexGoalStatus;
+  readonly token_budget?: number | null;
+}
+
+function normalizeGoal(goal: CodexGoalWire): CodexGoalSnapshot {
+  return { ...goal };
+}
+
+export async function getCodexGoal(
+  sessionId: string,
+): Promise<CodexGoalSnapshot | null> {
+  const data = await request<{ goal: CodexGoalWire | null }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+  );
+  return data.goal ? normalizeGoal(data.goal) : null;
+}
+
+export async function setCodexGoal(
+  sessionId: string,
+  update: SetCodexGoalInput,
+): Promise<CodexGoalSnapshot> {
+  const data = await request<{ goal: CodexGoalWire }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
+    },
+  );
+  return normalizeGoal(data.goal);
+}
+
+export async function clearCodexGoal(
+  sessionId: string,
+): Promise<{ cleared: boolean }> {
+  return request<{ cleared: boolean }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+    { method: "DELETE" },
+  );
+}
+
+export async function startCodexTurn(
+  sessionId: string,
+  text: string,
+): Promise<{ turnId: string }> {
+  const data = await request<{ turn_id: string }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/turns`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+  );
+  return { turnId: data.turn_id };
+}
+
 export async function updateAgentPermissionPreset(
   sessionId: string,
   preset: PermissionPreset,
@@ -298,6 +384,10 @@ export async function listAgentHistory(
 
 export function agentMessagesUrl(sessionId: string): string {
   return `${AGENT_API_BASE}/sessions/${sessionId}/messages`;
+}
+
+export function agentEventsUrl(sessionId: string): string {
+  return `${AGENT_API_BASE}/sessions/${sessionId}/events`;
 }
 
 export async function getAgentHistory(

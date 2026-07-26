@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 
 import { TodoBar } from "../components/cc/TodoBar";
 import {
@@ -11,7 +11,10 @@ import {
 
 const SID = "s1";
 
-function makeSession(tasks: Task[]): PerSessionState {
+function makeSession(
+  tasks: Task[],
+  over: Partial<PerSessionState> = {},
+): PerSessionState {
   return {
     ...INITIAL_REDUCER_STATE,
     workdir: "/wd",
@@ -30,6 +33,7 @@ function makeSession(tasks: Task[]): PerSessionState {
     lastSeq: null,
     needsReplay: false,
     tasks,
+    ...over,
   };
 }
 
@@ -109,5 +113,165 @@ describe("TodoBar", () => {
     rerender(<TodoBar />);
     expect(screen.getByText("1/1")).toBeInTheDocument();
     expect(screen.getByText(/已完成 1 项/)).toBeInTheDocument();
+  });
+
+  it("shows native Goal and Plan for Codex instead of Claude tasks", () => {
+    setActive(
+      makeSession(
+        [{ taskId: "cc", toolUseId: "cc", subject: "不应显示", status: "pending" }],
+        {
+          runtime: "codex",
+          goal: {
+            objective: "Ship Goal and Plan",
+            status: "active",
+            tokenBudget: 12000,
+            tokensUsed: 7448,
+            timeUsedSeconds: 9,
+            createdAt: 10,
+            updatedAt: 11,
+          },
+          plan: {
+            explanation: null,
+            steps: [
+              { step: "Inspect native event", status: "completed" },
+              { step: "Map the UI state", status: "inProgress" },
+              { step: "Report verification", status: "pending" },
+            ],
+          },
+        },
+      ),
+    );
+
+    render(<TodoBar />);
+
+    expect(screen.getByText("目标与计划")).toBeInTheDocument();
+    expect(screen.getByText("Ship Goal and Plan")).toBeInTheDocument();
+    expect(screen.getByText("Map the UI state")).toBeInTheDocument();
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+    expect(screen.queryByText("不应显示")).toBeNull();
+  });
+
+  it("keeps Claude Code on the native Task list", () => {
+    setActive(
+      makeSession(
+        [{ taskId: "1", toolUseId: "1", subject: "Claude Task", status: "pending" }],
+        {
+          goal: {
+            objective: "Codex-only Goal",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      ),
+    );
+
+    render(<TodoBar />);
+
+    expect(screen.getByText("待办")).toBeInTheDocument();
+    expect(screen.getByText("Claude Task")).toBeInTheDocument();
+    expect(screen.queryByText("Codex-only Goal")).toBeNull();
+  });
+
+  it("does not offer to resume a completed Goal", () => {
+    setActive(
+      makeSession([], {
+        runtime: "codex",
+        goal: {
+          objective: "Finished Goal",
+          status: "complete",
+          tokenBudget: 12000,
+          tokensUsed: 8000,
+          timeUsedSeconds: 10,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      }),
+    );
+
+    render(<TodoBar />);
+
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复 Goal" })).toBeNull();
+    expect(screen.getByRole("button", { name: "编辑 Goal" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "清除 Goal" })).toBeInTheDocument();
+  });
+
+  it("opens the native Goal editor and exposes the mobile drawer close", () => {
+    const onClose = vi.fn();
+    setActive(
+      makeSession([], {
+        runtime: "codex",
+        goal: {
+          objective: "Editable Goal",
+          status: "paused",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      }),
+    );
+
+    render(<TodoBar drawerOpen onCloseDrawer={onClose} />);
+    expect(screen.getByLabelText("Codex 目标与计划")).toHaveClass(
+      "cc-workrail--open",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "编辑 Goal" }));
+    expect(screen.getByRole("textbox", { name: "Goal 目标" })).toHaveValue(
+      "Editable Goal",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭目标与计划" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("drops an open Goal draft when the active Codex session changes", () => {
+    setActive(
+      makeSession([], {
+        runtime: "codex",
+        goal: {
+          objective: "First Goal",
+          status: "paused",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      }),
+    );
+    render(<TodoBar />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑 Goal" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal 目标" }), {
+      target: { value: "Unsaved draft" },
+    });
+
+    act(() => {
+      useCcStore.setState({
+        sessions: {
+          s2: makeSession([], {
+            runtime: "codex",
+            goal: {
+              objective: "Second Goal",
+              status: "active",
+              tokenBudget: 8000,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: 2,
+              updatedAt: 2,
+            },
+          }),
+        },
+        activeSid: "s2",
+      });
+    });
+
+    expect(screen.queryByRole("textbox", { name: "Goal 目标" })).toBeNull();
+    expect(screen.getByText("Second Goal")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Unsaved draft")).toBeNull();
   });
 });

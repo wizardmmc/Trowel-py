@@ -36,6 +36,9 @@ interface SessionHeaderProps {
   readonly historyError: string | null;
   readonly workdir: string;
   readonly nativeSessionId: string | null;
+  readonly workSummary?: string | null;
+  readonly workRailLabel?: string;
+  readonly onToggleWorkRail?: () => void;
   readonly onInterrupt: () => void;
   readonly onPickHistory: (row: AgentHistoryRow) => void;
   readonly onLoadMoreHistory: () => void;
@@ -56,6 +59,9 @@ export function SessionHeader({
   historyError,
   workdir,
   nativeSessionId,
+  workSummary,
+  workRailLabel = "打开右栏",
+  onToggleWorkRail,
   onInterrupt,
   onPickHistory,
   onLoadMoreHistory,
@@ -94,6 +100,16 @@ export function SessionHeader({
         onPick={onPickHistory}
         onNew={onNew}
       />
+      {workSummary && onToggleWorkRail && (
+        <button
+          type="button"
+          className="cc-workrail-toggle"
+          onClick={onToggleWorkRail}
+          aria-label={workRailLabel}
+        >
+          {workSummary}
+        </button>
+      )}
       {(nativeSessionId || onRequestChangeWorkdir) && (
         <div className="cc-session-context">
           {nativeSessionId && (

@@ -1,6 +1,11 @@
 import { useState } from "react";
 
-import { useActiveSession, type Task } from "../../stores/ccStore";
+import {
+  useActiveSession,
+  useCcStore,
+  type Task,
+} from "../../stores/ccStore";
+import { CodexWorkRail } from "./CodexWorkRail";
 
 function statusIcon(status: Task["status"]): string {
   switch (status) {
@@ -13,10 +18,32 @@ function statusIcon(status: Task["status"]): string {
   }
 }
 
-export function TodoBar() {
+interface TodoBarProps {
+  readonly drawerOpen?: boolean;
+  readonly onCloseDrawer?: () => void;
+}
+
+export function TodoBar({ drawerOpen = false, onCloseDrawer }: TodoBarProps) {
   const active = useActiveSession();
+  const activeSid = useCcStore((state) => state.activeSid);
+  const setCodexGoal = useCcStore((state) => state.setCodexGoal);
+  const clearCodexGoal = useCcStore((state) => state.clearCodexGoal);
   const tasks = active?.tasks ?? [];
   const [showCompleted, setShowCompleted] = useState(false);
+
+  if (active?.runtime === "codex") {
+    return (
+      <CodexWorkRail
+        key={activeSid}
+        goal={active.goal}
+        plan={active.plan}
+        drawerOpen={drawerOpen}
+        onCloseDrawer={onCloseDrawer}
+        onSetGoal={(update) => void setCodexGoal(update)}
+        onClearGoal={() => void clearCodexGoal()}
+      />
+    );
+  }
 
   const active0rPending = tasks.filter((t) => t.status !== "completed");
   const completed = tasks.filter((t) => t.status === "completed");

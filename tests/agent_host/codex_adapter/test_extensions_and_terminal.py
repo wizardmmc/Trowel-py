@@ -111,6 +111,44 @@ def test_compaction_marks_completed_phase(adapter) -> None:
     assert event.payload == {"kind": "contextCompaction", "phase": "completed"}
 
 
+def test_goal_and_plan_keep_native_snapshots(adapter) -> None:
+    goal = adapter.wrap(
+        make_codex_event(
+            CodexEventType.GOAL_UPDATED,
+            seq=6,
+            turn_id=None,
+            payload={
+                "objective": "Ship the right rail",
+                "status": "active",
+                "token_budget": 12000,
+                "tokens_used": 7448,
+                "time_used_seconds": 9,
+                "created_at": 10,
+                "updated_at": 11,
+            },
+        )
+    )
+    plan = adapter.wrap(
+        make_codex_event(
+            CodexEventType.PLAN_UPDATED,
+            seq=7,
+            payload={
+                "explanation": None,
+                "steps": ({"step": "Map state", "status": "inProgress"},),
+            },
+        )
+    )
+    cleared = adapter.wrap(
+        make_codex_event(CodexEventType.GOAL_CLEARED, seq=8, turn_id=None)
+    )
+
+    assert goal.type == "goal_updated"
+    assert goal.payload["tokens_used"] == 7448
+    assert plan.type == "plan_updated"
+    assert plan.payload["steps"] == ({"step": "Map state", "status": "inProgress"},)
+    assert cleared.type == "goal_cleared"
+
+
 def test_finished_maps_null_cost_fields(adapter) -> None:
     event = adapter.wrap(
         make_codex_event(

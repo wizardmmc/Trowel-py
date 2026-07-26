@@ -9,6 +9,7 @@ interface SendMessageBody {
 
 interface PostStreamOptions {
   readonly signal?: AbortSignal;
+  readonly onOpen?: () => void;
 }
 
 export function parseSseFrames(buffer: string): AgentEvent[] {
@@ -23,6 +24,7 @@ export function parseSseFrames(buffer: string): AgentEvent[] {
       try {
         out.push(JSON.parse(payload) as AgentEvent);
       } catch {
+        continue;
       }
     }
   }
@@ -52,6 +54,34 @@ export async function postMessageStream(
   if (!response.ok) {
     throw new Error(`CC stream request failed: ${response.status}`);
   }
+  options.onOpen?.();
+  await readEventStream(response, onEvent, options.signal);
+}
+
+export async function getEventStream(
+  url: string,
+  onEvent: (event: AgentEvent) => void,
+  options: PostStreamOptions = {},
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url, { method: "GET", signal: options.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return;
+    throw err;
+  }
+  if (!response.ok) {
+    throw new Error(`Agent event stream request failed: ${response.status}`);
+  }
+  options.onOpen?.();
+  await readEventStream(response, onEvent, options.signal);
+}
+
+async function readEventStream(
+  response: Response,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   if (!response.body) {
     return;
   }
@@ -80,7 +110,10 @@ export async function postMessageStream(
       }
     }
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (
+      signal?.aborted ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
       return;
     }
     throw err;

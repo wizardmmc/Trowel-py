@@ -104,6 +104,9 @@ class TestTypeVocabulary:
         assert "host_status" in AGENT_EVENT_TYPES
         assert "approval_request" in AGENT_EVENT_TYPES
         assert "rate_limit_updated" in AGENT_EVENT_TYPES
+        assert "goal_updated" in AGENT_EVENT_TYPES
+        assert "goal_cleared" in AGENT_EVENT_TYPES
+        assert "plan_updated" in AGENT_EVENT_TYPES
 
     def test_every_vocabulary_member_constructs(self) -> None:
         for t in sorted(AGENT_EVENT_TYPES):
