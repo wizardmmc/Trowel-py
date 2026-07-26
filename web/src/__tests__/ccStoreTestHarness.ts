@@ -9,11 +9,16 @@ vi.mock("../api/agent", () => ({
   listActiveAgentSessions: vi.fn(),
   listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
+  getCodexGoal: vi.fn().mockResolvedValue(null),
+  setCodexGoal: vi.fn(),
+  clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
+  startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   getAgentHistory: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
+  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
 }));
 
 vi.mock("../api/cc", () => ({
@@ -34,6 +39,18 @@ vi.mock("../api/ccStream", () => ({
         stream.resolvers.push(resolve);
       }),
   ),
+  getEventStream: vi.fn(
+    (
+      _url: string,
+      apply: (event: AgentEvent) => void,
+      options?: { onOpen?: () => void },
+    ) =>
+      new Promise<void>((resolve) => {
+        stream.apply = apply;
+        stream.resolvers.push(resolve);
+        options?.onOpen?.();
+      }),
+  ),
 }));
 
 import {
@@ -42,15 +59,25 @@ import {
   deleteAgentSession,
   listActiveAgentSessions,
   listAgentHistory,
+  getCodexGoal,
+  setCodexGoal,
+  clearCodexGoal,
+  startCodexTurn,
   updateAgentSessionSettings,
 } from "../api/agent";
+import { getEventStream } from "../api/ccStream";
 
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
 export const apiCreateSession = vi.mocked(createAgentSession);
 export const apiDeleteSession = vi.mocked(deleteAgentSession);
 export const listActiveSessions = vi.mocked(listActiveAgentSessions);
 export const listHistory = vi.mocked(listAgentHistory);
+export const apiGetCodexGoal = vi.mocked(getCodexGoal);
+export const apiSetCodexGoal = vi.mocked(setCodexGoal);
+export const apiClearCodexGoal = vi.mocked(clearCodexGoal);
+export const apiStartCodexTurn = vi.mocked(startCodexTurn);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
+export const apiGetEventStream = vi.mocked(getEventStream);
 
 let seqCounter = 0;
 

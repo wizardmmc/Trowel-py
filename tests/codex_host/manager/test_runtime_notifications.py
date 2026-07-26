@@ -153,6 +153,56 @@ async def test_rate_limit_update_fans_out_to_bound_session() -> None:
     await manager.close()
 
 
+async def test_native_turn_started_registers_goal_continuation() -> None:
+    fake = FakeAppServer(_behavior_server())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.attach(session)
+    assert session.binding is not None
+
+    manager._on_notification(  # noqa: SLF001 - 直接固定同步通知路由。
+        "turn/started",
+        {
+            "threadId": session.binding.thread_id,
+            "turn": {"id": "goal-turn", "status": "inProgress"},
+        },
+    )
+
+    assert session.current_turn_id == "goal-turn"
+    assert session.state.value == "running"
+    assert any(
+        event.type is CodexEventType.TURN_STARTED
+        and event.payload["autonomous"] is True
+        for event in session.drain()
+    )
+    await manager.close()
+
+
+async def test_recorded_plan_notification_reaches_session_queue() -> None:
+    fake = FakeAppServer(_behavior_server())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.attach(session)
+    assert session.binding is not None
+
+    manager._on_notification(  # noqa: SLF001
+        "turn/plan/updated",
+        {
+            "threadId": session.binding.thread_id,
+            "turnId": "turn-1",
+            "explanation": None,
+            "plan": [{"step": "Inspect", "status": "inProgress"}],
+        },
+    )
+
+    event = session.drain()[-1]
+    assert event.type is CodexEventType.PLAN_UPDATED
+    assert event.payload["steps"] == ({"step": "Inspect", "status": "inProgress"},)
+    await manager.close()
+
+
 async def test_rate_limit_update_fans_out_to_every_active_session() -> None:
 
     rate_limit_note = {

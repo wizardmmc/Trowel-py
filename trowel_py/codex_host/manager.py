@@ -301,6 +301,60 @@ class CodexHostManager:
             raise ProtocolViolationError("thread/read result.thread is not an object")
         return dict(thread)
 
+    async def get_goal(self, session: CodexSession) -> dict[str, Any] | None:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        result = await client.request(
+            "thread/goal/get",
+            {"threadId": binding.thread_id},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        goal = result.get("goal") if isinstance(result, Mapping) else None
+        if goal is None:
+            return None
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError("thread/goal/get result.goal is not an object")
+        return dict(goal)
+
+    async def set_goal(
+        self,
+        session: CodexSession,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        token_budget_supplied: bool = False,
+    ) -> dict[str, Any]:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        params: dict[str, Any] = {"threadId": binding.thread_id}
+        if objective is not None:
+            params["objective"] = objective
+        if status is not None:
+            params["status"] = status
+        if token_budget_supplied:
+            params["tokenBudget"] = token_budget
+        result = await client.request(
+            "thread/goal/set", params, timeout=_REQUEST_TIMEOUT_S
+        )
+        goal = result.get("goal") if isinstance(result, Mapping) else None
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError("thread/goal/set result.goal is not an object")
+        return dict(goal)
+
+    async def clear_goal(self, session: CodexSession) -> bool:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        result = await client.request(
+            "thread/goal/clear",
+            {"threadId": binding.thread_id},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        cleared = result.get("cleared") if isinstance(result, Mapping) else None
+        if not isinstance(cleared, bool):
+            raise ProtocolViolationError("thread/goal/clear result.cleared is not boolean")
+        return cleared
+
     async def attach(self, session: CodexSession) -> ThreadBinding:
         """按当前连接代际 start/resume thread，但不启动 turn。"""
 
@@ -588,6 +642,17 @@ class CodexHostManager:
                 _extract_turn_id_from_params(params),
                 "unknown_thread",
             )
+            return
+        if method == "turn/started":
+            turn = params.get("turn")
+            turn_id = turn.get("id") if isinstance(turn, Mapping) else None
+            if not isinstance(turn_id, str) or not turn_id:
+                self._record_orphan(method, thread_id, None, "missing_turn_id")
+                return
+            try:
+                session.record_native_turn_started(turn_id)
+            except TurnConflictError as exc:
+                _log.warning("native turn start rejected for %s: %s", thread_id, exc)
             return
         try:
             items = self._translator.translate(method, params)

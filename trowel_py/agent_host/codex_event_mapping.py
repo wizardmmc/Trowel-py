@@ -50,8 +50,14 @@ def _model_changed(event: CodexEvent) -> MappedCodexEvent:
     )
 
 
-def _turn_started(_: CodexEvent) -> MappedCodexEvent:
-    return _mapped("turn_start", {"revertible": False})
+def _turn_started(event: CodexEvent) -> MappedCodexEvent:
+    return _mapped(
+        "turn_start",
+        {
+            "revertible": False,
+            "autonomous": event.payload.get("autonomous") is True,
+        },
+    )
 
 
 def _user(event: CodexEvent) -> MappedCodexEvent:
@@ -289,6 +295,9 @@ _MAPPERS: dict[CodexEventType, Mapper] = {
     CodexEventType.APPROVAL_REQUEST: _passthrough,
     CodexEventType.USAGE_UPDATED: _passthrough,
     CodexEventType.RATE_LIMIT_UPDATED: _passthrough,
+    CodexEventType.GOAL_UPDATED: _passthrough,
+    CodexEventType.GOAL_CLEARED: _passthrough,
+    CodexEventType.PLAN_UPDATED: _passthrough,
     CodexEventType.STATUS: _status,
     CodexEventType.FINISHED: _finished,
     CodexEventType.INTERRUPTED: _interrupted,

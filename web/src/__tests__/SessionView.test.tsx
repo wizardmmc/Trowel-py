@@ -25,10 +25,29 @@ vi.mock("../api/agent", () => ({
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
   listAgentRequests: vi.fn().mockResolvedValue([]),
+  getCodexGoal: vi.fn().mockResolvedValue(null),
+  setCodexGoal: vi.fn(),
+  clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
+  startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   updateAgentSessionSettings: vi.fn(),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
+  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+}));
+
+vi.mock("../api/ccStream", () => ({
+  postMessageStream: vi.fn(async () => {}),
+  getEventStream: vi.fn(
+    (
+      _url: string,
+      _apply: unknown,
+      options?: { onOpen?: () => void },
+    ) => {
+      options?.onOpen?.();
+      return new Promise<void>(() => {});
+    },
+  ),
 }));
 
 vi.mock("../api/cc", () => ({
@@ -252,6 +271,8 @@ describe("SessionView", () => {
           turns: [],
           phase: "error",
           tasks: [],
+          goal: null,
+          plan: null,
           meta: {
             model: "gpt-5.6-sol",
             ccSessionId: "thr-1",

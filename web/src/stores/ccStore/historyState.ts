@@ -28,6 +28,10 @@ export function replayAgentHistory(
   return {
     ...session,
     ...finalizeHistoryForView(next),
+    // thread/goal/get 是当前事实；历史 turn 里的 Goal 通知可能已经过时。
+    goal: session.goal,
+    // Codex thread/read 不提供可信的当前 Plan，不能从旧 turn 回放恢复。
+    plan: null,
     // history 和 live 的 seq 都从 1 开始，不能共享 watermark。
     lastSeq: null,
     needsReplay: false,

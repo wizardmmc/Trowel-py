@@ -7,8 +7,10 @@ from trowel_py.codex_host.events import (
     CodexEventType,
 )
 from trowel_py.codex_host.translator import CodexTranslator
+from tests.codex_host.translator._support import _by_method
 
-# 这些 shape 来自 Codex 0.144.0 Rust 类型；没有真实录制，dispatch 仍保持 capability=false。
+# Plan shape 已由 Codex 0.144.0 真实录制固定；dispatch 仍保持 capability=false，
+# 等待共享事件词表和前端 consumer 一起接通。
 
 
 def test_plan_updated_translates_steps_and_status() -> None:
@@ -33,6 +35,20 @@ def test_plan_updated_translates_steps_and_status() -> None:
         {"step": "split handlers", "status": "inProgress"},
         {"step": "add tests", "status": "pending"},
     )
+
+
+def test_recorded_plan_notification_is_enabled() -> None:
+    msg = _by_method("turn/plan/updated")
+    translator = CodexTranslator()
+
+    assert msg["method"] not in translator.ignored_methods
+    item = translator.translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.PLAN_UPDATED
+    assert [step["status"] for step in item.payload["steps"]] == [
+        "completed",
+        "inProgress",
+        "pending",
+    ]
 
 
 def test_plan_updated_rejects_abandoned_status() -> None:
@@ -108,7 +124,6 @@ def test_untranslated_skeleton_methods_remain_capability_false() -> None:
     translator = CodexTranslator()
     ignored = translator.ignored_methods
     for method in (
-        "turn/plan/updated",
         "warning",
         "guardianWarning",
         "configWarning",

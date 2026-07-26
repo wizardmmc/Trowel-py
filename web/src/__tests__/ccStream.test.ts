@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { postMessageStream, parseSseFrames } from "../api/ccStream";
+import {
+  getEventStream,
+  postMessageStream,
+  parseSseFrames,
+} from "../api/ccStream";
 import type { AgentEvent } from "../api/agentTypes";
 
 function env(partial: Partial<AgentEvent> & { type: string; seq: number }): string {
@@ -132,5 +136,27 @@ describe("postMessageStream", () => {
     );
     ctrl.abort();
     await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("opens a GET event stream without a request body", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      body: makeStream([
+        `data: ${env({ type: "plan_updated", seq: 1, runtime: "codex" })}\n\n`,
+      ]),
+    } as Response);
+    const received: AgentEvent[] = [];
+    const opened = vi.fn();
+
+    await getEventStream("/events", (event) => received.push(event), {
+      onOpen: opened,
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/events", {
+      method: "GET",
+      signal: undefined,
+    });
+    expect(opened).toHaveBeenCalledOnce();
+    expect(received[0].type).toBe("plan_updated");
   });
 });
