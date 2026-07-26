@@ -303,6 +303,50 @@ async def test_resource_retry_continues_original_pending_dispatch(
 
 
 @pytest.mark.anyio
+async def test_suspended_foreground_retries_after_incubation_interrupt(
+    store,
+    monkeypatch,
+) -> None:
+    _suspended(store, monkeypatch)
+    wake = WakeController(store)
+    wake.queue_for_session(
+        "agent-1",
+        correlation_id="corr-1",
+        runtime_generation="generation-1",
+        payload={"request_id": "corr-1", "decision": "accept"},
+    )
+    broker = Broker(store, denial_reason=DenialReason.SLOT_BUSY)
+    preempted = []
+
+    async def preempt(provider):
+        preempted.append(provider)
+        broker.denial_reason = None
+        return True
+
+    runtime = Runtime()
+    resumer = SuspendedEpisodeResumer(
+        store,
+        broker=broker,
+        wake_controller=wake,
+        runtime_adapter=runtime,
+        yield_coordinator=Yielding(),
+        preempt_started_incubation=preempt,
+    )
+    scheduler = AttentionScheduler(
+        store,
+        request_user_preempt=_no_preempt,
+        resume_suspended=resumer.resume,
+    )
+
+    outcome = await scheduler.trigger("wake.incubation.busy")
+
+    assert outcome.result_code == "runtime_accepted"
+    assert preempted == [Provider.CODEX]
+    assert len(broker.requests) == 2
+    assert len(runtime.answers) == 1
+
+
+@pytest.mark.anyio
 async def test_live_generation_change_discards_input_without_runtime_answer(
     store,
     monkeypatch,

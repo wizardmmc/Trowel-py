@@ -18,7 +18,7 @@ from trowel_py.model_os.episode_starting.models import (
     NativeSessionIdentity,
     StartEpisodeCommand,
 )
-from trowel_py.model_os.types import Episode, MemoryEligibility
+from trowel_py.model_os.types import Episode, MemoryEligibility, SessionPurpose
 from trowel_py.model_os.types import EpisodeRuntimeBinding
 
 
@@ -51,7 +51,7 @@ class AgentEpisodeRuntimeAdapter:
         self, command: StartEpisodeCommand, episode: Episode
     ) -> NativeSessionIdentity:
         del episode
-        isolated = command.session_purpose.value == "default"
+        isolated = command.session_purpose is not SessionPurpose.FOREGROUND
         binding = self._hub.create(
             CreateAgentSessionRequest(
                 runtime=cast(RuntimeWire, command.runtime),
@@ -76,7 +76,7 @@ class AgentEpisodeRuntimeAdapter:
                 memory_enabled=False if isolated else command.memory_enabled,
                 profile_enabled=False if isolated else command.profile_enabled,
                 self_enabled=not isolated,
-                session_kind="default" if isolated else "user",
+                session_kind=command.session_purpose.value if isolated else "user",
                 session_purpose=command.session_purpose.value,
                 memory_eligibility=(
                     command.memory_eligibility is not MemoryEligibility.INELIGIBLE

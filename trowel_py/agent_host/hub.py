@@ -745,6 +745,39 @@ class SessionHub:
             raise SessionNotFoundError(f"codex session {session_id} not live")
         await self._codex.interrupt(session)
 
+    async def interrupt_and_confirm(
+        self,
+        session_id: str,
+        expected_turn_id: str | None = None,
+        *,
+        timeout_seconds: float = 10.0,
+        poll_seconds: float = 0.05,
+    ) -> bool:
+        """请求中断，并等待原生终态清除发起中断时的 turn。"""
+
+        if timeout_seconds <= 0 or poll_seconds <= 0:
+            raise ValueError("interrupt confirmation timings must be positive")
+        current = self.current_turn_id(session_id)
+        turn_id = expected_turn_id or current
+        if turn_id is None:
+            return False
+        if current != turn_id:
+            return True
+        await self.interrupt(session_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while True:
+            try:
+                current = self.current_turn_id(session_id)
+            except SessionNotFoundError:
+                return True
+            if current != turn_id:
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(poll_seconds, remaining))
+
     async def start_native(self, session_id: str) -> RuntimeIdentity:
         """创建或挂载 fresh native session，但不启动首轮模型工作。"""
 
@@ -768,7 +801,8 @@ class SessionHub:
         """controller restart 后按 durable binding 重建同一托管会话。"""
 
         previous = self._require(session_id)
-        if not previous.model_os_mcp_enabled and previous.session_purpose != "default":
+        isolated = previous.session_purpose != "foreground"
+        if not previous.model_os_mcp_enabled and not isolated:
             raise SessionAccessError("only Model OS managed sessions can be recreated")
         if previous.runtime is Runtime.CLAUDE_CODE:
             from trowel_py.cc_host import routes as cc_routes
@@ -789,19 +823,19 @@ class SessionHub:
             permission_preset=(
                 previous.permission_preset
                 if previous.runtime is Runtime.CODEX
-                and previous.session_purpose != "default"
+                and not isolated
                 else None
             ),
             approval_policy=(
                 "never"
                 if previous.runtime is Runtime.CODEX
-                and previous.session_purpose == "default"
+                and isolated
                 else None
             ),
             sandbox=(
                 "read-only"
                 if previous.runtime is Runtime.CODEX
-                and previous.session_purpose == "default"
+                and isolated
                 else None
             ),
             memory_enabled=previous.memory_enabled,

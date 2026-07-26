@@ -54,6 +54,19 @@ class OrderingBroker:
         return True
 
 
+class BusyOnceBroker(OrderingBroker):
+    def __init__(self, store) -> None:
+        super().__init__(store)
+        self.requests = 0
+
+    def request(self, request):
+        self.requests += 1
+        if self.requests == 1:
+            self.episode_seen_before_request = bool(self.store.read_snapshot().episodes)
+            return WorkDenial(DenialReason.SLOT_BUSY, "incubation is running")
+        return super().request(request)
+
+
 class Adapter:
     def __init__(self) -> None:
         self.start_calls = 0
@@ -210,6 +223,34 @@ async def test_work_denial_keeps_owned_episode_retryable_without_foreground(
         if event.kind == "attention.resource_deferred"
     ]
     assert deferred[0].payload["reason"] == denial_reason.value
+
+
+@pytest.mark.anyio
+async def test_foreground_retries_after_started_incubation_is_safely_interrupted(
+    store,
+) -> None:
+    task, command = _task_and_command(store)
+    broker = BusyOnceBroker(store)
+    preempted = []
+
+    async def preempt(provider):
+        preempted.append(provider)
+        return True
+
+    coordinator = StartEpisodeCoordinator(
+        store,
+        broker=broker,
+        adapter=Adapter(),
+        yield_coordinator=Yielding(),
+        preempt_started_incubation=preempt,
+    )
+
+    events = await _collect(coordinator, command)
+
+    assert events[-1]["type"] == "finished"
+    assert preempted == [Provider.CODEX]
+    assert broker.requests == 2
+    assert store.read_snapshot().foreground_task_id == task.task_id
 
 
 @pytest.mark.anyio

@@ -260,6 +260,18 @@
       },
       {
         "type": "index",
+        "name": "idx_incubation_plan_status",
+        "table": "incubation_plans",
+        "sql": "CREATE INDEX idx_incubation_plan_status ON incubation_plans(status, updated_at)"
+      },
+      {
+        "type": "index",
+        "name": "idx_incubation_wake_observation",
+        "table": "incubation_wakes",
+        "sql": "CREATE INDEX idx_incubation_wake_observation ON incubation_wakes(observation_id)"
+      },
+      {
+        "type": "index",
         "name": "idx_leases_active",
         "table": "leases",
         "sql": "CREATE UNIQUE INDEX idx_leases_active ON leases(resource_type, resource_id) WHERE released_at IS NULL"
@@ -356,6 +368,48 @@
       },
       {
         "type": "table",
+        "name": "incubation_candidates",
+        "table": "incubation_candidates",
+        "sql": "CREATE TABLE incubation_candidates ( candidate_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, cycle INTEGER NOT NULL, proposal TEXT NOT NULL, source_refs_json TEXT NOT NULL, new_points_json TEXT NOT NULL, verification TEXT NOT NULL, uncertainty TEXT NOT NULL, runtime TEXT NOT NULL, effective_model TEXT NOT NULL, tier TEXT NOT NULL, policy_version TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, shown_at TEXT, outcome_at TEXT, outcome_reason TEXT, expires_at TEXT, cleaned_at TEXT, UNIQUE(plan_id, cycle) )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_cleanup_commands",
+        "table": "incubation_cleanup_commands",
+        "sql": "CREATE TABLE incubation_cleanup_commands ( command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, before_at TEXT NOT NULL, result_json TEXT NOT NULL, occurred_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_command_ids",
+        "table": "incubation_command_ids",
+        "sql": "CREATE TABLE incubation_command_ids ( command_id TEXT PRIMARY KEY, command_kind TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_control_commands",
+        "table": "incubation_control_commands",
+        "sql": "CREATE TABLE incubation_control_commands ( command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, plan_id TEXT NOT NULL, command_kind TEXT NOT NULL, result_json TEXT NOT NULL, occurred_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_outcome_commands",
+        "table": "incubation_outcome_commands",
+        "sql": "CREATE TABLE incubation_outcome_commands ( command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, candidate_id TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT, occurred_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_plans",
+        "table": "incubation_plans",
+        "sql": "CREATE TABLE incubation_plans ( plan_id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_fingerprint TEXT NOT NULL, task_id TEXT NOT NULL, work_item_id TEXT NOT NULL, prepared_snapshot_json TEXT NOT NULL, unresolved_question TEXT NOT NULL, wake_condition_json TEXT NOT NULL, deadline TEXT, budget_json TEXT NOT NULL, runtime TEXT NOT NULL, cycle INTEGER NOT NULL DEFAULT 0, max_scheduled_cycles INTEGER NOT NULL, status TEXT NOT NULL, stop_reason TEXT, episode_id TEXT, model_called INTEGER NOT NULL DEFAULT 0, broker_settled INTEGER NOT NULL DEFAULT 1, effective_model TEXT, validated_output_json TEXT, input_tokens INTEGER, output_tokens INTEGER, wall_seconds REAL, cost REAL, policy_version TEXT NOT NULL, reframe_policy TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "incubation_wakes",
+        "table": "incubation_wakes",
+        "sql": "CREATE TABLE incubation_wakes ( dedupe_key TEXT PRIMARY KEY, observation_id TEXT NOT NULL, observation_fingerprint TEXT NOT NULL, plan_id TEXT NOT NULL, cycle INTEGER NOT NULL, wake_json TEXT NOT NULL, consumed_at TEXT NOT NULL, UNIQUE(plan_id, cycle) )"
+      },
+      {
+        "type": "table",
         "name": "lease_fence_counters",
         "table": "lease_fence_counters",
         "sql": "CREATE TABLE lease_fence_counters ( resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, last_token INTEGER NOT NULL, PRIMARY KEY (resource_type, resource_id) )"
@@ -389,6 +443,12 @@
         "name": "work_catchup_watermark",
         "table": "work_catchup_watermark",
         "sql": "CREATE TABLE work_catchup_watermark ( scope TEXT NOT NULL, period TEXT NOT NULL, work_kind TEXT NOT NULL, lease_id TEXT, state TEXT NOT NULL, claimed_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (scope, period, work_kind) )"
+      },
+      {
+        "type": "table",
+        "name": "work_cleanup_commands",
+        "table": "work_cleanup_commands",
+        "sql": "CREATE TABLE work_cleanup_commands ( command_id TEXT PRIMARY KEY, work_kind TEXT NOT NULL, before_at TEXT NOT NULL, recovered_count INTEGER NOT NULL, occurred_at TEXT NOT NULL )"
       },
       {
         "type": "table",
@@ -2834,6 +2894,286 @@
           }
         }
       },
+      "/api/model-os/incubation/plans": {
+        "post": {
+          "summary": "Create Incubation Plan",
+          "operationId": "create_incubation_plan_api_model_os_incubation_plans_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateIncubationPlanBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Create Incubation Plan Api Model Os Incubation Plans Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/plans/{plan_id}": {
+        "get": {
+          "summary": "Read Incubation Plan",
+          "operationId": "read_incubation_plan_api_model_os_incubation_plans__plan_id__get",
+          "parameters": [
+            {
+              "name": "plan_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Plan Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Read Incubation Plan Api Model Os Incubation Plans  Plan Id  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/plans/{plan_id}/cancel": {
+        "post": {
+          "summary": "Cancel Incubation Plan",
+          "operationId": "cancel_incubation_plan_api_model_os_incubation_plans__plan_id__cancel_post",
+          "parameters": [
+            {
+              "name": "plan_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Plan Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncubationControlBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Cancel Incubation Plan Api Model Os Incubation Plans  Plan Id  Cancel Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/plans/{plan_id}/wake": {
+        "post": {
+          "summary": "Wake Incubation Plan",
+          "operationId": "wake_incubation_plan_api_model_os_incubation_plans__plan_id__wake_post",
+          "parameters": [
+            {
+              "name": "plan_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Plan Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EarlyIncubationWakeBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Wake Incubation Plan Api Model Os Incubation Plans  Plan Id  Wake Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/candidates/{candidate_id}/outcome": {
+        "post": {
+          "summary": "Record Incubation Candidate Outcome",
+          "operationId": "record_incubation_candidate_outcome_api_model_os_incubation_candidates__candidate_id__outcome_post",
+          "parameters": [
+            {
+              "name": "candidate_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Candidate Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateOutcomeBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Record Incubation Candidate Outcome Api Model Os Incubation Candidates  Candidate Id  Outcome Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/cleanup": {
+        "post": {
+          "summary": "Cleanup Incubation Artifacts",
+          "operationId": "cleanup_incubation_artifacts_api_model_os_incubation_cleanup_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupIncubationBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Cleanup Incubation Artifacts Api Model Os Incubation Cleanup Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/incubation/gate": {
+        "get": {
+          "summary": "Incubation Gate",
+          "operationId": "incubation_gate_api_model_os_incubation_gate_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Incubation Gate Api Model Os Incubation Gate Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/default/pilot": {
         "post": {
           "summary": "Run Default Pilot",
@@ -3467,6 +3807,27 @@
           ],
           "title": "CandidateOutcomeBody"
         },
+        "CleanupIncubationBody": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Command Id"
+            },
+            "before": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Before"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "before"
+          ],
+          "title": "CleanupIncubationBody"
+        },
         "CreateAgentSessionRequest": {
           "properties": {
             "runtime": {
@@ -3585,7 +3946,10 @@
               "enum": [
                 "user",
                 "delegate",
-                "default"
+                "default",
+                "incubation",
+                "maintenance",
+                "experiment"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -3663,6 +4027,81 @@
           "title": "CreateAgentSessionRequest",
           "description": "创建一种 runtime 的会话。\n\n``runtime`` 与三个注入开关在恢复同一原生会话时保持不变。CC 使用\n``permission_mode``；Codex 优先使用 ``permission_preset``，并继续接受旧调用方\n直接传入的 ``approval_policy`` 与 ``sandbox``。"
         },
+        "CreateIncubationPlanBody": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Command Id"
+            },
+            "task_id": {
+              "type": "string",
+              "title": "Task Id",
+              "default": ""
+            },
+            "prepared_snapshot_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IncubationSnapshotRefBody"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "unresolved_question": {
+              "type": "string",
+              "title": "Unresolved Question",
+              "default": ""
+            },
+            "wake_condition": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IncubationWakeConditionBody"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "deadline": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Deadline"
+            },
+            "budget": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IncubationBudgetBody"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "runtime"
+          ],
+          "title": "CreateIncubationPlanBody"
+        },
         "CreateSessionRequest": {
           "properties": {
             "workdir": {
@@ -3728,7 +4167,10 @@
               "enum": [
                 "user",
                 "delegate",
-                "default"
+                "default",
+                "incubation",
+                "maintenance",
+                "experiment"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -3776,6 +4218,21 @@
           ],
           "title": "CreateSessionRequest",
           "description": "创建或恢复 CC 会话，并设置本次运行使用的模型、权限与注入开关。"
+        },
+        "EarlyIncubationWakeBody": {
+          "properties": {
+            "observation_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Observation Id"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "observation_id"
+          ],
+          "title": "EarlyIncubationWakeBody"
         },
         "EquipRequest": {
           "properties": {
@@ -3870,6 +4327,118 @@
           },
           "type": "object",
           "title": "HTTPValidationError"
+        },
+        "IncubationBudgetBody": {
+          "properties": {
+            "calls": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Calls"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "title": "IncubationBudgetBody"
+        },
+        "IncubationControlBody": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Command Id"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id"
+          ],
+          "title": "IncubationControlBody"
+        },
+        "IncubationSnapshotRefBody": {
+          "properties": {
+            "episode_id": {
+              "type": "string",
+              "title": "Episode Id",
+              "default": ""
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            },
+            "committed_event_id": {
+              "type": "string",
+              "title": "Committed Event Id",
+              "default": ""
+            },
+            "payload_hash": {
+              "type": "string",
+              "title": "Payload Hash",
+              "default": ""
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "title": "IncubationSnapshotRefBody"
+        },
+        "IncubationWakeConditionBody": {
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "time",
+                    "user_input",
+                    "observed_state",
+                    "host_event",
+                    "manual"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            },
+            "target_ref": {
+              "type": "string",
+              "title": "Target Ref",
+              "default": ""
+            },
+            "match_params": {
+              "additionalProperties": true,
+              "type": "object",
+              "title": "Match Params"
+            },
+            "due_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Due At"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "title": "IncubationWakeConditionBody"
         },
         "PatchAgentSessionRequest": {
           "properties": {

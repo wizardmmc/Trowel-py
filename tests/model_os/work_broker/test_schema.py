@@ -60,6 +60,13 @@ EXPECTED_COLUMNS = {
         "claimed_at",
         "completed_at",
     ),
+    "work_cleanup_commands": (
+        "command_id",
+        "work_kind",
+        "before_at",
+        "recovered_count",
+        "occurred_at",
+    ),
 }
 
 EXPECTED_INDEX_COLUMNS = {
@@ -75,9 +82,9 @@ EXPECTED_INDEX_COLUMNS = {
 
 
 def test_schema_bytes_are_stable() -> None:
-    assert len(SCHEMA_SQL.encode()) == 3729
+    assert len(SCHEMA_SQL.encode()) == 4041
     assert hashlib.sha256(SCHEMA_SQL.encode()).hexdigest() == (
-        "ec53e77af236f15bb6658af1f9c4fc3e4e1118611a702d0d6d7bac655a5b9410"
+        "56324da4ca0084ec6d781df8b940c8f3cf0fa86bc79b44ffe52d812f8e2d980f"
     )
 
 

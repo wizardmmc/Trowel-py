@@ -328,7 +328,7 @@ async def send_message(
         completed = False
         try:
             if gate is not None:
-                ticket = gate.before_send(session_id, body.text)
+                ticket = await gate.before_send(session_id, body.text)
             async for event in hub.stream(session_id, body.text):
                 if gate is not None:
                     await gate.observe_send_event(ticket, event, hub=hub)

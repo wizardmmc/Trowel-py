@@ -56,6 +56,7 @@ class WorkKind(Enum):
     FOREGROUND = "foreground"
     DEFAULT = "default"
     MAINTENANCE = "maintenance"
+    INCUBATION = "incubation"
 
 
 class ModelTier(Enum):
@@ -227,6 +228,10 @@ class WorkRequest:
             WorkBroker._parse_iso(self.deadline)
         if self.budget_cap is not None:
             WorkBroker._validate_cap(self.budget_cap)
+        if self.kind is WorkKind.INCUBATION and (
+            self.budget_cap is None or not self.work_item_id
+        ):
+            raise ValueError("incubation work requires budget_cap and work_item_id")
 
     @property
     def fingerprint(self) -> str:
@@ -455,6 +460,47 @@ class WorkBroker:
                 day=day,
             )
 
+    def settle_incubation_usage(
+        self, work_item_id: str, usage: UsageRecord
+    ) -> bool:
+        """按 durable WorkItem 对账 incubation usage，并释放遗留 lease。"""
+
+        if not work_item_id:
+            raise ValueError("work_item_id must be non-empty")
+        self._validate_usage(usage)
+        if usage.observation_id is None:
+            raise ValueError("durable incubation settlement requires observation_id")
+        with self._lock, self._tx():
+            assert self._conn is not None
+            row = self._conn.execute(
+                "SELECT * FROM work_leases WHERE work_item_id=? "
+                "AND work_kind='incubation' ORDER BY acquired_at DESC LIMIT 1",
+                (work_item_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            lease_id = row["lease_id"]
+            if not _usage_observation_seen_in_tx(
+                self._conn,
+                lease_id=lease_id,
+                observation_id=usage.observation_id,
+            ):
+                _mark_usage_lease_started_in_tx(self._conn, lease_id=lease_id)
+                _insert_usage_in_tx(
+                    self._conn,
+                    lease_id=lease_id,
+                    lease_row=row,
+                    usage=usage,
+                    day=self._utc_day(usage.occurred_at),
+                    policy_version=self._policy.policy_version,
+                )
+            self._conn.execute(
+                "UPDATE work_leases SET released_at=COALESCE(released_at, ?) "
+                "WHERE lease_id=?",
+                (self._now().isoformat(), lease_id),
+            )
+            return True
+
     def begin_critical_section(self, lease_id: str, fencing_token: int) -> None:
         """仅允许 maintenance 设置预留的临界区标志；当前仲裁尚不依赖该标志。"""
 
@@ -560,6 +606,7 @@ class WorkBroker:
         provider: Provider | None = None,
         account_id: str | None = None,
         task_id: str | None = None,
+        work_item_id: str | None = None,
         model_tier: ModelTier | None = None,
     ) -> UsageTotals:
         with self._lock, self._tx():
@@ -569,6 +616,7 @@ class WorkBroker:
                 provider=provider,
                 account_id=account_id,
                 task_id=task_id,
+                work_item_id=work_item_id,
                 model_tier=model_tier,
             )
 
@@ -578,7 +626,8 @@ class WorkBroker:
             now_iso = self._now().isoformat()
             cur = self._conn.execute(
                 "UPDATE work_leases SET released_at=? "
-                "WHERE released_at IS NULL AND expires_at <= ?",
+                "WHERE released_at IS NULL AND expires_at <= ? "
+                "AND NOT (work_kind='incubation' AND started=1)",
                 (now_iso, now_iso),
             )
             reclaimed = cur.rowcount
@@ -588,6 +637,54 @@ class WorkBroker:
                 reclaimed,
             )
         return reclaimed
+
+    def recover_for_cleanup(
+        self,
+        command_id: str,
+        *,
+        before: str,
+        work_kind: WorkKind,
+    ) -> int:
+        """按冻结 cutoff 回收指定类别的过期 lease，并稳定重放结果。"""
+
+        if not command_id.strip():
+            raise ValueError("command_id must be non-empty")
+        if not isinstance(work_kind, WorkKind):
+            raise ValueError("work_kind must be a WorkKind")
+        cutoff = self._parse_iso(before).astimezone(timezone.utc)
+        now = self._now().astimezone(timezone.utc)
+        cutoff_iso = cutoff.isoformat()
+        now_iso = now.isoformat()
+        with self._lock, self._tx():
+            assert self._conn is not None
+            prior = self._conn.execute(
+                "SELECT work_kind, before_at, recovered_count "
+                "FROM work_cleanup_commands WHERE command_id=?",
+                (command_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["work_kind"] != work_kind.value
+                    or prior["before_at"] != cutoff_iso
+                ):
+                    raise IdempotencyConflict(command_id)
+                return int(prior["recovered_count"])
+            if cutoff > now:
+                raise ValueError("cleanup before must not be in the future")
+            cursor = self._conn.execute(
+                "UPDATE work_leases SET released_at=? "
+                "WHERE released_at IS NULL AND work_kind=? AND expires_at<=? "
+                "AND NOT (work_kind='incubation' AND started=1)",
+                (now_iso, work_kind.value, cutoff_iso),
+            )
+            recovered = cursor.rowcount
+            self._conn.execute(
+                "INSERT INTO work_cleanup_commands "
+                "(command_id, work_kind, before_at, recovered_count, occurred_at) "
+                "VALUES (?,?,?,?,?)",
+                (command_id, work_kind.value, cutoff_iso, recovered, now_iso),
+            )
+            return recovered
 
     def _arbitrate_body(
         self, req: WorkRequest, now: datetime
@@ -609,6 +706,11 @@ class WorkBroker:
                 if self._budget_exhausted(req, account, now):
                     outcomes.append((account, DenialReason.BUDGET_EXHAUSTED))
                     continue
+            elif req.kind is WorkKind.INCUBATION and self._budget_exhausted(
+                req, account, now
+            ):
+                outcomes.append((account, DenialReason.BUDGET_EXHAUSTED))
+                continue
             lease, busy_expiry = self._try_acquire_any_slot(req, account, now)
             if lease is not None:
                 return self._after_grant(req, lease, now)
@@ -621,7 +723,7 @@ class WorkBroker:
                 )
 
         if req.kind is WorkKind.FOREGROUND:
-            victim = self._find_preemptable_default(req.provider, candidates)
+            victim = self._find_preemptable_background(req.provider, candidates)
             if victim is not None:
                 self._release_in_tx(victim.lease_id, now)
                 lease, _ = self._try_acquire_any_slot(req, victim.account_id, now)
@@ -732,6 +834,10 @@ class WorkBroker:
         if holder is not None:
             if holder["expires_at"] > now_iso:
                 return None
+            if holder["work_kind"] == WorkKind.INCUBATION.value and bool(
+                holder["started"]
+            ):
+                return None
             self._conn.execute(
                 "UPDATE work_leases SET released_at=? WHERE lease_id=?",
                 (now_iso, holder["lease_id"]),
@@ -778,16 +884,17 @@ class WorkBroker:
             work_item_id=req.work_item_id,
         )
 
-    def _find_preemptable_default(
+    def _find_preemptable_background(
         self, provider: Provider, accounts: tuple[str, ...]
     ) -> WorkLease | None:
-        """选择最早、尚未 begin_call 且非临界的 default lease 供 foreground 抢占。"""
+        """选择最早、尚未 begin_call 的 default/incubation 供 foreground 抢占。"""
 
         assert self._conn is not None
         placeholders = ",".join("?" for _ in accounts)
         row = self._conn.execute(
             f"SELECT * FROM work_leases WHERE released_at IS NULL "
-            f"AND work_kind='default' AND started=0 AND in_critical=0 "
+            f"AND work_kind IN ('default','incubation') "
+            f"AND started=0 AND in_critical=0 "
             f"AND provider=? AND account_id IN ({placeholders}) "
             f"ORDER BY acquired_at LIMIT 1",
             (provider.value, *accounts),
@@ -866,12 +973,18 @@ class WorkBroker:
         return "healthy"
 
     def _budget_exhausted(self, req: WorkRequest, account: str, now: datetime) -> bool:
-        cap = self._narrow_cap(self._policy.default_cap, req.budget_cap)
+        cap = (
+            req.budget_cap
+            if req.kind is WorkKind.INCUBATION
+            else self._narrow_cap(self._policy.default_cap, req.budget_cap)
+        )
+        assert cap is not None
         totals = self._totals_in_tx(
-            work_kind=WorkKind.DEFAULT,
+            work_kind=req.kind,
             provider=req.provider,
             account_id=account,
             day=now.date().isoformat(),
+            work_item_id=req.work_item_id,
         )
         return cap.exceeded_by(totals)
 
@@ -921,10 +1034,15 @@ class WorkBroker:
             )
             return None
         if row["expires_at"] <= now_iso:
-            self._conn.execute(
-                "UPDATE work_leases SET released_at=? WHERE lease_id=?",
-                (now_iso, row["lease_id"]),
+            protected = (
+                row["work_kind"] == WorkKind.INCUBATION.value
+                and bool(row["started"])
             )
+            if not protected:
+                self._conn.execute(
+                    "UPDATE work_leases SET released_at=? WHERE lease_id=?",
+                    (now_iso, row["lease_id"]),
+                )
             self._conn.execute(
                 "DELETE FROM work_idempotency_keys WHERE idempotency_key=?",
                 (req.idempotency_key,),
@@ -1000,6 +1118,7 @@ class WorkBroker:
         provider: Provider | None = None,
         account_id: str | None = None,
         task_id: str | None = None,
+        work_item_id: str | None = None,
         model_tier: ModelTier | None = None,
     ) -> UsageTotals:
         """在当前事务内聚合用量；任一费用未知时 cost 保持 None。"""
@@ -1012,6 +1131,7 @@ class WorkBroker:
             provider=provider,
             account_id=account_id,
             task_id=task_id,
+            work_item_id=work_item_id,
             model_tier=model_tier,
             totals_factory=UsageTotals,
         )
@@ -1019,6 +1139,8 @@ class WorkBroker:
     def _decide_granted_cap(self, req: WorkRequest) -> BudgetDimensions | None:
         if req.kind is WorkKind.DEFAULT:
             return self._narrow_cap(self._policy.default_cap, req.budget_cap)
+        if req.kind is WorkKind.INCUBATION:
+            return req.budget_cap
         return None
 
     @staticmethod

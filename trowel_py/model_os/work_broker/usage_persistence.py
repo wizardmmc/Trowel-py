@@ -72,6 +72,7 @@ def totals_in_tx(
     provider: Any = None,
     account_id: str | None = None,
     task_id: str | None = None,
+    work_item_id: str | None = None,
     model_tier: Any = None,
     totals_factory: Callable[..., _Totals],
 ) -> _Totals:
@@ -92,6 +93,9 @@ def totals_in_tx(
     if task_id is not None:
         clauses.append("task_id=?")
         params.append(task_id)
+    if work_item_id is not None:
+        clauses.append("work_item_id=?")
+        params.append(work_item_id)
     if model_tier is not None:
         clauses.append("model_tier=?")
         params.append(model_tier.value)

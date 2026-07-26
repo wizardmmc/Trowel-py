@@ -157,6 +157,9 @@ from trowel_py.model_os.store_schema import migrate_v5_to_v6 as _run_migrate_v5_
 from trowel_py.model_os.default_work.schema import (
     migrate_v7_to_v8 as _run_migrate_v7_to_v8,
 )
+from trowel_py.model_os.incubation.schema import (
+    migrate_v8_to_v9 as _run_migrate_v8_to_v9,
+)
 from trowel_py.model_os.task_commands import TaskCommands
 from trowel_py.model_os.validator_intent import (
     match_validator_intent_from_argv,
@@ -197,7 +200,7 @@ from trowel_py.model_os.context_observer import (
 from trowel_py.model_os.waking.models import WakeEvent, WakeObservation
 from trowel_py.model_os.waking.persistence import consume_wake as _consume_wake
 
-_SCHEMA_VERSION = 8  # default generation/candidate/outcome 使用隔离 live tables。
+_SCHEMA_VERSION = 9  # incubation plan/wake/candidate 使用隔离 live tables。
 _DEFAULT_POLICY_VERSION = "v0"
 
 _LOGGER = logging.getLogger(__name__)
@@ -706,6 +709,9 @@ class ModelOsStore:
             current = 7
         if current < 8:
             self._migrate_v7_to_v8()
+            current = 8
+        if current < 9:
+            self._migrate_v8_to_v9()
 
     def _migrate_v4_to_v5(self) -> None:
         """旧 Decision 只标历史未知，不根据自由文本猜 disposition。"""
@@ -730,6 +736,10 @@ class ModelOsStore:
     def _migrate_v7_to_v8(self) -> None:
         assert self._conn is not None
         _run_migrate_v7_to_v8(self._conn)
+
+    def _migrate_v8_to_v9(self) -> None:
+        assert self._conn is not None
+        _run_migrate_v8_to_v9(self._conn)
 
     def _schema_version(self) -> int:
         """返回 ``meta`` 中记录的 schema 版本。"""
@@ -3440,13 +3450,13 @@ class ModelOsStore:
                 expected_token=int(lease_row["fencing_token"]),
                 extra_payload={"reason": reason} if reason else None,
                 work_item_id=episode.work_item_id,
-                task_id=None,
+                task_id=episode.task_id,
             )
             self._insert_event_in_tx(
                 self._work_item_status_event(
                     work_item.work_item_id,
                     work_status,
-                    None,
+                    episode.task_id,
                     _now_iso(),
                 )
             )

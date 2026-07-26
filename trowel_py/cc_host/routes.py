@@ -208,7 +208,7 @@ async def send_message(
 
         gate = getattr(request.app.state, "model_os_command_gate", None)
         hub = getattr(request.app.state, "agent_hub", None)
-        ticket = gate.before_send(sid, body.text) if gate is not None else None
+        ticket = await gate.before_send(sid, body.text) if gate is not None else None
         completed = False
         try:
             if ticket is not None:

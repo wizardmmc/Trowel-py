@@ -15,6 +15,11 @@ from trowel_py.model_os.default_work.models import (
     DefaultWorkError,
     RunDefaultPilotCommand,
 )
+from trowel_py.model_os.incubation import (
+    CreateIncubationPlanCommand,
+    IncubationError,
+    IncubationWakeCondition,
+)
 from trowel_py.model_os.routing import (
     RouteMarker,
     RouteReviewClass,
@@ -36,6 +41,7 @@ from trowel_py.model_os.yielding import (
     YieldWaitingCondition,
 )
 from trowel_py.model_os.waking import WakeConditionKind, WakeObservation
+from trowel_py.model_os.work_broker import BudgetDimensions
 
 router = APIRouter()
 
@@ -155,6 +161,64 @@ class CandidateOutcomeBody(BaseModel):
     reason: str | None = None
 
 
+class IncubationWakeConditionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "time", "user_input", "observed_state", "host_event", "manual"
+    ] | None = None
+    target_ref: str = ""
+    match_params: dict[str, Any] = Field(default_factory=dict)
+    due_at: str | None = None
+
+
+class IncubationBudgetBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calls: int | None = Field(default=None, strict=True)
+
+
+class IncubationSnapshotRefBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str = ""
+    version: int | None = Field(default=None, strict=True)
+    committed_event_id: str = ""
+    payload_hash: str = ""
+
+
+class CreateIncubationPlanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(min_length=1)
+    task_id: str = ""
+    prepared_snapshot_ref: IncubationSnapshotRefBody | None = None
+    unresolved_question: str = ""
+    wake_condition: IncubationWakeConditionBody | None = None
+    deadline: str | None = None
+    budget: IncubationBudgetBody | None = None
+    runtime: Literal["claude_code", "codex"]
+
+
+class IncubationControlBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(min_length=1)
+
+
+class EarlyIncubationWakeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str = Field(min_length=1)
+
+
+class CleanupIncubationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(min_length=1)
+    before: str = Field(min_length=1)
+
+
 def _candidate_payload(candidate) -> dict[str, Any]:
     return {
         "candidate_id": candidate.candidate_id,
@@ -178,6 +242,86 @@ def _candidate_payload(candidate) -> dict[str, Any]:
     }
 
 
+def _incubation_plan_payload(plan, candidate=None) -> dict[str, Any]:
+    ref = plan.prepared_snapshot_ref
+    wake = plan.wake_condition
+    return {
+        "plan_id": plan.plan_id,
+        "command_id": plan.command_id,
+        "task_id": plan.task_id,
+        "work_item_id": plan.work_item_id,
+        "prepared_snapshot_ref": {
+            "episode_id": ref.episode_id,
+            "version": ref.version,
+            "committed_event_id": ref.committed_event_id,
+            "payload_hash": ref.payload_hash,
+        },
+        "unresolved_question": plan.unresolved_question,
+        "wake_condition": {
+            "kind": wake.kind.value,
+            "target_ref": wake.target_ref,
+            "match_params": wake.match_params,
+            "due_at": wake.due_at,
+        },
+        "deadline": plan.deadline,
+        "budget": {
+            "calls": plan.budget.calls,
+            "tokens": plan.budget.tokens,
+            "cost": plan.budget.cost,
+            "wall_seconds": plan.budget.wall_seconds,
+        },
+        "runtime": plan.runtime,
+        "cycle": plan.cycle,
+        "max_scheduled_cycles": plan.max_scheduled_cycles,
+        "status": plan.status.value,
+        "stop_reason": plan.stop_reason,
+        "episode_id": plan.episode_id,
+        "model_called": plan.model_called,
+        "effective_model": plan.effective_model,
+        "usage": (
+            {
+                "input_tokens": plan.usage.input_tokens,
+                "output_tokens": plan.usage.output_tokens,
+                "wall_seconds": plan.usage.wall_seconds,
+                "cost": plan.usage.cost,
+            }
+            if plan.usage is not None
+            else None
+        ),
+        "candidate": (
+            _incubation_candidate_payload(candidate) if candidate is not None else None
+        ),
+        "policy_version": plan.policy_version,
+        "reframe_policy": plan.reframe_policy,
+        "created_at": plan.created_at,
+        "updated_at": plan.updated_at,
+    }
+
+
+def _incubation_candidate_payload(candidate) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "plan_id": candidate.plan_id,
+        "cycle": candidate.cycle,
+        "proposal": candidate.proposal,
+        "source_refs": list(candidate.source_refs),
+        "new_points": list(candidate.new_points),
+        "verification": candidate.verification,
+        "uncertainty": candidate.uncertainty,
+        "runtime": candidate.runtime,
+        "effective_model": candidate.effective_model,
+        "tier": candidate.tier,
+        "policy_version": candidate.policy_version,
+        "status": candidate.status.value,
+        "created_at": candidate.created_at,
+        "shown_at": candidate.shown_at,
+        "outcome_at": candidate.outcome_at,
+        "outcome_reason": candidate.outcome_reason,
+        "expires_at": candidate.expires_at,
+        "cleaned_at": candidate.cleaned_at,
+    }
+
+
 def _default_error(code: str, message: str, *, status_code: int) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -187,6 +331,202 @@ def _default_error(code: str, message: str, *, status_code: int) -> JSONResponse
             "error": {"code": code, "message": message},
         },
     )
+
+
+def _incubation_service(request: Request):
+    service = getattr(request.app.state, "model_os_incubation", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Model OS incubation unavailable")
+    return service
+
+
+@router.post("/incubation/plans")
+async def create_incubation_plan(
+    body: CreateIncubationPlanBody, request: Request
+) -> Any:
+    service = _incubation_service(request)
+    ref = body.prepared_snapshot_ref
+    wake = body.wake_condition
+    budget = body.budget
+    if (
+        ref is None
+        or not ref.episode_id.strip()
+        or ref.version is None
+        or ref.version < 1
+        or not ref.committed_event_id.strip()
+        or not ref.payload_hash.strip()
+    ):
+        return _default_error("snapshot_missing", "snapshot_missing", status_code=409)
+    if wake is None:
+        return _default_error(
+            "wake_condition_missing", "wake_condition_missing", status_code=409
+        )
+    if wake.kind is None:
+        return _default_error(
+            "wake_condition_missing", "wake_condition_missing", status_code=409
+        )
+    if budget is None or budget.calls != 1:
+        return _default_error("budget_denied", "budget_denied", status_code=409)
+    try:
+        plan = service.create_plan(
+            CreateIncubationPlanCommand(
+                command_id=body.command_id,
+                task_id=body.task_id,
+                prepared_snapshot_ref=SnapshotRef(
+                    ref.episode_id,
+                    ref.version,
+                    ref.committed_event_id,
+                    ref.payload_hash,
+                ),
+                unresolved_question=body.unresolved_question,
+                wake_condition=IncubationWakeCondition(
+                    kind=WakeConditionKind(wake.kind),
+                    target_ref=wake.target_ref,
+                    match_params=wake.match_params,
+                    due_at=wake.due_at,
+                ),
+                deadline=body.deadline,
+                budget=BudgetDimensions(
+                    calls=budget.calls,
+                ),
+                runtime=body.runtime,
+                occurred_at=datetime.now(timezone.utc),
+            )
+        )
+    except (IncubationError, ValueError) as exc:
+        code = exc.code if isinstance(exc, IncubationError) else "plan_invalid"
+        return _default_error(code, str(exc), status_code=409)
+    return {"success": True, "data": _incubation_plan_payload(plan), "error": None}
+
+
+@router.get("/incubation/plans/{plan_id}")
+async def read_incubation_plan(plan_id: str, request: Request) -> Any:
+    service = _incubation_service(request)
+    try:
+        plan = service.repository.get_plan(plan_id)
+        candidate = service.repository.mark_candidate_shown(
+            plan_id, occurred_at=datetime.now(timezone.utc)
+        )
+    except IncubationError as exc:
+        return _default_error(exc.code, exc.detail, status_code=404)
+    return {
+        "success": True,
+        "data": _incubation_plan_payload(plan, candidate),
+        "error": None,
+    }
+
+
+@router.post("/incubation/plans/{plan_id}/cancel")
+async def cancel_incubation_plan(
+    plan_id: str, body: IncubationControlBody, request: Request
+) -> Any:
+    service = _incubation_service(request)
+    try:
+        plan = service.repository.cancel_plan(
+            plan_id,
+            command_id=body.command_id,
+            occurred_at=datetime.now(timezone.utc),
+        )
+    except IncubationError as exc:
+        return _default_error(exc.code, exc.detail, status_code=409)
+    return {"success": True, "data": _incubation_plan_payload(plan), "error": None}
+
+
+@router.post("/incubation/plans/{plan_id}/wake")
+async def wake_incubation_plan(
+    plan_id: str, body: EarlyIncubationWakeBody, request: Request
+) -> Any:
+    service = _incubation_service(request)
+    controller = getattr(request.app.state, "model_os_wake_controller", None)
+    if controller is None:
+        raise HTTPException(status_code=503, detail="Model OS wake unavailable")
+    events = controller.observe(
+        WakeObservation(
+            observation_id=body.observation_id,
+            kind=WakeConditionKind.MANUAL,
+            target_ref=plan_id,
+            observed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            source="user",
+            details={},
+        )
+    )
+    matched = [
+        event for event in events if event.condition_id == f"incubation:{plan_id}"
+    ]
+    if not matched:
+        return _default_error("wake_not_consumed", "Plan is not wakeable", status_code=409)
+    for event in matched:
+        service.trigger(event)
+    plan = service.repository.get_plan(plan_id)
+    return {"success": True, "data": _incubation_plan_payload(plan), "error": None}
+
+
+@router.post("/incubation/candidates/{candidate_id}/outcome")
+async def record_incubation_candidate_outcome(
+    candidate_id: str,
+    body: CandidateOutcomeBody,
+    request: Request,
+) -> Any:
+    service = _incubation_service(request)
+    try:
+        candidate = service.repository.record_outcome(
+            command_id=body.command_id,
+            candidate_id=candidate_id,
+            outcome=body.outcome,
+            reason=body.reason,
+            occurred_at=datetime.now(timezone.utc),
+        )
+    except (IncubationError, ValueError) as exc:
+        code = exc.code if isinstance(exc, IncubationError) else "outcome_invalid"
+        return _default_error(code, str(exc), status_code=409)
+    return {
+        "success": True,
+        "data": _incubation_candidate_payload(candidate),
+        "error": None,
+    }
+
+
+@router.post("/incubation/cleanup")
+async def cleanup_incubation_artifacts(
+    body: CleanupIncubationBody, request: Request
+) -> Any:
+    service = _incubation_service(request)
+    try:
+        result = service.cleanup_artifacts(
+            command_id=body.command_id,
+            before=body.before,
+            occurred_at=datetime.now(timezone.utc),
+        )
+    except (IncubationError, ValueError) as exc:
+        code = exc.code if isinstance(exc, IncubationError) else "cleanup_invalid"
+        return _default_error(code, str(exc), status_code=409)
+    return {
+        "success": True,
+        "data": result,
+        "error": None,
+    }
+
+
+@router.get("/incubation/gate")
+async def incubation_gate(request: Request) -> Any:
+    service = _incubation_service(request)
+    report = service.repository.gate_report()
+    return {
+        "success": True,
+        "data": {
+            "status": report.status,
+            "outcome_count": report.outcome_count,
+            "adopted": report.adopted,
+            "invalid": report.invalid,
+            "dismissed": report.dismissed,
+            "adoption_rate": report.adoption_rate,
+            "invalid_rate": report.invalid_rate,
+            "verification_success": report.verification_success,
+            "verification_total": report.verification_total,
+            "automatic_incubation": report.automatic_incubation,
+        },
+        "error": None,
+    }
 
 
 @router.post("/default/pilot")
@@ -464,8 +804,10 @@ async def submit_wake(body: WakeObservationBody, request: Request) -> dict[str, 
         )
     )
     scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
-    if scheduler is not None:
-        for event in events:
+    incubation = getattr(request.app.state, "model_os_incubation", None)
+    for event in events:
+        handled = incubation is not None and incubation.trigger(event)
+        if not handled and scheduler is not None:
             await scheduler.trigger(event.wake_id)
     return {
         "success": True,

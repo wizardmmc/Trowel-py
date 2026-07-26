@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from trowel_py.model_os.scheduling.journal import (
     append_schedule_terminal,
     complete_schedule_dispatch,
@@ -9,6 +11,7 @@ from trowel_py.model_os.scheduling.journal import (
 )
 from trowel_py.model_os.types import ReconcileReason
 from trowel_py.model_os.work_broker import (
+    DenialReason,
     ModelTier,
     WorkDenial,
     WorkKind,
@@ -27,12 +30,15 @@ class SuspendedEpisodeResumer:
         wake_controller,
         runtime_adapter,
         yield_coordinator,
+        preempt_started_incubation: Callable[[Provider], Awaitable[bool]]
+        | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
         self._wake = wake_controller
         self._runtime = runtime_adapter
         self._yield = yield_coordinator
+        self._preempt_started_incubation = preempt_started_incubation
 
     async def resume(self, recorded) -> str:
         decision = recorded.decision
@@ -111,6 +117,25 @@ class SuspendedEpisodeResumer:
                 idempotency_key=f"resume:{recorded.decision_id}",
             )
         )
+        if (
+            isinstance(work_lease, WorkDenial)
+            and work_lease.reason is DenialReason.SLOT_BUSY
+            and self._preempt_started_incubation is not None
+            and await self._preempt_started_incubation(provider)
+        ):
+            work_lease = self._broker.request(
+                WorkRequest(
+                    kind=WorkKind.FOREGROUND,
+                    provider=provider,
+                    model_tier=(
+                        route_tier_for_episode(self._store, episode_id)
+                        or ModelTier.DEEP
+                    ),
+                    task_id=task_id,
+                    work_item_id=work_item_id,
+                    idempotency_key=f"resume:{recorded.decision_id}",
+                )
+            )
         if isinstance(work_lease, WorkDenial):
             return record_resource_deferred(
                 self._store,

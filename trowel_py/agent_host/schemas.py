@@ -32,7 +32,9 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate", "default"] = "user"
+    session_kind: Literal[
+        "user", "delegate", "default", "incubation", "maintenance", "experiment"
+    ] = "user"
     session_purpose: Literal[
         "foreground", "default", "incubation", "maintenance", "experiment"
     ] = "foreground"

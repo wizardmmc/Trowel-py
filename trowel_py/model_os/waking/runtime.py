@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 
 from trowel_py.model_os.waking.matcher import condition_from_waiting
 from trowel_py.model_os.waking.models import (
@@ -29,6 +29,10 @@ class WakeService:
         interval_seconds: float = 30.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         on_wake: Callable[[WakeEvent], Awaitable[None]] | None = None,
+        condition_providers: tuple[Callable[[], Iterable], ...] = (),
+        observation_consumers: tuple[
+            Callable[[WakeObservation], Iterable[WakeEvent]], ...
+        ] = (),
     ) -> None:
         self._store = store
         self._observer = observer
@@ -37,6 +41,8 @@ class WakeService:
         self._interval_seconds = interval_seconds
         self._sleep = sleep
         self._on_wake = on_wake
+        self._condition_providers = condition_providers
+        self._observation_consumers = observation_consumers
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -84,6 +90,8 @@ class WakeService:
             condition = condition_from_waiting(task.task_id, task.waiting_condition)
             if condition is not None:
                 conditions.append(condition)
+        for provider in self._condition_providers:
+            conditions.extend(provider())
         consumed: list[WakeEvent] = []
         host_event = None
         if self._host_detector is not None:
@@ -106,7 +114,7 @@ class WakeService:
                 )
                 continue
             if observation is not None:
-                consumed.extend(self._store.consume_wake(observation))
+                consumed.extend(self._consume(observation))
             if (
                 host_event is not None
                 and condition.kind is WakeConditionKind.HOST_EVENT
@@ -117,7 +125,7 @@ class WakeService:
                     f"{host_event}\0{observed_at}".encode()
                 ).hexdigest()
                 consumed.extend(
-                    self._store.consume_wake(
+                    self._consume(
                         WakeObservation(
                             observation_id=f"host:{identity}",
                             kind=WakeConditionKind.HOST_EVENT,
@@ -133,3 +141,9 @@ class WakeService:
             for event in unique:
                 await self._on_wake(event)
         return unique
+
+    def _consume(self, observation: WakeObservation) -> list[WakeEvent]:
+        consumed = list(self._store.consume_wake(observation))
+        for consumer in self._observation_consumers:
+            consumed.extend(consumer(observation))
+        return consumed

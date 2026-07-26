@@ -76,6 +76,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_usage_obs
 CREATE INDEX IF NOT EXISTS idx_work_usage_dim
     ON work_usage(work_kind, provider, account_id, day);
 
+-- 显式 cleanup 的回收结果与命令身份同事务落盘，避免重放越过原 cutoff。
+CREATE TABLE IF NOT EXISTS work_cleanup_commands (
+    command_id TEXT PRIMARY KEY,
+    work_kind TEXT NOT NULL,
+    before_at TEXT NOT NULL,
+    recovered_count INTEGER NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+
 -- maintenance 补跑 claim：`(scope, period)` 在 grant 时 CLAIMED（靠主键原子去重），
 -- 只有成功 `complete` 才 COMPLETED。lease 已死（完成前崩溃）的 claim 会自愈——
 -- 下次请求清掉它重新 grant，必要维护不会永久丢失。
