@@ -16,6 +16,7 @@ interface EventTimelineProps {
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
   readonly runtime?: string;
+  readonly sessionId?: string;
 }
 
 export function EventTimeline({
@@ -27,6 +28,7 @@ export function EventTimeline({
   onApprovalDecision,
   workdir,
   runtime,
+  sessionId,
 }: EventTimelineProps) {
   // 必须返回 Fragment，消息块需保持为 .cc-msg__body 的直接子元素。
   const blocks: ReactNode[] = [];
@@ -34,7 +36,14 @@ export function EventTimeline({
   let key = 0;
   const flushText = () => {
     if (textBuf !== "") {
-      blocks.push(<AssistantText key={`t${key++}`} text={textBuf} />);
+      blocks.push(
+        <AssistantText
+          key={`t${key++}`}
+          text={textBuf}
+          sessionId={sessionId}
+          workdir={workdir}
+        />,
+      );
       textBuf = "";
     }
   };

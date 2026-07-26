@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from collections.abc import Awaitable, Callable
 from typing import Any, ParamSpec, TypeVar
 
@@ -23,6 +24,13 @@ from trowel_py.agent_host.hub import (
     SessionNotFoundError,
     SessionOperationError,
 )
+from trowel_py.agent_host.local_files import (
+    InvalidLocalFilePath,
+    LocalFileAccessError,
+    LocalFileNotFoundError,
+    iter_file_chunks,
+    open_local_file,
+)
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
     CreateAgentSessionRequest,
@@ -31,6 +39,20 @@ from trowel_py.agent_host.schemas import (
 )
 
 router = APIRouter()
+
+_LOCAL_FILE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "sandbox allow-scripts; default-src 'none'; "
+        "script-src 'unsafe-inline' 'unsafe-eval' https:; "
+        "style-src 'unsafe-inline' https:; "
+        "img-src data: blob: https:; font-src data: https:; "
+        "media-src data: blob: https:; connect-src 'none'; "
+        "form-action 'none'; base-uri 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -168,6 +190,33 @@ def get_session(
     if binding is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     return {"success": True, "data": binding.to_dict(), "error": None}
+
+
+@router.get("/sessions/{session_id}/files", response_class=StreamingResponse)
+def get_session_file(
+    session_id: str,
+    path: str = Query(..., min_length=1),
+    hub: SessionHub = Depends(get_hub),
+) -> StreamingResponse:
+    """只读打开当前会话工作目录内的普通文件。"""
+
+    binding = hub.get(session_id)
+    if binding is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    try:
+        handle = open_local_file(binding.workdir, path)
+    except InvalidLocalFilePath as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LocalFileAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LocalFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return StreamingResponse(
+        iter_file_chunks(handle),
+        media_type=media_type,
+        headers=_LOCAL_FILE_HEADERS,
+    )
 
 
 @router.patch("/sessions/{session_id}")

@@ -2677,6 +2677,49 @@
           }
         }
       },
+      "/api/agent/sessions/{session_id}/files": {
+        "get": {
+          "summary": "Get Session File",
+          "description": "只读打开当前会话工作目录内的普通文件。",
+          "operationId": "get_session_file_api_agent_sessions__session_id__files_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            },
+            {
+              "name": "path",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Path"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response"
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/{session_id}/interrupt": {
         "post": {
           "summary": "Interrupt Session",
