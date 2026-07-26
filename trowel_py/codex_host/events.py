@@ -37,6 +37,8 @@ class CodexEventType(str, Enum):
     GOAL_UPDATED = "goal_updated"
     GOAL_CLEARED = "goal_cleared"
     PLAN_UPDATED = "plan_updated"
+    TURN_DIFF_UPDATED = "turn_diff_updated"
+    REVIEW_MODE = "review_mode"
     SUBAGENT_ACTIVITY = "subagent_activity"
     COMPACTION = "compaction"
     HOST_WARNING = "host_warning"

@@ -24,6 +24,12 @@ vi.mock("../api/agent", () => ({
   getAgentSessionDefaults: vi.fn().mockResolvedValue(null),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
+  listCodexCommands: vi.fn().mockResolvedValue([]),
+  compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
+  startCodexReview: vi.fn().mockResolvedValue({
+    reviewThreadId: "thread-1",
+    turnId: "review-turn-1",
+  }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
   getCodexGoal: vi.fn().mockResolvedValue(null),
   setCodexGoal: vi.fn(),
@@ -67,6 +73,8 @@ import {
   listAgentHistory as listSessions,
   listActiveAgentSessions as listActiveSessions,
   listAgentRuntimes,
+  listCodexCommands,
+  compactCodexSession,
 } from "../api/agent";
 import {
   loadNewSessionPreferences,
@@ -91,6 +99,32 @@ beforeEach(() => {
 });
 
 describe("SessionView", () => {
+  function installCodexSession() {
+    useCcStore.setState({
+      sessions: {
+        s1: createNewSessionState(
+          {
+            session_id: "s1",
+            runtime: "codex",
+            native_session_id: "thread-1",
+            workdir: "/wd",
+            model: "gpt-5.6-sol",
+            effort: "high",
+            permission: "Workspace write · on-request",
+            memory_enabled: true,
+            profile_enabled: true,
+            capabilities: ["tools", "approval"],
+            name: "wd",
+            connected: true,
+            running: false,
+          },
+          { workdir: "/wd", runtime: "codex", effort: "high" },
+        ),
+      },
+      activeSid: "s1",
+    });
+  }
+
   it("mounts the three-column shell — multi-bar, center, todo-bar all present", async () => {
     const { container } = render(
       <SessionView workdir="/wd" onRequestChangeWorkdir={() => {}} />,
@@ -104,6 +138,49 @@ describe("SessionView", () => {
   it("shows the multi-bar empty hint before any connection exists", () => {
     render(<SessionView workdir="/wd" />);
     expect(screen.getByText(/暂无连接/)).toBeInTheDocument();
+  });
+
+  it("loads the Codex roster and opens /status locally", async () => {
+    installCodexSession();
+    vi.mocked(listCodexCommands).mockResolvedValueOnce([
+      {
+        name: "status",
+        description: "查看会话状态",
+        source: "codex",
+        action: "status",
+        available_while_running: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/status" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/status/ }));
+
+    expect(screen.getByRole("dialog", { name: "Codex 会话状态" })).toBeInTheDocument();
+    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+  });
+
+  it("routes /compact to its command API and keeps it out of turns", async () => {
+    installCodexSession();
+    vi.mocked(listCodexCommands).mockResolvedValueOnce([
+      {
+        name: "compact",
+        description: "压缩上下文",
+        source: "codex",
+        action: "compact",
+        available_while_running: false,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/compact/ }));
+
+    await waitFor(() => expect(vi.mocked(compactCodexSession)).toHaveBeenCalledWith("s1"));
+    expect(await screen.findByText("上下文压缩已启动")).toBeInTheDocument();
+    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
   });
 
   it("shows the no-active-session prompt in the center when activeSid is null", () => {
@@ -273,6 +350,7 @@ describe("SessionView", () => {
           tasks: [],
           goal: null,
           plan: null,
+          turnDiff: null,
           meta: {
             model: "gpt-5.6-sol",
             ccSessionId: "thr-1",

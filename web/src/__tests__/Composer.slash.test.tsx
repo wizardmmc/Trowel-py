@@ -187,4 +187,97 @@ describe("Composer slash autocomplete", () => {
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("/monthly-etf 查看沪深300");
   });
+
+  it("dispatches a Codex command locally and never calls onSend", () => {
+    const onSend = vi.fn();
+    const onLocalCommand = vi.fn();
+    const commands: readonly SlashItem[] = [
+      {
+        name: "review",
+        description: "原生代码审查",
+        source: "codex",
+        type: "command",
+      },
+    ];
+    render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={onSend}
+        onInterrupt={() => {}}
+        slashItems={commands}
+        onLocalCommand={onLocalCommand}
+      />,
+    );
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/review" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onLocalCommand).toHaveBeenCalledWith(commands[0], "/review");
+    expect(onSend).not.toHaveBeenCalled();
+    expect((input as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("skips disabled Codex commands during keyboard selection", () => {
+    const onLocalCommand = vi.fn();
+    const commands: readonly SlashItem[] = [
+      {
+        name: "compact",
+        description: "压缩上下文",
+        source: "codex",
+        type: "command",
+        disabled: true,
+        disabledReason: "当前 turn 结束后可用",
+      },
+      {
+        name: "status",
+        description: "查看状态",
+        source: "codex",
+        type: "command",
+      },
+    ];
+    render(
+      <Composer
+        streaming
+        disabled={false}
+        onSend={() => {}}
+        onInterrupt={() => {}}
+        slashItems={commands}
+        onLocalCommand={onLocalCommand}
+      />,
+    );
+
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onLocalCommand).toHaveBeenCalledWith(commands[1], "/status");
+  });
+
+  it("intercepts Codex command arguments instead of leaking them to the model", () => {
+    const onSend = vi.fn();
+    const onLocalCommand = vi.fn();
+    const command: SlashItem = {
+      name: "review",
+      description: "原生代码审查",
+      source: "codex",
+      type: "command",
+    };
+    render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={onSend}
+        onInterrupt={() => {}}
+        slashItems={[command]}
+        onLocalCommand={onLocalCommand}
+      />,
+    );
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/review focus on auth" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onLocalCommand).toHaveBeenCalledWith(command, "/review focus on auth");
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });

@@ -10,6 +10,7 @@ import {
   answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
   clearCodexGoal as apiClearCodexGoal,
+  compactCodexSession as apiCompactCodexSession,
   deleteAgentSession as apiDeleteSession,
   getAgentHistory,
   interruptAgentSession as interruptSession,
@@ -17,6 +18,7 @@ import {
   listAgentHistory as listSessions,
   listAgentRequests,
   setCodexGoal as apiSetCodexGoal,
+  startCodexReview as apiStartCodexReview,
   startCodexTurn as apiStartCodexTurn,
   updateAgentSessionSettings as apiUpdateSessionSettings,
   updateAgentPermissionPreset as apiUpdatePermissionPreset,
@@ -26,6 +28,7 @@ import {
   type AgentPendingRequest,
   type AgentSession,
   type SetCodexGoalInput,
+  type CodexReviewTarget,
   type Runtime,
 } from "../api/agent";
 import type { AgentEvent } from "../api/agentTypes";
@@ -35,6 +38,7 @@ export * from "./ccReducer";
 import {
   endActiveTurnOnStreamClose,
   nextTurnId,
+  reduceEvent,
   type Turn,
 } from "./ccReducer";
 import {
@@ -85,6 +89,8 @@ interface CcState {
   answerApproval: (requestId: string, decision: string) => Promise<void>;
   setCodexGoal: (update: SetCodexGoalInput) => Promise<void>;
   clearCodexGoal: () => Promise<void>;
+  compactCodex: () => Promise<void>;
+  startCodexReview: (target: CodexReviewTarget) => Promise<void>;
   revertTurn: (turnId: string) => Promise<void>;
   reset: () => void;
 }
@@ -713,6 +719,139 @@ export function createCcStore() {
           });
         } catch (error) {
           patchActive(() => ({ transportError: (error as Error).message }));
+        }
+      },
+
+      compactCodex: async () => {
+        const sid = get().activeSid;
+        if (!sid) throw new Error("No active Codex session");
+        let accepted = false;
+        set((state) => {
+          const session = state.sessions[sid];
+          if (
+            !session ||
+            session.runtime !== "codex" ||
+            session.abort ||
+            session.commandPending
+          ) {
+            return state;
+          }
+          accepted = true;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...session,
+                commandPending: "compact",
+                transportError: null,
+              },
+            },
+          };
+        });
+        if (!accepted) throw new Error("/compact is unavailable for this session");
+        try {
+          await codexLive.ensureWatcher(sid);
+          await apiCompactCodexSession(sid);
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  commandPending: null,
+                  transportError: (error as Error).message,
+                },
+              },
+            };
+          });
+          throw error;
+        }
+      },
+
+      startCodexReview: async (target) => {
+        const sid = get().activeSid;
+        if (!sid) throw new Error("No active Codex session");
+        let accepted = false;
+        set((state) => {
+          const session = state.sessions[sid];
+          if (
+            !session ||
+            session.runtime !== "codex" ||
+            session.abort ||
+            session.commandPending
+          ) {
+            return state;
+          }
+          accepted = true;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...session,
+                commandPending: "review",
+                transportError: null,
+              },
+            },
+          };
+        });
+        if (!accepted) throw new Error("/review is unavailable for this session");
+        try {
+          await codexLive.ensureWatcher(sid);
+          const result = await apiStartCodexReview(sid, target);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            const alreadyObserved = session.turns.some(
+              (turn) => turn.turnId === result.turnId,
+            );
+            const reduced = alreadyObserved
+              ? session
+              : reduceEvent(session, {
+                  type: "turn_start",
+                  turn_id: result.turnId,
+                  autonomous: true,
+                  revertible: false,
+                });
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  ...reduced,
+                  commandPending: null,
+                  abort: alreadyObserved
+                    ? session.abort
+                    : session.abort ?? new AbortController(),
+                  connected: true,
+                  transportError: null,
+                },
+              },
+            };
+          });
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  commandPending: null,
+                  transportError: (error as Error).message,
+                },
+              },
+            };
+          });
+          throw error;
         }
       },
 

@@ -179,8 +179,10 @@ export async function listModels(): Promise<readonly ModelOption[]> {
 export interface SlashItem {
   readonly name: string;
   readonly description: string;
-  readonly source: "project" | "user" | "bundled" | "builtin" | "plugin";
+  readonly source: "project" | "user" | "bundled" | "builtin" | "plugin" | "codex";
   readonly type: "skill" | "command";
+  readonly disabled?: boolean;
+  readonly disabledReason?: string | null;
 }
 
 export async function listSlashItems(

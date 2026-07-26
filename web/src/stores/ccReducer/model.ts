@@ -234,6 +234,11 @@ export interface CodexPlan {
   readonly steps: readonly CodexPlanStep[];
 }
 
+export interface CodexTurnDiff {
+  readonly turnId: string;
+  readonly diff: string;
+}
+
 export interface ReducerState {
   readonly turns: readonly Turn[];
   readonly phase: Phase;
@@ -241,6 +246,7 @@ export interface ReducerState {
   readonly tasks: readonly Task[];
   readonly goal: CodexGoal | null;
   readonly plan: CodexPlan | null;
+  readonly turnDiff: CodexTurnDiff | null;
 }
 
 export const INITIAL_REDUCER_STATE: ReducerState = {
@@ -249,6 +255,7 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
   tasks: [],
   goal: null,
   plan: null,
+  turnDiff: null,
   meta: {
     model: null,
     ccSessionId: null,

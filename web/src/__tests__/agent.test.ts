@@ -15,6 +15,9 @@ import {
   listAgentModels,
   listAgentRequests,
   listAgentRuntimes,
+  listCodexCommands,
+  compactCodexSession,
+  startCodexReview,
   getCodexGoal,
   setCodexGoal,
   clearCodexGoal,
@@ -253,6 +256,38 @@ describe("api/agent", () => {
     ]);
   });
 
+  it("loads and executes Codex native commands without using /turns", async () => {
+    const command = {
+      name: "review",
+      description: "Review changes",
+      source: "codex",
+      action: "review",
+      available_while_running: false,
+    } as const;
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEnvelope({ commands: [command] }))
+      .mockResolvedValueOnce(mockEnvelope({ started: true }))
+      .mockResolvedValueOnce(
+        mockEnvelope({ review_thread_id: "thread-1", turn_id: "turn-1" }),
+      );
+
+    await expect(listCodexCommands("s1")).resolves.toEqual([command]);
+    await expect(compactCodexSession("s1")).resolves.toEqual({ started: true });
+    await expect(
+      startCodexReview("s1", { type: "commit", sha: "abc123", title: "Fix" }),
+    ).resolves.toEqual({ reviewThreadId: "thread-1", turnId: "turn-1" });
+
+    expect(spy.mock.calls.map(([url]) => url)).toEqual([
+      "/api/agent/sessions/s1/commands",
+      "/api/agent/sessions/s1/commands/compact",
+      "/api/agent/sessions/s1/commands/review",
+    ]);
+    expect(JSON.parse((spy.mock.calls[2][1] as RequestInit).body as string)).toEqual({
+      target: { type: "commit", sha: "abc123", title: "Fix" },
+    });
+  });
+
   it("answers a pending Codex request through the host-neutral API", async () => {
     const request = {
       request_id: "7-0",
@@ -297,5 +332,18 @@ describe("api/agent", () => {
   it("throws when the envelope reports an error", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockEnvelope(null, false));
     await expect(getAgentSession("s1")).rejects.toThrow("boom");
+  });
+
+  it("preserves the backend reason for non-2xx responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "session already has an active turn" }), {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(compactCodexSession("s1")).rejects.toThrow(
+      "session already has an active turn",
+    );
   });
 });

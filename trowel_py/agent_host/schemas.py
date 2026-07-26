@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 RuntimeWire = Literal["claude_code", "codex"]
 PermissionPreset = Literal[
@@ -13,6 +13,7 @@ PermissionPreset = Literal[
 GoalStatus = Literal[
     "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"
 ]
+NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -71,6 +72,49 @@ class SetCodexGoalRequest(BaseModel):
     objective: str | None = Field(default=None, min_length=1)
     status: GoalStatus | None = None
     token_budget: int | None = Field(default=None, ge=1)
+
+
+class UncommittedChangesReviewTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["uncommittedChanges"]
+
+
+class BaseBranchReviewTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["baseBranch"]
+    branch: NonEmptyText
+
+
+class CommitReviewTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["commit"]
+    sha: NonEmptyText
+    title: NonEmptyText | None = None
+
+
+class CustomReviewTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["custom"]
+    instructions: NonEmptyText
+
+
+CodexReviewTarget = Annotated[
+    UncommittedChangesReviewTarget
+    | BaseBranchReviewTarget
+    | CommitReviewTarget
+    | CustomReviewTarget,
+    Field(discriminator="type"),
+]
+
+
+class StartCodexReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: CodexReviewTarget
 
 
 class AnswerAgentRequest(BaseModel):

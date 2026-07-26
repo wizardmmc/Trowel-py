@@ -1,7 +1,7 @@
 import { act, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSession } from "../api/agent";
+import type { AgentSession, CodexCommand } from "../api/agent";
 import { SessionComposer } from "../components/cc/SessionComposer";
 import { createNewSessionState } from "../stores/ccStore/sessionState";
 
@@ -68,6 +68,11 @@ function baseProps(runtime: "claude_code" | "codex") {
       },
     ],
     codexCatalogError: null,
+    codexCommands: [] as CodexCommand[],
+    codexCommandsLoading: false,
+    codexCommandsError: null,
+    onRetryCodexCommands: vi.fn(),
+    onCodexCommand: vi.fn(),
     onRetryCodexCatalog: vi.fn(),
     onSend: vi.fn(),
     onInterrupt: vi.fn(),
@@ -99,5 +104,48 @@ describe("SessionComposer", () => {
     });
     expect(props.onUpdateSettings).toHaveBeenCalledWith("gpt", "high");
     expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it("maps the backend Codex roster and disables only unsafe running commands", () => {
+    const props = baseProps("codex");
+    props.codexCommands = [
+      {
+        name: "status",
+        description: "状态",
+        source: "codex",
+        action: "status",
+        available_while_running: true,
+      },
+      {
+        name: "review",
+        description: "审查",
+        source: "codex",
+        action: "review",
+        available_while_running: false,
+      },
+    ];
+    props.streaming = true;
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.slashItems).toEqual([
+      expect.objectContaining({ name: "status", source: "codex", disabled: false }),
+      expect.objectContaining({
+        name: "review",
+        source: "codex",
+        disabled: true,
+        disabledReason: "当前 turn 结束后可用",
+      }),
+    ]);
+    act(() => {
+      (probe.props?.onLocalCommand as (item: unknown, raw: string) => void)(
+        (probe.props?.slashItems as unknown[])[0],
+        "/status",
+      );
+    });
+    expect(props.onCodexCommand).toHaveBeenCalledWith(
+      props.codexCommands[0],
+      "/status",
+    );
   });
 });

@@ -14,6 +14,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.catalog import parse_model_list_page
+from trowel_py.codex_host.commands import command_roster
 from trowel_py.codex_host.errors import (
     ProtocolViolationError,
     ServerRequestUnsupportedError,
@@ -247,6 +248,13 @@ class CodexHostManager:
             if cursor is None:
                 return rows
 
+    async def list_commands(self) -> list[dict[str, Any]]:
+        """按当前已连接的 CLI 版本返回经过验证的命令能力。"""
+
+        client = await self.ensure_ready()
+        version = str(client.version) if client.version is not None else None
+        return command_roster(version)
+
     async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
         """按更新时间列出指定 cwd 的默认交互 thread，不读取私有 rollout。"""
 
@@ -354,6 +362,78 @@ class CodexHostManager:
         if not isinstance(cleared, bool):
             raise ProtocolViolationError("thread/goal/clear result.cleared is not boolean")
         return cleared
+
+    async def compact(
+        self,
+        session: CodexSession,
+        *,
+        before_start: BeforeTurnStart | None = None,
+    ) -> None:
+        """在空闲 thread 上启动原生压缩，并与 turn 启动共享会话预留。"""
+
+        self._require_registered(session)
+        session.begin_send(autonomous=True, memory_eligible=False)
+        try:
+            binding = await self.attach(session)
+            if before_start is not None:
+                before_start(session)
+            client = await self.ensure_ready()
+            await client.request(
+                "thread/compact/start",
+                {"threadId": binding.thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except BaseException:
+            session.abort_send()
+            raise
+
+    async def start_review(
+        self,
+        session: CodexSession,
+        target: Mapping[str, Any],
+        *,
+        before_start: BeforeTurnStart | None = None,
+    ) -> dict[str, str]:
+        """启动 inline 原生 review，并登记不含 USER 事件的自主 turn。"""
+
+        self._require_registered(session)
+        session.begin_send(memory_eligible=False)
+        try:
+            binding = await self.attach(session)
+            if before_start is not None:
+                before_start(session)
+            client = await self.ensure_ready()
+            result = await client.request(
+                "review/start",
+                {
+                    "threadId": binding.thread_id,
+                    "target": dict(target),
+                    "delivery": "inline",
+                },
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            turn_id = _extract_turn_id(result)
+            review_thread_id = (
+                result.get("reviewThreadId") if isinstance(result, Mapping) else None
+            )
+            if not isinstance(review_thread_id, str) or not review_thread_id:
+                raise ProtocolViolationError(
+                    "review/start response has no reviewThreadId",
+                    payload=dict(result),
+                )
+            if review_thread_id != binding.thread_id:
+                raise ProtocolViolationError(
+                    "inline review/start returned a different reviewThreadId",
+                    payload=dict(result),
+                )
+            session.record_autonomous_turn_started(turn_id)
+            return {
+                "review_thread_id": review_thread_id,
+                "turn_id": turn_id,
+            }
+        except BaseException:
+            session.abort_send()
+            raise
 
     async def attach(self, session: CodexSession) -> ThreadBinding:
         """按当前连接代际 start/resume thread，但不启动 turn。"""

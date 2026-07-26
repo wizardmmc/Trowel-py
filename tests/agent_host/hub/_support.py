@@ -6,6 +6,7 @@ from typing import Any, AsyncIterator
 
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.cc_host.routes import OpenedCcSession
+from trowel_py.codex_host.commands import command_roster
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 
 
@@ -82,6 +83,8 @@ class FakeCodexManager:
         self.goals: dict[str, dict[str, Any] | None] = {}
         self.goal_sets: list[dict[str, Any]] = []
         self.goal_clears: list[str] = []
+        self.compactions: list[str] = []
+        self.reviews: list[dict[str, Any]] = []
         self.attach_results: dict[str, dict[str, Any]] = {}
         self.models: list[dict[str, Any]] = [
             {
@@ -181,6 +184,9 @@ class FakeCodexManager:
 
         return self.models
 
+    async def list_commands(self) -> list[dict[str, Any]]:
+        return command_roster("0.144.0")
+
     async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
         self.list_thread_calls.append((cwd, limit))
         return self.threads[:limit]
@@ -247,6 +253,24 @@ class FakeCodexManager:
         self.goal_clears.append(session.session_id)
         self.goals[session.session_id] = None
         return True
+
+    async def compact(self, session: Any, *, before_start=None) -> None:
+        await self.attach(session)
+        if before_start is not None:
+            before_start(session)
+        self.compactions.append(session.session_id)
+
+    async def start_review(
+        self, session: Any, target: dict[str, Any], *, before_start=None
+    ) -> dict[str, str]:
+        binding = await self.attach(session)
+        if before_start is not None:
+            before_start(session)
+        self.reviews.append({"session_id": session.session_id, "target": target})
+        return {
+            "review_thread_id": binding.thread_id,
+            "turn_id": "review-turn-1",
+        }
 
 
 class _FakeThreadBinding:
