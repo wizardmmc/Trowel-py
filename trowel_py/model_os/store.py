@@ -212,6 +212,7 @@ _TASK_LIFECYCLE_KINDS = frozenset(
         EventKind.TASK_CONSTRAINT_APPENDED,
         EventKind.TASK_WARM_CHANGED,
         EventKind.TASK_WARM_RANK_SET,
+        EventKind.TASK_PRIORITY_CHANGED,
         EventKind.TASK_WAITING_SET,
         EventKind.TASK_WAITING_CLEARED,
         EventKind.TASK_AUTHORIZATION_CHANGED,
@@ -1200,7 +1201,8 @@ class ModelOsStore:
             user_metadata = self._reference_metadata_in_tx(user_action_ref, binding)
             if (
                 user_metadata is None
-                or user_metadata.authority is not EvidenceAuthority.STRUCTURED_USER_ACTION
+                or user_metadata.authority
+                is not EvidenceAuthority.STRUCTURED_USER_ACTION
                 or user_metadata.action_subtype != draft.kind.subtype
             ):
                 self._reject_signal(draft, "unknown_user_action_ref")
@@ -1240,9 +1242,7 @@ class ModelOsStore:
                 is not EvidenceAuthority.NATIVE_MODEL_MESSAGE
             ):
                 self._reject_signal(draft, "unknown_native_message_ref")
-            existing = self._existing_signal_in_tx(
-                draft, Provenance.MODEL_HYPOTHESIS
-            )
+            existing = self._existing_signal_in_tx(draft, Provenance.MODEL_HYPOTHESIS)
             if existing is not None:
                 return existing
             return self._insert_signal_in_tx(
@@ -1327,21 +1327,16 @@ class ModelOsStore:
             if metadata is None:
                 self._reject_signal(draft, "unknown_or_cross_entity_evidence")
             assert metadata is not None
-            if (
-                draft.kind.family
-                in {
-                    SignalFamily.VALIDATOR_OUTCOME,
-                    SignalFamily.EXECUTION_OBSERVATION,
-                    SignalFamily.TURN_OUTCOME,
-                }
-                and metadata.authority
-                not in {
-                    EvidenceAuthority.RUNTIME_OBSERVATION,
-                    EvidenceAuthority.VALIDATOR_EXIT,
-                    EvidenceAuthority.VALIDATOR_OUTPUT,
-                    EvidenceAuthority.JOURNAL_EVENT,
-                }
-            ):
+            if draft.kind.family in {
+                SignalFamily.VALIDATOR_OUTCOME,
+                SignalFamily.EXECUTION_OBSERVATION,
+                SignalFamily.TURN_OUTCOME,
+            } and metadata.authority not in {
+                EvidenceAuthority.RUNTIME_OBSERVATION,
+                EvidenceAuthority.VALIDATOR_EXIT,
+                EvidenceAuthority.VALIDATOR_OUTPUT,
+                EvidenceAuthority.JOURNAL_EVENT,
+            }:
                 self._reject_signal(draft, "machine_evidence_authority_mismatch")
         if isinstance(draft.payload, ValidatorOutcomePayload):
             exit_metadata = self._reference_metadata_in_tx(
@@ -1386,8 +1381,7 @@ class ModelOsStore:
             ):
                 self._reject_signal(draft, "validator_invocation_mismatch")
             if (
-                draft.comparison_key.validator_intent_id
-                != draft.payload.intent_id
+                draft.comparison_key.validator_intent_id != draft.payload.intent_id
                 or draft.comparison_key.attempt_category
                 != f"validator:{draft.payload.intent_id}"
                 or draft.comparison_key.target_ref != normalized_target
@@ -1560,7 +1554,9 @@ class ModelOsStore:
         }
         safe_payload = redact_payload(event_payload)
         if not isinstance(safe_payload, dict):
-            raise SignalCommandError("signal payload must remain an object after redaction")
+            raise SignalCommandError(
+                "signal payload must remain an object after redaction"
+            )
         # 在事务写入前验证脱敏后的最终字节仍能按同一身份解码。
         safe_signal = _run_read_signal_from_event_payload(safe_payload)
         if safe_signal.signal_id != signal.signal_id:
@@ -1607,14 +1603,16 @@ class ModelOsStore:
             self._reject_signal(draft, "validator_persistence_shape_mismatch")
         assert target is not None
         assert safe_argv is not None
-        return draft_with_persisted_evidence(replace(
-            draft,
-            comparison_key=replace(
-                draft.comparison_key,
-                target_ref=hash_text(target),
-            ),
-            payload=replace(draft.payload, normalized_argv=safe_argv),
-        ))
+        return draft_with_persisted_evidence(
+            replace(
+                draft,
+                comparison_key=replace(
+                    draft.comparison_key,
+                    target_ref=hash_text(target),
+                ),
+                payload=replace(draft.payload, normalized_argv=safe_argv),
+            )
+        )
 
     def _reject_signal(self, draft: CognitiveSignalDraft, reason: str) -> None:
         signal_id = signal_id_for(
@@ -1658,7 +1656,9 @@ class ModelOsStore:
             if existing is None:
                 raise
             if existing["identity_hash"] != identity_hash:
-                raise JournalIdentityConflict("decision", decision.decision_id) from None
+                raise JournalIdentityConflict(
+                    "decision", decision.decision_id
+                ) from None
         row = self._conn.execute(
             "SELECT seq FROM decisions WHERE decision_id=?",
             (decision.decision_id,),
@@ -1712,7 +1712,9 @@ class ModelOsStore:
             if d_row is None or e_row is None:
                 raise
             if d_row["identity_hash"] != decision_hash:
-                raise JournalIdentityConflict("decision", decision.decision_id) from None
+                raise JournalIdentityConflict(
+                    "decision", decision.decision_id
+                ) from None
             if e_row["payload"] != payload_text or _event_row_identity(
                 e_row, payload_hash
             ) != _event_identity(intent_event, payload_hash):
@@ -2134,6 +2136,96 @@ class ModelOsStore:
 
         self._task_commands.claim_foreground(task_id)
 
+    def claim_scheduled_foreground(
+        self,
+        *,
+        decision_id: str,
+        task_id: str,
+        episode_id: str,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+    ) -> None:
+        """按已持久化的调度 intent 原子取得 Task foreground。"""
+
+        assert self._conn is not None
+        with self._tx():
+            decision = next(
+                (
+                    item
+                    for _, item in self.list_decisions()
+                    if item.decision_id == decision_id
+                ),
+                None,
+            )
+            if (
+                decision is None
+                or decision.kind != "attention.schedule"
+                or decision.disposition is not DecisionDisposition.EXECUTE
+                or decision.choice != "dispatch"
+                or decision.task_id != task_id
+            ):
+                raise EpisodeCommandError(
+                    "schedule decision target does not match Task"
+                )
+            if decision.episode_id not in {None, episode_id}:
+                raise EpisodeCommandError(
+                    "schedule decision target does not match Episode"
+                )
+            intent = next(
+                (
+                    event
+                    for _, event in self.list_events()
+                    if event.kind == EventKind.COMMAND_INTENT
+                    and event.cause_id == decision_id
+                    and event.task_id == task_id
+                ),
+                None,
+            )
+            if intent is None:
+                raise EpisodeCommandError(
+                    "schedule decision has no matching command intent"
+                )
+
+            snap = self.replay()
+            episode = self._require_episode(snap, episode_id)
+            if (
+                episode.task_id != task_id
+                or episode.work_item_id != decision.work_item_id
+            ):
+                raise EpisodeCommandError(
+                    "Episode does not match schedule decision target"
+                )
+            self._check_ownership_in_tx(
+                episode_id,
+                expected_lease_id,
+                expected_owner,
+                expected_token,
+            )
+            current = self._read_foreground_task_id()
+            if current == task_id:
+                if episode.status not in {
+                    EpisodeStatus.STARTING,
+                    EpisodeStatus.ACTIVE,
+                }:
+                    raise EpisodeCommandError(
+                        "foreground Task has an incompatible scheduled Episode"
+                    )
+                return
+            if episode.status is EpisodeStatus.SUSPENDED_READY:
+                self.activate_suspended_episode(
+                    episode_id,
+                    expected_lease_id=expected_lease_id,
+                    expected_owner=expected_owner,
+                    expected_token=expected_token,
+                )
+                return
+            if episode.status is not EpisodeStatus.STARTING:
+                raise EpisodeCommandError(
+                    "scheduled foreground requires STARTING or SUSPENDED_READY Episode"
+                )
+            self._task_commands.claim_foreground(task_id)
+
     def release_foreground(self) -> None:
         """原子释放 foreground，并把非终态 Task 与主 WorkItem 恢复为 READY。
 
@@ -2341,6 +2433,21 @@ class ModelOsStore:
     def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
         self._task_commands.set_warm_rank(task_id, warm_rank)
 
+    def set_task_priority(
+        self,
+        task_id: str,
+        *,
+        priority: int,
+        idempotency_key: str,
+    ) -> str:
+        """按用户幂等键修改非终态 Task 的调度优先级。"""
+
+        return self._task_commands.set_task_priority(
+            task_id,
+            priority=priority,
+            idempotency_key=idempotency_key,
+        )
+
     def change_authorization(
         self,
         task_id: str,
@@ -2360,7 +2467,7 @@ class ModelOsStore:
             confirmed_by=confirmed_by,
         )
 
-   # Episode 的受 fencing 保护命令在同一 IMMEDIATE 事务内完成状态回放、ownership
+    # Episode 的受 fencing 保护命令在同一 IMMEDIATE 事务内完成状态回放、ownership
     # 三元组校验、journal 追加以及快照行或 lease 更新。保护范围由事件 kind 强制，
     # 陈旧写入者不能通过省略 token 绕过。
 
@@ -2891,7 +2998,9 @@ class ModelOsStore:
         if not agent_session_id or not runtime_generation or not correlation_id:
             raise EpisodeCommandError("runtime binding requires durable identity")
         if activate and not native_session_id:
-            raise EpisodeCommandError("active runtime binding requires native_session_id")
+            raise EpisodeCommandError(
+                "active runtime binding requires native_session_id"
+            )
         if runtime_pid is not None and runtime_pid <= 0:
             raise EpisodeCommandError("runtime_pid must be positive")
         if runtime_pgid is not None and runtime_pgid <= 0:
@@ -2937,9 +3046,7 @@ class ModelOsStore:
         assert binding is not None
         return binding
 
-    def episode_runtime_binding(
-        self, episode_id: str
-    ) -> EpisodeRuntimeBinding | None:
+    def episode_runtime_binding(self, episode_id: str) -> EpisodeRuntimeBinding | None:
         """从最新 native binding 事件重建 durable 控制身份。"""
 
         assert self._conn is not None
@@ -3274,8 +3381,7 @@ class ModelOsStore:
                 task = next((t for t in snap.tasks if t.task_id == ep.task_id), None)
                 if task is None:
                     raise EpisodeCommandError(
-                        f"episode {episode_id!r} references missing task "
-                        f"{ep.task_id!r}"
+                        f"episode {episode_id!r} references missing task {ep.task_id!r}"
                     )
                 already_ready = (
                     task.status == TaskStatus.READY
@@ -3772,6 +3878,33 @@ class ModelOsStore:
         *,
         reason: ReconcileReason,
     ) -> None:
+        self._mark_pending_channel_lost(
+            episode_id,
+            reason=reason,
+            allow_resumed=False,
+        )
+
+    def mark_resumed_pending_channel_lost(
+        self,
+        episode_id: str,
+        *,
+        reason: ReconcileReason,
+    ) -> None:
+        """恢复后的 pending answer 结果未知时阻塞 ACTIVE Episode。"""
+
+        self._mark_pending_channel_lost(
+            episode_id,
+            reason=reason,
+            allow_resumed=True,
+        )
+
+    def _mark_pending_channel_lost(
+        self,
+        episode_id: str,
+        *,
+        reason: ReconcileReason,
+        allow_resumed: bool,
+    ) -> None:
         """内核检测到待处理通道丢失后进入 RECONCILE_REQUIRED。
 
         此路径可能发生在 ownership lease 消失后，因此不受 fencing 保护。
@@ -3782,14 +3915,17 @@ class ModelOsStore:
         with self._tx():
             snap = self.replay()
             ep = self._require_episode(snap, episode_id)
-            if ep.status not in (
+            allowed = {
                 EpisodeStatus.SUSPENDED_WAITING_INPUT,
                 EpisodeStatus.SUSPENDED_WAITING_APPROVAL,
                 EpisodeStatus.SUSPENDED_READY,
-            ):
+            }
+            if allow_resumed:
+                allowed.add(EpisodeStatus.ACTIVE)
+            if ep.status not in allowed:
                 raise EpisodeCommandError(
-                    f"episode {episode_id!r} must be suspended to mark channel "
-                    f"lost (got {ep.status.value})"
+                    f"episode {episode_id!r} must be suspended to mark "
+                    f"channel lost (got {ep.status.value})"
                 )
             self._insert_event_in_tx(
                 self._make_episode_event(
@@ -4539,6 +4675,33 @@ class ModelOsStore:
                     task_id=ep.task_id,
                 )
         return lease
+
+    def reacquire_starting_episode_ownership(
+        self,
+        episode_id: str,
+        *,
+        owner: str,
+        ttl_seconds: int,
+        idempotency_key: str,
+    ) -> Lease:
+        """资源延后超过旧 lease TTL 后重新取得 STARTING Episode ownership。"""
+
+        if not owner or ttl_seconds <= 0 or not idempotency_key.strip():
+            raise EpisodeCommandError(
+                "owner, positive ttl and idempotency key required"
+            )
+        with self._tx():
+            episode = self._require_episode(self.replay(), episode_id)
+            if episode.status is not EpisodeStatus.STARTING:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} must be STARTING to reacquire ownership"
+                )
+            return self._recover_ownership_in_tx(
+                episode_id,
+                owner,
+                ttl_seconds,
+                f"starting-retry:{idempotency_key}",
+            )
 
     def resume_recovered_episode(
         self,

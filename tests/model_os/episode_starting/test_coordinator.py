@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 
 import pytest
@@ -13,6 +14,7 @@ from trowel_py.model_os.episode_starting import (
     StartEpisodeCoordinator,
     StartStage,
 )
+from trowel_py.model_os.episode_starting.journal import _command_fingerprint
 from trowel_py.model_os.types import (
     EventEnvelope,
     EventKind,
@@ -196,6 +198,12 @@ def _bare_system_work_item(store) -> str:
     return item.work_item_id
 
 
+def test_system_start_fingerprint_preserves_pre_scheduler_identity() -> None:
+    payload = json.loads(_command_fingerprint(_command("work-system")))
+
+    assert "schedule_decision_id" not in payload
+
+
 async def _collect(coordinator, command):
     return [event async for event in coordinator.start(command)]
 
@@ -221,7 +229,9 @@ async def test_first_and_fresh_turn_use_same_start_command(store, runtime) -> No
 
 
 @pytest.mark.anyio
-async def test_cc_does_not_run_recreating_persist_after_payload_acceptance(store) -> None:
+async def test_cc_does_not_run_recreating_persist_after_payload_acceptance(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter(runtime="claude_code")
     coordinator = StartEpisodeCoordinator(
@@ -231,9 +241,7 @@ async def test_cc_does_not_run_recreating_persist_after_payload_acceptance(store
         yield_coordinator=FakeYieldCoordinator(),
     )
 
-    events = await _collect(
-        coordinator, _command(work_item_id, runtime="claude_code")
-    )
+    events = await _collect(coordinator, _command(work_item_id, runtime="claude_code"))
 
     assert events[-1]["type"] == "finished"
     assert len(adapter.persisted) == 1
@@ -244,7 +252,9 @@ async def test_cc_does_not_run_recreating_persist_after_payload_acceptance(store
 
 
 @pytest.mark.anyio
-async def test_work_denial_keeps_intent_retryable_without_creating_episode(store) -> None:
+async def test_work_denial_keeps_owned_episode_retryable_without_foreground(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     broker = DenyingBroker()
     coordinator = StartEpisodeCoordinator(
@@ -259,9 +269,10 @@ async def test_work_denial_keeps_intent_retryable_without_creating_episode(store
         await _collect(coordinator, command)
 
     progress = coordinator.progress(command.idempotency_key)
-    assert progress is not None and progress.stage is StartStage.INTENT
-    assert progress.episode_id is None
-    assert store.read_snapshot().episodes == ()
+    assert progress is not None and progress.stage is StartStage.OWNERSHIP_ACQUIRED
+    assert progress.episode_id is not None
+    assert len(store.read_snapshot().episodes) == 1
+    assert store.read_snapshot().foreground_task_id is None
 
 
 @pytest.mark.anyio
@@ -300,7 +311,9 @@ async def test_concurrent_duplicate_start_calls_native_once(store) -> None:
 
 
 @pytest.mark.anyio
-async def test_request_sent_without_response_is_unknown_and_never_retried(store) -> None:
+async def test_request_sent_without_response_is_unknown_and_never_retried(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter()
     adapter.crash_in_start = True
@@ -314,7 +327,10 @@ async def test_request_sent_without_response_is_unknown_and_never_retried(store)
 
     with pytest.raises(InjectedCrash):
         await _collect(coordinator, command)
-    assert coordinator.progress(command.idempotency_key).stage is StartStage.NATIVE_REQUESTED
+    assert (
+        coordinator.progress(command.idempotency_key).stage
+        is StartStage.NATIVE_REQUESTED
+    )
 
     adapter.crash_in_start = False
     events = await _collect(coordinator, command)
@@ -324,7 +340,9 @@ async def test_request_sent_without_response_is_unknown_and_never_retried(store)
 
 
 @pytest.mark.anyio
-async def test_durable_response_can_resume_at_binding_without_new_native_start(store) -> None:
+async def test_durable_response_can_resume_at_binding_without_new_native_start(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter()
     crash_once = True
@@ -354,7 +372,9 @@ async def test_durable_response_can_resume_at_binding_without_new_native_start(s
 
 
 @pytest.mark.anyio
-async def test_first_turn_accepted_without_terminal_is_unknown_and_not_replayed(store) -> None:
+async def test_first_turn_accepted_without_terminal_is_unknown_and_not_replayed(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter()
     crash_once = True
@@ -384,7 +404,9 @@ async def test_first_turn_accepted_without_terminal_is_unknown_and_not_replayed(
 
 
 @pytest.mark.anyio
-async def test_first_turn_request_without_acceptance_is_unknown_and_not_replayed(store) -> None:
+async def test_first_turn_request_without_acceptance_is_unknown_and_not_replayed(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter(runtime="claude_code")
     adapter.crash_before_accept = True
@@ -398,7 +420,10 @@ async def test_first_turn_request_without_acceptance_is_unknown_and_not_replayed
 
     with pytest.raises(InjectedCrash):
         await _collect(coordinator, command)
-    assert coordinator.progress(command.idempotency_key).stage is StartStage.FIRST_TURN_REQUESTED
+    assert (
+        coordinator.progress(command.idempotency_key).stage
+        is StartStage.FIRST_TURN_REQUESTED
+    )
 
     adapter.crash_before_accept = False
     assert await _collect(coordinator, command) == []
@@ -466,7 +491,9 @@ async def test_binding_persisted_restarts_only_first_turn(store) -> None:
 
 
 @pytest.mark.anyio
-async def test_terminal_retry_does_not_create_duplicate_episode_or_session(store) -> None:
+async def test_terminal_retry_does_not_create_duplicate_episode_or_session(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     adapter = FakeAdapter()
     coordinator = StartEpisodeCoordinator(
@@ -486,7 +513,9 @@ async def test_terminal_retry_does_not_create_duplicate_episode_or_session(store
 
 
 @pytest.mark.anyio
-async def test_first_episode_and_three_fresh_episodes_form_one_snapshot_chain(store) -> None:
+async def test_first_episode_and_three_fresh_episodes_form_one_snapshot_chain(
+    store,
+) -> None:
     work_item_id = _bare_system_work_item(store)
     previous_episode_id = None
     previous_ref = None

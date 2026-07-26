@@ -18,7 +18,9 @@ from trowel_py.model_os.types import Episode, MemoryEligibility
 from trowel_py.model_os.types import EpisodeRuntimeBinding
 
 
-def _model_identity(identity: RuntimeIdentity | NativeSessionIdentity) -> NativeSessionIdentity:
+def _model_identity(
+    identity: RuntimeIdentity | NativeSessionIdentity,
+) -> NativeSessionIdentity:
     return NativeSessionIdentity(
         agent_session_id=identity.agent_session_id,
         runtime=identity.runtime,
@@ -103,6 +105,19 @@ class AgentEpisodeRuntimeAdapter:
     ) -> AsyncIterator[dict[str, Any]]:
         async for event in self._hub.stream(identity.agent_session_id, text):
             yield event
+
+    async def answer_pending(
+        self,
+        binding: EpisodeRuntimeBinding,
+        payload: dict[str, Any],
+    ) -> object:
+        return await self._hub.answer_managed_pending(
+            binding.agent_session_id,
+            payload,
+        )
+
+    def current_generation(self, binding: EpisodeRuntimeBinding) -> str:
+        return self._hub.runtime_generation(binding.agent_session_id)
 
     def reconcile(self, binding: EpisodeRuntimeBinding) -> str:
         """清理旧 controller 的 runtime，不猜 terminal。"""

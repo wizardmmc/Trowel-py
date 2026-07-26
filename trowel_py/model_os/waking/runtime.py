@@ -28,6 +28,7 @@ class WakeService:
         host_detector: HostSuspendDetector | None,
         interval_seconds: float = 30.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        on_wake: Callable[[WakeEvent], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._observer = observer
@@ -35,6 +36,7 @@ class WakeService:
         self._host_detector = host_detector
         self._interval_seconds = interval_seconds
         self._sleep = sleep
+        self._on_wake = on_wake
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -95,9 +97,7 @@ class WakeService:
         host_targets: set[str] = set()
         for condition in conditions:
             try:
-                observation = self._observer.observe(
-                    condition, observed_at=observed_at
-                )
+                observation = self._observer.observe(condition, observed_at=observed_at)
             except Exception:
                 logger.warning(
                     "[model-os] wake observer failed for condition %s",
@@ -128,4 +128,8 @@ class WakeService:
                         )
                     )
                 )
-        return tuple(dict.fromkeys(consumed))
+        unique = tuple(dict.fromkeys(consumed))
+        if self._on_wake is not None:
+            for event in unique:
+                await self._on_wake(event)
+        return unique

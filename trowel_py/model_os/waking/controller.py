@@ -22,6 +22,7 @@ class WakeInputRejected(RuntimeError):
 
 @dataclass(frozen=True)
 class QueuedRuntimeInput:
+    wake_id: str
     episode_id: str
     runtime_generation: str
     payload: dict[str, Any]
@@ -63,8 +64,7 @@ class WakeController:
         payload_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         observation = WakeObservation(
             observation_id=(
-                f"user-input:{episode.episode_id}:"
-                f"{correlation_id}:{payload_hash}"
+                f"user-input:{episode.episode_id}:{correlation_id}:{payload_hash}"
             ),
             kind=WakeConditionKind.USER_INPUT,
             target_ref=correlation_id,
@@ -83,8 +83,11 @@ class WakeController:
             None,
         )
         if event is None:
-            raise WakeInputRejected("pending input no longer matches the live generation")
+            raise WakeInputRejected(
+                "pending input no longer matches the live generation"
+            )
         queued = QueuedRuntimeInput(
+            wake_id=event.wake_id,
             episode_id=episode.episode_id,
             runtime_generation=runtime_generation,
             payload=dict(payload),
@@ -105,6 +108,10 @@ class WakeController:
             )
             return None
         return dict(queued.payload)
+
+    def pending_input_generation(self, episode_id: str) -> str | None:
+        queued = self._pending_inputs.get(episode_id)
+        return queued.runtime_generation if queued is not None else None
 
 
 def _now_iso() -> str:

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from trowel_py.model_os.episode_starting import StartEpisodeCommand
+from trowel_py.model_os.store import TaskCommandError
 from trowel_py.model_os.types import (
     MemoryEligibility,
     SessionPurpose,
@@ -76,6 +77,7 @@ class StartEpisodeBody(BaseModel):
     memory_eligibility: Literal["eligible", "ineligible", "adopted"]
     permission: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
+    schedule_decision_id: str | None = Field(default=None, min_length=1)
 
 
 class WakeObservationBody(BaseModel):
@@ -86,13 +88,78 @@ class WakeObservationBody(BaseModel):
     target_ref: str = Field(min_length=1)
 
 
+class SetTaskPriorityBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: int = Field(strict=True)
+    idempotency_key: str = Field(min_length=1)
+
+
+class RequestForegroundBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1)
+
+
+def _outcome_payload(outcome) -> dict[str, Any]:
+    return {
+        "decision_id": outcome.recorded.decision_id,
+        "action": outcome.decision.action.value,
+        "target_task_id": outcome.decision.target_task_id,
+        "result_code": outcome.result_code,
+    }
+
+
+@router.post("/tasks/{task_id}/priority")
+async def set_task_priority(
+    task_id: str,
+    body: SetTaskPriorityBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+    if store is None or scheduler is None:
+        raise HTTPException(status_code=503, detail="Model OS scheduler unavailable")
+    try:
+        trigger = store.set_task_priority(
+            task_id,
+            priority=body.priority,
+            idempotency_key=body.idempotency_key,
+        )
+    except TaskCommandError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    outcome = await scheduler.trigger(trigger)
+    return {"success": True, "data": _outcome_payload(outcome), "error": None}
+
+
+@router.post("/tasks/{task_id}/foreground")
+async def request_foreground(
+    task_id: str,
+    body: RequestForegroundBody,
+    request: Request,
+) -> dict[str, Any]:
+    scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="Model OS scheduler unavailable")
+    try:
+        outcome = await scheduler.request_foreground(
+            task_id,
+            idempotency_key=body.idempotency_key,
+        )
+    except TaskCommandError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": _outcome_payload(outcome), "error": None}
+
+
 @router.post("/episodes/start")
 async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingResponse:
     """以同一 command 启动首段或 snapshot 后的 fresh Episode。"""
 
     starter = getattr(request.app.state, "model_os_episode_starter", None)
     if starter is None:
-        raise HTTPException(status_code=503, detail="Model OS Episode runner unavailable")
+        raise HTTPException(
+            status_code=503, detail="Model OS Episode runner unavailable"
+        )
     raw_ref = body.previous_snapshot_ref
     command = StartEpisodeCommand(
         work_item_id=body.work_item_id,
@@ -111,6 +178,7 @@ async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingRe
         memory_eligibility=MemoryEligibility(body.memory_eligibility),
         permission=body.permission,
         idempotency_key=body.idempotency_key,
+        schedule_decision_id=body.schedule_decision_id,
     )
 
     async def stream():
@@ -121,7 +189,7 @@ async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingRe
 
 
 @router.post("/wake")
-def submit_wake(body: WakeObservationBody, request: Request) -> dict[str, Any]:
+async def submit_wake(body: WakeObservationBody, request: Request) -> dict[str, Any]:
     """接受用户或人工唤醒；机器 observation 只能来自进程内 observer。"""
 
     controller = getattr(request.app.state, "model_os_wake_controller", None)
@@ -138,6 +206,10 @@ def submit_wake(body: WakeObservationBody, request: Request) -> dict[str, Any]:
             details={},
         )
     )
+    scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+    if scheduler is not None:
+        for event in events:
+            await scheduler.trigger(event.wake_id)
     return {
         "success": True,
         "data": {
@@ -174,9 +246,7 @@ async def propose_yield(
             session_id,
             YieldProposal(
                 reason=body.reason,
-                suggested_task_state=YieldSuggestedState(
-                    body.suggested_task_state
-                ),
+                suggested_task_state=YieldSuggestedState(body.suggested_task_state),
                 waiting_condition=(
                     YieldWaitingCondition(
                         cause=waiting.cause,

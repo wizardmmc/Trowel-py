@@ -15,6 +15,7 @@ from trowel_py.model_os.types import (
 
 class StartStage(str, Enum):
     INTENT = "intent"
+    OWNERSHIP_ACQUIRED = "ownership_acquired"
     NATIVE_REQUESTED = "native_requested"
     NATIVE_RESPONDED = "native_responded"
     BINDING_PERSISTED = "binding_persisted"
@@ -43,6 +44,7 @@ class StartEpisodeCommand:
     resume_from: str | None = None
     owner: str = "episode-runner"
     ownership_ttl_seconds: int = 600
+    schedule_decision_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.runtime not in {"claude_code", "codex"}:
@@ -66,8 +68,15 @@ class StartEpisodeCommand:
             raise ValueError("memory_eligibility must be a MemoryEligibility")
         if self.ownership_ttl_seconds <= 0:
             raise ValueError("ownership_ttl_seconds must be positive")
+        if (
+            self.schedule_decision_id is not None
+            and not self.schedule_decision_id.strip()
+        ):
+            raise ValueError("schedule_decision_id must be non-empty when provided")
         if self.resume_from is not None:
-            raise ValueError("StartEpisodeCommand always starts fresh; resume is forbidden")
+            raise ValueError(
+                "StartEpisodeCommand always starts fresh; resume is forbidden"
+            )
         paired = self.previous_episode_id is not None
         if paired != (self.previous_snapshot_ref is not None):
             raise ValueError(
@@ -76,12 +85,16 @@ class StartEpisodeCommand:
         if self.previous_snapshot_ref is not None and not isinstance(
             self.previous_snapshot_ref, SnapshotRef
         ):
-            raise ValueError("previous_snapshot_ref must reference a committed snapshot")
+            raise ValueError(
+                "previous_snapshot_ref must reference a committed snapshot"
+            )
         if (
             self.previous_snapshot_ref is not None
             and self.previous_snapshot_ref.episode_id != self.previous_episode_id
         ):
-            raise ValueError("previous_snapshot_ref does not belong to previous_episode_id")
+            raise ValueError(
+                "previous_snapshot_ref does not belong to previous_episode_id"
+            )
 
 
 @dataclass(frozen=True)
@@ -128,13 +141,17 @@ class EpisodeContext:
         if self.previous_snapshot is None:
             snapshot = "无；这是该 WorkItem 的首段。"
         else:
-            completed = "\n".join(
-                f"- {action}（证据：{evidence}）"
-                for action, evidence in self.previous_snapshot.completed_with_evidence
-            ) or "- 无已确认完成项"
-            next_steps = "\n".join(
-                f"- {step}" for step in self.previous_snapshot.next_steps
-            ) or "- 无"
+            completed = (
+                "\n".join(
+                    f"- {action}（证据：{evidence}）"
+                    for action, evidence in self.previous_snapshot.completed_with_evidence
+                )
+                or "- 无已确认完成项"
+            )
+            next_steps = (
+                "\n".join(f"- {step}" for step in self.previous_snapshot.next_steps)
+                or "- 无"
+            )
             snapshot = (
                 f"当前判断：{self.previous_snapshot.current_judgment}\n"
                 f"已确认完成：\n{completed}\n"

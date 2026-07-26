@@ -118,6 +118,7 @@ class EventKind:
     TASK_CONSTRAINT_APPENDED = "task.constraint_appended"
     TASK_WARM_CHANGED = "task.warm_changed"
     TASK_WARM_RANK_SET = "task.warm_rank_set"
+    TASK_PRIORITY_CHANGED = "task.priority_changed"
     TASK_WAITING_SET = "task.waiting_set"
     TASK_WAITING_CLEARED = "task.waiting_cleared"
     TASK_AUTHORIZATION_CHANGED = "task.authorization_changed"
@@ -142,9 +143,7 @@ class EventKind:
     EPISODE_ACTIVATED = "episode.activated"
     EPISODE_NATIVE_BOUND = "episode.native_bound"
     EPISODE_RECONCILE_REQUIRED = "episode.reconcile_required"
-    EPISODE_INTERRUPT_RECONCILE_REQUIRED = (
-        "episode.interrupt_reconcile_required"
-    )
+    EPISODE_INTERRUPT_RECONCILE_REQUIRED = "episode.interrupt_reconcile_required"
     EPISODE_RECONCILE_RESOLVED = "episode.reconcile_resolved"
     EPISODE_RECOVERING = "episode.recovering"
     EPISODE_SIDE_EFFECT_RECORDED = "episode.side_effect_recorded"
@@ -160,6 +159,11 @@ class EventKind:
     COGNITIVE_SIGNAL_RECORDED = "cognitive_signal.recorded"
     LATE_SIGNAL_REJECTED = "cognitive_signal.late_signal_rejected"
     WAKE_CONSUMED = "wake.consumed"
+    ATTENTION_FOREGROUND_REQUESTED = "attention.foreground_requested"
+    ATTENTION_FOREGROUND_RESOLVED = "attention.foreground_resolved"
+    ATTENTION_RESOURCE_DEFERRED = "attention.resource_deferred"
+    SWITCH_RECOVERY_STARTED = "attention.switch_recovery_started"
+    SWITCH_RECOVERY_OBSERVED = "attention.switch_recovery_observed"
 
 
 @dataclass(frozen=True)

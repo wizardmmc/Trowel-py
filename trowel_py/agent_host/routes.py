@@ -108,9 +108,7 @@ async def create_session(
             ),
             self_enabled=req.self_enabled if "self_enabled" in explicit else None,
             model_os_mcp_enabled=(
-                req.model_os_mcp_enabled
-                if "model_os_mcp_enabled" in explicit
-                else None
+                req.model_os_mcp_enabled if "model_os_mcp_enabled" in explicit else None
             ),
         )
     binding = _call_hub(hub.create, req)
@@ -272,6 +270,9 @@ async def answer_session_request(
                 runtime_generation=generation,
                 payload={"request_id": request_id, "decision": body.decision},
             )
+            scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+            if scheduler is not None:
+                await scheduler.trigger(queued.wake_id)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {

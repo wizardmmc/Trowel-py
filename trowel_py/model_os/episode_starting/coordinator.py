@@ -22,7 +22,16 @@ from trowel_py.model_os.episode_starting.models import (
     StartProgress,
     StartStage,
 )
-from trowel_py.model_os.store import ModelOsStore
+from trowel_py.model_os.store import (
+    EpisodeCommandError,
+    LeaseConflict,
+    ModelOsStore,
+)
+from trowel_py.model_os.scheduling.journal import (
+    complete_schedule_dispatch,
+    read_recorded_schedule,
+    record_resource_deferred,
+)
 from trowel_py.model_os.types import Episode, EpisodeStatus, Lease, WorkItemKind
 from trowel_py.model_os.work_broker import (
     ModelTier,
@@ -123,19 +132,52 @@ class StartEpisodeCoordinator:
             )
             return
 
+        episode, ownership = self._episode(command, progress)
+        if progress.stage is StartStage.INTENT:
+            record_stage(
+                self._store,
+                command,
+                StartStage.OWNERSHIP_ACQUIRED,
+                episode_id=episode.episode_id,
+            )
+            self._fault_hook(StartStage.OWNERSHIP_ACQUIRED)
+            progress = self.progress(command.idempotency_key)
+            assert progress is not None
         lease = self._work_lease(command)
         if isinstance(lease, WorkDenial):
-            raise RuntimeError(
-                f"WorkBroker denied Episode start: {lease.reason.value}"
-            )
-        try:
-            episode, ownership = self._episode(command, progress)
-        except BaseException:
-            self._broker.release(lease.lease_id, lease.fencing_token)
-            raise
+            if command.schedule_decision_id is not None:
+                recorded = read_recorded_schedule(
+                    self._store, command.schedule_decision_id
+                )
+                if recorded is not None:
+                    record_resource_deferred(
+                        self._store,
+                        recorded,
+                        reason=lease.reason.value,
+                    )
+            raise RuntimeError(f"WorkBroker denied Episode start: {lease.reason.value}")
+        if command.task_id is not None:
+            assert command.schedule_decision_id is not None
+            try:
+                self._store.claim_scheduled_foreground(
+                    decision_id=command.schedule_decision_id,
+                    task_id=command.task_id,
+                    episode_id=episode.episode_id,
+                    expected_lease_id=ownership.lease_id,
+                    expected_owner=ownership.owner,
+                    expected_token=ownership.fencing_token,
+                )
+                complete_schedule_dispatch(
+                    self._store,
+                    command.schedule_decision_id,
+                    episode_id=episode.episode_id,
+                )
+            except BaseException:
+                self._broker.release(lease.lease_id, lease.fencing_token)
+                raise
 
         identity = progress.identity
-        if progress.stage is StartStage.INTENT:
+        if progress.stage is StartStage.OWNERSHIP_ACQUIRED:
             self._broker.begin_call(lease.lease_id, lease.fencing_token)
             record_stage(
                 self._store,
@@ -210,9 +252,7 @@ class StartEpisodeCoordinator:
                     raise RuntimeError("accepted first turn has no turn_id")
                 refreshed = await self._adapter.refresh_identity(identity)
                 identity = refreshed
-                self._bind(
-                    command, episode, ownership, identity, activate=True
-                )
+                self._bind(command, episode, ownership, identity, activate=True)
                 record_stage(
                     self._store,
                     command,
@@ -259,14 +299,31 @@ class StartEpisodeCoordinator:
     def _episode(
         self, command: StartEpisodeCommand, progress: StartProgress
     ) -> tuple[Episode, Lease]:
-        return self._store.start_episode(
-            work_item_id=command.work_item_id,
-            owner=command.owner,
-            ttl_seconds=command.ownership_ttl_seconds,
-            idempotency_key=f"episode:{command.idempotency_key}",
-            task_id=command.task_id,
-            previous_snapshot_ref=command.previous_snapshot_ref,
-        )
+        def start() -> tuple[Episode, Lease]:
+            return self._store.start_episode(
+                work_item_id=command.work_item_id,
+                owner=command.owner,
+                ttl_seconds=command.ownership_ttl_seconds,
+                idempotency_key=f"episode:{command.idempotency_key}",
+                task_id=command.task_id,
+                previous_snapshot_ref=command.previous_snapshot_ref,
+            )
+
+        try:
+            return start()
+        except (EpisodeCommandError, LeaseConflict):
+            if (
+                progress.stage is not StartStage.OWNERSHIP_ACQUIRED
+                or progress.episode_id is None
+            ):
+                raise
+            self._store.reacquire_starting_episode_ownership(
+                progress.episode_id,
+                owner=command.owner,
+                ttl_seconds=command.ownership_ttl_seconds,
+                idempotency_key=command.idempotency_key,
+            )
+            return start()
 
     def _validate_command(
         self, command: StartEpisodeCommand, progress: StartProgress | None
@@ -288,6 +345,35 @@ class StartEpisodeCoordinator:
             raise ValueError("session_purpose does not match WorkItem policy")
         if work_item.memory_eligibility is not command.memory_eligibility:
             raise ValueError("memory_eligibility does not match WorkItem policy")
+        if command.task_id is not None:
+            if command.schedule_decision_id is None:
+                raise ValueError("Task Episode start requires a schedule decision")
+            decision = next(
+                (
+                    item
+                    for _, item in self._store.list_decisions()
+                    if item.decision_id == command.schedule_decision_id
+                ),
+                None,
+            )
+            intent = next(
+                (
+                    event
+                    for _, event in self._store.list_events()
+                    if event.kind == "command.intent"
+                    and event.cause_id == command.schedule_decision_id
+                ),
+                None,
+            )
+            if (
+                decision is None
+                or decision.kind != "attention.schedule"
+                or decision.choice != "dispatch"
+                or decision.task_id != command.task_id
+                or decision.work_item_id != command.work_item_id
+                or intent is None
+            ):
+                raise ValueError("schedule decision does not match Task Episode start")
         allowed_episode_id = progress.episode_id if progress is not None else None
         other_open = tuple(
             episode

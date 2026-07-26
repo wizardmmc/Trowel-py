@@ -30,6 +30,8 @@ class FakeCcHost:
         self.closed = False
         self.interrupted = False
         self.steered: list[tuple[str, str, str]] = []
+        self.elicit_answers: list[dict[str, str]] = []
+        self.elicit_cancelled = 0
         self.current_turn_id: str | None = None
         self.process_generation: str | None = None
         self.cc_session_id: str | None = None
@@ -41,6 +43,14 @@ class FakeCcHost:
 
     async def interrupt(self) -> None:
         self.interrupted = True
+
+    async def answer_elicit(self, answers: dict[str, str]) -> bool:
+        self.elicit_answers.append(answers)
+        return True
+
+    async def cancel_elicit(self) -> bool:
+        self.elicit_cancelled += 1
+        return True
 
     async def steer(
         self,
