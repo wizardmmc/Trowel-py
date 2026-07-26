@@ -35,6 +35,7 @@ def write_mcp_config(
     permission: str = "",
     memory_enabled: bool = True,
     agent_mcp_enabled: bool = False,
+    model_os_mcp_enabled: bool = False,
     memory_root: str = "",
     base_url: str = "",
     profile_enabled: bool = True,
@@ -69,6 +70,18 @@ def write_mcp_config(
                 "TROWEL_PARENT_SELF_ENABLED": str(self_enabled).lower(),
                 "TROWEL_DELEGATION_DEPTH": str(delegation_depth),
                 "MEMORY_ROOT": memory_root,
+            },
+        }
+    if model_os_mcp_enabled:
+        servers["trowel_model_os"] = {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "trowel_py.model_os.mcp_server"],
+            "alwaysLoad": True,
+            "env": {
+                "TROWEL_MODEL_OS_BASE_URL": base_url,
+                "TROWEL_SESSION_ID": trowel_session_id,
+                "TROWEL_PARENT_RUNTIME": runtime,
             },
         }
     config = {"mcpServers": servers}

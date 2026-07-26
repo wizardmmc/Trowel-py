@@ -201,6 +201,7 @@ def _apply_episode_reconcile_required(
             current,
             status=runtime.episode_status.RECONCILE_REQUIRED,
             status_provenance=event.provenance,
+            pending_descriptor=None,
             reconcile_reason=reason,
             updated_at=event.occurred_at,
         ),

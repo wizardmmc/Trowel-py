@@ -7,6 +7,7 @@ from re import Pattern
 from typing import Any
 
 from trowel_py.cc_host.schemas import TrowelEvent
+from trowel_py.kernel_messages import KERNEL_SOFT_YIELD_MARKER
 
 
 def clean_user_text(
@@ -17,6 +18,8 @@ def clean_user_text(
     skill_trigger_re: Pattern[str],
 ) -> str:
     """恢复真实输入，并丢弃 CC 持久化的内部注入。"""
+    if text.lstrip().startswith(KERNEL_SOFT_YIELD_MARKER):
+        return ""
     name_match = command_name_re.search(text)
     if name_match:
         name = name_match.group(1).strip()

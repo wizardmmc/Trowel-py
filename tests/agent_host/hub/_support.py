@@ -29,6 +29,9 @@ class FakeCcHost:
         self.agent_mcp_enabled = True
         self.closed = False
         self.interrupted = False
+        self.steered: list[tuple[str, str, str]] = []
+        self.current_turn_id: str | None = None
+        self.process_generation: str | None = None
         self.cc_session_id: str | None = None
 
     async def send(self, text: str) -> AsyncIterator[dict[str, Any]]:
@@ -39,6 +42,15 @@ class FakeCcHost:
     async def interrupt(self) -> None:
         self.interrupted = True
 
+    async def steer(
+        self,
+        text: str,
+        *,
+        expected_turn_id: str,
+        expected_generation: str,
+    ) -> None:
+        self.steered.append((text, expected_turn_id, expected_generation))
+
     async def close(self) -> None:
         self.closed = True
 
@@ -48,6 +60,8 @@ class FakeCodexManager:
         self.sessions: dict[str, Any] = {}
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.steered: list[tuple[str, str, str, str]] = []
+        self.connection_generation = 0
         self.answered_requests: list[tuple[str, str, str]] = []
         self.threads: list[dict[str, Any]] = []
         self.thread_reads: dict[str, dict[str, Any]] = {}
@@ -112,6 +126,18 @@ class FakeCodexManager:
 
     async def interrupt(self, session: Any) -> None:
         self.interrupted.append(session.session_id)
+
+    async def steer(
+        self,
+        session: Any,
+        text: str,
+        *,
+        expected_turn_id: str,
+        expected_generation: str,
+    ) -> None:
+        self.steered.append(
+            (session.session_id, text, expected_turn_id, expected_generation)
+        )
 
     async def list_models(self) -> list[dict[str, Any]]:
 

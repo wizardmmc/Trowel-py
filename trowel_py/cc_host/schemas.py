@@ -27,6 +27,7 @@ class CreateSessionRequest(BaseModel):
     self_enabled: bool = Field(default=True, strict=True)
     session_kind: Literal["user", "delegate"] = "user"
     agent_mcp_enabled: bool = Field(default=True, strict=True)
+    model_os_mcp_enabled: bool = Field(default=False, strict=True)
     delegation_depth: int = Field(default=0, ge=0, le=1)
 
 

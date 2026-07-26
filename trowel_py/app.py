@@ -24,6 +24,7 @@ from trowel_py.pet.routes import router as pet_router
 from trowel_py.player.routes import router as player_router
 from trowel_py.profile.routes import router as profile_router
 from trowel_py.review.routes import router as review_router
+from trowel_py.model_os.routes import router as model_os_router
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
     app.state.quota_scheduler = None
     app.state.quota_http_client = None
     app.state.work_broker = None
+    app.state.model_os_store = None
+    app.state.model_os_yield_coordinator = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -113,6 +116,20 @@ async def lifespan(app: FastAPI):
         logger.warning("[workbroker] failed to start", exc_info=True)
         if work_broker is not None:
             work_broker.close()
+        work_broker = None
+        app.state.work_broker = None
+    if work_broker is not None:
+        model_os_store = None
+        try:
+            from trowel_py.model_os.store import ModelOsStore
+
+            model_os_store = ModelOsStore(broker_path)
+            model_os_store.open()
+            app.state.model_os_store = model_os_store
+        except Exception:
+            logger.warning("[model-os] store failed to start", exc_info=True)
+            if model_os_store is not None:
+                model_os_store.close()
 
     # 三套模型型 maintenance 在 Broker 不可用时保持关闭，不能静默绕过仲裁。
     try:
@@ -202,7 +219,74 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
+    if app.state.agent_hub is not None and app.state.model_os_store is not None:
+        try:
+            from trowel_py.model_os.yielding import YieldCoordinator
+
+            async def _interrupt_runtime(session_id: str) -> None:
+                await app.state.agent_hub.interrupt(session_id)
+
+            async def _steer_runtime(
+                session_id: str,
+                text: str,
+                *,
+                expected_turn_id: str,
+                expected_generation: str,
+            ) -> None:
+                await app.state.agent_hub.steer(
+                    session_id,
+                    text,
+                    expected_turn_id=expected_turn_id,
+                    expected_generation=expected_generation,
+                )
+
+            async def _release_work_lease(lease_id: str) -> None:
+                broker = app.state.work_broker
+                if broker is None:
+                    raise RuntimeError("WorkBroker is unavailable")
+                lease = next(
+                    (
+                        item
+                        for item in broker.active_leases()
+                        if item.lease_id == lease_id
+                    ),
+                    None,
+                )
+                if lease is not None:
+                    broker.release(lease.lease_id, lease.fencing_token)
+
+            app.state.model_os_yield_coordinator = YieldCoordinator(
+                app.state.model_os_store,
+                interrupt_runtime=_interrupt_runtime,
+                steer_runtime=_steer_runtime,
+                release_work_lease=_release_work_lease,
+            )
+
+            async def _observe_model_os_event(payload) -> None:
+                session_id = str(payload.get("session_id", ""))
+                if not session_id:
+                    return
+                if not app.state.model_os_yield_coordinator.has_registered_turn(
+                    session_id
+                ):
+                    return
+                generation = app.state.agent_hub.runtime_generation(session_id)
+                await app.state.model_os_yield_coordinator.observe(
+                    session_id,
+                    payload,
+                    generation=generation,
+                )
+
+            app.state.agent_hub.set_model_os_observer(_observe_model_os_event)
+        except Exception:
+            logger.warning("[model-os] yield coordinator failed to start", exc_info=True)
     yield
+    _yield_coordinator = getattr(app.state, "model_os_yield_coordinator", None)
+    if _yield_coordinator is not None:
+        try:
+            await _yield_coordinator.close()
+        except Exception:
+            logger.warning("[model-os] yield coordinator close failed", exc_info=True)
     _scheduler = getattr(app.state, "memory_scheduler", None)
     if _scheduler is not None:
         try:
@@ -239,6 +323,12 @@ async def lifespan(app: FastAPI):
                 _work_broker.close()
         except Exception:
             logger.warning("[workbroker] close failed", exc_info=True)
+    _model_os_store = getattr(app.state, "model_os_store", None)
+    if _model_os_store is not None:
+        try:
+            _model_os_store.close()
+        except Exception:
+            logger.warning("[model-os] store close failed", exc_info=True)
     _codex_mgr = getattr(app.state, "codex_host_manager", None)
     if _codex_mgr is not None:
         try:
@@ -319,6 +409,7 @@ def create_app() -> FastAPI:
     app.include_router(proxy_router)
     app.include_router(cc_host_router, prefix="/api/cc")
     app.include_router(agent_router, prefix="/api/agent")
+    app.include_router(model_os_router, prefix="/api/model-os")
     app.include_router(quota_router)
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。

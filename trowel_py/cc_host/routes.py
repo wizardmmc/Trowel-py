@@ -138,6 +138,11 @@ def create_session(
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """创建新的 CC 会话，可通过原生会话 id 恢复已有会话。"""
+    if req.model_os_mcp_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Model OS managed sessions must be created through Agent Hub",
+        )
     opened = open_cc_session(req, request, registry)
     return {
         "success": True,

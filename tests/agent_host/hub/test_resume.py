@@ -224,6 +224,33 @@ def test_validate_resume_rejects_self_enabled_mismatch_for_same_native_thread(
         )
 
 
+def test_validate_resume_rejects_model_os_mcp_mismatch_for_same_native_thread(
+    hub: SessionHub, workdir: Path
+) -> None:
+    hub._store.put(
+        make_binding(
+            session_id="orig-model-os",
+            runtime=Runtime.CODEX,
+            native_session_id="thr-model-os-frozen",
+            workdir=str(workdir),
+            model=None,
+            effort=None,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            model_os_mcp_enabled=True,
+            capabilities=("tools",),
+            name="proj",
+        )
+    )
+    with pytest.raises(ConditionMismatchError):
+        hub.validate_resume(
+            Runtime.CODEX,
+            "thr-model-os-frozen",
+            model_os_mcp_enabled=False,
+        )
+
+
 def test_validate_resume_allows_matching_mp(hub: SessionHub, workdir: Path) -> None:
 
     hub._store.put(

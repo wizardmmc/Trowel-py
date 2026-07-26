@@ -148,6 +148,17 @@ from trowel_py.model_os.work_broker import (
     WorkLease,
     WorkRequest,
 )
+from trowel_py.model_os.yielding import (
+    ForceYieldReason,
+    SoftYieldPolicy,
+    TurnRegistration,
+    YieldControlError,
+    YieldCoordinator,
+    YieldProposal,
+    YieldReceipt,
+    YieldSuggestedState,
+    YieldWaitingCondition,
+)
 
 __all__ = [
     "ArtifactRef",
@@ -182,6 +193,8 @@ __all__ = [
     "EventEnvelope",
     "EventKind",
     "ForegroundConflict",
+    "ForceYieldReason",
+    "SoftYieldPolicy",
     "ExecutionOutcomePayload",
     "FailureMode",
     "IdempotencyConflict",
@@ -233,6 +246,7 @@ __all__ = [
     "TaskOrigin",
     "TaskState",
     "TaskStatus",
+    "TurnRegistration",
     "ToolFailureCategory",
     "TurnOutcomePayload",
     "UnknownCognitiveSignal",
@@ -254,6 +268,12 @@ __all__ = [
     "WorkKind",
     "WorkLease",
     "WorkRequest",
+    "YieldControlError",
+    "YieldCoordinator",
+    "YieldProposal",
+    "YieldReceipt",
+    "YieldSuggestedState",
+    "YieldWaitingCondition",
     "initial_snapshot",
     "build_route_evidence_bundle",
     "build_signal",
