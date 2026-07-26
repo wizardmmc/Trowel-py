@@ -259,6 +259,30 @@ async def answer_session_request(
 ) -> dict:
     """校验归属和 decision 后回答一个 connection-scoped Codex request。"""
 
+    wake = getattr(request.app.state, "model_os_wake_controller", None)
+    if wake is not None and wake.manages(session_id):
+        try:
+            try:
+                generation = hub.runtime_generation(session_id)
+            except Exception:
+                generation = "unavailable"
+            queued = wake.queue_for_session(
+                session_id,
+                correlation_id=request_id,
+                runtime_generation=generation,
+                payload={"request_id": request_id, "decision": body.decision},
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "success": True,
+            "data": {
+                "answered": False,
+                "queued": True,
+                "episode_id": queued.episode_id,
+            },
+            "error": None,
+        }
     gate = getattr(request.app.state, "model_os_command_gate", None)
     ticket = (
         gate.before_control(

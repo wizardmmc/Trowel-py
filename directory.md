@@ -42,6 +42,7 @@
 | `model_os/` | Task、Episode、租约、事件日志与模型资源仲裁 |
 | `model_os/yielding/` | 协作 yield、soft request、强制 interrupt、terminal race 与安全收口的唯一实现和导入入口 |
 | `model_os/episode_starting/` | 首段/fresh Episode 的上下文、command journal、crash recovery 与旧 API Kernel 门禁 |
+| `model_os/waking/` | 等待条件规范化、系统 observation、幂等 WakeEvent 消费、pending 输入与启动 reconcile |
 | `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP、Episode 启动 SSE 与本地 HTTP 边界 |
 | `model_os/episode_fold.py` / `work_item_fold.py` / `context_fold.py` | Reducer 的无 I/O 事件折叠策略 |
 | `model_os/store_event_factory.py` / `store_projection.py` | Store 事件构造与公开状态投影 |

@@ -200,6 +200,9 @@ class TestLifespanIntegration:
             assert app.state.model_os_yield_coordinator is not None
             assert app.state.model_os_episode_starter is not None
             assert app.state.model_os_command_gate is not None
+            assert app.state.model_os_wake_service is not None
+            assert app.state.model_os_wake_service.running
+            assert app.state.model_os_wake_controller is not None
             assert scheduler._work_gate._broker is app.state.work_broker
             assert (
                 app.state.memory_scheduler._work_gate._broker is app.state.work_broker
@@ -210,6 +213,7 @@ class TestLifespanIntegration:
         assert app.state.tidy_scheduler.tasks == ()
         assert app.state.work_broker._conn is None
         assert app.state.model_os_store._conn is None
+        assert not app.state.model_os_wake_service.running
 
     def test_broker_failure_keeps_model_maintenance_off(
         self, tmp_path: Path, monkeypatch
@@ -233,6 +237,8 @@ class TestLifespanIntegration:
             assert app.state.model_os_yield_coordinator is None
             assert app.state.model_os_episode_starter is None
             assert app.state.model_os_command_gate is None
+            assert app.state.model_os_wake_service is None
+            assert app.state.model_os_wake_controller is None
             assert app.state.agent_hub is not None
             assert app.state.memory_scheduler is None
             assert app.state.distill_scheduler is None

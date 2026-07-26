@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +22,7 @@ from trowel_py.model_os.yielding import (
     YieldSuggestedState,
     YieldWaitingCondition,
 )
+from trowel_py.model_os.waking import WakeConditionKind, WakeObservation
 
 router = APIRouter()
 
@@ -76,6 +78,14 @@ class StartEpisodeBody(BaseModel):
     idempotency_key: str = Field(min_length=1)
 
 
+class WakeObservationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str = Field(min_length=1)
+    kind: Literal["user_input", "manual"]
+    target_ref: str = Field(min_length=1)
+
+
 @router.post("/episodes/start")
 async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingResponse:
     """以同一 command 启动首段或 snapshot 后的 fresh Episode。"""
@@ -108,6 +118,41 @@ async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingRe
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.post("/wake")
+def submit_wake(body: WakeObservationBody, request: Request) -> dict[str, Any]:
+    """接受用户或人工唤醒；机器 observation 只能来自进程内 observer。"""
+
+    controller = getattr(request.app.state, "model_os_wake_controller", None)
+    if controller is None:
+        raise HTTPException(status_code=503, detail="Model OS wake is unavailable")
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    events = controller.observe(
+        WakeObservation(
+            observation_id=body.observation_id,
+            kind=WakeConditionKind(body.kind),
+            target_ref=body.target_ref,
+            observed_at=observed_at,
+            source="user",
+            details={},
+        )
+    )
+    return {
+        "success": True,
+        "data": {
+            "wakes": [
+                {
+                    "wake_id": event.wake_id,
+                    "task_id": event.task_id,
+                    "episode_id": event.episode_id,
+                    "disposition": event.disposition.value,
+                }
+                for event in events
+            ]
+        },
+        "error": None,
+    }
 
 
 @router.post("/sessions/{session_id}/yield")

@@ -44,6 +44,39 @@ def test_post_answer_codex_request_routes_by_session(
     assert manager.answered_requests == [(created["session_id"], "7-0", "cancel")]
 
 
+def test_managed_codex_answer_is_queued_without_resuming_runtime(
+    client: TestClient,
+    workdir: Path,
+    hub: SessionHub,
+) -> None:
+    created = create_session(client, codex_payload(workdir))
+
+    class Wake:
+        def manages(self, session_id):
+            return session_id == created["session_id"]
+
+        def queue_for_session(self, session_id, **kwargs):
+            assert session_id == created["session_id"]
+            assert kwargs["correlation_id"] == "7-0"
+            assert kwargs["payload"] == {"request_id": "7-0", "decision": "cancel"}
+            return SimpleNamespace(episode_id="episode-1")
+
+    client.app.state.model_os_wake_controller = Wake()
+    response = client.post(
+        f"/api/agent/sessions/{created['session_id']}/requests/7-0/answer",
+        json={"decision": "cancel"},
+    )
+
+    assert response.json()["data"] == {
+        "answered": False,
+        "queued": True,
+        "episode_id": "episode-1",
+    }
+    manager = hub._codex  # noqa: SLF001
+    assert isinstance(manager, FakeCodexManager)
+    assert manager.answered_requests == []
+
+
 def test_post_answer_request_rejects_cc_session(
     client: TestClient,
     workdir: Path,

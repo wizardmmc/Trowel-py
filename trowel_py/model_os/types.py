@@ -159,6 +159,7 @@ class EventKind:
     COMMAND_UNKNOWN = "command.unknown"
     COGNITIVE_SIGNAL_RECORDED = "cognitive_signal.recorded"
     LATE_SIGNAL_REJECTED = "cognitive_signal.late_signal_rejected"
+    WAKE_CONSUMED = "wake.consumed"
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,10 @@ class WaitingCondition:
     open_question: str | None = None
     preparation_snapshot_ref: str | None = None
     earliest_review_at: str | None = None
+    # L08 在既有等待事实上补充唤醒身份；旧 journal 缺失时保持 None。
+    condition_id: str | None = None
+    registered_at: str | None = None
+    catchup_policy: str | None = None
 
 
 @dataclass(frozen=True)
