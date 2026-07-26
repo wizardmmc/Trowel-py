@@ -96,4 +96,21 @@ describe("useStickyBottom", () => {
     expect(result.current.sticky).toBe(true);
     expect(result.current.unread).toBe(0);
   });
+
+  it("re-arms following when the active session changes", () => {
+    const { ref, div, setScrollTop } = makeScrollRef(1000, 500);
+    const { result, rerender } = renderHook(
+      ({ sessionKey }) => useStickyBottom(ref, 1, sessionKey),
+      { initialProps: { sessionKey: "session-a" } },
+    );
+    setScrollTop(0);
+    act(() => div.dispatchEvent(new Event("scroll")));
+    expect(result.current.sticky).toBe(false);
+
+    rerender({ sessionKey: "session-b" });
+
+    expect(result.current.sticky).toBe(true);
+    expect(result.current.stickyRef.current).toBe(true);
+    expect(result.current.unread).toBe(0);
+  });
 });

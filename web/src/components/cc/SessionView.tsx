@@ -86,11 +86,11 @@ export function SessionView({
 
   const phase = active?.phase ?? "idle";
   const turns = active?.turns ?? [];
-  // stickyRef 让滚动 effect 读取最新跟随状态而不重复订阅。
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { sticky, unread, stickyRef, jumpToBottom } = useStickyBottom(
+  const { sticky, unread, pauseFollowing, jumpToBottom } = useStickyBottom(
     scrollRef,
     turns.length,
+    activeSid,
   );
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
@@ -202,10 +202,13 @@ export function SessionView({
         >
           {active ? (
             <MessageList
+              key={activeSid}
               turns={turns}
               streaming={streaming}
               phase={phase}
-              stickyRef={stickyRef}
+              scrollRef={scrollRef}
+              sticky={sticky}
+              onLeaveBottom={pauseFollowing}
               onRetryLast={handleRetryLast}
               onAnswer={(answers) => void answerElicit(answers)}
               onCancel={() => void cancelElicit()}

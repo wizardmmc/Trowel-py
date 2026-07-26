@@ -1,8 +1,16 @@
-import { useEffect, useRef, type MutableRefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 import type { Turn } from "../../stores/ccStore";
 import { formatRunDuration } from "./durationLabel";
 import { EventTimeline } from "./EventTimeline";
+import { CurrentTurnContext } from "./CurrentTurnContext";
 import { scrubUserText } from "./scrubUserText";
 import { SpinnerLine } from "./SpinnerLine";
 
@@ -10,7 +18,9 @@ interface MessageListProps {
   readonly turns: readonly Turn[];
   readonly streaming: boolean;
   readonly phase?: string;
-  readonly stickyRef?: MutableRefObject<boolean>;
+  readonly scrollRef?: RefObject<HTMLDivElement | null>;
+  readonly sticky?: boolean;
+  readonly onLeaveBottom?: () => void;
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
   readonly onCancel?: () => void;
@@ -21,6 +31,11 @@ interface MessageListProps {
   readonly sessionId?: string;
 }
 
+const INITIAL_VISIBLE_TURNS = 2;
+const OLDER_TURN_BATCH = 5;
+const LOAD_OLDER_THRESHOLD_PX = 24;
+const CONTEXT_ACTIVATION_PX = 44;
+
 function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
   if (runtime === "codex") return "Codex";
   if (runtime === "claude_code") return "CC";
@@ -29,6 +44,7 @@ function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
 
 function TurnCard({
   turn,
+  turnIndex,
   streaming,
   onRetryLast,
   onAnswer,
@@ -40,6 +56,7 @@ function TurnCard({
   sessionId,
 }: {
   readonly turn: Turn;
+  readonly turnIndex: number;
   readonly streaming: boolean;
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
@@ -54,7 +71,11 @@ function TurnCard({
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
   const cleanedUserText = scrubUserText(turn.userText ?? "");
   return (
-    <div className="cc-turn" data-turn-status={turn.status}>
+    <div
+      className="cc-turn"
+      data-turn-index={turnIndex}
+      data-turn-status={turn.status}
+    >
       {canRevert && (
         <button
           type="button"
@@ -107,7 +128,9 @@ export function MessageList({
   turns,
   streaming,
   phase,
-  stickyRef,
+  scrollRef,
+  sticky = true,
+  onLeaveBottom,
   onRetryLast,
   onAnswer,
   onCancel,
@@ -118,12 +141,198 @@ export function MessageList({
   sessionId,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (stickyRef && !stickyRef.current) return;
-    if (typeof endRef.current?.scrollIntoView === "function") {
-      endRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+  const [visibleStart, setVisibleStart] = useState(() =>
+    Math.max(0, turns.length - INITIAL_VISIBLE_TURNS),
+  );
+  const [context, setContext] = useState({
+    turnIndex: null as number | null,
+    text: "",
+    visible: false,
+  });
+  const visibleStartRef = useRef(visibleStart);
+  const previousTurnCountRef = useRef(turns.length);
+  const prependAnchorRef = useRef<{
+    readonly scrollHeight: number;
+    readonly scrollTop: number;
+  } | null>(null);
+  const loadingOlderRef = useRef(false);
+  const touchStartYRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    visibleStartRef.current = visibleStart;
+  }, [visibleStart]);
+
+  useLayoutEffect(() => {
+    const previousCount = previousTurnCountRef.current;
+    const previousLatestStart = Math.max(
+      0,
+      previousCount - INITIAL_VISIBLE_TURNS,
+    );
+    const nextLatestStart = Math.max(0, turns.length - INITIAL_VISIBLE_TURNS);
+    setVisibleStart((current) => {
+      if (turns.length < previousCount) {
+        return Math.min(current, nextLatestStart);
+      }
+      if (
+        turns.length > previousCount &&
+        sticky &&
+        current === previousLatestStart
+      ) {
+        return nextLatestStart;
+      }
+      return current;
+    });
+    previousTurnCountRef.current = turns.length;
+  }, [sticky, turns.length]);
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    const element = scrollRef?.current;
+    if (!anchor || !element) return;
+    if (typeof element.scrollTo === "function") {
+      element.scrollTo({
+        top: anchor.scrollTop + element.scrollHeight - anchor.scrollHeight,
+        behavior: "auto",
+      });
     }
-  }, [turns, streaming, phase, stickyRef]);
+    prependAnchorRef.current = null;
+    loadingOlderRef.current = false;
+  }, [scrollRef, visibleStart]);
+
+  useLayoutEffect(() => {
+    if (!sticky) return;
+    const element = scrollRef?.current;
+    if (element && typeof element.scrollTo === "function") {
+      element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+    } else if (typeof endRef.current?.scrollIntoView === "function") {
+      endRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+    }
+  }, [phase, scrollRef, sticky, streaming, turns]);
+
+  const updateContext = useCallback(() => {
+    const element = scrollRef?.current;
+    if (!element) return;
+    const nodes = Array.from(
+      element.querySelectorAll<HTMLElement>(".cc-turn[data-turn-index]"),
+    );
+    if (nodes.length === 0) {
+      setContext({ turnIndex: null, text: "", visible: false });
+      return;
+    }
+    const containerRect = element.getBoundingClientRect();
+    let currentNode = nodes[0];
+    if (sticky) {
+      currentNode = nodes[nodes.length - 1];
+    } else {
+      const activationLine = containerRect.top + CONTEXT_ACTIVATION_PX;
+      for (const node of nodes) {
+        if (node.getBoundingClientRect().top <= activationLine) {
+          currentNode = node;
+        } else {
+          break;
+        }
+      }
+    }
+    const turnIndex = Number(currentNode.dataset.turnIndex);
+    const userCard = currentNode.querySelector<HTMLElement>(".cc-msg--user");
+    const userRect = userCard?.getBoundingClientRect();
+    const sourceVisible = Boolean(
+      userRect &&
+        userRect.bottom > containerRect.top &&
+        userRect.top < containerRect.bottom,
+    );
+    const visible = Boolean(
+      userRect && !sourceVisible && userRect.bottom <= containerRect.top,
+    );
+    const text = scrubUserText(turns[turnIndex]?.userText ?? "");
+    setContext((current) =>
+      current.turnIndex === turnIndex &&
+      current.text === text &&
+      current.visible === visible
+        ? current
+        : { turnIndex, text, visible },
+    );
+  }, [scrollRef, sticky, turns]);
+
+  useLayoutEffect(updateContext, [updateContext, visibleStart]);
+
+  const loadOlder = useCallback(() => {
+    const element = scrollRef?.current;
+    if (
+      !element ||
+      element.scrollTop > LOAD_OLDER_THRESHOLD_PX ||
+      visibleStartRef.current === 0 ||
+      loadingOlderRef.current
+    ) {
+      return;
+    }
+    loadingOlderRef.current = true;
+    prependAnchorRef.current = {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+    onLeaveBottom?.();
+    setVisibleStart((current) =>
+      Math.max(0, current - OLDER_TURN_BATCH),
+    );
+  }, [onLeaveBottom, scrollRef]);
+
+  useEffect(() => {
+    const element = scrollRef?.current;
+    if (!element) return;
+    const onScroll = () => {
+      updateContext();
+      loadOlder();
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) loadOlder();
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      touchStartYRef.current = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const currentY = event.touches[0]?.clientY;
+      const startY = touchStartYRef.current;
+      if (currentY === undefined || startY === null || currentY <= startY) return;
+      touchStartYRef.current = currentY;
+      loadOlder();
+    };
+    element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", onWheel, { passive: true });
+    element.addEventListener("touchstart", onTouchStart, { passive: true });
+    element.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", onWheel);
+      element.removeEventListener("touchstart", onTouchStart);
+      element.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [loadOlder, scrollRef, updateContext]);
+
+  const jumpToContext = useCallback(() => {
+    const element = scrollRef?.current;
+    if (
+      !element ||
+      typeof element.scrollTo !== "function" ||
+      context.turnIndex === null
+    ) {
+      return;
+    }
+    const target = element.querySelector<HTMLElement>(
+      `.cc-turn[data-turn-index="${context.turnIndex}"]`,
+    );
+    if (!target) return;
+    onLeaveBottom?.();
+    const containerRect = element.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    element.scrollTo({
+      top: Math.max(
+        0,
+        element.scrollTop + targetRect.top - containerRect.top - 8,
+      ),
+      behavior: "smooth",
+    });
+  }, [context.turnIndex, onLeaveBottom, scrollRef]);
 
   if (turns.length === 0) {
     return (
@@ -134,24 +343,32 @@ export function MessageList({
   }
 
   return (
-    <div className="cc-msglist" role="log" aria-live="polite" aria-busy={streaming}>
-      {turns.map((turn) => (
-        <TurnCard
-          key={turn.id}
-          turn={turn}
-          streaming={streaming}
-          onRetryLast={onRetryLast}
-          onAnswer={onAnswer}
-          onCancel={onCancel}
-          onApprovalDecision={onApprovalDecision}
-          onRevert={onRevert}
-          workdir={workdir}
-          runtime={runtime}
-          sessionId={sessionId}
-        />
-      ))}
-      <SpinnerLine />
-      <div ref={endRef} />
-    </div>
+    <>
+      <CurrentTurnContext
+        text={context.text}
+        visible={context.visible}
+        onJump={jumpToContext}
+      />
+      <div className="cc-msglist" role="log" aria-live="polite" aria-busy={streaming}>
+        {turns.slice(visibleStart).map((turn, index) => (
+          <TurnCard
+            key={turn.id}
+            turn={turn}
+            turnIndex={visibleStart + index}
+            streaming={streaming}
+            onRetryLast={onRetryLast}
+            onAnswer={onAnswer}
+            onCancel={onCancel}
+            onApprovalDecision={onApprovalDecision}
+            onRevert={onRevert}
+            workdir={workdir}
+            runtime={runtime}
+            sessionId={sessionId}
+          />
+        ))}
+        <SpinnerLine />
+        <div ref={endRef} />
+      </div>
+    </>
   );
 }
