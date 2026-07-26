@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI):
     app.state.model_os_wake_controller = None
     app.state.model_os_attention_scheduler = None
     app.state.model_os_recovery_observer = None
+    app.state.model_os_signal_bridge = None
+    app.state.model_os_router = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -128,11 +130,22 @@ async def lifespan(app: FastAPI):
     if work_broker is not None:
         model_os_store = None
         try:
+            from trowel_py.model_os.cognitive_signals import (
+                InMemorySignalAuthorityRegistry,
+            )
             from trowel_py.model_os.store import ModelOsStore
 
-            model_os_store = ModelOsStore(broker_path)
+            signal_authority = InMemorySignalAuthorityRegistry()
+            model_os_store = ModelOsStore(
+                broker_path, signal_authority=signal_authority
+            )
             model_os_store.open()
             app.state.model_os_store = model_os_store
+            from trowel_py.model_os.routing import CognitiveSignalBridge
+
+            app.state.model_os_signal_bridge = CognitiveSignalBridge(
+                model_os_store, signal_authority
+            )
         except Exception:
             logger.warning("[model-os] store failed to start", exc_info=True)
             if model_os_store is not None:
@@ -275,6 +288,18 @@ async def lifespan(app: FastAPI):
                     return
                 store = app.state.model_os_store
                 recovery = app.state.model_os_recovery_observer
+                signal_bridge = app.state.model_os_signal_bridge
+                if signal_bridge is not None:
+                    try:
+                        generation = app.state.agent_hub.runtime_generation(session_id)
+                        signal_bridge.observe(
+                            payload, runtime_generation=generation
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[model-os] cognitive signal bridge rejected event",
+                            exc_info=True,
+                        )
                 if store is not None and recovery is not None:
                     binding = store.episode_runtime_binding_for_session(session_id)
                     if binding is not None:
@@ -316,6 +341,31 @@ async def lifespan(app: FastAPI):
             )
 
             runtime_adapter = AgentEpisodeRuntimeAdapter(app.state.agent_hub)
+            from trowel_py.cc_host.models import list_models as list_cc_models
+            from trowel_py.model_os.routing import (
+                CognitiveRouter,
+                load_routing_config,
+                validate_routing_config,
+            )
+
+            configured_routing = load_routing_config()
+            codex_catalog = []
+            if configured_routing.requires_catalog("codex"):
+                try:
+                    codex_catalog = await app.state.agent_hub.list_codex_models()
+                except Exception:
+                    logger.info(
+                        "[model-os] Codex routing catalog unavailable; Codex Router off",
+                        exc_info=True,
+                    )
+            routing_config = validate_routing_config(
+                configured_routing,
+                cc_catalog=list_cc_models(app.state.cc_settings_path),
+                codex_catalog=codex_catalog,
+            )
+            app.state.model_os_router = CognitiveRouter(
+                app.state.model_os_store, routing_config
+            )
             from trowel_py.model_os.waking.controller import WakeController
 
             wake_controller = WakeController(app.state.model_os_store)
@@ -386,6 +436,7 @@ async def lifespan(app: FastAPI):
                 broker=app.state.work_broker,
                 adapter=runtime_adapter,
                 yield_coordinator=app.state.model_os_yield_coordinator,
+                router=app.state.model_os_router,
             )
             app.state.model_os_command_gate = ModelOsCommandGate(
                 app.state.model_os_store,

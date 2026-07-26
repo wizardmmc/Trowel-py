@@ -11,6 +11,11 @@ from trowel_py.model_os.types import (
     SessionPurpose,
     SnapshotRef,
 )
+from trowel_py.model_os.routing.models import (
+    RouteMarker,
+    UserRoutePreference,
+)
+from trowel_py.model_os.work_broker import ModelTier
 
 
 class StartStage(str, Enum):
@@ -45,6 +50,13 @@ class StartEpisodeCommand:
     owner: str = "episode-runner"
     ownership_ttl_seconds: int = 600
     schedule_decision_id: str | None = None
+    route_preference: UserRoutePreference = UserRoutePreference.AUTO
+    route_mandatory_markers: tuple[RouteMarker, ...] = ()
+    route_pre_route_markers: tuple[RouteMarker, ...] = ()
+    route_evaluation_domain: str = "unknown"
+    route_input_fact_refs: tuple[str, ...] = ()
+    route_decision_id: str | None = None
+    selected_model_tier: ModelTier | None = None
 
     def __post_init__(self) -> None:
         if self.runtime not in {"claude_code", "codex"}:
@@ -73,6 +85,8 @@ class StartEpisodeCommand:
             and not self.schedule_decision_id.strip()
         ):
             raise ValueError("schedule_decision_id must be non-empty when provided")
+        if self.route_decision_id is not None and not self.route_decision_id.strip():
+            raise ValueError("route_decision_id must be non-empty when provided")
         if self.resume_from is not None:
             raise ValueError(
                 "StartEpisodeCommand always starts fresh; resume is forbidden"

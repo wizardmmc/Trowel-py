@@ -15,6 +15,7 @@ from trowel_py.model_os.work_broker import (
     WorkRequest,
 )
 from trowel_py.quota.types import Provider
+from trowel_py.model_os.routing.journal import route_tier_for_episode
 
 
 class SuspendedEpisodeResumer:
@@ -102,7 +103,9 @@ class SuspendedEpisodeResumer:
             WorkRequest(
                 kind=WorkKind.FOREGROUND,
                 provider=provider,
-                model_tier=ModelTier.DEEP,
+                model_tier=(
+                    route_tier_for_episode(self._store, episode_id) or ModelTier.DEEP
+                ),
                 task_id=task_id,
                 work_item_id=work_item_id,
                 idempotency_key=f"resume:{recorded.decision_id}",

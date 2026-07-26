@@ -12,3 +12,23 @@ provider = "anthropic"
 model = "glm-5.1"
 api_key = "<your-bigmodel-key>" 
 base_url = "https://open.bigmodel.cn/api/anthropic"
+
+# Router 默认为关闭。model 必须出现在对应 runtime 的实时 catalog 中。
+[model_os.routing]
+mode = "off"
+
+[model_os.routing.claude_code.fast]
+model = "haiku"
+effort = "low"
+
+[model_os.routing.claude_code.deep]
+model = "opus"
+effort = "high"
+
+[model_os.routing.codex.fast]
+model = "<native-codex-model-id>"
+effort = "low"
+
+[model_os.routing.codex.deep]
+model = "<native-codex-model-id>"
+effort = "high"

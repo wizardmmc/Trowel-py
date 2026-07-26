@@ -201,6 +201,8 @@ class ToolResultEvent(_Event):
     tool_use_id: str
     content: str
     write_diff: WriteDiff | None = None
+    is_error: bool | None = None
+    exit_code: int | None = None
 
 
 class RetryingEvent(_Event):

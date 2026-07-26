@@ -26,6 +26,14 @@ from trowel_py.model_os.types import (
 )
 from trowel_py.model_os.work_broker import WorkLease
 from trowel_py.model_os.work_broker import DenialReason, WorkDenial
+from trowel_py.model_os.routing import (
+    CognitiveRouter,
+    RouteCandidate,
+    RouteMode,
+    RoutingConfig,
+    UserRoutePreference,
+)
+from trowel_py.model_os.work_broker import ModelTier
 from trowel_py.quota.types import Provider
 
 
@@ -97,9 +105,13 @@ class FakeAdapter:
             runtime_pid=321,
             runtime_pgid=321,
         )
+        self.started_commands = []
+        self.effective_model = "deep-model"
+        self.effective_effort = "high"
 
     async def start_native(self, command, episode):
         self.start_calls += 1
+        self.started_commands.append(command)
         if self.crash_in_start:
             raise InjectedCrash()
         return self.identity
@@ -111,6 +123,9 @@ class FakeAdapter:
         if self.runtime == "claude_code":
             return replace(identity, native_session_id="cc-native-1")
         return identity
+
+    def effective_settings(self, identity):
+        return self.effective_model, self.effective_effort
 
     async def start_first_turn(self, identity, text):
         self.turn_calls += 1
@@ -226,6 +241,116 @@ async def test_first_and_fresh_turn_use_same_start_command(store, runtime) -> No
     assert broker.started == [("work-lease-1", 1)]
     assert yielding.registrations[0].native_session_id in {"thread-1", "cc-native-1"}
     assert coordinator.progress("start-command-1").stage is StartStage.TERMINAL
+
+
+@pytest.mark.anyio
+async def test_shadow_proposes_fast_but_runs_fixed_baseline(store) -> None:
+    work_item_id = _bare_system_work_item(store)
+    adapter = FakeAdapter()
+    broker = FakeBroker()
+    router = CognitiveRouter(
+        store,
+        RoutingConfig(
+            RouteMode.SHADOW,
+            {
+                "codex": (
+                    RouteCandidate(ModelTier.FAST, "fast-model", "low"),
+                    RouteCandidate(ModelTier.DEEP, "deep-model", "high"),
+                )
+            },
+        ),
+    )
+    coordinator = StartEpisodeCoordinator(
+        store,
+        broker=broker,
+        adapter=adapter,
+        yield_coordinator=FakeYieldCoordinator(),
+        router=router,
+    )
+
+    await _collect(coordinator, _command(work_item_id))
+
+    started = adapter.started_commands[0]
+    assert (started.model, started.effort) == ("deep-model", "high")
+    assert broker.requests[0].model_tier is ModelTier.DEEP
+    route = next(
+        item for _, item in store.list_decisions() if item.kind == "cognitive.route"
+    )
+    proposed = next(item for item in route.candidates if item["role"] == "proposed")
+    actual = next(item for item in route.candidates if item["role"] == "actual")
+    assert proposed["tier"] == "fast"
+    assert actual["tier"] == "deep"
+
+
+@pytest.mark.anyio
+async def test_explicit_fast_executes_in_shadow_and_records_effective_binding(
+    store,
+) -> None:
+    work_item_id = _bare_system_work_item(store)
+    adapter = FakeAdapter()
+    adapter.effective_model = "fast-model"
+    adapter.effective_effort = "low"
+    broker = FakeBroker()
+    router = CognitiveRouter(
+        store,
+        RoutingConfig(
+            RouteMode.SHADOW,
+            {
+                "codex": (
+                    RouteCandidate(ModelTier.FAST, "fast-model", "low"),
+                    RouteCandidate(ModelTier.DEEP, "deep-model", "high"),
+                )
+            },
+        ),
+    )
+    coordinator = StartEpisodeCoordinator(
+        store,
+        broker=broker,
+        adapter=adapter,
+        yield_coordinator=FakeYieldCoordinator(),
+        router=router,
+    )
+    command = replace(_command(work_item_id), route_preference=UserRoutePreference.FAST)
+
+    await _collect(coordinator, command)
+
+    started = adapter.started_commands[0]
+    assert (started.model, started.effort) == ("fast-model", "low")
+    assert broker.requests[0].model_tier is ModelTier.FAST
+    actual = next(
+        event
+        for _, event in store.list_events()
+        if event.kind == "route.actual_observed"
+    )
+    assert actual.payload == {
+        "model": "fast-model",
+        "effort": "low",
+        "tier": "fast",
+        "evidence_ref": "agent-binding.agent-session-1",
+    }
+    start_decision = next(
+        item for _, item in store.list_decisions() if item.kind == "episode.start"
+    )
+    route_decision = next(
+        item for _, item in store.list_decisions() if item.kind == "cognitive.route"
+    )
+    assert start_decision.cause_id == route_decision.decision_id
+    assert start_decision.signals == {"refs": [route_decision.decision_id]}
+
+
+@pytest.mark.anyio
+async def test_invalid_start_does_not_write_route_decision(store) -> None:
+    coordinator = StartEpisodeCoordinator(
+        store,
+        broker=FakeBroker(),
+        adapter=FakeAdapter(),
+        yield_coordinator=FakeYieldCoordinator(),
+    )
+
+    with pytest.raises(ValueError, match="unknown work_item"):
+        await _collect(coordinator, _command("missing-work-item"))
+
+    assert all(item.kind != "cognitive.route" for _, item in store.list_decisions())
 
 
 @pytest.mark.anyio

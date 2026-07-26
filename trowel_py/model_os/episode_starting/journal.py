@@ -52,6 +52,18 @@ def _command_fingerprint(command: StartEpisodeCommand) -> str:
         payload.pop("schedule_decision_id")
     payload["session_purpose"] = command.session_purpose.value
     payload["memory_eligibility"] = command.memory_eligibility.value
+    payload["route_preference"] = command.route_preference.value
+    payload["route_mandatory_markers"] = [
+        item.value for item in command.route_mandatory_markers
+    ]
+    payload["route_pre_route_markers"] = [
+        item.value for item in command.route_pre_route_markers
+    ]
+    payload["selected_model_tier"] = (
+        command.selected_model_tier.value
+        if command.selected_model_tier is not None
+        else None
+    )
     ref = command.previous_snapshot_ref
     payload["previous_snapshot_ref"] = (
         {
@@ -75,13 +87,14 @@ def record_intent(store: ModelOsStore, command: StartEpisodeCommand) -> str:
         kind="episode.start",
         disposition=DecisionDisposition.EXECUTE,
         decided_at=now_iso(),
-        signals={"refs": []},
+        signals={"refs": [command.route_decision_id]},
         candidates=[command.runtime],
         choice=command.runtime,
         reason="start_work_item_episode",
         policy_version="episode-start-v1",
         work_item_id=command.work_item_id,
         task_id=command.task_id,
+        cause_id=command.route_decision_id,
         correlation_id=corr,
     )
     intent = EventEnvelope(

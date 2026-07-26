@@ -44,6 +44,7 @@
 | `model_os/episode_starting/` | 首段/fresh Episode 的上下文、command journal、crash recovery 与旧 API Kernel 门禁 |
 | `model_os/waking/` | 等待条件规范化、系统 observation、幂等 WakeEvent 消费、pending 输入与启动 reconcile |
 | `model_os/scheduling/` | 注意力调度策略、Decision 账本、pending reconcile、挂起恢复与切换成本观测 |
+| `model_os/routing/` | fast/deep policy、runtime catalog 配置、shadow journal、认知信号桥与人工上线 Gate |
 | `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP、Episode 启动 SSE 与本地 HTTP 边界 |
 | `model_os/episode_fold.py` / `work_item_fold.py` / `context_fold.py` | Reducer 的无 I/O 事件折叠策略 |
 | `model_os/store_event_factory.py` / `store_projection.py` | Store 事件构造与公开状态投影 |

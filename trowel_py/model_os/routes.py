@@ -11,6 +11,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from trowel_py.model_os.episode_starting import StartEpisodeCommand
+from trowel_py.model_os.routing import (
+    RouteMarker,
+    RouteReviewClass,
+    UserRoutePreference,
+    build_route_gate,
+    record_route_approval,
+    record_route_review,
+)
 from trowel_py.model_os.store import TaskCommandError
 from trowel_py.model_os.types import (
     MemoryEligibility,
@@ -78,6 +86,32 @@ class StartEpisodeBody(BaseModel):
     permission: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     schedule_decision_id: str | None = Field(default=None, min_length=1)
+    route_preference: Literal["auto", "fast", "deep"] = "auto"
+    route_mandatory_markers: tuple[Literal["high_impact_irreversible"], ...] = ()
+    route_pre_route_markers: tuple[
+        Literal["exact_constraint_search", "multi_scenario_contingency"], ...
+    ] = ()
+    route_evaluation_domain: Literal[
+        "coding", "research", "life", "other", "unknown"
+    ] = "unknown"
+    route_input_fact_refs: tuple[str, ...] = ()
+
+
+class RouteReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification: Literal[
+        "correct", "missed_deep_need", "unjustified_deep", "unknown"
+    ]
+    trusted_verifier: bool = Field(strict=True)
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
+    reviewer_ref: str = Field(min_length=1)
+
+
+class RouteApprovalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer_ref: str = Field(min_length=1)
 
 
 class WakeObservationBody(BaseModel):
@@ -179,6 +213,15 @@ async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingRe
         permission=body.permission,
         idempotency_key=body.idempotency_key,
         schedule_decision_id=body.schedule_decision_id,
+        route_preference=UserRoutePreference(body.route_preference),
+        route_mandatory_markers=tuple(
+            RouteMarker(item) for item in body.route_mandatory_markers
+        ),
+        route_pre_route_markers=tuple(
+            RouteMarker(item) for item in body.route_pre_route_markers
+        ),
+        route_evaluation_domain=body.route_evaluation_domain,
+        route_input_fact_refs=body.route_input_fact_refs,
     )
 
     async def stream():
@@ -186,6 +229,71 @@ async def start_episode(body: StartEpisodeBody, request: Request) -> StreamingRe
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.get("/routing/gate")
+async def route_gate(request: Request) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    gate = build_route_gate(store)
+    return {
+        "success": True,
+        "data": {
+            "live_episodes": gate.live_episodes,
+            "reviewed_episodes": gate.reviewed_episodes,
+            "domains": list(gate.domains),
+            "trusted_verifier_episodes": gate.trusted_verifier_episodes,
+            "trusted_verifier_versions": list(gate.trusted_verifier_versions),
+            "missed_deep_need": gate.missed_deep_need,
+            "unjustified_deep": gate.unjustified_deep,
+            "review_unknown": gate.review_unknown,
+            "user_override_total": gate.user_override_total,
+            "user_override_executed": gate.user_override_executed,
+            "actual_match_total": gate.actual_match_total,
+            "actual_match_executed": gate.actual_match_executed,
+            "ready_for_human_review": gate.ready_for_human_review,
+            "canary_approved": gate.canary_approved,
+            "as_of": {
+                "event_seq": gate.as_of.event_seq,
+                "decision_seq": gate.as_of.decision_seq,
+            },
+        },
+        "error": None,
+    }
+
+
+@router.post("/routing/decisions/{decision_id}/review")
+async def review_route(
+    decision_id: str, body: RouteReviewBody, request: Request
+) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    try:
+        event_id = record_route_review(
+            store,
+            decision_id,
+            classification=RouteReviewClass(body.classification),
+            trusted_verifier=body.trusted_verifier,
+            evidence_refs=body.evidence_refs,
+            reviewer_ref=body.reviewer_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": {"event_id": event_id}, "error": None}
+
+
+@router.post("/routing/approval")
+async def approve_route(body: RouteApprovalBody, request: Request) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    try:
+        event_id = record_route_approval(store, reviewer_ref=body.reviewer_ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": {"event_id": event_id}, "error": None}
 
 
 @router.post("/wake")

@@ -120,6 +120,26 @@ class TestToolProgressAndResult:
         assert isinstance(out[0], ToolResultEvent)
         assert out[0].write_diff is None
 
+    def test_real_taskoutput_fixture_preserves_error_and_exit_code(self):
+        import json
+        from pathlib import Path
+
+        rows = (
+            Path("tests/cc_host/fixtures/bg_taskoutput_completed.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        background = Translator().translate(json.loads(rows[3]))
+        raw = json.loads(rows[6])
+
+        out = Translator().translate(raw)
+
+        assert isinstance(background[0], ToolResultEvent)
+        assert background[0].is_error is False
+        assert isinstance(out[0], ToolResultEvent)
+        assert out[0].is_error is None
+        assert out[0].exit_code == 0
+
     def test_user_message_without_tool_result_yields_nothing(self):
         ev = {
             "type": "user",
