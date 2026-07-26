@@ -348,6 +348,41 @@
   font-weight: 600;
 }
 
+.cc-md-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cc-md-copy:hover,
+.cc-md-copy:focus-visible,
+.cc-md-copy[data-state="copied"] {
+  border-color: var(--color-border);
+  background: var(--garden-soft);
+  color: var(--garden-green);
+}
+.cc-md-copy:focus-visible {
+  outline: 2px solid var(--garden-green);
+  outline-offset: 1px;
+}
+.cc-md-copy svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .cc-msg__body {
   font-size: 0.95rem;
   line-height: 1.6;
@@ -373,6 +408,11 @@
   text-underline-offset: 2px;
 }
 .cc-md a:hover { color: var(--soil-brown); }
+.cc-md__blocked-link {
+  color: var(--text-secondary);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
 .cc-md ul,
 .cc-md ol { margin: 0 0 var(--space-sm) 0; padding-left: 1.4em; }
 .cc-md li { margin: 2px 0; }
@@ -410,9 +450,21 @@
   border-radius: var(--radius-md);
   overflow: hidden;
 }
+.cc-md-codeblock__meta {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-left: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-garden);
+}
 .cc-md-codeblock pre {
   margin: 0;
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) 92px var(--space-sm) var(--space-md);
   font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.5;
@@ -426,17 +478,18 @@
   font-size: inherit;
 }
 .cc-md-codeblock__lang {
-  position: absolute;
-  top: 0;
-  right: 0;
   font-family: var(--font-mono);
   font-size: 0.62rem;
   letter-spacing: 0.05em;
+  line-height: 26px;
   text-transform: uppercase;
   color: var(--text-secondary);
-  background: var(--neutral-soft);
-  padding: 1px 6px;
-  border-bottom-left-radius: var(--radius-sm);
+}
+@media (max-width: 640px) {
+  .cc-md-codeblock pre {
+    padding-top: 40px;
+    padding-right: var(--space-md);
+  }
 }
 .cc-md blockquote {
   margin: 0 0 var(--space-sm) 0;

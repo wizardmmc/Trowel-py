@@ -215,6 +215,7 @@ export function SessionView({
               onRevert={(t) => setRevertTarget(t)}
               workdir={active?.workdir ?? workdir}
               runtime={active.runtime}
+              sessionId={activeSid ?? undefined}
             />
           ) : (
             <div className="cc-empty cc-empty--noactive">

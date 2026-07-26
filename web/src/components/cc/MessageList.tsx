@@ -18,6 +18,7 @@ interface MessageListProps {
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
   readonly runtime?: string;
+  readonly sessionId?: string;
 }
 
 function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
@@ -36,6 +37,7 @@ function TurnCard({
   onRevert,
   workdir,
   runtime,
+  sessionId,
 }: {
   readonly turn: Turn;
   readonly streaming: boolean;
@@ -46,6 +48,7 @@ function TurnCard({
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
   readonly runtime?: string;
+  readonly sessionId?: string;
 }) {
   const hasContent = turn.items.length > 0;
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
@@ -81,6 +84,7 @@ function TurnCard({
               onApprovalDecision={onApprovalDecision}
               workdir={workdir}
               runtime={runtime}
+              sessionId={sessionId}
             />
           </div>
         </div>
@@ -111,6 +115,7 @@ export function MessageList({
   onRevert,
   workdir,
   runtime,
+  sessionId,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -142,6 +147,7 @@ export function MessageList({
           onRevert={onRevert}
           workdir={workdir}
           runtime={runtime}
+          sessionId={sessionId}
         />
       ))}
       <SpinnerLine />
