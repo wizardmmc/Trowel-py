@@ -66,6 +66,9 @@ export interface SubagentState {
   readonly subagent_type?: string | null;
   readonly last_tool_name?: string | null;
   readonly usage?: Record<string, unknown> | null;
+  readonly agentThreadId?: string | null;
+  readonly parentThreadId?: string | null;
+  readonly agentPath?: string | null;
 }
 
 /** 找不到对应 Agent 工具时保留的降级展示项。 */

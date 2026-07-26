@@ -97,6 +97,28 @@ def test_approval_request_keeps_verified_payload(adapter) -> None:
     assert event.payload["available_decisions"] == ["accept", "cancel"]
 
 
+def test_subagent_activity_keeps_native_thread_correlation(adapter) -> None:
+    event = adapter.wrap(
+        make_codex_event(
+            CodexEventType.SUBAGENT_ACTIVITY,
+            seq=5,
+            thread_id="parent-thread-1",
+            turn_id="parent-turn-1",
+            item_id="activity-1",
+            payload={
+                "source": "subagent_activity",
+                "kind": "started",
+                "agent_thread_id": "child-thread-1",
+                "agent_path": "/root/probe",
+            },
+        )
+    )
+
+    assert event.type == "subagent_activity"
+    assert event.thread_id == "parent-thread-1"
+    assert event.payload["agent_thread_id"] == "child-thread-1"
+
+
 def test_compaction_marks_completed_phase(adapter) -> None:
     event = adapter.wrap(
         make_codex_event(

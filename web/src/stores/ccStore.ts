@@ -13,6 +13,7 @@ import {
   compactCodexSession as apiCompactCodexSession,
   deleteAgentSession as apiDeleteSession,
   getAgentHistory,
+  getCodexSubagentHistory,
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
@@ -52,6 +53,7 @@ import { reduceAgentEvent } from "./ccStore/eventState";
 import { replayAgentHistory } from "./ccStore/historyState";
 import { admitSessionSend } from "./ccStore/sendAdmission";
 import { createCodexLiveController } from "./ccStore/codexLive";
+import { replayCodexSubagentHistory } from "./ccStore/codexSubagents";
 
 export type {
   PerSessionState,
@@ -82,6 +84,7 @@ interface CcState {
   updateSessionSettings: (model: string, effort: string) => Promise<void>;
   selectSessionPermissionPreset: (preset: PermissionPreset) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
+  loadCodexSubagentHistory: (threadId: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerElicit: (answers: Record<string, string>) => Promise<void>;
@@ -513,6 +516,116 @@ export function createCcStore() {
             },
           };
         });
+        if (get().activeSid !== sid) return;
+        const childThreadIds = Object.keys(
+          get().sessions[sid]?.codexSubagents ?? {},
+        );
+        await Promise.all(
+          childThreadIds.map((threadId) =>
+            get().loadCodexSubagentHistory(threadId),
+          ),
+        );
+      },
+
+      loadCodexSubagentHistory: async (threadId) => {
+        const sid = get().activeSid;
+        if (!sid) return;
+        const session = get().sessions[sid];
+        const child = session?.codexSubagents[threadId];
+        if (!session || session.runtime !== "codex" || !child) return;
+        if (child.historyLoaded || child.historyLoading) return;
+        const stateAtRequest = child.state;
+        set((state) => {
+          const current = state.sessions[sid];
+          const target = current?.codexSubagents[threadId];
+          if (!current || !target) return state;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...current,
+                codexSubagents: {
+                  ...current.codexSubagents,
+                  [threadId]: {
+                    ...target,
+                    historyLoading: true,
+                    historyError: null,
+                  },
+                },
+              },
+            },
+          };
+        });
+        try {
+          const envelopes = await getCodexSubagentHistory(sid, threadId);
+          set((state) => {
+            const current = state.sessions[sid];
+            const target = current?.codexSubagents[threadId];
+            if (!current || !target) return state;
+            if (target.state !== stateAtRequest) {
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...current,
+                    codexSubagents: {
+                      ...current.codexSubagents,
+                      [threadId]: { ...target, historyLoading: false },
+                    },
+                  },
+                },
+              };
+            }
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: replayCodexSubagentHistory(
+                  current,
+                  threadId,
+                  envelopes,
+                ),
+              },
+            };
+          });
+          if (get().activeSid !== sid) return;
+          const nestedThreadIds = Object.values(
+            get().sessions[sid]?.codexSubagents ?? {},
+          )
+            .filter((candidate) => candidate.parentThreadId === threadId)
+            .map((candidate) => candidate.threadId);
+          await Promise.all(
+            nestedThreadIds.map((nestedThreadId) =>
+              get().loadCodexSubagentHistory(nestedThreadId),
+            ),
+          );
+        } catch (error) {
+          set((state) => {
+            const current = state.sessions[sid];
+            const target = current?.codexSubagents[threadId];
+            if (!current || !target) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...current,
+                  codexSubagents: {
+                    ...current.codexSubagents,
+                    [threadId]: {
+                      ...target,
+                      historyLoading: false,
+                      historyError:
+                        error instanceof Error ? error.message : String(error),
+                    },
+                  },
+                },
+              },
+            };
+          });
+        }
       },
 
       send: async (text) => {

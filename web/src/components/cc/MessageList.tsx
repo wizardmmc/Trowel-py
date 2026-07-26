@@ -7,7 +7,7 @@ import {
   type RefObject,
 } from "react";
 
-import type { Turn } from "../../stores/ccStore";
+import type { PerSessionState, Turn } from "../../stores/ccStore";
 import { formatRunDuration } from "./durationLabel";
 import { EventTimeline } from "./EventTimeline";
 import { CurrentTurnContext } from "./CurrentTurnContext";
@@ -29,6 +29,9 @@ interface MessageListProps {
   readonly workdir?: string;
   readonly runtime?: string;
   readonly sessionId?: string;
+  readonly codexSubagents?: PerSessionState["codexSubagents"];
+  readonly onOpenSubagent?: (threadId: string) => void;
+  readonly emptyLabel?: string;
 }
 
 const INITIAL_VISIBLE_TURNS = 2;
@@ -54,6 +57,8 @@ function TurnCard({
   workdir,
   runtime,
   sessionId,
+  codexSubagents,
+  onOpenSubagent,
 }: {
   readonly turn: Turn;
   readonly turnIndex: number;
@@ -66,6 +71,8 @@ function TurnCard({
   readonly workdir?: string;
   readonly runtime?: string;
   readonly sessionId?: string;
+  readonly codexSubagents?: PerSessionState["codexSubagents"];
+  readonly onOpenSubagent?: (threadId: string) => void;
 }) {
   const hasContent = turn.items.length > 0;
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
@@ -106,6 +113,8 @@ function TurnCard({
               workdir={workdir}
               runtime={runtime}
               sessionId={sessionId}
+              codexSubagents={codexSubagents}
+              onOpenSubagent={onOpenSubagent}
             />
           </div>
         </div>
@@ -139,6 +148,9 @@ export function MessageList({
   workdir,
   runtime,
   sessionId,
+  codexSubagents,
+  onOpenSubagent,
+  emptyLabel,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const [visibleStart, setVisibleStart] = useState(() =>
@@ -337,7 +349,7 @@ export function MessageList({
   if (turns.length === 0) {
     return (
       <div className="cc-empty" data-testid="cc-empty">
-        <p>输入一条消息开始与 {runtimeLabel(runtime)} 对话。</p>
+        <p>{emptyLabel ?? `输入一条消息开始与 ${runtimeLabel(runtime)} 对话。`}</p>
       </div>
     );
   }
@@ -364,6 +376,8 @@ export function MessageList({
             workdir={workdir}
             runtime={runtime}
             sessionId={sessionId}
+            codexSubagents={codexSubagents}
+            onOpenSubagent={onOpenSubagent}
           />
         ))}
         <SpinnerLine />

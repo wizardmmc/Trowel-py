@@ -1647,6 +1647,13 @@
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   color: var(--text-secondary);
 }
+.cc-subagent[data-status="failed"] {
+  border-left-color: var(--color-error);
+}
+.cc-subagent[data-highlight="true"] {
+  outline: 2px solid var(--sunshine);
+  outline-offset: 2px;
+}
 .cc-subagent__header {
   display: flex;
   align-items: center;
@@ -1690,6 +1697,9 @@
   color: var(--garden-green);
   margin-left: auto;
 }
+.cc-subagent__done--failed {
+  color: var(--color-error);
+}
 
 
 .cc-subagent__children {
@@ -1712,6 +1722,83 @@
 .cc-subagent__more:hover {
   color: var(--text-primary);
   text-decoration: underline;
+}
+
+.cc-child-breadcrumb {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  font-size: 0.76rem;
+}
+.cc-child-breadcrumb button {
+  border: 0;
+  padding: 2px 0;
+  color: var(--garden-green);
+  background: none;
+  cursor: pointer;
+}
+.cc-child-breadcrumb span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.cc-child-history-error {
+  margin: 10px 14px 0;
+  color: var(--color-error);
+  font-size: 0.76rem;
+}
+
+.cc-agent-locator {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cc-agent-locator__row {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px 2px;
+  color: var(--text-primary);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.cc-agent-locator__row:hover {
+  background: rgba(74, 124, 89, 0.08);
+}
+.cc-agent-locator__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+.cc-agent-locator__status {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+.cc-agent-locator__status--completed {
+  color: var(--garden-green);
+}
+.cc-agent-locator__status--failed,
+.cc-agent-locator__status--cancelled {
+  color: var(--color-error);
 }
 
 .cc-elicit {

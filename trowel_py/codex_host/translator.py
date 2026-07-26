@@ -80,7 +80,8 @@ _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
 _ITEM_FILE_CHANGE = "fileChange"
 _ITEM_MCP_TOOL = "mcpToolCall"
-_ITEM_SUBAGENT = "subAgentActivity"  # started/completed 均未启用
+_ITEM_SUBAGENT = "subAgentActivity"
+_ITEM_COLLAB_AGENT_TOOL = "collabAgentToolCall"
 _ITEM_COMPACT = "contextCompaction"  # 仅 completed 形成边界
 _ITEM_REVIEW_ENTERED = "enteredReviewMode"
 _ITEM_REVIEW_EXITED = "exitedReviewMode"
@@ -325,8 +326,9 @@ class CodexTranslator:
         if item_type == _ITEM_MCP_TOOL:
             return [self._mcp_tool_started_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
-            # 未取得可信 fixture，started/completed 均不路由。
-            return []
+            return [self._subagent_item(params, item)]
+        if item_type == _ITEM_COLLAB_AGENT_TOOL:
+            return [self._collab_agent_tool_item(params, item)]
         if item_type == _ITEM_COMPACT:
             # started 不是上下文代际边界，只有 completed 才关闭一代。
             return []
@@ -350,7 +352,9 @@ class CodexTranslator:
         if item_type == _ITEM_MCP_TOOL:
             return [self._mcp_tool_completed_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
-            return []  # 未启用，不能仅凭已知 shape 发射事件
+            return [self._subagent_item(params, item)]
+        if item_type == _ITEM_COLLAB_AGENT_TOOL:
+            return [self._collab_agent_tool_item(params, item)]
         if item_type == _ITEM_COMPACT:
             # completed 是唯一可信的上下文代际边界。
             return [self._compaction_item(params, item)]
@@ -659,21 +663,52 @@ class CodexTranslator:
     def _subagent_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
-        """翻译尚未启用的 subAgentActivity shape。
+        """翻译已由 Codex 0.144.0 真实录制确认的 activity shape。
 
         父 thread 事件不含 usage、summary 或逐工具明细；这些信息依赖订阅
         sub-thread，不能在此虚构。
         """
 
+        agent_thread_id = _require(item, "agentThreadId", "subAgentActivity")
         return TranslatedItem(
             type=CodexEventType.SUBAGENT_ACTIVITY,
             thread_id=_as_str(_require(params, "threadId", "item/*")),
             turn_id=_as_str(_require(params, "turnId", "item/*")),
             item_id=_as_str(item.get("id")),
             payload=immutable_payload(
+                source="subagent_activity",
                 kind=item.get("kind"),
-                agent_thread_id=item.get("agentThreadId"),
+                agent_thread_id=_as_str(agent_thread_id),
                 agent_path=item.get("agentPath"),
+            ),
+        )
+
+    def _collab_agent_tool_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """保留 0.144.0 collabAgentToolCall 的稀疏原生字段。"""
+
+        receiver_thread_ids = item.get("receiverThreadIds")
+        if not isinstance(receiver_thread_ids, list):
+            raise ProtocolViolationError(
+                "collabAgentToolCall.receiverThreadIds is not an array",
+                payload=dict(item),
+            )
+        return TranslatedItem(
+            type=CodexEventType.SUBAGENT_ACTIVITY,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(_require(item, "id", "collabAgentToolCall")),
+            payload=immutable_payload(
+                source="collab_agent_tool_call",
+                tool=item.get("tool"),
+                status=item.get("status"),
+                sender_thread_id=item.get("senderThreadId"),
+                receiver_thread_ids=tuple(_as_str(value) for value in receiver_thread_ids),
+                prompt=item.get("prompt"),
+                model=item.get("model"),
+                reasoning_effort=item.get("reasoningEffort"),
+                agents_states=item.get("agentsStates"),
             ),
         )
 

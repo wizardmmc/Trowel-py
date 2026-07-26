@@ -8,7 +8,7 @@ from typing import Any
 from trowel_py.codex_host.protocol import SUPPORTED_CODEX_VERSION
 
 RESERVED_CODEX_COMMANDS: frozenset[str] = frozenset(
-    {"status", "compact", "review", "goal", "diff"}
+    {"status", "compact", "review", "goal", "diff", "agent"}
 )
 
 _COMMAND_TOKEN = re.compile(r"^\s*/([A-Za-z][A-Za-z0-9-]*)(?:\s|$)")
@@ -47,6 +47,13 @@ _VALIDATED_COMMANDS: tuple[dict[str, Any], ...] = (
         "description": "查看当前 turn 的聚合 diff",
         "source": "codex",
         "action": "diff",
+        "available_while_running": True,
+    },
+    {
+        "name": "agent",
+        "description": "查看并定位当前 thread 的 Subagent",
+        "source": "codex",
+        "action": "agent",
         "available_while_running": True,
     },
 )
