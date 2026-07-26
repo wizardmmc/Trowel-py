@@ -2835,6 +2835,47 @@
           }
         }
       },
+      "/api/model-os/wake": {
+        "post": {
+          "summary": "Submit Wake",
+          "description": "接受用户或人工唤醒；机器 observation 只能来自进程内 observer。",
+          "operationId": "submit_wake_api_model_os_wake_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WakeObservationBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Submit Wake Api Model Os Wake Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/sessions/{session_id}/yield": {
         "post": {
           "summary": "Propose Yield",
@@ -3822,6 +3863,36 @@
             "type"
           ],
           "title": "ValidationError"
+        },
+        "WakeObservationBody": {
+          "properties": {
+            "observation_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Observation Id"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "user_input",
+                "manual"
+              ],
+              "title": "Kind"
+            },
+            "target_ref": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Target Ref"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "observation_id",
+            "kind",
+            "target_ref"
+          ],
+          "title": "WakeObservationBody"
         },
         "YieldProposalBody": {
           "properties": {

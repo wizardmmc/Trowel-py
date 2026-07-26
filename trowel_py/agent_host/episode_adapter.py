@@ -15,6 +15,7 @@ from trowel_py.model_os.episode_starting.models import (
     StartEpisodeCommand,
 )
 from trowel_py.model_os.types import Episode, MemoryEligibility
+from trowel_py.model_os.types import EpisodeRuntimeBinding
 
 
 def _model_identity(identity: RuntimeIdentity | NativeSessionIdentity) -> NativeSessionIdentity:
@@ -102,6 +103,28 @@ class AgentEpisodeRuntimeAdapter:
     ) -> AsyncIterator[dict[str, Any]]:
         async for event in self._hub.stream(identity.agent_session_id, text):
             yield event
+
+    def reconcile(self, binding: EpisodeRuntimeBinding) -> str:
+        """清理旧 controller 的 runtime，不猜 terminal。"""
+
+        identity = NativeSessionIdentity(
+            agent_session_id=binding.agent_session_id,
+            runtime=binding.runtime,
+            native_session_id=binding.native_session_id,
+            runtime_generation=binding.runtime_generation,
+            runtime_pid=binding.runtime_pid,
+            runtime_pgid=binding.runtime_pgid,
+        )
+        if binding.runtime == "claude_code":
+            try:
+                return self._cc_reaper.reap(identity)
+            except RuntimeError:
+                return "unknown_requires_reconcile"
+        if binding.runtime == "codex":
+            if binding.runtime_pid is None or not self._pid_alive(binding.runtime_pid):
+                return "already_exited"
+            return "unknown_requires_reconcile"
+        return "unknown_requires_reconcile"
 
 
 def _pid_alive(pid: int) -> bool:

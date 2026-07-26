@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -61,6 +62,8 @@ async def lifespan(app: FastAPI):
     app.state.model_os_yield_coordinator = None
     app.state.model_os_episode_starter = None
     app.state.model_os_command_gate = None
+    app.state.model_os_wake_service = None
+    app.state.model_os_wake_controller = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -273,7 +276,12 @@ async def lifespan(app: FastAPI):
                 ):
                     return
                 generation = app.state.agent_hub.runtime_generation(session_id)
-                await app.state.model_os_yield_coordinator.observe(
+                from trowel_py.model_os.waking.runtime_bridge import (
+                    observe_runtime_event,
+                )
+
+                await observe_runtime_event(
+                    app.state.model_os_yield_coordinator,
                     session_id,
                     payload,
                     generation=generation,
@@ -289,10 +297,11 @@ async def lifespan(app: FastAPI):
                 StartEpisodeCoordinator,
             )
 
+            runtime_adapter = AgentEpisodeRuntimeAdapter(app.state.agent_hub)
             app.state.model_os_episode_starter = StartEpisodeCoordinator(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
-                adapter=AgentEpisodeRuntimeAdapter(app.state.agent_hub),
+                adapter=runtime_adapter,
                 yield_coordinator=app.state.model_os_yield_coordinator,
             )
             app.state.model_os_command_gate = ModelOsCommandGate(
@@ -300,9 +309,57 @@ async def lifespan(app: FastAPI):
                 broker=app.state.work_broker,
                 yield_coordinator=app.state.model_os_yield_coordinator,
             )
+            from trowel_py.model_os.waking.reconcile import StartupReconciler
+
+            reconciled = StartupReconciler(
+                app.state.model_os_store,
+                runtime_reconciler=runtime_adapter,
+            ).run()
+            if reconciled:
+                logger.info(
+                    "[model-os] reconciled %d pending runtime binding(s)",
+                    len(reconciled),
+                )
         except Exception:
             logger.warning("[model-os] yield coordinator failed to start", exc_info=True)
+    if app.state.model_os_store is not None:
+        try:
+            from trowel_py.model_os.waking.controller import WakeController
+            from trowel_py.model_os.waking.observers import (
+                HostSuspendDetector,
+                SystemObserver,
+                default_host_clock_sample,
+            )
+            from trowel_py.model_os.waking.runtime import WakeService
+
+            try:
+                host_detector = HostSuspendDetector(default_host_clock_sample)
+                host_detector.poll()
+            except Exception:
+                logger.info("[model-os] host suspend observer unavailable", exc_info=True)
+                host_detector = None
+            wake_service = WakeService(
+                app.state.model_os_store,
+                observer=SystemObserver(),
+                now=lambda: datetime.now(timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                host_detector=host_detector,
+            )
+            await wake_service.start()
+            app.state.model_os_wake_service = wake_service
+            app.state.model_os_wake_controller = WakeController(
+                app.state.model_os_store
+            )
+        except Exception:
+            logger.warning("[model-os] wake service failed to start", exc_info=True)
     yield
+    _wake_service = getattr(app.state, "model_os_wake_service", None)
+    if _wake_service is not None:
+        try:
+            await _wake_service.stop()
+        except Exception:
+            logger.warning("[model-os] wake service close failed", exc_info=True)
     _yield_coordinator = getattr(app.state, "model_os_yield_coordinator", None)
     if _yield_coordinator is not None:
         try:

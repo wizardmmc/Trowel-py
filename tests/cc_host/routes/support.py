@@ -26,6 +26,7 @@ class FakeHost:
         self.received: list[str] = []
         self.answered: dict[str, str] | None = None
         self.cancelled = False
+        self.pending_elicit_request_id = "req-1"
         # is_dead 区分未启动的临时会话与活动会话。
         self.is_dead = False
 

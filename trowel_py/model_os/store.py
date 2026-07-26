@@ -191,6 +191,8 @@ from trowel_py.model_os.context_observer import (
     ContextSample,
     context_sample_to_dict,
 )
+from trowel_py.model_os.waking.models import WakeEvent, WakeObservation
+from trowel_py.model_os.waking.persistence import consume_wake as _consume_wake
 
 _SCHEMA_VERSION = 7  # 认知信号历史使用独立、可重建的 projection。
 _DEFAULT_POLICY_VERSION = "v0"
@@ -2165,6 +2167,20 @@ class ModelOsStore:
         self._require_non_terminal(task)
         self._require_status(task, {TaskStatus.RUNNING})
         now = _now_iso()
+        if waiting.condition_id is None:
+            waiting = replace(
+                waiting,
+                condition_id=f"wake.condition.{uuid4().hex}",
+                registered_at=waiting.registered_at or now,
+                catchup_policy=(
+                    waiting.catchup_policy
+                    or (
+                        "merge_once"
+                        if waiting.condition_kind == "time"
+                        else "no_catchup"
+                    )
+                ),
+            )
         if self._read_foreground_task_id() == task_id:
             self._release_foreground_in_tx(task_id)
         if task.primary_work_item_id:
@@ -2193,9 +2209,17 @@ class ModelOsStore:
                     "open_question": waiting.open_question,
                     "preparation_snapshot_ref": waiting.preparation_snapshot_ref,
                     "earliest_review_at": waiting.earliest_review_at,
+                    "condition_id": waiting.condition_id,
+                    "registered_at": waiting.registered_at,
+                    "catchup_policy": waiting.catchup_policy,
                 },
             )
         )
+
+    def consume_wake(self, observation: WakeObservation) -> tuple[WakeEvent, ...]:
+        """原子消费一次外部 observation，并把命中的等待对象恢复为 ready。"""
+
+        return _consume_wake(self, observation)
 
     def set_waiting_user(
         self,
@@ -3338,9 +3362,20 @@ class ModelOsStore:
                 raise EpisodeCommandError(
                     f"episode {episode_id!r} has missing parent state"
                 )
+            existing_waiting = task.waiting_condition
+            retry_waiting = (
+                replace(
+                    waiting,
+                    condition_id=existing_waiting.condition_id,
+                    registered_at=existing_waiting.registered_at,
+                    catchup_policy=existing_waiting.catchup_policy,
+                )
+                if existing_waiting is not None
+                else waiting
+            )
             if (
                 task.status == TaskStatus.WAITING_EVENT
-                and task.waiting_condition == waiting
+                and existing_waiting == retry_waiting
                 and work_item.status == WorkItemStatus.SUSPENDED
                 and self._read_foreground_task_id() != task.task_id
             ):

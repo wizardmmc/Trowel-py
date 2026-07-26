@@ -12,7 +12,11 @@ from trowel_py.model_os.episode_starting import (
     NativeSessionIdentity,
     StartEpisodeCommand,
 )
-from trowel_py.model_os.types import MemoryEligibility, SessionPurpose
+from trowel_py.model_os.types import (
+    EpisodeRuntimeBinding,
+    MemoryEligibility,
+    SessionPurpose,
+)
 
 
 class FakeHub:
@@ -160,3 +164,41 @@ def test_cc_orphan_reaper_refuses_mismatched_or_own_group(
 
     with pytest.raises(RuntimeError):
         reaper.reap(identity)
+
+
+def _runtime_binding(runtime: str, *, pid: int | None, pgid: int | None):
+    return EpisodeRuntimeBinding(
+        episode_id="episode-1",
+        agent_session_id="agent-1",
+        runtime=runtime,
+        native_session_id="native-1",
+        runtime_generation="generation-1",
+        runtime_pid=pid,
+        runtime_pgid=pgid,
+        correlation_id="start-1",
+        possible_orphan=False,
+    )
+
+
+def test_startup_reconcile_uses_cc_reaper() -> None:
+    seen = []
+
+    class Reaper:
+        def reap(self, identity):
+            seen.append(identity)
+            return "killed_private_process_group"
+
+    adapter = AgentEpisodeRuntimeAdapter(FakeHub(), cc_reaper=Reaper())
+
+    assert adapter.reconcile(
+        _runtime_binding("claude_code", pid=321, pgid=321)
+    ) == "killed_private_process_group"
+    assert seen[0].runtime_generation == "generation-1"
+
+
+def test_startup_reconcile_codex_never_kills_surviving_unknown_process() -> None:
+    adapter = AgentEpisodeRuntimeAdapter(FakeHub(), pid_alive=lambda _pid: True)
+
+    assert adapter.reconcile(
+        _runtime_binding("codex", pid=456, pgid=None)
+    ) == "unknown_requires_reconcile"

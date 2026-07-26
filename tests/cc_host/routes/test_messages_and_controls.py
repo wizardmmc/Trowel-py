@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from trowel_py.schemas.cc_host import (
     FinishedEvent,
@@ -128,6 +129,36 @@ class TestAnswer:
         )
         assert resp.json()["success"] is True
         assert fake.cancelled is True
+        assert fake.answered is None
+
+    def test_managed_answer_is_queued_without_resuming_runtime(self):
+        fake = FakeHost([])
+        client = _mini_app({"s1": fake})
+
+        class Wake:
+            def manages(self, session_id):
+                return session_id == "s1"
+
+            def queue_for_session(self, session_id, **kwargs):
+                assert session_id == "s1"
+                assert kwargs["correlation_id"] == "req-1"
+                assert kwargs["payload"] == {
+                    "cancel": False,
+                    "answers": {"A or B?": "A"},
+                }
+                return SimpleNamespace(episode_id="episode-1")
+
+        client.app.state.model_os_wake_controller = Wake()
+        response = client.post(
+            "/api/cc/sessions/s1/answer",
+            json={"answers": {"A or B?": "A"}, "cancel": False},
+        )
+
+        assert response.json()["data"] == {
+            "answered": False,
+            "queued": True,
+            "episode_id": "episode-1",
+        }
         assert fake.answered is None
 
     def test_answer_unknown_404(self):

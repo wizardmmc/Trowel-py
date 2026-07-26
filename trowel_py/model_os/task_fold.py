@@ -95,6 +95,9 @@ def _waiting_from_payload(p: dict[str, Any]) -> WaitingCondition:
         open_question=p.get("open_question"),
         preparation_snapshot_ref=p.get("preparation_snapshot_ref"),
         earliest_review_at=p.get("earliest_review_at"),
+        condition_id=p.get("condition_id"),
+        registered_at=p.get("registered_at"),
+        catchup_policy=p.get("catchup_policy"),
     )
 
 

@@ -269,6 +269,35 @@ async def answer_elicit(
 ) -> dict:
     """回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。"""
     host = _require(sid, registry)
+    wake = getattr(request.app.state, "model_os_wake_controller", None)
+    if wake is not None and wake.manages(sid):
+        hub = getattr(request.app.state, "agent_hub", None)
+        try:
+            try:
+                generation = (
+                    hub.runtime_generation(sid)
+                    if hub is not None
+                    else "unavailable"
+                )
+            except Exception:
+                generation = "unavailable"
+            queued = wake.queue_for_session(
+                sid,
+                correlation_id=host.pending_elicit_request_id,
+                runtime_generation=generation,
+                payload={"cancel": body.cancel, "answers": body.answers},
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "success": True,
+            "data": {
+                "answered": False,
+                "queued": True,
+                "episode_id": queued.episode_id,
+            },
+            "error": None,
+        }
     gate = getattr(request.app.state, "model_os_command_gate", None)
     ticket = (
         gate.before_control(
