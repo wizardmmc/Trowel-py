@@ -53,6 +53,7 @@ from trowel_py.model_os.episode_fold import (
     _find_episode as _run_find_episode,
     _pending_from_payload as _run_pending_from_payload,
     _replace_episode as _run_replace_episode,
+    apply_episode_native_bound as _run_apply_episode_native_bound,
     episode_from_created as _run_episode_from_created,
 )
 from trowel_py.model_os.task_fold import (
@@ -388,6 +389,10 @@ def _apply_episode_status_change(snap: Snapshot, event: EventEnvelope) -> Snapsh
     )
 
 
+def _apply_episode_native_bound(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    return _run_apply_episode_native_bound(snap, event, runtime=_episode_fold_runtime())
+
+
 def _apply_episode_checkpoint(snap: Snapshot, event: EventEnvelope) -> Snapshot:
     return _run_apply_episode_checkpoint(snap, event, runtime=_episode_fold_runtime())
 
@@ -494,6 +499,8 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         return _apply_episode_status_change(snap, event)
     if event.kind == EventKind.EPISODE_CHECKPOINT_COMMITTED:
         return _apply_episode_checkpoint(snap, event)
+    if event.kind == EventKind.EPISODE_NATIVE_BOUND:
+        return _apply_episode_native_bound(snap, event)
     if event.kind == EventKind.EPISODE_SUSPENDED:
         return _apply_episode_suspended(snap, event)
     if event.kind == EventKind.EPISODE_WAIT_RESOLVED:

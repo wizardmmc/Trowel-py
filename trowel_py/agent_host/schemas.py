@@ -33,7 +33,13 @@ class CreateAgentSessionRequest(BaseModel):
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
     session_kind: Literal["user", "delegate"] = "user"
+    session_purpose: Literal[
+        "foreground", "default", "incubation", "maintenance", "experiment"
+    ] = "foreground"
     memory_eligibility: bool = Field(default=True, strict=True)
+    memory_eligibility_mode: Literal["eligible", "ineligible", "adopted"] = (
+        "eligible"
+    )
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     model_os_mcp_enabled: bool = Field(default=False, strict=True)
     parent_session_id: str | None = None

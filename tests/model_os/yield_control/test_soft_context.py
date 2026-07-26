@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -192,7 +193,62 @@ async def test_80_percent_dispatches_one_soft_request_with_runtime_cas(
         "runtime-generation-1",
     )
     assert "TROWEL_KERNEL_SOFT_YIELD" in text
+    expected_tool = (
+        "mcp__trowel_model_os__yield"
+        if runtime_name == "claude_code"
+        else "trowel_model_os.yield"
+    )
+    assert expected_tool in text
     assert "context_generation=0" in text
+    await coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_cc_terminal_usage_triggers_soft_request_on_next_turn(
+    store: ModelOsStore,
+) -> None:
+    episode, _, runtime, coordinator, registration = _setup(store)
+    await coordinator.register_turn(registration)
+    await coordinator.observe(
+        "session-1", _cc_usage(0), generation="runtime-generation-1"
+    )
+
+    terminal = await coordinator.observe(
+        "session-1",
+        _event(
+            "finished",
+            {
+                "usage": {
+                    "input_tokens": 160_000,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 0,
+                }
+            },
+        ),
+        generation="runtime-generation-1",
+    )
+
+    assert terminal is None
+    assert runtime.steers == []
+    latest = store.read_snapshot().latest_context_sample(episode.episode_id)
+    assert latest is not None and latest.latest_sample.used_tokens == 160_000
+
+    await coordinator.register_turn(replace(registration, turn_id="turn-2"))
+
+    assert runtime.steers == []
+    await coordinator.observe(
+        "session-1", _cc_usage(0), generation="runtime-generation-1"
+    )
+    assert runtime.steers == []
+    await coordinator.observe(
+        "session-1",
+        _event("tool_call", {"tool_use_id": "tool-1"}),
+        generation="runtime-generation-1",
+    )
+
+    assert len(runtime.steers) == 1
+    assert runtime.steers[0][2] == "turn-2"
     await coordinator.close()
 
 

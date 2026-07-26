@@ -140,6 +140,7 @@ class EventKind:
     EPISODE_SUSPENDED = "episode.suspended"
     EPISODE_WAIT_RESOLVED = "episode.wait_resolved"
     EPISODE_ACTIVATED = "episode.activated"
+    EPISODE_NATIVE_BOUND = "episode.native_bound"
     EPISODE_RECONCILE_REQUIRED = "episode.reconcile_required"
     EPISODE_INTERRUPT_RECONCILE_REQUIRED = (
         "episode.interrupt_reconcile_required"
@@ -447,3 +448,18 @@ class Episode:
     reconcile_reason: ReconcileReason | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class EpisodeRuntimeBinding:
+    """Episode 与 Session Hub/runtime 的 durable 控制身份。"""
+
+    episode_id: str
+    agent_session_id: str
+    runtime: str
+    native_session_id: str | None
+    runtime_generation: str
+    runtime_pid: int | None
+    runtime_pgid: int | None
+    correlation_id: str
+    possible_orphan: bool

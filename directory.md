@@ -29,6 +29,7 @@
 | `agent_host/events.py` | 两种 runtime 共用的 AgentEvent wire contract |
 | `agent_host/codex_settings.py` | Codex model 与 reasoning effort 的无 I/O 选择规则 |
 | `agent_host/codex_launch.py` | Codex session 启动配置与注入装配，不注册 manager 或持久化 binding |
+| `agent_host/episode_adapter.py` | StartEpisode 到 Session Hub 的三阶段 runtime adapter 与 CC 精确 orphan 清理 |
 | `cc_host/` / `codex_host/` | 两种原生 runtime 的进程、协议和事件适配 |
 | `codex_host/session_types.py` | Codex Session 冻结配置、MCP 配置与 thread 事实解析 |
 | `codex_host/transport_state.py` | Codex 客户端 pending response 与关闭清理状态 |
@@ -40,7 +41,8 @@
 | `codex_host/file_change_codec.py` | Codex fileChange 到前端 diff shape 的纯转换 |
 | `model_os/` | Task、Episode、租约、事件日志与模型资源仲裁 |
 | `model_os/yielding/` | 协作 yield、soft request、强制 interrupt、terminal race 与安全收口的唯一实现和导入入口 |
-| `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP 与本地 HTTP 登记边界 |
+| `model_os/episode_starting/` | 首段/fresh Episode 的上下文、command journal、crash recovery 与旧 API Kernel 门禁 |
+| `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP、Episode 启动 SSE 与本地 HTTP 边界 |
 | `model_os/episode_fold.py` / `work_item_fold.py` / `context_fold.py` | Reducer 的无 I/O 事件折叠策略 |
 | `model_os/store_event_factory.py` / `store_projection.py` | Store 事件构造与公开状态投影 |
 | `model_os/task_commands.py` | Task 创建、warm/foreground、等待与终态命令编排 |

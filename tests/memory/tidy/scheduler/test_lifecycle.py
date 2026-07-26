@@ -198,6 +198,8 @@ class TestLifespanIntegration:
             assert app.state.work_broker is not None
             assert app.state.model_os_store is not None
             assert app.state.model_os_yield_coordinator is not None
+            assert app.state.model_os_episode_starter is not None
+            assert app.state.model_os_command_gate is not None
             assert scheduler._work_gate._broker is app.state.work_broker
             assert (
                 app.state.memory_scheduler._work_gate._broker is app.state.work_broker
@@ -229,6 +231,8 @@ class TestLifespanIntegration:
             assert app.state.work_broker is None
             assert app.state.model_os_store is None
             assert app.state.model_os_yield_coordinator is None
+            assert app.state.model_os_episode_starter is None
+            assert app.state.model_os_command_gate is None
             assert app.state.agent_hub is not None
             assert app.state.memory_scheduler is None
             assert app.state.distill_scheduler is None

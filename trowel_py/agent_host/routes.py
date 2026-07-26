@@ -83,10 +83,16 @@ def _sse(event: dict[str, Any]) -> bytes:
 @router.post("/sessions")
 async def create_session(
     req: CreateAgentSessionRequest,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
+    if req.model_os_mcp_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Model OS managed sessions must use /api/model-os/episodes/start",
+        )
     req = await _await_hub(hub.prepare_create_request, req)
     explicit = req.model_fields_set
     if req.resume_from is not None:
@@ -220,11 +226,15 @@ async def delete_session(
 @router.post("/sessions/{session_id}/interrupt")
 async def interrupt_session(
     session_id: str,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """根据 binding 中断所属 runtime 的当前 turn。"""
 
-    await _await_hub(hub.interrupt, session_id)
+    gate = getattr(request.app.state, "model_os_command_gate", None)
+    handled = gate is not None and await gate.interrupt(session_id, hub=hub)
+    if not handled:
+        await _await_hub(hub.interrupt, session_id)
     return {"success": True, "data": {"interrupted": True}, "error": None}
 
 
@@ -244,14 +254,32 @@ async def answer_session_request(
     session_id: str,
     request_id: str,
     body: AnswerAgentRequest,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """校验归属和 decision 后回答一个 connection-scoped Codex request。"""
 
-    request = _call_hub(hub.answer_request, session_id, request_id, body.decision)
+    gate = getattr(request.app.state, "model_os_command_gate", None)
+    ticket = (
+        gate.before_control(
+            session_id,
+            command_kind="episode.approval_answer",
+            args=f"{request_id}:{body.decision}",
+        )
+        if gate is not None
+        else None
+    )
+    try:
+        answered = _call_hub(hub.answer_request, session_id, request_id, body.decision)
+    except BaseException:
+        if gate is not None:
+            gate.complete(ticket, unknown=True)
+        raise
+    if gate is not None:
+        gate.complete(ticket, result_code="runtime_accepted")
     return {
         "success": True,
-        "data": {"answered": True, "request": request},
+        "data": {"answered": True, "request": answered},
         "error": None,
     }
 
@@ -260,6 +288,7 @@ async def answer_session_request(
 async def send_message(
     session_id: str,
     body: SendMessageBody,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
     """发送一条消息并以 SSE 返回共享事件。
@@ -269,13 +298,31 @@ async def send_message(
     """
 
     async def gen():
+        gate = getattr(request.app.state, "model_os_command_gate", None)
+        ticket = None
+        completed = False
         try:
+            if gate is not None:
+                ticket = gate.before_send(session_id, body.text)
             async for event in hub.stream(session_id, body.text):
+                if gate is not None:
+                    await gate.observe_send_event(ticket, event, hub=hub)
+                    if event.get("type") in {
+                        "finished",
+                        "interrupted",
+                        "error",
+                        "session_exited",
+                    }:
+                        gate.complete(ticket)
+                        completed = True
                 yield _sse(event)
         except SessionHubError as exc:
             yield _sse(hub.error_envelope(session_id, str(exc)))
         except Exception as exc:  # noqa: BLE001 - 转为终止 error frame
             yield _sse(hub.error_envelope(session_id, str(exc)))
+        finally:
+            if gate is not None and ticket is not None and not completed:
+                gate.complete(ticket, unknown=True)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

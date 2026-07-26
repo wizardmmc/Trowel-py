@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -72,6 +73,10 @@ def _require(sid: str, registry: dict[str, CCHost]) -> CCHost:
 
 def _sse(event: object) -> str:
     return f"data: {event.model_dump_json()}\n\n"  # type: ignore[attr-defined]
+
+
+def _sse_payload(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,7 @@ def activate_session(
 async def send_message(
     sid: str,
     body: SendMessageRequest,
+    request: Request,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> StreamingResponse:
     """发送消息，并以 SSE 流返回 Trowel 事件。
@@ -198,13 +204,38 @@ async def send_message(
     async def gen() -> AsyncIterator[bytes]:
         """逐帧输出 host 事件；流内异常转换为终态 ErrorEvent。"""
 
+        gate = getattr(request.app.state, "model_os_command_gate", None)
+        hub = getattr(request.app.state, "agent_hub", None)
+        ticket = gate.before_send(sid, body.text) if gate is not None else None
+        completed = False
         try:
+            if ticket is not None:
+                if hub is None:
+                    raise RuntimeError("managed CC session has no Agent Hub")
+                async for envelope in hub.stream(sid, body.text):
+                    await gate.observe_send_event(ticket, envelope, hub=hub)
+                    raw = {"type": envelope["type"], **envelope.get("payload", {})}
+                    if envelope.get("turn_id") is not None:
+                        raw.setdefault("turn_id", envelope["turn_id"])
+                    if envelope["type"] in {
+                        "finished",
+                        "interrupted",
+                        "error",
+                        "session_exited",
+                    }:
+                        gate.complete(ticket)
+                        completed = True
+                    yield _sse_payload(raw).encode()
+                return
             async for event in host.send(body.text):
                 yield _sse(event).encode()
         except Exception as exc:  # noqa: BLE001 — 流已建立，只能用事件传递异常。
             yield _sse(
                 ErrorEvent(type="error", subclass="host_error", errors=[str(exc)])
             ).encode()
+        finally:
+            if ticket is not None and not completed:
+                gate.complete(ticket, unknown=True)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -212,11 +243,20 @@ async def send_message(
 @router.post("/sessions/{sid}/interrupt")
 async def interrupt(
     sid: str,
+    request: Request,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """中断当前 turn；会话仍保留供后续发送。"""
     host = _require(sid, registry)
-    await host.interrupt()
+    gate = getattr(request.app.state, "model_os_command_gate", None)
+    hub = getattr(request.app.state, "agent_hub", None)
+    handled = (
+        gate is not None
+        and hub is not None
+        and await gate.interrupt(sid, hub=hub)
+    )
+    if not handled:
+        await host.interrupt()
     return {"success": True, "data": {"interrupted": True}, "error": None}
 
 
@@ -224,14 +264,32 @@ async def interrupt(
 async def answer_elicit(
     sid: str,
     body: AnswerElicitRequest,
+    request: Request,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。"""
     host = _require(sid, registry)
-    if body.cancel:
-        ok = await host.cancel_elicit()
-    else:
-        ok = await host.answer_elicit(body.answers)
+    gate = getattr(request.app.state, "model_os_command_gate", None)
+    ticket = (
+        gate.before_control(
+            sid,
+            command_kind="episode.approval_answer",
+            args=("cancel" if body.cancel else json.dumps(body.answers, sort_keys=True)),
+        )
+        if gate is not None
+        else None
+    )
+    try:
+        if body.cancel:
+            ok = await host.cancel_elicit()
+        else:
+            ok = await host.answer_elicit(body.answers)
+    except BaseException:
+        if gate is not None:
+            gate.complete(ticket, unknown=True)
+        raise
+    if gate is not None:
+        gate.complete(ticket, result_code="runtime_accepted")
     return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
 
 

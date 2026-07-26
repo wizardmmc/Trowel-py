@@ -2798,6 +2798,43 @@
           }
         }
       },
+      "/api/model-os/episodes/start": {
+        "post": {
+          "summary": "Start Episode",
+          "description": "以同一 command 启动首段或 snapshot 后的 fresh Episode。",
+          "operationId": "start_episode_api_model_os_episodes_start_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartEpisodeBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/sessions/{session_id}/yield": {
         "post": {
           "summary": "Propose Yield",
@@ -3082,10 +3119,32 @@
               "title": "Session Kind",
               "default": "user"
             },
+            "session_purpose": {
+              "type": "string",
+              "enum": [
+                "foreground",
+                "default",
+                "incubation",
+                "maintenance",
+                "experiment"
+              ],
+              "title": "Session Purpose",
+              "default": "foreground"
+            },
             "memory_eligibility": {
               "type": "boolean",
               "title": "Memory Eligibility",
               "default": true
+            },
+            "memory_eligibility_mode": {
+              "type": "string",
+              "enum": [
+                "eligible",
+                "ineligible",
+                "adopted"
+              ],
+              "title": "Memory Eligibility Mode",
+              "default": "eligible"
             },
             "agent_mcp_enabled": {
               "type": "boolean",
@@ -3522,6 +3581,167 @@
           ],
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。"
+        },
+        "StartEpisodeBody": {
+          "properties": {
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Work Item Id"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            },
+            "previous_episode_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Previous Episode Id"
+            },
+            "previous_snapshot_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StartSnapshotRefBody"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            },
+            "memory_enabled": {
+              "type": "boolean",
+              "title": "Memory Enabled"
+            },
+            "profile_enabled": {
+              "type": "boolean",
+              "title": "Profile Enabled"
+            },
+            "workdir": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Workdir"
+            },
+            "session_purpose": {
+              "type": "string",
+              "enum": [
+                "foreground",
+                "default",
+                "incubation",
+                "maintenance",
+                "experiment"
+              ],
+              "title": "Session Purpose"
+            },
+            "memory_eligibility": {
+              "type": "string",
+              "enum": [
+                "eligible",
+                "ineligible",
+                "adopted"
+              ],
+              "title": "Memory Eligibility"
+            },
+            "permission": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Permission"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Idempotency Key"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "work_item_id",
+            "runtime",
+            "memory_enabled",
+            "profile_enabled",
+            "workdir",
+            "session_purpose",
+            "memory_eligibility",
+            "permission",
+            "idempotency_key"
+          ],
+          "title": "StartEpisodeBody"
+        },
+        "StartSnapshotRefBody": {
+          "properties": {
+            "episode_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Episode Id"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Version"
+            },
+            "committed_event_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Committed Event Id"
+            },
+            "payload_hash": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Payload Hash"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "episode_id",
+            "version",
+            "committed_event_id",
+            "payload_hash"
+          ],
+          "title": "StartSnapshotRefBody"
         },
         "SubmitRequest": {
           "properties": {

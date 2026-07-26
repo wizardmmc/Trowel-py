@@ -107,4 +107,18 @@ def cc_events_from_agent(
                     turn_id=opt_str_fn(event.get("turn_id")),
                 )
             )
+        elif type_ == "finished":
+            usage = payload.get("usage")
+            if isinstance_fn(usage, mapping_type):
+                out.append(
+                    event_type(
+                        type="assistant",
+                        subtype=None,
+                        timestamp=opt_str_fn(payload.get("timestamp")),
+                        message_id=None,
+                        model=None,
+                        usage=usage,
+                        turn_id=opt_str_fn(event.get("turn_id")),
+                    )
+                )
     return out

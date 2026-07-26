@@ -87,6 +87,28 @@ class TestAgentEventAdapter:
         assert [s.generation for s in samples] == [0, 1]
         assert samples[0].used_tokens == 50100
 
+    def test_cc_finished_event_preserves_terminal_usage(self):
+        normalized = cc_context_events_from_agent(
+            [
+                {
+                    "type": "finished",
+                    "turn_id": "t1",
+                    "payload": {
+                        "usage": {
+                            "input_tokens": 50000,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 100,
+                            "output_tokens": 50,
+                        }
+                    },
+                }
+            ]
+        )
+
+        assert len(normalized) == 1
+        assert normalized[0].type == "assistant"
+        assert normalized[0].usage["input_tokens"] == 50000
+
 
 class TestCodexFixture:
     def test_usage_compact_sequence_matches_083(self):

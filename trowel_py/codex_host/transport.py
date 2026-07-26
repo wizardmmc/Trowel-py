@@ -57,6 +57,7 @@ class SubprocessLike(Protocol):
     stderr: Any
 
     returncode: int | None
+    pid: int
 
     def terminate(self) -> None: ...
 
@@ -137,6 +138,10 @@ class AppServerClient:
     @property
     def last_exit_code(self) -> int | None:
         return self._last_exit_code
+
+    @property
+    def process_id(self) -> int | None:
+        return getattr(self._process, "pid", None)
 
     @property
     def stderr_tail(self) -> str:

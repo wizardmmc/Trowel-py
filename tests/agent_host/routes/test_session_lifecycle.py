@@ -29,6 +29,21 @@ def test_post_sessions_creates_codex(client: TestClient, workdir: Path) -> None:
     assert response.json()["data"]["runtime"] == "codex"
 
 
+def test_legacy_agent_create_rejects_model_os_managed_session(
+    client: TestClient, workdir: Path
+) -> None:
+    response = client.post(
+        "/api/agent/sessions",
+        json={
+            "runtime": "codex",
+            "workdir": str(workdir),
+            "model_os_mcp_enabled": True,
+        },
+    )
+
+    assert response.status_code == 409
+
+
 def test_post_sessions_missing_workdir_400(
     client: TestClient,
     tmp_path: Path,

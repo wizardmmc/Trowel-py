@@ -227,6 +227,25 @@ class CCHost:
         return self._active_turn_id
 
     @property
+    def runtime_pid(self) -> int | None:
+        return getattr(self._proc, "pid", None)
+
+    @property
+    def runtime_pgid(self) -> int | None:
+        pid = self.runtime_pid
+        if pid is None:
+            return None
+        try:
+            return os.getpgid(pid)
+        except OSError:
+            return None
+
+    async def start_native(self) -> None:
+        """只拉起 fresh CC 进程；原生 session id 要等首轮 init。"""
+
+        await self._ensure_process()
+
+    @property
     def _model_for_display(self) -> str:
         return self._model or "(cc default)"
 
@@ -627,9 +646,6 @@ class CCHost:
         payload = _user_msg(action.text)
         turn_id, revertible = await self._prepare_checkpoint()
         self._active_turn_id = turn_id
-        yield TurnStartEvent(
-            type="turn_start", turn_id=turn_id, revertible=revertible
-        )
         _wf_debug(
             f"SEND_START cc_sid={self._cc_session_id} text={action.text[:40]!r}"
         )
@@ -667,6 +683,9 @@ class CCHost:
                 normal_end = True
                 return
             detector.record_event(self._now())
+            yield TurnStartEvent(
+                type="turn_start", turn_id=turn_id, revertible=revertible
+            )
 
             while True:
                 for wfev in self._workflow_watcher.poll():
