@@ -287,11 +287,14 @@
       "elicit_request",
       "error",
       "finished",
+      "goal_cleared",
+      "goal_updated",
       "hook",
       "host_status",
       "interrupted",
       "local_command",
       "model_changed",
+      "plan_updated",
       "rate_limit_updated",
       "retrying",
       "session_exited",
@@ -2607,6 +2610,228 @@
           }
         }
       },
+      "/api/agent/sessions/{session_id}/goal": {
+        "get": {
+          "summary": "Get Codex Goal",
+          "description": "读取 Codex thread 的原生 Goal；Claude Code 会话不适用。",
+          "operationId": "get_codex_goal_api_agent_sessions__session_id__goal_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Codex Goal Api Agent Sessions  Session Id  Goal Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Set Codex Goal",
+          "description": "创建或局部更新 Codex thread 的原生 Goal。",
+          "operationId": "set_codex_goal_api_agent_sessions__session_id__goal_put",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetCodexGoalRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Set Codex Goal Api Agent Sessions  Session Id  Goal Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Clear Codex Goal",
+          "description": "清除 Codex thread 的原生 Goal。",
+          "operationId": "clear_codex_goal_api_agent_sessions__session_id__goal_delete",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Clear Codex Goal Api Agent Sessions  Session Id  Goal Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/events": {
+        "get": {
+          "summary": "Stream Codex Events",
+          "description": "常驻订阅 Codex live 事件；多个客户端共享一个原生队列 reader。",
+          "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/turns": {
+        "post": {
+          "summary": "Start Codex Turn",
+          "description": "启动一个 Codex turn，live 事件由常驻 events SSE 发送。",
+          "operationId": "start_codex_turn_api_agent_sessions__session_id__turns_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Start Codex Turn Api Agent Sessions  Session Id  Turns Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/{session_id}/messages": {
         "post": {
           "summary": "Send Message",
@@ -3402,6 +3627,55 @@
           ],
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。"
+        },
+        "SetCodexGoalRequest": {
+          "properties": {
+            "objective": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Objective"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "paused",
+                    "blocked",
+                    "usageLimited",
+                    "budgetLimited",
+                    "complete"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            },
+            "token_budget": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1.0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Budget"
+            }
+          },
+          "type": "object",
+          "title": "SetCodexGoalRequest"
         },
         "SubmitRequest": {
           "properties": {

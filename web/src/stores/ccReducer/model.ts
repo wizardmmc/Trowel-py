@@ -206,17 +206,49 @@ export interface Task {
   readonly status: "pending" | "in_progress" | "completed";
 }
 
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface CodexGoal {
+  readonly objective: string;
+  readonly status: CodexGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface CodexPlanStep {
+  readonly step: string;
+  readonly status: "pending" | "inProgress" | "completed";
+}
+
+export interface CodexPlan {
+  readonly explanation: string | null;
+  readonly steps: readonly CodexPlanStep[];
+}
+
 export interface ReducerState {
   readonly turns: readonly Turn[];
   readonly phase: Phase;
   readonly meta: SessionMeta;
   readonly tasks: readonly Task[];
+  readonly goal: CodexGoal | null;
+  readonly plan: CodexPlan | null;
 }
 
 export const INITIAL_REDUCER_STATE: ReducerState = {
   turns: [],
   phase: "idle",
   tasks: [],
+  goal: null,
+  plan: null,
   meta: {
     model: null,
     ccSessionId: null,

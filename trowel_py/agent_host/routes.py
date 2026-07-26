@@ -35,6 +35,7 @@ from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
     CreateAgentSessionRequest,
     PatchAgentSessionRequest,
+    SetCodexGoalRequest,
     SendMessageBody,
 )
 
@@ -296,6 +297,85 @@ async def answer_session_request(
     return {
         "success": True,
         "data": {"answered": True, "request": request},
+        "error": None,
+    }
+
+
+@router.get("/sessions/{session_id}/goal")
+async def get_codex_goal(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """读取 Codex thread 的原生 Goal；Claude Code 会话不适用。"""
+
+    goal = await _await_hub(hub.get_codex_goal, session_id)
+    return {"success": True, "data": {"goal": goal}, "error": None}
+
+
+@router.put("/sessions/{session_id}/goal")
+async def set_codex_goal(
+    session_id: str,
+    body: SetCodexGoalRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """创建或局部更新 Codex thread 的原生 Goal。"""
+
+    if not body.model_fields_set:
+        raise HTTPException(status_code=422, detail="Goal update requires at least one field")
+    goal = await _await_hub(
+        hub.set_codex_goal,
+        session_id,
+        objective=body.objective,
+        status=body.status,
+        token_budget=body.token_budget,
+        token_budget_supplied="token_budget" in body.model_fields_set,
+    )
+    return {"success": True, "data": {"goal": goal}, "error": None}
+
+
+@router.delete("/sessions/{session_id}/goal")
+async def clear_codex_goal(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """清除 Codex thread 的原生 Goal。"""
+
+    cleared = await _await_hub(hub.clear_codex_goal, session_id)
+    return {"success": True, "data": {"cleared": cleared}, "error": None}
+
+
+@router.get("/sessions/{session_id}/events")
+def stream_codex_events(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> StreamingResponse:
+    """常驻订阅 Codex live 事件；多个客户端共享一个原生队列 reader。"""
+
+    # 在返回 200 前完成 runtime/归属检查。
+    _call_hub(hub.require_codex_session, session_id)
+
+    async def gen():
+        try:
+            async for event in hub.subscribe_codex_events(session_id):
+                yield _sse(event)
+        except SessionHubError as exc:
+            yield _sse(hub.error_envelope(session_id, exc))
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/turns")
+async def start_codex_turn(
+    session_id: str,
+    body: SendMessageBody,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """启动一个 Codex turn，live 事件由常驻 events SSE 发送。"""
+
+    turn_id = await _await_hub(hub.start_codex_turn, session_id, body.text)
+    return {
+        "success": True,
+        "data": {"turn_id": turn_id},
         "error": None,
     }
 

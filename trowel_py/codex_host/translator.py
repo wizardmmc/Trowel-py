@@ -44,15 +44,12 @@ _IGNORED_METHODS: frozenset[str] = frozenset(
     {
         # start/resume 响应已生成 session_started，后续通知会重复且没有顶层 threadId。
         "thread/started",
-        # turn/start 响应已生成 TURN_STARTED，通知只是回显。
-        "turn/started",
         # 尚无可信 fixture 或消费契约。
         "mcpServer/startupStatus/updated",
         "serverRequest/resolved",
         "thread/turns/list",
         "thread/items/list",
         # 已有 handler，但仍受 manager 门控。
-        "turn/plan/updated",
         "warning",
         "guardianWarning",
         # shape 尚未验证，也没有 handler。
@@ -73,6 +70,9 @@ _TURN_COMPLETED = "completed"
 _TURN_INTERRUPTED = "interrupted"
 _TURN_FAILED = "failed"
 _TURN_IN_PROGRESS = "inProgress"
+_GOAL_STATUSES = frozenset(
+    {"active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"}
+)
 
 # item.type 路由表之外的类型不会猜测语义，而是返回空结果。
 _ITEM_COMMAND = "commandExecution"
@@ -190,7 +190,8 @@ class CodexTranslator:
             "thread/status/changed": self._on_thread_status,
             "error": self._on_error,
             "account/rateLimits/updated": self._on_rate_limits,
-            # 已登记 shape，但 manager 仍通过 _IGNORED_METHODS 阻止运行时路由。
+            "thread/goal/updated": self._on_goal_updated,
+            "thread/goal/cleared": self._on_goal_cleared,
             "turn/plan/updated": self._on_plan_updated,
             "warning": self._on_warning,
             "guardianWarning": self._on_warning,
@@ -561,12 +562,54 @@ class CodexTranslator:
             )
         ]
 
-    # plan/warning 虽已登记 handler，manager 仍会在 translate 前丢弃；
+    # warning 虽已登记 handler，manager 仍会在 translate 前丢弃；
     # subagent 的 started/completed 也显式返回空。启用前必须取得可信 fixture。
     # compaction 不属于该门控：仅 completed 已形成运行时边界。
 
+    def _on_goal_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        method = "thread/goal/updated"
+        thread_id = _as_str(_require(params, "threadId", method))
+        goal = _require(params, "goal", method)
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError(
+                f"notification {method!r} goal is not an object",
+                payload=dict(params),
+            )
+        status = _require(goal, "status", method)
+        if status not in _GOAL_STATUSES:
+            raise ProtocolViolationError(
+                f"notification {method!r} goal has unexpected status {status!r}",
+                payload=dict(goal),
+            )
+        turn_id = params.get("turnId")
+        return [
+            TranslatedItem(
+                type=CodexEventType.GOAL_UPDATED,
+                thread_id=thread_id,
+                turn_id=turn_id if isinstance(turn_id, str) else None,
+                payload=immutable_payload(
+                    objective=_as_str(_require(goal, "objective", method)),
+                    status=_as_str(status),
+                    token_budget=goal.get("tokenBudget"),
+                    tokens_used=_require(goal, "tokensUsed", method),
+                    time_used_seconds=_require(goal, "timeUsedSeconds", method),
+                    created_at=_require(goal, "createdAt", method),
+                    updated_at=_require(goal, "updatedAt", method),
+                ),
+            )
+        ]
+
+    def _on_goal_cleared(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        method = "thread/goal/cleared"
+        return [
+            TranslatedItem(
+                type=CodexEventType.GOAL_CLEARED,
+                thread_id=_as_str(_require(params, "threadId", method)),
+            )
+        ]
+
     def _on_plan_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """翻译尚未启用的 plan shape。
+        """翻译当前 turn 的完整 plan 快照。
 
         TurnPlanStep 没有 id，且只允许 pending/inProgress/completed；
         turn 中断由 turn 状态表达，不虚构 abandoned 步骤。

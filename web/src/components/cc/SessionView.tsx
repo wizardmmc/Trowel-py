@@ -69,6 +69,7 @@ export function SessionView({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [workRailOpen, setWorkRailOpen] = useState(false);
   const [newSessionInitialConfig, setNewSessionInitialConfig] =
     useState<NewSessionConfig | null>(null);
   const {
@@ -98,6 +99,7 @@ export function SessionView({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
+    setWorkRailOpen(false);
   }, [activeSid]);
 
   useSessionLifecycle({
@@ -156,6 +158,10 @@ export function SessionView({
     const idx = turns.findIndex((t) => t.id === revertTarget.id);
     return idx === -1 ? [] : turns.slice(idx);
   })();
+  const workSummary =
+    active?.runtime === "codex"
+      ? `目标 ${active.plan?.steps.filter((step) => step.status === "completed").length ?? 0}/${active.plan?.steps.length ?? 0}`
+      : null;
 
   async function handleRevertConfirm() {
     if (!revertTarget?.turnId) return;
@@ -187,6 +193,9 @@ export function SessionView({
           historyError={historyError}
           workdir={active?.workdir ?? workdir}
           nativeSessionId={active?.nativeSessionId ?? null}
+          workSummary={workSummary}
+          workRailLabel="打开目标与计划"
+          onToggleWorkRail={() => setWorkRailOpen(true)}
           onInterrupt={() => void interrupt()}
           onPickHistory={(row) => void handlePick(row)}
           onLoadMoreHistory={() => void loadMoreHistory()}
@@ -345,7 +354,18 @@ export function SessionView({
           }
         />
       </div>
-      <TodoBar />
+      <TodoBar
+        drawerOpen={workRailOpen}
+        onCloseDrawer={() => setWorkRailOpen(false)}
+      />
+      {workRailOpen && (
+        <button
+          type="button"
+          className="cc-workrail-backdrop"
+          aria-label="关闭目标与计划"
+          onClick={() => setWorkRailOpen(false)}
+        />
+      )}
     </div>
   );
 }

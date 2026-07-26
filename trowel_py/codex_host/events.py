@@ -34,6 +34,8 @@ class CodexEventType(str, Enum):
     ERROR = "error"
     # 账户级通知没有 thread_id，由 manager 向全部已注册 session 广播。
     RATE_LIMIT_UPDATED = "rate_limit_updated"
+    GOAL_UPDATED = "goal_updated"
+    GOAL_CLEARED = "goal_cleared"
     PLAN_UPDATED = "plan_updated"
     SUBAGENT_ACTIVITY = "subagent_activity"
     COMPACTION = "compaction"
