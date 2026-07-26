@@ -126,3 +126,9 @@ def test_mcp_config_coexists_with_system_prompt() -> None:
     assert "--mcp-config" in args
     assert "--strict-mcp-config" in args
     assert "--append-system-prompt" in args
+
+
+def test_empty_native_tool_roster_is_explicit() -> None:
+    args = build_args(workdir=WORKDIR, native_tools=())
+
+    assert args[-2:] == ["--tools", ""]

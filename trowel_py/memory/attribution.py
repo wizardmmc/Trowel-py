@@ -28,6 +28,7 @@ class Attribution:
     cc_session_id: str | None
     session_kind: str
     basis: AttributionBasis
+    memory_eligibility: str = "eligible"
 
     @property
     def attributed(self) -> bool:
@@ -37,7 +38,11 @@ class Attribution:
     @property
     def is_user(self) -> bool:
         """是否属于用户会话；内部任务与未归属记录不进入用户指标。"""
-        return self.attributed and self.session_kind == "user"
+        return (
+            self.attributed
+            and self.session_kind == "user"
+            and self.memory_eligibility == "eligible"
+        )
 
 
 class AttributionIndex:
@@ -47,9 +52,11 @@ class AttributionIndex:
         self,
         by_trowel: dict[str, SessionBinding],
         cc_kinds: dict[str, str],
+        cc_eligibility: dict[str, str] | None = None,
     ) -> None:
         self._by_trowel = by_trowel
         self._cc_kinds = cc_kinds
+        self._cc_eligibility = cc_eligibility or {}
 
     @classmethod
     def empty(cls) -> "AttributionIndex":
@@ -59,7 +66,7 @@ class AttributionIndex:
     def from_repo(cls, repo: SessionsRepository) -> "AttributionIndex":
         """从已打开的仓储加载绑定和会话类型。"""
         by_trowel = {b.trowel_session_id: b for b in repo.all_bindings()}
-        return cls(by_trowel, repo.all_cc_kinds())
+        return cls(by_trowel, repo.all_cc_kinds(), repo.all_cc_eligibility())
 
     @classmethod
     def from_root(cls, root: Path | str) -> "AttributionIndex":
@@ -86,12 +93,14 @@ class AttributionIndex:
                     cc_session_id=binding.cc_session_id,
                     session_kind=binding.session_kind,
                     basis="trowel_binding",
+                    memory_eligibility=binding.memory_eligibility,
                 )
         if cc_session_id:
             return Attribution(
                 cc_session_id=cc_session_id,
                 session_kind=self._cc_kinds.get(cc_session_id, "unknown"),
                 basis="cc_session_id",
+                memory_eligibility=self._cc_eligibility.get(cc_session_id, "eligible"),
             )
         return Attribution(
             cc_session_id=None, session_kind="unknown", basis="unattributed"

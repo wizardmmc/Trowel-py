@@ -320,6 +320,8 @@ class SessionHub:
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
             session_kind=req.session_kind,
+            memory_eligibility_mode=req.memory_eligibility_mode,
+            native_tools_mode=req.native_tools_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
             delegation_depth=req.delegation_depth,
@@ -352,6 +354,7 @@ class SessionHub:
             memory_eligibility_mode=req.memory_eligibility_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
+            native_tools_mode=req.native_tools_mode,
             parent_session_id=req.parent_session_id,
             delegation_depth=req.delegation_depth,
             capabilities=CC_CAPABILITIES,
@@ -393,6 +396,7 @@ class SessionHub:
             memory_eligibility_mode=req.memory_eligibility_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
+            native_tools_mode=req.native_tools_mode,
             parent_session_id=req.parent_session_id,
             delegation_depth=req.delegation_depth,
             capabilities=CODEX_CAPABILITIES,
@@ -764,7 +768,7 @@ class SessionHub:
         """controller restart 后按 durable binding 重建同一托管会话。"""
 
         previous = self._require(session_id)
-        if not previous.model_os_mcp_enabled:
+        if not previous.model_os_mcp_enabled and previous.session_purpose != "default":
             raise SessionAccessError("only Model OS managed sessions can be recreated")
         if previous.runtime is Runtime.CLAUDE_CODE:
             from trowel_py.cc_host import routes as cc_routes
@@ -785,6 +789,19 @@ class SessionHub:
             permission_preset=(
                 previous.permission_preset
                 if previous.runtime is Runtime.CODEX
+                and previous.session_purpose != "default"
+                else None
+            ),
+            approval_policy=(
+                "never"
+                if previous.runtime is Runtime.CODEX
+                and previous.session_purpose == "default"
+                else None
+            ),
+            sandbox=(
+                "read-only"
+                if previous.runtime is Runtime.CODEX
+                and previous.session_purpose == "default"
                 else None
             ),
             memory_enabled=previous.memory_enabled,
@@ -795,7 +812,8 @@ class SessionHub:
             memory_eligibility=previous.memory_eligibility,
             memory_eligibility_mode=previous.memory_eligibility_mode,  # type: ignore[arg-type]
             agent_mcp_enabled=previous.agent_mcp_enabled,
-            model_os_mcp_enabled=True,
+            model_os_mcp_enabled=previous.model_os_mcp_enabled,
+            native_tools_mode=previous.native_tools_mode,  # type: ignore[arg-type]
             parent_session_id=previous.parent_session_id,
             delegation_depth=previous.delegation_depth,
         )

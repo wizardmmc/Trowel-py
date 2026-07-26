@@ -138,6 +138,7 @@ class EventKind:
     EPISODE_CHECKPOINT_COMMITTED = "episode.checkpoint_committed"
     EPISODE_CLOSED = "episode.closed"
     EPISODE_FAILED = "episode.failed"
+    EPISODE_CANCELLED = "episode.cancelled"
     EPISODE_SUSPENDED = "episode.suspended"
     EPISODE_WAIT_RESOLVED = "episode.wait_resolved"
     EPISODE_ACTIVATED = "episode.activated"
@@ -363,10 +364,15 @@ class EpisodeStatus(str, Enum):
     RECOVERING = "recovering"
     CLOSED = "closed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
     @property
     def is_terminal(self) -> bool:
-        return self in (EpisodeStatus.CLOSED, EpisodeStatus.FAILED)
+        return self in (
+            EpisodeStatus.CLOSED,
+            EpisodeStatus.FAILED,
+            EpisodeStatus.CANCELLED,
+        )
 
 
 class SnapshotSource(str, Enum):

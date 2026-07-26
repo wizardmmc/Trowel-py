@@ -194,19 +194,19 @@
         "type": "table",
         "name": "codex_turns",
         "table": "codex_turns",
-        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, session_kind TEXT NOT NULL DEFAULT 'user', PRIMARY KEY (thread_id, turn_id) )"
+        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, session_kind TEXT NOT NULL DEFAULT 'user', memory_eligibility TEXT NOT NULL DEFAULT 'eligible', PRIMARY KEY (thread_id, turn_id) )"
       },
       {
         "type": "table",
         "name": "session_bindings",
         "table": "session_bindings",
-        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL )"
+        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, memory_eligibility TEXT NOT NULL DEFAULT 'eligible' )"
       },
       {
         "type": "table",
         "name": "sessions",
         "table": "sessions",
-        "sql": "CREATE TABLE sessions ( cc_session_id TEXT PRIMARY KEY, workdir TEXT NOT NULL, date TEXT NOT NULL, jsonl_path TEXT, registered_at TEXT NOT NULL, extracted_at TEXT, session_kind TEXT DEFAULT 'user', last_completed_offset INTEGER, last_completed_at TEXT, last_extracted_offset INTEGER, last_extracted_at TEXT )"
+        "sql": "CREATE TABLE sessions ( cc_session_id TEXT PRIMARY KEY, workdir TEXT NOT NULL, date TEXT NOT NULL, jsonl_path TEXT, registered_at TEXT NOT NULL, extracted_at TEXT, session_kind TEXT DEFAULT 'user', memory_eligibility TEXT NOT NULL DEFAULT 'eligible', last_completed_offset INTEGER, last_completed_at TEXT, last_extracted_offset INTEGER, last_extracted_at TEXT )"
       }
     ],
     "model_os": [
@@ -239,6 +239,12 @@
         "name": "idx_decisions_journal_page",
         "table": "decisions",
         "sql": "CREATE INDEX idx_decisions_journal_page ON decisions(decided_at, seq)"
+      },
+      {
+        "type": "index",
+        "name": "idx_default_generation_live_identity",
+        "table": "default_generations",
+        "sql": "CREATE UNIQUE INDEX idx_default_generation_live_identity ON default_generations(identity_hash) WHERE status IN ('pending', 'terminal', 'succeeded')"
       },
       {
         "type": "index",
@@ -293,6 +299,36 @@
         "name": "decisions",
         "table": "decisions",
         "sql": "CREATE TABLE decisions ( seq INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, disposition TEXT NOT NULL, decided_at TEXT NOT NULL, work_item_id TEXT, task_id TEXT, episode_id TEXT, cause_id TEXT, correlation_id TEXT, policy_version TEXT NOT NULL, signals TEXT NOT NULL, candidates TEXT NOT NULL, choice TEXT NOT NULL, reason TEXT NOT NULL, budget_before TEXT, budget_after TEXT, identity_hash TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "default_candidates",
+        "table": "default_candidates",
+        "sql": "CREATE TABLE default_candidates ( candidate_id TEXT PRIMARY KEY, generation_id TEXT NOT NULL, content TEXT NOT NULL, source_refs_json TEXT NOT NULL, related_question TEXT NOT NULL, why_useful TEXT NOT NULL, verification TEXT NOT NULL, uncertainty TEXT NOT NULL, runtime TEXT NOT NULL, effective_model TEXT NOT NULL, tier TEXT NOT NULL, policy_version TEXT NOT NULL, source_hashes_json TEXT NOT NULL, normalized_claim_hash TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, shown_at TEXT, outcome_at TEXT, outcome_reason TEXT, expires_at TEXT, UNIQUE(policy_version, source_hashes_json, normalized_claim_hash) )"
+      },
+      {
+        "type": "table",
+        "name": "default_commands",
+        "table": "default_commands",
+        "sql": "CREATE TABLE default_commands ( command_id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(command_id)) > 0), fingerprint TEXT NOT NULL, generation_id TEXT NOT NULL, runtime TEXT NOT NULL, source_refs_json TEXT NOT NULL, occurred_at TEXT NOT NULL, result_json TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "default_duplicate_outcomes",
+        "table": "default_duplicate_outcomes",
+        "sql": "CREATE TABLE default_duplicate_outcomes ( duplicate_id TEXT PRIMARY KEY, generation_id TEXT NOT NULL, existing_candidate_id TEXT NOT NULL, normalized_claim_hash TEXT NOT NULL, occurred_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "default_generations",
+        "table": "default_generations",
+        "sql": "CREATE TABLE default_generations ( generation_id TEXT PRIMARY KEY, identity_hash TEXT NOT NULL, work_item_id TEXT NOT NULL, episode_id TEXT, runtime TEXT NOT NULL, requested_tier TEXT NOT NULL, effective_model TEXT, policy_version TEXT NOT NULL, sources_json TEXT NOT NULL, status TEXT NOT NULL, model_called INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, input_tokens INTEGER, output_tokens INTEGER, wall_seconds REAL, cost REAL, created_at TEXT NOT NULL, completed_at TEXT, validated_output_json TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "default_outcome_commands",
+        "table": "default_outcome_commands",
+        "sql": "CREATE TABLE default_outcome_commands ( command_id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(command_id)) > 0), fingerprint TEXT NOT NULL, candidate_id TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT, occurred_at TEXT NOT NULL )"
       },
       {
         "type": "table",
@@ -2798,6 +2834,150 @@
           }
         }
       },
+      "/api/model-os/default/pilot": {
+        "post": {
+          "summary": "Run Default Pilot",
+          "operationId": "run_default_pilot_api_model_os_default_pilot_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDefaultPilotBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Run Default Pilot Api Model Os Default Pilot Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/default/candidates/{candidate_id}/outcome": {
+        "post": {
+          "summary": "Record Default Candidate Outcome",
+          "operationId": "record_default_candidate_outcome_api_model_os_default_candidates__candidate_id__outcome_post",
+          "parameters": [
+            {
+              "name": "candidate_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Candidate Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateOutcomeBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Record Default Candidate Outcome Api Model Os Default Candidates  Candidate Id  Outcome Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/default/gate": {
+        "get": {
+          "summary": "Default Gate",
+          "operationId": "default_gate_api_model_os_default_gate_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Default Gate Api Model Os Default Gate Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/default/generations/{generation_id}": {
+        "get": {
+          "summary": "Read Default Generation",
+          "operationId": "read_default_generation_api_model_os_default_generations__generation_id__get",
+          "parameters": [
+            {
+              "name": "generation_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Generation Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "title": "Response Read Default Generation Api Model Os Default Generations  Generation Id  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/tasks/{task_id}/priority": {
         "post": {
           "summary": "Set Task Priority",
@@ -3251,6 +3431,42 @@
           ],
           "title": "BuyItemRequest"
         },
+        "CandidateOutcomeBody": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Command Id"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "adopted",
+                "dismissed",
+                "invalid"
+              ],
+              "title": "Outcome"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "outcome"
+          ],
+          "title": "CandidateOutcomeBody"
+        },
         "CreateAgentSessionRequest": {
           "properties": {
             "runtime": {
@@ -3368,7 +3584,8 @@
               "type": "string",
               "enum": [
                 "user",
-                "delegate"
+                "delegate",
+                "default"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -3409,6 +3626,15 @@
               "type": "boolean",
               "title": "Model Os Mcp Enabled",
               "default": false
+            },
+            "native_tools_mode": {
+              "type": "string",
+              "enum": [
+                "default",
+                "none"
+              ],
+              "title": "Native Tools Mode",
+              "default": "default"
             },
             "parent_session_id": {
               "anyOf": [
@@ -3501,10 +3727,21 @@
               "type": "string",
               "enum": [
                 "user",
-                "delegate"
+                "delegate",
+                "default"
               ],
               "title": "Session Kind",
               "default": "user"
+            },
+            "memory_eligibility_mode": {
+              "type": "string",
+              "enum": [
+                "eligible",
+                "ineligible",
+                "adopted"
+              ],
+              "title": "Memory Eligibility Mode",
+              "default": "eligible"
             },
             "agent_mcp_enabled": {
               "type": "boolean",
@@ -3515,6 +3752,15 @@
               "type": "boolean",
               "title": "Model Os Mcp Enabled",
               "default": false
+            },
+            "native_tools_mode": {
+              "type": "string",
+              "enum": [
+                "default",
+                "none"
+              ],
+              "title": "Native Tools Mode",
+              "default": "default"
             },
             "delegation_depth": {
               "type": "integer",
@@ -3876,6 +4122,38 @@
             "reviewer_ref"
           ],
           "title": "RouteReviewBody"
+        },
+        "RunDefaultPilotBody": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Command Id"
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "source_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Source Refs"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "runtime",
+            "source_refs"
+          ],
+          "title": "RunDefaultPilotBody"
         },
         "SendMessageBody": {
           "properties": {

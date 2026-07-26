@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
     app.state.model_os_recovery_observer = None
     app.state.model_os_signal_bridge = None
     app.state.model_os_router = None
+    app.state.model_os_default_work = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -438,6 +439,16 @@ async def lifespan(app: FastAPI):
                 yield_coordinator=app.state.model_os_yield_coordinator,
                 router=app.state.model_os_router,
             )
+            from trowel_py.model_os.default_work.service import DefaultWorkService
+
+            assert memory_root is not None
+            app.state.model_os_default_work = DefaultWorkService(
+                app.state.model_os_store,
+                memory_root=memory_root,
+                starter=app.state.model_os_episode_starter,
+                router=app.state.model_os_router,
+                broker=app.state.work_broker,
+            )
             app.state.model_os_command_gate = ModelOsCommandGate(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
@@ -453,6 +464,18 @@ async def lifespan(app: FastAPI):
                 logger.info(
                     "[model-os] reconciled %d pending runtime binding(s)",
                     len(reconciled),
+                )
+            try:
+                default_reconciled = app.state.model_os_default_work.reconcile()
+                if default_reconciled:
+                    logger.info(
+                        "[model-os] reconciled %d default generation(s)",
+                        default_reconciled,
+                    )
+            except Exception:
+                logger.warning(
+                    "[model-os] default generation reconcile failed",
+                    exc_info=True,
                 )
             await attention_scheduler.reconcile()
         except Exception:

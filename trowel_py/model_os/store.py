@@ -154,6 +154,9 @@ from trowel_py.model_os.store_projection import (
 from trowel_py.model_os.store_schema import SCHEMA_SQL as _SCHEMA_SQL
 from trowel_py.model_os.store_schema import migrate_v4_to_v5 as _run_migrate_v4_to_v5
 from trowel_py.model_os.store_schema import migrate_v5_to_v6 as _run_migrate_v5_to_v6
+from trowel_py.model_os.default_work.schema import (
+    migrate_v7_to_v8 as _run_migrate_v7_to_v8,
+)
 from trowel_py.model_os.task_commands import TaskCommands
 from trowel_py.model_os.validator_intent import (
     match_validator_intent_from_argv,
@@ -194,7 +197,7 @@ from trowel_py.model_os.context_observer import (
 from trowel_py.model_os.waking.models import WakeEvent, WakeObservation
 from trowel_py.model_os.waking.persistence import consume_wake as _consume_wake
 
-_SCHEMA_VERSION = 7  # 认知信号历史使用独立、可重建的 projection。
+_SCHEMA_VERSION = 8  # default generation/candidate/outcome 使用隔离 live tables。
 _DEFAULT_POLICY_VERSION = "v0"
 
 _LOGGER = logging.getLogger(__name__)
@@ -237,6 +240,7 @@ _EPISODE_LIFECYCLE_KINDS = frozenset(
         EventKind.EPISODE_CHECKPOINT_COMMITTED,
         EventKind.EPISODE_CLOSED,
         EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_CANCELLED,
         EventKind.EPISODE_SUSPENDED,
         EventKind.EPISODE_WAIT_RESOLVED,
         EventKind.EPISODE_ACTIVATED,
@@ -267,6 +271,7 @@ _EPISODE_FENCED_KINDS = frozenset(
         EventKind.EPISODE_CHECKPOINT_COMMITTED,
         EventKind.EPISODE_CLOSED,
         EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_CANCELLED,
         EventKind.EPISODE_SUSPENDED,
         EventKind.EPISODE_ACTIVATED,
         EventKind.EPISODE_NATIVE_BOUND,
@@ -698,6 +703,9 @@ class ModelOsStore:
             current = 6
         if current < 7:
             self._migrate_v6_to_v7()
+            current = 7
+        if current < 8:
+            self._migrate_v7_to_v8()
 
     def _migrate_v4_to_v5(self) -> None:
         """旧 Decision 只标历史未知，不根据自由文本猜 disposition。"""
@@ -718,6 +726,10 @@ class ModelOsStore:
     def _migrate_v6_to_v7(self) -> None:
         assert self._conn is not None
         _run_migrate_v6_to_v7(self._conn)
+
+    def _migrate_v7_to_v8(self) -> None:
+        assert self._conn is not None
+        _run_migrate_v7_to_v8(self._conn)
 
     def _schema_version(self) -> int:
         """返回 ``meta`` 中记录的 schema 版本。"""
@@ -3354,6 +3366,94 @@ class ModelOsStore:
                     "UPDATE leases SET released_at=? WHERE lease_id=?",
                     (_now_iso(), expected_lease_id),
                 )
+
+    def settle_one_shot_episode(
+        self,
+        episode_id: str,
+        *,
+        outcome: str,
+        reason: str | None = None,
+    ) -> None:
+        """一次性 system Episode 与父 WorkItem 的不可重试终态结算。"""
+
+        mapping = {
+            "succeeded": (
+                EventKind.EPISODE_CLOSED,
+                EpisodeStatus.CLOSED,
+                WorkItemStatus.DONE,
+            ),
+            "failed": (
+                EventKind.EPISODE_FAILED,
+                EpisodeStatus.FAILED,
+                WorkItemStatus.FAILED,
+            ),
+            "cancelled": (
+                EventKind.EPISODE_CANCELLED,
+                EpisodeStatus.CANCELLED,
+                WorkItemStatus.CANCELLED,
+            ),
+        }
+        if outcome not in mapping:
+            raise ValueError(f"unsupported one-shot outcome {outcome!r}")
+        event_kind, episode_status, work_status = mapping[outcome]
+        assert self._conn is not None
+        with self._tx():
+            snap = self.replay()
+            episode = self._require_episode(snap, episode_id)
+            work_item = next(
+                item
+                for item in snap.work_items
+                if item.work_item_id == episode.work_item_id
+            )
+            if episode.status == episode_status and work_item.status == work_status:
+                return
+            if episode.status.is_terminal or work_item.status.is_terminal:
+                raise EpisodeCommandError("one-shot terminal outcome conflicts")
+            lease_row = self._read_episode_lease_row(episode_id)
+            now = _now_iso()
+            if lease_row is None or lease_row["expires_at"] <= now:
+                self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE resource_type=? "
+                    "AND resource_id=? AND released_at IS NULL AND expires_at<=?",
+                    (
+                        now,
+                        self._EPISODE_OWNERSHIP_RESOURCE_TYPE,
+                        episode_id,
+                        now,
+                    ),
+                )
+                self._grant_episode_ownership_in_tx(
+                    episode_id,
+                    "default-reconciler",
+                    60,
+                    f"default-settlement:{episode_id}",
+                )
+                lease_row = self._read_episode_lease_row(episode_id)
+            if lease_row is None:
+                raise EpisodeCommandError("one-shot ownership reacquire failed")
+            self._fenced_status_change_in_tx(
+                episode_id=episode_id,
+                kind=event_kind,
+                new_status=episode_status,
+                expected_lease_id=lease_row["lease_id"],
+                expected_owner=lease_row["owner"],
+                expected_token=int(lease_row["fencing_token"]),
+                extra_payload={"reason": reason} if reason else None,
+                work_item_id=episode.work_item_id,
+                task_id=None,
+            )
+            self._insert_event_in_tx(
+                self._work_item_status_event(
+                    work_item.work_item_id,
+                    work_status,
+                    None,
+                    _now_iso(),
+                )
+            )
+            self._conn.execute(
+                "UPDATE leases SET released_at=? WHERE lease_id=?",
+                (_now_iso(), lease_row["lease_id"]),
+            )
 
     def settle_closed_episode(self, episode_id: str) -> None:
         """按 Episode 绑定原子释放 foreground，并把父对象恢复为 READY。"""

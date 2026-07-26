@@ -66,6 +66,7 @@ class SessionBinding:
     memory_eligibility_mode: str = "eligible"
     agent_mcp_enabled: bool = True
     model_os_mcp_enabled: bool = False
+    native_tools_mode: str = "default"
     parent_session_id: str | None = None
     delegation_depth: int = 0
 
@@ -100,6 +101,7 @@ class SessionBinding:
             "memory_eligibility_mode": self.memory_eligibility_mode,
             "agent_mcp_enabled": self.agent_mcp_enabled,
             "model_os_mcp_enabled": self.model_os_mcp_enabled,
+            "native_tools_mode": self.native_tools_mode,
             "parent_session_id": self.parent_session_id,
             "delegation_depth": self.delegation_depth,
         }
@@ -134,6 +136,7 @@ def make_binding(
     memory_eligibility_mode: str = "eligible",
     agent_mcp_enabled: bool = True,
     model_os_mcp_enabled: bool = False,
+    native_tools_mode: str = "default",
     parent_session_id: str | None = None,
     delegation_depth: int = 0,
 ) -> SessionBinding:
@@ -168,6 +171,7 @@ def make_binding(
         memory_eligibility_mode=memory_eligibility_mode,
         agent_mcp_enabled=agent_mcp_enabled,
         model_os_mcp_enabled=model_os_mcp_enabled,
+        native_tools_mode=native_tools_mode,
         parent_session_id=parent_session_id,
         delegation_depth=delegation_depth,
         created_at=now,
@@ -250,6 +254,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         ),
         agent_mcp_enabled=bool(data.get("agent_mcp_enabled", True)),
         model_os_mcp_enabled=bool(data.get("model_os_mcp_enabled", False)),
+        native_tools_mode=str(data.get("native_tools_mode", "default")),
         parent_session_id=(
             str(data["parent_session_id"])
             if data.get("parent_session_id") is not None

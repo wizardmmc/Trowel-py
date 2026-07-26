@@ -155,6 +155,7 @@ def prepare_codex_session(
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,
         session_kind=req.session_kind,
+        memory_eligibility=req.memory_eligibility_mode,
     )
     session = CodexSession(config, event_sink=journal.record)
     return PreparedCodexSession(

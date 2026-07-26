@@ -133,6 +133,8 @@ class CCHost:
         stalled_tick: float = 1.0,
         session_registrar: Any = None,
         session_kind: str = "user",
+        memory_eligibility_mode: str = "eligible",
+        native_tools_mode: str = "default",
         agent_mcp_enabled: bool = False,
         model_os_mcp_enabled: bool = False,
         mcp_config: str | None = None,
@@ -163,6 +165,8 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        self._memory_eligibility_mode = memory_eligibility_mode
+        self._native_tools_mode = native_tools_mode
         self.agent_mcp_enabled = agent_mcp_enabled
         self.model_os_mcp_enabled = model_os_mcp_enabled
         # 三个开关彼此独立，并在整个会话及重启期间保持不变。
@@ -173,7 +177,10 @@ class CCHost:
         # 配置仍在 memory-off 时丢弃，保持独立 review host 的隔离语义。
         self._mcp_config = (
             mcp_config
-            if memory_enabled or agent_mcp_enabled or model_os_mcp_enabled or owned_mcp_config
+            if memory_enabled
+            or agent_mcp_enabled
+            or model_os_mcp_enabled
+            or owned_mcp_config
             else None
         )
         self._owned_mcp_config = owned_mcp_config
@@ -310,10 +317,9 @@ class CCHost:
             resume_from=resume_from,
             append_system_prompt=injection,
             mcp_config=self._mcp_config,
+            native_tools=() if self._native_tools_mode == "none" else None,
         )
-        kwargs = build_subprocess_kwargs(
-            self.workdir, env=self._build_spawn_env()
-        )
+        kwargs = build_subprocess_kwargs(self.workdir, env=self._build_spawn_env())
         return await self._spawner(args, kwargs)
 
     def _build_spawn_env(self) -> dict[str, str] | None:
@@ -330,6 +336,7 @@ class CCHost:
         if self._mcp_config:
             env = dict(env) if env is not None else dict(os.environ)
             from trowel_py.memory.paths import resolve_memory_root
+
             env["TROWEL_SESSION_ID"] = self.session_id
             env["TROWEL_HOST_KIND"] = "cc"
             env["MEMORY_ROOT"] = str(resolve_memory_root())
@@ -490,6 +497,7 @@ class CCHost:
                 workdir=self.workdir,
                 jsonl_path=jsonl_path,
                 session_kind=self._session_kind,
+                memory_eligibility=self._memory_eligibility_mode,
                 registrar=self._session_registrar,
             )
         except Exception as exc:  # noqa: BLE001 — 注册失败不能中断 CC 会话
@@ -557,11 +565,7 @@ class CCHost:
         """返回 CC 2.1.197 存放 workflows 与 subagents 的会话目录。"""
         if not self._cc_session_id:
             return None
-        return (
-            cc_projects_root()
-            / workdir_to_slug(self.workdir)
-            / self._cc_session_id
-        )
+        return cc_projects_root() / workdir_to_slug(self.workdir) / self._cc_session_id
 
     def _update_bg_tracker(self, ev: dict[str, Any]) -> None:
         """同步后台任务状态，供实时读取与断线 drain 共用。"""
@@ -588,8 +592,7 @@ class CCHost:
     def _has_background_activity(self) -> bool:
         """判断逻辑 turn 是否仍有后台活动；此时 result 只是中途边界。"""
         return self._bg_tracker.has_pending_tasks() or (
-            self._workflow_watcher.enabled
-            and not self._workflow_watcher.all_done
+            self._workflow_watcher.enabled and not self._workflow_watcher.all_done
         )
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
@@ -646,9 +649,7 @@ class CCHost:
         payload = _user_msg(action.text)
         turn_id, revertible = await self._prepare_checkpoint()
         self._active_turn_id = turn_id
-        _wf_debug(
-            f"SEND_START cc_sid={self._cc_session_id} text={action.text[:40]!r}"
-        )
+        _wf_debug(f"SEND_START cc_sid={self._cc_session_id} text={action.text[:40]!r}")
         translator = Translator()
         detector = StalledDetector(
             threshold_mild=self.stalled_threshold_mild,
@@ -735,9 +736,7 @@ class CCHost:
                         if not severe_warned:
                             severe_warned = True
                             elapsed = detector.quiet_seconds(self._now())
-                            logger.warning(
-                                "cc silent %.0fs, severe heads-up", elapsed
-                            )
+                            logger.warning("cc silent %.0fs, severe heads-up", elapsed)
                             yield StalledWarningEvent(
                                 type="stalled_warning",
                                 severity="severe",
@@ -748,9 +747,7 @@ class CCHost:
                         if not mild_warned:
                             mild_warned = True
                             elapsed = detector.quiet_seconds(self._now())
-                            logger.warning(
-                                "cc silent %.0fs, mild heads-up", elapsed
-                            )
+                            logger.warning("cc silent %.0fs, mild heads-up", elapsed)
                             yield StalledWarningEvent(
                                 type="stalled_warning",
                                 severity="mild",
@@ -796,8 +793,8 @@ class CCHost:
                     or (_et == "system" and _es.startswith("task_"))
                 ):
                     _wf_debug(
-                        f"  EV ts={ev.get('timestamp','')} type={_et} sub={_es} "
-                        f"tu={ev.get('tool_use_id','')}"
+                        f"  EV ts={ev.get('timestamp', '')} type={_et} sub={_es} "
+                        f"tu={ev.get('tool_use_id', '')}"
                     )
                 if ev.get("type") == "system" and ev.get("subtype") == "api_retry":
                     delay = ev.get("retry_delay_ms")
@@ -834,10 +831,7 @@ class CCHost:
                             "tool_use_id": tev.tool_use_id,
                             "questions": tev.questions,
                         }
-                    if (
-                        isinstance(tev, ToolCallEvent)
-                        and tev.tool_name == "Workflow"
-                    ):
+                    if isinstance(tev, ToolCallEvent) and tev.tool_name == "Workflow":
                         _wf_debug(
                             f"  watcher enable (Workflow tu={tev.tool_use_id}) "
                             f"dir={self._workflow_transcript_dir()}"
@@ -857,8 +851,7 @@ class CCHost:
                 if ev.get("type") == "result":
                     terminal = self._pending_terminal
                     is_error_result = not (
-                        ev.get("subtype") == "success"
-                        and not ev.get("is_error")
+                        ev.get("subtype") == "success" and not ev.get("is_error")
                     )
                     if is_error_result:
                         # 错误 result 始终结束本轮，但不算干净终态；finally 会杀掉
@@ -1022,9 +1015,7 @@ class CCHost:
                     try:
                         await self._maybe_update_completed()
                     except Exception as exc:  # noqa: BLE001 — 水位异常不能终止 drain
-                        logger.warning(
-                            "drain completed-offset update failed: %s", exc
-                        )
+                        logger.warning("drain completed-offset update failed: %s", exc)
                     return
         finally:
             self.running = False
@@ -1127,9 +1118,7 @@ class CCHost:
         # started 发出时 transcript 尚未创建，避免必然失败的读取。
         if tev.status == "started":
             return tev
-        path = subagent_transcript_path(
-            self.workdir, self._cc_session_id, tev.task_id
-        )
+        path = subagent_transcript_path(self.workdir, self._cc_session_id, tev.task_id)
         summed = sum_transcript_usage(path)
         if summed is None:
             return tev

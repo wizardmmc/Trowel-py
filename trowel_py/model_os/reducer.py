@@ -496,6 +496,7 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.EPISODE_YIELD_REQUESTED,
         EventKind.EPISODE_CLOSED,
         EventKind.EPISODE_FAILED,
+        EventKind.EPISODE_CANCELLED,
         EventKind.EPISODE_ACTIVATED,
         EventKind.EPISODE_RECOVERING,
     ):

@@ -45,8 +45,8 @@ class SessionsRepository:
         self._conn.execute(
             "INSERT OR IGNORE INTO sessions"
             " (cc_session_id, workdir, date, jsonl_path, registered_at,"
-            " extracted_at, session_kind)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " extracted_at, session_kind, memory_eligibility)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rec.cc_session_id,
                 rec.workdir,
@@ -55,6 +55,7 @@ class SessionsRepository:
                 rec.registered_at,
                 rec.extracted_at,
                 rec.session_kind,
+                rec.memory_eligibility,
             ),
         )
         if rec.trowel_session_id:
@@ -65,6 +66,7 @@ class SessionsRepository:
                     session_kind=rec.session_kind,
                     workdir=rec.workdir,
                     bound_at=rec.registered_at or datetime.now().isoformat(),
+                    memory_eligibility=rec.memory_eligibility,
                 )
             )
         self._conn.commit()
@@ -76,7 +78,11 @@ class SessionsRepository:
         exclude_kinds: list[str] | None = None,
     ) -> list[SessionRecord]:
         """返回指定日期尚未提炼的 session，按注册时间排序。"""
-        clauses = ["date = ?", "extracted_at IS NULL"]
+        clauses = [
+            "date = ?",
+            "extracted_at IS NULL",
+            "COALESCE(memory_eligibility, 'eligible') = 'eligible'",
+        ]
         params: list = [date]
         if exclude_workdir_substr:
             clauses.append("workdir NOT LIKE ?")
@@ -134,6 +140,7 @@ class SessionsRepository:
         rows = self._conn.execute(
             "SELECT * FROM sessions"
             " WHERE COALESCE(session_kind, 'user') = 'user'"
+            " AND COALESCE(memory_eligibility, 'eligible') = 'eligible'"
             " AND last_completed_offset IS NOT NULL"
             " AND last_completed_offset > COALESCE(last_extracted_offset, 0)"
             + cutoff_sql
@@ -174,6 +181,7 @@ class SessionsRepository:
         memory_enabled: bool,
         profile_enabled: bool,
         session_kind: str = "user",
+        memory_eligibility: str = "eligible",
     ) -> None:
         """首次事件登记 turn；重放同一原生 turn 时不覆盖原始身份。"""
 
@@ -181,7 +189,8 @@ class SessionsRepository:
             "INSERT OR IGNORE INTO codex_turns"
             " (thread_id, turn_id, trowel_session_id, workdir, journal_path,"
             " registered_at, model, effort, provider, memory_enabled,"
-            " profile_enabled, session_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " profile_enabled, session_kind, memory_eligibility) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 turn_id,
@@ -195,6 +204,7 @@ class SessionsRepository:
                 int(memory_enabled),
                 int(profile_enabled),
                 session_kind,
+                memory_eligibility,
             ),
         )
         self._conn.commit()
@@ -232,6 +242,7 @@ class SessionsRepository:
             "SELECT * FROM codex_turns"
             " WHERE completed_at IS NOT NULL AND extracted_at IS NULL"
             " AND session_kind = 'user'"
+            " AND COALESCE(memory_eligibility, 'eligible') = 'eligible'"
             + cutoff_sql
             + " ORDER BY completed_at, registered_at, thread_id, turn_id",
             params,
@@ -295,6 +306,7 @@ class SessionsRepository:
         rows = self._conn.execute(
             "SELECT * FROM sessions WHERE "
             + where_kind
+            + " AND COALESCE(memory_eligibility, 'eligible') = 'eligible'"
             + " AND last_completed_offset IS NOT NULL"
             + cutoff_sql
             + " ORDER BY registered_at",
@@ -307,13 +319,14 @@ class SessionsRepository:
         self._conn.execute(
             "INSERT OR IGNORE INTO session_bindings"
             " (trowel_session_id, cc_session_id, session_kind, workdir,"
-            " bound_at) VALUES (?, ?, ?, ?, ?)",
+            " bound_at, memory_eligibility) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 binding.trowel_session_id,
                 binding.cc_session_id,
                 binding.session_kind,
                 binding.workdir,
                 binding.bound_at,
+                binding.memory_eligibility,
             ),
         )
         self._conn.commit()
@@ -345,6 +358,13 @@ class SessionsRepository:
     def all_cc_kinds(self) -> dict[str, str]:
         rows = self._conn.execute(
             "SELECT cc_session_id, COALESCE(session_kind, 'user') FROM sessions"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows if row[0]}
+
+    def all_cc_eligibility(self) -> dict[str, str]:
+        rows = self._conn.execute(
+            "SELECT cc_session_id, COALESCE(memory_eligibility, 'eligible') "
+            "FROM sessions"
         ).fetchall()
         return {row[0]: row[1] for row in rows if row[0]}
 
