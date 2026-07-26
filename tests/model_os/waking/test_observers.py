@@ -44,7 +44,7 @@ def test_real_file_observer_wakes_when_exact_file_exists(
 
     observation = SystemObserver().observe(
         _condition(store, task.task_id),
-        observed_at="2026-07-26T09:00:00Z",
+        observed_at="2099-01-01T09:00:00Z",
     )
 
     assert observation is not None
@@ -76,7 +76,7 @@ def test_real_short_process_observer_uses_start_identity(
 
         observation = SystemObserver().observe(
             _condition(store, task.task_id),
-            observed_at="2026-07-26T09:00:00Z",
+            observed_at="2099-01-01T09:00:00Z",
         )
 
         assert observation is not None

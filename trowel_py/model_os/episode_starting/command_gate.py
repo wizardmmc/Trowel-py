@@ -28,6 +28,7 @@ from trowel_py.model_os.work_broker import (
 from trowel_py.model_os.yielding import ForceYieldReason, TurnRegistration
 from trowel_py.model_os.yielding.journal import now_iso
 from trowel_py.quota.types import Provider
+from trowel_py.model_os.routing.journal import route_tier_for_episode
 
 
 def _hash(value: str) -> str:
@@ -47,7 +48,9 @@ class CommandTicket:
 
 
 class ModelOsCommandGate:
-    def __init__(self, store: ModelOsStore, *, broker: Any, yield_coordinator: Any) -> None:
+    def __init__(
+        self, store: ModelOsStore, *, broker: Any, yield_coordinator: Any
+    ) -> None:
         self._store = store
         self._broker = broker
         self._yield = yield_coordinator
@@ -59,7 +62,9 @@ class ModelOsCommandGate:
         ownership = self._ownership(binding.episode_id)
         work_lease = self._request_work(binding)
         if isinstance(work_lease, WorkDenial):
-            raise RuntimeError(f"WorkBroker denied managed send: {work_lease.reason.value}")
+            raise RuntimeError(
+                f"WorkBroker denied managed send: {work_lease.reason.value}"
+            )
         self._broker.begin_call(work_lease.lease_id, work_lease.fencing_token)
         try:
             return self._intent(
@@ -93,7 +98,11 @@ class ModelOsCommandGate:
         *,
         hub: Any,
     ) -> None:
-        if ticket is None or ticket.turn_registered or event.get("type") != "turn_start":
+        if (
+            ticket is None
+            or ticket.turn_registered
+            or event.get("type") != "turn_start"
+        ):
             return
         turn_id = event.get("turn_id")
         if not isinstance(turn_id, str) or not turn_id:
@@ -269,7 +278,10 @@ class ModelOsCommandGate:
                 provider=(
                     Provider.CODEX if binding.runtime == "codex" else Provider.GLM
                 ),
-                model_tier=ModelTier.DEEP,
+                model_tier=(
+                    route_tier_for_episode(self._store, binding.episode_id)
+                    or ModelTier.DEEP
+                ),
                 task_id=episode.task_id,
                 work_item_id=episode.work_item_id,
                 idempotency_key=f"turn:{uuid4().hex}",

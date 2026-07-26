@@ -6,6 +6,7 @@ from tests.model_os._episode_helpers import make_running_system_episode
 from tests.model_os.episode_starting.test_coordinator import FakeBroker
 from trowel_py.model_os.episode_starting.command_gate import ModelOsCommandGate
 from trowel_py.model_os.types import EventKind
+from trowel_py.model_os.work_broker import ModelTier
 
 
 class FakeYield:
@@ -83,9 +84,7 @@ async def test_managed_send_writes_intent_before_turn_and_registers_it(store) ->
 async def test_managed_interrupt_uses_l06_expected_turn_and_generation(store) -> None:
     _, _, binding = _managed_episode(store)
     yielding = FakeYield()
-    gate = ModelOsCommandGate(
-        store, broker=FakeBroker(), yield_coordinator=yielding
-    )
+    gate = ModelOsCommandGate(store, broker=FakeBroker(), yield_coordinator=yielding)
 
     handled = await gate.interrupt("agent-1", hub=FakeHub(binding))
 
@@ -97,9 +96,7 @@ async def test_managed_interrupt_uses_l06_expected_turn_and_generation(store) ->
 
 
 def test_unmanaged_session_is_left_to_legacy_hub(store) -> None:
-    gate = ModelOsCommandGate(
-        store, broker=FakeBroker(), yield_coordinator=FakeYield()
-    )
+    gate = ModelOsCommandGate(store, broker=FakeBroker(), yield_coordinator=FakeYield())
 
     assert gate.before_send("ordinary-session", "hello") is None
 
@@ -109,9 +106,7 @@ def test_managed_send_releases_work_lease_when_intent_write_fails(
 ) -> None:
     _managed_episode(store)
     broker = FakeBroker()
-    gate = ModelOsCommandGate(
-        store, broker=broker, yield_coordinator=FakeYield()
-    )
+    gate = ModelOsCommandGate(store, broker=broker, yield_coordinator=FakeYield())
 
     def fail_intent(*_args, **_kwargs):
         raise RuntimeError("journal unavailable")
@@ -122,3 +117,17 @@ def test_managed_send_releases_work_lease_when_intent_write_fails(
         gate.before_send("agent-1", "hello")
 
     assert broker.released == [("work-lease-1", 1)]
+
+
+def test_managed_send_reuses_episode_route_tier(store, monkeypatch) -> None:
+    _managed_episode(store)
+    broker = FakeBroker()
+    monkeypatch.setattr(
+        "trowel_py.model_os.episode_starting.command_gate.route_tier_for_episode",
+        lambda _store, _episode_id: ModelTier.FAST,
+    )
+    gate = ModelOsCommandGate(store, broker=broker, yield_coordinator=FakeYield())
+
+    gate.before_send("agent-1", "continue")
+
+    assert broker.requests[0].model_tier is ModelTier.FAST

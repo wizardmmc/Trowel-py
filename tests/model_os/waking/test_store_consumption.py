@@ -20,7 +20,7 @@ def _observation(
     *,
     kind: WakeConditionKind = WakeConditionKind.OBSERVED_STATE,
     target_ref: str = "file:/tmp/build.done",
-    observed_at: str = "2026-07-26T09:00:00Z",
+    observed_at: str = "2099-01-01T09:00:00Z",
     details: dict | None = None,
 ) -> WakeObservation:
     return WakeObservation(

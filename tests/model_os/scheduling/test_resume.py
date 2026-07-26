@@ -24,8 +24,10 @@ class Broker:
         self.denial_reason = denial_reason
         self.ownership_seen = False
         self.released = []
+        self.requests = []
 
     def request(self, request):
+        self.requests.append(request)
         snapshot = self.store.read_snapshot()
         episode = snapshot.episodes[0]
         self.ownership_seen = any(
@@ -136,6 +138,12 @@ async def test_suspended_dispatch_resumes_same_episode_and_sends_input_once(
         payload={"request_id": "corr-1", "decision": "accept"},
     )
     broker = Broker(store)
+    from trowel_py.model_os.work_broker import ModelTier
+
+    monkeypatch.setattr(
+        "trowel_py.model_os.scheduling.resume.route_tier_for_episode",
+        lambda _store, _episode_id: ModelTier.FAST,
+    )
     runtime = Runtime()
     yielding = Yielding()
     resumer = SuspendedEpisodeResumer(
@@ -162,6 +170,7 @@ async def test_suspended_dispatch_resumes_same_episode_and_sends_input_once(
     assert runtime.answers[0][1]["decision"] == "accept"
     assert len(runtime.answers) == 1
     assert len(yielding.resumed) == 1
+    assert broker.requests[0].model_tier is ModelTier.FAST
     assert (
         wake.take_pending_input(
             episode.episode_id,

@@ -48,6 +48,11 @@ def test_start_episode_http_streams_agent_events_and_builds_command() -> None:
             "memory_eligibility": "ineligible",
             "permission": "danger-full-access",
             "idempotency_key": "start-1",
+            "route_preference": "deep",
+            "route_mandatory_markers": ["high_impact_irreversible"],
+            "route_pre_route_markers": ["exact_constraint_search"],
+            "route_evaluation_domain": "coding",
+            "route_input_fact_refs": ["decision.input.1"],
         },
     )
 
@@ -59,6 +64,10 @@ def test_start_episode_http_streams_agent_events_and_builds_command() -> None:
     assert command.resume_from is None
     assert command.session_purpose.value == "default"
     assert command.memory_eligibility.value == "ineligible"
+    assert command.route_preference.value == "deep"
+    assert command.route_mandatory_markers[0].value == "high_impact_irreversible"
+    assert command.route_pre_route_markers[0].value == "exact_constraint_search"
+    assert command.route_evaluation_domain == "coding"
 
 
 def test_start_episode_http_is_unavailable_without_kernel_runner() -> None:

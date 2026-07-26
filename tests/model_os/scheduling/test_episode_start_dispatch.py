@@ -73,6 +73,9 @@ class Adapter:
     async def refresh_identity(self, identity):
         return identity
 
+    def effective_settings(self, _identity):
+        return "model-1", "high"
+
     async def start_first_turn(self, _identity, _text):
         yield {
             "type": "turn_start",

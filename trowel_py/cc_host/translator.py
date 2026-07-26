@@ -56,6 +56,8 @@ class Translator:
 
     def translate(self, cc_event: dict[str, Any]) -> list[TrowelEvent]:
         top_type = cc_event.get("type")
+        if not isinstance(top_type, str):
+            return []
         handler = self._dispatch.get(top_type)
         if handler is None:
             return []
@@ -118,8 +120,12 @@ class Translator:
         if isinstance(usage, dict):
             out.append(
                 ContextUsageEvent(
-                    message_id=msg.get("id") if isinstance(msg.get("id"), str) else None,
-                    model=msg.get("model") if isinstance(msg.get("model"), str) else None,
+                    message_id=msg.get("id")
+                    if isinstance(msg.get("id"), str)
+                    else None,
+                    model=msg.get("model")
+                    if isinstance(msg.get("model"), str)
+                    else None,
                     usage=usage,
                 )
             )
@@ -155,6 +161,15 @@ class Translator:
     def _on_user(self, ev: dict[str, Any]) -> list[TrowelEvent]:
         # 顶层 tool_use_result 的预计算 diff 必须随每个工具结果传给展示层。
         write_diff = write_diff_from_cc_result(ev.get("tool_use_result"))
+        tool_use_result = ev.get("tool_use_result")
+        exit_code = None
+        if isinstance(tool_use_result, dict):
+            raw_exit = tool_use_result.get("exitCode")
+            task = tool_use_result.get("task")
+            if raw_exit is None and isinstance(task, dict):
+                raw_exit = task.get("exitCode")
+            if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+                exit_code = raw_exit
         out: list[TrowelEvent] = []
         for block in ev.get("message", {}).get("content", []) or []:
             if block.get("type") != "tool_result":
@@ -164,6 +179,12 @@ class Translator:
                     tool_use_id=block.get("tool_use_id", ""),
                     content=_as_text(block.get("content")),
                     write_diff=write_diff,
+                    is_error=(
+                        block.get("is_error")
+                        if isinstance(block.get("is_error"), bool)
+                        else None
+                    ),
+                    exit_code=exit_code,
                 )
             )
         return out

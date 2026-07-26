@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import signal
 from collections.abc import AsyncIterator
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from trowel_py.agent_host.binding import RuntimeIdentity
 from trowel_py.agent_host.hub import SessionHub
-from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.agent_host.schemas import (
+    CreateAgentSessionRequest,
+    PermissionPreset,
+    RuntimeWire,
+)
 from trowel_py.model_os.episode_starting.models import (
     NativeSessionIdentity,
     StartEpisodeCommand,
@@ -49,7 +53,7 @@ class AgentEpisodeRuntimeAdapter:
         del episode
         binding = self._hub.create(
             CreateAgentSessionRequest(
-                runtime=command.runtime,
+                runtime=cast(RuntimeWire, command.runtime),
                 workdir=command.workdir,
                 resume_from=None,
                 model=command.model,
@@ -58,7 +62,9 @@ class AgentEpisodeRuntimeAdapter:
                     command.permission if command.runtime == "claude_code" else None
                 ),
                 permission_preset=(
-                    command.permission if command.runtime == "codex" else None
+                    cast(PermissionPreset, command.permission)
+                    if command.runtime == "codex"
+                    else None
                 ),
                 memory_enabled=command.memory_enabled,
                 profile_enabled=command.profile_enabled,
@@ -105,6 +111,14 @@ class AgentEpisodeRuntimeAdapter:
     ) -> AsyncIterator[dict[str, Any]]:
         async for event in self._hub.stream(identity.agent_session_id, text):
             yield event
+
+    def effective_settings(
+        self, identity: NativeSessionIdentity
+    ) -> tuple[str | None, str | None]:
+        binding = self._hub.get(identity.agent_session_id)
+        if binding is None:
+            raise RuntimeError("native Session binding disappeared")
+        return binding.model, binding.effort
 
     async def answer_pending(
         self,

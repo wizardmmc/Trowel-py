@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from trowel_py.model_os.episode_starting.context import build_episode_context
@@ -26,6 +26,14 @@ from trowel_py.model_os.store import (
     EpisodeCommandError,
     LeaseConflict,
     ModelOsStore,
+)
+from trowel_py.model_os.routing import (
+    CognitiveRouter,
+    RouteAction,
+    RouteMode,
+    RouteRequest,
+    RoutingConfig,
+    record_route_actual,
 )
 from trowel_py.model_os.scheduling.journal import (
     complete_schedule_dispatch,
@@ -61,6 +69,10 @@ class EpisodeRuntimeAdapter(Protocol):
         self, identity: NativeSessionIdentity, text: str
     ) -> AsyncIterator[dict[str, Any]]: ...
 
+    def effective_settings(
+        self, identity: NativeSessionIdentity
+    ) -> tuple[str | None, str | None]: ...
+
 
 @dataclass
 class _StartLock:
@@ -76,12 +88,16 @@ class StartEpisodeCoordinator:
         broker: Any,
         adapter: EpisodeRuntimeAdapter,
         yield_coordinator: Any,
+        router: CognitiveRouter | None = None,
         fault_hook: Callable[[StartStage], None] | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
         self._adapter = adapter
         self._yield = yield_coordinator
+        self._router = router or CognitiveRouter(
+            store, RoutingConfig(RouteMode.OFF, {})
+        )
         self._fault_hook = fault_hook or (lambda _stage: None)
         self._start_locks: dict[str, _StartLock] = {}
 
@@ -108,7 +124,9 @@ class StartEpisodeCoordinator:
         self, command: StartEpisodeCommand
     ) -> AsyncIterator[dict[str, Any]]:
         progress = self.progress(command.idempotency_key)
-        self._validate_command(command, progress)
+        self._validate_command(command, progress, require_route=False)
+        command = self._routed_command(command)
+        self._validate_command(command, progress, require_route=True)
         record_intent(self._store, command)
         if progress is None:
             progress = self.progress(command.idempotency_key)
@@ -253,6 +271,17 @@ class StartEpisodeCoordinator:
                 refreshed = await self._adapter.refresh_identity(identity)
                 identity = refreshed
                 self._bind(command, episode, ownership, identity, activate=True)
+                model, effort = self._adapter.effective_settings(identity)
+                assert command.route_decision_id is not None
+                record_route_actual(
+                    self._store,
+                    command.route_decision_id,
+                    episode_id=episode.episode_id,
+                    model=model,
+                    effort=effort,
+                    tier=command.selected_model_tier,
+                    evidence_ref=f"agent-binding.{identity.agent_session_id}",
+                )
                 record_stage(
                     self._store,
                     command,
@@ -326,7 +355,11 @@ class StartEpisodeCoordinator:
             return start()
 
     def _validate_command(
-        self, command: StartEpisodeCommand, progress: StartProgress | None
+        self,
+        command: StartEpisodeCommand,
+        progress: StartProgress | None,
+        *,
+        require_route: bool,
     ) -> None:
         snapshot = self._store.read_snapshot()
         work_item = next(
@@ -394,6 +427,60 @@ class StartEpisodeCoordinator:
                 raise ValueError("previous_snapshot_ref is not the committed head")
             self._store.read_episode_snapshot(command.previous_snapshot_ref)
 
+        if not require_route:
+            return
+        route = next(
+            (
+                item
+                for _, item in self._store.list_decisions()
+                if item.decision_id == command.route_decision_id
+            ),
+            None,
+        )
+        actual = (
+            next(
+                (
+                    item
+                    for item in route.candidates
+                    if isinstance(item, dict) and item.get("role") == "actual"
+                ),
+                None,
+            )
+            if route is not None
+            else None
+        )
+        route_input = (
+            next(
+                (
+                    item
+                    for item in route.candidates
+                    if isinstance(item, dict) and item.get("role") == "input"
+                ),
+                None,
+            )
+            if route is not None
+            else None
+        )
+        if (
+            route is None
+            or route.kind != "cognitive.route"
+            or route.work_item_id != command.work_item_id
+            or route.task_id != command.task_id
+            or route.policy_version != "m8-l10-paired-20260723"
+            or actual is None
+            or route_input is None
+            or route_input.get("runtime") != command.runtime
+            or (actual.get("request_model") or actual.get("model")) != command.model
+            or actual.get("effort") != command.effort
+            or actual.get("tier")
+            != (
+                command.selected_model_tier.value
+                if command.selected_model_tier is not None
+                else None
+            )
+        ):
+            raise ValueError("route decision does not match Episode start")
+
     def _work_lease(self, command: StartEpisodeCommand) -> WorkLease | WorkDenial:
         snapshot = self._store.read_snapshot()
         work_item = next(
@@ -412,11 +499,42 @@ class StartEpisodeCoordinator:
             WorkRequest(
                 kind=kind,
                 provider=provider,
-                model_tier=ModelTier.DEEP,
+                model_tier=command.selected_model_tier or ModelTier.DEEP,
                 task_id=command.task_id,
                 work_item_id=command.work_item_id,
                 idempotency_key=f"work:{command.idempotency_key}",
             )
+        )
+
+    def _routed_command(self, command: StartEpisodeCommand) -> StartEpisodeCommand:
+        refs = command.route_input_fact_refs
+        if command.schedule_decision_id is not None:
+            refs = tuple(dict.fromkeys((command.schedule_decision_id, *refs)))
+        recorded = self._router.route(
+            idempotency_key=command.idempotency_key,
+            work_item_id=command.work_item_id,
+            task_id=command.task_id,
+            previous_episode_id=command.previous_episode_id,
+            runtime=command.runtime,
+            fixed_model=command.model,
+            fixed_effort=command.effort,
+            request=RouteRequest(
+                preference=command.route_preference,
+                mandatory_markers=command.route_mandatory_markers,
+                trusted_pre_route_markers=command.route_pre_route_markers,
+                evaluation_domain=command.route_evaluation_domain,
+                input_fact_refs=refs,
+            ),
+        )
+        decision = recorded.decision
+        if decision.action is RouteAction.DENY or decision.actual is None:
+            raise ValueError(f"route denied Episode start: {decision.reason.value}")
+        return replace(
+            command,
+            model=decision.actual.request_model or decision.actual.model,
+            effort=decision.actual.effort,
+            route_decision_id=recorded.decision_id,
+            selected_model_tier=decision.actual.tier,
         )
 
     def _bind(

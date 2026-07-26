@@ -2937,6 +2937,117 @@
           }
         }
       },
+      "/api/model-os/routing/gate": {
+        "get": {
+          "summary": "Route Gate",
+          "operationId": "route_gate_api_model_os_routing_gate_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Route Gate Api Model Os Routing Gate Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/routing/decisions/{decision_id}/review": {
+        "post": {
+          "summary": "Review Route",
+          "operationId": "review_route_api_model_os_routing_decisions__decision_id__review_post",
+          "parameters": [
+            {
+              "name": "decision_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Decision Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteReviewBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Review Route Api Model Os Routing Decisions  Decision Id  Review Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/routing/approval": {
+        "post": {
+          "summary": "Approve Route",
+          "operationId": "approve_route_api_model_os_routing_approval_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteApprovalBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Approve Route Api Model Os Routing Approval Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/wake": {
         "post": {
           "summary": "Submit Wake",
@@ -3711,6 +3822,61 @@
           "title": "ReviewRequest",
           "description": "审核卡片草稿并携带可选字段修改。"
         },
+        "RouteApprovalBody": {
+          "properties": {
+            "reviewer_ref": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Reviewer Ref"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "reviewer_ref"
+          ],
+          "title": "RouteApprovalBody"
+        },
+        "RouteReviewBody": {
+          "properties": {
+            "classification": {
+              "type": "string",
+              "enum": [
+                "correct",
+                "missed_deep_need",
+                "unjustified_deep",
+                "unknown"
+              ],
+              "title": "Classification"
+            },
+            "trusted_verifier": {
+              "type": "boolean",
+              "title": "Trusted Verifier"
+            },
+            "evidence_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "minItems": 1,
+              "title": "Evidence Refs"
+            },
+            "reviewer_ref": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Reviewer Ref"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "classification",
+            "trusted_verifier",
+            "evidence_refs",
+            "reviewer_ref"
+          ],
+          "title": "RouteReviewBody"
+        },
         "SendMessageBody": {
           "properties": {
             "text": {
@@ -3883,6 +4049,57 @@
                 }
               ],
               "title": "Schedule Decision Id"
+            },
+            "route_preference": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "fast",
+                "deep"
+              ],
+              "title": "Route Preference",
+              "default": "auto"
+            },
+            "route_mandatory_markers": {
+              "items": {
+                "type": "string",
+                "const": "high_impact_irreversible"
+              },
+              "type": "array",
+              "title": "Route Mandatory Markers",
+              "default": []
+            },
+            "route_pre_route_markers": {
+              "items": {
+                "type": "string",
+                "enum": [
+                  "exact_constraint_search",
+                  "multi_scenario_contingency"
+                ]
+              },
+              "type": "array",
+              "title": "Route Pre Route Markers",
+              "default": []
+            },
+            "route_evaluation_domain": {
+              "type": "string",
+              "enum": [
+                "coding",
+                "research",
+                "life",
+                "other",
+                "unknown"
+              ],
+              "title": "Route Evaluation Domain",
+              "default": "unknown"
+            },
+            "route_input_fact_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Route Input Fact Refs",
+              "default": []
             }
           },
           "additionalProperties": false,
