@@ -492,6 +492,18 @@ async def get_session_history(
     return {"success": True, "data": envelopes, "error": None}
 
 
+@router.get("/sessions/{session_id}/subagents/{thread_id}/history")
+async def get_subagent_history(
+    session_id: str,
+    thread_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """Replay a Codex child thread after validating its root-session ownership."""
+
+    envelopes = await _await_hub(hub.child_history, session_id, thread_id)
+    return {"success": True, "data": envelopes, "error": None}
+
+
 @router.get("/sessions")
 async def list_history(
     workdir: str = Query(..., min_length=1),

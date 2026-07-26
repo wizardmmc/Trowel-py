@@ -154,10 +154,10 @@ def test_untranslated_skeleton_methods_remain_capability_false() -> None:
         assert method in ignored, f"{method} should be capability=false"
 
 
-def test_subagent_and_compaction_items_route_to_empty() -> None:
+def test_malformed_subagent_is_rejected_and_compaction_started_is_empty() -> None:
 
     translator = CodexTranslator()
-    assert (
+    with pytest.raises(ProtocolViolationError, match="agentThreadId"):
         translator.translate(
             "item/started",
             {
@@ -166,8 +166,6 @@ def test_subagent_and_compaction_items_route_to_empty() -> None:
                 "item": {"type": "subAgentActivity", "id": "s"},
             },
         )
-        == []
-    )
 
     # contextCompaction 只有 completed 才关闭边界，started 必须保持无事件。
     assert (

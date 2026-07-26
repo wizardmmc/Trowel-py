@@ -3,7 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import type { CodexReviewTarget } from "../../api/agent";
 import type { PerSessionState } from "../../stores/ccStore";
 
-export type CodexCommandDialogKind = "status" | "review" | "diff" | null;
+export type CodexCommandDialogKind =
+  | "status"
+  | "review"
+  | "diff"
+  | "agent"
+  | null;
 
 interface CodexCommandDialogsProps {
   readonly kind: CodexCommandDialogKind;
@@ -12,6 +17,7 @@ interface CodexCommandDialogsProps {
   readonly onStartReview: (target: CodexReviewTarget) => void;
   readonly reviewPending: boolean;
   readonly reviewError: string | null;
+  readonly onLocateSubagent?: (threadId: string) => void;
 }
 
 type ReviewTargetType = CodexReviewTarget["type"];
@@ -50,6 +56,7 @@ export function CodexCommandDialogs({
   onStartReview,
   reviewPending,
   reviewError,
+  onLocateSubagent,
 }: CodexCommandDialogsProps) {
   if (kind === null || active === null) return null;
   if (kind === "status") {
@@ -71,6 +78,16 @@ export function CodexCommandDialogs({
       </CommandModal>
     );
   }
+  if (kind === "agent") {
+    return (
+      <CommandModal title="Subagent" ariaLabel="Subagent 定位器" onClose={onClose}>
+        <AgentBody
+          active={active}
+          onLocate={(threadId) => onLocateSubagent?.(threadId)}
+        />
+      </CommandModal>
+    );
+  }
   return (
     <CommandModal title="选择审查目标" ariaLabel="选择审查目标" onClose={onClose}>
       <ReviewBody
@@ -79,6 +96,39 @@ export function CodexCommandDialogs({
         onStart={onStartReview}
       />
     </CommandModal>
+  );
+}
+
+function AgentBody({
+  active,
+  onLocate,
+}: {
+  readonly active: PerSessionState;
+  readonly onLocate: (threadId: string) => void;
+}) {
+  const agents = Object.values(active.codexSubagents);
+  return (
+    <div className="cc-command-modal__body cc-agent-locator">
+      {agents.length === 0 ? (
+        <div className="cc-command-empty">当前没有 Subagent</div>
+      ) : (
+        agents.map((agent) => (
+          <button
+            type="button"
+            className="cc-agent-locator__row"
+            key={agent.threadId}
+            onClick={() => onLocate(agent.threadId)}
+          >
+            <span className="cc-agent-locator__path">
+              {agent.agentPath ?? agent.threadId}
+            </span>
+            <span className={`cc-agent-locator__status cc-agent-locator__status--${agent.status}`}>
+              {agent.status}
+            </span>
+          </button>
+        ))
+      )}
+    </div>
   );
 }
 

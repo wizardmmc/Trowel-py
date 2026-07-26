@@ -51,6 +51,39 @@ function active() {
 }
 
 describe("CodexCommandDialogs", () => {
+  it("lists native child threads in the /agent locator", () => {
+    const onLocate = vi.fn();
+    const root = active();
+    render(
+      <CodexCommandDialogs
+        kind="agent"
+        active={{
+          ...root,
+          codexSubagents: {
+            "child-thread-1": {
+              threadId: "child-thread-1",
+              parentThreadId: "thread-1",
+              agentPath: "/root/probe",
+              status: "progress",
+              state: root,
+              historyLoaded: false,
+              historyLoading: false,
+              historyError: null,
+            },
+          },
+        }}
+        onClose={() => {}}
+        onStartReview={() => {}}
+        onLocateSubagent={onLocate}
+        reviewPending={false}
+        reviewError={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /root\/probe/ }));
+    expect(onLocate).toHaveBeenCalledWith("child-thread-1");
+  });
+
   it("renders real status facts and labels missing values explicitly", () => {
     render(
       <CodexCommandDialogs

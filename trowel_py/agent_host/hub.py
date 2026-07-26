@@ -46,7 +46,7 @@ _log = logging.getLogger(__name__)
 
 # capability 是界面的能力发现契约，界面不能从 runtime 推断功能。
 CC_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "checkpoint", "workflow")
-CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval")
+CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "subagents")
 
 # 连接上限按仍有 binding 的已注册 session/thread 计数，共享 manager 不合并名额。
 MAX_CONNECTIONS = 20
@@ -500,6 +500,62 @@ class SessionHub:
         adapter = CodexEventAdapter(session_id)
         envelopes = []
         for event in events_from_thread(session_id, thread):
+            envelope = adapter.wrap(event)
+            if envelope is not None:
+                envelopes.append(envelope.model_dump(by_alias=True))
+        return envelopes
+
+    async def child_history(
+        self, session_id: str, child_thread_id: str
+    ) -> list[dict[str, Any]]:
+        """Replay a child thread only when its parent chain reaches this session root."""
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise SessionOperationError("subagent history is only available for Codex")
+        root_thread_id = binding.native_session_id
+        if not root_thread_id:
+            raise SessionNotFoundError(f"session {session_id} has no native thread")
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        if child_thread_id == root_thread_id:
+            raise SessionAccessError("requested thread is not a child of this session")
+
+        thread = await self._codex.read_thread(child_thread_id)
+        current = thread
+        visited = {child_thread_id}
+        inherited_turn_ids: set[str] = set()
+        while True:
+            parent_thread_id = current.get("parentThreadId")
+            if not isinstance(parent_thread_id, str) or not parent_thread_id:
+                raise SessionAccessError(
+                    "subagent thread does not belong to this session"
+                )
+            if parent_thread_id in visited:
+                raise SessionAccessError("subagent parent chain contains a cycle")
+            visited.add(parent_thread_id)
+            parent = await self._codex.read_thread(parent_thread_id)
+            inherited_turn_ids.update(_native_turn_ids(parent))
+            if parent_thread_id == root_thread_id:
+                break
+            current = parent
+
+        from trowel_py.codex_host.history import events_from_thread
+
+        adapter = CodexEventAdapter(session_id)
+        envelopes = []
+        child_only = dict(thread)
+        turns = thread.get("turns")
+        if isinstance(turns, list):
+            child_only["turns"] = [
+                turn
+                for turn in turns
+                if not isinstance(turn, Mapping)
+                or turn.get("id") not in inherited_turn_ids
+            ]
+        for event in events_from_thread(
+            session_id, child_only, include_turn_started=True
+        ):
             envelope = adapter.wrap(event)
             if envelope is not None:
                 envelopes.append(envelope.model_dump(by_alias=True))
@@ -1164,6 +1220,18 @@ class SessionHub:
                 1 for sid in self._codex.session_ids if self._store.get(sid) is not None
             )
         return cc_live + codex_live
+
+
+def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return set()
+    return {
+        turn_id
+        for turn in turns
+        if isinstance(turn, Mapping)
+        and isinstance((turn_id := turn.get("id")), str)
+    }
 
 
 def _is_terminal(payload: dict[str, Any]) -> bool:

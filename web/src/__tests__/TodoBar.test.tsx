@@ -34,6 +34,7 @@ function makeSession(
     needsReplay: false,
     tasks,
     ...over,
+    codexSubagents: over.codexSubagents ?? {},
   };
 }
 

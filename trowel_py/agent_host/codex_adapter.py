@@ -58,6 +58,7 @@ class CodexEventAdapter:
             runtime=_CODEX_RUNTIME,
             seq=self._seq,
             type=type_,
+            thread_id=_optional_string(event.thread_id),
             turn_id=_optional_string(event.turn_id),
             item_id=_optional_string(event.item_id),
             payload=dict(payload),

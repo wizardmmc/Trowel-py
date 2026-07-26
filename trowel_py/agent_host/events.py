@@ -33,6 +33,7 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         "goal_cleared",
         "plan_updated",
         "turn_diff_updated",
+        "subagent_activity",
     }
 )
 
@@ -60,6 +61,7 @@ class AgentEvent(BaseModel):
     runtime: AgentRuntime
     seq: int = Field(ge=1)
     type: str
+    thread_id: str | None = None
     turn_id: str | None = None
     item_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)

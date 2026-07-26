@@ -14,6 +14,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.catalog import parse_model_list_page
+from trowel_py.codex_host.child_threads import ChildThreadRegistry
 from trowel_py.codex_host.commands import command_roster
 from trowel_py.codex_host.errors import (
     ProtocolViolationError,
@@ -97,6 +98,7 @@ class CodexHostManager:
         self._state: CodexHostManagerState = CodexHostManagerState.STOPPED
         self._sessions: dict[str, CodexSession] = {}
         self._thread_to_session: dict[str, CodexSession] = {}
+        self._child_threads = ChildThreadRegistry()
         # 只记录当前连接已加载原生 thread 的本地 session；thread 独占另由
         # _thread_to_session 保证，重连后 attachment 必须重建。
         self._attached_session_ids: set[str] = set()
@@ -150,6 +152,8 @@ class CodexHostManager:
         self._attached_session_ids.discard(session_id)
         if session is not None and session.binding is not None:
             self._thread_to_session.pop(session.binding.thread_id, None)
+        for thread_id in self._child_threads.remove_session(session) if session else ():
+            self._thread_to_session.pop(thread_id, None)
         return session
 
     def session_for_thread(self, thread_id: str) -> CodexSession | None:
@@ -730,7 +734,20 @@ class CodexHostManager:
                 self._record_orphan(method, thread_id, None, "missing_turn_id")
                 return
             try:
-                session.record_native_turn_started(turn_id)
+                if self._child_threads.is_child(thread_id):
+                    session.emit_child_translated(
+                        TranslatedItem(
+                            type=CodexEventType.TURN_STARTED,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            payload=immutable_payload(
+                                autonomous=True,
+                                memory_eligible=False,
+                            ),
+                        )
+                    )
+                else:
+                    session.record_native_turn_started(turn_id)
             except TurnConflictError as exc:
                 _log.warning("native turn start rejected for %s: %s", thread_id, exc)
             return
@@ -739,18 +756,20 @@ class CodexHostManager:
         except ProtocolViolationError as exc:
             # 已映射协议发生漂移时向所属 session 报错，但不能杀死 reader。
             _log.warning("translator rejected %s: %s", method, exc)
-            session.emit_translated(
-                TranslatedItem(
-                    type=CodexEventType.ERROR,
-                    thread_id=thread_id,
-                    turn_id=_extract_turn_id_from_params(params),
-                    payload=immutable_payload(
-                        kind="translator_error",
-                        method=method,
-                        message=str(exc),
-                    ),
-                )
+            error_item = TranslatedItem(
+                type=CodexEventType.ERROR,
+                thread_id=thread_id,
+                turn_id=_extract_turn_id_from_params(params),
+                payload=immutable_payload(
+                    kind="translator_error",
+                    method=method,
+                    message=str(exc),
+                ),
             )
+            if self._child_threads.is_child(thread_id):
+                session.emit_child_translated(error_item)
+            else:
+                session.emit_translated(error_item)
             return
         if not items:
             # 非忽略方法未产出事件时留诊断，避免协议变化被静默丢弃。
@@ -762,7 +781,27 @@ class CodexHostManager:
             )
             return
         for item in items:
-            session.emit_translated(item)
+            if item.type is CodexEventType.SUBAGENT_ACTIVITY:
+                child_thread_id = item.payload.get("agent_thread_id")
+                if isinstance(child_thread_id, str) and child_thread_id:
+                    accepted = self._child_threads.register(
+                        thread_id=child_thread_id,
+                        parent_thread_id=thread_id,
+                        session=session,
+                    )
+                    if not accepted:
+                        self._record_orphan(
+                            method,
+                            child_thread_id,
+                            item.turn_id,
+                            "child_thread_conflict",
+                        )
+                        continue
+                    self._thread_to_session[child_thread_id] = session
+            if self._child_threads.is_child(thread_id):
+                session.emit_child_translated(item)
+            else:
+                session.emit_translated(item)
 
     def _dispatch_account_level(
         self, method: str, params: Mapping[str, Any]
