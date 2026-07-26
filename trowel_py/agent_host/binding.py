@@ -16,6 +16,18 @@ class Runtime(str, Enum):
 
 
 @dataclass(frozen=True)
+class RuntimeIdentity:
+    """controller 恢复与精确清理所需的 runtime 进程/会话身份。"""
+
+    agent_session_id: str
+    runtime: str
+    native_session_id: str | None
+    runtime_generation: str
+    runtime_pid: int | None = None
+    runtime_pgid: int | None = None
+
+
+@dataclass(frozen=True)
 class SessionBinding:
     """不可变的公开会话绑定。
 
@@ -49,7 +61,9 @@ class SessionBinding:
     declared_mcp_roster: tuple[str, ...] = ()
     self_enabled: bool = True
     session_kind: str = "user"
+    session_purpose: str = "foreground"
     memory_eligibility: bool = True
+    memory_eligibility_mode: str = "eligible"
     agent_mcp_enabled: bool = True
     model_os_mcp_enabled: bool = False
     parent_session_id: str | None = None
@@ -81,7 +95,9 @@ class SessionBinding:
             "declared_mcp_roster": list(self.declared_mcp_roster),
             "self_enabled": self.self_enabled,
             "session_kind": self.session_kind,
+            "session_purpose": self.session_purpose,
             "memory_eligibility": self.memory_eligibility,
+            "memory_eligibility_mode": self.memory_eligibility_mode,
             "agent_mcp_enabled": self.agent_mcp_enabled,
             "model_os_mcp_enabled": self.model_os_mcp_enabled,
             "parent_session_id": self.parent_session_id,
@@ -113,7 +129,9 @@ def make_binding(
     declared_mcp_roster: Iterable[str] = (),
     self_enabled: bool = True,
     session_kind: str = "user",
+    session_purpose: str = "foreground",
     memory_eligibility: bool = True,
+    memory_eligibility_mode: str = "eligible",
     agent_mcp_enabled: bool = True,
     model_os_mcp_enabled: bool = False,
     parent_session_id: str | None = None,
@@ -145,7 +163,9 @@ def make_binding(
         declared_mcp_roster=tuple(declared_mcp_roster),
         self_enabled=self_enabled,
         session_kind=session_kind,
+        session_purpose=session_purpose,
         memory_eligibility=memory_eligibility,
+        memory_eligibility_mode=memory_eligibility_mode,
         agent_mcp_enabled=agent_mcp_enabled,
         model_os_mcp_enabled=model_os_mcp_enabled,
         parent_session_id=parent_session_id,
@@ -220,7 +240,14 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         else (),
         self_enabled=bool(data.get("self_enabled", True)),
         session_kind=str(data.get("session_kind", "user")),
+        session_purpose=str(data.get("session_purpose", "foreground")),
         memory_eligibility=bool(data.get("memory_eligibility", True)),
+        memory_eligibility_mode=str(
+            data.get(
+                "memory_eligibility_mode",
+                "eligible" if data.get("memory_eligibility", True) else "ineligible",
+            )
+        ),
         agent_mcp_enabled=bool(data.get("agent_mcp_enabled", True)),
         model_os_mcp_enabled=bool(data.get("model_os_mcp_enabled", False)),
         parent_session_id=(

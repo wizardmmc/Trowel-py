@@ -110,6 +110,30 @@ def _apply_episode_status_change(
     )
 
 
+def apply_episode_native_bound(
+    snap: Snapshot,
+    event: EventEnvelope,
+    *,
+    runtime: EpisodeFoldRuntime,
+) -> Snapshot:
+    current = runtime.find_episode(snap, event.episode_id)
+    if current is None:
+        return snap
+    updates: dict[str, Any] = {
+        "native_session_id": event.payload.get("native_session_id"),
+        "updated_at": event.occurred_at,
+    }
+    new_status = event.payload.get("new_status")
+    if new_status is not None:
+        updates["status"] = runtime.episode_status(new_status)
+        updates["status_provenance"] = event.provenance
+    return runtime.replace_episode(
+        snap,
+        event.episode_id,
+        runtime.state_replace(current, **updates),
+    )
+
+
 def _apply_episode_checkpoint(
     snap: Snapshot,
     event: EventEnvelope,

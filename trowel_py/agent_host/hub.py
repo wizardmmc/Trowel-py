@@ -13,7 +13,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
+from trowel_py.agent_host.binding import (
+    Runtime,
+    RuntimeIdentity,
+    SessionBinding,
+    make_binding,
+)
 from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.codex_adapter import CodexEventAdapter
 from trowel_py.agent_host.codex_launch import (
@@ -345,7 +350,9 @@ class SessionHub:
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
             session_kind=req.session_kind,
+            session_purpose=req.session_purpose,
             memory_eligibility=req.memory_eligibility,
+            memory_eligibility_mode=req.memory_eligibility_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
             parent_session_id=req.parent_session_id,
@@ -384,7 +391,9 @@ class SessionHub:
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
             session_kind=req.session_kind,
+            session_purpose=req.session_purpose,
             memory_eligibility=req.memory_eligibility,
+            memory_eligibility_mode=req.memory_eligibility_mode,
             agent_mcp_enabled=req.agent_mcp_enabled,
             model_os_mcp_enabled=req.model_os_mcp_enabled,
             parent_session_id=req.parent_session_id,
@@ -737,6 +746,121 @@ class SessionHub:
             raise SessionNotFoundError(f"codex session {session_id} not live")
         await self._codex.interrupt(session)
 
+    async def start_native(self, session_id: str) -> RuntimeIdentity:
+        """创建或挂载 fresh native session，但不启动首轮模型工作。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            host = self._cc_registry.get(session_id)
+            if host is None:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+            await host.start_native()
+            return self.native_identity(session_id)
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        await self._codex.attach(session)
+        self._writeback_codex_native(session_id, session)
+        return self.native_identity(session_id)
+
+    async def recreate_managed_session(self, session_id: str) -> RuntimeIdentity:
+        """controller restart 后按 durable binding 重建同一托管会话。"""
+
+        previous = self._require(session_id)
+        if not previous.model_os_mcp_enabled:
+            raise SessionAccessError("only Model OS managed sessions can be recreated")
+        if previous.runtime is Runtime.CLAUDE_CODE:
+            from trowel_py.cc_host import routes as cc_routes
+
+            await cc_routes.close_cc_session(session_id, self._cc_registry)
+        elif self._codex is not None:
+            self._codex.unregister(session_id)
+        self._store.delete(session_id)
+        request = CreateAgentSessionRequest(
+            runtime=previous.runtime.value,
+            workdir=previous.workdir,
+            resume_from=previous.native_session_id,
+            model=previous.model,
+            effort=previous.effort,
+            permission_mode=(
+                previous.permission
+                if previous.runtime is Runtime.CLAUDE_CODE
+                else None
+            ),
+            permission_preset=(
+                previous.permission_preset
+                if previous.runtime is Runtime.CODEX
+                else None
+            ),
+            memory_enabled=previous.memory_enabled,
+            profile_enabled=previous.profile_enabled,
+            self_enabled=previous.self_enabled,
+            session_kind=previous.session_kind,  # type: ignore[arg-type]
+            session_purpose=previous.session_purpose,  # type: ignore[arg-type]
+            memory_eligibility=previous.memory_eligibility,
+            memory_eligibility_mode=previous.memory_eligibility_mode,  # type: ignore[arg-type]
+            agent_mcp_enabled=previous.agent_mcp_enabled,
+            model_os_mcp_enabled=True,
+            parent_session_id=previous.parent_session_id,
+            delegation_depth=previous.delegation_depth,
+        )
+        recreated = self.create(request)
+        return await self.start_native(recreated.session_id)
+
+    def native_identity(self, session_id: str) -> RuntimeIdentity:
+        """读取当前精确 runtime identity；缺 generation 时拒绝启动。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            host = self._cc_registry.get(session_id)
+            if host is None:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+            generation = getattr(host, "process_generation", None)
+            if not generation:
+                raise SessionConflictError(f"cc session {session_id} has no process")
+            return RuntimeIdentity(
+                agent_session_id=session_id,
+                runtime=binding.runtime.value,
+                native_session_id=getattr(host, "cc_session_id", None),
+                runtime_generation=str(generation),
+                runtime_pid=getattr(host, "runtime_pid", None),
+                runtime_pgid=getattr(host, "runtime_pgid", None),
+            )
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None or session.binding is None:
+            raise SessionConflictError(f"codex session {session_id} has no thread")
+        client = getattr(self._codex, "client", None)
+        return RuntimeIdentity(
+            agent_session_id=session_id,
+            runtime=binding.runtime.value,
+            native_session_id=session.binding.thread_id,
+            runtime_generation=str(self._codex.connection_generation),
+            runtime_pid=getattr(client, "process_id", None),
+            runtime_pgid=None,
+        )
+
+    def persist_native_identity(self, identity: RuntimeIdentity) -> None:
+        """确认 identity 仍属当前 generation，并原子写回 Session binding。"""
+
+        current = self.native_identity(identity.agent_session_id)
+        if (
+            current.runtime != identity.runtime
+            or current.native_session_id != identity.native_session_id
+            or current.runtime_generation != identity.runtime_generation
+            or current.runtime_pid != identity.runtime_pid
+            or current.runtime_pgid != identity.runtime_pgid
+        ):
+            raise SessionConflictError("runtime identity changed before binding persisted")
+        if identity.native_session_id is not None:
+            self._store.update_native(
+                identity.agent_session_id,
+                native_session_id=identity.native_session_id,
+            )
+
     def runtime_generation(self, session_id: str) -> str:
         """返回 steer/interrupt CAS 使用的当前 runtime 连接代际。"""
 
@@ -752,6 +876,22 @@ class SessionHub:
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
         return str(self._codex.connection_generation)
+
+    def current_turn_id(self, session_id: str) -> str | None:
+        """返回旧控制 API 转交 Kernel 时使用的当前 turn identity。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            host = self._cc_registry.get(session_id)
+            if host is None:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+            return getattr(host, "current_turn_id", None)
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        session = self._codex.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        return getattr(session, "current_turn_id", None)
 
     async def steer(
         self,

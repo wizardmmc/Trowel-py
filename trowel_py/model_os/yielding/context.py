@@ -14,6 +14,7 @@ from trowel_py.model_os.context_observer import (
     codex_context_events_from_agent,
     extract_cc_samples,
     extract_codex_samples,
+    resolve_window,
 )
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.yielding.models import TurnState
@@ -50,10 +51,19 @@ def record_context_event(
                 task_id=task_id,
                 trigger=cc_event.compact_trigger,
             )
+        previous = store.read_snapshot().context_observation(
+            registration.episode_id, registration.native_session_id
+        )
+        previous_window = (
+            previous.latest_sample.effective_window_tokens
+            if previous is not None
+            else None
+        )
         samples = extract_cc_samples(
             [cc_event],
             native_session_id=registration.native_session_id,
             main_or_subagent="main",
+            window_resolver=lambda model: resolve_window(model) or previous_window,
         )
     else:
         codex_events = codex_context_events_from_agent([event])

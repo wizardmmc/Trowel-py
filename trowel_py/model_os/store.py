@@ -165,6 +165,7 @@ from trowel_py.model_os.types import (
     DecisionRecord,
     DecisionDisposition,
     Episode,
+    EpisodeRuntimeBinding,
     EpisodeSnapshot,
     EpisodeStatus,
     EventEnvelope,
@@ -236,6 +237,7 @@ _EPISODE_LIFECYCLE_KINDS = frozenset(
         EventKind.EPISODE_SUSPENDED,
         EventKind.EPISODE_WAIT_RESOLVED,
         EventKind.EPISODE_ACTIVATED,
+        EventKind.EPISODE_NATIVE_BOUND,
         EventKind.EPISODE_RECONCILE_REQUIRED,
         EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
         EventKind.EPISODE_RECONCILE_RESOLVED,
@@ -264,6 +266,7 @@ _EPISODE_FENCED_KINDS = frozenset(
         EventKind.EPISODE_FAILED,
         EventKind.EPISODE_SUSPENDED,
         EventKind.EPISODE_ACTIVATED,
+        EventKind.EPISODE_NATIVE_BOUND,
         EventKind.EPISODE_RECOVERING,
         EventKind.EPISODE_SIDE_EFFECT_RECORDED,
         EventKind.EPISODE_INTERRUPT_RECONCILE_REQUIRED,
@@ -2840,6 +2843,131 @@ class ModelOsStore:
                 fencing_token=expected_token,
             )
         )
+
+    def bind_episode_runtime(
+        self,
+        episode_id: str,
+        *,
+        expected_lease_id: str,
+        expected_owner: str,
+        expected_token: int,
+        agent_session_id: str,
+        runtime: str,
+        native_session_id: str | None,
+        runtime_generation: str,
+        runtime_pid: int | None,
+        runtime_pgid: int | None,
+        correlation_id: str,
+        activate: bool,
+    ) -> EpisodeRuntimeBinding:
+        """持久化精确 runtime 身份，并在身份完整时激活 Episode。"""
+
+        if runtime not in {"claude_code", "codex"}:
+            raise EpisodeCommandError(f"unsupported runtime {runtime!r}")
+        if not agent_session_id or not runtime_generation or not correlation_id:
+            raise EpisodeCommandError("runtime binding requires durable identity")
+        if activate and not native_session_id:
+            raise EpisodeCommandError("active runtime binding requires native_session_id")
+        if runtime_pid is not None and runtime_pid <= 0:
+            raise EpisodeCommandError("runtime_pid must be positive")
+        if runtime_pgid is not None and runtime_pgid <= 0:
+            raise EpisodeCommandError("runtime_pgid must be positive")
+        possible_orphan = not activate
+        identity = hashlib.sha256(
+            f"{correlation_id}:{'active' if activate else 'partial'}".encode("utf-8")
+        ).hexdigest()[:24]
+        with self._tx():
+            snap = self.replay()
+            episode = self._require_episode(snap, episode_id)
+            allowed = {EpisodeStatus.STARTING}
+            if activate:
+                allowed.add(EpisodeStatus.ACTIVE)
+            if episode.status not in allowed:
+                raise EpisodeCommandError(
+                    f"episode {episode_id!r} cannot bind runtime from "
+                    f"{episode.status.value}"
+                )
+            event = self._make_episode_event(
+                EventKind.EPISODE_NATIVE_BOUND,
+                episode_id,
+                {
+                    "agent_session_id": agent_session_id,
+                    "runtime": runtime,
+                    "native_session_id": native_session_id,
+                    "runtime_generation": runtime_generation,
+                    "runtime_pid": runtime_pid,
+                    "runtime_pgid": runtime_pgid,
+                    "correlation_id": correlation_id,
+                    "possible_orphan": possible_orphan,
+                    "new_status": EpisodeStatus.ACTIVE.value if activate else None,
+                },
+                work_item_id=episode.work_item_id,
+                task_id=episode.task_id,
+                lease_id=expected_lease_id,
+                owner=expected_owner,
+                fencing_token=expected_token,
+                event_id=f"episode.native_bound.{identity}",
+            )
+            self._append_fenced_event_in_tx(event)
+        binding = self.episode_runtime_binding(episode_id)
+        assert binding is not None
+        return binding
+
+    def episode_runtime_binding(
+        self, episode_id: str
+    ) -> EpisodeRuntimeBinding | None:
+        """从最新 native binding 事件重建 durable 控制身份。"""
+
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT * FROM events WHERE kind=? AND episode_id=? "
+            "ORDER BY seq DESC LIMIT 1",
+            (EventKind.EPISODE_NATIVE_BOUND, episode_id),
+        ).fetchone()
+        if row is None:
+            return None
+        event = _event_from_row(row)
+        payload = event.payload
+        return EpisodeRuntimeBinding(
+            episode_id=episode_id,
+            agent_session_id=str(payload["agent_session_id"]),
+            runtime=str(payload["runtime"]),
+            native_session_id=(
+                str(payload["native_session_id"])
+                if payload.get("native_session_id") is not None
+                else None
+            ),
+            runtime_generation=str(payload["runtime_generation"]),
+            runtime_pid=(
+                int(payload["runtime_pid"])
+                if payload.get("runtime_pid") is not None
+                else None
+            ),
+            runtime_pgid=(
+                int(payload["runtime_pgid"])
+                if payload.get("runtime_pgid") is not None
+                else None
+            ),
+            correlation_id=str(payload["correlation_id"]),
+            possible_orphan=bool(payload["possible_orphan"]),
+        )
+
+    def episode_runtime_binding_for_session(
+        self, agent_session_id: str
+    ) -> EpisodeRuntimeBinding | None:
+        """按 Session Hub id 找到最新 Episode binding。"""
+
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT * FROM events WHERE kind=? ORDER BY seq DESC",
+            (EventKind.EPISODE_NATIVE_BOUND,),
+        ).fetchall()
+        for row in rows:
+            event = _event_from_row(row)
+            if event.payload.get("agent_session_id") == agent_session_id:
+                assert event.episode_id is not None
+                return self.episode_runtime_binding(event.episode_id)
+        return None
 
     def request_yield(
         self,

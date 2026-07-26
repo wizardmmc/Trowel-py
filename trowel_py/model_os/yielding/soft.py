@@ -49,13 +49,31 @@ class SoftYieldController:
         self._defer_forced = defer_forced
         self._dispatch_interrupt = dispatch_interrupt
         self._deadlines: dict[str, asyncio.Task[None]] = {}
+        self._pending_samples: dict[str, ContextSample] = {}
 
     async def observe(
         self, state: TurnState, event: Mapping[str, Any]
     ) -> YieldReceipt | None:
+        event_type = str(event.get("type", ""))
+        terminal = event_type in {
+            "finished",
+            "interrupted",
+            "error",
+            "session_exited",
+        }
+        prior_sample = None
+        if event_type == "tool_call":
+            prior_sample = self._pending_samples.pop(
+                state.registration.session_id, None
+            )
         context = record_context_event(self._store, state, event)
         if context is not None and context.compacted:
             return self._supersede(state)
+        if terminal:
+            self._pending_samples.pop(state.registration.session_id, None)
+            return None
+        if prior_sample is not None and not state.soft_request_attempted:
+            return await self._dispatch(state, prior_sample)
         if (
             context is None
             or context.sample is None
@@ -65,6 +83,22 @@ class SoftYieldController:
         ):
             return None
         return await self._dispatch(state, context.sample)
+
+    def arm_from_latest(self, state: TurnState) -> None:
+        registration = state.registration
+        observation = self._store.read_snapshot().context_observation(
+            registration.episode_id, registration.native_session_id
+        )
+        if observation is None:
+            return
+        sample = observation.latest_sample
+        if (
+            sample.confidence is not ContextConfidence.RELIABLE
+            or not self._meets_threshold(sample)
+            or state.soft_request_attempted
+        ):
+            return
+        self._pending_samples[registration.session_id] = sample
 
     def mark_proposal(self, state: TurnState) -> None:
         if (
@@ -78,6 +112,7 @@ class SoftYieldController:
         return state.context_generation if state is not None else 0
 
     def cancel(self, session_id: str) -> None:
+        self._pending_samples.pop(session_id, None)
         task = self._deadlines.pop(session_id, None)
         if task is not None and task is not asyncio.current_task():
             task.cancel()
@@ -215,10 +250,15 @@ class SoftYieldController:
 
     @staticmethod
     def _request_text(state: TurnState) -> str:
+        tool_name = (
+            "mcp__trowel_model_os__yield"
+            if state.registration.runtime == "claude_code"
+            else "trowel_model_os.yield"
+        )
         return (
             f"{KERNEL_SOFT_YIELD_MARKER}\n"
             "上下文已接近安全线。请先可靠收束当前工具和写入，再调用 "
-            "trowel_model_os.yield 提交真实工作现场，并正常结束当前 turn。"
+            f"{tool_name} 提交真实工作现场，并正常结束当前 turn。"
             "不要为了交接编造完成状态。\n"
             f"context_generation={state.context_generation}"
         )

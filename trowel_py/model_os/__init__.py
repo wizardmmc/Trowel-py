@@ -5,8 +5,8 @@
 WorkBroker 仲裁 foreground/default/maintenance 的 provider、预算和并发资源，并以
 lease/fencing 约束崩溃恢复和用量归因。
 
-Attention Scheduler、Router 与 Episode Runner 尚未接入；三个 memory scheduler 已通过
-WorkBroker 领取 maintenance 资源租约。
+Episode starter 已接入 Session Hub、WorkBroker 与 yield；Attention Scheduler 和
+Router 尚未接入。三个 memory scheduler 已通过 WorkBroker 领取 maintenance 资源租约。
 """
 
 from trowel_py.model_os.redaction import redact_payload
@@ -107,6 +107,7 @@ from trowel_py.model_os.types import (
     DecisionRecord,
     DecisionDisposition,
     Episode,
+    EpisodeRuntimeBinding,
     EpisodeSnapshot,
     EpisodeStatus,
     ErrorRecord,
@@ -131,6 +132,16 @@ from trowel_py.model_os.types import (
     WorkItem,
     WorkItemKind,
     WorkItemStatus,
+)
+from trowel_py.model_os.episode_starting import (
+    EpisodeContext,
+    ModelOsCommandGate,
+    NativeSessionIdentity,
+    StartEpisodeCommand,
+    StartEpisodeCoordinator,
+    StartProgress,
+    StartStage,
+    build_episode_context,
 )
 from trowel_py.model_os.work_broker import (
     BrokerPolicy,
@@ -182,11 +193,13 @@ __all__ = [
     "DerivedContradiction",
     "DenialReason",
     "Episode",
+    "EpisodeContext",
     "EpisodeCommandError",
     "EpisodeSnapshot",
     "EpisodeState",
     "EpisodeStatus",
     "EpisodeRef",
+    "EpisodeRuntimeBinding",
     "ErrorRecord",
     "EvidenceAuthority",
     "EvidenceRef",
@@ -212,6 +225,8 @@ __all__ = [
     "ModelReportPayload",
     "ModelTier",
     "ModelOsStore",
+    "ModelOsCommandGate",
+    "NativeSessionIdentity",
     "OutcomeAttribution",
     "PendingDescriptor",
     "PendingLostPayload",
@@ -239,6 +254,10 @@ __all__ = [
     "StaleWorkLease",
     "StaleWriterRejected",
     "StateSample",
+    "StartEpisodeCommand",
+    "StartEpisodeCoordinator",
+    "StartProgress",
+    "StartStage",
     "SubsystemState",
     "Task",
     "TaskRef",
@@ -276,6 +295,7 @@ __all__ = [
     "YieldWaitingCondition",
     "initial_snapshot",
     "build_route_evidence_bundle",
+    "build_episode_context",
     "build_signal",
     "build_validator_outcome",
     "classify_route_evidence",

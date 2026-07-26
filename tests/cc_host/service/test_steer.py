@@ -25,6 +25,8 @@ async def test_steer_writes_kernel_message_into_matching_active_turn(
     stream, events = await _start_active_turn(host)
     turn_start, _ = events
     generation = host.process_generation
+    original = json.loads(proc.stdin.written[0])
+    assert original["message"]["content"][0]["text"] == "first"
 
     await host.steer(
         "kernel-soft-yield",

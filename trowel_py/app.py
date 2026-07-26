@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
     app.state.work_broker = None
     app.state.model_os_store = None
     app.state.model_os_yield_coordinator = None
+    app.state.model_os_episode_starter = None
+    app.state.model_os_command_gate = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -278,6 +280,26 @@ async def lifespan(app: FastAPI):
                 )
 
             app.state.agent_hub.set_model_os_observer(_observe_model_os_event)
+
+            from trowel_py.agent_host.episode_adapter import (
+                AgentEpisodeRuntimeAdapter,
+            )
+            from trowel_py.model_os.episode_starting import (
+                ModelOsCommandGate,
+                StartEpisodeCoordinator,
+            )
+
+            app.state.model_os_episode_starter = StartEpisodeCoordinator(
+                app.state.model_os_store,
+                broker=app.state.work_broker,
+                adapter=AgentEpisodeRuntimeAdapter(app.state.agent_hub),
+                yield_coordinator=app.state.model_os_yield_coordinator,
+            )
+            app.state.model_os_command_gate = ModelOsCommandGate(
+                app.state.model_os_store,
+                broker=app.state.work_broker,
+                yield_coordinator=app.state.model_os_yield_coordinator,
+            )
         except Exception:
             logger.warning("[model-os] yield coordinator failed to start", exc_info=True)
     yield

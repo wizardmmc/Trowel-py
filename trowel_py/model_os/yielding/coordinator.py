@@ -102,6 +102,7 @@ class YieldCoordinator:
                 started_monotonic=self._monotonic(),
                 context_generation=registration.context_generation,
             )
+            self._soft.arm_from_latest(self._turns[registration.session_id])
 
     async def propose(self, session_id: str, proposal: YieldProposal) -> YieldReceipt:
         async with self._lock:
@@ -193,11 +194,11 @@ class YieldCoordinator:
                 }:
                     return await self._finalize_terminal(state)
                 return None
+            item_id = event.get("item_id") or payload.get("tool_use_id")
+            fold_activity(state, event_type, payload, item_id)
             soft_receipt = await self._soft.observe(state, event)
             if soft_receipt is not None:
                 return soft_receipt
-            item_id = event.get("item_id") or payload.get("tool_use_id")
-            fold_activity(state, event_type, payload, item_id)
             if event_type in {"approval_request", "elicit_request"}:
                 return await self._finalizer.suspend_pending(
                     state, event_type, payload
