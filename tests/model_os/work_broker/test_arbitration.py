@@ -5,8 +5,11 @@ from pathlib import Path
 
 from trowel_py.model_os.work_broker import (
     DenialReason,
+    BudgetDimensions,
     WorkBroker,
+    WorkKind,
     WorkLease,
+    WorkRequest,
 )
 from tests.model_os.work_broker._support import (
     FakeClock,
@@ -36,6 +39,27 @@ def test_foreground_preempts_unstarted_default(broker: WorkBroker) -> None:
     assert isinstance(fg, WorkLease)
     assert fg.slot == d.slot
     assert all(lse.lease_id != d.lease_id for lse in broker.active_leases())
+
+
+def test_foreground_preempts_unstarted_incubation(broker: WorkBroker) -> None:
+    incubation = broker.request(
+        WorkRequest(
+            kind=WorkKind.INCUBATION,
+            provider=_fg().provider,
+            account_id="glm-a",
+            work_item_id="incubation-work",
+            budget_cap=BudgetDimensions(calls=1),
+        )
+    )
+    assert isinstance(incubation, WorkLease)
+
+    foreground = broker.request(_fg(account_id="glm-a"))
+
+    assert isinstance(foreground, WorkLease)
+    assert foreground.slot == incubation.slot
+    assert all(
+        lease.lease_id != incubation.lease_id for lease in broker.active_leases()
+    )
 
 
 def test_foreground_cannot_preempt_started_default(

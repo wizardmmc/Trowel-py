@@ -63,7 +63,7 @@ def test_public_and_method_signatures_are_stable() -> None:
         "04f9d6c56f46d97a45edb87444ea610f3e5758b86aef0e8ac21fa997b31e7d2e"
     )
     assert method_signature_digest() == (
-        "a519c9d9632ea055cc300bea970d8ff868f276d3cf82f8f15b78163589152090"
+        "c0a89ceee68dfbbdd1cceae8a0d9d8418f84835f3b96de08c6fa79f2cd372510"
     )
 
 

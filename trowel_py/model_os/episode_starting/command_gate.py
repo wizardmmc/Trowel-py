@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Mapping
 from uuid import uuid4
@@ -19,6 +20,7 @@ from trowel_py.model_os.types import (
     WorkItemKind,
 )
 from trowel_py.model_os.work_broker import (
+    DenialReason,
     ModelTier,
     WorkDenial,
     WorkKind,
@@ -49,18 +51,38 @@ class CommandTicket:
 
 class ModelOsCommandGate:
     def __init__(
-        self, store: ModelOsStore, *, broker: Any, yield_coordinator: Any
+        self,
+        store: ModelOsStore,
+        *,
+        broker: Any,
+        yield_coordinator: Any,
+        preempt_started_incubation: Callable[[Provider], Awaitable[bool]]
+        | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
         self._yield = yield_coordinator
+        self._preempt_started_incubation = preempt_started_incubation
 
-    def before_send(self, session_id: str, text: str) -> CommandTicket | None:
+    async def before_send(
+        self, session_id: str, text: str
+    ) -> CommandTicket | None:
         binding = self._store.episode_runtime_binding_for_session(session_id)
         if binding is None:
             return None
         ownership = self._ownership(binding.episode_id)
         work_lease = self._request_work(binding)
+        if (
+            isinstance(work_lease, WorkDenial)
+            and work_lease.reason is DenialReason.SLOT_BUSY
+            and self._work_kind(binding) is WorkKind.FOREGROUND
+            and self._preempt_started_incubation is not None
+        ):
+            provider = (
+                Provider.CODEX if binding.runtime == "codex" else Provider.GLM
+            )
+            if await self._preempt_started_incubation(provider):
+                work_lease = self._request_work(binding)
         if isinstance(work_lease, WorkDenial):
             raise RuntimeError(
                 f"WorkBroker denied managed send: {work_lease.reason.value}"
@@ -257,21 +279,7 @@ class ModelOsCommandGate:
         return lease
 
     def _request_work(self, binding: EpisodeRuntimeBinding) -> WorkLease | WorkDenial:
-        snapshot = self._store.read_snapshot()
-        episode = snapshot.episode_by_id(binding.episode_id)
-        if episode is None:
-            raise RuntimeError("managed Episode disappeared")
-        work_item = next(
-            item
-            for item in snapshot.work_items
-            if item.work_item_id == episode.work_item_id
-        )
-        if work_item.kind is WorkItemKind.MAINTENANCE:
-            kind = WorkKind.MAINTENANCE
-        elif work_item.kind is WorkItemKind.TASK:
-            kind = WorkKind.FOREGROUND
-        else:
-            kind = WorkKind.DEFAULT
+        kind, episode = self._work_kind_and_episode(binding)
         return self._broker.request(
             WorkRequest(
                 kind=kind,
@@ -287,3 +295,26 @@ class ModelOsCommandGate:
                 idempotency_key=f"turn:{uuid4().hex}",
             )
         )
+
+    def _work_kind(self, binding: EpisodeRuntimeBinding) -> WorkKind:
+        return self._work_kind_and_episode(binding)[0]
+
+    def _work_kind_and_episode(self, binding: EpisodeRuntimeBinding):
+        snapshot = self._store.read_snapshot()
+        episode = snapshot.episode_by_id(binding.episode_id)
+        if episode is None:
+            raise RuntimeError("managed Episode disappeared")
+        work_item = next(
+            item
+            for item in snapshot.work_items
+            if item.work_item_id == episode.work_item_id
+        )
+        if work_item.kind is WorkItemKind.MAINTENANCE:
+            kind = WorkKind.MAINTENANCE
+        elif work_item.kind is WorkItemKind.TASK:
+            kind = WorkKind.FOREGROUND
+        elif work_item.kind is WorkItemKind.INCUBATION:
+            raise RuntimeError("incubation session does not accept additional turns")
+        else:
+            kind = WorkKind.DEFAULT
+        return kind, episode

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+
+from trowel_py.model_os.candidates import CandidateStatus
 
 POLICY_VERSION = "m8-l11-manual-recent-deep-20260723"
 AUTOMATIC_DEFAULT = False
@@ -16,24 +17,6 @@ class DefaultWorkError(Exception):
         self.code = code
         self.detail = detail or code
         super().__init__(self.detail)
-
-
-class CandidateStatus(str, Enum):
-    NEW = "new"
-    SHOWN = "shown"
-    ADOPTED = "adopted"
-    DISMISSED = "dismissed"
-    INVALID = "invalid"
-    EXPIRED = "expired"
-
-    @property
-    def is_terminal(self) -> bool:
-        return self in {
-            CandidateStatus.ADOPTED,
-            CandidateStatus.DISMISSED,
-            CandidateStatus.INVALID,
-            CandidateStatus.EXPIRED,
-        }
 
 
 @dataclass(frozen=True)

@@ -7,10 +7,15 @@ import pytest
 from trowel_py.model_os.work_broker import (
     BudgetDimensions,
     DenialReason,
+    IdempotencyConflict,
+    ModelTier,
     StaleWorkLease,
     WorkBroker,
+    WorkKind,
     WorkLease,
+    WorkRequest,
 )
+from trowel_py.quota.types import Provider
 from tests.model_os.work_broker._support import (
     FakeClock,
     _begin,
@@ -77,6 +82,94 @@ def test_crash_recovery_old_fencing_token_dead(db_path: Path, clock: FakeClock) 
     totals = _use_and_return(b2, fresh, clock=clock)
     assert totals.calls == 1
     b2.close()
+
+
+def test_cleanup_recovery_is_idempotent_and_scoped_to_incubation(
+    broker: WorkBroker, clock: FakeClock
+) -> None:
+    incubation = broker.request(
+        WorkRequest(
+            kind=WorkKind.INCUBATION,
+            provider=Provider.GLM,
+            account_id="glm-a",
+            model_tier=ModelTier.DEEP,
+            work_item_id="incubation-cleanup-work",
+            budget_cap=BudgetDimensions(calls=1),
+            idempotency_key="incubation-cleanup-lease",
+        )
+    )
+    maintenance = broker.request(_maint(account_id="glm-b"))
+    assert isinstance(incubation, WorkLease)
+    assert isinstance(maintenance, WorkLease)
+    clock.advance(broker.policy.lease_ttl_seconds + 1)
+    cutoff = clock.iso()
+
+    first = broker.recover_for_cleanup(
+        "cleanup-command-1",
+        before=cutoff,
+        work_kind=WorkKind.INCUBATION,
+    )
+    replay = broker.recover_for_cleanup(
+        "cleanup-command-1",
+        before=cutoff,
+        work_kind=WorkKind.INCUBATION,
+    )
+
+    assert first == replay == 1
+    assert broker._conn is not None
+    rows = {
+        row["lease_id"]: row["released_at"]
+        for row in broker._conn.execute(
+            "SELECT lease_id, released_at FROM work_leases WHERE lease_id IN (?,?)",
+            (incubation.lease_id, maintenance.lease_id),
+        ).fetchall()
+    }
+    assert rows[incubation.lease_id] is not None
+    assert rows[maintenance.lease_id] is None
+    clock.advance(1)
+    with pytest.raises(IdempotencyConflict):
+        broker.recover_for_cleanup(
+            "cleanup-command-1",
+            before=clock.iso(),
+            work_kind=WorkKind.INCUBATION,
+        )
+
+
+def test_started_incubation_is_not_reclaimed_only_because_lease_expired(
+    broker: WorkBroker, clock: FakeClock
+) -> None:
+    incubation = broker.request(
+        WorkRequest(
+            kind=WorkKind.INCUBATION,
+            provider=Provider.GLM,
+            account_id="glm-a",
+            model_tier=ModelTier.DEEP,
+            work_item_id="incubation-unknown-work",
+            budget_cap=BudgetDimensions(calls=1),
+            idempotency_key="incubation-unknown-lease",
+        )
+    )
+    assert isinstance(incubation, WorkLease)
+    broker.begin_call(incubation.lease_id, incubation.fencing_token)
+    clock.advance(broker.policy.lease_ttl_seconds + 1)
+
+    assert broker.recover() == 0
+    assert (
+        broker.recover_for_cleanup(
+            "cleanup-started-incubation",
+            before=clock.iso(),
+            work_kind=WorkKind.INCUBATION,
+        )
+        == 0
+    )
+    foreground = broker.request(_fg(account_id="glm-a"))
+    assert not isinstance(foreground, WorkLease)
+    assert broker._conn is not None
+    row = broker._conn.execute(
+        "SELECT released_at FROM work_leases WHERE lease_id=?",
+        (incubation.lease_id,),
+    ).fetchone()
+    assert row["released_at"] is None
 
 
 def test_expired_lease_rejects_record_usage(

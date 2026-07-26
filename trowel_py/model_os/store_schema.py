@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from trowel_py.model_os.default_work.schema import SCHEMA_SQL as DEFAULT_WORK_SCHEMA_SQL
+from trowel_py.model_os.incubation.schema import SCHEMA_SQL as INCUBATION_SCHEMA_SQL
 from trowel_py.model_os.signal_projection import CREATE_PROJECTION_SQL
 
 SCHEMA_SQL = (
@@ -154,6 +155,7 @@ CREATE TABLE IF NOT EXISTS episode_create_keys (
 );
 """
     + DEFAULT_WORK_SCHEMA_SQL
+    + INCUBATION_SCHEMA_SQL
 )
 
 

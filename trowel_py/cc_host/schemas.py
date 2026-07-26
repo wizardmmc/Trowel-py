@@ -25,7 +25,9 @@ class CreateSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate", "default"] = "user"
+    session_kind: Literal[
+        "user", "delegate", "default", "incubation", "maintenance", "experiment"
+    ] = "user"
     memory_eligibility_mode: Literal["eligible", "ineligible", "adopted"] = "eligible"
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     model_os_mcp_enabled: bool = Field(default=False, strict=True)

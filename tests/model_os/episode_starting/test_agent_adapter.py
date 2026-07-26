@@ -62,7 +62,12 @@ class FakeHub:
         }
 
 
-def _command(workdir: Path, memory: bool, profile: bool) -> StartEpisodeCommand:
+def _command(
+    workdir: Path,
+    memory: bool,
+    profile: bool,
+    purpose: SessionPurpose = SessionPurpose.DEFAULT,
+) -> StartEpisodeCommand:
     return StartEpisodeCommand(
         work_item_id="work-1",
         task_id=None,
@@ -74,7 +79,7 @@ def _command(workdir: Path, memory: bool, profile: bool) -> StartEpisodeCommand:
         memory_enabled=memory,
         profile_enabled=profile,
         workdir=str(workdir),
-        session_purpose=SessionPurpose.DEFAULT,
+        session_purpose=purpose,
         memory_eligibility=MemoryEligibility.INELIGIBLE,
         permission="danger-full-access",
         idempotency_key=f"start-{memory}-{profile}",
@@ -104,6 +109,36 @@ async def test_default_adapter_forces_memory_profile_and_mcp_off(
     assert request.agent_mcp_enabled is False
     assert request.memory_eligibility is False
     assert identity.native_session_id == "thread-1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "purpose",
+    [
+        SessionPurpose.DEFAULT,
+        SessionPurpose.INCUBATION,
+        SessionPurpose.MAINTENANCE,
+        SessionPurpose.EXPERIMENT,
+    ],
+)
+async def test_all_system_purposes_use_the_same_runtime_isolation(
+    tmp_path: Path, purpose: SessionPurpose
+) -> None:
+    hub = FakeHub()
+    adapter = AgentEpisodeRuntimeAdapter(hub)
+
+    await adapter.start_native(_command(tmp_path, True, True, purpose), object())
+
+    request = hub.requests[0]
+    assert request.session_kind == purpose.value
+    assert request.approval_policy == "never"
+    assert request.sandbox == "read-only"
+    assert request.memory_enabled is False
+    assert request.profile_enabled is False
+    assert request.self_enabled is False
+    assert request.agent_mcp_enabled is False
+    assert request.model_os_mcp_enabled is False
+    assert request.native_tools_mode == "none"
 
 
 @pytest.mark.anyio

@@ -60,10 +60,14 @@ def test_v4_decision_migrates_without_guessing_or_changing_rows(tmp_path: Path) 
         assert decision.reason == "free text legacy reason"
         assert decision.signals == {"prompt": "private legacy body"}
         assert decision.disposition == DecisionDisposition.LEGACY_UNKNOWN
-        assert store._schema_version() == 8
+        assert store._schema_version() == 9
         assert store._conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type='table' "
             "AND name='default_candidates'"
+        ).fetchone()
+        assert store._conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' "
+            "AND name='incubation_plans'"
         ).fetchone()
         assert store._conn is not None
         row = store._conn.execute(
@@ -76,7 +80,7 @@ def test_v4_decision_migrates_without_guessing_or_changing_rows(tmp_path: Path) 
     reopened = ModelOsStore(path)
     reopened.open()
     try:
-        assert reopened._schema_version() == 8
+        assert reopened._schema_version() == 9
         assert len(reopened.list_decisions()) == 1
     finally:
         reopened.close()

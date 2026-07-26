@@ -60,6 +60,7 @@ def test_totals_facade_injects_current_connection_and_type(monkeypatch) -> None:
                 "provider": Provider.GLM,
                 "account_id": "glm-a",
                 "task_id": "task-1",
+                "work_item_id": None,
                 "model_tier": ModelTier.FAST,
                 "totals_factory": totals_type,
             },

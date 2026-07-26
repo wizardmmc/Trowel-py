@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -42,6 +42,7 @@ from trowel_py.model_os.scheduling.journal import (
 )
 from trowel_py.model_os.types import Episode, EpisodeStatus, Lease, WorkItemKind
 from trowel_py.model_os.work_broker import (
+    DenialReason,
     ModelTier,
     WorkDenial,
     WorkKind,
@@ -90,6 +91,8 @@ class StartEpisodeCoordinator:
         yield_coordinator: Any,
         router: CognitiveRouter | None = None,
         fault_hook: Callable[[StartStage], None] | None = None,
+        preempt_started_incubation: Callable[[Provider], Awaitable[bool]]
+        | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
@@ -99,6 +102,7 @@ class StartEpisodeCoordinator:
             store, RoutingConfig(RouteMode.OFF, {})
         )
         self._fault_hook = fault_hook or (lambda _stage: None)
+        self._preempt_started_incubation = preempt_started_incubation
         self._start_locks: dict[str, _StartLock] = {}
 
     def progress(self, idempotency_key: str) -> StartProgress | None:
@@ -162,6 +166,15 @@ class StartEpisodeCoordinator:
             progress = self.progress(command.idempotency_key)
             assert progress is not None
         lease = self._work_lease(command)
+        if (
+            isinstance(lease, WorkDenial)
+            and lease.reason is DenialReason.SLOT_BUSY
+            and command.schedule_decision_id is not None
+            and self._preempt_started_incubation is not None
+        ):
+            provider = Provider.CODEX if command.runtime == "codex" else Provider.GLM
+            if await self._preempt_started_incubation(provider):
+                lease = self._work_lease(command)
         if isinstance(lease, WorkDenial):
             if command.schedule_decision_id is not None:
                 recorded = read_recorded_schedule(
@@ -174,8 +187,14 @@ class StartEpisodeCoordinator:
                         reason=lease.reason.value,
                     )
             raise RuntimeError(f"WorkBroker denied Episode start: {lease.reason.value}")
-        if command.task_id is not None:
+        work_item = next(
+            item
+            for item in self._store.read_snapshot().work_items
+            if item.work_item_id == command.work_item_id
+        )
+        if work_item.kind is WorkItemKind.TASK:
             assert command.schedule_decision_id is not None
+            assert command.task_id is not None
             try:
                 self._store.claim_scheduled_foreground(
                     decision_id=command.schedule_decision_id,
@@ -379,7 +398,7 @@ class StartEpisodeCoordinator:
             raise ValueError("session_purpose does not match WorkItem policy")
         if work_item.memory_eligibility is not command.memory_eligibility:
             raise ValueError("memory_eligibility does not match WorkItem policy")
-        if command.task_id is not None:
+        if work_item.kind is WorkItemKind.TASK:
             if command.schedule_decision_id is None:
                 raise ValueError("Task Episode start requires a schedule decision")
             decision = next(
@@ -420,8 +439,20 @@ class StartEpisodeCoordinator:
             raise ValueError("WorkItem already has a non-terminal Episode")
         if command.previous_snapshot_ref is not None:
             previous = snapshot.episode_by_id(command.previous_episode_id)
-            if previous is None or previous.work_item_id != command.work_item_id:
-                raise ValueError("previous Episode does not belong to WorkItem")
+            same_work_item = (
+                previous is not None
+                and previous.work_item_id == command.work_item_id
+            )
+            same_task_incubation = (
+                previous is not None
+                and work_item.kind is WorkItemKind.INCUBATION
+                and previous.task_id == command.task_id
+            )
+            if not same_work_item and not same_task_incubation:
+                raise ValueError(
+                    "previous Episode does not belong to WorkItem or incubation Task"
+                )
+            assert previous is not None
             if previous.status is not EpisodeStatus.CLOSED:
                 raise ValueError("previous Episode must be closed before fresh start")
             if previous.last_snapshot_ref != command.previous_snapshot_ref:
@@ -493,6 +524,8 @@ class StartEpisodeCoordinator:
             kind = WorkKind.MAINTENANCE
         elif work_item.kind is WorkItemKind.TASK:
             kind = WorkKind.FOREGROUND
+        elif work_item.kind is WorkItemKind.INCUBATION:
+            kind = WorkKind.INCUBATION
         else:
             kind = WorkKind.DEFAULT
         provider = Provider.CODEX if command.runtime == "codex" else Provider.GLM
@@ -503,6 +536,7 @@ class StartEpisodeCoordinator:
                 model_tier=command.selected_model_tier or ModelTier.DEEP,
                 task_id=command.task_id,
                 work_item_id=command.work_item_id,
+                budget_cap=command.budget_cap,
                 idempotency_key=f"work:{command.idempotency_key}",
             )
         )

@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
-from tests.model_os._episode_helpers import make_running_system_episode
+from tests.model_os._episode_helpers import (
+    activate_episode,
+    make_running_system_episode,
+    make_running_task_episode,
+)
 from tests.model_os.episode_starting.test_coordinator import FakeBroker
 from trowel_py.model_os.episode_starting.command_gate import ModelOsCommandGate
+from trowel_py.model_os.incubation import IncubationRepository
 from trowel_py.model_os.types import EventKind
-from trowel_py.model_os.work_broker import ModelTier
+from trowel_py.model_os.waking import WakeConditionKind, WakeObservation
+from trowel_py.model_os.work_broker import (
+    DenialReason,
+    ModelTier,
+    WorkDenial,
+)
+from tests.model_os.incubation.support import create_command, prepared_running_task
 
 
 class FakeYield:
@@ -53,6 +66,35 @@ def _managed_episode(store):
     return episode, ownership, binding
 
 
+def _managed_task_episode(store):
+    episode, ownership, _, _ = make_running_task_episode(store)
+    activate_episode(store, episode.episode_id, ownership)
+    binding = store.bind_episode_runtime(
+        episode.episode_id,
+        expected_lease_id=ownership.lease_id,
+        expected_owner=ownership.owner,
+        expected_token=ownership.fencing_token,
+        agent_session_id="agent-task",
+        runtime="codex",
+        native_session_id="thread-task",
+        runtime_generation="codex-connection-task",
+        runtime_pid=101,
+        runtime_pgid=None,
+        correlation_id="command.start.task",
+        activate=True,
+    )
+    return binding
+
+
+class BusyOnceBroker(FakeBroker):
+    def request(self, request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return WorkDenial(DenialReason.SLOT_BUSY, "incubation running")
+        self.requests.pop()
+        return super().request(request)
+
+
 @pytest.mark.anyio
 async def test_managed_send_writes_intent_before_turn_and_registers_it(store) -> None:
     episode, ownership, binding = _managed_episode(store)
@@ -60,7 +102,7 @@ async def test_managed_send_writes_intent_before_turn_and_registers_it(store) ->
     yielding = FakeYield()
     gate = ModelOsCommandGate(store, broker=broker, yield_coordinator=yielding)
 
-    ticket = gate.before_send("agent-1", "private prompt is not journaled")
+    ticket = await gate.before_send("agent-1", "private prompt is not journaled")
     kinds = [event.kind for _, event in store.list_events()]
     assert kinds[-1] == EventKind.COMMAND_INTENT
     assert "private prompt" not in str(store.list_events())
@@ -95,13 +137,15 @@ async def test_managed_interrupt_uses_l06_expected_turn_and_generation(store) ->
     }
 
 
-def test_unmanaged_session_is_left_to_legacy_hub(store) -> None:
+@pytest.mark.anyio
+async def test_unmanaged_session_is_left_to_legacy_hub(store) -> None:
     gate = ModelOsCommandGate(store, broker=FakeBroker(), yield_coordinator=FakeYield())
 
-    assert gate.before_send("ordinary-session", "hello") is None
+    assert await gate.before_send("ordinary-session", "hello") is None
 
 
-def test_managed_send_releases_work_lease_when_intent_write_fails(
+@pytest.mark.anyio
+async def test_managed_send_releases_work_lease_when_intent_write_fails(
     store, monkeypatch
 ) -> None:
     _managed_episode(store)
@@ -114,12 +158,13 @@ def test_managed_send_releases_work_lease_when_intent_write_fails(
     monkeypatch.setattr(store, "append_decision_with_intent", fail_intent)
 
     with pytest.raises(RuntimeError, match="journal unavailable"):
-        gate.before_send("agent-1", "hello")
+        await gate.before_send("agent-1", "hello")
 
     assert broker.released == [("work-lease-1", 1)]
 
 
-def test_managed_send_reuses_episode_route_tier(store, monkeypatch) -> None:
+@pytest.mark.anyio
+async def test_managed_send_reuses_episode_route_tier(store, monkeypatch) -> None:
     _managed_episode(store)
     broker = FakeBroker()
     monkeypatch.setattr(
@@ -128,6 +173,80 @@ def test_managed_send_reuses_episode_route_tier(store, monkeypatch) -> None:
     )
     gate = ModelOsCommandGate(store, broker=broker, yield_coordinator=FakeYield())
 
-    gate.before_send("agent-1", "continue")
+    await gate.before_send("agent-1", "continue")
 
     assert broker.requests[0].model_tier is ModelTier.FAST
+
+
+@pytest.mark.anyio
+async def test_managed_foreground_send_retries_after_incubation_interrupt(store) -> None:
+    _managed_task_episode(store)
+    broker = BusyOnceBroker()
+    preempted = []
+
+    async def preempt(provider):
+        preempted.append(provider)
+        return True
+
+    gate = ModelOsCommandGate(
+        store,
+        broker=broker,
+        yield_coordinator=FakeYield(),
+        preempt_started_incubation=preempt,
+    )
+
+    ticket = await gate.before_send("agent-task", "continue")
+
+    assert ticket is not None
+    assert len(broker.requests) == 2
+    assert preempted
+
+
+@pytest.mark.anyio
+async def test_incubation_session_rejects_an_additional_turn(store) -> None:
+    task, ref = prepared_running_task(store)
+    repository = IncubationRepository(store)
+    plan = repository.create_plan(create_command(task.task_id, ref))
+    repository.consume_wake(
+        WakeObservation(
+            observation_id="manual-command-gate",
+            kind=WakeConditionKind.MANUAL,
+            target_ref=plan.plan_id,
+            observed_at="2026-07-27T08:00:00+00:00",
+            source="user",
+            details={},
+        )
+    )
+    repository.begin_run(
+        plan.plan_id,
+        occurred_at=datetime.fromisoformat("2026-07-27T08:00:00+00:00"),
+    )
+    episode, ownership = store.start_episode(
+        work_item_id=plan.work_item_id,
+        owner="test",
+        ttl_seconds=600,
+        idempotency_key="incubation-command-gate",
+        task_id=task.task_id,
+        previous_snapshot_ref=ref,
+    )
+    binding = store.bind_episode_runtime(
+        episode.episode_id,
+        expected_lease_id=ownership.lease_id,
+        expected_owner=ownership.owner,
+        expected_token=ownership.fencing_token,
+        agent_session_id="incubation-agent",
+        runtime="codex",
+        native_session_id="incubation-thread",
+        runtime_generation="incubation-generation",
+        runtime_pid=102,
+        runtime_pgid=None,
+        correlation_id="incubation-command-gate",
+        activate=True,
+    )
+    assert binding.agent_session_id == "incubation-agent"
+    gate = ModelOsCommandGate(
+        store, broker=FakeBroker(), yield_coordinator=FakeYield()
+    )
+
+    with pytest.raises(RuntimeError, match="does not accept additional turns"):
+        await gate.before_send("incubation-agent", "run cycle 2")

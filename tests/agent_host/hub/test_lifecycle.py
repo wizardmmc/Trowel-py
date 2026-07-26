@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,57 @@ async def test_interrupt_routes_to_codex(
     binding = hub.create(codex_req(workdir))
     await hub.interrupt(binding.session_id)
     assert binding.session_id in codex_mgr.interrupted
+
+
+async def test_interrupt_and_confirm_waits_for_the_original_turn_terminal(
+    hub: SessionHub, workdir: Path, cc_registry: dict[str, FakeCcHost]
+):
+    binding = hub.create(cc_req(workdir))
+    host = cc_registry[binding.session_id]
+    host.current_turn_id = "cc-turn-running"
+
+    async def acknowledge_then_finish() -> None:
+        host.interrupted = True
+        asyncio.get_running_loop().call_later(
+            0.01, setattr, host, "current_turn_id", None
+        )
+
+    host.interrupt = acknowledge_then_finish
+
+    assert await hub.interrupt_and_confirm(
+        binding.session_id,
+        timeout_seconds=0.1,
+        poll_seconds=0.001,
+    )
+
+
+async def test_interrupt_and_confirm_returns_false_when_turn_stays_running(
+    hub: SessionHub, workdir: Path, cc_registry: dict[str, FakeCcHost]
+):
+    binding = hub.create(cc_req(workdir))
+    host = cc_registry[binding.session_id]
+    host.current_turn_id = "cc-turn-running"
+
+    assert not await hub.interrupt_and_confirm(
+        binding.session_id,
+        timeout_seconds=0.01,
+        poll_seconds=0.001,
+    )
+    assert host.current_turn_id == "cc-turn-running"
+
+
+async def test_interrupt_and_confirm_does_not_guess_before_turn_identity_exists(
+    hub: SessionHub, workdir: Path, cc_registry: dict[str, FakeCcHost]
+):
+    binding = hub.create(cc_req(workdir))
+    host = cc_registry[binding.session_id]
+
+    assert not await hub.interrupt_and_confirm(binding.session_id)
+    assert host.interrupted is False
+    assert await hub.interrupt_and_confirm(
+        binding.session_id,
+        expected_turn_id="turn-already-terminal",
+    )
 
 
 async def test_interrupt_unknown_session_404(hub: SessionHub):

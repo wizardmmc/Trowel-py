@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI):
     app.state.model_os_signal_bridge = None
     app.state.model_os_router = None
     app.state.model_os_default_work = None
+    app.state.model_os_incubation = None
     app.state.memory_scheduler = None
     app.state.distill_scheduler = None
     app.state.tidy_scheduler = None
@@ -416,12 +417,43 @@ async def lifespan(app: FastAPI):
                 )
                 return receipt.status
 
+            async def _preempt_started_incubation(provider) -> bool:
+                from trowel_py.model_os.work_broker import WorkKind
+
+                incubation = app.state.model_os_incubation
+                if incubation is None:
+                    return False
+                victim = next(
+                    (
+                        lease
+                        for lease in app.state.work_broker.active_leases()
+                        if lease.provider is provider
+                        and lease.work_kind is WorkKind.INCUBATION
+                        and lease.work_item_id is not None
+                    ),
+                    None,
+                )
+                if victim is None:
+                    return False
+                try:
+                    return await incubation.interrupt_for_foreground(
+                        victim.work_item_id,
+                        app.state.agent_hub.interrupt,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[model-os] started incubation preemption failed",
+                        exc_info=True,
+                    )
+                    return False
+
             resumer = SuspendedEpisodeResumer(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
                 wake_controller=wake_controller,
                 runtime_adapter=runtime_adapter,
                 yield_coordinator=app.state.model_os_yield_coordinator,
+                preempt_started_incubation=_preempt_started_incubation,
             )
             attention_scheduler = AttentionScheduler(
                 app.state.model_os_store,
@@ -432,12 +464,14 @@ async def lifespan(app: FastAPI):
             app.state.model_os_recovery_observer = SwitchRecoveryObserver(
                 app.state.model_os_store
             )
+
             app.state.model_os_episode_starter = StartEpisodeCoordinator(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
                 adapter=runtime_adapter,
                 yield_coordinator=app.state.model_os_yield_coordinator,
                 router=app.state.model_os_router,
+                preempt_started_incubation=_preempt_started_incubation,
             )
             from trowel_py.model_os.default_work.service import DefaultWorkService
 
@@ -449,10 +483,31 @@ async def lifespan(app: FastAPI):
                 router=app.state.model_os_router,
                 broker=app.state.work_broker,
             )
+            from trowel_py.model_os.incubation.service import IncubationService
+
+            async def _interrupt_incubation_runtime(
+                session_id: str, expected_turn_id: str | None
+            ) -> bool:
+                return await app.state.agent_hub.interrupt_and_confirm(
+                    session_id, expected_turn_id
+                )
+
+            app.state.model_os_incubation = IncubationService(
+                app.state.model_os_store,
+                starter=app.state.model_os_episode_starter,
+                router=app.state.model_os_router,
+                broker=app.state.work_broker,
+                interrupt_runtime=_interrupt_incubation_runtime,
+                reconcile_runtime=runtime_adapter.reconcile,
+            )
+            wake_controller.add_observation_consumer(
+                app.state.model_os_incubation.repository.consume_wake
+            )
             app.state.model_os_command_gate = ModelOsCommandGate(
                 app.state.model_os_store,
                 broker=app.state.work_broker,
                 yield_coordinator=app.state.model_os_yield_coordinator,
+                preempt_started_incubation=_preempt_started_incubation,
             )
             from trowel_py.model_os.waking.reconcile import StartupReconciler
 
@@ -475,6 +530,20 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.warning(
                     "[model-os] default generation reconcile failed",
+                    exc_info=True,
+                )
+            try:
+                incubation_reconciled = (
+                    await app.state.model_os_incubation.reconcile()
+                )
+                if incubation_reconciled:
+                    logger.info(
+                        "[model-os] reconciled %d incubation plan(s)",
+                        incubation_reconciled,
+                    )
+            except Exception:
+                logger.warning(
+                    "[model-os] incubation reconcile failed",
                     exc_info=True,
                 )
             await attention_scheduler.reconcile()
@@ -503,6 +572,14 @@ async def lifespan(app: FastAPI):
                 )
                 host_detector = None
             scheduler = app.state.model_os_attention_scheduler
+            incubation = app.state.model_os_incubation
+
+            async def _dispatch_wake(event) -> None:
+                if incubation is not None and incubation.trigger(event):
+                    return
+                if scheduler is not None:
+                    await scheduler.trigger(event.wake_id)
+
             wake_service = WakeService(
                 app.state.model_os_store,
                 observer=SystemObserver(),
@@ -510,9 +587,13 @@ async def lifespan(app: FastAPI):
                     datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 ),
                 host_detector=host_detector,
-                on_wake=(lambda event: scheduler.trigger(event.wake_id))
-                if scheduler is not None
-                else None,
+                on_wake=_dispatch_wake,
+                condition_providers=(incubation.repository.wake_conditions,)
+                if incubation is not None
+                else (),
+                observation_consumers=(incubation.repository.consume_wake,)
+                if incubation is not None
+                else (),
             )
             await wake_service.start()
             app.state.model_os_wake_service = wake_service
@@ -529,6 +610,12 @@ async def lifespan(app: FastAPI):
             await _wake_service.stop()
         except Exception:
             logger.warning("[model-os] wake service close failed", exc_info=True)
+    _incubation = getattr(app.state, "model_os_incubation", None)
+    if _incubation is not None:
+        try:
+            await _incubation.drain()
+        except Exception:
+            logger.warning("[model-os] incubation drain failed", exc_info=True)
     _yield_coordinator = getattr(app.state, "model_os_yield_coordinator", None)
     if _yield_coordinator is not None:
         try:

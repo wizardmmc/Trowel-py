@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from trowel_py.model_os.types import ReconcileReason
@@ -29,12 +30,29 @@ class QueuedRuntimeInput:
 
 
 class WakeController:
-    def __init__(self, store) -> None:
+    def __init__(
+        self,
+        store,
+        *,
+        observation_consumers: tuple[
+            Callable[[WakeObservation], Iterable[WakeEvent]], ...
+        ] = (),
+    ) -> None:
         self._store = store
+        self._observation_consumers = observation_consumers
         self._pending_inputs: dict[str, QueuedRuntimeInput] = {}
 
+    def add_observation_consumer(
+        self, consumer: Callable[[WakeObservation], Iterable[WakeEvent]]
+    ) -> None:
+        if consumer not in self._observation_consumers:
+            self._observation_consumers = (*self._observation_consumers, consumer)
+
     def observe(self, observation: WakeObservation) -> tuple[WakeEvent, ...]:
-        return self._store.consume_wake(observation)
+        consumed = list(self._store.consume_wake(observation))
+        for consumer in self._observation_consumers:
+            consumed.extend(consumer(observation))
+        return tuple(dict.fromkeys(consumed))
 
     def manages(self, session_id: str) -> bool:
         return self._store.episode_runtime_binding_for_session(session_id) is not None
