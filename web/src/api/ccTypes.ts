@@ -53,6 +53,12 @@ export interface PlanUpdatedEvent {
   }[];
 }
 
+export interface TurnDiffUpdatedEvent {
+  readonly type: "turn_diff_updated";
+  readonly turn_id: string;
+  readonly diff: string;
+}
+
 export interface UserEvent {
   readonly type: "user";
   readonly text: string;
@@ -355,7 +361,8 @@ export type TrowelEvent =
   | RateLimitUpdatedEvent
   | GoalUpdatedEvent
   | GoalClearedEvent
-  | PlanUpdatedEvent;
+  | PlanUpdatedEvent
+  | TurnDiffUpdatedEvent;
 
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([
   "error_during_execution",

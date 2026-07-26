@@ -137,4 +137,32 @@ describe("SlashAutocomplete", () => {
     );
     expect(container.firstChild).toBeNull();
   });
+
+  it("shows why a running-state Codex command is disabled", () => {
+    const disabled: SlashItem = {
+      name: "compact",
+      description: "压缩上下文",
+      source: "codex",
+      type: "command",
+      disabled: true,
+      disabledReason: "当前 turn 结束后可用",
+    };
+    const onSelect = vi.fn();
+    render(
+      <SlashAutocomplete
+        groups={groupSlashItems([disabled], "")}
+        searching={false}
+        collapsed={noCollapse}
+        selectedIndex={0}
+        onSelect={onSelect}
+        onToggleGroup={() => {}}
+      />,
+    );
+
+    const option = screen.getByRole("option");
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("当前 turn 结束后可用")).toBeInTheDocument();
+    fireEvent.click(option);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

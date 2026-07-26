@@ -86,6 +86,8 @@ class CodexSession:
         self._session_started_emitted: bool = False
         # begin_send 到 RUNNING 之间也必须拒绝并发发送。
         self._sending: bool = False
+        self._autonomous_start: bool = False
+        self._memory_eligible: bool = True
         # turn/start 响应后的抢先通知先缓存，保证 USER 与 TURN_STARTED 排在前面。
         self._turn_started: bool = False
         self._native_turn_started_id: str | None = None
@@ -252,7 +254,9 @@ class CodexSession:
             )
         )
 
-    def begin_send(self) -> None:
+    def begin_send(
+        self, *, autonomous: bool = False, memory_eligible: bool = True
+    ) -> None:
         """为新 turn 预留会话；已有活动或启动中的 turn 时拒绝。"""
 
         if self._sending or self._state not in _SENDABLE_STATES:
@@ -261,6 +265,8 @@ class CodexSession:
                 f"{self._state.name} (sending={self._sending})"
             )
         self._sending = True
+        self._autonomous_start = autonomous
+        self._memory_eligible = memory_eligible
         self._turn_started = False
         self._pending = []
 
@@ -270,15 +276,18 @@ class CodexSession:
         native_turn_id = self._native_turn_started_id
         pending = self._pending
         self._sending = False
+        self._autonomous_start = False
         self._turn_started = False
         self._native_turn_started_id = None
         self._pending = []
         if native_turn_id is None:
+            self._memory_eligible = True
             return
         self.record_native_turn_started(native_turn_id)
         for item in pending:
             self._emit(item)
             self._apply_terminal_state(item)
+        self._memory_eligible = True
 
     def attach_thread_binding(self, result: Mapping[str, Any]) -> ThreadBinding:
         """用最新原生响应覆盖绑定；服务端事实始终优先。"""
@@ -356,6 +365,8 @@ class CodexSession:
         self._has_started_turn = True
         self._state = CodexSessionState.RUNNING
         self._sending = False
+        self._autonomous_start = False
+        self._memory_eligible = True
         self._turn_started = True
         self._native_turn_started_id = None
         # 抢先通知必须在 TURN_STARTED 后按原顺序落队并更新终态。
@@ -374,6 +385,9 @@ class CodexSession:
                 f"session {self.session_id} cannot start a native turn with no binding"
             )
         if self._sending:
+            if self._autonomous_start:
+                events = self.record_autonomous_turn_started(turn_id)
+                return events[0] if events else None
             self._native_turn_started_id = turn_id
             return None
         if self._current_turn_id == turn_id:
@@ -388,7 +402,10 @@ class CodexSession:
                 type=CodexEventType.TURN_STARTED,
                 thread_id=self._binding.thread_id,
                 turn_id=turn_id,
-                payload=immutable_payload(autonomous=True),
+                payload=immutable_payload(
+                    autonomous=True,
+                    memory_eligible=self._memory_eligible,
+                ),
             )
         )
         self._current_turn_id = turn_id
@@ -396,6 +413,50 @@ class CodexSession:
         self._state = CodexSessionState.RUNNING
         self._turn_started = True
         return event
+
+    def record_autonomous_turn_started(self, turn_id: str) -> list[CodexEvent]:
+        """完成已预留的原生自主 turn，不合成用户消息。"""
+
+        if self._binding is None:
+            raise TurnConflictError(
+                f"session {self.session_id} cannot start a native turn with no binding"
+            )
+        if not self._sending:
+            event = self.record_native_turn_started(turn_id)
+            return [event] if event is not None else []
+        if (
+            self._native_turn_started_id is not None
+            and self._native_turn_started_id != turn_id
+        ):
+            raise TurnConflictError(
+                f"native turn response {turn_id} does not match turn/started "
+                f"{self._native_turn_started_id}"
+            )
+        turn_event = self._emit(
+            TranslatedItem(
+                type=CodexEventType.TURN_STARTED,
+                thread_id=self._binding.thread_id,
+                turn_id=turn_id,
+                payload=immutable_payload(
+                    autonomous=True,
+                    memory_eligible=self._memory_eligible,
+                ),
+            )
+        )
+        self._current_turn_id = turn_id
+        self._has_started_turn = True
+        self._state = CodexSessionState.RUNNING
+        self._sending = False
+        self._autonomous_start = False
+        self._memory_eligible = True
+        self._turn_started = True
+        self._native_turn_started_id = None
+        flushed: list[CodexEvent] = []
+        for pending_item in self._pending:
+            flushed.append(self._emit(pending_item))
+            self._apply_terminal_state(pending_item)
+        self._pending = []
+        return [turn_event, *flushed]
 
     def emit_translated(self, item: TranslatedItem) -> CodexEvent | None:
         """处理翻译后的通知；pre-turn 窗口先缓存，记录 turn 后再顺序发出。"""
@@ -413,6 +474,8 @@ class CodexSession:
         """为活动 turn 合成 HOST_EXITED 终态，同时保留 thread 绑定以供恢复。"""
 
         self._sending = False
+        self._autonomous_start = False
+        self._memory_eligible = True
         self._turn_started = False
         self._native_turn_started_id = None
         self._pending = []

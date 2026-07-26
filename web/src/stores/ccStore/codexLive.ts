@@ -30,7 +30,8 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
     const terminal =
       event.type === "finished" ||
       event.type === "interrupted" ||
-      event.type === "error";
+      event.type === "error" ||
+      (event.type === "host_status" && event.payload.status === "host_exited");
     const autonomousStart =
       event.type === "turn_start" && event.payload.autonomous === true;
     if (!terminal && !autonomousStart) return;
@@ -39,6 +40,8 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
       abort: terminal
         ? null
         : session.abort ?? new AbortController(),
+      commandPending:
+        terminal || autonomousStart ? null : session.commandPending,
       connected: true,
     }));
   }
@@ -87,6 +90,7 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
             ...current,
             ...closed,
             abort: null,
+            commandPending: null,
             plan: null,
             needsReplay: true,
           };
@@ -97,6 +101,7 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
         if (controller.signal.aborted) return;
         callbacks.updateSession(sid, (current) => ({
           ...current,
+          commandPending: null,
           plan: null,
           needsReplay: true,
           transportError: errorMessage(error),

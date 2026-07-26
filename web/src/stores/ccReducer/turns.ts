@@ -36,9 +36,10 @@ export function applyTurnStart(
       turns: [...turns, turn],
       phase: "awaiting_first",
       plan: null,
+      turnDiff: null,
     };
   }
-  if (turns.length === 0) return { ...prev, plan: null };
+  if (turns.length === 0) return { ...prev, plan: null, turnDiff: null };
 
   const last = turns[turns.length - 1];
   const updated: Turn = {
@@ -47,7 +48,12 @@ export function applyTurnStart(
     turnId: event.turn_id ?? last.turnId,
     revertible: event.revertible,
   };
-  return { ...prev, turns: [...turns.slice(0, -1), updated], plan: null };
+  return {
+    ...prev,
+    turns: [...turns.slice(0, -1), updated],
+    plan: null,
+    turnDiff: null,
+  };
 }
 
 /** 对齐 history user 事件与 Codex live user echo。 */
@@ -76,5 +82,5 @@ export function applyUserEvent(
     revertible: false,
     durationSeconds: event.duration_seconds,
   };
-  return { ...prev, turns: [...turns, turn] };
+  return { ...prev, turns: [...turns, turn], turnDiff: null };
 }

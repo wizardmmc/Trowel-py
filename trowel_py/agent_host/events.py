@@ -32,6 +32,7 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         "goal_updated",
         "goal_cleared",
         "plan_updated",
+        "turn_diff_updated",
     }
 )
 

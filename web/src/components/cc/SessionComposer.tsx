@@ -1,5 +1,8 @@
 import type { ModelOption, SlashItem } from "../../api/cc";
-import type { AgentModel } from "../../api/agent";
+import type {
+  AgentModel,
+  CodexCommand,
+} from "../../api/agent";
 import type { PerSessionState } from "../../stores/ccStore";
 import { Composer } from "./Composer";
 import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
@@ -12,6 +15,11 @@ interface SessionComposerProps {
   readonly ccModels: readonly ModelOption[];
   readonly codexModels: readonly AgentModel[];
   readonly codexCatalogError: string | null;
+  readonly codexCommands: readonly CodexCommand[];
+  readonly codexCommandsLoading: boolean;
+  readonly codexCommandsError: string | null;
+  readonly onRetryCodexCommands: () => void;
+  readonly onCodexCommand: (command: CodexCommand, rawText: string) => void;
   readonly onRetryCodexCatalog: () => void;
   readonly onSend: (text: string) => void;
   readonly onInterrupt: () => void;
@@ -29,6 +37,11 @@ export function SessionComposer({
   ccModels,
   codexModels,
   codexCatalogError,
+  codexCommands,
+  codexCommandsLoading,
+  codexCommandsError,
+  onRetryCodexCommands,
+  onCodexCommand,
   onRetryCodexCatalog,
   onSend,
   onInterrupt,
@@ -78,6 +91,17 @@ export function SessionComposer({
     }),
   );
   const codexCurrentEffort = active?.pendingEffort ?? effort;
+  const codexSlashItems: readonly SlashItem[] = codexCommands.map((command) => ({
+    name: command.name,
+    description: command.description,
+    source: "codex",
+    type: "command",
+    disabled: streaming && !command.available_while_running,
+    disabledReason:
+      streaming && !command.available_while_running
+        ? "当前 turn 结束后可用"
+        : null,
+  }));
 
   function pickCodexModel(modelId: string): void {
     const next = codexModels.find((model) => model.id === modelId);
@@ -93,11 +117,26 @@ export function SessionComposer({
   return (
     <Composer
       streaming={streaming}
-      disabled={!activeSid || phase === "awaiting_input"}
+      disabled={
+        !activeSid ||
+        phase === "awaiting_input" ||
+        active?.commandPending != null
+      }
       awaitingInput={phase === "awaiting_input"}
       onSend={onSend}
       onInterrupt={onInterrupt}
-      slashItems={ccControls ? slashItems : []}
+      slashItems={
+        ccControls ? slashItems : codexControls ? codexSlashItems : []
+      }
+      slashLoading={codexControls && codexCommandsLoading}
+      slashError={codexControls ? codexCommandsError : null}
+      onRetrySlashItems={
+        codexControls ? onRetryCodexCommands : undefined
+      }
+      onLocalCommand={(item, rawText) => {
+        const command = codexCommands.find((candidate) => candidate.name === item.name);
+        if (command) onCodexCommand(command, rawText);
+      }}
       models={
         ccControls
           ? ccModels

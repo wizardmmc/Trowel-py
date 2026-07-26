@@ -78,6 +78,33 @@ describe("reduceEvent — Codex mapping (post-adapter)", () => {
     });
   });
 
+  it("turn_diff_updated replaces the aggregate and a new turn clears it", () => {
+    const withDiff = run([
+      {
+        type: "turn_diff_updated",
+        turn_id: "turn-1",
+        diff: "diff --git a/a b/a\n+one\n",
+      } as TrowelEvent,
+      {
+        type: "turn_diff_updated",
+        turn_id: "turn-1",
+        diff: "diff --git a/a b/a\n+one\n+two\n",
+      } as TrowelEvent,
+    ]);
+    expect(withDiff.turnDiff).toEqual({
+      turnId: "turn-1",
+      diff: "diff --git a/a b/a\n+one\n+two\n",
+    });
+
+    const nextTurn = reduceEvent(withDiff, {
+      type: "turn_start",
+      turn_id: "turn-2",
+      revertible: false,
+      autonomous: true,
+    } as TrowelEvent);
+    expect(nextTurn.turnDiff).toBeNull();
+  });
+
   it("host_status host_exited errors the running turn + flags degraded", () => {
     const state = run([
       { type: "user", text: "go" },
