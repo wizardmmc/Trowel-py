@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from pathlib import Path
 
+from trowel_py.model_os.work_broker import WorkBroker
 from trowel_py.model_os.work_broker.schema import SCHEMA_SQL
 
 EXPECTED_COLUMNS = {
@@ -15,6 +17,7 @@ EXPECTED_COLUMNS = {
         "model_tier",
         "task_id",
         "work_item_id",
+        "decision_id",
         "granted_cap",
         "started",
         "in_critical",
@@ -82,9 +85,9 @@ EXPECTED_INDEX_COLUMNS = {
 
 
 def test_schema_bytes_are_stable() -> None:
-    assert len(SCHEMA_SQL.encode()) == 4041
+    assert len(SCHEMA_SQL.encode()) == 4150
     assert hashlib.sha256(SCHEMA_SQL.encode()).hexdigest() == (
-        "56324da4ca0084ec6d781df8b940c8f3cf0fa86bc79b44ffe52d812f8e2d980f"
+        "3713db8aa36f50d833c84ca65db7f54d67705275b5a9089e1761ac9872f0de4e"
     )
 
 
@@ -113,3 +116,31 @@ def test_schema_is_idempotent_and_has_expected_shape() -> None:
             row[2] for row in connection.execute(f"PRAGMA index_info({index})")
         )
         assert actual == columns
+
+
+def test_open_migrates_existing_lease_table_with_decision_link(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "old-broker.db"
+    connection = sqlite3.connect(path)
+    old_schema = SCHEMA_SQL.replace(
+        "    -- 产生本 lease 的统一仲裁 Decision；旧行前向迁移后允许为空。\n"
+        "    decision_id TEXT,\n",
+        "",
+    )
+    connection.executescript(old_schema)
+    connection.close()
+
+    broker = WorkBroker(path)
+    broker.open()
+    try:
+        assert broker._conn is not None
+        columns = {
+            row["name"]
+            for row in broker._conn.execute(
+                "PRAGMA table_info(work_leases)"
+            ).fetchall()
+        }
+        assert "decision_id" in columns
+    finally:
+        broker.close()

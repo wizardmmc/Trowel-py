@@ -45,6 +45,8 @@
 | `model_os/waking/` | 等待条件规范化、系统 observation、幂等 WakeEvent 消费、pending 输入与启动 reconcile |
 | `model_os/scheduling/` | 注意力调度策略、Decision 账本、pending reconcile、挂起恢复与切换成本观测 |
 | `model_os/routing/` | fast/deep policy、runtime catalog 配置、shadow journal、认知信号桥与人工上线 Gate |
+| `model_os/journal_schema.py` / `journal_persistence.py` | Model OS 与 WorkBroker 共用的 Event/Decision schema 和安全写入编码 |
+| `model_os/observation/` | 固定水位 journal、task/episode/decision explain、六维指标与只读 policy replay |
 | `model_os/default_work/` | 显式近期 Memory 采样、隔离 deep generation、Candidate/outcome、去重、usage 与启动恢复 |
 | `model_os/incubation/` | 用户显式单轮孵化的 Plan、wake、隔离 generation、Candidate/outcome、Broker 对账与清理 |
 | `model_os/mcp_server.py` / `model_os/routes.py` | `trowel_model_os.yield` stdio MCP、Episode 启动 SSE 与本地 HTTP 边界 |

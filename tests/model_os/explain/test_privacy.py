@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 import pytest
 
 from trowel_py.model_os.journal import InvalidJournalCursor, JournalIdentityConflict
+from trowel_py.model_os.observation import ReplayStatus, replay_policy_decision
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.model_os.types import (
     DecisionDisposition,
@@ -84,7 +85,7 @@ def test_errors_and_cursor_do_not_echo_private_content(store: ModelOsStore) -> N
     assert SECRETS[0] not in str(conflict.value)
     assert "private body changed" not in str(conflict.value)
 
-    for bad_cursor in (SECRETS[0], "private cursor body"):
+    for bad_cursor in (SECRETS[0], "private cursor body", "x" * 4097):
         with pytest.raises(InvalidJournalCursor) as invalid:
             store.read_journal_page(cursor=bad_cursor)
         assert bad_cursor not in str(invalid.value)
@@ -124,3 +125,97 @@ def test_decision_validation_error_does_not_echo_rejected_value(
     with pytest.raises(ValueError) as caught:
         store.append_decision(decision)
     assert field_value not in str(caught.value)
+
+
+def test_public_read_models_fail_closed_for_unsafe_legacy_metadata(
+    store: ModelOsStore,
+) -> None:
+    """旧库或内部写入绕过新门禁时，公开读模型仍不得回显原值。"""
+
+    assert store._conn is not None
+    secret = "sk-EXAMPLE-legacy-secret"
+    private_ref = "/Users/alice/private/session.jsonl"
+    store._conn.execute(
+        "INSERT INTO events (event_id, kind, occurred_at, source, provenance, "
+        "policy_version, work_item_id, task_id, outcome, payload, payload_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "private event id",
+            f"prefix Bearer {secret} suffix",
+            "2026-07-25T00:00:00Z",
+            "internal",
+            "machine_observation",
+            secret,
+            private_ref,
+            "task.private",
+            secret,
+            json.dumps({"evidence_ref": private_ref}),
+            "sha256:legacy",
+        ),
+    )
+    store._conn.execute(
+        "INSERT INTO decisions (decision_id, kind, disposition, decided_at, "
+        "task_id, policy_version, signals, candidates, choice, reason, "
+        "identity_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "decision.private.metadata",
+            f"prefix Bearer {secret} suffix",
+            "no_action",
+            "2026-07-25T00:00:01Z",
+            "task.private",
+            secret,
+            json.dumps({"refs": [private_ref]}),
+            json.dumps([{"prompt": "private legacy prompt"}]),
+            "private legacy choice",
+            "private legacy reason",
+            "sha256:legacy-metadata",
+        ),
+    )
+    store._conn.execute(
+        "INSERT INTO decisions (decision_id, kind, disposition, decided_at, "
+        "task_id, policy_version, signals, candidates, choice, reason, "
+        "identity_hash) VALUES (?, 'work_broker.usage', 'no_action', ?, ?, ?, "
+        "'{\"refs\":[]}', ?, 'recorded', 'usage_observed', ?)",
+        (
+            "decision.private.usage",
+            "2026-07-25T00:00:02Z",
+            "task.private",
+            secret,
+            json.dumps(
+                [{"role": "usage", "cost": 1.0, "cost_source": secret}]
+            ),
+            "sha256:legacy-usage",
+        ),
+    )
+    store._conn.commit()
+
+    page = store.read_journal_page(limit=20)
+    decision = store.explain_decision("decision.private.metadata")
+    scope = store.explain_scope("task", "task.private")
+    replay = replay_policy_decision(store, "decision.private.metadata")
+    metrics = store.read_metrics(
+        window_start="2026-07-24T00:00:00+00:00",
+        window_end="2026-07-26T00:00:00+00:00",
+    )
+    public_text = json.dumps(
+        {
+            "page": asdict(page),
+            "decision": asdict(decision),
+            "scope": asdict(scope),
+            "replay": asdict(replay),
+            "metrics": asdict(metrics),
+        },
+        default=str,
+    )
+
+    assert secret not in public_text
+    assert private_ref not in public_text
+    assert "private legacy prompt" not in public_text
+    assert "private legacy choice" not in public_text
+    assert "private legacy reason" not in public_text
+    assert decision.disposition == "legacy_unknown"
+    assert replay.status is ReplayStatus.UNSUPPORTED
+    reliability = next(
+        item for item in metrics.dimensions if item.name == "reliability"
+    )
+    assert reliability.cost.sources == ("unknown",)

@@ -60,10 +60,10 @@ def test_public_types_keep_identity_and_module() -> None:
 
 def test_public_and_method_signatures_are_stable() -> None:
     assert signature_digest(PUBLIC_NAMES) == (
-        "04f9d6c56f46d97a45edb87444ea610f3e5758b86aef0e8ac21fa997b31e7d2e"
+        "e27e0e7b3eb3b880cff328fff6db92972d5137bf3cbcb19fef752c6ab46c21f0"
     )
     assert method_signature_digest() == (
-        "c0a89ceee68dfbbdd1cceae8a0d9d8418f84835f3b96de08c6fa79f2cd372510"
+        "964394bd649100270fffec0fddb963391eee73a3c159e2163f6f3e9d229fd940"
     )
 
 

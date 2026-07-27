@@ -16,6 +16,7 @@ from trowel_py.model_os.scheduling.journal import (
     read_resource_deferred,
     record_resource_deferred,
     record_schedule_decision,
+    schedule_decision_from_record,
 )
 from trowel_py.model_os.scheduling.policy import (
     decide_schedule,
@@ -42,4 +43,5 @@ __all__ = [
     "rebase_ready_candidate",
     "record_resource_deferred",
     "record_schedule_decision",
+    "schedule_decision_from_record",
 ]

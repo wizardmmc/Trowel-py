@@ -65,6 +65,9 @@ class ScheduleDecision:
     target_work_item_id: str | None = None
     target_task_id: str | None = None
     target_episode_id: str | None = None
+    current_foreground_task_id: str | None = None
+    previous_foreground_task_id: str | None = None
+    user_override_task_id: str | None = None
 
 
 @dataclass(frozen=True)

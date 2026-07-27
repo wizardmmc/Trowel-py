@@ -45,6 +45,11 @@ from trowel_py.model_os.explain import (
     DecisionExplanation,
     read_decision_explanation as _run_read_decision_explanation,
 )
+from trowel_py.model_os.observation.models import MetricsReport, ScopeExplanation
+from trowel_py.model_os.observation.read_model import (
+    read_metrics as _run_read_metrics,
+    read_scope_explanation as _run_read_scope_explanation,
+)
 from trowel_py.model_os.cognitive_signals import (
     AttemptBinding,
     AttemptRef,
@@ -1771,6 +1776,23 @@ class ModelOsStore:
         ).fetchall()
         return [(int(row["seq"]), _decision_from_row(row)) for row in rows]
 
+    def read_decision_record(
+        self,
+        decision_id: str,
+        *,
+        boundary: JournalBoundary | None = None,
+    ) -> DecisionRecord | None:
+        """按主键读取固定 Decision 水位内的一条结构记录。"""
+
+        assert self._conn is not None
+        with self._read_tx():
+            fixed = boundary or capture_journal_boundary(self._conn)
+            row = self._conn.execute(
+                "SELECT * FROM decisions WHERE decision_id=? AND seq<=?",
+                (decision_id, fixed.decision_seq),
+            ).fetchone()
+            return _decision_from_row(row) if row is not None else None
+
     def journal_boundary(self) -> JournalBoundary:
         """在同一 SQLite read transaction 中捕获 Event/Decision 双水位。"""
 
@@ -1811,6 +1833,48 @@ class ModelOsStore:
                 boundary=fixed,
                 decode_decision=_decision_from_row,
                 decode_event=_event_from_row,
+            )
+
+    def explain_scope(
+        self,
+        subject_kind: str,
+        subject_id: str,
+        *,
+        boundary: JournalBoundary | None = None,
+    ) -> ScopeExplanation:
+        """按 task/episode 的结构化引用读取固定水位解释。"""
+
+        if subject_kind not in {"task", "episode"}:
+            raise ValueError("unsupported explanation subject")
+        assert self._conn is not None
+        with self._read_tx():
+            fixed = boundary or capture_journal_boundary(self._conn)
+            return _run_read_scope_explanation(
+                self._conn,
+                subject_kind=subject_kind,
+                subject_id=subject_id,
+                boundary=fixed,
+                decode_decision=_decision_from_row,
+                decode_event=_event_from_row,
+            )
+
+    def read_metrics(
+        self,
+        *,
+        window_start: str,
+        window_end: str,
+        boundary: JournalBoundary | None = None,
+    ) -> MetricsReport:
+        """以固定 Event/Decision 水位聚合六维指标。"""
+
+        assert self._conn is not None
+        with self._read_tx():
+            fixed = boundary or capture_journal_boundary(self._conn)
+            return _run_read_metrics(
+                self._conn,
+                boundary=fixed,
+                window_start=window_start,
+                window_end=window_end,
             )
 
     def _read_event_range(

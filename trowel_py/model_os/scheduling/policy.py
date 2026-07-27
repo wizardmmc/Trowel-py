@@ -56,6 +56,9 @@ def _decision(
         target_work_item_id=target.work_item_id if target else None,
         target_task_id=target.task_id if target else target_task_id,
         target_episode_id=target.suspended_episode_id if target else None,
+        current_foreground_task_id=schedule_input.current_foreground_task_id,
+        previous_foreground_task_id=schedule_input.previous_foreground_task_id,
+        user_override_task_id=schedule_input.user_override_task_id,
     )
 
 

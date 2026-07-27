@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from trowel_py.model_os.episode_starting import StartEpisodeCommand
+from trowel_py.model_os.observation.routes import router as observation_router
 from trowel_py.model_os.default_work.models import (
     DefaultWorkError,
     RunDefaultPilotCommand,
@@ -44,6 +45,7 @@ from trowel_py.model_os.waking import WakeConditionKind, WakeObservation
 from trowel_py.model_os.work_broker import BudgetDimensions
 
 router = APIRouter()
+router.include_router(observation_router)
 
 
 class YieldWaitingConditionBody(BaseModel):

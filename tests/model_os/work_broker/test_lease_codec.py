@@ -39,7 +39,8 @@ def lease_row(
             "'2026-07-23T00:10:00+00:00' AS expires_at, "
             "? AS fencing_token, "
             "'task-example' AS task_id, "
-            "'work-example' AS work_item_id",
+            "'work-example' AS work_item_id, "
+            "'decision-example' AS decision_id",
             (provider, work_kind, model_tier, granted_cap, fencing_token),
         ).fetchone()
         assert row is not None
@@ -124,6 +125,7 @@ def test_row_to_lease_rebuilds_enums_cap_and_scalar_fields() -> None:
         task_id="task-example",
         work_item_id="work-example",
     )
+    assert lease.decision_id == "decision-example"
 
 
 @pytest.mark.parametrize("stored_cap", [None, "", 0])

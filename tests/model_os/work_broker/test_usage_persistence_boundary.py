@@ -116,17 +116,29 @@ def test_record_usage_persistence_runs_inside_broker_transaction(
     )
 
     assert broker.record_usage(lease.lease_id, lease.fencing_token, usage) is expected
-    assert [name for name, _ in calls] == ["seen", "started", "insert", "totals"]
+    assert [name for name, _ in calls] == [
+        "seen",
+        "totals",
+        "started",
+        "insert",
+        "totals",
+    ]
     assert broker._conn is not None
     assert not broker._conn.in_transaction
     assert calls[0][1] == {
         "lease_id": lease.lease_id,
         "observation_id": "observation-1",
     }
-    assert calls[1][1] == {"lease_id": lease.lease_id}
-    assert calls[2][1]["lease_id"] == lease.lease_id
-    assert calls[2][1]["usage"] is usage
-    assert calls[3][1] == {
+    assert calls[1][1] == {
+        "work_kind": WorkKind.DEFAULT,
+        "provider": Provider.GLM,
+        "account_id": "glm-a",
+        "day": clock().date().isoformat(),
+    }
+    assert calls[2][1] == {"lease_id": lease.lease_id}
+    assert calls[3][1]["lease_id"] == lease.lease_id
+    assert calls[3][1]["usage"] is usage
+    assert calls[4][1] == {
         "work_kind": WorkKind.DEFAULT,
         "provider": Provider.GLM,
         "account_id": "glm-a",
