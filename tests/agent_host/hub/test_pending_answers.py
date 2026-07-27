@@ -50,3 +50,34 @@ async def test_managed_cc_answer_and_cancel_use_existing_elicit_path(
     assert cancelled is True
     assert host.elicit_answers == [{"匿名问题": "匿名回答"}]
     assert host.elicit_cancelled == 1
+
+
+def test_pending_cc_request_exposes_question_without_changing_host(
+    hub: SessionHub,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+) -> None:
+    binding = hub.create(cc_req(workdir))
+    host = cc_registry[binding.session_id]
+    host.pending_elicit = {
+        "request_id": "request-cc-1",
+        "questions": [
+            {
+                "question": "是否继续实现？",
+                "header": "下一步",
+                "options": [],
+                "multiSelect": False,
+            }
+        ],
+    }
+
+    pending = hub.pending_request(binding.session_id, "request-cc-1")
+
+    assert pending == {
+        "kind": "input",
+        "request_id": "request-cc-1",
+        "prompt": "是否继续实现？",
+        "questions": host.pending_elicit["questions"],
+        "available_decisions": [],
+    }
+    assert host.elicit_answers == []

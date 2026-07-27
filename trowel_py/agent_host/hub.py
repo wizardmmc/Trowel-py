@@ -1033,6 +1033,49 @@ class SessionHub:
             request.to_payload() for request in self._codex.list_requests(session_id)
         ]
 
+    def pending_request(
+        self,
+        session_id: str,
+        correlation_id: str,
+    ) -> dict[str, Any] | None:
+        """读取托管 Episode 正在等待的原生请求，不改变 host 状态。"""
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CODEX:
+            return next(
+                (
+                    {
+                        "kind": "approval",
+                        "request_id": request["request_id"],
+                        "prompt": request.get("reason") or request.get("command"),
+                        "questions": [],
+                        "available_decisions": request.get(
+                            "available_decisions", []
+                        ),
+                    }
+                    for request in self.list_requests(session_id)
+                    if request["request_id"] == correlation_id
+                ),
+                None,
+            )
+        host = self._cc_registry.get(session_id)
+        pending = host.pending_elicit if host is not None else None
+        if pending is None or pending["request_id"] != correlation_id:
+            return None
+        questions = pending["questions"]
+        return {
+            "kind": "input",
+            "request_id": pending["request_id"],
+            "prompt": (
+                questions[0].get("question")
+                if len(questions) == 1
+                and isinstance(questions[0].get("question"), str)
+                else None
+            ),
+            "questions": questions,
+            "available_decisions": [],
+        }
+
     async def delete(self, session_id: str) -> bool:
         """注销运行时会话并删除 binding；未知 id 返回 False，允许重试。"""
 

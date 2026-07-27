@@ -35,6 +35,7 @@ class FakeCcHost:
         self.current_turn_id: str | None = None
         self.process_generation: str | None = None
         self.cc_session_id: str | None = None
+        self.pending_elicit: dict[str, Any] | None = None
 
     async def send(self, text: str) -> AsyncIterator[dict[str, Any]]:
         self.running = True

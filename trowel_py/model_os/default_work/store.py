@@ -779,6 +779,13 @@ class DefaultWorkRepository:
             self._conn.execute("SELECT COUNT(*) FROM default_generations").fetchone()[0]
         )
 
+    def pending_candidates(self) -> tuple[Candidate, ...]:
+        rows = self._conn.execute(
+            "SELECT candidate_id FROM default_candidates "
+            "WHERE status IN ('new','shown') ORDER BY created_at, candidate_id"
+        ).fetchall()
+        return tuple(self._candidate(row["candidate_id"]) for row in rows)
+
     def candidate_count(self) -> int:
         return int(
             self._conn.execute("SELECT COUNT(*) FROM default_candidates").fetchone()[0]

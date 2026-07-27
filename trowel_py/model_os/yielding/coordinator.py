@@ -234,7 +234,12 @@ class YieldCoordinator:
             soft_receipt = await self._soft.observe(state, event)
             if soft_receipt is not None:
                 return soft_receipt
-            if event_type in {"approval_request", "elicit_request"}:
+            approval_status = payload.get("status")
+            is_pending_interaction = event_type == "elicit_request" or (
+                event_type == "approval_request"
+                and (approval_status is None or approval_status == "pending")
+            )
+            if is_pending_interaction:
                 return await self._finalizer.suspend_pending(state, event_type, payload)
             if event_type in {"finished", "interrupted", "error", "session_exited"}:
                 self._soft.cancel(session_id)

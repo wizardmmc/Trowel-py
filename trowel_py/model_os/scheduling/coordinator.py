@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from trowel_py.model_os.automation import automation_is_paused
 from trowel_py.model_os.scheduling.journal import (
     append_schedule_terminal,
     complete_schedule_dispatch,
@@ -151,6 +152,18 @@ class AttentionScheduler:
                 user_override_task_id=self.pending_override_task_id(),
             )
             decision = decide_schedule(schedule_input)
+            if (
+                automation_is_paused(self._store)
+                and schedule_input.user_override_task_id is None
+            ):
+                decision = replace(
+                    decision,
+                    action=ScheduleAction.IDLE,
+                    reason=ScheduleReason.AUTOMATION_PAUSED,
+                    target_work_item_id=None,
+                    target_task_id=None,
+                    target_episode_id=None,
+                )
             trigger_seq = next(
                 (
                     seq
