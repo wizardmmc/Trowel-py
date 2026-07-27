@@ -75,4 +75,5 @@ def row_to_lease(
         fencing_token=int(row["fencing_token"]),
         task_id=row["task_id"],
         work_item_id=row["work_item_id"],
+        decision_id=row["decision_id"],
     )

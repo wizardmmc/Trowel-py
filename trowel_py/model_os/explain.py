@@ -8,7 +8,13 @@ import sqlite3
 from typing import Any
 
 from trowel_py.model_os.types import DecisionDisposition, DecisionRecord, EventEnvelope
-from trowel_py.model_os.journal import JournalBoundary
+from trowel_py.model_os.journal import (
+    JournalBoundary,
+    public_journal_label,
+    public_journal_ref,
+    validate_decision,
+)
+from trowel_py.model_os.redaction import redact_payload
 
 
 class DecisionNotFound(LookupError):
@@ -51,21 +57,26 @@ def _command(
     conflict_event_ids: list[str] | None = None,
 ) -> CommandExplanation:
     return CommandExplanation(
-        correlation_id=correlation_id,
-        intent_event_id=intent_event_id,
-        terminal_event_id=terminal_event_id,
-        status=status,
-        evidence_refs=evidence_refs or [],
-        conflict_event_ids=conflict_event_ids or [],
+        correlation_id=public_journal_ref(correlation_id),
+        intent_event_id=public_journal_ref(intent_event_id),
+        terminal_event_id=public_journal_ref(terminal_event_id),
+        status=public_journal_label(status),
+        evidence_refs=[
+            public_journal_ref(value) or "unknown" for value in (evidence_refs or [])
+        ],
+        conflict_event_ids=[
+            public_journal_ref(value) or "unknown"
+            for value in (conflict_event_ids or [])
+        ],
     )
 
 
 def _legacy_explanation(decision: DecisionRecord) -> DecisionExplanation:
     return DecisionExplanation(
-        decision_id=decision.decision_id,
-        decision_kind=decision.kind,
+        decision_id=public_journal_ref(decision.decision_id) or "unknown",
+        decision_kind=public_journal_label(decision.kind),
         disposition=DecisionDisposition.LEGACY_UNKNOWN.value,
-        policy_version=decision.policy_version,
+        policy_version=public_journal_label(decision.policy_version),
         signal_refs=[],
         candidates=[],
         choice="unknown",
@@ -81,6 +92,10 @@ def explain_decision_record(
     command_events: list[tuple[int, EventEnvelope]],
 ) -> DecisionExplanation:
     if decision.disposition == DecisionDisposition.LEGACY_UNKNOWN:
+        return _legacy_explanation(decision)
+    try:
+        validate_decision(decision)
+    except (TypeError, ValueError):
         return _legacy_explanation(decision)
 
     disposition = decision.disposition.value
@@ -154,16 +169,19 @@ def explain_decision_record(
             )
 
     return DecisionExplanation(
-        decision_id=decision.decision_id,
-        decision_kind=decision.kind,
+        decision_id=public_journal_ref(decision.decision_id) or "unknown",
+        decision_kind=public_journal_label(decision.kind),
         disposition=disposition,
-        policy_version=decision.policy_version,
-        signal_refs=list(decision.signals["refs"]),
-        candidates=list(decision.candidates),
-        choice=decision.choice,
-        reason_code=decision.reason,
-        budget_before=decision.budget_before,
-        budget_after=decision.budget_after,
+        policy_version=public_journal_label(decision.policy_version),
+        signal_refs=[
+            public_journal_ref(value) or "unknown"
+            for value in decision.signals["refs"]
+        ],
+        candidates=redact_payload(list(decision.candidates)),
+        choice=public_journal_label(decision.choice),
+        reason_code=public_journal_label(decision.reason),
+        budget_before=redact_payload(decision.budget_before),
+        budget_after=redact_payload(decision.budget_after),
         command=command,
     )
 

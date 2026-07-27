@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import base64
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,17 +30,50 @@ def _hash(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
+def _encoded_timestamp(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("schedule candidate created_at must be absolute")
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decoded_timestamp(value: str) -> str:
+    padded = value + "=" * (-len(value) % 4)
+    try:
+        decoded = base64.b64decode(
+            padded,
+            altchars=b"-_",
+            validate=True,
+        ).decode("utf-8")
+        _encoded_timestamp(decoded)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("invalid recorded schedule timestamp") from exc
+    return decoded
+
+
 def _candidate_summary(candidate, *, journal_event_seq: int) -> dict[str, object]:
     return {
+        "role": "candidate",
         "work_item_id": candidate.work_item_id,
         "task_id": candidate.task_id,
         "suspended_episode_id": candidate.suspended_episode_id,
         "priority": candidate.priority,
         "warm_rank": candidate.warm_rank,
-        "created_at_ref": _hash(candidate.created_at),
+        "created_at_b64": _encoded_timestamp(candidate.created_at),
         "ready_epoch_ref": candidate.ready_epoch_ref,
         "virtual_service_segments": candidate.virtual_service_segments,
         "journal_event_seq": journal_event_seq,
+    }
+
+
+def _input_summary(decision: ScheduleDecision) -> dict[str, object]:
+    return {
+        "role": "input",
+        "journal_event_seq": decision.journal_boundary.event_seq,
+        "journal_decision_seq": decision.journal_boundary.decision_seq,
+        "current_foreground_task_id": decision.current_foreground_task_id,
+        "previous_foreground_task_id": decision.previous_foreground_task_id,
+        "user_override_task_id": decision.user_override_task_id,
     }
 
 
@@ -55,6 +89,9 @@ def _identity(decision: ScheduleDecision) -> str:
         "target_work_item_id": decision.target_work_item_id,
         "target_task_id": decision.target_task_id,
         "target_episode_id": decision.target_episode_id,
+        "current_foreground_task_id": decision.current_foreground_task_id,
+        "previous_foreground_task_id": decision.previous_foreground_task_id,
+        "user_override_task_id": decision.user_override_task_id,
         "candidates": [
             {
                 "work_item_id": item.work_item_id,
@@ -75,26 +112,38 @@ def _identity(decision: ScheduleDecision) -> str:
 
 
 def read_recorded_schedule(store, decision_id: str) -> RecordedScheduleDecision | None:
-    row = next(
-        (item for _, item in store.list_decisions() if item.decision_id == decision_id),
-        None,
-    )
+    row = store.read_decision_record(decision_id)
     if row is None:
         return None
-    intent = next(
-        (
-            event
-            for _, event in store.list_events()
-            if event.kind == EventKind.COMMAND_INTENT and event.cause_id == decision_id
-        ),
-        None,
+    explanation = store.explain_decision(decision_id)
+    schedule = schedule_decision_from_record(row)
+    return RecordedScheduleDecision(
+        decision_id=row.decision_id,
+        correlation_id=row.correlation_id,
+        intent_event_id=explanation.command.intent_event_id,
+        decision=schedule,
     )
+
+
+def schedule_decision_from_record(row: DecisionRecord) -> ScheduleDecision:
+    """从一条 attention Decision 恢复其冻结输入与输出。"""
+
     from trowel_py.model_os.journal import JournalBoundary
     from trowel_py.model_os.scheduling.models import (
         ScheduleCandidate,
         ScheduleReason,
     )
 
+    if row.kind != "attention.schedule":
+        raise ValueError("not an attention schedule decision")
+    input_summary = next(
+        (
+            item
+            for item in row.candidates
+            if isinstance(item, dict) and item.get("role") == "input"
+        ),
+        None,
+    )
     candidates = tuple(
         ScheduleCandidate(
             work_item_id=str(item["work_item_id"]),
@@ -103,7 +152,11 @@ def read_recorded_schedule(store, decision_id: str) -> RecordedScheduleDecision 
             warm_rank=(
                 int(item["warm_rank"]) if item["warm_rank"] is not None else None
             ),
-            created_at=str(item["created_at_ref"]),
+            created_at=(
+                _decoded_timestamp(str(item["created_at_b64"]))
+                if "created_at_b64" in item
+                else str(item.get("created_at_ref"))
+            ),
             ready_epoch_ref=str(item["ready_epoch_ref"]),
             virtual_service_segments=int(item["virtual_service_segments"]),
             suspended_episode_id=(
@@ -113,31 +166,51 @@ def read_recorded_schedule(store, decision_id: str) -> RecordedScheduleDecision 
             ),
         )
         for item in row.candidates
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("role", "candidate") == "candidate"
     )
-    schedule = ScheduleDecision(
+    return ScheduleDecision(
         action=ScheduleAction(row.choice),
         reason=ScheduleReason(row.reason),
         trigger_event_ref=row.cause_id or "unknown",
         journal_boundary=JournalBoundary(
             event_seq=(
-                int(row.candidates[0]["journal_event_seq"])
-                if row.candidates and isinstance(row.candidates[0], dict)
+                int(input_summary["journal_event_seq"])
+                if input_summary is not None
+                else (
+                    int(row.candidates[0].get("journal_event_seq", 0))
+                    if row.candidates and isinstance(row.candidates[0], dict)
+                    else 0
+                )
+            ),
+            decision_seq=(
+                int(input_summary["journal_decision_seq"])
+                if input_summary is not None
                 else 0
             ),
-            decision_seq=0,
         ),
         candidate_summaries=candidates,
         policy_version=row.policy_version,
         target_work_item_id=row.work_item_id,
         target_task_id=row.task_id,
         target_episode_id=row.episode_id,
-    )
-    return RecordedScheduleDecision(
-        decision_id=row.decision_id,
-        correlation_id=row.correlation_id,
-        intent_event_id=intent.event_id if intent is not None else None,
-        decision=schedule,
+        current_foreground_task_id=(
+            str(input_summary["current_foreground_task_id"])
+            if input_summary is not None
+            and input_summary["current_foreground_task_id"] is not None
+            else None
+        ),
+        previous_foreground_task_id=(
+            str(input_summary["previous_foreground_task_id"])
+            if input_summary is not None
+            and input_summary["previous_foreground_task_id"] is not None
+            else None
+        ),
+        user_override_task_id=(
+            str(input_summary["user_override_task_id"])
+            if input_summary is not None
+            and input_summary["user_override_task_id"] is not None
+            else None
+        ),
     )
 
 
@@ -157,11 +230,14 @@ def record_schedule_decision(
         decided_at=_now_iso(),
         signals={"refs": [decision.trigger_event_ref]},
         candidates=[
-            _candidate_summary(
-                item,
-                journal_event_seq=decision.journal_boundary.event_seq,
-            )
-            for item in decision.candidate_summaries
+            _input_summary(decision),
+            *[
+                _candidate_summary(
+                    item,
+                    journal_event_seq=decision.journal_boundary.event_seq,
+                )
+                for item in decision.candidate_summaries
+            ],
         ],
         choice=decision.action.value,
         reason=decision.reason.value,

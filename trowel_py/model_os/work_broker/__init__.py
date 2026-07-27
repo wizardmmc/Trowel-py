@@ -8,8 +8,10 @@ WorkLease 只代表资源所有权，调用方须先取得状态 ownership，再
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
+import re
 import sqlite3
 import threading
 import uuid
@@ -23,6 +25,12 @@ from typing import Any, Iterator
 
 from trowel_py.quota.read_model import QuotaReadModel
 from trowel_py.quota.types import Provider, QuotaStatus, QuotaWindowKind
+from trowel_py.model_os.journal_persistence import (
+    DECISION_INSERT_SQL,
+    decision_params,
+)
+from trowel_py.model_os.journal_schema import JOURNAL_SCHEMA_SQL
+from trowel_py.model_os.types import DecisionDisposition, DecisionRecord
 
 from .lease_codec import cap_to_json as _run_cap_to_json
 from .lease_codec import row_to_lease as _run_row_to_lease
@@ -48,6 +56,7 @@ _MODEL_CALL_WINDOW_KINDS: frozenset[QuotaWindowKind] = frozenset(
         QuotaWindowKind.RATE_LIMIT,
     }
 )
+_STRUCTURED_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 
 
 class WorkKind(Enum):
@@ -208,6 +217,12 @@ class WorkRequest:
     idempotency_key: str | None = None
 
     def __post_init__(self) -> None:
+        for field_name, value in (
+            ("task_id", self.task_id),
+            ("work_item_id", self.work_item_id),
+        ):
+            if value is not None and _STRUCTURED_REF.fullmatch(value) is None:
+                raise ValueError(f"{field_name} must be a structured reference")
         if self.catchup is CatchupPolicy.MAINTENANCE_MERGE:
             if self.kind is not WorkKind.MAINTENANCE:
                 raise ValueError(
@@ -273,6 +288,7 @@ class WorkLease:
     fencing_token: int
     task_id: str | None
     work_item_id: str | None
+    decision_id: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -284,6 +300,7 @@ class WorkDenial:
     retry_after_seconds: float | None = None
     ask_human: bool = False
     failed_account_id: str | None = None
+    decision_id: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -346,7 +363,18 @@ class WorkBroker:
         with self._lock:
             self._conn = self._create_connection()
             with self._conn:
+                self._conn.executescript(JOURNAL_SCHEMA_SQL)
                 self._conn.executescript(_SCHEMA_SQL)
+                columns = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        "PRAGMA table_info(work_leases)"
+                    ).fetchall()
+                }
+                if columns and "decision_id" not in columns:
+                    self._conn.execute(
+                        "ALTER TABLE work_leases ADD COLUMN decision_id TEXT"
+                    )
             logger.info(
                 "[workbroker] opened (policy=%s, concurrency=%d/slot, ttl=%ds)",
                 self._policy.policy_version,
@@ -399,11 +427,190 @@ class WorkBroker:
             # 重试须先于 catch-up gate，否则活跃 lease 会被误判为已合并。
             reclaimed = self._reclaim_idempotent(req, now)
             if reclaimed is not None:
-                return reclaimed
+                return self._attach_existing_arbitration(req, reclaimed, now)
             gate = self._catchup_gate(req, now)
             if gate is not None:
-                return gate
-            return self._arbitrate_body(req, now)
+                return self._record_arbitration(req, gate, now)
+            result = self._arbitrate_body(req, now)
+            return self._record_arbitration(req, result, now)
+
+    @staticmethod
+    def _account_ref(account_id: str) -> str:
+        digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
+
+    @staticmethod
+    def _totals_payload(totals: UsageTotals) -> dict[str, int | float | None]:
+        return {
+            "calls": totals.calls,
+            "input_tokens": totals.input_tokens,
+            "output_tokens": totals.output_tokens,
+            "cost": totals.cost,
+            "wall_seconds": totals.wall_seconds,
+        }
+
+    def _budget_snapshot(
+        self,
+        req: WorkRequest,
+        *,
+        account_id: str | None,
+        now: datetime,
+    ) -> dict[str, int | float | None] | None:
+        if account_id is None or req.kind not in {
+            WorkKind.DEFAULT,
+            WorkKind.INCUBATION,
+        }:
+            return None
+        return self._totals_payload(
+            self._totals_in_tx(
+                work_kind=req.kind,
+                provider=req.provider,
+                account_id=account_id,
+                day=now.date().isoformat(),
+                work_item_id=req.work_item_id,
+            )
+        )
+
+    def _record_arbitration(
+        self,
+        req: WorkRequest,
+        result: WorkLease | WorkDenial,
+        now: datetime,
+    ) -> WorkLease | WorkDenial:
+        assert self._conn is not None
+        selected_account = (
+            result.account_id
+            if isinstance(result, WorkLease)
+            else result.failed_account_id
+        )
+        budget = self._budget_snapshot(req, account_id=selected_account, now=now)
+        decision_id = f"decision.workbroker.{uuid.uuid4().hex}"
+        candidates = [
+            {
+                "role": "request",
+                "work_kind": req.kind.value,
+                "provider": req.provider.value,
+                "model_tier": req.model_tier.value,
+                "catchup": req.catchup.value,
+                "account_scope": (
+                    self._account_ref(req.account_id)
+                    if req.account_id is not None
+                    else "policy_order"
+                ),
+            },
+            *(
+                {
+                    "role": "account",
+                    "account_ref": self._account_ref(account),
+                }
+                for account in self._policy.account_order(req.provider)
+                if req.account_id is None
+            ),
+            *(
+                [{"role": "result", "lease_ref": result.lease_id}]
+                if isinstance(result, WorkLease)
+                else []
+            ),
+        ]
+        record = DecisionRecord(
+            decision_id=decision_id,
+            kind="work_broker.arbitrate",
+            disposition=DecisionDisposition.NO_ACTION,
+            decided_at=now.isoformat(),
+            signals={"refs": []},
+            candidates=candidates,
+            choice=(
+                "grant"
+                if isinstance(result, WorkLease)
+                else (
+                    "defer"
+                    if result.reason
+                    in {
+                        DenialReason.RATE_LIMIT,
+                        DenialReason.QUOTA_LOW,
+                        DenialReason.SLOT_BUSY,
+                        DenialReason.CATCHUP_ALREADY_DONE,
+                    }
+                    else "deny"
+                )
+            ),
+            reason=(
+                "granted"
+                if isinstance(result, WorkLease)
+                else result.reason.value
+            ),
+            policy_version=self._policy.policy_version,
+            budget_before=budget,
+            budget_after=budget,
+            work_item_id=req.work_item_id,
+            task_id=req.task_id,
+        )
+        self._conn.execute(DECISION_INSERT_SQL, decision_params(record))
+        if isinstance(result, WorkLease):
+            self._conn.execute(
+                "UPDATE work_leases SET decision_id=? WHERE lease_id=?",
+                (decision_id, result.lease_id),
+            )
+        return replace(result, decision_id=decision_id)
+
+    def _attach_existing_arbitration(
+        self,
+        req: WorkRequest,
+        lease: WorkLease,
+        now: datetime,
+    ) -> WorkLease:
+        assert self._conn is not None
+        if lease.decision_id is None:
+            recorded = self._record_arbitration(req, lease, now)
+            assert isinstance(recorded, WorkLease)
+            return recorded
+        return lease
+
+    def _record_usage_decision(
+        self,
+        *,
+        lease_row: sqlite3.Row,
+        usage: UsageRecord,
+        before: UsageTotals,
+        after: UsageTotals,
+    ) -> None:
+        assert self._conn is not None
+        cause_id = lease_row["decision_id"]
+        identity = hashlib.sha256(
+            (
+                f"{lease_row['lease_id']}|"
+                f"{usage.observation_id or uuid.uuid4().hex}"
+            ).encode("utf-8")
+        ).hexdigest()
+        record = DecisionRecord(
+            decision_id=f"decision.workbroker.usage.{identity}",
+            kind="work_broker.usage",
+            disposition=DecisionDisposition.NO_ACTION,
+            decided_at=usage.occurred_at,
+            signals={"refs": []},
+            candidates=[
+                {
+                    "role": "usage",
+                    "calls": usage.calls,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost": usage.cost,
+                    "wall_seconds": usage.wall_seconds,
+                    "cost_source": (
+                        "provider_report" if usage.cost is not None else "unknown"
+                    ),
+                }
+            ],
+            choice="recorded",
+            reason="usage_observed",
+            policy_version=self._policy.policy_version,
+            budget_before=self._totals_payload(before),
+            budget_after=self._totals_payload(after),
+            work_item_id=lease_row["work_item_id"],
+            task_id=lease_row["task_id"],
+            cause_id=cause_id,
+        )
+        self._conn.execute(DECISION_INSERT_SQL, decision_params(record))
 
     def begin_call(self, lease_id: str, fencing_token: int) -> None:
         """发起模型调用前标记 started，关闭 foreground 的抢占窗口。"""
@@ -440,6 +647,12 @@ class WorkBroker:
                         account_id=row["account_id"],
                         day=day,
                     )
+            before = self._totals_in_tx(
+                work_kind=WorkKind(row["work_kind"]),
+                provider=Provider(row["provider"]),
+                account_id=row["account_id"],
+                day=self._utc_day(usage.occurred_at),
+            )
             _mark_usage_lease_started_in_tx(
                 self._conn,
                 lease_id=lease_id,
@@ -453,12 +666,19 @@ class WorkBroker:
                 day=day,
                 policy_version=self._policy.policy_version,
             )
-            return self._totals_in_tx(
+            after = self._totals_in_tx(
                 work_kind=WorkKind(row["work_kind"]),
                 provider=Provider(row["provider"]),
                 account_id=row["account_id"],
                 day=day,
             )
+            self._record_usage_decision(
+                lease_row=row,
+                usage=usage,
+                before=before,
+                after=after,
+            )
+            return after
 
     def settle_incubation_usage(
         self, work_item_id: str, usage: UsageRecord
@@ -480,19 +700,39 @@ class WorkBroker:
             if row is None:
                 return False
             lease_id = row["lease_id"]
-            if not _usage_observation_seen_in_tx(
+            is_new = not _usage_observation_seen_in_tx(
                 self._conn,
                 lease_id=lease_id,
                 observation_id=usage.observation_id,
-            ):
+            )
+            if is_new:
+                day = self._utc_day(usage.occurred_at)
+                before = self._totals_in_tx(
+                    work_kind=WorkKind(row["work_kind"]),
+                    provider=Provider(row["provider"]),
+                    account_id=row["account_id"],
+                    day=day,
+                )
                 _mark_usage_lease_started_in_tx(self._conn, lease_id=lease_id)
                 _insert_usage_in_tx(
                     self._conn,
                     lease_id=lease_id,
                     lease_row=row,
                     usage=usage,
-                    day=self._utc_day(usage.occurred_at),
+                    day=day,
                     policy_version=self._policy.policy_version,
+                )
+                after = self._totals_in_tx(
+                    work_kind=WorkKind(row["work_kind"]),
+                    provider=Provider(row["provider"]),
+                    account_id=row["account_id"],
+                    day=day,
+                )
+                self._record_usage_decision(
+                    lease_row=row,
+                    usage=usage,
+                    before=before,
+                    after=after,
                 )
             self._conn.execute(
                 "UPDATE work_leases SET released_at=COALESCE(released_at, ?) "
@@ -847,10 +1087,10 @@ class WorkBroker:
         granted_cap = self._decide_granted_cap(req)
         self._conn.execute(
             "INSERT INTO work_leases (lease_id, slot, provider, account_id, "
-            "work_kind, model_tier, task_id, work_item_id, granted_cap, "
+            "work_kind, model_tier, task_id, work_item_id, decision_id, granted_cap, "
             "started, in_critical, acquired_at, expires_at, fencing_token, "
             "idempotency_key, policy_version, released_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,NULL,?,0,0,?,?,?,?,?,?)",
             (
                 lease_id,
                 slot,

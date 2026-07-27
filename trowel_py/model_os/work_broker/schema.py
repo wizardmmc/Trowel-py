@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS work_leases (
     model_tier TEXT NOT NULL,
     task_id TEXT,
     work_item_id TEXT,
+    -- 产生本 lease 的统一仲裁 Decision；旧行前向迁移后允许为空。
+    decision_id TEXT,
     -- JSON BudgetDimensions；NULL 表示无限额度（foreground / maintenance）。
     -- 读回时解析成 WorkLease.granted_cap。
     granted_cap TEXT,

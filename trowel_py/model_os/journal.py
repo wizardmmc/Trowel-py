@@ -123,6 +123,8 @@ def encode_journal_cursor(cursor: JournalCursor) -> str:
 
 
 def decode_journal_cursor(raw_cursor: str, expected_filter_hash: str) -> JournalCursor:
+    if len(raw_cursor) > 4096:
+        raise InvalidJournalCursor()
     try:
         padded = raw_cursor + "=" * (-len(raw_cursor) % 4)
         body = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
@@ -244,17 +246,25 @@ def _read_summary_stream(
         JournalEntrySummary(
             stream=stream,
             stream_seq=int(row["seq"]),
-            entry_id=row["entry_id"],
-            kind=row["kind"],
+            entry_id=public_journal_ref(row["entry_id"]) or "unknown",
+            kind=public_journal_label(row["kind"]),
             recorded_at=row["recorded_at"],
-            work_item_id=row["work_item_id"],
-            task_id=row["task_id"],
-            episode_id=row["episode_id"],
-            cause_id=row["cause_id"],
-            correlation_id=row["correlation_id"],
-            policy_version=row["policy_version"],
-            provenance=row["provenance"],
-            outcome=row["outcome"],
+            work_item_id=public_journal_ref(row["work_item_id"]),
+            task_id=public_journal_ref(row["task_id"]),
+            episode_id=public_journal_ref(row["episode_id"]),
+            cause_id=public_journal_ref(row["cause_id"]),
+            correlation_id=public_journal_ref(row["correlation_id"]),
+            policy_version=public_journal_label(row["policy_version"]),
+            provenance=(
+                public_journal_label(row["provenance"])
+                if row["provenance"] is not None
+                else None
+            ),
+            outcome=(
+                public_journal_label(row["outcome"])
+                if row["outcome"] is not None
+                else None
+            ),
         )
         for row in rows
     ]
@@ -325,6 +335,25 @@ def _disposition_value(disposition: DecisionDisposition | str) -> str:
 
 def _is_structured_token(value: Any) -> bool:
     return isinstance(value, str) and _STRUCTURED_TOKEN.fullmatch(value) is not None
+
+
+def public_journal_ref(value: Any) -> str | None:
+    """把旧账本里的非结构化 ID 稳定哈希，避免 read model 回显正文。"""
+
+    if value is None:
+        return None
+    if _is_structured_token(value) and redact_payload(value) == value:
+        return value
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def public_journal_label(value: Any) -> str:
+    """公开 kind/version 等标签；不安全旧值只返回 unknown。"""
+
+    if _is_structured_token(value) and redact_payload(value) == value:
+        return value
+    return "unknown"
 
 
 def _is_safe_recorded_at(value: Any) -> bool:
