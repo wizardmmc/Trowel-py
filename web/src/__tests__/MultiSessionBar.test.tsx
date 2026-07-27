@@ -34,6 +34,7 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     lastSeq: null,
     needsReplay: false,
     ...over,
+    codexSubagents: over.codexSubagents ?? {},
   };
 }
 

@@ -1,6 +1,10 @@
 import { Fragment, type ReactNode } from "react";
 
-import type { ToolItem, TurnItem } from "../../stores/ccStore";
+import type {
+  PerSessionState,
+  ToolItem,
+  TurnItem,
+} from "../../stores/ccStore";
 import { AssistantText } from "./AssistantText";
 import { CodexExplorationGroup } from "./CodexExplorationGroup";
 import { EventTimelineRow } from "./EventTimelineRow";
@@ -16,6 +20,9 @@ interface EventTimelineProps {
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
   readonly runtime?: string;
+  readonly sessionId?: string;
+  readonly codexSubagents?: PerSessionState["codexSubagents"];
+  readonly onOpenSubagent?: (threadId: string) => void;
 }
 
 export function EventTimeline({
@@ -27,6 +34,9 @@ export function EventTimeline({
   onApprovalDecision,
   workdir,
   runtime,
+  sessionId,
+  codexSubagents,
+  onOpenSubagent,
 }: EventTimelineProps) {
   // 必须返回 Fragment，消息块需保持为 .cc-msg__body 的直接子元素。
   const blocks: ReactNode[] = [];
@@ -34,7 +44,14 @@ export function EventTimeline({
   let key = 0;
   const flushText = () => {
     if (textBuf !== "") {
-      blocks.push(<AssistantText key={`t${key++}`} text={textBuf} />);
+      blocks.push(
+        <AssistantText
+          key={`t${key++}`}
+          text={textBuf}
+          sessionId={sessionId}
+          workdir={workdir}
+        />,
+      );
       textBuf = "";
     }
   };
@@ -81,6 +98,8 @@ export function EventTimeline({
           onApprovalDecision={onApprovalDecision}
           workdir={workdir}
           runtime={runtime}
+          codexSubagents={codexSubagents}
+          onOpenSubagent={onOpenSubagent}
           thinkingComplete={
             item.kind === "thinking" && (Boolean(isReplay) || index < items.length - 1)
           }

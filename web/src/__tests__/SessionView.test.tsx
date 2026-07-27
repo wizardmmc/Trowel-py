@@ -24,11 +24,37 @@ vi.mock("../api/agent", () => ({
   getAgentSessionDefaults: vi.fn().mockResolvedValue(null),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
   listAgentModels: vi.fn().mockResolvedValue([]),
+  listCodexCommands: vi.fn().mockResolvedValue([]),
+  compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
+  startCodexReview: vi.fn().mockResolvedValue({
+    reviewThreadId: "thread-1",
+    turnId: "review-turn-1",
+  }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
+  getCodexGoal: vi.fn().mockResolvedValue(null),
+  getCodexSubagentHistory: vi.fn().mockResolvedValue([]),
+  setCodexGoal: vi.fn(),
+  clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
+  startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   updateAgentSessionSettings: vi.fn(),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
+  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+}));
+
+vi.mock("../api/ccStream", () => ({
+  postMessageStream: vi.fn(async () => {}),
+  getEventStream: vi.fn(
+    (
+      _url: string,
+      _apply: unknown,
+      options?: { onOpen?: () => void },
+    ) => {
+      options?.onOpen?.();
+      return new Promise<void>(() => {});
+    },
+  ),
 }));
 
 vi.mock("../api/cc", () => ({
@@ -41,12 +67,18 @@ vi.mock("../api/cc", () => ({
 
 import { SessionView } from "../components/cc/SessionView";
 import { useCcStore } from "../stores/ccStore";
+import { createNewSessionState } from "../stores/ccStore/sessionState";
+import { reduceAgentEvent } from "../stores/ccStore/eventState";
+import type { AgentEvent } from "../api/agentTypes";
 import {
   createAgentSession as createSession,
   getAgentSessionDefaults,
   listAgentHistory as listSessions,
   listActiveAgentSessions as listActiveSessions,
   listAgentRuntimes,
+  listCodexCommands,
+  compactCodexSession,
+  getCodexSubagentHistory,
 } from "../api/agent";
 import {
   loadNewSessionPreferences,
@@ -71,6 +103,102 @@ beforeEach(() => {
 });
 
 describe("SessionView", () => {
+  it("opens a Codex child timeline without a composer and returns to the parent", async () => {
+    installCodexSession();
+    let current = useCcStore.getState().sessions.s1;
+    const apply = (event: AgentEvent) => {
+      const result = reduceAgentEvent(current, event);
+      if (result.kind === "updated") current = result.session;
+    };
+    apply({
+      schema: "agent-event-v1",
+      session_id: "s1",
+      runtime: "codex",
+      seq: 1,
+      type: "user",
+      thread_id: "thread-1",
+      turn_id: "parent-turn-1",
+      item_id: null,
+      payload: { text: "delegate" },
+    });
+    apply({
+      schema: "agent-event-v1",
+      session_id: "s1",
+      runtime: "codex",
+      seq: 2,
+      type: "subagent_activity",
+      thread_id: "thread-1",
+      turn_id: "parent-turn-1",
+      item_id: "activity-1",
+      payload: {
+        source: "subagent_activity",
+        kind: "started",
+        agent_thread_id: "child-thread-1",
+        agent_path: "/root/probe",
+      },
+    });
+    useCcStore.setState({ sessions: { s1: current }, activeSid: "s1" });
+    vi.mocked(getCodexSubagentHistory).mockResolvedValueOnce([
+      {
+        schema: "agent-event-v1",
+        session_id: "s1",
+        runtime: "codex",
+        seq: 1,
+        type: "turn_start",
+        thread_id: "child-thread-1",
+        turn_id: "child-turn-1",
+        item_id: null,
+        payload: { autonomous: true, revertible: false },
+      },
+      {
+        schema: "agent-event-v1",
+        session_id: "s1",
+        runtime: "codex",
+        seq: 2,
+        type: "text",
+        thread_id: "child-thread-1",
+        turn_id: "child-turn-1",
+        item_id: "message-1",
+        payload: { text: "child result" },
+      },
+    ]);
+
+    render(<SessionView workdir="/wd" />);
+    fireEvent.click(screen.getByRole("button", { name: /root\/probe/ }));
+
+    expect(await screen.findByText("child result")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Subagent 路径" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "wd" }));
+    expect(screen.getAllByText("delegate").length).toBeGreaterThan(0);
+  });
+
+  function installCodexSession() {
+    useCcStore.setState({
+      sessions: {
+        s1: createNewSessionState(
+          {
+            session_id: "s1",
+            runtime: "codex",
+            native_session_id: "thread-1",
+            workdir: "/wd",
+            model: "gpt-5.6-sol",
+            effort: "high",
+            permission: "Workspace write · on-request",
+            memory_enabled: true,
+            profile_enabled: true,
+            capabilities: ["tools", "approval"],
+            name: "wd",
+            connected: true,
+            running: false,
+          },
+          { workdir: "/wd", runtime: "codex", effort: "high" },
+        ),
+      },
+      activeSid: "s1",
+    });
+  }
+
   it("mounts the three-column shell — multi-bar, center, todo-bar all present", async () => {
     const { container } = render(
       <SessionView workdir="/wd" onRequestChangeWorkdir={() => {}} />,
@@ -86,11 +214,91 @@ describe("SessionView", () => {
     expect(screen.getByText(/暂无连接/)).toBeInTheDocument();
   });
 
+  it("loads the Codex roster and opens /status locally", async () => {
+    installCodexSession();
+    vi.mocked(listCodexCommands).mockResolvedValueOnce([
+      {
+        name: "status",
+        description: "查看会话状态",
+        source: "codex",
+        action: "status",
+        available_while_running: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/status" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/status/ }));
+
+    expect(screen.getByRole("dialog", { name: "Codex 会话状态" })).toBeInTheDocument();
+    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+  });
+
+  it("routes /compact to its command API and keeps it out of turns", async () => {
+    installCodexSession();
+    vi.mocked(listCodexCommands).mockResolvedValueOnce([
+      {
+        name: "compact",
+        description: "压缩上下文",
+        source: "codex",
+        action: "compact",
+        available_while_running: false,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+
+    const input = screen.getByLabelText("CC 消息输入");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/compact/ }));
+
+    await waitFor(() => expect(vi.mocked(compactCodexSession)).toHaveBeenCalledWith("s1"));
+    expect(await screen.findByText("上下文压缩已启动")).toBeInTheDocument();
+    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+  });
+
   it("shows the no-active-session prompt in the center when activeSid is null", () => {
     const { container } = render(<SessionView workdir="/wd" />);
     expect(container.querySelector(".cc-empty--noactive")).not.toBeNull();
     expect(container.querySelector(".cc-empty--noactive")?.textContent)
       .toMatch(/未选择 session/);
+  });
+
+  it("shows the active native session id immediately left of the workdir button", () => {
+    const nativeSessionId = "019c1f22-96f2-7341-b85a-2f7244e63526";
+    useCcStore.setState({
+      sessions: {
+        s1: createNewSessionState(
+          {
+            session_id: "s1",
+            runtime: "codex",
+            native_session_id: nativeSessionId,
+            workdir: "/wd",
+            model: "gpt-5.6-sol",
+            effort: "high",
+            permission: "Full access · never",
+            memory_enabled: true,
+            profile_enabled: true,
+            capabilities: ["tools", "approval"],
+            name: "wd",
+            connected: true,
+            running: false,
+          },
+          { workdir: "/wd", runtime: "codex" },
+        ),
+      },
+      activeSid: "s1",
+    });
+
+    render(
+      <SessionView workdir="/wd" onRequestChangeWorkdir={() => {}} />,
+    );
+
+    const copyButton = screen.getByRole("button", {
+      name: `复制会话 ID ${nativeSessionId}`,
+    });
+    const workdirButton = screen.getByTitle("工作目录：/wd（点击切换）");
+    expect(copyButton.nextElementSibling).toBe(workdirButton);
   });
 
   it("reconcile 时按后端 connected 字段标记，temp(connected=false) 不进多开栏", async () => {
@@ -214,6 +422,10 @@ describe("SessionView", () => {
           turns: [],
           phase: "error",
           tasks: [],
+          goal: null,
+          plan: null,
+          turnDiff: null,
+          codexSubagents: {},
           meta: {
             model: "gpt-5.6-sol",
             ccSessionId: "thr-1",

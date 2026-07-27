@@ -7,8 +7,10 @@ from trowel_py.codex_host.events import (
     CodexEventType,
 )
 from trowel_py.codex_host.translator import CodexTranslator
+from tests.codex_host.translator._support import _by_method
 
-# 这些 shape 来自 Codex 0.144.0 Rust 类型；没有真实录制，dispatch 仍保持 capability=false。
+# Plan shape 已由 Codex 0.144.0 真实录制固定；dispatch 仍保持 capability=false，
+# 等待共享事件词表和前端 consumer 一起接通。
 
 
 def test_plan_updated_translates_steps_and_status() -> None:
@@ -33,6 +35,20 @@ def test_plan_updated_translates_steps_and_status() -> None:
         {"step": "split handlers", "status": "inProgress"},
         {"step": "add tests", "status": "pending"},
     )
+
+
+def test_recorded_plan_notification_is_enabled() -> None:
+    msg = _by_method("turn/plan/updated")
+    translator = CodexTranslator()
+
+    assert msg["method"] not in translator.ignored_methods
+    item = translator.translate(msg["method"], msg["params"])[0]
+    assert item.type is CodexEventType.PLAN_UPDATED
+    assert [step["status"] for step in item.payload["steps"]] == [
+        "completed",
+        "inProgress",
+        "pending",
+    ]
 
 
 def test_plan_updated_rejects_abandoned_status() -> None:
@@ -80,6 +96,28 @@ def test_compaction_item_carries_only_id() -> None:
     assert dict(item.payload) == {}
 
 
+@pytest.mark.parametrize(
+    ("item_type", "phase"),
+    [("enteredReviewMode", "entered"), ("exitedReviewMode", "exited")],
+)
+def test_review_mode_completed_item_keeps_native_review(
+    item_type: str, phase: str
+) -> None:
+    # item 字段来自 0.144.0 生成的 ThreadItem schema。
+    items = CodexTranslator().translate(
+        "item/completed",
+        {
+            "threadId": "t-1",
+            "turnId": "turn-1",
+            "item": {"type": item_type, "id": "review-1", "review": "Review changes"},
+        },
+    )
+
+    assert len(items) == 1
+    assert items[0].type is CodexEventType.REVIEW_MODE
+    assert items[0].payload == {"phase": phase, "review": "Review changes"}
+
+
 def test_warning_translates_message_with_optional_thread() -> None:
 
     # notification.rs 将 warning.threadId 定义为 Optional，全局告警允许缺失。
@@ -108,7 +146,6 @@ def test_untranslated_skeleton_methods_remain_capability_false() -> None:
     translator = CodexTranslator()
     ignored = translator.ignored_methods
     for method in (
-        "turn/plan/updated",
         "warning",
         "guardianWarning",
         "configWarning",
@@ -117,10 +154,10 @@ def test_untranslated_skeleton_methods_remain_capability_false() -> None:
         assert method in ignored, f"{method} should be capability=false"
 
 
-def test_subagent_and_compaction_items_route_to_empty() -> None:
+def test_malformed_subagent_is_rejected_and_compaction_started_is_empty() -> None:
 
     translator = CodexTranslator()
-    assert (
+    with pytest.raises(ProtocolViolationError, match="agentThreadId"):
         translator.translate(
             "item/started",
             {
@@ -129,8 +166,6 @@ def test_subagent_and_compaction_items_route_to_empty() -> None:
                 "item": {"type": "subAgentActivity", "id": "s"},
             },
         )
-        == []
-    )
 
     # contextCompaction 只有 completed 才关闭边界，started 必须保持无事件。
     assert (

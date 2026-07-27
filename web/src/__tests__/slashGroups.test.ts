@@ -39,8 +39,9 @@ describe("groupSlashItems", () => {
     ]);
   });
 
-  it("source order is builtin → bundled → user → project → plugin", () => {
+  it("keeps native Codex commands before the Claude Code source groups", () => {
     expect(SLASH_SOURCE_ORDER).toEqual([
+      "codex",
       "builtin",
       "bundled",
       "user",

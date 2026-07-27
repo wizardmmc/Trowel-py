@@ -34,6 +34,7 @@ class TestEnvelopeShape:
             "runtime": "codex",
             "seq": 1,
             "type": "text",
+            "thread_id": None,
             "turn_id": None,
             "item_id": None,
             "payload": {"text": "hi"},
@@ -45,6 +46,7 @@ class TestEnvelopeShape:
             runtime="codex",
             seq=7,
             type="tool_result",
+            thread_id="thread-2",
             turn_id="turn-9",
             item_id="item-3",
             payload={"content": "done"},
@@ -52,6 +54,7 @@ class TestEnvelopeShape:
         dumped = ev.model_dump(by_alias=True)
         assert dumped["turn_id"] == "turn-9"
         assert dumped["item_id"] == "item-3"
+        assert dumped["thread_id"] == "thread-2"
 
     def test_payload_defaults_to_empty_dict_not_shared(self) -> None:
         a = AgentEvent(session_id="s", runtime="codex", seq=1, type="status")
@@ -104,6 +107,10 @@ class TestTypeVocabulary:
         assert "host_status" in AGENT_EVENT_TYPES
         assert "approval_request" in AGENT_EVENT_TYPES
         assert "rate_limit_updated" in AGENT_EVENT_TYPES
+        assert "goal_updated" in AGENT_EVENT_TYPES
+        assert "goal_cleared" in AGENT_EVENT_TYPES
+        assert "plan_updated" in AGENT_EVENT_TYPES
+        assert "subagent_activity" in AGENT_EVENT_TYPES
 
     def test_every_vocabulary_member_constructs(self) -> None:
         for t in sorted(AGENT_EVENT_TYPES):

@@ -32,6 +32,7 @@ function event(
     runtime: "claude_code",
     seq,
     type,
+    thread_id: null,
     turn_id: null,
     item_id: null,
     payload,
@@ -39,6 +40,38 @@ function event(
 }
 
 describe("replayAgentHistory", () => {
+  it("rebuilds Codex child ownership from parent thread history", () => {
+    const codex = createNewSessionState(
+      { ...SESSION, runtime: "codex", native_session_id: "parent-thread-1" },
+      { workdir: "/repo", runtime: "codex" },
+    );
+    const replayed = replayAgentHistory(codex, [
+      {
+        ...event(1, "user", { text: "delegate" }),
+        runtime: "codex",
+        thread_id: "parent-thread-1",
+      },
+      {
+        ...event(2, "subagent_activity", {
+          source: "subagent_activity",
+          kind: "started",
+          agent_thread_id: "child-thread-1",
+          agent_path: "/root/probe",
+        }),
+        runtime: "codex",
+        thread_id: "parent-thread-1",
+      },
+    ]);
+
+    expect(replayed.codexSubagents["child-thread-1"].parentThreadId).toBe(
+      "parent-thread-1",
+    );
+    expect(replayed.turns[0].items[0]).toMatchObject({
+      kind: "subagent",
+      subagent: { agentThreadId: "child-thread-1" },
+    });
+  });
+
   it("按 history seq 去重并补齐只读终态", () => {
     const session = createNewSessionState(SESSION, { workdir: "/repo" });
     const replayed = replayAgentHistory(session, [
@@ -64,5 +97,45 @@ describe("replayAgentHistory", () => {
 
     expect(replayed.lastSeq).toBeNull();
     expect(replayed.needsReplay).toBe(false);
+  });
+
+  it("保留当前 thread Goal，但不从历史恢复旧 Plan", () => {
+    const session = {
+      ...createNewSessionState(
+        { ...SESSION, runtime: "codex" },
+        { workdir: "/repo", runtime: "codex" },
+      ),
+      goal: {
+        objective: "Current Goal",
+        status: "complete" as const,
+        tokenBudget: 12000,
+        tokensUsed: 8000,
+        timeUsedSeconds: 20,
+        createdAt: 1,
+        updatedAt: 3,
+      },
+      plan: {
+        explanation: null,
+        steps: [{ step: "Stale step", status: "completed" as const }],
+      },
+    };
+    const replayed = replayAgentHistory(session, [
+      event(1, "goal_updated", {
+        objective: "Historical Goal",
+        status: "active",
+        token_budget: 12000,
+        tokens_used: 100,
+        time_used_seconds: 1,
+        created_at: 1,
+        updated_at: 2,
+      }),
+      event(2, "plan_updated", {
+        explanation: null,
+        steps: [{ step: "Historical step", status: "pending" }],
+      }),
+    ]);
+
+    expect(replayed.goal).toEqual(session.goal);
+    expect(replayed.plan).toBeNull();
   });
 });

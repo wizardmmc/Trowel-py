@@ -18,7 +18,28 @@ export function applyTurnStart(
   event: TurnStartEvent,
 ): ReducerState {
   const turns = prev.turns;
-  if (turns.length === 0) return prev;
+  if (
+    event.autonomous &&
+    (turns.length === 0 || turns[turns.length - 1].status !== "active")
+  ) {
+    const turn: Turn = {
+      id: nextTurnId(),
+      userText: "",
+      items: [],
+      status: "active",
+      turnId: event.turn_id ?? null,
+      revertible: false,
+      startedAtMs: Date.now(),
+    };
+    return {
+      ...prev,
+      turns: [...turns, turn],
+      phase: "awaiting_first",
+      plan: null,
+      turnDiff: null,
+    };
+  }
+  if (turns.length === 0) return { ...prev, plan: null, turnDiff: null };
 
   const last = turns[turns.length - 1];
   const updated: Turn = {
@@ -27,7 +48,12 @@ export function applyTurnStart(
     turnId: event.turn_id ?? last.turnId,
     revertible: event.revertible,
   };
-  return { ...prev, turns: [...turns.slice(0, -1), updated] };
+  return {
+    ...prev,
+    turns: [...turns.slice(0, -1), updated],
+    plan: null,
+    turnDiff: null,
+  };
 }
 
 /** 对齐 history user 事件与 Codex live user echo。 */
@@ -56,5 +82,5 @@ export function applyUserEvent(
     revertible: false,
     durationSeconds: event.duration_seconds,
   };
-  return { ...prev, turns: [...turns, turn] };
+  return { ...prev, turns: [...turns, turn], turnDiff: null };
 }

@@ -4,6 +4,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from trowel_py.codex_host.events import (
+    CodexEventType,
+    TranslatedItem,
+    immutable_payload,
+)
 from trowel_py.codex_host.session import CodexSession
 from trowel_py.codex_host.session_types import CodexSessionConfig
 from trowel_py.codex_host.translator import CodexTranslator
@@ -154,6 +159,71 @@ def test_real_normalized_events_are_durable_before_turn_is_sealed(tmp_path: Path
     assert ("tool_started", "fileChange") in tool_kinds
     assert ("tool_completed", "fileChange") in tool_kinds
     assert types[-1] == "finished"
+
+
+def test_memory_ineligible_autonomous_turn_is_not_registered(tmp_path: Path) -> None:
+    journal = CodexTurnJournal(
+        tmp_path,
+        trowel_session_id="trowel-native-command",
+        workdir="/workspace",
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    session = CodexSession(
+        CodexSessionConfig("trowel-native-command", "/workspace"),
+        event_sink=journal.record,
+    )
+    session.attach_thread_binding(_binding())
+    session.begin_send(autonomous=True, memory_eligible=False)
+    session.record_native_turn_started(TURN_ID)
+    session.emit_translated(
+        TranslatedItem(
+            type=CodexEventType.FINISHED,
+            thread_id=THREAD_ID,
+            turn_id=TURN_ID,
+            payload=immutable_payload(status="completed"),
+        )
+    )
+
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        assert repo.find_incremental_codex() == []
+        assert repo.find_unsealed_codex_turns() == []
+    finally:
+        conn.close()
+    assert list((tmp_path / "meta" / "codex-turns").rglob("*.jsonl")) == []
+
+
+def test_unsolicited_autonomous_turn_remains_memory_eligible(tmp_path: Path) -> None:
+    journal = CodexTurnJournal(
+        tmp_path,
+        trowel_session_id="trowel-autonomous",
+        workdir="/workspace",
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    session = CodexSession(
+        CodexSessionConfig("trowel-autonomous", "/workspace"),
+        event_sink=journal.record,
+    )
+    session.attach_thread_binding(_binding())
+    session.record_native_turn_started(TURN_ID)
+    session.emit_translated(
+        TranslatedItem(
+            type=CodexEventType.FINISHED,
+            thread_id=THREAD_ID,
+            turn_id=TURN_ID,
+            payload=immutable_payload(status="completed"),
+        )
+    )
+
+    conn = open_sessions_db(tmp_path)
+    try:
+        [segment] = create_sessions_repository(conn).find_incremental_codex()
+    finally:
+        conn.close()
+    assert segment.turn.turn_id == TURN_ID
 
 
 def test_two_completed_turns_use_native_turn_watermark(tmp_path: Path) -> None:

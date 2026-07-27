@@ -38,6 +38,8 @@ from trowel_py.codex_host.pending_requests import (
     PendingRequestNotFoundError,
     PendingRequestOwnershipError,
 )
+from trowel_py.codex_host.commands import reserved_command_name
+from trowel_py.codex_host.session import TurnConflictError
 from trowel_py.cc_host.session_lifecycle import (
     CcCapacityError,
     CcWorkdirNotFoundError,
@@ -49,7 +51,7 @@ _log = logging.getLogger(__name__)
 
 # capability 是界面的能力发现契约，界面不能从 runtime 推断功能。
 CC_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "checkpoint", "workflow")
-CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval")
+CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "subagents")
 
 # 连接上限按仍有 binding 的已注册 session/thread 计数，共享 manager 不合并名额。
 MAX_CONNECTIONS = 20
@@ -81,6 +83,14 @@ class SessionConflictError(SessionHubError):
 
 class SessionOperationError(SessionHubError):
     """命令不适用于当前 runtime 或参数组合。"""
+
+
+def _reject_reserved_codex_command(text: str) -> None:
+    reserved = reserved_command_name(text)
+    if reserved is not None:
+        raise SessionOperationError(
+            f"/{reserved} is a local command and cannot start a Codex turn"
+        )
 
 
 class RuntimeUnavailableError(SessionHubError):
@@ -154,6 +164,10 @@ class SessionHub:
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
         self._cc_adapters: dict[str, CcEventAdapter] = {}
         self._codex_adapters: dict[str, CodexEventAdapter] = {}
+        self._codex_event_subscribers: dict[
+            str, set[asyncio.Queue[dict[str, Any] | None]]
+        ] = {}
+        self._codex_event_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def store(self) -> BindingStore:
@@ -301,6 +315,8 @@ class SessionHub:
         try:
             await self._codex.attach(session)
             self._writeback_codex_native(session_id, session)
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
         except SessionHubError:
             raise
         except Exception as exc:  # noqa: BLE001 - 统一映射为可诊断的 runtime 错误。
@@ -515,6 +531,62 @@ class SessionHub:
                 envelopes.append(envelope.model_dump(by_alias=True))
         return envelopes
 
+    async def child_history(
+        self, session_id: str, child_thread_id: str
+    ) -> list[dict[str, Any]]:
+        """Replay a child thread only when its parent chain reaches this session root."""
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise SessionOperationError("subagent history is only available for Codex")
+        root_thread_id = binding.native_session_id
+        if not root_thread_id:
+            raise SessionNotFoundError(f"session {session_id} has no native thread")
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        if child_thread_id == root_thread_id:
+            raise SessionAccessError("requested thread is not a child of this session")
+
+        thread = await self._codex.read_thread(child_thread_id)
+        current = thread
+        visited = {child_thread_id}
+        inherited_turn_ids: set[str] = set()
+        while True:
+            parent_thread_id = current.get("parentThreadId")
+            if not isinstance(parent_thread_id, str) or not parent_thread_id:
+                raise SessionAccessError(
+                    "subagent thread does not belong to this session"
+                )
+            if parent_thread_id in visited:
+                raise SessionAccessError("subagent parent chain contains a cycle")
+            visited.add(parent_thread_id)
+            parent = await self._codex.read_thread(parent_thread_id)
+            inherited_turn_ids.update(_native_turn_ids(parent))
+            if parent_thread_id == root_thread_id:
+                break
+            current = parent
+
+        from trowel_py.codex_host.history import events_from_thread
+
+        adapter = CodexEventAdapter(session_id)
+        envelopes = []
+        child_only = dict(thread)
+        turns = thread.get("turns")
+        if isinstance(turns, list):
+            child_only["turns"] = [
+                turn
+                for turn in turns
+                if not isinstance(turn, Mapping)
+                or turn.get("id") not in inherited_turn_ids
+            ]
+        for event in events_from_thread(
+            session_id, child_only, include_turn_started=True
+        ):
+            envelope = adapter.wrap(event)
+            if envelope is not None:
+                envelopes.append(envelope.model_dump(by_alias=True))
+        return envelopes
+
     def _require(self, session_id: str) -> SessionBinding:
         binding = self._store.get(session_id)
         if binding is None:
@@ -671,6 +743,129 @@ class SessionHub:
         session.queue_permission_override(approval=approval, sandbox=sandbox)
         session.apply_permission_override(approval=approval, sandbox=sandbox)
         return {"permission_preset": permission_preset}
+
+    def _require_codex_runtime(self) -> Any:
+        codex = self._codex
+        if codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        return codex
+
+    def _require_codex_session(self, session_id: str) -> Any:
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CODEX:
+            raise SessionOperationError("Goal is Codex-only")
+        session = self._require_codex_runtime().get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"codex session {session_id} not live")
+        return session
+
+    def require_codex_session(self, session_id: str) -> None:
+        """在开始流式响应前校验 Codex binding 与 live session。"""
+
+        self._require_codex_session(session_id)
+
+    async def get_codex_goal(self, session_id: str) -> dict[str, Any] | None:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            await self._prepare_codex_goal_session(session_id, session)
+            return await codex.get_goal(session)
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 统一为 runtime 失败边界。
+            raise RuntimeTurnError(f"codex goal get failed: {exc}") from exc
+
+    async def list_codex_commands(self, session_id: str) -> list[dict[str, Any]]:
+        self._require_codex_session(session_id)
+        try:
+            return await self._require_codex_runtime().list_commands()
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex command roster failed: {exc}") from exc
+
+    async def compact_codex(self, session_id: str) -> None:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            await codex.compact(
+                session,
+                before_start=lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
+                ),
+            )
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex compact failed: {exc}") from exc
+
+    async def start_codex_review(
+        self, session_id: str, target: dict[str, Any]
+    ) -> dict[str, str]:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            result = await codex.start_review(
+                session,
+                target,
+                before_start=lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
+                ),
+            )
+            self._writeback_codex_native(session_id, session)
+            return result
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex review failed: {exc}") from exc
+
+    async def set_codex_goal(
+        self,
+        session_id: str,
+        *,
+        objective: str | None,
+        status: str | None,
+        token_budget: int | None,
+        token_budget_supplied: bool,
+    ) -> dict[str, Any]:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            await self._prepare_codex_goal_session(session_id, session)
+            return await codex.set_goal(
+                session,
+                objective=objective,
+                status=status,
+                token_budget=token_budget,
+                token_budget_supplied=token_budget_supplied,
+            )
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 保留上游错误文本供界面诊断。
+            raise RuntimeTurnError(f"codex goal set failed: {exc}") from exc
+
+    async def clear_codex_goal(self, session_id: str) -> bool:
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        try:
+            await self._prepare_codex_goal_session(session_id, session)
+            return await codex.clear_goal(session)
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeTurnError(f"codex goal clear failed: {exc}") from exc
+
+    async def _prepare_codex_goal_session(self, session_id: str, session: Any) -> None:
+        """Goal 可在首轮消息前物化 thread，原生请求前必须先持久化该绑定。"""
+
+        await self._require_codex_runtime().attach(session)
+        self._writeback_codex_before_turn(session_id, session)
 
     def validate_resume(
         self,
@@ -1088,6 +1283,7 @@ class SessionHub:
 
             await cc_routes.close_cc_session(session_id, self._cc_registry)
         elif self._codex is not None:
+            self._stop_codex_event_pump(session_id)
             self._codex.unregister(session_id)
         # 删除 adapter，避免复用 id 继承旧序号。
         self._cc_adapters.pop(session_id, None)
@@ -1127,8 +1323,11 @@ class SessionHub:
         session = self._codex.get_session(session_id)
         if session is None:
             raise SessionNotFoundError(f"codex session {session_id} not live")
+        _reject_reserved_codex_command(text)
+        queue = self._add_codex_event_subscriber(session_id, session)
+        turn_id: str | None = None
         try:
-            await self._codex.send(
+            turn_id = await self._codex.send(
                 session,
                 text,
                 before_turn_start=lambda attached: self._writeback_codex_before_turn(
@@ -1137,26 +1336,122 @@ class SessionHub:
             )
             # turn 接受后再写回已提交的有效设置。
             self._writeback_codex_native(session_id, session)
+        except TurnConflictError as exc:
+            self._remove_codex_event_subscriber(session_id, queue)
+            raise SessionConflictError(str(exc)) from exc
         except SessionHubError:
+            self._remove_codex_event_subscriber(session_id, queue)
             raise
         except Exception as exc:  # noqa: BLE001 - 统一映射为 502，不能落入 500。
+            self._remove_codex_event_subscriber(session_id, queue)
             _log.warning("codex turn start failed for %s: %s", session_id, exc)
             raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
-        codex_adapter = self._codex_adapters.get(session_id)
-        if codex_adapter is None:
-            codex_adapter = CodexEventAdapter(session_id)
-            self._codex_adapters[session_id] = codex_adapter
-        async for event in session.events():
-            codex_event = codex_adapter.wrap(event)
-            if codex_event is None:
-                # adapter 丢弃的事件不占统一序号，避免产生空洞。
-                continue
-            payload = codex_event.model_dump(by_alias=True)
-            self._observe(payload)
-            await self._observe_model_os(payload)
-            yield payload
-            if _is_terminal(payload):
-                break
+        try:
+            while True:
+                payload = await queue.get()
+                if payload is None:
+                    break
+                yield payload
+                if _is_terminal(payload) and payload.get("turn_id") == turn_id:
+                    break
+        finally:
+            self._remove_codex_event_subscriber(session_id, queue)
+
+    async def start_codex_turn(self, session_id: str, text: str) -> str:
+        """只启动 Codex turn；事件由常驻订阅流统一消费。"""
+
+        session = self._require_codex_session(session_id)
+        codex = self._require_codex_runtime()
+        _reject_reserved_codex_command(text)
+        try:
+            turn_id = await codex.send(
+                session,
+                text,
+                before_turn_start=lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
+                ),
+            )
+            self._writeback_codex_native(session_id, session)
+            return turn_id
+        except TurnConflictError as exc:
+            raise SessionConflictError(str(exc)) from exc
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("codex turn start failed for %s: %s", session_id, exc)
+            raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
+
+    def subscribe_codex_events(
+        self, session_id: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """订阅一个 Codex 会话的常驻事件流；所有订阅共享一个原生 reader。"""
+
+        async def iterate() -> AsyncIterator[dict[str, Any]]:
+            session = self._require_codex_session(session_id)
+            queue = self._add_codex_event_subscriber(session_id, session)
+            try:
+                while True:
+                    payload = await queue.get()
+                    if payload is None:
+                        return
+                    yield payload
+            finally:
+                self._remove_codex_event_subscriber(session_id, queue)
+
+        return iterate()
+
+    def _add_codex_event_subscriber(
+        self, session_id: str, session: Any
+    ) -> asyncio.Queue[dict[str, Any] | None]:
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._codex_event_subscribers.setdefault(session_id, set()).add(queue)
+        task = self._codex_event_tasks.get(session_id)
+        if task is None or task.done():
+            self._codex_event_tasks[session_id] = asyncio.create_task(
+                self._pump_codex_events(session_id, session),
+                name=f"codex-events-{session_id}",
+            )
+        return queue
+
+    def _remove_codex_event_subscriber(
+        self, session_id: str, queue: asyncio.Queue[dict[str, Any] | None]
+    ) -> None:
+        subscribers = self._codex_event_subscribers.get(session_id)
+        if subscribers is None:
+            return
+        subscribers.discard(queue)
+        if not subscribers:
+            self._codex_event_subscribers.pop(session_id, None)
+
+    async def _pump_codex_events(self, session_id: str, session: Any) -> None:
+        adapter = self._codex_adapters.get(session_id)
+        if adapter is None:
+            adapter = CodexEventAdapter(session_id)
+            self._codex_adapters[session_id] = adapter
+        try:
+            async for event in session.events():
+                envelope = adapter.wrap(event)
+                if envelope is None:
+                    continue
+                payload = envelope.model_dump(by_alias=True)
+                self._observe(payload)
+                await self._observe_model_os(payload)
+                for queue in tuple(
+                    self._codex_event_subscribers.get(session_id, ())
+                ):
+                    queue.put_nowait(payload)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            for queue in tuple(self._codex_event_subscribers.get(session_id, ())):
+                queue.put_nowait(None)
+
+    def _stop_codex_event_pump(self, session_id: str) -> None:
+        task = self._codex_event_tasks.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        for queue in tuple(self._codex_event_subscribers.pop(session_id, ())):
+            queue.put_nowait(None)
 
     def _observe(self, payload: Mapping[str, Any]) -> None:
         """observer 是旁路消费者；其异常只能记录，不能中断用户 turn。"""
@@ -1271,6 +1566,18 @@ class SessionHub:
                 1 for sid in self._codex.session_ids if self._store.get(sid) is not None
             )
         return cc_live + codex_live
+
+
+def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return set()
+    return {
+        turn_id
+        for turn in turns
+        if isinstance(turn, Mapping)
+        and isinstance((turn_id := turn.get("id")), str)
+    }
 
 
 def _is_terminal(payload: dict[str, Any]) -> bool:

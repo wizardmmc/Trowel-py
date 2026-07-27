@@ -9,12 +9,18 @@ import {
   agentMessagesUrl as messagesUrl,
   answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
+  clearCodexGoal as apiClearCodexGoal,
+  compactCodexSession as apiCompactCodexSession,
   deleteAgentSession as apiDeleteSession,
   getAgentHistory,
+  getCodexSubagentHistory,
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
   listAgentRequests,
+  setCodexGoal as apiSetCodexGoal,
+  startCodexReview as apiStartCodexReview,
+  startCodexTurn as apiStartCodexTurn,
   updateAgentSessionSettings as apiUpdateSessionSettings,
   updateAgentPermissionPreset as apiUpdatePermissionPreset,
   type AgentEventLike,
@@ -22,6 +28,8 @@ import {
   type AgentHistoryRow,
   type AgentPendingRequest,
   type AgentSession,
+  type SetCodexGoalInput,
+  type CodexReviewTarget,
   type Runtime,
 } from "../api/agent";
 import type { AgentEvent } from "../api/agentTypes";
@@ -31,6 +39,7 @@ export * from "./ccReducer";
 import {
   endActiveTurnOnStreamClose,
   nextTurnId,
+  reduceEvent,
   type Turn,
 } from "./ccReducer";
 import {
@@ -43,6 +52,8 @@ import { applyPendingApproval } from "./ccStore/approvalState";
 import { reduceAgentEvent } from "./ccStore/eventState";
 import { replayAgentHistory } from "./ccStore/historyState";
 import { admitSessionSend } from "./ccStore/sendAdmission";
+import { createCodexLiveController } from "./ccStore/codexLive";
+import { replayCodexSubagentHistory } from "./ccStore/codexSubagents";
 
 export type {
   PerSessionState,
@@ -73,11 +84,16 @@ interface CcState {
   updateSessionSettings: (model: string, effort: string) => Promise<void>;
   selectSessionPermissionPreset: (preset: PermissionPreset) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
+  loadCodexSubagentHistory: (threadId: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerElicit: (answers: Record<string, string>) => Promise<void>;
   cancelElicit: () => Promise<void>;
   answerApproval: (requestId: string, decision: string) => Promise<void>;
+  setCodexGoal: (update: SetCodexGoalInput) => Promise<void>;
+  clearCodexGoal: () => Promise<void>;
+  compactCodex: () => Promise<void>;
+  startCodexReview: (target: CodexReviewTarget) => Promise<void>;
   revertTurn: (turnId: string) => Promise<void>;
   reset: () => void;
 }
@@ -88,7 +104,6 @@ export function createCcStore() {
     let historyLoadMorePromise: Promise<void> | null = null;
     let historyLoadMoreToken: symbol | null = null;
     let sessionStartGeneration = 0;
-
     function applyTo(
       sid: string,
       event: AgentEvent,
@@ -117,6 +132,26 @@ export function createCcStore() {
       });
       return applied;
     }
+
+    const codexLive = createCodexLiveController({
+      getSession: (sid) => get().sessions[sid],
+      applyEvent: (sid, event) => {
+        applyTo(sid, event);
+      },
+      updateSession: (sid, update) => {
+        set((state) => {
+          const current = state.sessions[sid];
+          if (!current) return state;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: update(current),
+            },
+          };
+        });
+      },
+    });
 
     function applyApprovalRequest(
       sid: string,
@@ -214,6 +249,10 @@ export function createCcStore() {
           sessions: { ...state.sessions, [sid]: perSession },
           activeSid: sid,
         }));
+        if (runtime === "codex") {
+          codexLive.watchInBackground(sid);
+          await codexLive.refreshGoal(sid);
+        }
         return session;
       },
 
@@ -222,6 +261,10 @@ export function createCcStore() {
         if (!state.sessions[sid]) return;
         if (state.activeSid === sid) {
           await recoverApprovalRequests(sid);
+          if (state.sessions[sid].runtime === "codex") {
+            codexLive.watchInBackground(sid);
+            await codexLive.refreshGoal(sid);
+          }
           return;
         }
         await dropTempActive();
@@ -232,12 +275,17 @@ export function createCcStore() {
         }
         set({ activeSid: sid });
         await recoverApprovalRequests(sid);
+        if (get().sessions[sid]?.runtime === "codex") {
+          codexLive.watchInBackground(sid);
+          await codexLive.refreshGoal(sid);
+        }
       },
 
       closeSession: async (sid) => {
         const cur = get().sessions[sid];
         if (!cur) return;
         cur.abort?.abort();
+        codexLive.stop(sid);
         try {
           await apiDeleteSession(sid);
         } catch {
@@ -275,6 +323,12 @@ export function createCcStore() {
                 : state.activeSid;
           return { ...state, sessions: merged, activeSid };
         });
+        for (const session of backend) {
+          if (session.runtime === "codex" && session.connected) {
+            codexLive.watchInBackground(session.session_id);
+            void codexLive.refreshGoal(session.session_id);
+          }
+        }
       },
 
       refreshHistory: async (workdir) => {
@@ -462,6 +516,116 @@ export function createCcStore() {
             },
           };
         });
+        if (get().activeSid !== sid) return;
+        const childThreadIds = Object.keys(
+          get().sessions[sid]?.codexSubagents ?? {},
+        );
+        await Promise.all(
+          childThreadIds.map((threadId) =>
+            get().loadCodexSubagentHistory(threadId),
+          ),
+        );
+      },
+
+      loadCodexSubagentHistory: async (threadId) => {
+        const sid = get().activeSid;
+        if (!sid) return;
+        const session = get().sessions[sid];
+        const child = session?.codexSubagents[threadId];
+        if (!session || session.runtime !== "codex" || !child) return;
+        if (child.historyLoaded || child.historyLoading) return;
+        const stateAtRequest = child.state;
+        set((state) => {
+          const current = state.sessions[sid];
+          const target = current?.codexSubagents[threadId];
+          if (!current || !target) return state;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...current,
+                codexSubagents: {
+                  ...current.codexSubagents,
+                  [threadId]: {
+                    ...target,
+                    historyLoading: true,
+                    historyError: null,
+                  },
+                },
+              },
+            },
+          };
+        });
+        try {
+          const envelopes = await getCodexSubagentHistory(sid, threadId);
+          set((state) => {
+            const current = state.sessions[sid];
+            const target = current?.codexSubagents[threadId];
+            if (!current || !target) return state;
+            if (target.state !== stateAtRequest) {
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...current,
+                    codexSubagents: {
+                      ...current.codexSubagents,
+                      [threadId]: { ...target, historyLoading: false },
+                    },
+                  },
+                },
+              };
+            }
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: replayCodexSubagentHistory(
+                  current,
+                  threadId,
+                  envelopes,
+                ),
+              },
+            };
+          });
+          if (get().activeSid !== sid) return;
+          const nestedThreadIds = Object.values(
+            get().sessions[sid]?.codexSubagents ?? {},
+          )
+            .filter((candidate) => candidate.parentThreadId === threadId)
+            .map((candidate) => candidate.threadId);
+          await Promise.all(
+            nestedThreadIds.map((nestedThreadId) =>
+              get().loadCodexSubagentHistory(nestedThreadId),
+            ),
+          );
+        } catch (error) {
+          set((state) => {
+            const current = state.sessions[sid];
+            const target = current?.codexSubagents[threadId];
+            if (!current || !target) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...current,
+                  codexSubagents: {
+                    ...current.codexSubagents,
+                    [threadId]: {
+                      ...target,
+                      historyLoading: false,
+                      historyError:
+                        error instanceof Error ? error.message : String(error),
+                    },
+                  },
+                },
+              },
+            };
+          });
+        }
       },
 
       send: async (text) => {
@@ -469,6 +633,7 @@ export function createCcStore() {
         if (!sid) {
           return;
         }
+        const runtime = get().sessions[sid]?.runtime;
         // 上限检查与 abort 写入必须在同一个 set 回调中原子完成。
         const turn: Turn = {
           id: nextTurnId(),
@@ -493,6 +658,37 @@ export function createCcStore() {
           return { ...state, sessions: admission.sessions };
         });
         if (!accepted) return;
+
+        if (runtime === "codex") {
+          try {
+            await codexLive.ensureWatcher(sid);
+            await apiStartCodexTurn(sid, text);
+          } catch (error) {
+            set((state) => {
+              const session = state.sessions[sid];
+              if (!session) return state;
+              const turns = session.turns.map((item, index) =>
+                index === session.turns.length - 1
+                  ? { ...item, status: "error" as const }
+                  : item,
+              );
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...session,
+                    turns,
+                    phase: "error",
+                    abort: null,
+                    transportError: (error as Error).message,
+                  },
+                },
+              };
+            });
+          }
+          return;
+        }
 
         let transportOk = false;
         let allowNonTerminalClose = false;
@@ -597,6 +793,181 @@ export function createCcStore() {
         }
       },
 
+      setCodexGoal: async (update) => {
+        const sid = get().activeSid;
+        if (!sid || get().sessions[sid]?.runtime !== "codex") return;
+        try {
+          const goal = await apiSetCodexGoal(sid, update);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: { ...session, goal, transportError: null },
+              },
+            };
+          });
+        } catch (error) {
+          patchActive(() => ({ transportError: (error as Error).message }));
+        }
+      },
+
+      clearCodexGoal: async () => {
+        const sid = get().activeSid;
+        if (!sid || get().sessions[sid]?.runtime !== "codex") return;
+        try {
+          await apiClearCodexGoal(sid);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: { ...session, goal: null, transportError: null },
+              },
+            };
+          });
+        } catch (error) {
+          patchActive(() => ({ transportError: (error as Error).message }));
+        }
+      },
+
+      compactCodex: async () => {
+        const sid = get().activeSid;
+        if (!sid) throw new Error("No active Codex session");
+        let accepted = false;
+        set((state) => {
+          const session = state.sessions[sid];
+          if (
+            !session ||
+            session.runtime !== "codex" ||
+            session.abort ||
+            session.commandPending
+          ) {
+            return state;
+          }
+          accepted = true;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...session,
+                commandPending: "compact",
+                transportError: null,
+              },
+            },
+          };
+        });
+        if (!accepted) throw new Error("/compact is unavailable for this session");
+        try {
+          await codexLive.ensureWatcher(sid);
+          await apiCompactCodexSession(sid);
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  commandPending: null,
+                  transportError: (error as Error).message,
+                },
+              },
+            };
+          });
+          throw error;
+        }
+      },
+
+      startCodexReview: async (target) => {
+        const sid = get().activeSid;
+        if (!sid) throw new Error("No active Codex session");
+        let accepted = false;
+        set((state) => {
+          const session = state.sessions[sid];
+          if (
+            !session ||
+            session.runtime !== "codex" ||
+            session.abort ||
+            session.commandPending
+          ) {
+            return state;
+          }
+          accepted = true;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: {
+                ...session,
+                commandPending: "review",
+                transportError: null,
+              },
+            },
+          };
+        });
+        if (!accepted) throw new Error("/review is unavailable for this session");
+        try {
+          await codexLive.ensureWatcher(sid);
+          const result = await apiStartCodexReview(sid, target);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            const alreadyObserved = session.turns.some(
+              (turn) => turn.turnId === result.turnId,
+            );
+            const reduced = alreadyObserved
+              ? session
+              : reduceEvent(session, {
+                  type: "turn_start",
+                  turn_id: result.turnId,
+                  autonomous: true,
+                  revertible: false,
+                });
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  ...reduced,
+                  commandPending: null,
+                  abort: alreadyObserved
+                    ? session.abort
+                    : session.abort ?? new AbortController(),
+                  connected: true,
+                  transportError: null,
+                },
+              },
+            };
+          });
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  commandPending: null,
+                  transportError: (error as Error).message,
+                },
+              },
+            };
+          });
+          throw error;
+        }
+      },
+
       revertTurn: async (turnId) => {
         const sid = get().activeSid;
         if (!sid) return;
@@ -633,6 +1004,7 @@ export function createCcStore() {
         for (const s of Object.values(get().sessions)) {
           s.abort?.abort();
         }
+        codexLive.stopAll();
         set({
           sessions: {},
           activeSid: null,

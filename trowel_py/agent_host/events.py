@@ -29,6 +29,11 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
         "rate_limit_updated",
         # ``contextCompaction`` 只在 completed 时形成新的上下文代际边界。
         "compaction",
+        "goal_updated",
+        "goal_cleared",
+        "plan_updated",
+        "turn_diff_updated",
+        "subagent_activity",
     }
 )
 
@@ -56,6 +61,7 @@ class AgentEvent(BaseModel):
     runtime: AgentRuntime
     seq: int = Field(ge=1)
     type: str
+    thread_id: str | None = None
     turn_id: str | None = None
     item_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)

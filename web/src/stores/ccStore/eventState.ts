@@ -2,6 +2,7 @@ import type { AgentEvent } from "../../api/agentTypes";
 import { agentEventToTrowel } from "../../api/agentTypes";
 import { reduceEvent } from "../ccReducer";
 import type { PerSessionState } from "./sessionState";
+import { reduceCodexSubagentEvent } from "./codexSubagents";
 
 export type AgentEventReduction =
   | { readonly kind: "duplicate" }
@@ -41,6 +42,18 @@ export function reduceAgentEvent(
     return { kind: "session_exited" };
   }
 
+  const childReduced = reduceCodexSubagentEvent(baseline, event);
+  if (childReduced !== null) {
+    return {
+      kind: "updated",
+      session: {
+        ...childReduced,
+        lastSeq: event.seq,
+        needsReplay: baseline.needsReplay || gapped,
+      },
+    };
+  }
+
   const flat = agentEventToTrowel(event);
   const reduced = reduceEvent(baseline, flat);
   let next: PerSessionState = {
@@ -59,6 +72,13 @@ export function reduceAgentEvent(
       pendingEffort: null,
       settingsNotice: null,
     };
+  }
+
+  if (event.type === "session_started") {
+    const nativeSessionId = event.payload.cc_session_id;
+    if (typeof nativeSessionId === "string" && nativeSessionId) {
+      next = { ...next, nativeSessionId };
+    }
   }
 
   if (event.type === "session_started" && event.runtime === "codex") {

@@ -9,6 +9,7 @@ export interface AgentEvent {
   readonly runtime: AgentRuntime;
   readonly seq: number;
   readonly type: string;
+  readonly thread_id: string | null;
   readonly turn_id: string | null;
   readonly item_id: string | null;
   readonly payload: Readonly<Record<string, unknown>>;

@@ -35,6 +35,7 @@ describe("MessageList", () => {
     );
     expect(screen.getByText("请回数字 1")).toBeTruthy();
     expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /复制/ })).toBeNull();
   });
 
   it.each([

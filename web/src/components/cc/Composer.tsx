@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ComposerToolbar, type PermissionFacts } from "./ComposerToolbar";
 import type { PermissionPreset } from "./PermissionFactsChip";
 import type { EffortControlOption } from "./ModelEffortChip";
@@ -18,6 +18,10 @@ interface ComposerProps {
   readonly onInterrupt: () => void;
   // 省略 slashItems 时保持原始文本直发。
   readonly slashItems?: readonly SlashItem[];
+  readonly onLocalCommand?: (item: SlashItem, rawText: string) => void;
+  readonly slashLoading?: boolean;
+  readonly slashError?: string | null;
+  readonly onRetrySlashItems?: () => void;
   readonly onRequestModelPicker?: () => void;
   readonly onRequestEffortPicker?: () => void;
   readonly models?: readonly ModelOption[];
@@ -35,6 +39,30 @@ interface ComposerProps {
   readonly profileEnabled?: boolean | null;
 }
 
+function closestEnabledIndex(items: readonly SlashItem[], index: number): number {
+  if (items.length === 0) return 0;
+  const clamped = Math.min(Math.max(index, 0), items.length - 1);
+  if (!items[clamped].disabled) return clamped;
+  for (let distance = 1; distance < items.length; distance += 1) {
+    const after = clamped + distance;
+    if (after < items.length && !items[after].disabled) return after;
+    const before = clamped - distance;
+    if (before >= 0 && !items[before].disabled) return before;
+  }
+  return clamped;
+}
+
+function moveEnabledIndex(
+  items: readonly SlashItem[],
+  index: number,
+  step: -1 | 1,
+): number {
+  for (let next = index + step; next >= 0 && next < items.length; next += step) {
+    if (!items[next].disabled) return next;
+  }
+  return index;
+}
+
 export function Composer({
   streaming,
   disabled,
@@ -42,6 +70,10 @@ export function Composer({
   onSend,
   onInterrupt,
   slashItems,
+  onLocalCommand,
+  slashLoading = false,
+  slashError = null,
+  onRetrySlashItems,
   onRequestModelPicker,
   onRequestEffortPicker,
   models,
@@ -66,10 +98,11 @@ export function Composer({
     () => new Set<SlashSource>(["plugin"]),
   );
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const autocompleteId = useId();
 
   const acOpen =
     text.startsWith("/") &&
-    (slashItems?.length ?? 0) > 0 &&
+    ((slashItems?.length ?? 0) > 0 || slashLoading || slashError !== null) &&
     !dismissed;
   const query = acOpen ? text.slice(1) : "";
   const searching = query.trim() !== "";
@@ -84,7 +117,7 @@ export function Composer({
     [acGroups, searching, collapsedSources],
   );
   // 折叠或数据变化后，高亮索引不能指向隐藏行。
-  const safeIndex = Math.min(acIndex, Math.max(0, acFlat.length - 1));
+  const safeIndex = closestEnabledIndex(acFlat, acIndex);
 
   // 输入框随内容增高，但最多 200px。
   useEffect(() => {
@@ -100,10 +133,30 @@ export function Composer({
     else next.add(source);
     setCollapsedSources(next);
     const nextLen = flatVisible(acGroups, searching, next).length;
-    setAcIndex((i) => Math.min(i, Math.max(0, nextLen - 1)));
+    setAcIndex((i) =>
+      closestEnabledIndex(
+        flatVisible(acGroups, searching, next),
+        Math.min(i, Math.max(0, nextLen - 1)),
+      ),
+    );
   }
 
-  function pickItem(item: SlashItem) {
+  function findLocalCommand(rawText: string): SlashItem | undefined {
+    const match = /^\s*\/([^\s]+)(?:\s|$)/.exec(rawText);
+    if (!match) return undefined;
+    return slashItems?.find(
+      (item) => item.source === "codex" && item.name === match[1],
+    );
+  }
+
+  function pickItem(item: SlashItem, rawText = `/${item.name}`) {
+    if (item.disabled) return;
+    if (item.source === "codex") {
+      onLocalCommand?.(item, rawText);
+      setText("");
+      setDismissed(false);
+      return;
+    }
     // model/effort 命令直接打开选择器，不回填输入框。
     if (item.name === "model" && onRequestModelPicker) {
       onRequestModelPicker();
@@ -123,20 +176,24 @@ export function Composer({
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (acOpen) {
-      const last = acFlat.length - 1;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setAcIndex((i) => Math.min(last, i + 1));
+        setAcIndex(moveEnabledIndex(acFlat, safeIndex, 1));
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setAcIndex((i) => Math.max(0, i - 1));
+        setAcIndex(moveEnabledIndex(acFlat, safeIndex, -1));
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         const trimmed = text.trim();
+        const localCommand = findLocalCommand(trimmed);
+        if (localCommand) {
+          pickItem(localCommand, trimmed);
+          return;
+        }
         if (trimmed === "/model" && onRequestModelPicker) {
           onRequestModelPicker();
           setText("");
@@ -192,6 +249,11 @@ export function Composer({
   function submit() {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
+    const localCommand = findLocalCommand(trimmed);
+    if (localCommand) {
+      pickItem(localCommand, trimmed);
+      return;
+    }
     onSend(trimmed);
     setText("");
     setDismissed(false);
@@ -206,7 +268,12 @@ export function Composer({
           collapsed={collapsedSources}
           selectedIndex={safeIndex}
           onSelect={pickItem}
+          onHighlight={setAcIndex}
           onToggleGroup={toggleGroup}
+          id={autocompleteId}
+          loading={slashLoading}
+          error={slashError}
+          onRetry={onRetrySlashItems}
         />
       )}
       <div className="cc-composer__shell">
@@ -227,6 +294,14 @@ export function Composer({
           onKeyDown={handleKeyDown}
           disabled={disabled}
           aria-label="CC 消息输入"
+          aria-autocomplete="list"
+          aria-expanded={acOpen}
+          aria-controls={acOpen ? autocompleteId : undefined}
+          aria-activedescendant={
+            acOpen && acFlat.length > 0
+              ? `${autocompleteId}-option-${safeIndex}`
+              : undefined
+          }
         />
         <ComposerToolbar
           streaming={streaming}

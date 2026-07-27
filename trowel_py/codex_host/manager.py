@@ -14,6 +14,8 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.catalog import parse_model_list_page
+from trowel_py.codex_host.child_threads import ChildThreadRegistry
+from trowel_py.codex_host.commands import command_roster
 from trowel_py.codex_host.errors import (
     ProtocolViolationError,
     ServerRequestUnsupportedError,
@@ -96,6 +98,7 @@ class CodexHostManager:
         self._state: CodexHostManagerState = CodexHostManagerState.STOPPED
         self._sessions: dict[str, CodexSession] = {}
         self._thread_to_session: dict[str, CodexSession] = {}
+        self._child_threads = ChildThreadRegistry()
         # 只记录当前连接已加载原生 thread 的本地 session；thread 独占另由
         # _thread_to_session 保证，重连后 attachment 必须重建。
         self._attached_session_ids: set[str] = set()
@@ -149,6 +152,8 @@ class CodexHostManager:
         self._attached_session_ids.discard(session_id)
         if session is not None and session.binding is not None:
             self._thread_to_session.pop(session.binding.thread_id, None)
+        for thread_id in self._child_threads.remove_session(session) if session else ():
+            self._thread_to_session.pop(thread_id, None)
         return session
 
     def session_for_thread(self, thread_id: str) -> CodexSession | None:
@@ -247,6 +252,13 @@ class CodexHostManager:
             if cursor is None:
                 return rows
 
+    async def list_commands(self) -> list[dict[str, Any]]:
+        """按当前已连接的 CLI 版本返回经过验证的命令能力。"""
+
+        client = await self.ensure_ready()
+        version = str(client.version) if client.version is not None else None
+        return command_roster(version)
+
     async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
         """按更新时间列出指定 cwd 的默认交互 thread，不读取私有 rollout。"""
 
@@ -300,6 +312,132 @@ class CodexHostManager:
         if not isinstance(thread, Mapping):
             raise ProtocolViolationError("thread/read result.thread is not an object")
         return dict(thread)
+
+    async def get_goal(self, session: CodexSession) -> dict[str, Any] | None:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        result = await client.request(
+            "thread/goal/get",
+            {"threadId": binding.thread_id},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        goal = result.get("goal") if isinstance(result, Mapping) else None
+        if goal is None:
+            return None
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError("thread/goal/get result.goal is not an object")
+        return dict(goal)
+
+    async def set_goal(
+        self,
+        session: CodexSession,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        token_budget_supplied: bool = False,
+    ) -> dict[str, Any]:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        params: dict[str, Any] = {"threadId": binding.thread_id}
+        if objective is not None:
+            params["objective"] = objective
+        if status is not None:
+            params["status"] = status
+        if token_budget_supplied:
+            params["tokenBudget"] = token_budget
+        result = await client.request(
+            "thread/goal/set", params, timeout=_REQUEST_TIMEOUT_S
+        )
+        goal = result.get("goal") if isinstance(result, Mapping) else None
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError("thread/goal/set result.goal is not an object")
+        return dict(goal)
+
+    async def clear_goal(self, session: CodexSession) -> bool:
+        binding = await self.attach(session)
+        client = await self.ensure_ready()
+        result = await client.request(
+            "thread/goal/clear",
+            {"threadId": binding.thread_id},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        cleared = result.get("cleared") if isinstance(result, Mapping) else None
+        if not isinstance(cleared, bool):
+            raise ProtocolViolationError("thread/goal/clear result.cleared is not boolean")
+        return cleared
+
+    async def compact(
+        self,
+        session: CodexSession,
+        *,
+        before_start: BeforeTurnStart | None = None,
+    ) -> None:
+        """在空闲 thread 上启动原生压缩，并与 turn 启动共享会话预留。"""
+
+        self._require_registered(session)
+        session.begin_send(autonomous=True, memory_eligible=False)
+        try:
+            binding = await self.attach(session)
+            if before_start is not None:
+                before_start(session)
+            client = await self.ensure_ready()
+            await client.request(
+                "thread/compact/start",
+                {"threadId": binding.thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except BaseException:
+            session.abort_send()
+            raise
+
+    async def start_review(
+        self,
+        session: CodexSession,
+        target: Mapping[str, Any],
+        *,
+        before_start: BeforeTurnStart | None = None,
+    ) -> dict[str, str]:
+        """启动 inline 原生 review，并登记不含 USER 事件的自主 turn。"""
+
+        self._require_registered(session)
+        session.begin_send(memory_eligible=False)
+        try:
+            binding = await self.attach(session)
+            if before_start is not None:
+                before_start(session)
+            client = await self.ensure_ready()
+            result = await client.request(
+                "review/start",
+                {
+                    "threadId": binding.thread_id,
+                    "target": dict(target),
+                    "delivery": "inline",
+                },
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            turn_id = _extract_turn_id(result)
+            review_thread_id = (
+                result.get("reviewThreadId") if isinstance(result, Mapping) else None
+            )
+            if not isinstance(review_thread_id, str) or not review_thread_id:
+                raise ProtocolViolationError(
+                    "review/start response has no reviewThreadId",
+                    payload=dict(result),
+                )
+            if review_thread_id != binding.thread_id:
+                raise ProtocolViolationError(
+                    "inline review/start returned a different reviewThreadId",
+                    payload=dict(result),
+                )
+            session.record_autonomous_turn_started(turn_id)
+            return {
+                "review_thread_id": review_thread_id,
+                "turn_id": turn_id,
+            }
+        except BaseException:
+            session.abort_send()
+            raise
 
     async def attach(self, session: CodexSession) -> ThreadBinding:
         """按当前连接代际 start/resume thread，但不启动 turn。"""
@@ -623,23 +761,49 @@ class CodexHostManager:
                 "unknown_thread",
             )
             return
+        if method == "turn/started":
+            turn = params.get("turn")
+            turn_id = turn.get("id") if isinstance(turn, Mapping) else None
+            if not isinstance(turn_id, str) or not turn_id:
+                self._record_orphan(method, thread_id, None, "missing_turn_id")
+                return
+            try:
+                if self._child_threads.is_child(thread_id):
+                    session.emit_child_translated(
+                        TranslatedItem(
+                            type=CodexEventType.TURN_STARTED,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            payload=immutable_payload(
+                                autonomous=True,
+                                memory_eligible=False,
+                            ),
+                        )
+                    )
+                else:
+                    session.record_native_turn_started(turn_id)
+            except TurnConflictError as exc:
+                _log.warning("native turn start rejected for %s: %s", thread_id, exc)
+            return
         try:
             items = self._translator.translate(method, params)
         except ProtocolViolationError as exc:
             # 已映射协议发生漂移时向所属 session 报错，但不能杀死 reader。
             _log.warning("translator rejected %s: %s", method, exc)
-            session.emit_translated(
-                TranslatedItem(
-                    type=CodexEventType.ERROR,
-                    thread_id=thread_id,
-                    turn_id=_extract_turn_id_from_params(params),
-                    payload=immutable_payload(
-                        kind="translator_error",
-                        method=method,
-                        message=str(exc),
-                    ),
-                )
+            error_item = TranslatedItem(
+                type=CodexEventType.ERROR,
+                thread_id=thread_id,
+                turn_id=_extract_turn_id_from_params(params),
+                payload=immutable_payload(
+                    kind="translator_error",
+                    method=method,
+                    message=str(exc),
+                ),
             )
+            if self._child_threads.is_child(thread_id):
+                session.emit_child_translated(error_item)
+            else:
+                session.emit_translated(error_item)
             return
         if not items:
             # 非忽略方法未产出事件时留诊断，避免协议变化被静默丢弃。
@@ -651,7 +815,27 @@ class CodexHostManager:
             )
             return
         for item in items:
-            session.emit_translated(item)
+            if item.type is CodexEventType.SUBAGENT_ACTIVITY:
+                child_thread_id = item.payload.get("agent_thread_id")
+                if isinstance(child_thread_id, str) and child_thread_id:
+                    accepted = self._child_threads.register(
+                        thread_id=child_thread_id,
+                        parent_thread_id=thread_id,
+                        session=session,
+                    )
+                    if not accepted:
+                        self._record_orphan(
+                            method,
+                            child_thread_id,
+                            item.turn_id,
+                            "child_thread_conflict",
+                        )
+                        continue
+                    self._thread_to_session[child_thread_id] = session
+            if self._child_threads.is_child(thread_id):
+                session.emit_child_translated(item)
+            else:
+                session.emit_translated(item)
 
     def _dispatch_account_level(
         self, method: str, params: Mapping[str, Any]

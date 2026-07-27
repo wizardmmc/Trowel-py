@@ -120,6 +120,95 @@ def test_get_history_unknown_session_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_get_codex_child_history_checks_parent_and_returns_child_events(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    binding = make_binding(
+        session_id="history-parent",
+        runtime=Runtime.CODEX,
+        native_session_id="parent-thread-1",
+        workdir=str(workdir),
+        model="gpt-5.6-sol",
+        effort=None,
+        permission=None,
+        memory_enabled=True,
+        profile_enabled=True,
+        capabilities=("tools", "approval", "subagents"),
+        name="project",
+    )
+    hub.store.put(binding)
+    hub._codex.thread_reads["child-thread-1"] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": "child-thread-1",
+        "parentThreadId": "parent-thread-1",
+        "turns": [
+            {
+                "id": "parent-turn-1",
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "inherited-user-1",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "parent prompt"}],
+                    }
+                ],
+            },
+            {
+                "id": "child-turn-1",
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "child-message-1",
+                        "type": "agentMessage",
+                        "text": "child result",
+                    }
+                ],
+            }
+        ],
+    }
+    hub._codex.thread_reads["parent-thread-1"] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": "parent-thread-1",
+        "turns": [{"id": "parent-turn-1", "status": "completed", "items": []}],
+    }
+
+    response = client.get(
+        f"/api/agent/sessions/{binding.session_id}/subagents/child-thread-1/history"
+    )
+
+    assert response.status_code == 200
+    events = response.json()["data"]
+    assert [event["type"] for event in events] == [
+        "turn_start",
+        "text",
+        "finished",
+    ]
+    assert all(event["thread_id"] == "child-thread-1" for event in events)
+    assert all(event["payload"].get("text") != "parent prompt" for event in events)
+
+    hub._codex.thread_reads["child-thread-1"]["parentThreadId"] = "other-root"  # type: ignore[union-attr]  # noqa: SLF001
+    hub._codex.thread_reads["other-root"] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": "other-root",
+        "parentThreadId": None,
+        "turns": [],
+    }
+    denied = client.get(
+        f"/api/agent/sessions/{binding.session_id}/subagents/child-thread-1/history"
+    )
+    assert denied.status_code == 403
+
+    hub._codex.thread_reads["child-thread-1"]["parentThreadId"] = "middle-thread"  # type: ignore[union-attr]  # noqa: SLF001
+    hub._codex.thread_reads["middle-thread"] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": "middle-thread",
+        "parentThreadId": "parent-thread-1",
+        "turns": [],
+    }
+    nested = client.get(
+        f"/api/agent/sessions/{binding.session_id}/subagents/child-thread-1/history"
+    )
+    assert nested.status_code == 200
+
+
 def test_list_history_invalid_cursor_returns_400(
     client: TestClient,
     workdir: Path,

@@ -44,6 +44,7 @@ class CodexTurnJournal:
         self._memory_eligibility = memory_eligibility
         self._now = now_fn or datetime.now
         self._registered: set[tuple[str, str]] = set()
+        self._excluded: set[tuple[str, str]] = set()
         self._failed: set[tuple[str, str]] = set()
         self._handles: dict[tuple[str, str], IO[str]] = {}
         # Codex session 创建发生在 native turn 前；这里失败可安全拒绝创建。
@@ -62,6 +63,14 @@ class CodexTurnJournal:
         now = self._now()
         path = self._turn_path(event.thread_id, event.turn_id)
         key = (event.thread_id, event.turn_id)
+        if key in self._excluded:
+            return
+        if (
+            event.type is CodexEventType.TURN_STARTED
+            and event.payload.get("memory_eligible") is False
+        ):
+            self._excluded.add(key)
+            return
         if key in self._failed:
             return
         model = str(getattr(binding, "model", "") or "")
