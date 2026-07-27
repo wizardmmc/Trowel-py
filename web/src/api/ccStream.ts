@@ -4,6 +4,7 @@ const FRAME_DELIMITER = "\n\n";
 
 interface SendMessageBody {
   readonly text: string;
+  readonly task_id?: string;
 }
 
 interface PostStreamOptions {

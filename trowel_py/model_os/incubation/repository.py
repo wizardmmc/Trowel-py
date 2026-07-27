@@ -740,6 +740,24 @@ class IncubationRepository:
             self._conn.execute("SELECT COUNT(*) FROM incubation_candidates").fetchone()[0]
         )
 
+    def pending_review_candidates(
+        self,
+    ) -> tuple[tuple[IncubationPlan, IncubationCandidate], ...]:
+        rows = self._conn.execute(
+            "SELECT p.plan_id, c.candidate_id "
+            "FROM incubation_plans AS p "
+            "JOIN incubation_candidates AS c ON c.plan_id=p.plan_id "
+            "WHERE p.status='awaiting_review' AND c.status IN ('new','shown') "
+            "ORDER BY c.created_at, c.candidate_id"
+        ).fetchall()
+        return tuple(
+            (
+                self.get_plan(row["plan_id"]),
+                self.get_candidate(row["candidate_id"]),
+            )
+            for row in rows
+        )
+
     def _candidate_for_plan(self, plan_id: str) -> IncubationCandidate | None:
         row = self._conn.execute(
             "SELECT candidate_id FROM incubation_candidates WHERE plan_id=? AND cycle=1",

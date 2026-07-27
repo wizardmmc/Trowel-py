@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -10,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from trowel_py.agent_host.hub import SessionHubError
+from trowel_py.agent_host.routes import stream_message_response
 from trowel_py.model_os.episode_starting import StartEpisodeCommand
 from trowel_py.model_os.observation.routes import router as observation_router
 from trowel_py.model_os.default_work.models import (
@@ -29,7 +33,7 @@ from trowel_py.model_os.routing import (
     record_route_approval,
     record_route_review,
 )
-from trowel_py.model_os.store import TaskCommandError
+from trowel_py.model_os.store import TaskCommandError, WarmFull
 from trowel_py.model_os.types import (
     MemoryEligibility,
     SessionPurpose,
@@ -43,6 +47,7 @@ from trowel_py.model_os.yielding import (
 )
 from trowel_py.model_os.waking import WakeConditionKind, WakeObservation
 from trowel_py.model_os.work_broker import BudgetDimensions
+from trowel_py.model_os.workbench import build_workbench_state, set_automation_paused
 
 router = APIRouter()
 router.include_router(observation_router)
@@ -145,6 +150,34 @@ class RequestForegroundBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str = Field(min_length=1)
+
+
+class SetTaskWarmBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warm: bool = Field(strict=True)
+
+
+class SetAutomationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paused: bool = Field(strict=True)
+    idempotency_key: str = Field(min_length=1)
+
+
+class ReplyWaitingBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    correlation_id: str = Field(min_length=1)
+    answers: dict[str, str] | None = None
+    decision: str | None = None
+
+
+class WorkbenchInstructionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
 
 
 class RunDefaultPilotBody(BaseModel):
@@ -633,6 +666,220 @@ def _outcome_payload(outcome) -> dict[str, Any]:
         "target_task_id": outcome.decision.target_task_id,
         "result_code": outcome.result_code,
     }
+
+
+def _workbench_payload(request: Request) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    hub = getattr(request.app.state, "agent_hub", None)
+    scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+    default_service = getattr(request.app.state, "model_os_default_work", None)
+    incubation_service = getattr(request.app.state, "model_os_incubation", None)
+    state = build_workbench_state(
+        store,
+        hub=hub,
+        pending_override_task_id=(
+            scheduler.pending_override_task_id() if scheduler is not None else None
+        ),
+        default_repository=(
+            default_service.repository if default_service is not None else None
+        ),
+        incubation_repository=(
+            incubation_service.repository if incubation_service is not None else None
+        ),
+    )
+    return asdict(state)
+
+
+def _workbench_sse_frame(payload: dict[str, Any]) -> bytes:
+    envelope = {"success": True, "data": payload, "error": None}
+    return f"data: {json.dumps(envelope, ensure_ascii=False)}\n\n".encode()
+
+
+@router.get("/workbench")
+async def read_workbench(request: Request) -> dict[str, Any]:
+    return {"success": True, "data": _workbench_payload(request), "error": None}
+
+
+@router.get("/workbench/events")
+async def stream_workbench(request: Request) -> StreamingResponse:
+    async def stream():
+        previous: str | None = None
+        while not await request.is_disconnected():
+            payload = _workbench_payload(request)
+            fingerprint = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if fingerprint != previous:
+                previous = fingerprint
+                yield _workbench_sse_frame(payload)
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/automation")
+async def set_automation(
+    body: SetAutomationBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    try:
+        set_automation_paused(
+            store,
+            paused=body.paused,
+            idempotency_key=body.idempotency_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": _workbench_payload(request), "error": None}
+
+
+@router.post("/tasks/{task_id}/warm")
+async def set_task_warm(
+    task_id: str,
+    body: SetTaskWarmBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Model OS store unavailable")
+    try:
+        if body.warm:
+            store.promote_to_warm(task_id)
+        else:
+            store.demote_to_backlog(task_id)
+    except (TaskCommandError, WarmFull) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": _workbench_payload(request), "error": None}
+
+
+@router.post("/workbench/tasks/{task_id}/reply")
+async def reply_waiting_task(
+    task_id: str,
+    body: ReplyWaitingBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = getattr(request.app.state, "model_os_store", None)
+    hub = getattr(request.app.state, "agent_hub", None)
+    wake = getattr(request.app.state, "model_os_wake_controller", None)
+    scheduler = getattr(request.app.state, "model_os_attention_scheduler", None)
+    if store is None or hub is None or wake is None:
+        raise HTTPException(status_code=503, detail="Waiting reply unavailable")
+    task = next(
+        (
+            candidate
+            for candidate in store.read_snapshot().tasks
+            if candidate.task_id == task_id
+        ),
+        None,
+    )
+    waiting = task.waiting_condition if task is not None else None
+    if waiting is None or waiting.correlation_id != body.correlation_id:
+        raise HTTPException(status_code=409, detail="Waiting request changed")
+    episode_id = waiting.episode_id
+    binding = (
+        store.episode_runtime_binding(episode_id)
+        if episode_id is not None
+        else None
+    )
+    if binding is None:
+        raise HTTPException(status_code=409, detail="Waiting session unavailable")
+    try:
+        pending = hub.pending_request(
+            binding.agent_session_id,
+            body.correlation_id,
+        )
+    except SessionHubError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if pending is None:
+        raise HTTPException(status_code=409, detail="Waiting request is no longer active")
+    if pending["kind"] == "input":
+        if body.answers is None or body.decision is not None:
+            raise HTTPException(status_code=422, detail="Input answers are required")
+        expected = {
+            question.get("question")
+            for question in pending["questions"]
+            if isinstance(question.get("question"), str)
+        }
+        if not expected or set(body.answers) != expected:
+            raise HTTPException(status_code=409, detail="Answers do not match questions")
+        payload = {"cancel": False, "answers": body.answers}
+    else:
+        if body.decision is None or body.answers is not None:
+            raise HTTPException(status_code=422, detail="Approval decision is required")
+        available = pending["available_decisions"]
+        if body.decision not in available:
+            raise HTTPException(status_code=409, detail="Decision is no longer available")
+        payload = {
+            "request_id": body.correlation_id,
+            "decision": body.decision,
+        }
+    try:
+        queued = wake.queue_for_session(
+            binding.agent_session_id,
+            correlation_id=body.correlation_id,
+            runtime_generation=hub.runtime_generation(binding.agent_session_id),
+            payload=payload,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if scheduler is not None:
+        await scheduler.trigger(queued.wake_id)
+    return {
+        "success": True,
+        "data": {
+            "queued": True,
+            "episode_id": queued.episode_id,
+        },
+        "error": None,
+    }
+
+
+@router.post("/workbench/instruction")
+async def send_workbench_instruction(
+    body: WorkbenchInstructionBody,
+    request: Request,
+) -> StreamingResponse:
+    store = getattr(request.app.state, "model_os_store", None)
+    hub = getattr(request.app.state, "agent_hub", None)
+    if store is None or hub is None:
+        raise HTTPException(status_code=503, detail="Workbench instruction unavailable")
+    snapshot = store.read_snapshot()
+    if snapshot.foreground_task_id != body.task_id:
+        raise HTTPException(status_code=409, detail="Foreground task changed")
+    episodes = [
+        episode
+        for episode in snapshot.episodes
+        if episode.task_id == body.task_id and not episode.status.is_terminal
+    ]
+    episode = max(episodes, key=lambda item: item.updated_at) if episodes else None
+    binding = (
+        store.episode_runtime_binding(episode.episode_id)
+        if episode is not None
+        else None
+    )
+    if binding is None or binding.possible_orphan:
+        raise HTTPException(status_code=409, detail="Foreground session unavailable")
+    return stream_message_response(
+        binding.agent_session_id,
+        body.text,
+        request=request,
+        hub=hub,
+    )
 
 
 @router.post("/tasks/{task_id}/priority")

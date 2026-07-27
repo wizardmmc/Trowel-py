@@ -165,6 +165,7 @@ class EventKind:
     ATTENTION_RESOURCE_DEFERRED = "attention.resource_deferred"
     SWITCH_RECOVERY_STARTED = "attention.switch_recovery_started"
     SWITCH_RECOVERY_OBSERVED = "attention.switch_recovery_observed"
+    AUTOMATION_MODE_CHANGED = "automation.mode_changed"
 
 
 @dataclass(frozen=True)

@@ -169,6 +169,32 @@ async def test_pending_suspends_and_generation_loss_requires_user_restart(
 
 
 @pytest.mark.anyio
+async def test_answered_approval_event_does_not_suspend_again(
+    store: ModelOsStore,
+) -> None:
+    episode, coordinator, native, registration = _setup(store)
+    await coordinator.register_turn(registration)
+
+    receipt = await coordinator.observe(
+        "session-1",
+        _event(
+            "approval_request",
+            request_id="approval-1",
+            status="answered",
+            decision="accept",
+        ),
+        generation="generation-1",
+    )
+
+    assert receipt is None
+    assert (
+        store.read_snapshot().episode_by_id(episode.episode_id).status
+        == EpisodeStatus.ACTIVE
+    )
+    assert native.releases == []
+
+
+@pytest.mark.anyio
 async def test_pending_retry_releases_work_lease_after_suspend_was_persisted(
     store: ModelOsStore,
 ) -> None:

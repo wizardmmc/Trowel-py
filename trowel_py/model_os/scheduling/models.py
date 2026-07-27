@@ -26,6 +26,7 @@ class ScheduleReason(str, Enum):
     NO_READY_WORK = "no_ready_work"
     STALE_TRIGGER = "stale_trigger"
     TARGET_NOT_RUNNABLE = "target_not_runnable"
+    AUTOMATION_PAUSED = "automation_paused"
 
 
 @dataclass(frozen=True)

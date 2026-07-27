@@ -942,6 +942,16 @@ class CCHost:
         pending = self._pending_elicit
         return str(pending["request_id"]) if pending is not None else None
 
+    @property
+    def pending_elicit(self) -> dict[str, Any] | None:
+        pending = self._pending_elicit
+        if pending is None:
+            return None
+        return {
+            "request_id": str(pending["request_id"]),
+            "questions": [dict(question) for question in pending["questions"]],
+        }
+
     async def cancel_elicit(self) -> bool:
         """向待处理 AskUserQuestion 写入 deny；无 pending 或写入失败时返回 False。"""
         async with self._elicit_lock:

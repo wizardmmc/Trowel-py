@@ -7,6 +7,7 @@ import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
 import { SessionView } from "./components/cc/SessionView";
 import { ProfileView } from "./components/profile/ProfileView";
+import { WorkbenchView } from "./components/workbench/WorkbenchView";
 import { WorkdirPicker } from "./components/cc/WorkdirPicker";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
@@ -141,6 +142,7 @@ function App() {
         />
       )}
       {!reviewActive && activeTool === "profile" && <ProfileView />}
+      {!reviewActive && activeTool === "workbench" && <WorkbenchView />}
       {activeTool === "cc" && (
         <SessionView
           workdir={ccWorkdir}

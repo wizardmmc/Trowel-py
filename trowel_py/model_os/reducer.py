@@ -541,6 +541,7 @@ def reduce_event(snap: Snapshot, event: EventEnvelope) -> Snapshot:
         EventKind.ATTENTION_RESOURCE_DEFERRED,
         EventKind.SWITCH_RECOVERY_STARTED,
         EventKind.SWITCH_RECOVERY_OBSERVED,
+        EventKind.AUTOMATION_MODE_CHANGED,
     ):
         return snap
     if event.kind not in snap.unrecognized_event_kinds:

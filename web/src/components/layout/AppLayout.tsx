@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import "./AppLayout.css";
 
-export type Tool = "garden" | "extract" | "review" | "cc" | "profile";
+export type Tool =
+  | "garden"
+  | "extract"
+  | "review"
+  | "cc"
+  | "workbench"
+  | "profile";
 
 interface AppLayoutProps {
   readonly children: ReactNode;
@@ -68,11 +74,22 @@ function IconProfile() {
   );
 }
 
+function IconWorkbench() {
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
+    </svg>
+  );
+}
+
 const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
   { id: "cc", icon: <IconCC />, label: "Agent" },
+  { id: "workbench", icon: <IconWorkbench />, label: "工作台" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
 

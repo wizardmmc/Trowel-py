@@ -3893,6 +3893,220 @@
           }
         }
       },
+      "/api/model-os/workbench": {
+        "get": {
+          "summary": "Read Workbench",
+          "operationId": "read_workbench_api_model_os_workbench_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Read Workbench Api Model Os Workbench Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/workbench/events": {
+        "get": {
+          "summary": "Stream Workbench",
+          "operationId": "stream_workbench_api_model_os_workbench_events_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/automation": {
+        "post": {
+          "summary": "Set Automation",
+          "operationId": "set_automation_api_model_os_automation_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetAutomationBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Set Automation Api Model Os Automation Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/tasks/{task_id}/warm": {
+        "post": {
+          "summary": "Set Task Warm",
+          "operationId": "set_task_warm_api_model_os_tasks__task_id__warm_post",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Task Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetTaskWarmBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Set Task Warm Api Model Os Tasks  Task Id  Warm Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/workbench/tasks/{task_id}/reply": {
+        "post": {
+          "summary": "Reply Waiting Task",
+          "operationId": "reply_waiting_task_api_model_os_workbench_tasks__task_id__reply_post",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Task Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyWaitingBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Reply Waiting Task Api Model Os Workbench Tasks  Task Id  Reply Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/model-os/workbench/instruction": {
+        "post": {
+          "summary": "Send Workbench Instruction",
+          "operationId": "send_workbench_instruction_api_model_os_workbench_instruction_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchInstructionBody"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/model-os/tasks/{task_id}/priority": {
         "post": {
           "summary": "Set Task Priority",
@@ -5151,6 +5365,46 @@
           "title": "ReExplainRequest",
           "description": "草稿尚未持久化，因此直接携带内容；``user_hint`` 为空时自由生成。"
         },
+        "ReplyWaitingBody": {
+          "properties": {
+            "correlation_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Correlation Id"
+            },
+            "answers": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Answers"
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Decision"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "correlation_id"
+          ],
+          "title": "ReplyWaitingBody"
+        },
         "RequestForegroundBody": {
           "properties": {
             "idempotency_key": {
@@ -5328,6 +5582,26 @@
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。"
         },
+        "SetAutomationBody": {
+          "properties": {
+            "paused": {
+              "type": "boolean",
+              "title": "Paused"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Idempotency Key"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "paused",
+            "idempotency_key"
+          ],
+          "title": "SetAutomationBody"
+        },
         "SetTaskPriorityBody": {
           "properties": {
             "priority": {
@@ -5347,6 +5621,20 @@
             "idempotency_key"
           ],
           "title": "SetTaskPriorityBody"
+        },
+        "SetTaskWarmBody": {
+          "properties": {
+            "warm": {
+              "type": "boolean",
+              "title": "Warm"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "warm"
+          ],
+          "title": "SetTaskWarmBody"
         },
         "StartEpisodeBody": {
           "properties": {
@@ -5681,6 +5969,27 @@
             "target_ref"
           ],
           "title": "WakeObservationBody"
+        },
+        "WorkbenchInstructionBody": {
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Task Id"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Text"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "task_id",
+            "text"
+          ],
+          "title": "WorkbenchInstructionBody"
         },
         "YieldProposalBody": {
           "properties": {

@@ -322,14 +322,31 @@ async def send_message(
     明确结束信号。
     """
 
+    return stream_message_response(
+        session_id,
+        body.text,
+        request=request,
+        hub=hub,
+    )
+
+
+def stream_message_response(
+    session_id: str,
+    text: str,
+    *,
+    request: Request,
+    hub: SessionHub,
+) -> StreamingResponse:
+    """复用 Agent Host 的受管消息门禁并返回同一 SSE 契约。"""
+
     async def gen():
         gate = getattr(request.app.state, "model_os_command_gate", None)
         ticket = None
         completed = False
         try:
             if gate is not None:
-                ticket = await gate.before_send(session_id, body.text)
-            async for event in hub.stream(session_id, body.text):
+                ticket = await gate.before_send(session_id, text)
+            async for event in hub.stream(session_id, text):
                 if gate is not None:
                     await gate.observe_send_event(ticket, event, hub=hub)
                     if event.get("type") in {
