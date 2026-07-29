@@ -1,4 +1,4 @@
-"""编排 memory dictionary 的派生、校验、发布与状态收敛。"""
+"""编排 Dictionary 的派生、校验、发布和一致性状态更新。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,17 @@ def derive_dictionary_full(
     root: Path | str,
     provider: LLMProvider,
 ) -> dict[str, Any]:
-    """从 active notes 派生完整 L0/L1，不写文件或 state。"""
+    """从 active Note 派生完整 L0/L1，不写索引或状态文件。
+
+    本函数不捕获读取 active Note 或调用 provider 时的异常，调用方负责处理。
+
+    Args:
+        root: active Note 所在的 Memory 根目录。
+        provider: 对 Note 进行领域聚类的模型客户端。
+
+    Returns:
+        包含 L0 文本、各领域 L1 文本和领域结构的映射。
+    """
 
     return render.derive_dictionary_full(root, provider)
 
@@ -41,11 +51,26 @@ def rebuild_dictionary(
     apply: bool,
     provider: LLMProvider,
 ) -> dict[str, Any]:
-    """全量派生；apply=False 只预览，apply=True 原子发布。"""
+    """全量派生并校验 Dictionary，可选择原子发布。
+
+    ``apply=False`` 只返回预览，不写索引或状态。``apply=True`` 发布前尽力把
+    状态标为 stale。``derive_dictionary_full`` 抛出异常、暂存报告不一致或
+    原子替换失败时，函数返回带 ``error`` 的结果并保留旧索引；重新读取
+    active Note、评估暂存结果或获取文件锁时的异常会向上传播。
+
+    Args:
+        root: Note、Dictionary 和状态文件所在的 Memory 根目录。
+        apply: 是否发布通过校验的新索引。
+        provider: 对 active Note 进行领域聚类的模型客户端。
+
+    Returns:
+        预览、发布结果或失败信息。成功结果包含领域数和 L1 领域名；发布成功时
+        还包含来源与渲染摘要。
+    """
 
     root_path = Path(root)
     if apply:
-        # 提前标 stale，使进程在派生或发布中崩溃时仍可由下次任务自愈。
+        # 发布前先尽力标为 stale；若进程中途退出，后续维护可据此重试。
         _mark_stale(root_path, "rebuild in progress")
 
     staged = _derive_and_stage(root_path, provider, apply)
@@ -70,7 +95,7 @@ def rebuild_dictionary(
                 staged["l0_text"],
                 staged["l1_files"],
             )
-        except Exception as exc:  # noqa: BLE001 - IO 失败需要返回给调用方重试。
+        except Exception as exc:  # noqa: BLE001 - 原子替换的任意异常都转换为失败结果。
             _mark_stale(root_path, f"replace failed: {exc}")
             logger.warning("dictionary replace failed (old index kept): %s", exc)
             return {
@@ -94,7 +119,21 @@ def ensure_dictionary_consistent(
     root: Path | str,
     provider: LLMProvider,
 ) -> dict[str, Any]:
-    """索引漂移时在锁外重新派生，并在短独占锁内发布。"""
+    """检查 Dictionary，并在不一致时重新派生和发布。
+
+    一致时不调用 provider。初检和发布分别持有锁，慢派生与暂存校验在两次
+    加锁之间执行。派生调用失败、暂存报告不一致或原子替换失败时保留旧索引
+    并返回 stale；状态写入失败不回滚已发布的索引，发布后复检失败也可能在
+    新索引已经落盘后返回 stale。初检、暂存语料读取或评估以及锁操作抛出的
+    异常会向上传播。
+
+    Args:
+        root: Note、Dictionary 和状态文件所在的 Memory 根目录。
+        provider: 重建 Dictionary 使用的模型客户端。
+
+    Returns:
+        一致性状态、是否重建，以及重建前后的检查或失败信息。
+    """
 
     root_path = Path(root)
     with dictionary_lock(root, exclusive=True):
@@ -126,7 +165,7 @@ def ensure_dictionary_consistent(
             )
             _stamp_success_state(root_path, staged)
             after = _check_dictionary_locked(root)
-        except Exception as exc:  # noqa: BLE001 - 发布失败允许重试。
+        except Exception as exc:  # noqa: BLE001 - 原子替换或发布后复检异常都转换为 stale 结果。
             _mark_stale(root_path, f"publish failed: {exc}")
             logger.warning("dictionary publish failed: %s", exc)
             return {
@@ -154,14 +193,25 @@ def ensure_dictionary_consistent(
 def mark_dictionary_stale_if_drifted(
     root: Path | str,
 ) -> dict[str, Any]:
-    """没有 provider 时只检查漂移并标 stale，不触发重建。"""
+    """在没有 provider 时检查 Dictionary 漂移，但不重建。
+
+    检查结果不为 consistent 时尽力把状态标为 stale。检查本身抛出异常时只
+    记录告警，并返回 stale 和错误信息。
+
+    Args:
+        root: 要检查的 Memory 根目录。
+
+    Returns:
+        当前一致性状态、固定为 False 的 ``rebuilt`` 标记和检查报告；检查异常
+        时改为返回错误信息。
+    """
 
     from trowel_py.memory.dictionary_check import check_dictionary
 
     root_path = Path(root)
     try:
         report = check_dictionary(root_path)
-    except Exception as exc:  # noqa: BLE001 -- 检查失败不能阻塞调用者
+    except Exception as exc:  # noqa: BLE001 - 检查异常不能阻塞调用方。
         logger.warning("dictionary check raised: %s", exc)
         return {"dictionary_status": "stale", "error": str(exc)}
     if report["status"] != "consistent":
@@ -181,10 +231,25 @@ def _derive_and_stage(
     provider: LLMProvider,
     apply: bool,
 ) -> dict[str, Any]:
+    """供调用方在锁外派生索引，并检查结果是否可发布。
+
+    本函数只把 ``derive_dictionary_full`` 抛出的异常和不一致的暂存报告转换为
+    失败结果；重新读取 active Note、评估暂存内容或计算摘要时的异常继续向上
+    传播。
+
+    Args:
+        root: active Note 所在的 Memory 根目录。
+        provider: 对 Note 进行领域聚类的模型客户端。
+        apply: 原样写入失败结果的模式标记；不决定是否写盘，本函数始终不写盘。
+
+    Returns:
+        通过校验的 L0/L1、摘要和检查报告；派生调用抛出异常或暂存报告不一致
+        时返回带 ``error`` 的失败信息。
+    """
     # provider 调用必须留在锁外，避免慢请求阻塞检索和一致性检查。
     try:
         result = derive_dictionary_full(root, provider)
-    except Exception as exc:  # noqa: BLE001 - provider 或网络失败允许重试。
+    except Exception as exc:  # noqa: BLE001 - 派生调用的任意异常都转换为可重试结果。
         return {
             "apply": apply,
             "error": "derive_failed",
@@ -220,11 +285,16 @@ def _derive_and_stage(
 
 
 def _mark_stale(root: Path, reason: str) -> None:
-    # state 只负责可观察性；写入失败不能覆盖原始派生/发布错误。
+    """尽力将 Dictionary 状态标为 stale，且不清除上次成功构建的摘要和时间。
+
+    Args:
+        root: Dictionary 状态文件所在的 Memory 根目录。
+        reason: 要记录到状态文件的失败或漂移原因。
+    """
     try:
         previous = load_state(root)
         save_state(root, previous.with_failure(reason, _now_iso()))
-    except Exception:  # noqa: BLE001 - 可观察性写入仅作尽力尝试。
+    except Exception:  # noqa: BLE001 - 状态写入失败不能阻塞 Dictionary 检查或重建。
         logger.warning(
             "could not stamp dictionary stale: %s",
             reason,
@@ -236,7 +306,13 @@ def _stamp_success_state(
     root: Path,
     staged: dict[str, Any],
 ) -> None:
-    # 索引已经正确发布时，state 失败最多导致一次冗余重建，不能回滚索引。
+    """在索引发布成功后尽力记录来源和渲染摘要。
+
+    Args:
+        root: Dictionary 状态文件所在的 Memory 根目录。
+        staged: 已发布索引的暂存结果，须包含来源与渲染摘要。
+    """
+    # 索引发布已完成；状态写入失败不回滚索引，但可能让后续检查再次触发重建。
     try:
         save_state(
             root,
@@ -246,9 +322,10 @@ def _stamp_success_state(
                 _now_iso(),
             ),
         )
-    except Exception as exc:  # noqa: BLE001 - state 标记仅作尽力尝试。
+    except Exception as exc:  # noqa: BLE001 - 状态写入失败不回滚已发布索引。
         logger.warning("dictionary state stamp failed (best-effort): %s", exc)
 
 
 def _now_iso() -> str:
+    """返回精确到秒的当前 UTC ISO 8601 时间。"""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

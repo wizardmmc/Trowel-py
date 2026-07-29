@@ -1,4 +1,8 @@
-"""Profile distill 的稳定调用入口。"""
+"""重导出 Profile 提炼的稳定调用契约。
+
+具体实现留在内部 ``profile_distill`` 包；本模块统一暴露 host 驱动、建议门禁、
+单会话提炼和每日批处理所需的类型与函数。
+"""
 
 from trowel_py.memory.profile_distill.agent import (
     HostFactory as HostFactory,

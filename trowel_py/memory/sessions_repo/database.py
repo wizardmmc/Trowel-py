@@ -77,7 +77,12 @@ _CODEX_ADD_COLUMN_SQL = {
 
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
-    """建表后补齐旧库列，最后创建依赖新增列的索引。"""
+    """创建基础表与索引，再补齐旧库列和增量索引。
+
+    本函数不显式调用 ``commit()``。默认 legacy transaction control 下，
+    ``executescript()`` 会先提交已有事务，脚本及随后未包在显式事务中的 DDL
+    会自动提交；其他 transaction/autocommit 配置下由连接模式决定。
+    """
     conn.executescript(_CREATE_SQL)
     ensure_columns(conn)
 
@@ -101,6 +106,15 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
+    """打开可写数据库，并让查询结果支持按列名访问。
+
+    会创建 ``meta`` 目录，SQLite 也可能创建 ``sessions.db``；本函数不初始化
+    schema，调用方负责关闭连接。
+
+    Raises:
+        OSError: ``meta`` 目录无法创建。
+        sqlite3.Error: 数据库连接失败。
+    """
     meta = memory_root / _META_DIR
     meta.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(meta / _SESSIONS_DB))
@@ -111,7 +125,18 @@ def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
 def open_sessions_db_readonly(
     memory_root: Path,
 ) -> sqlite3.Connection | None:
-    """只读打开现有数据库；缺失时不创建目录或文件。"""
+    """以 SQLite URI 只读模式打开现有数据库。
+
+    路径不存在时返回 None，不创建目录、文件或 schema。URI 直接拼接本地路径，
+    不对 ``?``、``#`` 等字符编码；调用方负责提供可信路径并关闭返回的连接。
+
+    Returns:
+        支持按列名访问的只读连接，或在路径不存在时返回 None。
+
+    Raises:
+        OSError: 数据库路径检查失败。
+        sqlite3.Error: 路径存在但无法按只读数据库打开。
+    """
     database = memory_root / _META_DIR / _SESSIONS_DB
     if not database.exists():
         return None
@@ -121,6 +146,12 @@ def open_sessions_db_readonly(
 
 
 def row_to_record(row: sqlite3.Row) -> SessionRecord:
+    """把完整 sessions 行转换为 CC 会话记录。
+
+    ``jsonl_path`` 的假值变为空字符串，``session_kind`` 的假值回退为 ``user``。
+    sessions 表没有 trowel id，因此模型保留该字段的默认空值。缺列异常传播，列值
+    类型不在此处校验。
+    """
     return SessionRecord(
         cc_session_id=row["cc_session_id"],
         workdir=row["workdir"],
@@ -137,6 +168,10 @@ def row_to_record(row: sqlite3.Row) -> SessionRecord:
 
 
 def row_to_binding(row: sqlite3.Row) -> SessionBinding:
+    """把完整 session_bindings 行转换为会话绑定。
+
+    所有列原样传入；缺列异常传播，列值类型不在此处校验。
+    """
     return SessionBinding(
         trowel_session_id=row["trowel_session_id"],
         cc_session_id=row["cc_session_id"],
@@ -147,6 +182,12 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
 
 
 def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
+    """把完整 codex_turns 行转换为 Codex 轮次记录。
+
+    model、effort 和 provider 的假值变为空字符串；两个开关通过 ``bool()``
+    转换；session kind 的假值回退为 ``user``。其他列原样传入；缺列异常传播，
+    列值类型不在此处校验。
+    """
     return CodexTurnRecord(
         thread_id=row["thread_id"],
         turn_id=row["turn_id"],

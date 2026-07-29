@@ -1,4 +1,8 @@
-"""画像重校准的计划、数据契约与隔离重放。"""
+"""汇总画像重校准的数据契约、计划器和隔离重放实现。
+
+对外稳定导入路径是 ``trowel_py.memory.profile_recalibrate``；本包根同步
+重导出相同符号。
+"""
 
 from .models import (
     FrozenSession,

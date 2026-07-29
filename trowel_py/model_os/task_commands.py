@@ -24,25 +24,51 @@ from trowel_py.model_os.types import (
 
 
 class TaskCommandStore(Protocol):
+    """声明 ``TaskCommands`` 所需的 Store 事务、查询和事件原语。"""
+
     _conn: sqlite3.Connection | None
     _policy_version: str
     _warm_limit: int
 
-    def _tx(self) -> AbstractContextManager[None]: ...
+    def _tx(self) -> AbstractContextManager[None]:
+        """返回 Task 写入使用的事务上下文。"""
 
-    def replay(self, from_seq: int = 0) -> Snapshot: ...
+        ...
 
-    def _task_state_to_task(self, state: TaskState) -> Task: ...
+    def replay(self, from_seq: int = 0) -> Snapshot:
+        """从 journal 起点返回当前派生快照；兼容参数 ``from_seq`` 只接受 0。"""
 
-    def _require_task(self, snap: Snapshot, task_id: str) -> TaskState: ...
+        ...
 
-    def _require_non_terminal(self, task: TaskState) -> None: ...
+    def _task_state_to_task(self, state: TaskState) -> Task:
+        """把内部 TaskState 转换为公开 Task。"""
 
-    def _require_status(self, task: TaskState, allowed: set[TaskStatus]) -> None: ...
+        ...
 
-    def _read_foreground_task_id(self) -> str | None: ...
+    def _require_task(self, snap: Snapshot, task_id: str) -> TaskState:
+        """从快照读取 Task，不存在时拒绝命令。"""
 
-    def _insert_event_in_tx(self, event: EventEnvelope) -> int | None: ...
+        ...
+
+    def _require_non_terminal(self, task: TaskState) -> None:
+        """拒绝对终态 Task 执行后续命令。"""
+
+        ...
+
+    def _require_status(self, task: TaskState, allowed: set[TaskStatus]) -> None:
+        """要求 Task 处于命令允许的来源状态。"""
+
+        ...
+
+    def _read_foreground_task_id(self) -> str | None:
+        """读取当前 foreground Task。"""
+
+        ...
+
+    def _insert_event_in_tx(self, event: EventEnvelope) -> int | None:
+        """追加事件；新事件返回序号，完全相同的重复事件返回 None，ID 冲突时拒绝。"""
+
+        ...
 
     def _make_task_event(
         self,
@@ -51,7 +77,10 @@ class TaskCommandStore(Protocol):
         payload: dict[str, Any],
         provenance: Provenance = Provenance.MACHINE_OBSERVATION,
         work_item_id: str | None = None,
-    ) -> EventEnvelope: ...
+    ) -> EventEnvelope:
+        """构造由内核产生的 Task 事件。"""
+
+        ...
 
     def _work_item_status_event(
         self,
@@ -59,18 +88,39 @@ class TaskCommandStore(Protocol):
         new_status: WorkItemStatus,
         task_id: str | None,
         now: str,
-    ) -> EventEnvelope: ...
+    ) -> EventEnvelope:
+        """构造同步主 WorkItem 状态的事件。"""
 
-    def _release_foreground_in_tx(self, task_id: str) -> None: ...
+        ...
 
-    def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None: ...
+    def _release_foreground_in_tx(self, task_id: str) -> None:
+        """仅当指定 Task 当前持有 foreground 时才释放，并写入审计事件。"""
+
+        ...
+
+    def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
+        """在独立事务中把 RUNNING Task 置为等待态并暂停主 WorkItem。
+
+        Task 持有 foreground 时一并释放。
+        """
+
+        ...
 
     def _set_waiting_in_tx(
         self,
         task_id: str,
         waiting: WaitingCondition,
         snap: Snapshot | None = None,
-    ) -> None: ...
+    ) -> None:
+        """在当前事务中执行等待转换。
+
+        Args:
+            task_id: 必须处于 RUNNING 的 Task ID。
+            waiting: 要写入的等待状态和唤醒条件。
+            snap: 已在当前事务中回放的快照；为 None 时重新回放。
+        """
+
+        ...
 
 
 class TaskCommands:
@@ -87,6 +137,18 @@ class TaskCommands:
         warm_full: Callable[[int, tuple[str, ...]], Exception],
         foreground_conflict: Callable[[str | None], Exception],
     ) -> None:
+        """绑定命令执行所需的 Store、工厂和领域异常构造器。
+
+        Args:
+            store: 提供事务、状态查询和事件写入原语的 Store。
+            now: 返回事件时间的时钟函数。
+            new_id: 返回新 Task 和 WorkItem ID 的工厂。
+            event_type: 构造事件 envelope 的工厂。
+            task_error: 构造 Task 命令异常的函数。
+            warm_full: 构造 warm 容量异常的函数。
+            foreground_conflict: 构造 foreground 冲突异常的函数。
+        """
+
         self._store = store
         self._now = now
         self._new_id = new_id
@@ -103,6 +165,21 @@ class TaskCommands:
         authorization_scope: str = "",
         priority: int = 0,
     ) -> Task:
+        """创建用户 Task 及其主 WorkItem。
+
+        ``idempotency_key`` 命中已有请求时直接返回首次创建的 Task，不比较本次
+        ``original_goal``、``authorization_scope`` 或 ``priority``。
+
+        Args:
+            original_goal: 用户最初提出且后续不可覆盖的目标。
+            idempotency_key: 用户请求的非空幂等键。
+            authorization_scope: Task 初始授权范围。
+            priority: Task 初始调度优先级。
+
+        Returns:
+            新建或幂等命中的 Task。
+        """
+
         store = self._store
         conn = store._conn
         assert conn is not None
@@ -178,6 +255,11 @@ class TaskCommands:
         return store._task_state_to_task(store._require_task(snap, task_id))
 
     def promote_to_warm(self, task_id: str) -> None:
+        """把非终态 Task 加入有容量上限的 warm 集合。
+
+        BACKLOG Task 同时转为 READY，已经 warm 时幂等返回。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -216,6 +298,11 @@ class TaskCommands:
             )
 
     def demote_to_backlog(self, task_id: str) -> None:
+        """把非终态 Task 移出 warm 集合并退回 BACKLOG。
+
+        foreground Task 必须先释放；已处于 BACKLOG 且不在 warm 时不写事件。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -253,6 +340,11 @@ class TaskCommands:
                     )
 
     def claim_foreground(self, task_id: str) -> None:
+        """让 READY 或 RUNNING 的 warm Task 独占 foreground。
+
+        同一 Task 重试时幂等返回，其他 Task 已占用时拒绝。
+        """
+
         store = self._store
         conn = store._conn
         assert conn is not None
@@ -300,6 +392,11 @@ class TaskCommands:
             )
 
     def release_foreground(self) -> None:
+        """释放 foreground，并把非终态 Task 及主 WorkItem 恢复为 READY。
+
+        当前没有 foreground 时幂等返回。
+        """
+
         store = self._store
         conn = store._conn
         assert conn is not None
@@ -340,6 +437,17 @@ class TaskCommands:
         correlation_id: str,
         deadline: str | None = None,
     ) -> None:
+        """把 RUNNING Task 置为 WAITING_USER，并暂停主 WorkItem。
+
+        Task 保持 warm 并继续占用容量；其 foreground 会被释放。
+
+        Args:
+            task_id: 要进入等待态的 RUNNING Task ID。
+            cause: 本次等待的非空原因。
+            correlation_id: 关联后续用户回复的非空 ID。
+            deadline: 可选截止时间；为 None 时不设置。
+        """
+
         if not cause:
             raise self._task_error("waiting_user cause must be non-empty")
         if not correlation_id:
@@ -364,6 +472,19 @@ class TaskCommands:
         match_params: dict[str, Any] | None = None,
         deadline: str | None = None,
     ) -> None:
+        """把 RUNNING Task 置为 WAITING_EVENT，并暂停主 WorkItem。
+
+        Task 保持 warm 并继续占用容量；其 foreground 会被释放。
+
+        Args:
+            task_id: 要进入等待态的 RUNNING Task ID。
+            cause: 本次等待的非空原因。
+            condition_kind: 待观察条件的非空类型。
+            target_ref: 待观察对象的非空引用。
+            match_params: 可选匹配参数；为 None 时不附加参数。
+            deadline: 可选截止时间；为 None 时不设置。
+        """
+
         if not cause:
             raise self._task_error("waiting_event cause must be non-empty")
         if not condition_kind or not target_ref:
@@ -390,6 +511,17 @@ class TaskCommands:
         preparation_snapshot_ref: str,
         earliest_review_at: str | None = None,
     ) -> None:
+        """把 RUNNING Task 连同准备信息置为 INCUBATING，并暂停主 WorkItem。
+
+        Task 保持 warm 并继续占用容量；其 foreground 会被释放。
+
+        Args:
+            task_id: 要进入 incubation 的 RUNNING Task ID。
+            open_question: incubation 要继续处理的非空问题。
+            preparation_snapshot_ref: 进入 incubation 前的非空快照引用。
+            earliest_review_at: 可选最早复查时间；为 None 时不设置。
+        """
+
         if not open_question or not preparation_snapshot_ref:
             raise self._task_error(
                 "incubating requires open_question and preparation_snapshot_ref"
@@ -406,6 +538,11 @@ class TaskCommands:
         )
 
     def clear_waiting(self, task_id: str) -> None:
+        """清除等待条件，把 Task 和主 WorkItem 恢复为 READY。
+
+        保留 warm 状态，且不重新占用 foreground。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -442,6 +579,18 @@ class TaskCommands:
         evidence_refs: tuple[str, ...] = (),
         confirmation_provenance: Provenance = Provenance.USER_DECISION,
     ) -> None:
+        """用至少一个证据引用完成 RUNNING Task，并同步结束主 WorkItem。
+
+        完成会清除 warm 和等待状态；USER_REQUEST Task 只接受 USER_DECISION 来源。
+        若 Task 持有 foreground，则在同一事务内释放。
+
+        Args:
+            task_id: 要完成的 RUNNING Task ID。
+            confirmed_by: 非空确认者标识。
+            evidence_refs: 至少包含一个完成证据引用。
+            confirmation_provenance: 写入完成证据和事件的确认来源。
+        """
+
         store = self._store
         assert store._conn is not None
         if not confirmed_by:
@@ -490,6 +639,11 @@ class TaskCommands:
             )
 
     def cancel_task(self, task_id: str, *, reason: str) -> None:
+        """取消非终态 Task，清除 warm 和等待状态。
+
+        同步取消主 WorkItem，并释放 Task 持有的 foreground。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -525,6 +679,18 @@ class TaskCommands:
         last_episode_ref: str | None = None,
         recovery_hint: str | None = None,
     ) -> None:
+        """把非终态 Task 结束为 ERROR，并记录恢复线索。
+
+        清除 warm 和等待状态，同步失败主 WorkItem，并释放 Task 持有的 foreground。
+
+        Args:
+            task_id: 要结束为 ERROR 的非终态 Task ID。
+            reason: 记录到错误事实中的失败原因。
+            last_snapshot_ref: 最后可用快照引用；为 None 时不记录。
+            last_episode_ref: 最后相关 Episode 引用；为 None 时不记录。
+            recovery_hint: 可选恢复建议；为 None 时不记录。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -558,6 +724,8 @@ class TaskCommands:
             )
 
     def append_constraint(self, task_id: str, constraint: str) -> None:
+        """向非终态 Task 追加非空约束，不覆盖原始目标。"""
+
         store = self._store
         assert store._conn is not None
         if not constraint:
@@ -575,6 +743,12 @@ class TaskCommands:
             )
 
     def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
+        """设置非终态 Task 的人工 warm 顺序。
+
+        ``None`` 清除人工顺序；Task 不在 warm 集合中时仍保存该值，供之后进入 warm
+        使用。
+        """
+
         store = self._store
         assert store._conn is not None
         with store._tx():
@@ -596,6 +770,12 @@ class TaskCommands:
         authorization_scope: str,
         confirmed_by: str,
     ) -> None:
+        """记录非终态 Task 的授权范围变更。
+
+        调用方负责在进入此命令前确认用户决定；事件来源固定为 USER_DECISION，
+        ``confirmed_by`` 仅作为审计字段写入。
+        """
+
         store = self._store
         assert store._conn is not None
         if not authorization_scope:

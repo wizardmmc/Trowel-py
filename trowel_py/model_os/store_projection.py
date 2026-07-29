@@ -13,6 +13,8 @@ def project_task_state(
     *,
     task_type: Callable[..., Task],
 ) -> Task:
+    """把 reducer 的 TaskState 转换为 Store 对外返回的 Task。"""
+
     return task_type(
         task_id=state.task_id,
         origin=state.origin,
@@ -38,6 +40,8 @@ def project_episode_state(
     *,
     episode_type: Callable[..., Episode],
 ) -> Episode:
+    """把 EpisodeState 与实时 lease 合并为 Store 对外返回的 Episode。"""
+
     return episode_type(
         episode_id=state.episode_id,
         work_item_id=state.work_item_id,

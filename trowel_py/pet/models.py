@@ -1,3 +1,5 @@
+"""宠物持久化状态的数据模型。"""
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field

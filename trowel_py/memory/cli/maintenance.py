@@ -1,4 +1,4 @@
-"""Memory CLI 的批处理维护操作。"""
+"""提供 Memory CLI 的 Dictionary 一致性维护、daily review 与整理任务分发、Episode 修复和旧会话水位回填。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,14 @@ if TYPE_CHECKING:
 
 
 def ensure_dict_after_batch(root: Path) -> None:
-    """批处理改动 note 后检查并收敛字典。"""
+    """批量修改 Note 后检查 Dictionary，并在不一致时尝试重建。
+
+    Provider 无法创建时把漂移的 Dictionary 标为 stale；重建失败时保留该状态，
+    两种情况都输出原因供后续任务重试。
+
+    Args:
+        root: 要检查的 Memory 根目录。
+    """
     from trowel_py.memory.dictionary import (
         ensure_dictionary_consistent,
         mark_dictionary_stale_if_drifted,
@@ -22,7 +29,7 @@ def ensure_dict_after_batch(root: Path) -> None:
         from trowel_py.llm.client import AnthropicProvider
 
         provider = AnthropicProvider(load_llm_config())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - CLI 需记录任意 provider 初始化失败。
         out = mark_dictionary_stale_if_drifted(root)
         print(
             f"[memory] dictionary: {out['dictionary_status']} "
@@ -31,14 +38,24 @@ def ensure_dict_after_batch(root: Path) -> None:
         return
     try:
         out = ensure_dictionary_consistent(root, provider)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 批处理已完成，重建失败留待后续重试。
         print(f"[memory] dictionary rebuild skipped: {exc}")
         return
     print(f"[memory] dictionary: {out['dictionary_status']}")
 
 
 def run_memory_review(registry: HookRegistry, root: Path, date_str: str) -> int:
-    """分发单日写入任务。"""
+    """登记并同步执行一次 Memory daily review 写入任务。
+
+    Args:
+        registry: 用于登记任务和记录本次派发的 hook registry。
+        root: 写入任务使用的 Memory 根目录。
+        date_str: 本次 review 工作目录和备用日期标签，格式为 ``YYYY-MM-DD``；
+            不限制会话登记日期。
+
+    Returns:
+        同步派发未抛出异常时返回 0；review 因锁冲突而跳过时也返回 0。
+    """
     from trowel_py.memory.review_job import run_daily_review_sync
 
     registry.register_write_job(run_daily_review_sync)
@@ -51,7 +68,15 @@ def run_memory_review(registry: HookRegistry, root: Path, date_str: str) -> int:
 
 
 def run_memory_tidy(registry: HookRegistry, root: Path) -> int:
-    """分发已注册的整理任务。"""
+    """同步分发 registry 中已登记的全部 Memory 整理任务。
+
+    Args:
+        registry: 保存整理任务和本次派发记录的 hook registry。
+        root: 作为事件参数传给各整理任务的 Memory 根目录。
+
+    Returns:
+        所有已登记任务完成后返回 0；未登记任务时也返回 0。
+    """
     registry.dispatch_tidy_job({"root": str(root)})
     print(
         f"[memory] tidy dispatched over {root} | "
@@ -62,7 +87,17 @@ def run_memory_tidy(registry: HookRegistry, root: Path) -> int:
 
 
 def run_repair(root: Path, date_str: str, *, apply: bool) -> int:
-    """从存活 draft 修复逐会话 episode。"""
+    """预览或执行修复：用仍存在的 draft 重建各会话的 Episode。
+
+    Args:
+        root: 要扫描或修复的 Memory 根目录。
+        date_str: 要修复的日期，格式为 ``YYYY-MM-DD``。
+        apply: ``False`` 时不写 Episode 或重建日记，只输出计划；``True`` 时
+            先备份，再写入 Episode 并重建当日日记。
+
+    Returns:
+        报告输出后返回 0；写入后的 Episode 数与可用 draft 数不符时返回 1。
+    """
     from trowel_py.memory.repair import repair_memory
 
     report = repair_memory(root, date_str, apply=apply)
@@ -86,7 +121,13 @@ def run_repair(root: Path, date_str: str, *, apply: bool) -> int:
 
 
 def _jsonl_size(path_value: str) -> int | None:
-    """在写入前读取 JSONL 当前大小，避免使用过期计划值。"""
+    """返回 JSONL 当前字节数；路径为空、缺失或不是文件时返回 ``None``。
+
+    预览和回填时都直接读取文件，回填不会沿用此前预览输出的字节数。
+
+    Args:
+        path_value: JSONL 路径；空字符串表示会话没有源文件。
+    """
     if not path_value:
         return None
     path = Path(path_value)
@@ -97,6 +138,13 @@ def _apply_backfill(
     repo: SessionsRepository,
     plan: list[tuple[str, str, str | None]],
 ) -> None:
+    """按 JSONL 当前大小回填完成水位；旧任务已提炼完整会话时，同时将提炼水位推进到相同位置。
+
+    Args:
+        repo: 要更新的会话仓库。
+        plan: ``(session_id, jsonl_path, extracted_at)`` 元组列表；
+            ``extracted_at`` 非空表示旧任务已完成整会话提炼。
+    """
     backfilled = 0
     already_extracted = 0
     skipped = 0
@@ -107,7 +155,7 @@ def _apply_backfill(
             continue
         repo.update_completed(session_id, size)
         if extracted_at:
-            # 已提取会话的 extracted 水位必须同步，避免整段重复蒸馏。
+            # 旧任务已提炼完整会话，提炼水位也要追平，避免重复处理。
             repo.advance_extracted(session_id, size, when=extracted_at)
             already_extracted += 1
         backfilled += 1
@@ -118,6 +166,11 @@ def _apply_backfill(
 
 
 def _print_backfill_plan(plan: list[tuple[str, str, str | None]]) -> None:
+    """输出完成水位回填计划，标出已提炼会话和缺失的 JSONL。
+
+    Args:
+        plan: ``(session_id, jsonl_path, extracted_at)`` 元组列表。
+    """
     skipped = 0
     for session_id, jsonl_path, extracted_at in plan:
         size = _jsonl_size(jsonl_path)
@@ -131,7 +184,19 @@ def _print_backfill_plan(plan: list[tuple[str, str, str | None]]) -> None:
 
 
 def run_backfill_completed(root: Path, date_str: str, *, apply: bool) -> int:
-    """按 JSONL 当前大小回填旧会话完成水位。"""
+    """预览或回填指定日期旧会话的完成水位。
+
+    只处理尚无完成水位的会话，并在 review 独占锁内读取计划和执行写入。
+
+    Args:
+        root: 会话数据库所在的 Memory 根目录。
+        date_str: 要处理的登记日期，格式为 ``YYYY-MM-DD``。
+        apply: ``False`` 时不回填会话水位，只输出计划；``True`` 时按各 JSONL
+            当前字节数写入。
+
+    Returns:
+        计划或执行结果输出后返回 0；review 任务持有锁时跳过并返回 0。
+    """
     from trowel_py.memory.review_job import _review_lock
     from trowel_py.memory.sessions_repo import (
         create_sessions_repository,

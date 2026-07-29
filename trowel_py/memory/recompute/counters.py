@@ -1,4 +1,4 @@
-"""note 效果缓存回写。"""
+"""用重新聚合的证据覆盖 note 效果缓存。"""
 
 from __future__ import annotations
 
@@ -17,12 +17,26 @@ def recompute_counters(
     store_cls: Any = MemoryStore,
     compute_effects_fn=compute_note_effects,
 ) -> dict[str, Any]:
-    """用重算效果覆盖 note 缓存，并返回更新汇总。"""
+    """重算并覆盖 note 的效果缓存字段。
+
+    只改写有重算效果或仍带旧非零缓存的 note。后者会被归零，使缓存始终可以
+    从当前证据重建；重算效果指向但存储中已不存在的 note 会被跳过。
+
+    Args:
+        root: memory 根目录。
+        local_tz: 聚合读取日期采用的时区。
+        store_cls: 用于读写 note 的存储实现。
+        compute_effects_fn: 按 note stem 返回重算效果的函数。
+
+    Returns:
+        ``updated`` 为实际改写的 note 数，其余字段为有效重算效果的读取事件、
+        读取会话、有帮助会话和有害会话合计。清除旧缓存不增加这些合计。
+    """
     root_path = Path(root)
     store = store_cls(root_path)
     effects = compute_effects_fn(root_path, local_tz=local_tz)
 
-    # 缓存不是事实源；没有存活证据时也必须把旧的非零值归零。
+    # 缓存必须能从当前证据重建，因此已失去证据的旧非零值也要归零。
     touched = set(effects)
     for stem, note in store.load_notes_with_id():
         if stem in touched:

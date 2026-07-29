@@ -1,8 +1,8 @@
-"""Daily compression prompt 契约。"""
+"""定义 Daily compression 的条目闭集、输出 schema 和 prompt 模板。"""
 
 from __future__ import annotations
 
-# outcome/decision 映射到进展，另外两类保持独立 section。
+# 渲染时 outcome/decision 合入进展，correction 和 open_loop 各自成节。
 DAILY_ITEM_TYPES = ("outcome", "decision", "correction", "open_loop")
 
 DAILY_ITEMS_SCHEMA = """\
@@ -55,7 +55,23 @@ def build_daily_compress_prompt(
     sources_block: str,
     template: str = DAILY_COMPRESS_TEMPLATE,
 ) -> str:
-    """填充目标日期与结构化来源。"""
+    """按固定顺序填充 Daily compression 模板。
+
+    先全局替换 ``{date}``，再替换 ``{sources_block}``；日期文本中注入的来源
+    占位符会继续被第二步替换，来源块中的日期占位符不会回头替换。函数不校验
+    日期、来源 alias 或剩余占位符。
+
+    默认 ``template`` 在函数定义时绑定；直接替换模块常量不会改变已绑定的
+    默认值，调用方可显式传入其他模板。
+
+    Args:
+        date: 注入模板的目标日期文本。
+        sources_block: 注入模板的结构化 segment 来源块。
+        template: 要填充的模板。
+
+    Returns:
+        完成两步字符串替换后的 prompt。
+    """
     return template.replace("{date}", date).replace(
         "{sources_block}",
         sources_block,

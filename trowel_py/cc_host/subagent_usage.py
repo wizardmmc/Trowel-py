@@ -18,7 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 def subagent_transcript_path(workdir: str, cc_session_id: str, task_id: str) -> Path:
-    """按录制确认的 task 身份关系构造 transcript 路径。"""
+    """按 `task_id == agentId` 的录制结果构造子代理 transcript 路径。
+
+    Args:
+        workdir: 主 CC 会话使用的工作目录。
+        cc_session_id: 主会话的原生 CC 会话 ID。
+        task_id: task 事件报告的 ID，也是子代理文件名中的 agent ID。
+
+    Returns:
+        `<project>/<cc_session_id>/subagents/agent-<task_id>.jsonl` 路径。
+    """
     return (
         cc_projects_root()
         / workdir_to_slug(workdir)
@@ -29,7 +38,19 @@ def subagent_transcript_path(workdir: str, cc_session_id: str, task_id: str) -> 
 
 
 def sum_transcript_usage(path: Path) -> dict[str, int] | None:
-    """累加 assistant usage 与 tool_use；文件缺失或不可读时返回 None。"""
+    """逐行累加子代理 transcript 中的 token 和 `tool_use` 块数量。
+
+    每个可解析字典的 `message.usage.input_tokens` 与 `output_tokens` 都计入 token
+    总量，`message.content` 中每个 `tool_use` 块计为一次工具调用。空行、无效 JSON
+    和不含字典 `message` 的行跳过，不做跨行去重。
+
+    Args:
+        path: 要读取的子代理 JSONL transcript。
+
+    Returns:
+        `total_tokens` 与 `tool_uses` 汇总；空文件返回两个 0，文件缺失或读取失败
+        时返回 `None`。
+    """
     if not path.is_file():
         return None
     total_tokens = 0
@@ -65,6 +86,22 @@ def sum_transcript_usage(path: Path) -> dict[str, int] | None:
 
 
 def _as_int(value: object) -> int:
+    """将计量值转换为整数。
+
+    布尔值返回 0，整数原样返回，浮点数直接交给 `int()` 截断。其他值先转为
+    字符串再解析，字符串解析失败时返回 0。
+
+    Args:
+        value: transcript usage 字段中的原始计量值。
+
+    Returns:
+        转换后的整数；布尔值或字符串解析失败时返回 0。
+
+    Raises:
+        ValueError: 浮点数是 `NaN`。
+        OverflowError: 浮点数是正无穷或负无穷。
+    """
+
     if isinstance(value, bool):
         return 0
     if isinstance(value, int):
@@ -80,7 +117,15 @@ def _as_int(value: object) -> int:
 def merge_usage(
     cc_usage: dict[str, Any] | None, summed: dict[str, int]
 ) -> dict[str, Any]:
-    """用 transcript 总量覆盖 CC 空计量，保留 duration_ms 等其余字段。"""
+    """用 transcript 汇总覆盖 CC 的 token 和工具调用量，并保留其他字段。
+
+    Args:
+        cc_usage: task 事件原有的 usage；`None` 或非字典值按空字典处理。
+        summed: transcript 汇总出的 `total_tokens` 和 `tool_uses`。
+
+    Returns:
+        CC 原有字段的副本，其中 `total_tokens` 和 `tool_uses` 无条件替换为汇总值。
+    """
     merged: dict[str, Any] = dict(cc_usage) if isinstance(cc_usage, dict) else {}
     merged["total_tokens"] = summed["total_tokens"]
     merged["tool_uses"] = summed["tool_uses"]

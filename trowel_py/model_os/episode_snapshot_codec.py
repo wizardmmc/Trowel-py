@@ -1,4 +1,7 @@
-"""EpisodeSnapshot codec；脱敏、hash 与持久化仍由 Store 负责。"""
+"""在 Episode 快照对象与持久化字段之间转换，并校验写入条件。
+
+脱敏、内容哈希和数据库读写由 Store 负责。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +10,15 @@ from typing import Any
 
 
 def pending_to_payload(pending: Any) -> dict[str, Any]:
+    """把 Episode 的等待请求编码成快照字段。
+
+    Args:
+        pending: 要编码的 ``PendingDescriptor``。
+
+    Returns:
+        可写入快照 ``waiting_condition`` 字段的字典。
+    """
+
     return {
         "kind": pending.kind.value,
         "native_generation": pending.native_generation,
@@ -22,6 +34,23 @@ def pending_from_payload(
     pending_type: Callable[..., Any],
     waiting_subtype: Callable[[Any], Any],
 ) -> Any:
+    """从快照字段构造 Episode 的等待请求。
+
+    Args:
+        payload: 等待请求字段。``kind``、``correlation_id`` 和 ``posed_at`` 必须
+            存在；缺少 ``native_generation`` 或 ``cause`` 时分别使用 None 和空
+            字符串。
+        pending_type: 构造等待请求的类型。
+        waiting_subtype: 把 ``kind`` 字段转换为等待类型的函数。
+
+    Returns:
+        由 ``pending_type`` 构造的等待请求。
+
+    Raises:
+        KeyError: ``payload`` 缺少必填字段。
+        ValueError: ``kind`` 不是有效的等待类型。
+    """
+
     return pending_type(
         kind=waiting_subtype(payload["kind"]),
         native_generation=payload.get("native_generation"),
@@ -36,6 +65,16 @@ def snapshot_to_payload(
     *,
     encode_pending: Callable[[Any], dict[str, Any]],
 ) -> dict[str, Any]:
+    """把完整 EpisodeSnapshot 转换为持久化前的字段字典。
+
+    Args:
+        snapshot: 要编码的 Episode 快照。
+        encode_pending: 编码 ``waiting_condition`` 的函数；没有等待请求时不会调用。
+
+    Returns:
+        由基本 JSON 值组成的快照字段；结果尚未脱敏、序列化或计算哈希。
+    """
+
     return {
         "work_item_goal": snapshot.work_item_goal,
         "task_constraints_ref": snapshot.task_constraints_ref,
@@ -86,6 +125,21 @@ def validate_snapshot(
     max_payload_bytes: int,
     error_type: type[Exception],
 ) -> None:
+    """在持久化前校验快照大小、后续步骤和完成证据。
+
+    ``next_steps`` 最多包含三项。完成记录的 action 和证据引用都不能为空，结果为
+    ``done`` 的副作用也必须带 ``evidence_ref``。
+
+    Args:
+        snapshot: 要校验的 Episode 快照。
+        payload_text: 即将持久化的快照文本，大小按 UTF-8 字节数计算。
+        max_payload_bytes: 允许的最大字节数；大小等于该值时仍可通过。
+        error_type: 任一规则不满足时使用的异常类型，必须能接收错误消息。
+
+    Raises:
+        error_type: 快照文本超过上限，或快照内容不满足上述规则。
+    """
+
     if len(payload_text.encode("utf-8")) > max_payload_bytes:
         raise error_type(
             f"snapshot payload exceeds {max_payload_bytes} bytes "
@@ -121,6 +175,30 @@ def snapshot_from_payload(
     snapshot_ref_type: Callable[..., Any],
     snapshot_source: Callable[[Any], Any],
 ) -> Any:
+    """从持久化字段构造 EpisodeSnapshot 及其嵌套对象。
+
+    缺少顶层字段时使用历史缺省值，未知顶层字段会被忽略。空的
+    ``waiting_condition`` 和 ``base_snapshot_ref`` 视为 None；
+    ``journal_through_seq`` 和基线快照的 ``version`` 会转换为整数。
+
+    Args:
+        payload: 从持久化文本解析出的快照字段。
+        decode_pending: 把非空 ``waiting_condition`` 字段转换为等待请求的函数。
+        snapshot_type: 构造 Episode 快照的类型。
+        side_effect_type: 构造每项副作用记录的类型。
+        artifact_type: 构造每项产物引用的类型。
+        snapshot_ref_type: 构造基线快照引用的类型。
+        snapshot_source: 把 ``source`` 字段转换为快照来源的函数。
+
+    Returns:
+        由 ``snapshot_type`` 构造的 Episode 快照。
+
+    Raises:
+        KeyError: 非空嵌套对象缺少必填字段。
+        TypeError: 字段无法按预期结构迭代、索引或转换。
+        ValueError: 等待类型、快照来源或整数字段的值无效。
+    """
+
     waiting = payload.get("waiting_condition")
     base = payload.get("base_snapshot_ref")
     return snapshot_type(

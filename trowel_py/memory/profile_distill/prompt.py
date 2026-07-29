@@ -1,4 +1,4 @@
-"""构造 profile distill agent 的画像建议提炼指令。
+"""构造 Profile 提炼 agent 使用的画像建议指令。
 
 模板属于机器契约；Python gate 另行强制数量、长度和来源约束。
 """
@@ -9,7 +9,8 @@ from typing import Sequence
 from trowel_py.memory.profile import _FIELD_TO_TITLE
 from trowel_py.memory.types import Profile, Suggestion
 
-# schema 只约束 agent 输出；id、date、status 和策略版本由 job 补齐。
+# Schema 只指导 agent 输出；gate 补齐 id、date、status 和策略版本，
+# 并且不保存 rationale。
 SUGGESTIONS_DRAFT_SCHEMA = """\
 {
   "suggestions": [
@@ -74,7 +75,28 @@ def build_distill_prompt(
     start_offset: int | None = None,
     end_offset: int | None = None,
 ) -> str:
-    """注入会话、画像与同策略建议；使用 replace 避免 JSON 花括号被解析。"""
+    """把来源路径、现有 Profile 和建议摘要注入提炼模板。
+
+    函数不筛选调用方提供的建议；policy version 或状态由调用方筛选。占位符按
+    ``jsonl_path``、``profile_summary``、``suggestions_summary`` 的顺序使用
+    ``str.replace`` 替换，普通 JSON 花括号不受影响。注入文本不会转义，因此
+    路径中的后两种占位符，以及 Profile 摘要中的建议占位符，也会在后续步骤
+    被替换。
+
+    只要任一 offset 不是 ``None``，就在提示前添加增量范围：缺失的起点按 0，
+    缺失的终点写为 ``EOF``。范围只约束 agent，不会在 Python 中读取或截取
+    JSONL，也不校验负数、顺序或文件边界。
+
+    Args:
+        jsonl_path: 写入提示的会话 JSONL 路径文本。
+        existing_suggestions: 作为去重上下文注入的建议；筛选责任在调用方。
+        existing_profile: 作为去重上下文注入的当前五维 Profile。
+        start_offset: 可选的增量起始字节偏移。
+        end_offset: 可选的增量结束字节偏移。
+
+    Returns:
+        已注入上下文及可选增量范围的完整 agent 提示。
+    """
     prompt = (
         DISTILL_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
         .replace("{profile_summary}", _format_profile_summary(existing_profile))
@@ -94,6 +116,17 @@ def build_distill_prompt(
 
 
 def _format_profile_summary(profile: Profile) -> str:
+    """把现有五维 Profile 格式化为去重上下文。
+
+    五个维度去掉首尾空白后均为空时只返回冷启动标记；否则按固定顺序列出全部
+    维度，空维度显示“（空）”。``updated`` 和 ``source`` 不进入摘要。
+
+    Args:
+        profile: 要摘要的当前 Profile。
+
+    Returns:
+        可直接插入提示的项目符号文本。
+    """
     has_any = any(str(getattr(profile, field)).strip() for field in _FIELD_TO_TITLE)
     if not has_any:
         return "- （画像为空，这是冷启动）"
@@ -105,6 +138,17 @@ def _format_profile_summary(profile: Profile) -> str:
 
 
 def _format_suggestions_summary(items: Sequence[Suggestion]) -> str:
+    """把调用方提供的建议按原顺序格式化为去重上下文。
+
+    空序列返回队列为空标记。已知维度显示中文标题，未知维度回退到原值；正文
+    原样拼接，不包含 ID、来源、日期、状态或策略版本。
+
+    Args:
+        items: 要展示的既有建议。
+
+    Returns:
+        可直接插入提示的项目符号文本。
+    """
     if not items:
         return "- （队列为空）"
     lines: list[str] = []

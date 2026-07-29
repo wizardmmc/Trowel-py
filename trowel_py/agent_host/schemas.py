@@ -44,10 +44,19 @@ class CreateAgentSessionRequest(BaseModel):
 
 
 class PatchAgentSessionRequest(BaseModel):
-    """``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。
+    """修改已创建的 Codex 会话配置。
 
-    ``permission_preset`` 立即写入 binding 的 requested 字段，并在下一次
-    ``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 生效。
+    模型和思考强度先为下一轮排队，Codex 接受该轮后成为对话线程的当前设置。权限
+    模式立即写入会话记录，并从下一轮或下次重连起生效；此接口不能切换到 follow。
+    运行工具创建后不能更换。
+
+    Attributes:
+        runtime: 用于确认会话仍使用原运行工具；传入另一种运行工具会被拒绝，None
+            表示不检查。
+        model: 下一轮请求使用的 Codex 模型；None 表示保持现有选择。
+        effort: 下一轮请求使用的 Codex 思考强度；None 表示保持现有选择。
+        permission_preset: 后续轮次和重连使用的 Codex 权限模式；None 表示保持现有
+            选择，follow 会被拒绝。
     """
 
     runtime: str | None = None
@@ -57,22 +66,50 @@ class PatchAgentSessionRequest(BaseModel):
 
 
 class SendMessageBody(BaseModel):
+    """携带要发送给 Agent 会话的非空文本。
+
+    Attributes:
+        text: 作为本轮用户输入发送给 Claude Code 或 Codex 的文字。
+    """
+
     text: str = Field(min_length=1)
 
 
 class SetCodexGoalRequest(BaseModel):
+    """指定要创建或更新的 Codex Goal 字段。
+
+    Attributes:
+        objective: Goal 要完成的任务；None 表示不修改。
+        status: Goal 当前的执行状态；None 表示不修改。
+        token_budget: Goal 最多可以使用的 token 数量。省略该字段时保留原限制；
+            明确传入 None 时取消限制。
+    """
+
     objective: str | None = Field(default=None, min_length=1)
     status: GoalStatus | None = None
     token_budget: int | None = Field(default=None, ge=1)
 
 
 class UncommittedChangesReviewTarget(BaseModel):
+    """要求 Codex 审查当前工作区中尚未提交的全部改动。
+
+    Attributes:
+        type: 固定为 uncommittedChanges，用于选择这种审查目标。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["uncommittedChanges"]
 
 
 class BaseBranchReviewTarget(BaseModel):
+    """要求 Codex 审查当前分支相对于指定基础分支的改动。
+
+    Attributes:
+        type: 固定为 baseBranch，用于选择这种审查目标。
+        branch: 作为比较基准的分支名称。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["baseBranch"]
@@ -80,6 +117,14 @@ class BaseBranchReviewTarget(BaseModel):
 
 
 class CommitReviewTarget(BaseModel):
+    """要求 Codex 审查指定 Git 提交引入的改动。
+
+    Attributes:
+        type: 固定为 commit，用于选择这种审查目标。
+        sha: 要审查的 Git 提交 ID。
+        title: 随审查请求提供的可选提交标题；None 表示不提供标题。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["commit"]
@@ -88,6 +133,13 @@ class CommitReviewTarget(BaseModel):
 
 
 class CustomReviewTarget(BaseModel):
+    """要求 Codex 按给定范围和关注点进行审查。
+
+    Attributes:
+        type: 固定为 custom，用于选择这种审查目标。
+        instructions: 描述审查范围和要求的非空文字。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["custom"]
@@ -104,16 +156,25 @@ CodexReviewTarget = Annotated[
 
 
 class StartCodexReviewRequest(BaseModel):
+    """携带一次 Codex 代码审查的目标。
+
+    Attributes:
+        target: 要审查的内容，可以是未提交改动、与基础分支的差异、指定提交或
+            自定义要求。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     target: CodexReviewTarget
 
 
 class AnswerAgentRequest(BaseModel):
-    """回答一个 connection-scoped Codex server request。
+    """回答当前 Codex 连接上的一个待决请求。
 
-    HTTP 边界保留原始 decision 字符串；manager 再根据该 pending request 记录的
-    ``availableDecisions`` 校验。
+    HTTP 边界保留原始决定文本，运行时管理器再按该请求允许的选项校验。
+
+    Attributes:
+        decision: 用户选择的处理方式，必须与该请求允许的决定之一匹配。
     """
 
     decision: str = Field(min_length=1)

@@ -1,4 +1,4 @@
-"""统一 CC 与 Codex 会话的公开 facade。"""
+"""统一 CC 与 Codex 会话的对外调用入口。"""
 
 from __future__ import annotations
 

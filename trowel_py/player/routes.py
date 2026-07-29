@@ -1,3 +1,5 @@
+"""提供玩家资料、库存和购买接口。"""
+
 from fastapi import APIRouter, Depends
 from trowel_py.player.service import get_profile, get_inventory, spend_coins
 from trowel_py.db.connection import create_db
@@ -12,7 +14,10 @@ router = APIRouter()
 
 
 def _get_conn():
-    """请求结束时提交并关闭连接，异常路径也不回滚。"""
+    """为一次请求提供数据库连接。
+
+    请求结束时提交并关闭连接，异常路径也不回滚。
+    """
     conn = create_db()
     try:
         yield conn
@@ -22,6 +27,7 @@ def _get_conn():
 
 
 def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRepository:
+    """为请求创建玩家数据仓库。"""
     return create_player_repository(conn)
 
 

@@ -1,3 +1,5 @@
+"""宠物喂食和装备接口接收的请求数据。"""
+
 from pydantic import BaseModel, Field
 
 

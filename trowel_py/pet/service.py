@@ -1,3 +1,5 @@
+"""编排宠物心情、饱食度、互动和库存装备变化。"""
+
 import logging
 import random
 from typing import Literal
@@ -35,6 +37,7 @@ def _require_inventory_item(
     expected_type: Literal["food", "hat"],
     player_repo: PlayerRepository,
 ) -> InventoryItem:
+    """查找默认玩家的库存行并确认商品类型。"""
     row = player_repo.find_item_by_id(item_id)
     if row is None:
         raise ValueError(f"item {item_id} not in inventory")
@@ -45,19 +48,25 @@ def _require_inventory_item(
 
 
 def resolve_mood(trigger: MoodTrigger) -> PetMood:
+    """返回指定事件触发后的宠物心情。"""
     return _MOOD_TRANSITIONS[trigger]
 
 
 def _clamp_hunger(value: int) -> int:
+    """将饱食度限制在零到上限之间。"""
     return max(0, min(value, HUNGER_MAX))
 
 
 def get_pet(pet_repo: PetRepository) -> Pet:
+    """返回默认宠物，不存在时创建。"""
     return pet_repo.find_or_create()
 
 
 def feed(item_id: str, pet_repo: PetRepository, player_repo: PlayerRepository) -> Pet:
-    """`item_id` 是库存行 ID；恢复量由该行的商品目录 ID 决定。"""
+    """消耗一件库存食物并提高宠物饱食度。
+
+    `item_id` 是库存行 ID；恢复量由该行的商品目录 ID 决定。
+    """
     row = _require_inventory_item(item_id, "food", player_repo)
 
     recovery = _FOOD_RECOVERY.get(row.item_id)
@@ -74,6 +83,7 @@ def feed(item_id: str, pet_repo: PetRepository, player_repo: PlayerRepository) -
 
 
 def interact(pet_repo: PetRepository, brain: PetBrain, rng: random.Random) -> dict:
+    """将宠物心情改为互动状态并生成一句回应。"""
     new_mood = resolve_mood("interaction")
     pet_repo.update_mood(new_mood)
     response = brain.generate_response(PetBrainInput(mood=new_mood), rng.random())
@@ -87,7 +97,10 @@ def interact(pet_repo: PetRepository, brain: PetBrain, rng: random.Random) -> di
 def equip_hat(
     item_id: str, pet_repo: PetRepository, player_repo: PlayerRepository
 ) -> Pet:
-    """`item_id` 是库存行 ID；库存装备状态与宠物引用必须同步。"""
+    """为宠物换上指定库存帽子。
+
+    `item_id` 是库存行 ID；库存装备状态与宠物引用必须同步。
+    """
     row = _require_inventory_item(item_id, "hat", player_repo)
 
     # 调用方须用同一连接组装两个仓储，三步写入才能作为一个事务提交。
@@ -99,6 +112,7 @@ def equip_hat(
 
 
 def update_mood(trigger: MoodTrigger, pet_repo: PetRepository) -> Pet:
+    """按触发事件更新并返回宠物心情。"""
     new_mood = resolve_mood(trigger)
     pet_repo.update_mood(new_mood)
     return pet_repo.find_or_create()
@@ -109,7 +123,10 @@ def tick_hunger(
     elapsed_minutes: int,
     decay_per_hour: int = HUNGER_DECAY_PER_HOUR,
 ) -> Pet:
-    """只衰减饥饿值；“饥饿”是展示层派生状态，不写入 `mood`。"""
+    """按经过时间降低宠物饱食度。
+
+    只衰减饱食度；“饥饿”是展示层派生状态，不写入 `mood`。
+    """
     pet = pet_repo.find_or_create()
     decay = int(elapsed_minutes * decay_per_hour / 60)
     new_hunger = _clamp_hunger(pet.hunger - decay)

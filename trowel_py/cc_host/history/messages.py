@@ -45,6 +45,25 @@ def translate_user(
     user_event_type: Callable[..., TrowelEvent],
     tool_result_event_type: Callable[..., TrowelEvent],
 ) -> list[TrowelEvent]:
+    """从一条历史 user 记录中提取用户输入或工具结果。
+
+    列表内容含有可展示文本时，文本块会合并为一个用户事件；否则返回其中的工具
+    结果。多个工具结果共享一个 ``toolUseResult`` 时不附加 write diff，避免把同一
+    份文件变化归给多个调用。
+
+    Args:
+        event: Claude Code 历史中的 user 记录。
+        clean_user_text: 清洗单段 user 文本的函数。
+        write_diff_from_result: 从 ``toolUseResult`` 提取文件变化的函数。
+        user_event_type: 根据 ``text`` 构造用户事件的类型或函数。
+        tool_result_event_type: 根据工具 ID、输出和文件变化构造结果事件的类型或
+            函数。
+
+    Returns:
+        由该记录生成的用户事件或工具结果；meta 记录、内部输入和不支持的内容
+        生成空列表。
+    """
+
     if event.get("isMeta"):
         return []
     content = event.get("message", {}).get("content")
@@ -96,6 +115,26 @@ def translate_assistant(
     elicitation_event_type: Callable[..., TrowelEvent],
     tool_call_event_type: Callable[..., TrowelEvent],
 ) -> list[TrowelEvent]:
+    """从一条历史 assistant 记录中按内容块生成展示事件。
+
+    ``AskUserQuestion`` 工具调用会转换为交互请求。历史 JSONL 不包含对应的
+    ``control_request``，因此交互请求的 ``request_id`` 为空字符串。
+
+    Args:
+        event: Claude Code 历史中的 assistant 记录。
+        prev_ts: 此前最近一条带时间戳记录的 ISO 时间；没有时为 None。
+        compute_thinking_duration: 接收 ``prev_ts`` 和当前记录的 ``timestamp``，
+            返回估算思考秒数的函数。
+        text_event_type: 根据 ``text`` 构造文本事件的类型或函数。
+        thinking_event_type: 根据文本和估算时长构造思考事件的类型或函数。
+        elicitation_event_type: 根据工具 ID 和问题列表构造交互请求的类型或函数。
+        tool_call_event_type: 根据工具 ID、名称和参数构造普通工具调用的类型或函数。
+
+    Returns:
+        按内容块顺序生成的文本、思考、交互请求和工具调用事件；消息内容不是列表
+        时为空列表。
+    """
+
     content = event.get("message", {}).get("content")
     if not isinstance(content, list):
         return []

@@ -1,6 +1,6 @@
-"""离线 retrieval baseline 的可执行入口。
+"""并发运行离线检索基准，并把评估结果写成 Markdown 报告。
 
-并发检索版本化 query 集并写出报告。运行方式：
+可直接运行：
 
     .venv/bin/python -m trowel_py.memory.baseline
 """
@@ -41,6 +41,14 @@ log = logging.getLogger(__name__)
 
 
 def build_provider(cfg: LLMConfig) -> LLMProvider:
+    """为离线检索创建 OpenAI 或 Anthropic 模型客户端。
+
+    Args:
+        cfg: 模型供应商、模型名称和连接设置。
+
+    Returns:
+        与 ``cfg.provider`` 对应的模型客户端。
+    """
     if cfg.provider == "openai":
         return OpenAIProvider(cfg)
     return AnthropicProvider(cfg)
@@ -53,7 +61,21 @@ def run_v0_baseline(
     report_path: Path = _REPORT,
     max_workers: int = 5,
 ) -> EvalReport:
-    """并发检索并写报告；单 query 失败按空结果计，不中止整批。"""
+    """并发运行版本化查询集，并写出离线检索基准报告。
+
+    任一查询失败时记录警告，并把该查询按空结果纳入评估，不中止其他查询。
+    模型初始化、查询集加载、整体评估或报告写入失败仍会传给调用方。
+
+    Args:
+        corpus_dir: 存放待检索 Note Markdown 文件的语料目录。
+        dictionary_path: 检索器使用的根 Dictionary 文件。
+        query_set: 包含查询和相关 Note 标注的 YAML 文件。
+        report_path: 写入 Markdown 评估报告的位置；父目录不存在时会创建。
+        max_workers: 查询线程池允许的最大并发数，必须大于零。
+
+    Returns:
+        包含逐条结果及平均 precision、recall 的评估报告。
+    """
     provider = build_provider(load_llm_config())
     retriever = LLMRetriever(provider)
     queries = load_queries(query_set)
@@ -61,12 +83,22 @@ def run_v0_baseline(
     retrieved_by_query: dict[str, list[str]] = {}
 
     def _one(q: EvalQuery) -> tuple[str, list[str]]:
+        """只把问题文本和检索路径交给检索器，并把单条异常转换为空结果。
+
+        ``q.relevant`` 是评估答案，不会传给检索器。
+
+        Args:
+            q: 要执行的问题及其评估标注。
+
+        Returns:
+            查询文本及检索到的 Note 文件 stem；失败时 stem 列表为空。
+        """
         try:
             got = retriever(
                 q.query, corpus_dir=corpus_dir, dictionary_path=dictionary_path
             )
             return q.query, got
-        except Exception as exc:  # noqa: BLE001 - benchmark 需隔离单 query 失败
+        except Exception as exc:  # noqa: BLE001 - 基准批次必须隔离单条查询失败
             log.warning("retrieval failed for %s: %s", q.query_id, exc)
             return q.query, []
 
@@ -77,6 +109,16 @@ def run_v0_baseline(
             log.info("retrieved %d notes for a query", len(val))
 
     def _memo(query: str, *, corpus_dir, dictionary_path) -> list[str]:
+        """把并发阶段缓存的结果交给评估器，避免再次调用检索器。
+
+        Args:
+            query: 用于查找缓存结果的查询文本。
+            corpus_dir: 为满足 Retriever 接口而接收，不参与缓存查找。
+            dictionary_path: 为满足 Retriever 接口而接收，不参与缓存查找。
+
+        Returns:
+            对应查询的 Note 文件 stem；没有记录时返回空列表。
+        """
         return retrieved_by_query.get(query, [])
 
     report = run_eval(corpus_dir, dictionary_path, queries, _memo)
@@ -93,6 +135,16 @@ def _render(
     queries: list[EvalQuery],
     retrieved_by_query: dict[str, list[str]],
 ) -> str:
+    """渲染评估总览和未完全命中查询的明细。
+
+    Args:
+        report: 包含逐条指标和平均指标的评估结果。
+        queries: 原始评估问题，用于在报告头部记录查询总数。
+        retrieved_by_query: 已取得的查询结果映射；该参数不参与报告渲染。
+
+    Returns:
+        以换行符结尾的 Markdown 报告。
+    """
     head = [
         "# milestone6-v2 离线检索 v0 baseline",
         "",

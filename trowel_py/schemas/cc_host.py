@@ -1,4 +1,8 @@
-"""兼容旧 schema import；定义归 cc_host 所有。"""
+"""保留 Claude Code 请求与事件模型的旧导入路径。
+
+模型由 ``trowel_py.cc_host.schemas`` 定义；本模块继续支持
+``trowel_py.schemas.cc_host``。
+"""
 
 from trowel_py.cc_host.schemas import (
     EVENT_TYPES,

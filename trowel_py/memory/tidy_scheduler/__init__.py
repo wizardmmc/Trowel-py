@@ -1,4 +1,4 @@
-"""应用内 tidy scheduler 的稳定入口。"""
+"""汇总导出应用内 Tidy 调度器、显式补跑、时间计算和水位状态接口。"""
 
 import logging
 

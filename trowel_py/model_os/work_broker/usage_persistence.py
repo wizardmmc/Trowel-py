@@ -15,6 +15,8 @@ def observation_seen(
     lease_id: str,
     observation_id: str,
 ) -> bool:
+    """判断同一 lease 是否已记录指定 observation_id。"""
+
     row = connection.execute(
         "SELECT 1 FROM work_usage WHERE lease_id=? AND observation_id=?",
         (lease_id, observation_id),
@@ -23,6 +25,15 @@ def observation_seen(
 
 
 def mark_lease_started(connection: sqlite3.Connection, *, lease_id: str) -> None:
+    """将 lease 标记为已开始。
+
+    已开始的 default lease 不再被 foreground 抢占。
+
+    Args:
+        connection: WorkBroker 已打开的 SQLite 连接。
+        lease_id: 要标记的 lease ID。
+    """
+
     connection.execute(
         "UPDATE work_leases SET started=1 WHERE lease_id=?",
         (lease_id,),
@@ -38,6 +49,22 @@ def insert_usage(
     day: str,
     policy_version: str,
 ) -> None:
+    """写入一次用量，并从 lease 行复制业务归因维度。
+
+    本函数不校验 lease 状态、fencing token 或用量值；上层入口负责应用各自的
+    校验策略。lease_id 和 policy_version 由独立参数提供；调用方必须确保
+    lease_id 与 lease_row 属于同一 lease。provider、账号、工作类别、档位、
+    Task 和 WorkItem 均取自 lease_row，不接受 usage 覆盖。
+
+    Args:
+        connection: WorkBroker 已打开的 SQLite 连接。
+        lease_id: 用量所属的 lease ID。
+        lease_row: 提供可信归因字段的完整 work_leases 行。
+        usage: 提供观测 ID、计量值和发生时间的用量记录。
+        day: 用量发生时刻所属的 UTC 日期。
+        policy_version: 记账时生效并随记录保存的 broker 策略版本。
+    """
+
     connection.execute(
         "INSERT INTO work_usage (observation_id, lease_id, provider, "
         "account_id, work_kind, model_tier, task_id, work_item_id, calls, "
@@ -75,6 +102,26 @@ def totals_in_tx(
     model_tier: Any = None,
     totals_factory: Callable[..., _Totals],
 ) -> _Totals:
+    """按全部指定的范围条件聚合用量，并保留未知费用。
+
+    没有记录时各计数与费用均为 0。任一匹配记录的 cost 为 NULL 时，汇总
+    cost 为 None；未报告的 wall_seconds 则不计入总和。
+
+    Args:
+        connection: WorkBroker 已打开的 SQLite 连接。
+        day: UTC 日期筛选；None 表示不按日期筛选。
+        work_kind: 工作类别筛选；None 表示不按工作类别筛选。
+        provider: 模型 provider 筛选；None 表示不按 provider 筛选。
+        account_id: provider 账号筛选；None 表示不按账号筛选。
+        task_id: Task 归属筛选；None 表示不按 Task 筛选。
+        model_tier: 请求方预估档位筛选；None 表示不按档位筛选。
+        totals_factory: 接受 calls、input_tokens、output_tokens、cost 和
+            wall_seconds 五个关键字参数的构造函数。
+
+    Returns:
+        由 totals_factory 构造的聚合用量。
+    """
+
     clauses: list[str] = []
     params: list[Any] = []
     if day is not None:

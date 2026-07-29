@@ -1,1 +1,1 @@
-"""Claude Code 长驻子进程与 Trowel 事件适配。"""
+"""托管 Claude Code 常驻子进程，并把原生事件转换为 Trowel 事件。"""

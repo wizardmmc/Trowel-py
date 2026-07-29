@@ -18,6 +18,8 @@ def select_event(
     now: datetime,
     rng: random.Random | None = None,
 ) -> EventType | None:
+    """从当前可触发事件中按调整后的权重随机选择一种。"""
+
     eligible = filter_eligible(configs, state, cooldowns, now)
     if not eligible:
         return None
@@ -30,6 +32,8 @@ def select_event(
 def _adjust_weights(
     configs: tuple[EventConfig, ...], state: GameState
 ) -> tuple[WeightedItem, ...]:
+    """随卡片总数提高挑战事件权重，其他事件保持默认权重。"""
+
     boosted: list[WeightedItem] = []
     for c in configs:
         if c.type == "challenge":
@@ -41,7 +45,7 @@ def _adjust_weights(
 
 
 def _weighted_random(items: tuple[WeightedItem, ...], rand: float) -> EventType:
-    """`items` 必须非空且权重为正，`rand` 是预抽取的 `[0, 1)` 随机值。"""
+    """按正权重随机选择一种事件；`rand` 是预先生成的 `[0, 1)` 随机值。"""
     total_weight = sum(weight for _, weight in items)
     remaining = rand * total_weight
     for config, weight in items:

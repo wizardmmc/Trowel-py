@@ -1,4 +1,4 @@
-"""Codex completed turn 到共享 memory persist 的编排。"""
+"""提炼已封口的 Codex 轮次，并通过共享持久化链写入 Memory。"""
 
 from __future__ import annotations
 
@@ -42,6 +42,27 @@ async def review_codex_segments(
     host_factory: HostFactory | None,
     completed_before: str | None,
 ) -> set[str]:
+    """提炼符合条件的 Codex 轮次，并在持久化成功后推进各轮次水位。
+
+    只处理 user、memory eligible、已有终态且尚未提炼的轮次。journal 缺失、
+    提炼失败、草稿日期越界或持久化失败时保留原水位；成功推进水位后运行
+    judge，judge 失败不撤销已经落盘的事实。
+
+    Args:
+        root: Memory 根目录，用于创建 review 工作目录并运行后续 judge；Codex
+            journal 路径来自轮次记录。
+        date_str: 本次 review 工作目录和持久化记录使用的日期，不限制轮次的
+            登记日期。
+        repo: 查询 Codex 轮次并推进提炼水位的会话仓库。
+        store: 接收 Note、Episode、meta 和 completion manifest 的 MemoryStore。
+        host_factory: 创建提炼 host 的可选工厂；为 None 时使用真实 host。
+        completed_before: 只处理完成时间严格早于此时间的轮次；为 None 时不设
+            完成时间上限。
+
+    Returns:
+        已成功持久化并推进提炼水位的草稿中，Diary 条目涉及的日期集合，供
+        调用方重建 Daily。
+    """
     segments = repo.find_incremental_codex(completed_before=completed_before)
     logger.info(
         "daily review: %d Codex completed turn(s) (date_str=%s)",
@@ -71,6 +92,7 @@ async def review_codex_segments(
         derivation: DerivationProvenance | None = None
 
         def capture_derivation(value: DerivationProvenance) -> None:
+            """暂存当前提炼运行的派生记录，供该轮次持久化使用。"""
             nonlocal derivation
             derivation = value
 
@@ -92,6 +114,8 @@ async def review_codex_segments(
             )
             continue
 
+        # Codex 轮次按完成时间归属；空字节区间使日期优先取 completed_at，
+        # 缺失时回退 registered_at。
         activity = extract_activity_dates(
             journal_path,
             0,
@@ -181,6 +205,23 @@ def _context_for_codex(
     date_basis: str,
     derivation: DerivationProvenance | None,
 ) -> PersistContext:
+    """为一个 Codex 轮次构造持久化上下文和来源记录。
+
+    来源模型只取轮次首次登记时固化的 binding；模型、推理强度和 provider
+    均未知时不创建模型记录。
+
+    Args:
+        turn: 已封口且尚未提炼的 Codex 轮次记录。
+        review_date: 本次 review 写入持久化记录的日期。
+        activity_dates: 轮次完成时间对应的本地日期；完成时间缺失时使用登记
+            时间，均无效时为空。
+        date_basis: ``activity_dates`` 使用的时间来源。
+        derivation: 本次提炼使用的 runtime、模型和流水线记录。
+
+    Returns:
+        包含 Codex turn 来源、binding 模型信息、活动日期和提炼来源的持久化
+        上下文。
+    """
     segment_id = f"codex:{turn.thread_id}:{turn.turn_id}"
     source_models: tuple[ModelIdentity, ...] = ()
     if any((turn.model, turn.effort, turn.provider)):
@@ -223,6 +264,15 @@ def _out_of_range_dates(
     diary: tuple,
     activity_dates: tuple[str, ...],
 ) -> tuple[str, ...]:
+    """返回草稿中不属于当前 Codex 轮次活动日期的日期。
+
+    Args:
+        diary: 草稿中的 Diary 条目。
+        activity_dates: 当前轮次允许归属的日期。
+
+    Returns:
+        按草稿顺序保留的越界日期；没有允许日期时返回草稿中的全部日期。
+    """
     if not activity_dates:
         return tuple(entry.date for entry in diary)
     allowed = set(activity_dates)

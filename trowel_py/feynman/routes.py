@@ -1,3 +1,5 @@
+"""提供费曼问题生成、回答评估和历史查询接口。"""
+
 from __future__ import annotations
 
 import logging
@@ -32,7 +34,10 @@ class EvaluateRequest(BaseModel):
 
 
 def _get_conn():
-    """请求结束时提交并关闭连接，异常路径也不回滚。"""
+    """为一次请求提供数据库连接。
+
+    请求结束时提交并关闭连接，异常路径也不回滚。
+    """
     conn = create_db()
     try:
         yield conn
@@ -42,16 +47,19 @@ def _get_conn():
 
 
 def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+    """为请求创建卡片数据仓库。"""
     return create_card_repository(conn)
 
 
 def _get_feynman_repo(
     conn: sqlite3.Connection = Depends(_get_conn),
 ) -> FeynmanRepository:
+    """为请求创建费曼练习数据仓库。"""
     return create_feynman_repository(conn)
 
 
 def _get_llm_service() -> LLMService:
+    """按当前配置创建模型调用服务。"""
     from trowel_py.config import load_llm_config
 
     return create_llm_service(load_llm_config())

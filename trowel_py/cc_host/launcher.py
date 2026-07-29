@@ -30,6 +30,7 @@ def build_args(
     mcp_config: str | None = None,
 ) -> list[str]:
     """构造 CC argv；workdir 只由子进程 cwd 承载，不进入 argv。"""
+
     args = [
         CLAUDE_BIN,
         "-p",
@@ -47,7 +48,7 @@ def build_args(
         args += ["--fallback-model", fallback_model]
     if effort is not None:
         args += ["--effort", effort]
-    # stdio 在 bypassPermissions 下保留交互请求通道；None 表示不注册。
+    # stdio 在 bypassPermissions 下保留交互请求通道；None 或空字符串表示不注册。
     if permission_prompt_tool:
         args += ["--permission-prompt-tool", permission_prompt_tool]
     if resume_from:
@@ -65,7 +66,20 @@ def build_subprocess_kwargs(
     *,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """构造子进程参数；env=None 时省略该键，使子进程继承父环境。"""
+    """构造启动 Claude Code 子进程所需的关键字参数。
+
+    标准输入、输出和错误都接入 asyncio 管道。子进程会创建独立的操作系统会话，
+    并把 stream-json 单行读取上限设为 16 MiB。
+
+    Args:
+        workdir: 子进程使用的工作目录。
+        env: 子进程使用的完整环境变量；None 表示省略 ``env`` 键并继承父进程
+            环境，非 None 时不会自动与父环境合并。
+
+    Returns:
+        可直接传给 ``asyncio.create_subprocess_exec`` 的关键字参数。
+    """
+
     kwargs: dict[str, Any] = {
         "cwd": str(workdir),
         "stdin": asubprocess.PIPE,

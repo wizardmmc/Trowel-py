@@ -1,14 +1,14 @@
-"""Daily review refine prompt 契约。"""
+"""定义 Daily review 提炼使用的枚举约束、知识轨信号、草稿结构和 prompt 模板。"""
 
 from __future__ import annotations
 
-# 与 schema/types 同步的 verification 闭集。
+# refine 草稿允许输出的三档验证状态。
 VERIFICATION_TIERS = ("verified", "event-data-supported", "inferred-untested")
 
-# 与 schema/types 同步的 note kind 闭集。
+# refine 草稿允许输出的五类笔记。
 NOTE_KINDS = ("fact", "gotcha", "procedure", "preference", "hypothesis")
 
-# 与 dualtrack.py 同步的知识轨信号词。
+# 用于提示和审计知识轨内容误入经历轨的信号词。
 DUALTRACK_SIGNAL_WORDS = (
     "我想到",
     "感悟",
@@ -21,7 +21,7 @@ DUALTRACK_SIGNAL_WORDS = (
     "告诉我们",
 )
 
-# agent 必须逐字段输出的 draft schema。
+# refine agent 写入 draft.json 时必须遵守的字段结构。
 DRAFT_SCHEMA = """\
 {
   "notes": [
@@ -170,7 +170,27 @@ def build_refine_prompt(
     end_offset: int | None = None,
     template: str = REFINE_PROMPT_TEMPLATE,
 ) -> str:
-    """填充会话信息；给定字节范围时只产出该增量的新记忆。"""
+    """填充 refine 模板，并按需添加来源字节范围说明。
+
+    先全局替换 ``{jsonl_path}``，再替换 ``{cost}``，因此路径文本中注入的成本
+    占位符会继续被第二步替换，成本文本中的路径占位符不会回头替换。
+
+    任一 offset 非 ``None`` 时添加范围说明。显示起点由 ``start_offset or 0``
+    决定：``None`` 和 0 都显示为 0，负值原样显示；终点 ``None`` 显示为
+    ``EOF``，其余值（包括 0 和负值）原样显示。范围只约束 agent；函数不
+    读取或截取文件，也不校验路径、offset 顺序、文件边界和成本文本。默认
+    ``template`` 在函数定义时绑定。
+
+    Args:
+        jsonl_path: 注入模板的 numbered JSONL 路径文本。
+        cost_text: 注入模板的客观成本文本。
+        start_offset: 可选的原 JSONL 起始字节偏移。
+        end_offset: 可选的原 JSONL 结束字节偏移。
+        template: 要填充的 refine 模板。
+
+    Returns:
+        带可选范围前缀的完整 prompt。
+    """
     prompt = template.replace("{jsonl_path}", jsonl_path).replace("{cost}", cost_text)
     if start_offset is not None or end_offset is not None:
         start = start_offset or 0

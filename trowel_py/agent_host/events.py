@@ -1,8 +1,8 @@
-"""两个 runtime 共用的 AgentEvent v1 wire contract。
+"""定义 Claude Code 与 Codex 共用的 AgentEvent 事件格式。
 
-CC 与 Codex adapter 负责各自的事件语义和 payload；本层只固定路由、关联与顺序
-字段。两种 adapter 都为实际发出的事件分配会话内连续序号，原生序号不会直接进入
-共享 envelope。
+两种运行工具各自负责转换事件类型和内容；本模块只规定事件所属的 Trowel 会话、
+Codex thread、轮次或工具调用，以及发送顺序。事件序号在每个 Trowel 会话内连续
+生成，不直接使用 Claude Code 或 Codex 自带的序号。
 """
 
 from __future__ import annotations
@@ -13,21 +13,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from trowel_py.cc_host.schemas import EVENT_TYPES as _CC_EVENT_TYPES
 
-# 每个 envelope 都携带版本判别符，使未来协议升级可以在边界被识别。
+# 每个 AgentEvent 都带格式版本，接收方可在格式升级后选择对应的解析规则。
 AGENT_EVENT_SCHEMA: Literal["agent-event-v1"] = "agent-event-v1"
 
-# 不能直接复用 CC type 的稳定 Codex 事件使用明确扩展名，不能塞进泛化 payload。
+# Codex 特有事件保留各自的明确类型，避免接收方根据内容字段猜测事件含义。
 _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
     {
-        # ``thread/tokenUsage/updated`` 的 turn 级 token 统计。
+        # Codex thread/tokenUsage/updated 通知中的本轮和累计 token 用量。
         "usage_updated",
-        # manager 根据 transport 状态合成的生命周期，不对应单条原生通知。
+        # 根据 Codex 进程和连接状态生成，不对应 Codex 发来的一条通知。
         "host_status",
-        # connection-scoped Codex 审批生命周期。
+        # 只在当前 Codex 连接中有效的操作确认请求；重连后旧请求失效。
         "approval_request",
-        # ``account/rateLimits/updated`` 的账户级额度快照。
+        # Codex account/rateLimits/updated 通知中的账户额度信息。
         "rate_limit_updated",
-        # ``contextCompaction`` 只在 completed 时形成新的上下文代际边界。
+        # 只在上下文压缩完成后发出，表示后续轮次使用压缩后的上下文。
         "compaction",
         "goal_updated",
         "goal_cleared",
@@ -37,19 +37,32 @@ _CODEX_EXTENSION_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# 直接合并 CC 词汇，避免新增 CC 事件时在共享 envelope 维护第二份名单。
+# 通用事件类型由 Claude Code 已有类型和 Codex 特有类型合并而成；
+# Claude Code 新增的事件类型也会随之加入。
 AGENT_EVENT_TYPES: frozenset[str] = _CC_EVENT_TYPES | _CODEX_EXTENSION_TYPES
 
-# 在 leaf schema 中重复声明，避免 wire contract 反向依赖 runtime 层。
+# 在事件模型中单独声明允许值，避免为了这两个值依赖上层的会话管理模块。
 AgentRuntime = Literal["claude_code", "codex"]
 
 
 class AgentEvent(BaseModel):
-    """live stream 与 history replay 共用的 host-neutral envelope。
+    """表示 Claude Code 与 Codex 在实时事件流和历史回放中共用的事件。
 
-    ``seq`` 只在同一 session 内比较，用于去重和发现缺口；``turn_id`` 与
-    ``item_id`` 在原生协议提供时保持关联语义。payload 的逐类型校验由各 runtime
-    translator 负责，本模型只拒绝共享词汇之外的 ``type``。
+    事件内容由对应运行工具的转换代码负责校验；本模型只检查事件类型是否已经登记。
+
+    Attributes:
+        schema_version: 事件格式版本；序列化后的字段名为 schema，当前固定为
+            "agent-event-v1"。
+        session_id: 事件所属的 Trowel 会话 ID。
+        runtime: 产生事件的运行工具，值为 "claude_code" 或 "codex"。
+        seq: 该 Trowel 会话实际发出事件的连续序号，从 1 开始，用于去重和发现
+            事件缺失。
+        type: 事件类型，必须属于 AGENT_EVENT_TYPES。
+        thread_id: Codex thread ID；Claude Code 事件不使用该字段。
+        turn_id: 事件所属的轮次 ID。
+        item_id: 事件关联的工具调用或其他 Codex 条目 ID，用于关联同一条目的
+            启动、更新和完成事件。
+        payload: 随事件类型变化的具体内容。
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -69,7 +82,7 @@ class AgentEvent(BaseModel):
     @field_validator("type")
     @classmethod
     def _type_in_vocabulary(cls, value: str) -> str:
-        """未知 type 表示 adapter 映射缺口，不能作为透传事件进入共享边界。"""
+        """只接受已经登记在 AGENT_EVENT_TYPES 中的事件类型。"""
 
         if value not in AGENT_EVENT_TYPES:
             raise ValueError(

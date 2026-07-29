@@ -1,3 +1,5 @@
+"""串联卡片数据、复习排程和统计查询。"""
+
 import logging
 from datetime import datetime, timezone
 
@@ -12,6 +14,7 @@ logger = logging.getLogger(__name__)
 def get_due_cards(
     review_repo: ReviewRepository, card_repo: CardRepository
 ) -> list[dict]:
+    """返回已经到期且卡片仍然存在的复习项。"""
     now = datetime.now(timezone.utc).isoformat()
     due_states = review_repo.find_due(now)
 
@@ -34,6 +37,7 @@ def get_due_cards(
 def submit_review(
     card_id: str, rating: int, review_repo: ReviewRepository, card_repo: CardRepository
 ) -> dict | None:
+    """计算并保存一次卡片复习，卡片或状态不存在时返回空值。"""
     card = card_repo.find_by_id(card_id)
     if card is None:
         logger.warning("Submit review for unknown card: %s", card_id)
@@ -61,8 +65,10 @@ def submit_review(
 
 
 def get_session_stats(review_repo: ReviewRepository, since: str) -> dict:
+    """返回指定时间之后的复习统计。"""
     return review_repo.get_session_stats(since)
 
 
 def get_review_stats(review_repo: ReviewRepository) -> dict:
+    """返回全部历史复习统计。"""
     return review_repo.get_session_stats("2000-01-01T00:00:00")

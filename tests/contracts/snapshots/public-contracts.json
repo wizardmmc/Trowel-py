@@ -1,6 +1,6 @@
 {
   "cli_help": {
-    "root": "usage: trowel-py [-h] [--port PORT] [--host HOST] [--no-open]\n\n启动 Trowel 服务，并分发 memory 子命令。\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT  port to listen on (default 8000)\n  --host HOST  host to bind (default 127.0.0.1)\n  --no-open    don't open a browser window\n",
+    "root": "usage: trowel-py [-h] [--port PORT] [--host HOST] [--no-open]\n\n提供 Trowel 后端服务和 Memory 子命令的命令行入口。\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT  port to listen on (default 8000)\n  --host HOST  host to bind (default 127.0.0.1)\n  --no-open    don't open a browser window\n",
     "memory": "usage: trowel-py memory [-h]\n                        {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate,regenerate} ...\n\nmemory subsystem\n\npositional arguments:\n  {tidy,review,repair,backfill-completed,dict-rebuild,dict-check,migrate,core,metrics,promotion,profile-recalibrate,regenerate}\n    tidy                weekly/monthly tidy + rollback (041)\n    review              run the daily write loop: distill a day's cc sessions\n    repair              backfill per-session episodes from surviving drafts\n                        (P1 overwrite fix)\n    backfill-completed  stamp last_completed_offset for legacy rows from jsonl\n                        size (040-b)\n    dict-rebuild        regenerate dictionary L0/L1 from notes (040-c C-3)\n    dict-check          read-only dictionary consistency report vs notes (064)\n    migrate             backfill memory_id/status/valid_from on legacy notes\n                        (041 C-9)\n    core                layer-one promotion: nominate/approve/activate (041)\n    metrics             print memory metrics (065):\n                        identity/retrieval/effect/recall with coverage +\n                        quality labels + the policy in force\n    promotion           evaluate core-candidate promotion gaps (065); --apply\n                        writes candidates\n    profile-recalibrate\n                        re-distill history under v2 hard rules into isolated\n                        staging (067); default is a read-only plan, never\n                        touching live data\n    regenerate          plan, stage, or explicitly apply daily/weekly/monthly\n                        regeneration\n\noptions:\n  -h, --help            show this help message and exit\n",
     "memory tidy": "usage: trowel-py memory tidy [-h] [--weekly] [--monthly] [--iso-week ISO_WEEK]\n                             [--month MONTH] [--rollback ROLLBACK] [--status]\n                             [--catchup] [--from PERIOD]\n                             [--scope {weekly,monthly}] [--root ROOT]\n\noptions:\n  -h, --help            show this help message and exit\n  --weekly              run weekly tidy (compress + bypass + TidyPlan) for one\n                        ISO week\n  --monthly             run monthly tidy (compress + retire + promote +\n                        TidyPlan)\n  --iso-week ISO_WEEK   ISO week YYYY-Www (default: current week)\n  --month MONTH         YYYY-MM (default: current month)\n  --rollback ROLLBACK   rollback a tidy plan id (restore notes/)\n  --status              print the tidy watermark + pending periods (read-only,\n                        063)\n  --catchup             explicitly catch up a range; needs --from and --scope\n                        (063)\n  --from PERIOD         starting period for --catchup (YYYY-Www weekly, YYYY-\n                        MM monthly)\n  --scope {weekly,monthly}\n                        which scope --catchup runs\n  --root ROOT           memory root (default: resolved from config.toml)\n",
     "memory review": "usage: trowel-py memory review [-h] [--date DATE] [--root ROOT]\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE  target day YYYY-MM-DD (default: today)\n  --root ROOT  memory root (default: resolved from config.toml)\n",
@@ -352,6 +352,7 @@
       "/api/health": {
         "get": {
           "summary": "Health",
+          "description": "返回后端存活状态。",
           "operationId": "health_api_health_get",
           "responses": {
             "200": {
@@ -372,6 +373,7 @@
       "/api/cards/extract": {
         "post": {
           "summary": "Extract",
+          "description": "从原始文本生成卡片草稿，并保存到进程内草稿池。",
           "operationId": "extract_api_cards_extract_post",
           "requestBody": {
             "content": {
@@ -412,7 +414,7 @@
       "/api/cards/extract-conversation": {
         "post": {
           "summary": "Extract Conversation",
-          "description": "从上传的 Claude Code JSONL 对话记录中提取卡片草稿。",
+          "description": "从 Claude Code JSONL 对话记录中提取草稿，并保存到进程内草稿池。",
           "operationId": "extract_conversation_api_cards_extract_conversation_post",
           "requestBody": {
             "content": {
@@ -453,7 +455,7 @@
       "/api/cards/re-explain": {
         "post": {
           "summary": "Re Explain Card",
-          "description": "换一个角度重新生成草稿解释，不写入数据库。候选版本由调用方保存。",
+          "description": "为草稿生成一版候选解释，不修改草稿或数据库。\n\n候选解释只在响应中返回，是否保留由调用方决定。",
           "operationId": "re_explain_card_api_cards_re_explain_post",
           "requestBody": {
             "content": {
@@ -494,6 +496,7 @@
       "/api/cards/{draft_id}/review": {
         "post": {
           "summary": "Review",
+          "description": "根据审核动作拒绝草稿，或保存卡片和初始复习状态。\n\n无论审核结果如何，进程内草稿池都不会删除这份草稿。草稿不存在时仍返回\nHTTP 200，``success`` 为 false。",
           "operationId": "review_api_cards__draft_id__review_post",
           "parameters": [
             {
@@ -545,7 +548,7 @@
       "/api/cards/{draft_id}/dedup": {
         "get": {
           "summary": "De Duplicate",
-          "description": "为尚未持久化的草稿查找重复卡片；路径参数是草稿 ID，不是卡片 ID。",
+          "description": "为尚未保存的草稿查找重复卡片。\n\n路径参数是草稿 ID，不是卡片 ID。草稿不存在时仍返回 HTTP 200，\n``success`` 为 false。",
           "operationId": "de_duplicate_api_cards__draft_id__dedup_get",
           "parameters": [
             {
@@ -583,7 +586,7 @@
       "/api/cards/search": {
         "get": {
           "summary": "Search Cards",
-          "description": "使用 FTS5 全文检索卡片。",
+          "description": "按 FTS5 查询表达式搜索卡片的标题、解释和标签。",
           "operationId": "search_cards_api_cards_search_get",
           "parameters": [
             {
@@ -625,6 +628,7 @@
       "/api/cards/": {
         "get": {
           "summary": "Get All Cards",
+          "description": "按从 1 开始的页码和每页数量返回卡片列表及总数。",
           "operationId": "get_all_cards_api_cards__get",
           "parameters": [
             {
@@ -677,6 +681,7 @@
       "/api/cards": {
         "get": {
           "summary": "Get All Cards",
+          "description": "按从 1 开始的页码和每页数量返回卡片列表及总数。",
           "operationId": "get_all_cards_api_cards_get",
           "parameters": [
             {
@@ -992,7 +997,7 @@
       "/api/profile/": {
         "get": {
           "summary": "Get Profile",
-          "description": "返回用户画像；首次使用时返回空画像。",
+          "description": "读取当前用户画像；没有可用画像时，五个维度和更新时间为空，来源为 ``user-edit``。",
           "operationId": "get_profile_api_profile__get",
           "responses": {
             "200": {
@@ -1011,7 +1016,7 @@
         },
         "put": {
           "summary": "Put Profile",
-          "description": "通过 store 写入五个画像维度。",
+          "description": "用请求内容完整替换五个画像维度；未传入的维度按空字符串写入。",
           "operationId": "put_profile_api_profile__put",
           "requestBody": {
             "content": {
@@ -1052,7 +1057,7 @@
       "/api/profile": {
         "get": {
           "summary": "Get Profile",
-          "description": "返回用户画像；首次使用时返回空画像。",
+          "description": "读取当前用户画像；没有可用画像时，五个维度和更新时间为空，来源为 ``user-edit``。",
           "operationId": "get_profile_api_profile_get",
           "responses": {
             "200": {
@@ -1071,7 +1076,7 @@
         },
         "put": {
           "summary": "Put Profile",
-          "description": "通过 store 写入五个画像维度。",
+          "description": "用请求内容完整替换五个画像维度；未传入的维度按空字符串写入。",
           "operationId": "put_profile_api_profile_put",
           "requestBody": {
             "content": {
@@ -1112,7 +1117,7 @@
       "/api/profile/suggestions": {
         "get": {
           "summary": "Get Suggestions",
-          "description": "返回等待用户审核的画像建议。",
+          "description": "返回当前画像提炼策略生成且仍待用户审核的建议。",
           "operationId": "get_suggestions_api_profile_suggestions_get",
           "responses": {
             "200": {
@@ -1133,7 +1138,7 @@
       "/api/profile/suggestions/{suggestion_id}": {
         "patch": {
           "summary": "Patch Suggestion",
-          "description": "记录用户接受或丢弃建议的决定，但不直接写入 profile.md。",
+          "description": "把指定 ID 的全部建议标记为已接受或已丢弃，不写入画像正文。",
           "operationId": "patch_suggestion_api_profile_suggestions__suggestion_id__patch",
           "parameters": [
             {
@@ -1185,6 +1190,7 @@
       "/api/events/trigger": {
         "post": {
           "summary": "Trigger",
+          "description": "尝试触发一次可执行事件并返回产生的日志。",
           "operationId": "trigger_api_events_trigger_post",
           "responses": {
             "200": {
@@ -1205,6 +1211,7 @@
       "/api/events/history": {
         "get": {
           "summary": "History",
+          "description": "按时间从新到旧返回最近的事件日志。",
           "operationId": "history_api_events_history_get",
           "parameters": [
             {
@@ -1533,7 +1540,7 @@
       "/v1/{rest}": {
         "post": {
           "summary": "Proxy Passthrough",
-          "description": "流式转发 CC 调用的其他 `/v1/*` 路径，例如 `count_tokens`。\n\n所有路径与 `/v1/messages` 共用请求重写和上游转发链路。",
+          "description": "流式转发 CC 调用的其他 `/v1/*` 路径，例如 `/v1/messages/count_tokens`。\n\n这些路径与 `/v1/messages` 共用请求重写和上游转发链路。",
           "operationId": "proxy_passthrough_v1__rest__post",
           "parameters": [
             {
@@ -1653,7 +1660,7 @@
       "/api/cc/sessions/active": {
         "get": {
           "summary": "List Active Sessions",
-          "description": "列出当前进程注册的 CC 会话及 active id。\nconnected 表示是否仍有存活的 CC 子进程。",
+          "description": "列出当前进程注册的 CC 会话及 active id。\n\n`connected` 表示 CC 子进程是否仍存活。",
           "operationId": "list_active_sessions_api_cc_sessions_active_get",
           "responses": {
             "200": {
@@ -1858,7 +1865,7 @@
       "/api/cc/sessions/{sid}/revert": {
         "post": {
           "summary": "Revert Turn",
-          "description": "恢复指定 turn 前的工作树与 CC 历史，并结束当前进程以便后续恢复。\n未知 checkpoint 返回 404，非 Git 工作目录返回 400。",
+          "description": "恢复到指定轮次开始前的工作树和 CC 历史。\n\n恢复后结束当前 CC 子进程，下一次发送将从恢复后的历史启动。找不到恢复点时\n返回 404；工作目录不是 Git 仓库时返回 400。",
           "operationId": "revert_turn_api_cc_sessions__sid__revert_post",
           "parameters": [
             {
@@ -2140,7 +2147,7 @@
         },
         "get": {
           "summary": "List History",
-          "description": "返回两个 runtime 全局排序后的历史分页。",
+          "description": "分页列出指定工作目录中的 Claude Code 和 Codex 历史会话。\n\n两种运行工具的记录合并后按更新时间从新到旧排列。未配置 Codex 会话管理器时\n只返回 Claude Code 记录。\n\nArgs:\n    workdir: 要查询历史会话的工作目录。\n    limit: 本页最多返回的会话数，范围为 1 到 100。\n    cursor: 上一页返回的下一页游标；首次查询时为 None。\n    hub: 负责读取、合并并分页历史会话的 Session Hub。\n\nReturns:\n    统一响应。data 为本页历史会话；meta.next_cursor 为下一页游标，没有下一页\n    时为 None。\n\nRaises:\n    HTTPException: 分页游标无效时返回 400。",
           "operationId": "list_history_api_agent_sessions_get",
           "parameters": [
             {
@@ -2211,7 +2218,7 @@
       "/api/agent/session-defaults": {
         "get": {
           "summary": "Get Session Defaults",
-          "description": "返回最近成功创建或使用的 runtime 配置；无历史时返回 null。",
+          "description": "返回最近创建或使用的会话设置，供新建会话时预填。\n\nArgs:\n    hub: 用于读取最近会话设置的 Session Hub。\n\nReturns:\n    统一响应。data 包含运行工具、模型、思考强度、权限以及 Memory 和 Profile\n    开关；没有历史会话时，data 为 None。",
           "operationId": "get_session_defaults_api_agent_session_defaults_get",
           "responses": {
             "200": {
@@ -2232,7 +2239,7 @@
       "/api/agent/sessions/active": {
         "get": {
           "summary": "List Active",
-          "description": "返回持久化会话、基于本地 registry/manager 的状态和当前视图 id。",
+          "description": "返回当前会话列表，以及各会话的连接、处理和选中状态。\n\n列表也包含尚未连接或已经断开的会话。active_id 只表示工作台当前选中的会话，\n不表示该会话正在执行任务。\n\nArgs:\n    hub: 用于读取会话及实时状态的 Session Hub。\n\nReturns:\n    统一响应。data.sessions 为会话列表，data.active_id 为当前选中的会话 ID；\n    没有选中会话时为 None。",
           "operationId": "list_active_api_agent_sessions_active_get",
           "responses": {
             "200": {
@@ -2253,7 +2260,7 @@
       "/api/agent/sessions/{session_id}/activate": {
         "post": {
           "summary": "Activate Session",
-          "description": "只切换当前视图，不关闭或中断任何会话。",
+          "description": "把指定会话设为工作台当前选中的会话。\n\n此操作只改变选中状态，不会启动、中断或关闭任何会话。\n\nArgs:\n    session_id: 要切换到的会话 ID。\n    hub: 用于更新当前选中会话的 Session Hub。\n\nReturns:\n    统一响应。data.active_id 为切换后的会话 ID。\n\nRaises:\n    HTTPException: 找不到指定会话，此时返回 404。",
           "operationId": "activate_session_api_agent_sessions__session_id__activate_post",
           "parameters": [
             {
@@ -2295,7 +2302,7 @@
       "/api/agent/sessions/{session_id}": {
         "get": {
           "summary": "Get Session",
-          "description": "返回单个持久化 binding；未知 session id 返回 404。",
+          "description": "返回指定会话保存的 ID、运行工具和配置。\n\n此端点不会重新检查实际连接和处理状态；需要实时状态时应使用\n/sessions/active。\n\nArgs:\n    session_id: 要查询的会话 ID。\n    hub: 用于读取会话信息的 Session Hub。\n\nReturns:\n    统一响应。data 为保存的会话信息。\n\nRaises:\n    HTTPException: 找不到指定会话，此时返回 404。",
           "operationId": "get_session_api_agent_sessions__session_id__get",
           "parameters": [
             {
@@ -2335,7 +2342,7 @@
         },
         "patch": {
           "summary": "Patch Session",
-          "description": "拒绝修改 runtime；model/effort/permission_preset 仅为下一次 Codex turn 排队。\n\n``permission_preset`` 立即写回 binding 的 requested 字段，下个 turn/start\n作为 override 生效；其余字段按原契约排队。任一字段被处理时返回合并后的\n``data``，否则 ``data`` 为 ``None``。",
+          "description": "设置指定 Codex 会话下一轮使用的模型、思考强度或权限。\n\n运行工具创建后不能更换。未提供或值为 None 的字段保持不变。模型和思考强度\n会先暂存，在下一轮被 Codex 接受后才保存；权限选择会立即保存，但从下一轮起\n生效，且不能通过此端点改回 follow。\n\nArgs:\n    session_id: 要修改的会话 ID。\n    body: 要修改的运行工具、模型、思考强度或权限；只处理非 None 字段。\n    hub: 负责校验和暂存设置的 Session Hub。\n\nReturns:\n    统一响应。data 包含最终选定的模型、思考强度和权限；adjusted 表示思考强度\n    是否因模型不支持而被自动调整。没有字段需要处理时，data 为 None。\n\nRaises:\n    HTTPException: 会话不存在时返回 404，当前状态不允许修改时返回 409，\n        运行工具或设置无效时返回 422，Codex 当前不可用时返回 503。",
           "operationId": "patch_session_api_agent_sessions__session_id__patch",
           "parameters": [
             {
@@ -2385,7 +2392,7 @@
         },
         "delete": {
           "summary": "Delete Session",
-          "description": "注销原生会话并删除 binding；重复删除仍成功返回。",
+          "description": "移除指定会话，使 Trowel 不再显示或管理它。\n\n移除 Claude Code 会话时会关闭对应进程；移除 Codex 会话时只停止 Trowel 的\n管理和事件接收，不会主动中断已经开始的 Codex 任务。两种工具各自保存的历史\n会话都不会被删除。重复请求仍返回成功。\n\nArgs:\n    session_id: 要移除的会话 ID。\n    hub: 负责清理会话状态的 Session Hub。\n\nReturns:\n    统一响应。会话存在并被移除时 data.closed 为 True；会话原本就不存在时\n    为 False。",
           "operationId": "delete_session_api_agent_sessions__session_id__delete",
           "parameters": [
             {
@@ -2427,7 +2434,7 @@
       "/api/agent/sessions/{session_id}/files": {
         "get": {
           "summary": "Get Session File",
-          "description": "只读打开当前会话工作目录内的普通文件。",
+          "description": "读取指定会话项目目录中的一个文件，并分块发送给客户端。\n\npath 必须是项目目录内的相对路径。目录、符号链接以及无法确认位于项目目录内的\n路径都会被拒绝。响应会禁止缓存，并附带隔离页面内容的安全响应头。\n\nArgs:\n    session_id: 文件所属的会话 ID。\n    path: 相对于会话项目目录的文件路径。\n    hub: 用于读取会话项目目录的 Session Hub。\n\nReturns:\n    文件流响应；内容类型根据文件名判断，无法判断时使用\n    application/octet-stream。\n\nRaises:\n    HTTPException: 路径格式无效时返回 400，无法保证访问范围时返回 403，\n        会话或文件不存在时返回 404。",
           "operationId": "get_session_file_api_agent_sessions__session_id__files_get",
           "parameters": [
             {
@@ -2512,7 +2519,7 @@
       "/api/agent/sessions/{session_id}/requests": {
         "get": {
           "summary": "List Session Requests",
-          "description": "返回保留中的 Codex request，使短暂断线后仍可恢复待决策状态。",
+          "description": "返回指定 Codex 会话的操作确认请求记录。\n\n操作确认请求是 Codex 在执行命令或修改文件前，请用户批准或拒绝的请求。结果既包含\n仍在等待决定的请求，也包含已经回答、超时、自动拒绝或因连接关闭而结束的请求，供\n客户端断线重连后恢复显示。Claude Code 会话返回空列表。\n\nArgs:\n    session_id: 要查询的会话 ID。\n    hub: 用于读取操作确认请求的 Session Hub。\n\nReturns:\n    统一响应。data.requests 为请求记录列表，每项包含请求类型、命令、可选决定、\n    当前状态和最终决定等信息。\n\nRaises:\n    HTTPException: 找不到指定会话时返回 404，Codex 当前不可用时返回 503。",
           "operationId": "list_session_requests_api_agent_sessions__session_id__requests_get",
           "parameters": [
             {
@@ -2615,7 +2622,7 @@
       "/api/agent/sessions/{session_id}/goal": {
         "get": {
           "summary": "Get Codex Goal",
-          "description": "读取 Codex thread 的原生 Goal；Claude Code 会话不适用。",
+          "description": "读取指定 Codex 会话设置的 Codex Goal。\n\nCodex Goal 是绑定在 Codex 对话线程上的持续任务记录，包含任务内容、当前状态、\ntoken 预算和用量等信息。尚未设置时返回 None。读取前会确保对应线程已经连接，\n并把实际使用的线程 ID、模型、思考强度和权限写回会话记录。Claude Code 会话\n不支持此功能。\n\nArgs:\n    session_id: 要查询的会话 ID。\n    hub: 用于读取 Codex Goal 的 Session Hub。\n\nReturns:\n    统一响应。data.goal 为完整的 Codex Goal；尚未设置时为 None。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前状态不允许连接 Codex 线程时返回\n        409；会话由 Claude Code 运行时返回 422；连接线程、保存会话信息或读取\n        Goal 失败时返回 502；Codex 当前不可用时返回 503。",
           "operationId": "get_codex_goal_api_agent_sessions__session_id__goal_get",
           "parameters": [
             {
@@ -2655,7 +2662,7 @@
         },
         "put": {
           "summary": "Set Codex Goal",
-          "description": "创建或局部更新 Codex thread 的原生 Goal。",
+          "description": "创建指定 Codex 会话的 Codex Goal，或修改已有 Goal 中传入的字段。\n\n请求可以设置任务内容、当前状态和 token 数量上限，且至少要传入一个字段。没有传入\n的字段保留原值；将 token_budget 明确设为 None 表示取消 token 限制。操作前会确保\n对应的 Codex 对话线程已经连接，并保存实际使用的线程 ID 和设置。Claude Code 会话\n不支持此功能。\n\nArgs:\n    session_id: 要设置 Codex Goal 的会话 ID。\n    body: 要创建或修改的 Goal 字段。\n    hub: 负责设置 Codex Goal 的 Session Hub。\n\nReturns:\n    统一响应。data.goal 为创建或更新后的完整 Codex Goal。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；没有提供任何字段、字段值无效或会话由\n        Claude Code 运行时返回 422；连接线程、保存会话信息或设置 Goal 失败时\n        返回 502；Codex 当前不可用时返回 503。",
           "operationId": "set_codex_goal_api_agent_sessions__session_id__goal_put",
           "parameters": [
             {
@@ -2705,7 +2712,7 @@
         },
         "delete": {
           "summary": "Clear Codex Goal",
-          "description": "清除 Codex thread 的原生 Goal。",
+          "description": "清除指定 Codex 会话当前设置的整个 Codex Goal。\n\n清除后该会话不再设置 Codex Goal；这不是把 Goal 状态改为 complete。操作前会确保\n对应的 Codex 对话线程已经连接，并保存实际使用的线程 ID 和设置。Claude Code\n会话不支持此功能。\n\nArgs:\n    session_id: 要清除 Codex Goal 的会话 ID。\n    hub: 负责清除 Codex Goal 的 Session Hub。\n\nReturns:\n    统一响应。data.cleared 表示 Codex 是否成功清除了 Goal。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；会话由 Claude Code 运行时返回 422；\n        连接线程、保存会话信息或清除 Goal 失败时返回 502；Codex 当前不可用时\n        返回 503。",
           "operationId": "clear_codex_goal_api_agent_sessions__session_id__goal_delete",
           "parameters": [
             {
@@ -2747,7 +2754,7 @@
       "/api/agent/sessions/{session_id}/commands": {
         "get": {
           "summary": "List Codex Commands",
-          "description": "返回当前 CLI 版本经过验证的 session-scoped 命令 roster。",
+          "description": "列出指定 Codex 会话支持的命令及其使用条件。\n\n这些命令包括 /status、/compact 和 /review 等针对当前会话的操作，不是 shell\n命令，也不会作为普通用户消息发送给 Codex。只返回已经适配当前 Codex 命令行程序\n版本的命令；版本未知或尚未验证时返回空列表。\n\nArgs:\n    session_id: 要查询命令的 Codex 会话 ID。\n    hub: 用于读取可用命令的 Session Hub。\n\nReturns:\n    统一响应。data.commands 为命令列表，每项包含名称、说明、对应操作、来源，\n    以及能否在 Codex 正在处理任务时使用。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；会话由 Claude Code 运行时返回 422；\n        启动 Codex 或读取版本失败时返回 502；Codex 当前不可用时返回 503。",
           "operationId": "list_codex_commands_api_agent_sessions__session_id__commands_get",
           "parameters": [
             {
@@ -2789,7 +2796,7 @@
       "/api/agent/sessions/{session_id}/commands/compact": {
         "post": {
           "summary": "Compact Codex Session",
-          "description": "调用 ``thread/compact/start``，不创建普通用户消息。",
+          "description": "请求 Codex 压缩指定会话当前对话线程的上下文。\n\n压缩会把较早的对话内容整理成更短的摘要，减少后续轮次需要携带的上下文。此操作\n不会发送普通用户消息。接口在 Codex 接受启动请求后立即返回，不等待压缩完成；\n后续进度和结果通过会话事件流发送。\n\nArgs:\n    session_id: 要压缩上下文的 Codex 会话 ID。\n    hub: 负责启动上下文压缩的 Session Hub。\n\nReturns:\n    统一响应。data.started 为 True 只表示 Codex 已接受启动请求，不表示压缩\n    已经完成。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前有其他轮次正在运行时返回 409；\n        会话由 Claude Code 运行时返回 422；连接会话或启动压缩失败时返回 502；\n        Codex 当前不可用时返回 503。",
           "operationId": "compact_codex_session_api_agent_sessions__session_id__commands_compact_post",
           "parameters": [
             {
@@ -2831,7 +2838,7 @@
       "/api/agent/sessions/{session_id}/commands/review": {
         "post": {
           "summary": "Start Codex Review",
-          "description": "按 0.144.0 ReviewTarget schema 启动 inline 原生审查。",
+          "description": "在指定 Codex 会话的当前对话线程中启动一次代码审查。\n\n审查目标可以是未提交的改动、当前代码与指定基础分支的差异、某个提交，或一段\n自定义审查要求。审查不会创建普通用户消息，也不会另开对话线程。接口在 Codex\n接受启动请求后立即返回，不等待审查完成；后续过程和结果通过会话事件流发送。\n\nArgs:\n    session_id: 要启动代码审查的 Codex 会话 ID。\n    body: 审查目标及其所需参数。\n    hub: 负责启动 Codex 代码审查的 Session Hub。\n\nReturns:\n    统一响应。data.review_thread_id 为审查所在的 Codex 对话线程 ID，\n    data.turn_id 为本次审查的轮次 ID。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前有其他轮次正在运行时返回 409；\n        审查目标无效或会话由 Claude Code 运行时返回 422；连接会话或启动审查\n        失败时返回 502；Codex 当前不可用时返回 503。",
           "operationId": "start_codex_review_api_agent_sessions__session_id__commands_review_post",
           "parameters": [
             {
@@ -2883,7 +2890,7 @@
       "/api/agent/sessions/{session_id}/events": {
         "get": {
           "summary": "Stream Codex Events",
-          "description": "常驻订阅 Codex live 事件；多个客户端共享一个原生队列 reader。",
+          "description": "持续向客户端发送指定 Codex 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、\n工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的\n事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前\n正在执行的任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Codex 会话 ID。\n    hub: 负责订阅 Codex 事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时\n        返回 422；Codex 当前不可用时返回 503。",
           "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
           "parameters": [
             {
@@ -2921,7 +2928,7 @@
       "/api/agent/sessions/{session_id}/turns": {
         "post": {
           "summary": "Start Codex Turn",
-          "description": "启动一个 Codex turn，live 事件由常驻 events SSE 发送。",
+          "description": "向指定 Codex 会话发送一段文字，并启动新一轮处理。\n\n接口在 Codex 接受输入并创建轮次后立即返回，不等待这一轮结束。回复文本、工具调用\n和最终状态等后续事件通过 /events 接口发送；为了避免漏掉较早的事件，调用方应先\n建立事件流连接，再启动轮次。\n\n/compact、/review 等由 Trowel 单独处理的 Codex 命令不能作为普通文字发送，必须\n调用各自的接口。\n\nArgs:\n    session_id: 要启动新一轮处理的 Codex 会话 ID。\n    body: 要发送给 Codex 的非空文字。\n    hub: 负责启动 Codex 轮次的 Session Hub。\n\nReturns:\n    统一响应。data.turn_id 为 Codex 创建的轮次 ID；返回该 ID 不表示本轮已经结束。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前已有轮次正在启动或运行时返回 409；\n        输入为空、会话由 Claude Code 运行或输入是专用命令时返回 422；Codex\n        未能接受输入或保存会话信息时返回 502；Codex 当前不可用时返回 503。",
           "operationId": "start_codex_turn_api_agent_sessions__session_id__turns_post",
           "parameters": [
             {
@@ -3021,7 +3028,7 @@
       "/api/agent/runtimes": {
         "get": {
           "summary": "List Runtimes",
-          "description": "返回两种 runtime 的 capability 与 host 可用状态。\n\nCodex ``connected`` 只表示共享 manager 已装配，不代表登录或代理健康。",
+          "description": "列出 Claude Code 和 Codex 支持的功能及当前接入状态。\n\nCodex 的 connected 只表示应用已经配置共享会话管理器，不代表账号已登录或\n网络可用。Claude Code 的 connected 当前固定为 True，不会主动探测进程。\n\nArgs:\n    hub: 用于判断 Codex 会话管理器是否已配置的 Session Hub。\n\nReturns:\n    统一响应。data 为两个运行工具的标识、显示名称、底层程序、功能列表和\n    connected 状态。",
           "operationId": "list_runtimes_api_agent_runtimes_get",
           "responses": {
             "200": {
@@ -3042,7 +3049,7 @@
       "/api/agent/models": {
         "get": {
           "summary": "List Models",
-          "description": "返回原生 Codex model catalog，不维护静态回退名单。",
+          "description": "返回当前 Codex 提供的模型目录。\n\nTrowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。\n\nArgs:\n    hub: 用于读取 Codex 模型目录的 Session Hub。\n\nReturns:\n    统一响应。data.models 为 Codex 当前提供的模型列表。\n\nRaises:\n    HTTPException: Codex 会话管理器未配置时返回 503。",
           "operationId": "list_models_api_agent_models_get",
           "responses": {
             "200": {
@@ -3063,7 +3070,7 @@
       "/api/agent/sessions/{session_id}/history": {
         "get": {
           "summary": "Get Session History",
-          "description": "按 binding runtime 回放原生 history；序号独立从 1 开始。",
+          "description": "回放指定 Claude Code 或 Codex 会话的历史事件。\n\n读取方式由会话记录中的运行工具决定，返回结果统一为 AgentEvent，并从 1 重新\n编号。会话尚未取得 Claude Code 会话 ID 或 Codex thread ID 时返回空列表。\n\nArgs:\n    session_id: 要回放历史的 Trowel 会话 ID。\n    hub: 负责读取并统一历史事件的 Session Hub。\n\nReturns:\n    统一响应。data 为按时间顺序排列的历史事件列表。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；Codex 会话管理器未配置时返回 503。",
           "operationId": "get_session_history_api_agent_sessions__session_id__history_get",
           "parameters": [
             {
@@ -3105,7 +3112,7 @@
       "/api/agent/sessions/{session_id}/subagents/{thread_id}/history": {
         "get": {
           "summary": "Get Subagent History",
-          "description": "Replay a Codex child thread after validating its root-session ownership.",
+          "description": "读取指定 Codex 子 Agent 对话线程自己产生的历史事件。\n\n读取前会沿父线程关系确认该线程以当前会话的主线程为根，并排除各级父线程已有的\n轮次。返回事件统一为 AgentEvent，并从 1 重新编号。\n\nArgs:\n    session_id: 子线程所属的 Trowel 会话 ID。\n    thread_id: 要回放的 Codex 子线程 ID。\n    hub: 负责校验归属并读取子线程历史的 Session Hub。\n\nReturns:\n    统一响应。data 为该子 Agent 自己产生的历史事件列表。\n\nRaises:\n    HTTPException: 子线程不属于指定会话时返回 403；找不到会话或主线程时返回\n        404；会话由 Claude Code 运行时返回 422；Codex 会话管理器未配置时\n        返回 503。",
           "operationId": "get_subagent_history_api_agent_sessions__session_id__subagents__thread_id__history_get",
           "parameters": [
             {
@@ -3177,6 +3184,7 @@
       "/{full_path}": {
         "get": {
           "summary": " Spa Fallback",
+          "description": "为未匹配的路径返回前端资源，API 路径则返回 JSON 404。\n\n非 API 路径存在静态文件时直接返回，否则回退到 SPA 入口。\n\nArgs:\n    full_path: 请求路径中去掉开头斜杠后的部分。",
           "operationId": "_spa_fallback__full_path__get",
           "parameters": [
             {
@@ -3229,7 +3237,7 @@
             "decision"
           ],
           "title": "AnswerAgentRequest",
-          "description": "回答一个 connection-scoped Codex server request。\n\nHTTP 边界保留原始 decision 字符串；manager 再根据该 pending request 记录的\n``availableDecisions`` 校验。"
+          "description": "回答当前 Codex 连接上的一个待决请求。\n\nHTTP 边界保留原始决定文本，运行时管理器再按该请求允许的选项校验。\n\nAttributes:\n    decision: 用户选择的处理方式，必须与该请求允许的决定之一匹配。"
         },
         "AnswerElicitRequest": {
           "properties": {
@@ -3248,7 +3256,7 @@
           },
           "type": "object",
           "title": "AnswerElicitRequest",
-          "description": "回答待处理的 AskUserQuestion；`cancel` 会写入 deny control_response。"
+          "description": "提交对待处理 `AskUserQuestion` 的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入\n        `control_response.updatedInput.answers`。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
         },
         "BaseBranchReviewTarget": {
           "properties": {
@@ -3269,7 +3277,8 @@
             "type",
             "branch"
           ],
-          "title": "BaseBranchReviewTarget"
+          "title": "BaseBranchReviewTarget",
+          "description": "要求 Codex 审查当前分支相对于指定基础分支的改动。\n\nAttributes:\n    type: 固定为 baseBranch，用于选择这种审查目标。\n    branch: 作为比较基准的分支名称。"
         },
         "BuyItemRequest": {
           "properties": {
@@ -3283,7 +3292,8 @@
           "required": [
             "item_id"
           ],
-          "title": "BuyItemRequest"
+          "title": "BuyItemRequest",
+          "description": "指定要购买的商品目录 ID。"
         },
         "CommitReviewTarget": {
           "properties": {
@@ -3316,7 +3326,8 @@
             "type",
             "sha"
           ],
-          "title": "CommitReviewTarget"
+          "title": "CommitReviewTarget",
+          "description": "要求 Codex 审查指定 Git 提交引入的改动。\n\nAttributes:\n    type: 固定为 commit，用于选择这种审查目标。\n    sha: 要审查的 Git 提交 ID。\n    title: 随审查请求提供的可选提交标题；None 表示不提供标题。"
         },
         "CreateAgentSessionRequest": {
           "properties": {
@@ -3585,7 +3596,8 @@
             "type",
             "instructions"
           ],
-          "title": "CustomReviewTarget"
+          "title": "CustomReviewTarget",
+          "description": "要求 Codex 按给定范围和关注点进行审查。\n\nAttributes:\n    type: 固定为 custom，用于选择这种审查目标。\n    instructions: 描述审查范围和要求的非空文字。"
         },
         "EquipRequest": {
           "properties": {
@@ -3636,7 +3648,7 @@
             "content"
           ],
           "title": "ExtractRequest",
-          "description": "提交给卡片提取流程的原始内容。"
+          "description": "携带要交给卡片提取流程的原始内容。\n\nAttributes:\n    content: 原始文本或 Claude Code JSONL 对话记录，至少包含一个字符。"
         },
         "FeedRequest": {
           "properties": {
@@ -3736,7 +3748,7 @@
           },
           "type": "object",
           "title": "PatchAgentSessionRequest",
-          "description": "``runtime`` 创建后不可变；model/effort 只为下一次 Codex turn 排队。\n\n``permission_preset`` 立即写入 binding 的 requested 字段，并在下一次\n``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 生效。"
+          "description": "修改已创建的 Codex 会话配置。\n\n模型和思考强度先为下一轮排队，Codex 接受该轮后成为对话线程的当前设置。权限\n模式立即写入会话记录，并从下一轮或下次重连起生效；此接口不能切换到 follow。\n运行工具创建后不能更换。\n\nAttributes:\n    runtime: 用于确认会话仍使用原运行工具；传入另一种运行工具会被拒绝，None\n        表示不检查。\n    model: 下一轮请求使用的 Codex 模型；None 表示保持现有选择。\n    effort: 下一轮请求使用的 Codex 思考强度；None 表示保持现有选择。\n    permission_preset: 后续轮次和重连使用的 Codex 权限模式；None 表示保持现有\n        选择，follow 会被拒绝。"
         },
         "ProfileUpdate": {
           "properties": {
@@ -3777,7 +3789,7 @@
           },
           "type": "object",
           "title": "ProfileUpdate",
-          "description": "五个可编辑画像维度及文件级来源；更新时间由服务端写入。"
+          "description": "接收一份完整的用户画像更新。\n\n这是整份替换而非部分修改；更新时间由服务端生成，未传入的维度会按空字符串\n写入。\n\nAttributes:\n    ability: 用户自述的背景、知识和能力。\n    methodology: 用户长期采用的做事方式和流程偏好。\n    expression: 用户希望 AI 采用的措辞、结构和讲解方式。\n    goal: 需要持续影响后续协作方向的长期目标。\n    other: 不属于上述四个维度、但会影响后续协作的稳定信息。\n    source: 本次更新来自用户编辑还是 AI 校准，分别记录为\n        ``user-edit`` 或 ``ai-calibration``。"
         },
         "ReExplainRequest": {
           "properties": {
@@ -3815,7 +3827,7 @@
             "category"
           ],
           "title": "ReExplainRequest",
-          "description": "草稿尚未持久化，因此直接携带内容；``user_hint`` 为空时自由生成。"
+          "description": "携带重新生成草稿解释所需的当前内容和用户偏好。\n\n草稿尚未保存，因此请求直接携带内容而不是卡片 ID。\n\nAttributes:\n    explanation: 当前解释，模型会根据它生成新的候选版本；至少包含 10 个字符。\n    title: 草稿标题，不能为空。\n    category: 草稿分类，不能为空。\n    user_hint: 用户希望采用的解释方向；为 ``None`` 或空字符串时不限定方向。"
         },
         "RevertRequest": {
           "properties": {
@@ -3830,7 +3842,7 @@
             "turn_id"
           ],
           "title": "RevertRequest",
-          "description": "恢复到 `turn_id` 对应 turn 之前，并丢弃该 turn 及后续内容。"
+          "description": "恢复到指定轮次开始前，并丢弃该轮及后续内容。\n\nAttributes:\n    turn_id: 要恢复的轮次所对应的 checkpoint ID。"
         },
         "ReviewRequest": {
           "properties": {
@@ -3861,7 +3873,7 @@
             "action"
           ],
           "title": "ReviewRequest",
-          "description": "审核卡片草稿并携带可选字段修改。"
+          "description": "描述如何处理一张卡片草稿。\n\nAttributes:\n    action: 审核动作；``\"accept\"`` 原样保存，``\"edit\"`` 应用 ``edits`` 后\n        保存，``\"reject\"`` 不保存卡片。\n    edits: ``action`` 为 ``\"edit\"`` 时覆盖草稿字段的键值；没有修改时为\n        ``None``。模型不限制 ``action`` 与 ``edits`` 的组合：``\"accept\"``\n        或 ``\"reject\"`` 携带的修改会被忽略，``\"edit\"`` 没有修改时会原样保存。"
         },
         "SendMessageBody": {
           "properties": {
@@ -3875,7 +3887,8 @@
           "required": [
             "text"
           ],
-          "title": "SendMessageBody"
+          "title": "SendMessageBody",
+          "description": "携带要发送给 Agent 会话的非空文本。\n\nAttributes:\n    text: 作为本轮用户输入发送给 Claude Code 或 Codex 的文字。"
         },
         "SendMessageRequest": {
           "properties": {
@@ -3890,7 +3903,7 @@
             "text"
           ],
           "title": "SendMessageRequest",
-          "description": "向 CC 会话发送一条非空消息。"
+          "description": "向 CC 会话发送一条非空消息。\n\nAttributes:\n    text: 作为本轮用户输入发送给 CC 的文字。"
         },
         "SetCodexGoalRequest": {
           "properties": {
@@ -3939,7 +3952,8 @@
             }
           },
           "type": "object",
-          "title": "SetCodexGoalRequest"
+          "title": "SetCodexGoalRequest",
+          "description": "指定要创建或更新的 Codex Goal 字段。\n\nAttributes:\n    objective: Goal 要完成的任务；None 表示不修改。\n    status: Goal 当前的执行状态；None 表示不修改。\n    token_budget: Goal 最多可以使用的 token 数量。省略该字段时保留原限制；\n        明确传入 None 时取消限制。"
         },
         "StartCodexReviewRequest": {
           "properties": {
@@ -3975,7 +3989,8 @@
           "required": [
             "target"
           ],
-          "title": "StartCodexReviewRequest"
+          "title": "StartCodexReviewRequest",
+          "description": "携带一次 Codex 代码审查的目标。\n\nAttributes:\n    target: 要审查的内容，可以是未提交改动、与基础分支的差异、指定提交或\n        自定义要求。"
         },
         "SubmitRequest": {
           "properties": {
@@ -4015,7 +4030,7 @@
             "status"
           ],
           "title": "SuggestionStatusUpdate",
-          "description": "用户对画像建议的接受或丢弃决定。"
+          "description": "接收用户对一条画像建议的处理结果。\n\n该请求只修改建议队列中的状态，不会把建议正文写入用户画像。\n\nAttributes:\n    status: ``accepted`` 将建议标记为已接受，``discarded`` 将建议标记为\n        已丢弃。"
         },
         "UncommittedChangesReviewTarget": {
           "properties": {
@@ -4030,7 +4045,8 @@
           "required": [
             "type"
           ],
-          "title": "UncommittedChangesReviewTarget"
+          "title": "UncommittedChangesReviewTarget",
+          "description": "要求 Codex 审查当前工作区中尚未提交的全部改动。\n\nAttributes:\n    type: 固定为 uncommittedChanges，用于选择这种审查目标。"
         },
         "ValidationError": {
           "properties": {

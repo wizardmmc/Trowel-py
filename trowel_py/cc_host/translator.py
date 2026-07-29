@@ -1,3 +1,5 @@
+"""将 CC stream-json 消息翻译为 Trowel 前端事件。"""
+
 from __future__ import annotations
 
 import logging
@@ -28,11 +30,13 @@ _RESULT_ERROR_SUBCLASSES = frozenset(
     }
 )
 
-# 交互工具由 control_request 渲染，不能同时生成普通工具块。
+# AskUserQuestion 由 control_request 翻译为 elicit_request，不再生成普通 tool_call。
 _ELICIT_TOOL_NAMES = frozenset({"AskUserQuestion"})
 
 
 def _is_elicit_tool(name: str) -> bool:
+    """判断工具是否只通过 `control_request` 生成交互事件。"""
+
     return name in _ELICIT_TOOL_NAMES
 
 
@@ -40,8 +44,17 @@ logger = logging.getLogger(__name__)
 
 
 class Translator:
+    """翻译一次逻辑发送中的 CC 消息，并维护工具调用的流式状态。
+
+    同一实例覆盖后台任务自动续跑产生的多个原生片段：每个 `result` 清空未闭合的
+    工具输入块，但已发布的工具调用 ID 保留到本次逻辑发送结束。下一次发送创建新
+    实例，不复用这些状态。
+    """
+
     def __init__(self) -> None:
-        # 每次发送创建一个实例；累加器与去重集合不得跨轮复用。
+        """创建空的工具输入累加器、去重集合和顶层消息分发表。"""
+
+        # service 每次逻辑发送创建一个实例，状态不得跨发送复用。
         self._acc = DeltaAccumulator()
         self._emitted_tool_ids: set[str] = set()
         self._dispatch = {
@@ -55,17 +68,36 @@ class Translator:
         }
 
     def translate(self, cc_event: dict[str, Any]) -> list[TrowelEvent]:
+        """按 CC 顶层消息类型分发一条 stream-json 消息。
+
+        顶层 `type` 缺失、不是字符串或没有对应处理器时忽略消息。处理器异常不在
+        此处捕获，由流式调用边界统一转换为终态错误。
+
+        Args:
+            cc_event: CC 输出的一条 stream-json 消息。
+
+        Returns:
+            按原消息顺序生成的 Trowel 事件；消息被忽略时返回空列表。
+        """
+
         top_type = cc_event.get("type")
         handler = self._dispatch.get(top_type)
         if handler is None:
             return []
-        # handler 异常必须向上冒泡，由调用链在流式边界转换为终态错误事件。
         return handler(cc_event)
 
     def _on_system(self, ev: dict[str, Any]) -> list[TrowelEvent]:
+        """把 CC `system` 状态和进度消息交给专用转换器。"""
+
         return translate_system_event(ev, as_text_fn=_as_text, logger=logger)
 
     def _on_stream_event(self, ev: dict[str, Any]) -> list[TrowelEvent]:
+        """按内部事件类型处理内容块的开始、增量和结束。
+
+        块开始只登记元数据，增量由 `_on_delta` 处理，块结束由 `_on_block_stop`
+        组装工具调用；其他内部事件不产生输出。
+        """
+
         inner = ev.get("event", {})
         itype = inner.get("type")
         if itype == "content_block_start":
@@ -80,6 +112,12 @@ class Translator:
         return []
 
     def _on_delta(self, inner: dict[str, Any]) -> list[TrowelEvent]:
+        """翻译一个内容块增量。
+
+        文本和思考增量立即生成事件；工具参数分片按块 index 累积，直到块结束才
+        生成工具调用。未知增量类型不产生输出。
+        """
+
         delta = inner.get("delta", {})
         dtype = delta.get("type")
         index = inner.get("index", 0)
@@ -93,7 +131,17 @@ class Translator:
         return []
 
     def _on_block_stop(self, index: int) -> list[TrowelEvent]:
-        # 必须先闭合 block 取得完整调用，再做跨来源去重与交互工具分流。
+        """在内容块闭合后生成完整且未重复的工具调用。
+
+        Args:
+            index: `content_block_stop` 指定的消息内内容块序号。
+
+        Returns:
+            单个普通工具调用；块无效、调用 ID 已发布或工具由交互请求处理时返回
+            空列表。
+        """
+
+        # 先取得完整调用，再与 assistant envelope 按 ID 去重并分流交互工具。
         result = self._acc.on_block_stop(index)
         if result is None:
             return []
@@ -111,7 +159,14 @@ class Translator:
         ]
 
     def _on_assistant(self, ev: dict[str, Any]) -> list[TrowelEvent]:
-        # envelope 可能是唯一内容源；usage 先发出，tool_use 再按 ID 与流式结果去重。
+        """按内容顺序拆分完整 assistant envelope。
+
+        `message.usage` 先生成 `ContextUsageEvent`，随后按 `content` 顺序生成文本、
+        思考和普通工具调用。assistant envelope 提供完整内容；其中工具调用与已闭合
+        的流式块按 ID 去重，文本和思考不做跨来源去重。`AskUserQuestion` 留给
+        `control_request`。
+        """
+
         out: list[TrowelEvent] = []
         msg = ev.get("message", {}) or {}
         usage = msg.get("usage")
@@ -153,7 +208,14 @@ class Translator:
         return out
 
     def _on_user(self, ev: dict[str, Any]) -> list[TrowelEvent]:
-        # 顶层 tool_use_result 的预计算 diff 必须随每个工具结果传给展示层。
+        """从 user envelope 中提取工具执行结果。
+
+        顶层 `tool_use_result` 的文件 diff 和退出码附到 envelope 内的每个
+        `tool_result`。退出码优先读取顶层 `exitCode`；该字段为 `None` 时再读取
+        `task.exitCode`，且只接受非布尔整数。`is_error` 同样只接受布尔值。
+        """
+
+        # structuredPatch 在顶层 tool_use_result 中，不在 message.content 块内。
         write_diff = write_diff_from_cc_result(ev.get("tool_use_result"))
         out: list[TrowelEvent] = []
         for block in ev.get("message", {}).get("content", []) or []:
@@ -169,6 +231,11 @@ class Translator:
         return out
 
     def _on_tool_progress(self, ev: dict[str, Any]) -> list[TrowelEvent]:
+        """把 CC 工具耗时消息转换为单个工具进度事件。
+
+        `elapsed_time_seconds` 缺失时使用 0.0，其他值直接交给 `float()` 转换。
+        """
+
         return [
             ToolProgressEvent(
                 tool_use_id=ev.get("tool_use_id", ""),
@@ -178,7 +245,13 @@ class Translator:
         ]
 
     def _on_result(self, ev: dict[str, Any]) -> list[TrowelEvent]:
-        # 每个 result 分支都先重置累加器；后台任务场景会在同一逻辑轮内继续下一个原生片段。
+        """把一个原生 `result` 转换为完成或错误事件。
+
+        已知错误 subtype 保留上游错误列表；只有 `subtype == "success"` 且
+        `is_error` 为假值时生成完成事件，其余情况生成通用错误事件。所有分支都
+        清空尚未闭合的工具输入块，为可能的后台续跑片段隔离分片状态。
+        """
+
         sub = ev.get("subtype")
         if sub in _RESULT_ERROR_SUBCLASSES:
             errors_raw = ev.get("errors") or []
@@ -209,6 +282,13 @@ class Translator:
         ]
 
     def _on_control_request(self, ev: dict[str, Any]) -> list[TrowelEvent]:
+        """把 `AskUserQuestion` 权限请求转换为可回答的交互事件。
+
+        仅处理 `request.subtype == "can_use_tool"` 的 `AskUserQuestion`。缺少非空
+        `tool_use_id` 或 `request_id` 时记录 warning 并丢弃，因为响应无法关联回
+        原请求。`questions` 保持上游字段 shape，并以浅拷贝列表传入事件模型。
+        """
+
         req = ev.get("request") or {}
         if req.get("subtype") != "can_use_tool":
             return []
@@ -217,7 +297,7 @@ class Translator:
         tool_use_id = req.get("tool_use_id")
         request_id = ev.get("request_id")
         if not tool_use_id or not request_id:
-            # 缺少关联 ID 时必须告警并丢弃，不能发出无法回传的半成品事件。
+            # 无关联 ID 的事件无法构造 control_response。
             logger.warning(
                 "AskUserQuestion control_request missing tool_use_id or "
                 "request_id; dropping. raw=%s",
@@ -235,6 +315,22 @@ class Translator:
 
 
 def _as_text(content: Any) -> str:
+    """将 CC 消息正文归一化为纯文本。
+
+    `None` 变为空字符串，字符串原样返回。列表只保留字典形式且 `type == "text"`
+    的块，并将其 `text` 值按原顺序用换行连接；这些值不做字符串转换。列表以外的
+    其他值使用 `str()` 转换。
+
+    Args:
+        content: CC `content` 字段的原始值。
+
+    Returns:
+        归一化后的文本。
+
+    Raises:
+        TypeError: 列表中保留的 `text` 值不是字符串。
+    """
+
     if content is None:
         return ""
     if isinstance(content, str):

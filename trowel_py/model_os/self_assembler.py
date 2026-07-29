@@ -82,6 +82,8 @@ def build_self_manifest(
 
 
 def _native_tools_note(runtime: str) -> str:
+    """说明本次调用的工具和 MCP 由哪个 runtime 提供。"""
+
     return f"本次 runtime 的工具与 MCP 由 {runtime} 自带，不在 trowel 层重复"
 
 
@@ -94,13 +96,15 @@ def _authorization_scope(permission_preset: str | None) -> str:
 
 
 def _state_line(state: SubsystemState) -> str:
+    """把子系统开关转成注入状态说明。"""
+
     if state == SubsystemState.INJECTED:
         return "本次内容已注入"
     return "本次内容未注入"
 
 
 def render_self_injection(manifest: SelfManifest) -> str:
-    """渲染 Self 注入；稳定身份头在动态调用信息之前，以复用 prompt cache。"""
+    """构建注入自我认知的提示词。"""
 
     runtime = manifest.runtime
     model_line = manifest.model if manifest.model is not None else "未定"

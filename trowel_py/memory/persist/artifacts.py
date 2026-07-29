@@ -1,4 +1,4 @@
-"""Reflection 与 escalation 产物。"""
+"""把 reflection 与 escalation 保存为带来源信息的会话级 Markdown。"""
 
 from typing import Any
 
@@ -14,7 +14,28 @@ def _write_meta(
     context: PersistContext,
     body: str,
 ) -> bool:
-    """空正文不落盘；同一 session 的产物覆盖更新。"""
+    """写入一项会话级 reflection 或 escalation。
+
+    ``body`` 去掉首尾空白后若为空，则返回 ``False``，且不创建、覆盖或删除
+    已有文件。正文非空时，去掉首尾空白并补一个末尾换行，然后写入
+    ``<store.root>/<rel_dir>/<cc_session_id>.md``，覆盖同路径文件。
+    frontmatter 固定记录 ``type``、``cc_session_id``、``segment_id`` 和
+    ``review_date``；上下文提供 ``completed_segment`` 或 ``derivation`` 时，
+    再分别记录 ``source`` 或 ``derivation``。
+
+    Args:
+        store: 提供落盘根目录的 Memory Store。
+        rel_dir: 相对于 Store 根目录的产物目录。
+        meta_type: 写入 frontmatter 的产物类型。
+        context: 提供会话、片段、日期和来源信息的持久化上下文。
+        body: 要写入的 Markdown 正文。
+
+    Returns:
+        文件写入成功时为 ``True``；正文为空而跳过写入时为 ``False``。
+
+    Raises:
+        OSError: 无法创建产物目录或写入文件。
+    """
     if not body.strip():
         return False
     path = store.root / rel_dir / f"{context.cc_session_id}.md"

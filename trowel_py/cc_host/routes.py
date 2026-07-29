@@ -51,11 +51,16 @@ def get_registry() -> dict[str, CCHost]:
 
 
 def get_active_session_id() -> str | None:
+    """返回当前选中的 CC 会话 ID。"""
+
     return _ACTIVE_SID
 
 
 def set_active_session_id(session_id: str | None) -> None:
-    """更新当前会话；Agent Hub 通过此入口同步 CC 选择。"""
+    """更新当前会话选择，不校验 session ID 是否已注册。
+
+    Agent Hub 通过此入口同步 CC 选择。
+    """
 
     global _ACTIVE_SID
     _ACTIVE_SID = session_id
@@ -71,12 +76,20 @@ def _require(sid: str, registry: dict[str, CCHost]) -> CCHost:
 
 
 def _sse(event: object) -> str:
+    """将 Pydantic 事件编码为一条 SSE data 消息。"""
+
     return f"data: {event.model_dump_json()}\n\n"  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
 class OpenedCcSession:
-    """已经注册的 CC 会话。"""
+    """已经注册的 CC 会话。
+
+    Attributes:
+        sid: Trowel 生成的 session ID。
+        host: 会话对应的 CC host。
+        name: 用于界面展示的会话名。
+    """
 
     sid: str
     host: CCHost
@@ -88,10 +101,22 @@ def open_cc_session(
     request: Request,
     registry: dict[str, CCHost] | None = None,
 ) -> OpenedCcSession:
-    """创建并注册 CC 会话，保留 routes 的状态与依赖注入边界。
+    """使用应用中的启动配置创建并注册 CC 会话。
 
-    内核在创建时延迟导入 MCP 配置写入器；仅 memory 开启时写配置，关闭时
-    传入 None。校验或 host 构造失败时不会写入 registry 与派生索引。
+    通过工作目录和容量校验后，本函数会创建该会话专用的 MCP 配置；请求中的
+    功能开关决定配置内容。
+    配置由 host 持有并在关闭时删除。host 构造失败时立即删除配置，且不登记会话。
+
+    Args:
+        req: 工作目录、恢复目标和会话功能开关。
+        request: 提供代理地址和 CC settings 路径的当前 HTTP 请求。
+        registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
+
+    Returns:
+        已注册会话的 ID、host 和显示名称。
+
+    Raises:
+        HTTPException: 工作目录不存在或当前会话数已达上限。
     """
 
     try:
@@ -114,7 +139,19 @@ def open_cc_session_configured(
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
 ) -> OpenedCcSession:
-    """用显式启动配置创建 CC 会话，供非 HTTP 编排层调用。"""
+    """使用显式代理和 settings 配置创建并注册 CC 会话。
+
+    创建成功后登记会话及其显示名称和工作目录，并把新会话设为当前选择。
+
+    Args:
+        req: 工作目录、恢复目标和会话功能开关。
+        registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
+        proxy_base_url: CC 子进程使用的代理地址；为 `None` 时不配置代理。
+        settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
+
+    Returns:
+        已注册会话的 ID、host 和显示名称。
+    """
 
     target_registry = _REGISTRY if registry is None else registry
     sid, host, name = session_lifecycle.open_session(
@@ -160,7 +197,9 @@ def list_active_sessions(
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """列出当前进程注册的 CC 会话及 active id。
-    connected 表示是否仍有存活的 CC 子进程。"""
+
+    `connected` 表示 CC 子进程是否仍存活。
+    """
     sessions = session_lifecycle.list_live_sessions(registry, _SESSION_NAMES)
     return {
         "success": True,
@@ -236,8 +275,11 @@ async def revert_turn(
     body: RevertRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """恢复指定 turn 前的工作树与 CC 历史，并结束当前进程以便后续恢复。
-    未知 checkpoint 返回 404，非 Git 工作目录返回 400。"""
+    """恢复到指定轮次开始前的工作树和 CC 历史。
+
+    恢复后结束当前 CC 子进程，下一次发送将从恢复后的历史启动。找不到恢复点时
+    返回 404；工作目录不是 Git 仓库时返回 400。
+    """
     host = _require(sid, registry)
     try:
         meta = checkpoint.revert(host.workdir, body.turn_id)
@@ -297,9 +339,17 @@ def list_models_endpoint() -> dict:
 def _init_roster_for_workdir(
     workdir: str, registry: dict[str, CCHost]
 ) -> list[str]:
-    """返回 workdir 的初始化命令表，优先使用该目录的 active session。
+    """返回指定工作目录中可用的初始化命令。
 
-    active 不属于该 workdir 或无可用 roster 时，回退到同目录其他 session。
+    优先读取该目录当前选中会话的命令；该会话不属于目标目录或没有命令时，
+    再检查同目录的其他会话。
+
+    Args:
+        workdir: 要查询的工作目录。
+        registry: 提供初始化命令的当前 CC 会话。
+
+    Returns:
+        第一个可用的初始化命令列表；没有可用命令时返回空列表。
     """
     return session_lifecycle.init_roster_for_workdir(
         workdir,
@@ -339,10 +389,20 @@ def list_dir(
 async def close_cc_session(
     session_id: str, registry: dict[str, CCHost] | None = None
 ) -> bool:
-    """关闭已注册 CC 会话并清理多开状态。
+    """关闭 CC 会话，并在成功后移除其注册状态。
 
-    直接调用对未知 id 返回 False，供 Agent Hub 幂等清理；DELETE 路由会先经
-    ``_require`` 转为 404。host.close 失败时保留 registry、索引与 active 状态。
+    未知会话返回 `False`，便于调用方重复清理。host 关闭失败时异常继续向上传递，
+    registry、工作目录索引、显示名称和当前选择均保持不变。
+
+    Args:
+        session_id: 要关闭的 Trowel 会话 ID。
+        registry: 要更新的 registry；为 `None` 时使用模块共享 registry。
+
+    Returns:
+        找到并成功关闭会话时返回 `True`；会话不存在时返回 `False`。
+
+    Raises:
+        BaseException: host 关闭失败时原样向上传递。
     """
 
     target_registry = _REGISTRY if registry is None else registry

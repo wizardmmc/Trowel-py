@@ -1,3 +1,5 @@
+"""提供花园植物列表和聚合统计接口。"""
+
 from fastapi import APIRouter, Depends
 from trowel_py.db.connection import create_db
 from trowel_py.garden.repository import GardenRepository, create_garden_repository
@@ -11,7 +13,10 @@ router = APIRouter()
 
 
 def _get_conn():
-    """请求结束时提交并关闭连接，异常路径也不回滚。"""
+    """为一次请求提供数据库连接。
+
+    请求结束时提交并关闭连接，异常路径也不回滚。
+    """
     conn = create_db()
     try:
         yield conn
@@ -21,6 +26,7 @@ def _get_conn():
 
 
 def _get_garden_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> GardenRepository:
+    """为请求创建花园数据仓库。"""
     return create_garden_repository(conn)
 
 

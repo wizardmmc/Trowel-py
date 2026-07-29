@@ -1,4 +1,7 @@
-"""监视 CC 的 workflow 文件、journal 与 agent transcript。"""
+"""监视 CC 的 workflow 文件、journal 与 Agent transcript。
+
+本模块还保留 workflow 树解析函数的兼容入口；具体解析由 `workflow_tree` 实现。
+"""
 
 from __future__ import annotations
 
@@ -37,10 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 def _wf_debug(msg: str) -> None:
+    """接收但不输出 workflow 调试消息，保留现有诊断调用点。"""
+
     pass
 
 
-# CC 用 ``start``/``progress`` 表示进行中，未知状态也必须保持可见而不能误报完成。
+# CC 用 `start`/`progress` 表示进行中；未知状态也必须保持可见，不能误报完成。
 _AGENT_STATE_MAP: dict[str, str] = {
     "done": "done",
     "start": "running",
@@ -56,26 +61,46 @@ WireStatus = Literal["running", "completed", "killed", "failed"]
 
 
 def _agent_state_from_cc(cc_state: Any) -> WireState:
+    """将 CC Agent 状态转换为前端状态，未知值按 `running` 处理。"""
+
     return _run_agent_state_from_cc(cc_state, state_map=_AGENT_STATE_MAP)
 
 
 def _status_from_cc(cc_status: Any) -> WireStatus:
+    """将 CC workflow 状态转换为前端状态，未知值按 `running` 处理。"""
+
     return _run_status_from_cc(cc_status)
 
 
 def _args_to_str(raw: Any) -> str | None:
+    """将 workflow 参数转为可展示文本。"""
+
     return _run_args_to_str(raw, dumps=json.dumps)
 
 
 def _int_or_none(value: Any) -> int | None:
+    """将 workflow 的阶段 index、计数和毫秒时长转换为整数。
+
+    `None` 和布尔值返回 `None`，整数原样返回，有限浮点数向零截断。其他非浮点值
+    先转成字符串再解析，转换触发 `TypeError` 或 `ValueError` 时返回 `None`。
+
+    Raises:
+        ValueError: 浮点数是 `NaN`。
+        OverflowError: 浮点数是正无穷或负无穷。
+    """
+
     return _run_int_or_none(value)
 
 
 def _str_or_none(value: Any) -> str | None:
+    """将 workflow 的非 `None` 字段转换为字符串。"""
+
     return _run_str_or_none(value)
 
 
 def _phase_from_top(p: Any) -> WorkflowPhaseInfo | None:
+    """将顶层阶段条目转为阶段信息。"""
+
     return _run_phase_from_top(
         p,
         phase_type=WorkflowPhaseInfo,
@@ -84,6 +109,8 @@ def _phase_from_top(p: Any) -> WorkflowPhaseInfo | None:
 
 
 def _phases_from_progress(events: list[Any]) -> list[WorkflowPhaseInfo]:
+    """从进度事件中恢复阶段列表。"""
+
     return _run_phases_from_progress(
         events,
         phase_type=WorkflowPhaseInfo,
@@ -93,6 +120,8 @@ def _phases_from_progress(events: list[Any]) -> list[WorkflowPhaseInfo]:
 
 
 def _agent_from_event(e: Any) -> WorkflowAgentInfo | None:
+    """将进度事件转为 Agent 信息。"""
+
     return _run_agent_from_event(
         e,
         agent_type=WorkflowAgentInfo,
@@ -103,6 +132,8 @@ def _agent_from_event(e: Any) -> WorkflowAgentInfo | None:
 
 
 def parse_workflow_tree(wf: dict[str, Any]) -> WorkflowTreeEvent:
+    """把已解析的 CC workflow 快照转换为前端树事件。"""
+
     return _run_parse_workflow_tree(
         wf,
         event_type=WorkflowTreeEvent,
@@ -117,30 +148,58 @@ def parse_workflow_tree(wf: dict[str, Any]) -> WorkflowTreeEvent:
 
 
 class WorkflowWatcher:
-    """按会话轮询 CC 的 workflow 快照、journal 与 agent transcript。"""
+    """按会话轮询 CC 的 workflow 快照、journal 与 Agent transcript。
+
+    观察器在 service 看到 Workflow 工具调用后才启用。启用时已经存在的完整快照
+    由历史回放发布，不进入实时轮询；之后从完整快照或 journal 发现的 run 才加入
+    `all_done` 判断。journal 提供完整快照出现前的 Agent 状态，
+    `wf_<runId>.json` 出现后替换该临时快照。
+
+    Attributes:
+        enabled: 是否已经启用文件轮询。
+        is_watching: 完整快照 mtime 缓存的诊断状态，不统计只有 journal 的 run。
+        all_done: 启用后发现的 run 是否都已发布终态完整快照。
+    """
 
     _TERMINAL_STATUSES = frozenset({"completed", "killed", "failed"})
 
     def __init__(self, transcript_dir: Path | None) -> None:
+        """创建尚未启用的 workflow 文件观察器。
+
+        Args:
+            transcript_dir: 当前 CC 会话的 transcript 目录；原生会话 ID 尚未确定时
+                为 `None`，之后由 `set_transcript_dir()` 补充。
+        """
+
         self._dir = transcript_dir
-        # 只在本 turn 出现 Workflow tool_use 后轮询，避免普通会话持续扫描磁盘。
+        # 只有观察到 Workflow tool_use 后才启用，避免从未使用 Workflow 的会话持续扫描。
         self._enabled = False
         # mtime 只在快照读取成功后提交，失败时必须允许下次重试同一文件。
         self._last_mtime: dict[str, float | None] = {}
         self._finished: set[str] = set()
-        # enable 前已有的 run 归 history replay 所有，live watcher 不得重复发送。
+        # enable 时已有完整快照的 run 归历史回放所有，实时观察器不得重复发送。
         self._pre_existing: set[str] = set()
-        # turn 终态只由 enable 后发现的 run 决定，不能被历史完成快照提前触发。
+        # all_done 只统计 enable 后发现的 run，不能被历史完成快照提前触发。
         self._tracked: set[str] = set()
-        # wf.json 完成前，agent 的 live 状态来自对应 journal.jsonl。
+        # `wf_<runId>.json` 出现前，Agent 实时状态来自对应的 `journal.jsonl`。
         self._journal_cursors: dict[str, JsonlCursor] = {}
         self._journal_agents: dict[str, dict[str, WorkflowAgentInfo]] = {}
 
     def set_transcript_dir(self, transcript_dir: Path) -> None:
+        """设置当前 CC 会话的 transcript 目录。
+
+        Args:
+            transcript_dir: 包含 `workflows/` 和 `subagents/workflows/` 的会话目录。
+        """
+
         self._dir = transcript_dir
 
     def enable(self) -> None:
-        """启用轮询，并登记由 history replay 负责的既有 workflow。"""
+        """启用轮询，并登记由历史回放负责的既有完整快照。
+
+        只有第一次调用生效；当时已绑定 transcript 目录时，将其中的
+        `workflows/wf_*.json` 记为既有 run，避免实时路径重复发布。
+        """
         if self._enabled:
             return
         self._enabled = True
@@ -151,16 +210,30 @@ class WorkflowWatcher:
                     self._pre_existing.add(f.stem)
 
     def resync(self) -> None:
-        """在新 send 前重读非终态 run，接回跨 turn 完成的 workflow。"""
+        """清空完整快照的 mtime 缓存，使下次轮询重读未终止 run 的完整快照。
+
+        终态记录、run 跟踪集合和 journal 缓存保持不变，因此跨多次 `send()` 的
+        workflow 仍沿用原有观察状态。
+        """
         self._last_mtime.clear()
 
     def _clear_run_cache(self, run_id: str) -> None:
+        """清除一个 run 的 mtime、跟踪状态和 journal 缓存。
+
+        此方法不修改 `_finished` 和 `_pre_existing`。
+
+        Args:
+            run_id: 要停止跟踪的 workflow run ID。
+        """
+
         self._last_mtime.pop(run_id, None)
         self._tracked.discard(run_id)
         self._journal_cursors.pop(run_id, None)
         self._journal_agents.pop(run_id, None)
 
     def close(self) -> None:
+        """清空全部 run 缓存和集合，保留启用标记与 transcript 目录。"""
+
         run_ids = (
             set(self._last_mtime)
             | self._tracked
@@ -174,17 +247,29 @@ class WorkflowWatcher:
 
     @property
     def enabled(self) -> bool:
+        """返回观察器是否已经启用。"""
+
         return self._enabled
 
     @property
     def is_watching(self) -> bool:
+        """返回完整快照 mtime 数量是否多于已记录的终态 run 数量。
+
+        未绑定 transcript 目录时返回 `False`。该值只用于诊断，不统计只有 journal
+        的运行中 run，也不参与 `send()` 的终态判断。
+        """
+
         if self._dir is None:
             return False
         return len(self._last_mtime) > len(self._finished)
 
     @property
     def all_done(self) -> bool:
-        """当前 turn 发现的 workflow 是否都已终止。"""
+        """判断启用后发现的 workflow 是否都已发布终态完整快照。
+
+        观察器未启用时返回 `True`；已启用但尚未跟踪到 run 时返回 `False`。启用时
+        已有完整快照的 run 不会加入跟踪集合。
+        """
         if not self._enabled:
             return True
         if not self._tracked:
@@ -192,7 +277,18 @@ class WorkflowWatcher:
         return all(rid in self._finished for rid in self._tracked)
 
     def poll(self) -> list[WorkflowTreeEvent]:
-        """合并 wf.json 完成快照与 journal live 状态，按 runId 输出变更。"""
+        """轮询完整快照和 journal，并按 run ID 返回树事件。
+
+        run ID 来自 `workflows/wf_*.json`、含 `journal.jsonl` 的 run 目录，以及已有
+        mtime 和 Agent 缓存；已发布终态或启用时已有完整快照的 run 会被排除。
+        完整快照只在 mtime 尚未成功处理时读取，读取或转换失败不提交 mtime，下次
+        仍会重试。没有完整快照时，只要已经累积 Agent，每轮都会重发 journal 合并
+        快照，以便补全迟到的 label。终态完整快照发布后不再轮询该 run。
+
+        Returns:
+            按 run ID 排序的树事件；观察器未启用、目录未知或没有可发布快照时
+            返回空列表。
+        """
         if not self._enabled or self._dir is None:
             return []
         wf_dir = self._dir / "workflows"
@@ -250,7 +346,24 @@ class WorkflowWatcher:
     def _read_journal_snapshot(
         self, run_id: str, journal_root: Path
     ) -> WorkflowTreeEvent | None:
-        """从 journal 的增量事件构造可被最终 wf.json 替换的运行中快照。"""
+        """从 journal 增量事件构造可被完整快照替换的运行中树事件。
+
+        只处理带非空字符串 `agentId` 的 `started` 和 `result`。`started` 将 Agent
+        记为运行中，`result` 将已有 Agent 标为完成，或补建一个已完成 Agent。空行、
+        JSON 语法错误、非对象和其他事件类型会被忽略；journal 读取失败返回 `None`。
+
+        Args:
+            run_id: 当前 workflow run ID。
+            journal_root: 包含各 run journal 和 Agent transcript 的目录。
+
+        Returns:
+            累积至今的运行中树事件；journal 不存在、读取失败或尚无有效 Agent 时
+            返回 `None`。
+
+        Raises:
+            UnicodeDecodeError: journal 行或 Agent transcript 首行不是有效 UTF-8。
+            AttributeError: transcript 第一个 `text` 块的 `text` 值不是字符串。
+        """
         journal_path = journal_root / run_id / "journal.jsonl"
         if not journal_path.is_file():
             return None
@@ -294,7 +407,7 @@ class WorkflowWatcher:
             return None
         if not agents:
             return None
-        # transcript 可能晚于 started 落盘；先回退到 agentId，后续轮询再补 label。
+        # Agent transcript 可能晚于 started 落盘；先用 agentId，后续轮询再补 label。
         for agent_id, agent in list(agents.items()):
             if agent.label == agent_id:
                 label = self._agent_label_from_transcript(
@@ -316,7 +429,25 @@ class WorkflowWatcher:
     def _agent_label_from_transcript(
         self, journal_root: Path, run_id: str, agent_id: str
     ) -> str | None:
-        """用 agent transcript 首条 prompt 补足 journal 缺失的 live label。"""
+        """从 Agent transcript 首行提取运行中 label。
+
+        content 为字符串时直接使用；为列表时取第一个 `text` 块。文本去除首尾空白，
+        正文超过 40 个字符时截断为 40 个字符并追加省略号。文件不存在、读取失败、
+        JSON 语法错误、content 既不是字符串也不是列表、列表中没有 `text` 块或文本
+        为空时返回 `None`。
+
+        Args:
+            journal_root: 包含各 run journal 和 Agent transcript 的目录。
+            run_id: 当前 workflow run ID。
+            agent_id: 要补充 label 的 Agent ID。
+
+        Returns:
+            从 transcript 首行消息正文得到的短 label，或 `None`。
+
+        Raises:
+            UnicodeDecodeError: transcript 首行不是有效 UTF-8。
+            AttributeError: 第一个 `text` 块的 `text` 值不是字符串。
+        """
         path = journal_root / run_id / f"agent-{agent_id}.jsonl"
         if not path.is_file():
             return None
@@ -347,7 +478,22 @@ class WorkflowWatcher:
         return prompt[:40] + ("…" if len(prompt) > 40 else "")
 
     def _read_snapshot(self, run_id: str, path: Path) -> WorkflowTreeEvent | None:
-        """读取完整快照；文件未写完或解析失败时保留到下次轮询重试。"""
+        """读取并转换一个完整 workflow 快照。
+
+        `read_text()` 抛出 `OSError`、JSON 语法错误、顶层不是对象或树转换抛出普通
+        异常时返回 `None`。调用方不会提交本次 mtime，并会在下次轮询重试。UTF-8
+        解码失败则向上传播。
+
+        Args:
+            run_id: 用于诊断日志的 workflow run ID。
+            path: `wf_<runId>.json` 的路径。
+
+        Returns:
+            转换后的树事件；本次无法取得有效快照时返回 `None`。
+
+        Raises:
+            UnicodeDecodeError: 快照文件不是有效 UTF-8。
+        """
         try:
             raw = path.read_text(encoding="utf-8")
             wf = json.loads(raw)

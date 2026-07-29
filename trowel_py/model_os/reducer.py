@@ -200,6 +200,8 @@ class Snapshot:
     context_observations: tuple[ContextObservationState, ...]
 
     def task_work_items(self) -> tuple[WorkItemState, ...]:
+        """返回所有代表 Task 的 WorkItem。"""
+
         return tuple(w for w in self.work_items if w.kind == WorkItemKind.TASK)
 
     def warm_tasks(self) -> tuple[TaskState, ...]:
@@ -220,6 +222,8 @@ class Snapshot:
         )
 
     def episode_by_id(self, episode_id: str | None) -> EpisodeState | None:
+        """按 ID 查找 Episode；未提供或找不到时返回空。"""
+
         if episode_id is None:
             return None
         return next((e for e in self.episodes if e.episode_id == episode_id), None)
@@ -227,6 +231,8 @@ class Snapshot:
     def non_terminal_episodes_for_work_item(
         self, work_item_id: str
     ) -> tuple[EpisodeState, ...]:
+        """返回一个 WorkItem 下所有尚未结束的 Episode。"""
+
         return tuple(
             e
             for e in self.episodes
@@ -236,6 +242,8 @@ class Snapshot:
     def context_observation(
         self, episode_id: str | None, native_session_id: str
     ) -> ContextObservationState | None:
+        """返回指定 Episode 和原生会话的最新上下文观测。"""
+
         return next(
             (
                 s
@@ -264,6 +272,8 @@ class Snapshot:
 
 
 def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
+    """创建尚未归约任何 journal 记录的空快照。"""
+
     return Snapshot(
         schema_version=schema_version,
         last_seq=0,
@@ -280,6 +290,8 @@ def initial_snapshot(schema_version: int = _SCHEMA_VERSION) -> Snapshot:
 
 
 def _work_item_from_created(event: EventEnvelope) -> WorkItemState:
+    """把 WorkItem 创建事件转换为初始派生状态。"""
+
     return _run_work_item_from_created(
         event,
         work_item_state_factory=WorkItemState,
@@ -294,6 +306,8 @@ def _work_item_from_created(event: EventEnvelope) -> WorkItemState:
 def _replace_work_item(
     snap: Snapshot, work_item_id: str, new_state: WorkItemState
 ) -> Snapshot:
+    """在快照中替换指定 WorkItem 的派生状态。"""
+
     return _run_replace_work_item(
         snap,
         work_item_id,
@@ -303,6 +317,8 @@ def _replace_work_item(
 
 
 def _work_item_fold_runtime() -> WorkItemFoldRuntime:
+    """组装 WorkItem fold 在主 reducer 中使用的依赖。"""
+
     return WorkItemFoldRuntime(
         replace_work_item=_replace_work_item,
         provenance=Provenance,
@@ -312,6 +328,8 @@ def _work_item_fold_runtime() -> WorkItemFoldRuntime:
 
 
 def _apply_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 WorkItem 状态变化事件归约进快照。"""
+
     return _run_apply_status_change(
         snap,
         event,
@@ -333,6 +351,8 @@ def _add_unknown_action(snap: Snapshot, event: EventEnvelope, kind: str) -> Snap
 
 
 def _task_from_created(event: EventEnvelope) -> TaskState:
+    """把 Task 创建事件转换为初始派生状态。"""
+
     return _run_task_from_created(
         event,
         task_state_factory=TaskState,
@@ -340,6 +360,8 @@ def _task_from_created(event: EventEnvelope) -> TaskState:
 
 
 def _episode_from_created(event: EventEnvelope) -> EpisodeState:
+    """把 Episode 创建事件转换为初始派生状态。"""
+
     return _run_episode_from_created(
         event,
         episode_state_factory=EpisodeState,
@@ -348,12 +370,16 @@ def _episode_from_created(event: EventEnvelope) -> EpisodeState:
 
 
 def _find_episode(snap: Snapshot, episode_id: str | None) -> EpisodeState | None:
+    """按 ID 从快照中查找 Episode 派生状态。"""
+
     return _run_find_episode(snap, episode_id)
 
 
 def _replace_episode(
     snap: Snapshot, episode_id: str | None, new_state: EpisodeState
 ) -> Snapshot:
+    """在快照中替换指定 Episode 的派生状态。"""
+
     return _run_replace_episode(
         snap,
         episode_id,
@@ -363,6 +389,8 @@ def _replace_episode(
 
 
 def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
+    """把事件 payload 中的等待信息转换为 PendingDescriptor。"""
+
     return _run_pending_from_payload(
         p,
         pending_descriptor_factory=PendingDescriptor,
@@ -371,6 +399,8 @@ def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
 
 
 def _episode_fold_runtime() -> EpisodeFoldRuntime:
+    """组装 Episode fold 在主 reducer 中使用的依赖。"""
+
     return EpisodeFoldRuntime(
         find_episode=_find_episode,
         replace_episode=_replace_episode,
@@ -383,38 +413,52 @@ def _episode_fold_runtime() -> EpisodeFoldRuntime:
 
 
 def _apply_episode_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 状态变化事件归约进快照。"""
+
     return _run_apply_episode_status_change(
         snap, event, runtime=_episode_fold_runtime()
     )
 
 
 def _apply_episode_checkpoint(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 已提交的 checkpoint 引用归约进快照。"""
+
     return _run_apply_episode_checkpoint(snap, event, runtime=_episode_fold_runtime())
 
 
 def _apply_episode_suspended(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 暂停事件及其等待信息归约进快照。"""
+
     return _run_apply_episode_suspended(snap, event, runtime=_episode_fold_runtime())
 
 
 def _apply_episode_wait_resolved(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 等待已解决事件归约进快照。"""
+
     return _run_apply_episode_wait_resolved(
         snap, event, runtime=_episode_fold_runtime()
     )
 
 
 def _apply_episode_reconcile_required(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 需要核对现实的事件归约进快照。"""
+
     return _run_apply_episode_reconcile_required(
         snap, event, runtime=_episode_fold_runtime()
     )
 
 
 def _apply_episode_reconcile_resolved(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Episode 现实核对完成事件归约进快照。"""
+
     return _run_apply_episode_reconcile_resolved(
         snap, event, runtime=_episode_fold_runtime()
     )
 
 
 def _apply_context_sample(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把上下文用量样本归约为对应会话的最新观测。"""
+
     return _run_apply_context_sample(
         snap,
         event,

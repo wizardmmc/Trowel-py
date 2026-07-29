@@ -2,8 +2,8 @@
 
 ``--disable memories`` 不会注销用户配置的 MCP server。同名配置仍可能在
 memory-off thread 中启动，因此 hub 必须在创建 session 前检查 global、workdir 与
-git root 配置。本模块只读 ``config.toml``；文件缺失或无法解析按无冲突处理，只有
-明确的同名条目会阻止创建。
+git root 配置。本模块只读 ``config.toml``；文件缺失、不可读或无法解析均按无冲突
+处理，只有明确的同名条目会阻止创建。
 """
 
 from __future__ import annotations
@@ -40,6 +40,13 @@ def resolve_codex_config_path(
 
 @dataclass(frozen=True)
 class McpConflict:
+    """表示配置文件声明了正在检查的 MCP 服务名。
+
+    Attributes:
+        server_name: 在 ``mcp_servers`` 中找到的目标服务名。
+        config_path: 声明该服务的 ``config.toml`` 路径。
+    """
+
     server_name: str
     config_path: str
 
@@ -50,10 +57,19 @@ def find_conflicting_mcp_server(
     codex_home: str | os.PathLike | None = None,
     workdir: str | os.PathLike | None = None,
 ) -> McpConflict | None:
-    """检查 global、当前 workdir 与 git root 配置中的同名 server。
+    """按 global、当前 workdir、git root 的顺序查找同名 MCP server。
 
-    此函数无锁且只读取一次。并发写入产生的半成品 TOML 按无冲突处理，下一次创建
-    session 时会重新读取；不能因用户正在编辑配置而阻塞本次创建。
+    此函数无锁且每个文件只读取一次。文件缺失、权限错误等读取失败，以及并发写入
+    产生的半成品 TOML，均按无冲突处理；下一次创建 session 时会重新读取。
+
+    Args:
+        server_name: 要检查的 MCP 服务名，默认检查 Trowel memory 服务。
+        codex_home: Codex 配置目录覆盖；省略时先读取 ``CODEX_HOME``，环境变量也未
+            设置时才使用 ``~/.codex``。
+        workdir: 会话工作目录；None 表示不检查项目级配置。
+
+    Returns:
+        按检查顺序发现的首个冲突；没有明确同名条目时为 None。
     """
 
     for path in _collect_config_paths(codex_home, workdir):
@@ -69,8 +85,8 @@ def _collect_config_paths(
 ) -> list[Path]:
     """收集当前检查覆盖的 global、workdir 与 git root 配置路径。
 
-    Codex 上游 ``config/loader/mod.rs`` 还定义 tree layer；本函数当前只取端点路径，
-    并按 global 优先的首次出现顺序去重。
+    项目层只检查 workdir 本身和 git root，不检查两者之间的祖先目录。结果按 global、
+    workdir、git root 的报告顺序排列，并保留重复路径的首次出现位置。
     """
 
     paths = [resolve_codex_config_path(codex_home)]
@@ -82,7 +98,6 @@ def _collect_config_paths(
             git_path = git_root / ".codex" / CONFIG_TOML
             if git_path != workdir_path:
                 paths.append(git_path)
-    # 保留首次出现顺序，确保 global 配置优先报告。
     seen: set[Path] = set()
     unique: list[Path] = []
     for p in paths:
@@ -93,10 +108,13 @@ def _collect_config_paths(
 
 
 def _git_root(workdir: str | os.PathLike) -> Path | None:
-    """返回 git root；非仓库、git 不可用或超时时均返回 ``None``。"""
+    """探测 git root；进程启动失败、超时、非零退出或空输出时返回 None。
+
+    返回 None 只会省略 git root 配置层；调用方仍检查 global 和 workdir 配置。
+    """
 
     try:
-        result = subprocess.run(  # noqa: S603,S607 - argv 受信，git 从 PATH 解析。
+        result = subprocess.run(  # noqa: S603,S607 - 命令参数固定，cwd 不拼入 argv。
             ["git", "rev-parse", "--show-toplevel"],
             cwd=str(workdir),
             capture_output=True,
@@ -112,6 +130,12 @@ def _git_root(workdir: str | os.PathLike) -> Path | None:
 
 
 def _check_one_layer(path: Path, server_name: str) -> McpConflict | None:
+    """解析单个配置，并仅在 ``mcp_servers`` 含目标 key 时返回冲突。
+
+    文件缺失、不可读、TOML 无效或 ``mcp_servers`` 不是表时均返回 None；读取与解析
+    失败会写 warning，文件缺失不会。
+    """
+
     try:
         with path.open("rb") as handle:
             data = tomllib.load(handle)

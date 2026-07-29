@@ -1,4 +1,4 @@
-"""合并两种 runtime 的历史摘要，并提供 Trowel 自有分页游标。"""
+"""扫描 Claude Code 历史会话，并对 Claude Code 与 Codex 的历史记录进行合并、排序和分页。"""
 
 from __future__ import annotations
 
@@ -12,14 +12,25 @@ _CURSOR_VERSION = 1
 
 
 class HistoryCursorError(ValueError):
-    """历史分页游标无法由当前版本解析。"""
+    """表示历史分页游标格式错误或版本不受支持。"""
 
 
 def scan_cc_history(workdir: str, *, limit: int) -> list[SessionSummary]:
+    """读取指定工作目录中最近的 Claude Code 历史会话摘要。"""
+
     return list_sessions(workdir, limit=limit)
 
 
 def encode_history_cursor(offset: int) -> str:
+    """将历史记录的分页位置编码为可放入 URL 的游标。
+
+    Args:
+        offset: 下一页从第几条历史记录开始读取，0 表示第一条。
+
+    Returns:
+        包含格式版本和分页位置的游标文本。
+    """
+
     payload = json.dumps(
         {"offset": offset, "version": _CURSOR_VERSION},
         separators=(",", ":"),
@@ -29,6 +40,18 @@ def encode_history_cursor(offset: int) -> str:
 
 
 def decode_history_cursor(cursor: str) -> int:
+    """解析历史分页游标，取得下一页的起始位置。
+
+    Args:
+        cursor: encode_history_cursor 生成的游标文本。
+
+    Returns:
+        下一页从第几条历史记录开始读取。
+
+    Raises:
+        HistoryCursorError: 游标格式错误、版本不受支持或分页位置无效。
+    """
+
     try:
         padding = "=" * (-len(cursor) % 4)
         decoded = base64.b64decode(
@@ -54,6 +77,22 @@ def merge_history_page(
     offset: int,
     limit: int,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    """合并 Claude Code 会话摘要和 Codex thread，并按更新时间返回一页。
+
+    缺少有效 ID 或更新时间的 Codex thread 会被忽略。结果按更新时间从新到旧排列；
+    更新时间相同时，再按运行工具和会话 ID 排序。
+
+    Args:
+        cc_summaries: Claude Code 历史会话列表，每项包含会话 ID、标题和更新时间。
+        codex_threads: Codex 返回的 thread 记录。
+        offset: 本页从合并结果中的第几条记录开始。
+        limit: 本页最多返回的记录数。
+
+    Returns:
+        历史记录列表和下一页游标。每条记录包含 runtime、native_session_id、title
+        和 updated_at；没有下一页时游标为 None。
+    """
+
     rows = [
         {
             "runtime": "claude_code",

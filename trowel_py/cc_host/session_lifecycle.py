@@ -23,6 +23,16 @@ class CcCapacityError(Exception):
 
 
 def _display_name(workdir: str, workdir_index: dict[str, set[str]]) -> str:
+    """按工作目录名和同目录现有会话数生成显示名称。
+
+    Args:
+        workdir: 新会话使用的工作目录。
+        workdir_index: 各工作目录当前包含的会话 ID。
+
+    Returns:
+        首个会话使用目录名，后续会话使用带序号的目录名。
+    """
+
     basename = Path(workdir).name or workdir
     existing = len(workdir_index.get(workdir, ()))
     return basename if existing == 0 else f"{basename} #{existing + 1}"
@@ -101,7 +111,15 @@ def list_live_sessions(
     registry: dict[str, CCHost],
     session_names: dict[str, str],
 ) -> list[dict[str, object]]:
-    """把当前 registry 转为路由响应所需的会话行。"""
+    """把当前 registry 转为路由响应使用的会话摘要。
+
+    Args:
+        registry: 当前会话 ID 与 CC host 的对应表。
+        session_names: 各会话 ID 对应的显示名称；缺失时使用工作目录名。
+
+    Returns:
+        保持 registry 迭代顺序的会话摘要列表。
+    """
 
     return [
         {
@@ -124,7 +142,19 @@ def init_roster_for_workdir(
     workdir_index: dict[str, set[str]],
     active_session_id: str | None,
 ) -> list[str]:
-    """优先读取指定工作目录当前活跃会话的初始化命令表。"""
+    """返回指定工作目录中第一个非空的 CC 初始化命令表。
+
+    当前活跃会话属于该目录时优先读取它，否则检查同目录的其他会话。
+
+    Args:
+        workdir: 要查询的工作目录。
+        registry: 当前会话 ID 与 CC host 的对应表。
+        workdir_index: 各工作目录当前包含的会话 ID。
+        active_session_id: 当前活跃的会话 ID；`None` 表示没有活跃会话。
+
+    Returns:
+        找到的首个非空命令列表；没有可用命令时返回空列表。
+    """
 
     sids = workdir_index.get(workdir, set())
     ordered = ([active_session_id] if active_session_id in sids else []) + [
@@ -144,7 +174,22 @@ async def close_session(
     workdir_index: dict[str, set[str]],
     session_names: dict[str, str],
 ) -> bool:
-    """关闭主机，并从调用方持有的多会话状态中移除。"""
+    """关闭 CC host，并从 registry、工作目录索引和名称表中移除会话。
+
+    未知会话不修改任何状态。host 关闭失败时异常向上传递，三张表保持不变。
+
+    Args:
+        session_id: 要关闭的 Trowel 会话 ID。
+        registry: 当前会话 ID 与 CC host 的对应表。
+        workdir_index: 各工作目录当前包含的会话 ID。
+        session_names: 各会话 ID 对应的显示名称。
+
+    Returns:
+        找到并成功关闭会话时返回 `True`；会话不存在时返回 `False`。
+
+    Raises:
+        BaseException: host 关闭失败时原样向上传递。
+    """
 
     host = registry.get(session_id)
     if host is None:

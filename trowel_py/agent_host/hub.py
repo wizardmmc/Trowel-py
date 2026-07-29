@@ -57,30 +57,39 @@ _TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
 
 class SessionHubError(Exception):
-    """SessionHub 拒绝命令或无法完成 runtime 操作。"""
+    """表示 Session Hub 拒绝请求或未能完成会话操作。"""
 
 
 class InvalidSessionRequestError(SessionHubError):
-    """创建或操作请求不满足基本输入条件。"""
+    """表示创建或操作会话时提供的参数无效。"""
 
 
 class SessionNotFoundError(SessionHubError):
-    """binding 或对应的原生会话不存在。"""
+    """表示 Trowel 会话记录或对应的 Claude Code、Codex 会话不存在。"""
 
 
 class SessionAccessError(SessionHubError):
-    """调用方试图操作不属于当前会话的资源。"""
+    """表示请求试图操作属于其他会话的资源。"""
 
 
 class SessionConflictError(SessionHubError):
-    """命令与当前会话、容量或并发状态冲突。"""
+    """表示请求与会话当前状态、连接上限或并发操作冲突。"""
 
 
 class SessionOperationError(SessionHubError):
-    """命令不适用于当前 runtime 或参数组合。"""
+    """表示当前运行工具不支持该操作，或提供的参数组合不适用。"""
 
 
 def _reject_reserved_codex_command(text: str) -> None:
+    """阻止把 Codex 专用斜杠命令作为普通消息发送。
+
+    Args:
+        text: 准备用于启动 Codex 轮次的文本。
+
+    Raises:
+        SessionOperationError: 文本是由 Trowel 单独处理的 Codex 斜杠命令。
+    """
+
     reserved = reserved_command_name(text)
     if reserved is not None:
         raise SessionOperationError(
@@ -89,23 +98,23 @@ def _reject_reserved_codex_command(text: str) -> None:
 
 
 class RuntimeUnavailableError(SessionHubError):
-    """目标 runtime host 当前不可用。"""
+    """表示目标运行工具的管理组件当前不可用。"""
 
 
 class RuntimeTurnError(SessionHubError):
-    """runtime 未能启动或持久化当前 turn。"""
+    """表示 Claude Code 或 Codex 未能完成请求，或操作结果未能保存。"""
 
 
 class RuntimeFrozenError(SessionOperationError):
-    """runtime 已成为路由身份，创建后不能修改。"""
+    """表示试图把已创建的会话从 Claude Code 改为 Codex，或反向修改。"""
 
 
 class CrossRuntimeResumeError(SessionConflictError):
-    """同一原生会话 id 不能跨 runtime 恢复。"""
+    """表示恢复历史会话时选择的运行工具与原会话记录不一致。"""
 
 
 class ConditionMismatchError(SessionConflictError):
-    """恢复同一原生会话时不能改变已冻结的注入条件。"""
+    """表示恢复历史会话时，请求的上下文注入或工具开关与创建时不一致。"""
 
 
 # 生产 opener 与测试替身共享调用协议但具体类型不同，因此保持宽松 Callable。
@@ -113,12 +122,16 @@ CcOpener = Callable[..., Any]
 
 
 def _default_cc_registry() -> dict[str, Any]:
+    """返回 Claude Code 路由当前登记的 Trowel 会话 ID 与会话对象对应表。"""
+
     from trowel_py.cc_host import routes as cc_routes
 
     return cc_routes.get_registry()
 
 
 def _default_cc_opener() -> CcOpener:
+    """返回 Claude Code 路由提供的默认会话创建函数。"""
+
     from trowel_py.cc_host import routes as cc_routes
 
     return cc_routes.open_cc_session_configured
@@ -139,6 +152,22 @@ class SessionHub:
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
+        """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
+
+        Args:
+            store: 保存 Trowel 会话记录的存储对象。
+            codex_manager: Codex 进程和 thread 管理器；未提供时不启用 Codex。
+            cc_registry: Claude Code 会话 ID 与会话对象的对应表；未提供时使用路由
+                模块当前登记的会话。
+            cc_opener: 创建 Claude Code 会话的函数；未提供时使用路由模块的默认
+                函数。
+            cc_proxy_base_url: Claude Code 请求模型时使用的代理地址。
+            cc_settings_path: Claude Code 配置文件路径；使用代理时从中读取模型
+                服务商所需的环境变量。
+            codex_config_home: Codex 配置目录；创建会话前检查其中是否存在同名 MCP。
+            event_observer: 接收每个通用事件的同步回调。
+        """
+
         self._store = store
         self._codex = codex_manager
         self._cc_registry = (
@@ -162,13 +191,33 @@ class SessionHub:
 
     @property
     def store(self) -> BindingStore:
+        """获取保存了 Trowel 会话记录的存储对象。"""
+
         return self._store
 
     @property
     def codex_available(self) -> bool:
+        """是否已经配置 Codex 进程和 thread 管理器。"""
+
         return self._codex is not None
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
+        """创建 Claude Code 或 Codex 会话，并保存对应的 Trowel 会话记录。
+
+        此方法只完成会话登记和配置保存，不发送消息或启动轮次。
+
+        Args:
+            req: 运行工具、工作目录、模型、权限和上下文开关等创建配置。
+
+        Returns:
+            新创建的 Trowel 会话记录。
+
+        Raises:
+            InvalidSessionRequestError: 工作目录不存在或创建参数无效。
+            SessionConflictError: 连接数已满，或 Codex 配置中存在同名 MCP。
+            RuntimeUnavailableError: 请求使用 Codex，但未配置 Codex 会话管理器。
+        """
+
         req = self._inherit_resume_config(req)
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
@@ -183,6 +232,18 @@ class SessionHub:
     def _inherit_resume_config(
         self, req: CreateAgentSessionRequest
     ) -> CreateAgentSessionRequest:
+        """恢复历史会话时，用最近一次 Trowel 会话记录补全未明确指定的配置。
+
+        Claude Code 会沿用模型、思考强度和权限模式，Codex 会沿用权限预设；两者
+        都会沿用 Memory、Profile 和 Self 开关。
+
+        Args:
+            req: 包含 Claude Code 会话 ID 或 Codex thread ID 的创建请求。
+
+        Returns:
+            补全后的创建请求；没有对应历史记录时原样返回。
+        """
+
         if req.resume_from is None:
             return req
         previous = self._latest_binding(
@@ -212,7 +273,17 @@ class SessionHub:
     async def prepare_create_request(
         self, req: CreateAgentSessionRequest
     ) -> CreateAgentSessionRequest:
-        """继承 binding，并在线程中补读旧 CC transcript 的缺失配置。"""
+        """为会话创建请求补全可以沿用的历史配置。
+
+        先读取最近一次 Trowel 会话记录。请求继续 Claude Code 历史会话时，如果记录中
+        没有模型、思考强度或权限配置，再从 Claude Code 自己保存的历史文件中查找。
+
+        Args:
+            req: 尚未补全历史配置的会话创建请求。
+
+        Returns:
+            补全后的创建请求；没有可用历史配置时原样返回。
+        """
 
         prepared = self._inherit_resume_config(req)
         if req.runtime != "claude_code" or req.resume_from is None:
@@ -242,6 +313,17 @@ class SessionHub:
         runtime: Runtime | None = None,
         native_session_id: str | None = None,
     ) -> SessionBinding | None:
+        """查找符合条件且最近更新的 Trowel 会话记录。
+
+        Args:
+            runtime: 只查找由 Claude Code 或 Codex 运行的会话。
+            native_session_id: 只查找指定 Claude Code 会话 ID 或 Codex thread ID
+                对应的记录。
+
+        Returns:
+            最近更新的匹配记录；没有匹配记录时返回 None。
+        """
+
         candidates = [
             binding
             for binding in self._store.list_all()
@@ -263,7 +345,13 @@ class SessionHub:
         )[1]
 
     def latest_session_defaults(self) -> dict[str, Any] | None:
-        """返回最近成功创建或实际使用的会话配置。"""
+        """读取最近创建或使用的会话配置，作为新建会话的默认值。
+
+        Returns:
+            包含运行工具、模型、思考强度、权限、Memory 和 Profile 开关的配置。
+            Claude Code 使用 permission_mode；Codex 使用 permission_preset。
+            没有历史会话记录时返回 None。
+        """
 
         bindings = self._store.list_all()
         if not bindings:
@@ -289,7 +377,23 @@ class SessionHub:
         return defaults
 
     async def hydrate_resume(self, session_id: str) -> SessionBinding:
-        """Codex resume 只挂载原生 thread，并在首条消息前写回有效事实。"""
+        """将要继续的 Codex thread 加载到当前 Codex 进程，并更新 Trowel 会话记录。
+
+        更新内容包括 Codex 实际采用的 thread ID、模型、思考强度和权限。Claude Code
+        会话或没有历史 thread ID 的 Codex 会话不需要加载，直接返回原记录。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            更新后的 Trowel 会话记录。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话或 Codex 会话。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: 该 Codex thread 已被其他会话占用。
+            RuntimeTurnError: Codex thread 加载或会话记录更新失败。
+        """
 
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX or binding.native_session_id is None:
@@ -311,6 +415,22 @@ class SessionHub:
         return self._require(session_id)
 
     def _create_cc(self, req: CreateAgentSessionRequest) -> SessionBinding:
+        """登记 Claude Code 会话并保存初始的 Trowel 会话记录。
+
+        未指定权限模式时使用 bypassPermissions。此时只创建会话对象，不启动
+        Claude Code 进程或轮次。
+
+        Args:
+            req: 已选择 Claude Code 的 Agent 会话创建请求。
+
+        Returns:
+            新创建的 Trowel 会话记录。
+
+        Raises:
+            InvalidSessionRequestError: 工作目录不存在。
+            SessionConflictError: Claude Code 会话数已达到上限。
+        """
+
         from trowel_py.cc_host.schemas import CreateSessionRequest
 
         cc_req = CreateSessionRequest(
@@ -426,14 +546,28 @@ class SessionHub:
                 )
 
     def _display_name(self, workdir: str) -> str:
+        """用工作目录名称生成会话显示名称；同一目录的后续会话依次添加 #2、#3 等序号。"""
+
         basename = Path(workdir).name or str(workdir)
         same_workdir = sum(1 for b in self._store.list_all() if b.workdir == workdir)
         return basename if same_workdir == 0 else f"{basename} #{same_workdir + 1}"
 
     def get(self, session_id: str) -> SessionBinding | None:
+        """读取指定 Trowel 会话的持久化记录，找不到时返回 None。"""
+
         return self._store.get(session_id)
 
     async def list_codex_models(self) -> list[dict[str, Any]]:
+        """读取当前 Codex 提供的全部可见模型及其思考强度选项。
+
+        Returns:
+            Codex 模型列表。每项包含模型 ID、显示名称、说明、默认思考强度和支持的
+            思考强度；顺序与 Codex 返回结果一致。
+
+        Raises:
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+        """
+
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
         return await self._codex.list_models()
@@ -445,7 +579,22 @@ class SessionHub:
         limit: int,
         cursor: str | None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """合并两个 runtime 的最新摘要，并使用 Trowel 自有 offset 游标。"""
+        """读取指定工作目录的 Claude Code 与 Codex 历史会话，并按更新时间分页。
+
+        未配置 Codex 会话管理器时只返回 Claude Code 历史会话。
+
+        Args:
+            workdir: 要查询历史会话的工作目录。
+            limit: 本页最多返回的会话数，范围为 1 到 100。
+            cursor: 上一页返回的下一页游标；首次查询时传入 None。
+
+        Returns:
+            历史会话列表和下一页游标。每条记录包含运行工具、Claude Code 会话 ID
+            或 Codex thread ID、标题和更新时间；没有下一页时游标为 None。
+
+        Raises:
+            InvalidSessionRequestError: limit 超出范围或分页游标无效。
+        """
 
         from trowel_py.agent_host.history import (
             HistoryCursorError,
@@ -475,7 +624,21 @@ class SessionHub:
         )
 
     async def history(self, session_id: str) -> list[dict[str, Any]]:
-        """按 binding runtime 回放公开的原生历史，并从序号 1 重新封装。"""
+        """读取指定会话的历史事件，并转换为通用 AgentEvent 格式。
+
+        每次读取都从序号 1 重新编号。会话记录中尚无 Claude Code 会话 ID 或 Codex
+        thread ID 时返回空列表。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            按历史顺序排列的消息、工具调用和状态等事件。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话。
+            RuntimeUnavailableError: 该会话属于 Codex，但未配置 Codex 会话管理器。
+        """
 
         binding = self._require(session_id)
         native_session_id = binding.native_session_id
@@ -508,7 +671,24 @@ class SessionHub:
     async def child_history(
         self, session_id: str, child_thread_id: str
     ) -> list[dict[str, Any]]:
-        """Replay a child thread only when its parent chain reaches this session root."""
+        """读取指定 Codex 子 Agent thread 自己产生的历史事件。
+
+        只有确认该 thread 最终隶属于当前会话的主 thread 后才返回。Codex 子 thread 中
+        从父级继承的轮次会被排除，避免重复显示父级历史。
+
+        Args:
+            session_id: 父级 Trowel 会话 ID。
+            child_thread_id: 要读取的 Codex 子 Agent thread ID。
+
+        Returns:
+            子 Agent 自己产生并从序号 1 重新编号的 AgentEvent 列表。
+
+        Raises:
+            SessionNotFoundError: 找不到父级会话或其主 thread ID。
+            SessionOperationError: 父级会话不是 Codex 会话。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionAccessError: 指定 thread 不是该会话的子级，或父级关系中出现循环。
+        """
 
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
@@ -562,13 +742,20 @@ class SessionHub:
         return envelopes
 
     def _require(self, session_id: str) -> SessionBinding:
+        """根据 Trowel 会话 ID 读取对应的会话记录；找不到时抛出 SessionNotFoundError。"""
+
         binding = self._store.get(session_id)
         if binding is None:
             raise SessionNotFoundError(f"session {session_id} not found")
         return binding
 
     def list_active(self) -> tuple[list[dict[str, Any]], str | None]:
-        """返回 binding 列表，并以本地 registry/manager 的 session 状态覆盖持久化值。"""
+        """列出全部 Trowel 会话，并补充当前连接和轮次运行状态。
+
+        Returns:
+            会话记录列表与当前选中的会话 ID。每条记录在原有字段外增加 connected 和
+            running；当前没有选中会话时，会话 ID 为 None。
+        """
 
         items: list[dict[str, Any]] = []
         for binding in self._store.list_all():
@@ -580,6 +767,18 @@ class SessionHub:
         return items, self._active_id
 
     def _live_status(self, binding: SessionBinding) -> tuple[bool, bool]:
+        """计算会话列表中的 connected 和 running 状态。
+
+        Claude Code 的 connected 表示子进程存在且尚未退出；Codex 的 connected 表示
+        会话仍登记在 Codex 管理器中。running 表示当前有轮次正在执行。
+
+        Args:
+            binding: 要检查的 Trowel 会话记录。
+
+        Returns:
+            connected 和 running 组成的二元组，顺序为 connected、running。
+        """
+
         if binding.runtime is Runtime.CLAUDE_CODE:
             host = self._cc_registry.get(binding.session_id)
             if host is None:
@@ -597,7 +796,20 @@ class SessionHub:
         return True, state_value == "running"
 
     def activate(self, session_id: str) -> str:
-        """切换当前视图；CC 还需同步旧 routes 的 active id。"""
+        """将指定 Trowel 会话设为当前选中的会话。
+
+        选择 Claude Code 会话时，同时更新旧版 Claude Code 接口保存的当前会话 ID，
+        保证两个接口状态一致。
+
+        Args:
+            session_id: 要选中的 Trowel 会话 ID。
+
+        Returns:
+            当前选中的 Trowel 会话 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话。
+        """
 
         binding = self._require(session_id)
         self._active_id = session_id
@@ -608,6 +820,19 @@ class SessionHub:
         return session_id
 
     def patch(self, session_id: str, **fields: Any) -> None:
+        """检查会话修改请求是否试图更换运行工具。
+
+        此方法只检查 runtime，不保存其他字段；模型、思考强度和权限由各自的方法处理。
+
+        Args:
+            session_id: 要修改的 Trowel 会话 ID。
+            fields: 修改请求中的字段；只有 runtime 会在此处检查。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话。
+            RuntimeFrozenError: 请求把会话改为另一种运行工具。
+        """
+
         binding = self._require(session_id)
         new_runtime = fields.get("runtime")
         if new_runtime is not None and new_runtime != binding.runtime.value:
@@ -623,7 +848,25 @@ class SessionHub:
         model: str | None,
         effort: str | None,
     ) -> dict[str, Any]:
-        """暂存下一个 Codex turn 的原子设置对；不支持的 effort 回落到原生默认值。"""
+        """为指定 Codex 会话选择并暂存下一轮使用的模型和思考强度。
+
+        请求值会根据 Codex 当前提供的模型列表进行校验。思考强度不受所选模型支持时，
+        改用该模型的默认值；设置只有在下一轮被 Codex 接受后才写入 Trowel 会话记录。
+
+        Args:
+            session_id: 要修改的 Trowel 会话 ID。
+            model: 下一轮请求使用的模型；未指定时沿用已有配置。
+            effort: 下一轮请求使用的思考强度；未指定时沿用已有配置。
+
+        Returns:
+            最终选定的 model、effort，以及是否因不兼容而调整过 effort。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话或 Codex 会话。
+            SessionOperationError: 会话不是 Codex 会话，模型不存在，或没有可用的思考强度。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: 当前会话状态不允许修改下一轮设置。
+        """
 
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
@@ -670,19 +913,25 @@ class SessionHub:
         *,
         permission_preset: str,
     ) -> dict[str, Any]:
-        """暂存下一个 Codex turn 的 permission override，requested preset 立即持久化。
+        """更新指定 Codex 会话后续轮次使用的权限模式。
 
-        approval/sandbox 取自 ``_CODEX_PERMISSION_PRESETS``，由 session 在下次
-        ``turn/start`` 作为 ``sandboxPolicy``/``approvalPolicy`` override 发出。
-        ``binding.permission_preset`` 立即写回 store，让 UI 反映用户请求；
-        ``session.apply_permission_override`` 同步更新 live ``CodexSession.config``，
-        避免 host 重连时 ``thread_resume_params`` 仍输出旧 preset 覆盖新选择。
-        effective sandbox/approval 仍以原生响应为准，不在这里推断。
+        新权限同时用于下一轮请求和 Codex 重连。Trowel 会话记录会先于内存中的 Codex
+        会话更新，保存失败时不会出现只修改一半的状态。接口不允许切换到 "follow"，
+        因为它无法可靠撤销当前会话中已经生效的明确权限。
 
-        ``follow`` 没有 sticky 恢复语义——thread/start·resume 上等价于"不发送
-        override"，无法撤销已生效的 Full access；PATCH 直接拒绝，避免给 UI
-        假成功。session 内部 queue/apply 仍接受 ``(None, None)``，那是 session
-        层契约，与 PATCH 的对外语义分开。
+        Args:
+            session_id: 要修改的 Trowel 会话 ID。
+            permission_preset: 新权限模式，可选 "read-only"、"workspace-write" 或
+                "danger-full-access"。
+
+        Returns:
+            包含最终 permission_preset 的字典。
+
+        Raises:
+            SessionNotFoundError: 找不到对应的 Trowel 会话或 Codex 会话。
+            SessionOperationError: 会话不是 Codex 会话，或权限模式无效。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: 当前会话状态不允许修改权限。
         """
 
         binding = self._require(session_id)
@@ -719,12 +968,28 @@ class SessionHub:
         return {"permission_preset": permission_preset}
 
     def _require_codex_runtime(self) -> Any:
+        """返回已配置的 Codex 会话管理器；未配置时抛出 RuntimeUnavailableError。"""
+
         codex = self._codex
         if codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
         return codex
 
     def _require_codex_session(self, session_id: str) -> Any:
+        """读取 Trowel 会话 ID 对应的已登记 Codex 会话。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            Codex 会话管理器中登记的会话对象。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+        """
+
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
             raise SessionOperationError("Goal is Codex-only")
@@ -734,11 +999,41 @@ class SessionHub:
         return session
 
     def require_codex_session(self, session_id: str) -> None:
-        """在开始流式响应前校验 Codex binding 与 live session。"""
+        """在创建 Codex 事件流响应前，确认会话由 Codex 运行且仍登记在管理器中。
+
+        这样可以在 HTTP 200 响应发出前返回正确的错误状态。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+        """
 
         self._require_codex_session(session_id)
 
     async def get_codex_goal(self, session_id: str) -> dict[str, Any] | None:
+        """读取 Codex 会话当前设置的 Goal。
+
+        读取前会确认对应的 Codex thread 已连接，并将实际采用的 thread ID、模型、
+        思考强度和权限写回 Trowel 会话记录。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            Codex 返回的目标内容；尚未设置目标时返回 None。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: Codex 当前状态不允许连接对应的 thread。
+            RuntimeTurnError: 连接 thread、保存会话信息或读取目标失败。
+        """
+
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
         try:
@@ -752,6 +1047,25 @@ class SessionHub:
             raise RuntimeTurnError(f"codex goal get failed: {exc}") from exc
 
     async def list_codex_commands(self, session_id: str) -> list[dict[str, Any]]:
+        """列出当前 Codex CLI 版本已验证可用的会话命令。
+
+        这些命令由 Trowel 单独处理，不会作为普通消息发送给 Codex；CLI 版本未经验证时
+        返回空列表。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            可用命令列表。每项包含命令名称、说明、来源、对应操作，以及轮次运行期间
+            能否使用。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            RuntimeTurnError: 启动 Codex 或读取 CLI 版本失败。
+        """
+
         self._require_codex_session(session_id)
         try:
             return await self._require_codex_runtime().list_commands()
@@ -761,6 +1075,22 @@ class SessionHub:
             raise RuntimeTurnError(f"codex command roster failed: {exc}") from exc
 
     async def compact_codex(self, session_id: str) -> None:
+        """请求 Codex 压缩当前 thread 的上下文。
+
+        此操作不发送普通用户消息。函数在 Codex 接受请求后返回，不等待压缩完成；后续
+        进度和结果由会话事件流报告。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: 当前有其他轮次正在运行。
+            RuntimeTurnError: 连接 thread、保存会话信息或启动压缩失败。
+        """
+
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
         try:
@@ -780,6 +1110,24 @@ class SessionHub:
     async def start_codex_review(
         self, session_id: str, target: dict[str, Any]
     ) -> dict[str, str]:
+        """按指定范围启动 Codex 的代码审查。
+
+        Args:
+            session_id: Trowel 会话 ID。
+            target: 要审查的内容，可以是未提交的改动、与指定基础分支的差异、某个提交
+                或自定义审查要求。
+
+        Returns:
+            审查使用的 Codex thread ID 和本次审查的轮次 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: 当前有其他轮次正在运行。
+            RuntimeTurnError: 启动审查失败。
+        """
+
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
         try:
@@ -808,6 +1156,26 @@ class SessionHub:
         token_budget: int | None,
         token_budget_supplied: bool,
     ) -> dict[str, Any]:
+        """创建 Codex Goal，或更新已有 Goal 中指定的字段。
+
+        Args:
+            session_id: Trowel 会话 ID。
+            objective: Goal 要完成的内容；None 表示不修改。
+            status: Goal 当前的执行状态；None 表示不修改。
+            token_budget: Goal 最多可以使用的 token 数量。
+            token_budget_supplied: 是否更新 token 数量限制。False 表示保留原值；True
+                表示使用 token_budget，其中 None 表示取消限制。
+
+        Returns:
+            Codex 返回的完整 Goal。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            RuntimeTurnError: 创建或更新 Goal 失败。
+        """
+
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
         try:
@@ -825,6 +1193,21 @@ class SessionHub:
             raise RuntimeTurnError(f"codex goal set failed: {exc}") from exc
 
     async def clear_codex_goal(self, session_id: str) -> bool:
+        """清除 Codex 会话当前设置的 Goal。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            是否成功清除了 Goal。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            RuntimeTurnError: 清除 Goal 失败。
+        """
+
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
         try:
@@ -836,7 +1219,12 @@ class SessionHub:
             raise RuntimeTurnError(f"codex goal clear failed: {exc}") from exc
 
     async def _prepare_codex_goal_session(self, session_id: str, session: Any) -> None:
-        """Goal 可在首轮消息前物化 thread，原生请求前必须先持久化该绑定。"""
+        """在读写 Goal 前连接对应的 Codex thread，并保存实际会话信息。
+
+        Args:
+            session_id: Trowel 会话 ID。
+            session: Codex 会话管理器中登记的会话对象。
+        """
 
         await self._require_codex_runtime().attach(session)
         self._writeback_codex_before_turn(session_id, session)
@@ -889,6 +1277,18 @@ class SessionHub:
                 )
 
     async def interrupt(self, session_id: str) -> None:
+        """请求中断会话当前正在运行的轮次。
+
+        没有正在运行的轮次时不执行任何操作；方法返回不代表轮次已经结束。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的运行中会话。
+            RuntimeUnavailableError: 会话由 Codex 运行，但未配置 Codex 会话管理器。
+        """
+
         binding = self._require(session_id)
         if binding.runtime is Runtime.CLAUDE_CODE:
             host = self._cc_registry.get(session_id)
@@ -906,6 +1306,24 @@ class SessionHub:
     def answer_request(
         self, session_id: str, request_id: str, decision: str
     ) -> dict[str, Any]:
+        """把用户对命令执行或文件修改请求的决定交回正在等待答复的 Codex。
+
+        Args:
+            session_id: Trowel 会话 ID。
+            request_id: 要回答的请求 ID。
+            decision: 选择的处理方式，必须是该请求提供的选项之一。
+
+        Returns:
+            回答后的完整请求信息，包括请求状态和最终选择。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或指定请求。
+            SessionOperationError: 该会话由 Claude Code 运行，或选择不在允许范围内。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionAccessError: 请求属于另一个会话。
+            SessionConflictError: 请求已经被回答、过期或关闭。
+        """
+
         binding = self._require(session_id)
         if binding.runtime is not Runtime.CODEX:
             raise SessionOperationError(
@@ -938,7 +1356,16 @@ class SessionHub:
         ]
 
     async def delete(self, session_id: str) -> bool:
-        """注销运行时会话并删除 binding；未知 id 返回 False，允许重试。"""
+        """删除 Trowel 中的指定会话并清理相关运行状态。
+
+        Claude Code 或 Codex 保存的原生会话不会被删除。
+
+        Args:
+            session_id: Trowel 会话 ID。
+
+        Returns:
+            删除成功时返回 True；会话不存在时返回 False。
+        """
 
         binding = self._store.get(session_id)
         if binding is None:
@@ -1023,7 +1450,26 @@ class SessionHub:
             self._remove_codex_event_subscriber(session_id, queue)
 
     async def start_codex_turn(self, session_id: str, text: str) -> str:
-        """只启动 Codex turn；事件由常驻订阅流统一消费。"""
+        """向指定 Codex 会话发送一条输入并启动新一轮处理。
+
+        函数在 Codex 接受请求后返回，不等待这一轮结束；后续事件由
+        subscribe_codex_events 返回。
+
+        Args:
+            session_id: 接收输入的 Codex 会话 ID。
+            text: 要发送给 Codex 的文字内容。
+
+        Returns:
+            Codex 为新一轮处理生成的轮次 ID。
+
+        Raises:
+            SessionNotFoundError: 找不到指定会话，或会话已不再运行。
+            SessionOperationError: 会话由 Claude Code 运行，或输入是需要单独处理的
+                Codex 斜杠命令。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            SessionConflictError: Codex 当前已有一轮正在启动或运行。
+            RuntimeTurnError: Codex 未能接受输入或保存会话信息。
+        """
 
         session = self._require_codex_session(session_id)
         codex = self._require_codex_runtime()
@@ -1049,9 +1495,26 @@ class SessionHub:
     def subscribe_codex_events(
         self, session_id: str
     ) -> AsyncIterator[dict[str, Any]]:
-        """订阅一个 Codex 会话的常驻事件流；所有订阅共享一个原生 reader。"""
+        """持续返回指定 Codex 会话产生的事件。
+
+        此订阅不会启动新一轮处理，也不会在某一轮结束时自动结束。多个订阅者会各自
+        收到相同的事件。
+
+        Args:
+            session_id: 要订阅的 Codex 会话 ID。
+
+        Yields:
+            Codex 产生的会话事件，包括回复文本、工具调用和状态变化等。
+
+        Raises:
+            SessionNotFoundError: 找不到指定会话，或会话已不再运行。
+            SessionOperationError: 指定会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+        """
 
         async def iterate() -> AsyncIterator[dict[str, Any]]:
+            """逐个返回收到的事件，并在停止迭代时取消本次订阅。"""
+
             session = self._require_codex_session(session_id)
             queue = self._add_codex_event_subscriber(session_id, session)
             try:
@@ -1068,6 +1531,16 @@ class SessionHub:
     def _add_codex_event_subscriber(
         self, session_id: str, session: Any
     ) -> asyncio.Queue[dict[str, Any] | None]:
+        """为一个订阅者创建事件队列，并确保该会话的事件读取任务正在运行。
+
+        Args:
+            session_id: 要订阅的 Codex 会话 ID。
+            session: 已登记的 Codex 会话对象。
+
+        Returns:
+            供该订阅者读取的事件队列；队列中的 None 表示事件读取已经结束。
+        """
+
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._codex_event_subscribers.setdefault(session_id, set()).add(queue)
         task = self._codex_event_tasks.get(session_id)
@@ -1081,6 +1554,13 @@ class SessionHub:
     def _remove_codex_event_subscriber(
         self, session_id: str, queue: asyncio.Queue[dict[str, Any] | None]
     ) -> None:
+        """停止向一个调用方发送会话事件，但不中断 Codex 当前的处理。
+
+        Args:
+            session_id: Codex 会话 ID。
+            queue: 该调用方接收事件的队列。
+        """
+
         subscribers = self._codex_event_subscribers.get(session_id)
         if subscribers is None:
             return
@@ -1089,6 +1569,16 @@ class SessionHub:
             self._codex_event_subscribers.pop(session_id, None)
 
     async def _pump_codex_events(self, session_id: str, session: Any) -> None:
+        """持续读取 Codex 会话产生的事件，转换后交给内部模块和所有接收方。
+
+        即使当前没有接收方，也会继续读取事件。读取任务结束时，会通知仍在等待的
+        调用方停止等待。
+
+        Args:
+            session_id: Codex 会话 ID。
+            session: 要从中读取事件的 Codex 会话对象。
+        """
+
         adapter = self._codex_adapters.get(session_id)
         if adapter is None:
             adapter = CodexEventAdapter(session_id)
@@ -1111,6 +1601,14 @@ class SessionHub:
                 queue.put_nowait(None)
 
     def _stop_codex_event_pump(self, session_id: str) -> None:
+        """停止读取指定 Codex 会话的事件，并让所有等待事件的调用方退出等待。
+
+        此操作只停止事件传递，不会中断 Codex 正在执行的任务。
+
+        Args:
+            session_id: Codex 会话 ID。
+        """
+
         task = self._codex_event_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
@@ -1118,7 +1616,13 @@ class SessionHub:
             queue.put_nowait(None)
 
     def _observe(self, payload: Mapping[str, Any]) -> None:
-        """observer 是旁路消费者；其异常只能记录，不能中断用户 turn。"""
+        """把一个会话事件交给创建 SessionHub 时传入的处理函数。
+
+        没有配置处理函数时直接返回；处理失败只记录日志，不影响当前会话继续运行。
+
+        Args:
+            payload: 已转换为统一格式的会话事件。
+        """
 
         if self._event_observer is None:
             return
@@ -1128,9 +1632,17 @@ class SessionHub:
             _log.warning("[hub] event observer raised; ignored", exc_info=True)
 
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
-        """从会话自身序号空间构造终止错误。
+        """把错误信息转换成可通过事件流发送的结束事件。
 
-        binding 消失后无法恢复 runtime 与连续序号，只能返回 legacy 降级帧。
+        找得到会话时，事件编号会接在该会话的前一个事件之后；找不到会话记录时，
+        仍会生成一个最基本的错误事件。
+
+        Args:
+            session_id: 错误所属的会话 ID。
+            detail: 异常对象或错误说明，写入事件时会转换成字符串。
+
+        Returns:
+            可直接发送给客户端的错误事件。
         """
 
         binding = self._store.get(session_id)
@@ -1155,6 +1667,15 @@ class SessionHub:
         return codex_adapter.error_event(detail).model_dump(by_alias=True)
 
     def _writeback_cc_native(self, session_id: str, host: Any) -> None:
+        """把 Claude Code 当前的会话 ID、模型、思考强度和权限保存到会话记录。
+
+        只保存已经取得的信息，不会用 None 清空原记录；保存前会话已被删除时直接忽略。
+
+        Args:
+            session_id: 要更新的会话 ID。
+            host: 提供当前运行信息的 Claude Code 会话对象。
+        """
+
         cc_session_id = getattr(host, "cc_session_id", None)
         model = getattr(host, "effective_model", None) or getattr(host, "model", None)
         if cc_session_id is None and model is None:
@@ -1171,7 +1692,15 @@ class SessionHub:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
 
     def _writeback_codex_native(self, session_id: str, session: Any) -> None:
-        """只写回完整原生事实；空模型 placeholder 不得覆盖已有 binding。"""
+        """把 Codex 当前的线程 ID、模型、思考强度、权限和网络设置保存到会话记录。
+
+        Codex 尚未提供模型时不保存；缺少的值不会清空原记录。保存前会话已被删除时
+        直接忽略。
+
+        Args:
+            session_id: 要更新的会话 ID。
+            session: 提供当前线程和运行设置的 Codex 会话对象。
+        """
 
         thread_binding = getattr(session, "binding", None)
         if thread_binding is None or not thread_binding.model:
@@ -1196,7 +1725,18 @@ class SessionHub:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
 
     def _writeback_codex_before_turn(self, session_id: str, session: Any) -> None:
-        """原生 turn 启动前必须能写回并重新读取 binding。"""
+        """在 Codex 开始新一轮处理前保存线程信息，并确认线程 ID 已正确写入会话记录。
+
+        保存或检查失败时会阻止本轮启动，避免 Codex 已经开始工作，但 Trowel 没有记住
+        对应的线程 ID。
+
+        Args:
+            session_id: 要更新的会话 ID。
+            session: 包含当前线程信息的 Codex 会话对象。
+
+        Raises:
+            KeyError: 线程 ID 无效、会话记录已被删除，或保存后的线程 ID 不一致。
+        """
 
         self._writeback_codex_native(session_id, session)
         persisted = self._store.get(session_id)
@@ -1211,6 +1751,14 @@ class SessionHub:
             raise KeyError(session_id)
 
     def _live_connection_count(self) -> int:
+        """统计当前占用会话名额的 Claude Code 会话和 Codex 线程。
+
+        多个 Codex 线程即使共用同一个管理进程，也会分别占用一个名额。
+
+        Returns:
+            当前已占用的会话名额数量。
+        """
+
         cc_live = sum(
             1 for sid in self._cc_registry if self._store.get(sid) is not None
         )
@@ -1223,6 +1771,15 @@ class SessionHub:
 
 
 def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
+    """收集 Codex 线程记录中所有字符串形式的轮次 ID。
+
+    Args:
+        thread: Codex 返回的线程记录。
+
+    Returns:
+        找到的轮次 ID 集合；turns 字段不存在或不是列表时返回空集合。
+    """
+
     turns = thread.get("turns")
     if not isinstance(turns, list):
         return set()
@@ -1235,10 +1792,16 @@ def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
 
 
 def _is_terminal(payload: dict[str, Any]) -> bool:
-    """判断统一事件是否结束 Codex 流。
+    """判断一条会话事件是否表示 Codex 当前的处理已经结束。
 
-    native_error 已由 adapter 映射为非终态 retrying；host_exited 则是特殊的
-    host_status 终态。
+    处理完成、中断、最终失败或 Codex 进程退出时返回 True；仍在重试的错误返回
+    False。此函数不检查事件属于哪一轮，调用方还需核对轮次 ID。
+
+    Args:
+        payload: 已转换为统一格式的会话事件。
+
+    Returns:
+        该事件表示处理已经结束时返回 True，否则返回 False。
     """
 
     event_type = payload.get("type")
@@ -1252,7 +1815,15 @@ def _is_terminal(payload: dict[str, Any]) -> bool:
 
 
 def _permission_label(sandbox: str | None, approval: str | None) -> str | None:
-    """为旧 permission 展示字段拼接兼容标签。"""
+    """把 Codex 的文件操作范围和确认策略合并成 permission 字段的显示文字。
+
+    Args:
+        sandbox: Codex 可以修改文件的范围；None 表示尚未取得。
+        approval: 哪些操作需要用户确认；None 表示尚未取得。
+
+    Returns:
+        合并后的权限说明；两项都为 None 时返回 None。
+    """
 
     labels = {
         "read-only": "Read only",

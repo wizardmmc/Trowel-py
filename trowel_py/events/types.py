@@ -18,6 +18,8 @@ EventType = Literal[
 
 @dataclass(frozen=True)
 class EventConfig:
+    """保存一种事件的随机权重、冷却时间和卡片数量门槛。"""
+
     type: EventType
     weight: int
     cooldown_minutes: int
@@ -26,7 +28,7 @@ class EventConfig:
 
 @dataclass(frozen=True)
 class GameState:
-    """只携带聚合状态，避免纯引擎依赖卡片持久化结构。"""
+    """只保存事件判断需要的状态，避免选择逻辑依赖卡片数据库结构。"""
 
     total_cards: int
     due_cards: int

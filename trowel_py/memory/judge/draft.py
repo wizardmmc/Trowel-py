@@ -1,4 +1,4 @@
-"""judge agent 草稿的宽松解析。"""
+"""把 judge agent 的 JSON 草稿宽松转换为判效报告。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,11 @@ from trowel_py.memory.judgements import (
 
 
 def _coerce_bool(value: object) -> bool:
+    """按 judge 兼容规则转换布尔值。
+
+    字符串去除首尾空白并转为小写后，只有 ``"false"``、``"0"``、``"no"``
+    和空字符串为假；其他字符串为真。非字符串沿用 Python 真值规则。
+    """
     if isinstance(value, str):
         return value.strip().lower() not in ("false", "0", "no", "")
     return bool(value)
@@ -28,6 +33,28 @@ def _parse_draft(
     cc_session_id: str,
     segment_id: str = "",
 ) -> JudgementReport:
+    """解析判效 JSON，并规范化 Hit 与 Recall miss。
+
+    顶层必须是对象。``hits`` 和 ``recall_miss`` 的假值按空序列处理，其他
+    值直接迭代，其中非对象项会被跳过。Hit 的未知 outcome 会改为
+    ``"unknown"``，Recall miss 的未知 attribution 则整项丢弃。
+    ``memory_id``、``reason``、``evidence`` 和 ``summary`` 的假值归一为空
+    字符串，其余值使用 ``str()``；Memory ID 的真实性不在此处检查，由 judge
+    facade 在保存前另行过滤。
+
+    Args:
+        text: ``judgement-draft.json`` 的完整文本。
+        cc_session_id: 写入报告的被判效 CC 会话 ID。
+        segment_id: 写入报告的可选来源片段 ID。
+
+    Returns:
+        分别保持 ``hits`` 和 ``recall_miss`` 中保留项原顺序的判效报告。
+
+    Raises:
+        JudgeError: 文本不是合法 JSON，或顶层 JSON 不是对象。
+        TypeError: ``hits`` 或 ``recall_miss`` 为真值但不可迭代，或 outcome、
+            attribution 不可哈希。
+    """
     from trowel_py.memory.judge import JudgeError
 
     try:

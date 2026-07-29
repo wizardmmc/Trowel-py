@@ -1,1 +1,1 @@
-"""基于 memory store 的 profile HTTP 适配层。"""
+"""提供用户画像及画像建议的 HTTP 接口。"""

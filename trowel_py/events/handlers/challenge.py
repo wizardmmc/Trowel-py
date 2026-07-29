@@ -14,11 +14,16 @@ _RECENT_EXCLUDE_COUNT = 5
 
 
 class ChallengeHandler:
+    """从卡片库中选择一张卡片生成知识挑战。"""
+
     def can_trigger(self, state: GameState) -> bool:
+        """允许事件继续执行；卡片数量和冷却已由事件引擎过滤。"""
+
         return True
 
     def execute(self, state: GameState, deps: EventDependencies) -> EventResult:
-        """优先到期卡片，否则按陌生度加权；排除近期卡片后不得留下空池。"""
+        """选择卡片生成挑战；优先到期卡片，否则按陌生程度加权并保留回退池。"""
+
         all_cards = deps.card_repo.find_all()
         card_map = {card.id: card for card in all_cards}
         reviewed = {s.card_id: s for s in deps.review_repo.find_all_states()}
@@ -53,10 +58,14 @@ class ChallengeHandler:
 
 
 def _unfamiliarity_weight(state: FSRSState) -> float:
+    """根据复习和遗忘次数计算卡片被挑战的相对权重。"""
+
     return (state.lapses / max(state.reps, 1)) + 1
 
 
 def _weighted_pick(items: list[tuple[Card, float]], rng: random.Random) -> Card:
+    """按给定权重从非空卡片列表中随机选择一张。"""
+
     total = sum(weight for _, weight in items)
     remaining = rng.random() * total
     for card, weight in items:

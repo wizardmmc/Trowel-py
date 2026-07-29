@@ -1,7 +1,8 @@
-"""Trowel 的 Codex app-server 主机公开入口。
+"""导出 Codex app-server 主机的公开接口。
 
-一个后端进程持有一个 manager 和一个 app-server 进程；多个 Codex thread 共享该
-进程，并按 ``threadId`` 将通知路由到所属 session。
+Trowel 后端通过一个 ``CodexHostManager`` 管理共享的 app-server 进程；该进程
+在首次请求时启动，连接失效后可以重启。多个 Codex thread 共用当前进程，
+``CodexHostManager`` 按 ``threadId`` 将通知交给对应的 session。
 """
 
 from __future__ import annotations

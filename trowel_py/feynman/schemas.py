@@ -1,3 +1,5 @@
+"""费曼问题和回答评估的结构化模型输出。"""
+
 from pydantic import BaseModel, Field
 
 

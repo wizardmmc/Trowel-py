@@ -1,4 +1,4 @@
-"""由调用方显式渲染的 recall-miss 反思 prompt；本模块不负责调度。"""
+"""定义 recall-miss 反思 prompt 模板；渲染与调度由调用方负责。"""
 
 from __future__ import annotations
 

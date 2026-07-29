@@ -8,6 +8,12 @@ from trowel_py.codex_host.session import CodexSession
 
 
 def thread_start_params(session: CodexSession) -> dict[str, Any]:
+    """构造 ``thread/start`` 参数，并合并已启用的 Trowel MCP 服务。
+
+    工作目录和 ephemeral 标记始终发送；权限、模型和开发者指令只在会话配置显式
+    提供时发送。
+    """
+
     config = session.config
     params: dict[str, Any] = {
         "cwd": config.workdir,
@@ -32,10 +38,12 @@ def thread_start_params(session: CodexSession) -> dict[str, Any]:
 
 
 def thread_resume_params(session: CodexSession) -> dict[str, Any]:
-    # app-server 不持久化 MCP 配置，恢复线程时必须重新挂载并写入真实 thread id。
-    # thread/resume 接受与 thread/start 相同的 permission override（openai/codex
-    # app-server README）；不显式回传 cwd/sandbox/approvalPolicy，Codex 会回退默认
-    # workspace-write/on-request，使原 Full access 会话恢复后权限回退。
+    """构造 ``thread/resume`` 参数，重发工作目录并按需重发权限与 MCP 配置。
+
+    会话必须已有 binding。app-server 不持久化 MCP 配置，恢复时各 MCP 服务会使用
+    真实 thread ID 重新生成配置；显式重发权限可避免恢复后回退到进程默认值。
+    """
+
     assert session.binding is not None
     config = session.config
     params: dict[str, Any] = {
@@ -73,6 +81,22 @@ def turn_start_params(
     approval: str | None = None,
     sandbox: str | None = None,
 ) -> dict[str, Any]:
+    """构造 ``turn/start`` 文本输入和单轮设置覆盖。
+
+    Args:
+        thread_id: 接收新 turn 的 Codex thread ID。
+        text: 用户输入文本。
+        model: 单轮模型覆盖；None 表示不发送。
+        effort: 单轮推理强度覆盖；None 表示不发送。
+        approval: 单轮审批策略覆盖；None 表示不发送。
+        sandbox: 单轮沙箱预设；已知值转换为 ``sandboxPolicy`` 对象，None 或未知值
+            不发送覆盖。
+
+    Returns:
+        包含 thread ID 和单个文本输入的参数；非 None 的模型、推理强度和审批策略会
+        直接加入，已知沙箱预设会以对象形式加入。
+    """
+
     # Text 输入即使没有富文本片段也必须携带空 text_elements。
     params: dict[str, Any] = {
         "threadId": thread_id,
@@ -83,33 +107,21 @@ def turn_start_params(
     if effort is not None:
         params["effort"] = effort
     if approval is not None:
-        # approvalPolicy 接受 AskForApproval 字符串枚举（"untrusted"|"on-request"|"never"）。
+        # approvalPolicy 使用 AskForApproval 字符串枚举，不是沙箱对象。
         params["approvalPolicy"] = approval
     sandbox_policy = sandbox_policy_from_preset(sandbox)
     if sandbox_policy is not None:
-        # turn/start 用 sandboxPolicy（SandboxPolicy 对象），不是 thread/start·resume
-        # 的 sandbox（SandboxMode 字符串）；字段名与值都不能混用。
+        # turn/start 使用 SandboxPolicy 对象；thread/start 和 thread/resume 使用字符串。
         params["sandboxPolicy"] = sandbox_policy
     return params
 
 
 def sandbox_policy_from_preset(preset: str | None) -> dict[str, Any] | None:
-    """把 preset 字符串映射到 turn/start 的 SandboxPolicy 对象。
+    """将已知沙箱预设转换为 ``turn/start`` 的 SandboxPolicy 对象。
 
-    上游 codex app-server v2 ``SandboxPolicy`` 是 discriminated union：
-    - ``dangerFullAccess`` 无额外字段；
-    - ``readOnly`` 的 ``networkAccess`` 标 ``#[serde(default)]``，这里显式
-      传 ``False``；
-    - ``workspaceWrite`` 的 ``writableRoots``/``networkAccess``/
-      ``excludeTmpdirEnvVar``/``excludeSlashTmp`` 全部 ``#[serde(default)]``
-      （codex-rs app-server-protocol v2 ``permissions.rs``），缺失时服务端
-      回退默认值。真实 app-server 实测：``dangerFullAccess`` thread 上只发
-      ``approvalPolicy`` 不发 ``sandboxPolicy`` 时 native 仍沿用 danger，
-      必须显式发 ``workspaceWrite`` policy 才真正降权；这里按实测的
-      ``empty writableRoots / network false / exclude flags false`` 显式提供，
-      避免依赖服务端默认行为。
-
-    ``None`` 输入表示 ``follow`` preset，不发送 sandboxPolicy。
+    ``workspace-write`` 显式发送空 ``writableRoots``、关闭网络和两个为 false 的临时
+    目录排除开关，避免从 ``danger-full-access`` 降权时依赖服务端默认值。``None`` 或
+    未知预设返回 None，调用方不会发送沙箱覆盖。
     """
 
     if preset is None:

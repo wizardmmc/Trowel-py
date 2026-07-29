@@ -1,7 +1,8 @@
-"""把 Codex app-server 通知翻译为内部事件。
+"""将 Codex app-server 通知翻译为内部事件。
 
-转换无状态、无副作用；manager 负责 thread 路由、会话盖章和诊断。
-读取的原生字段只能来自真实录制或上游协议；已映射通知缺少必填字段即视为协议漂移。
+translator 不保存会话状态；manager 负责 thread 路由和诊断，session 将翻译结果
+绑定到 Trowel 会话并分配序号。读取的原生字段只能来自真实录制或上游协议；已映射
+通知缺少必填字段即视为协议漂移。
 """
 
 from __future__ import annotations
@@ -36,8 +37,8 @@ from trowel_py.codex_host.file_change_codec import (
     parse_unified_diff as _run_parse_unified_diff,
 )
 
-# 此集合只表达 translator 的 method 门控；完整启用还需明确 manager 的
-# global/thread 路由，并补齐 adapter 与公开事件词表。
+# 此集合供 manager 在调用 translate 前静默丢弃 method；启用方法还需确定
+# global/thread 路由，并接通 adapter 与公开事件词表。
 # warning 可没有 threadId，仅移出集合会被 manager 记为 no_thread_id orphan。
 # 未知且未列入集合的方法仍进入诊断；移出前必须确认协议并取得可信 fixture。
 _IGNORED_METHODS: frozenset[str] = frozenset(
@@ -74,7 +75,8 @@ _GOAL_STATUSES = frozenset(
     {"active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"}
 )
 
-# item.type 路由表之外的类型不会猜测语义，而是返回空结果。
+# 未命中 started/completed 分支的 item.type 返回空结果；已映射类型结构不符则
+# 报告协议漂移。
 _ITEM_COMMAND = "commandExecution"
 _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
@@ -94,7 +96,7 @@ _CMD_IN_PROGRESS = "inProgress"
 _CMD_FAILED = "failed"
 _CMD_DECLINED = "declined"
 
-# CommandAction 使用闭集；接受未知 tag 会迫使 UI 猜测未经验证的语义。
+# CommandAction 只接受表中 tag，包括协议定义的 unknown；其他 tag 视为协议漂移。
 _COMMAND_ACTION_FIELDS: Mapping[str, tuple[str, ...]] = {
     "read": ("command", "name", "path"),
     "listFiles": ("command", "path"),
@@ -104,7 +106,10 @@ _COMMAND_ACTION_FIELDS: Mapping[str, tuple[str, ...]] = {
 
 
 def _require(params: Mapping[str, Any], key: str, method: str) -> Any:
-    """读取必填字段；缺失即为协议漂移，不合成兼容值。"""
+    """读取协议必填字段，缺少键时报告所属 method 的协议漂移。
+
+    这里只检查键是否存在；需要拒绝 ``None`` 或错误类型时由调用方继续校验。
+    """
 
     if key not in params:
         raise ProtocolViolationError(
@@ -115,10 +120,20 @@ def _require(params: Mapping[str, Any], key: str, method: str) -> Any:
 
 
 def _as_str(value: Any) -> str:
+    """保留字符串原值，其他值直接使用 ``str()`` 转换。
+
+    本函数不校验协议类型，``None`` 也会转换为 ``"None"``。
+    """
+
     return value if isinstance(value, str) else str(value)
 
 
 def _mcp_tool_name(server: Any, tool: Any) -> str:
+    """用非空的 MCP 服务名和工具名生成显示名称；两者均无效时返回 ``"mcp"``。
+
+    本入口保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+    """
+
     return _run_mcp_tool_name(
         server,
         tool,
@@ -128,6 +143,12 @@ def _mcp_tool_name(server: Any, tool: Any) -> str:
 
 
 def _command_actions(item: Mapping[str, Any], method: str) -> tuple[dict[str, Any], ...]:
+    """校验命令条目的 ``commandActions`` 并转换为公开动作列表。
+
+    ``method`` 仅用于在协议异常中标明通知来源。本入口保留既有签名，并在调用
+    共享 codec 时传入 translator 当前的依赖。
+    """
+
     return _run_command_actions(
         item,
         method,
@@ -144,14 +165,29 @@ def _command_actions(item: Mapping[str, Any], method: str) -> tuple[dict[str, An
 
 
 def _parse_unified_diff(patch: str) -> tuple[dict[str, Any], ...]:
+    """提取 unified diff 中的区块范围和带标记内容行。
+
+    本入口保留既有签名，并使用 translator 当前的 hunk header 调用共享 codec。
+    """
+
     return _run_parse_unified_diff(patch, hunk_header=_HUNK_HEADER)
 
 
 def _full_file_hunk(text: str, marker: str) -> tuple[dict[str, Any], ...]:
+    """将新增或删除文件的完整内容转换为单个变更区块。
+
+    ``marker`` 使用 ``"+"`` 表示新增，使用 ``"-"`` 表示删除。本入口保留既有签名。
+    """
+
     return _run_full_file_hunk(text, marker)
 
 
 def _file_change_write_diff(kind_type: Any, diff: Any) -> dict[str, Any]:
+    """按文件操作类型将完整内容或 unified diff 转换为前端差异对象。
+
+    本入口保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+    """
+
     return _run_file_change_write_diff(
         kind_type,
         diff,
@@ -165,6 +201,12 @@ def _file_change_write_diff(kind_type: Any, diff: Any) -> dict[str, Any]:
 
 
 def _file_change_to_change(change: Mapping[str, Any], method: str) -> dict[str, Any]:
+    """将单个 ``fileChange.changes`` 条目转换为路径、操作类型和差异字段。
+
+    ``method`` 仅用于在协议异常中标明通知来源。本入口保留既有签名，并在调用
+    共享 codec 时传入 translator 当前的依赖。
+    """
+
     return _run_file_change_to_change(
         change,
         method,
@@ -179,9 +221,11 @@ def _file_change_to_change(change: Mapping[str, Any], method: str) -> dict[str, 
 
 
 class CodexTranslator:
-    """把单条原生通知无状态地映射为零个或多个内部事件。"""
+    """将单条原生通知无状态地映射为零个或多个内部事件。"""
 
     def __init__(self) -> None:
+        """建立 ``translate()`` 的 method 分发表；manager 另行应用前置门控。"""
+
         self._dispatch: dict[str, Callable[[Mapping[str, Any]], list[TranslatedItem]]] = {
             "turn/completed": self._on_turn_completed,
             "item/agentMessage/delta": self._on_agent_message_delta,
@@ -202,10 +246,20 @@ class CodexTranslator:
         }
 
     def translate(self, method: str, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """翻译一条通知。
+        """将一条 app-server 通知映射为内部事件。
 
-        未知 method 返回空列表，由调用方决定是否记录诊断；已映射通知缺少
-        必填字段时抛出 ``ProtocolViolationError``。
+        未知 method 或未映射的 ``item.type`` 返回空列表；handler 明确校验的
+        必填键、字段类型或枚举值不符合协议时抛出 ``ProtocolViolationError``。
+
+        Args:
+            method: app-server 通知的方法名。
+            params: 通知携带的参数对象。
+
+        Returns:
+            按通知内容生成的内部事件；没有稳定映射时返回空列表。
+
+        Raises:
+            ProtocolViolationError: 已校验的通知结构不符合协议。
         """
 
         handler = self._dispatch.get(method)
@@ -271,6 +325,8 @@ class CodexTranslator:
     def _on_agent_message_delta(
         self, params: Mapping[str, Any]
     ) -> list[TranslatedItem]:
+        """保留 item ID 和文本增量，供下游按同一消息连续输出。"""
+
         return [
             TranslatedItem(
                 type=CodexEventType.ASSISTANT_DELTA,
@@ -308,9 +364,12 @@ class CodexTranslator:
         ]
 
     def _on_item_started(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """只为 command、fileChange 与 MCP item 生成 TOOL_STARTED。
+        """翻译已启用的 item 启动通知。
 
-        agentMessage 与 reasoning 通过独立 delta 通知输出。
+        ``commandExecution``、``fileChange`` 和 ``mcpToolCall`` 生成
+        ``TOOL_STARTED``；``subAgentActivity`` 与 ``collabAgentToolCall``
+        生成 ``SUBAGENT_ACTIVITY``。其余类型，包括 ``contextCompaction`` 和
+        未知值，返回空结果。
         """
 
         item = _require(params, "item", "item/started")
@@ -335,7 +394,11 @@ class CodexTranslator:
         return []
 
     def _on_item_completed(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """按 item.type 翻译完成事件。"""
+        """按 ``item.type`` 翻译完成通知。
+
+        工具、完整助手消息、subagent、compaction 和 review mode 分别映射为对应
+        事件；其余类型，包括未知值，返回空结果。
+        """
 
         item = _require(params, "item", "item/completed")
         if not isinstance(item, Mapping):
@@ -366,6 +429,11 @@ class CodexTranslator:
     def _command_started_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """把 ``item/started`` 中的命令执行转换为工具启动条目。
+
+        本方法保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+        """
+
         return _run_command_started_item(
             params,
             item,
@@ -381,6 +449,11 @@ class CodexTranslator:
     def _command_completed_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """把 ``item/completed`` 中的命令执行转换为工具完成条目。
+
+        本方法保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+        """
+
         return _run_command_completed_item(
             params,
             item,
@@ -396,6 +469,11 @@ class CodexTranslator:
     def _mcp_tool_started_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """把 ``item/started`` 中的 MCP 调用转换为工具启动条目。
+
+        本方法保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+        """
+
         return _run_mcp_tool_started_item(
             params,
             item,
@@ -411,6 +489,11 @@ class CodexTranslator:
     def _mcp_tool_completed_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """把 ``item/completed`` 中的 MCP 调用转换为工具完成条目。
+
+        本方法保留既有签名，并在调用共享 codec 时传入 translator 当前的依赖。
+        """
+
         return _run_mcp_tool_completed_item(
             params,
             item,
@@ -468,6 +551,8 @@ class CodexTranslator:
     def _agent_message_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """保留完整助手文本和 phase；下游 adapter 可丢弃它以避免重复 delta。"""
+
         return TranslatedItem(
             type=CodexEventType.ASSISTANT_MESSAGE,
             thread_id=_as_str(_require(params, "threadId", "item/completed")),
@@ -480,6 +565,8 @@ class CodexTranslator:
         )
 
     def _on_token_usage(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """保留 total、last 和上下文窗口组成的稀疏用量快照。"""
+
         usage = _require(params, "tokenUsage", "thread/tokenUsage/updated")
         if not isinstance(usage, Mapping):
             raise ProtocolViolationError(
@@ -520,7 +607,10 @@ class CodexTranslator:
         ]
 
     def _on_error(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """翻译原生错误；willRetry 为真时 turn 仍然存活。"""
+        """翻译原生错误并保留 ``willRetry``，但不把通知当作 turn 终态。
+
+        turn 是否结束仍以 ``turn/completed`` 为准。
+        """
 
         error = _require(params, "error", "error")
         if not isinstance(error, Mapping):
@@ -571,11 +661,9 @@ class CodexTranslator:
             )
         ]
 
-    # warning 虽已登记 handler，manager 仍会在 translate 前丢弃；
-    # subagent 的 started/completed 也显式返回空。启用前必须取得可信 fixture。
-    # compaction 不属于该门控：仅 completed 已形成运行时边界。
-
     def _on_goal_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """校验目标状态闭集，并保留预算、用量和时间戳的完整快照。"""
+
         method = "thread/goal/updated"
         thread_id = _as_str(_require(params, "threadId", method))
         goal = _require(params, "goal", method)
@@ -609,6 +697,8 @@ class CodexTranslator:
         ]
 
     def _on_goal_cleared(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        """用无 payload 的专用事件表示 thread 已清除目标。"""
+
         method = "thread/goal/cleared"
         return [
             TranslatedItem(
@@ -731,6 +821,8 @@ class CodexTranslator:
     def _review_mode_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
+        """要求 review 为字符串，并将 item 类型归一化为 entered 或 exited。"""
+
         review = _require(item, "review", "review mode item")
         if not isinstance(review, str):
             raise ProtocolViolationError(
@@ -754,6 +846,8 @@ class CodexTranslator:
     def _on_turn_diff_updated(
         self, params: Mapping[str, Any]
     ) -> list[TranslatedItem]:
+        """保留当前 turn 的完整差异字符串，而非增量补丁。"""
+
         method = "turn/diff/updated"
         diff = _require(params, "diff", method)
         if not isinstance(diff, str):
@@ -770,9 +864,9 @@ class CodexTranslator:
         ]
 
     def _on_warning(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """翻译尚未启用的 warning/guardianWarning shape。
+        """翻译已实现但仍被 manager 门控的 warning/guardianWarning。
 
-        warning 可没有 threadId，且不代表 turn 终态。configWarning 与
+        ``threadId`` 可缺省，且该通知不表示 turn 终态。configWarning 与
         deprecationNotice 的 shape 不同，仍保持忽略。
         """
 

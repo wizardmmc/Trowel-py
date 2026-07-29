@@ -1,4 +1,4 @@
-"""派生日记的只读范围判定、stale 比较与依赖级联。"""
+"""检查 live 派生日记的状态，并生成带依赖的重生成计划。"""
 
 from __future__ import annotations
 
@@ -36,6 +36,12 @@ _LAYER_ORDER = {"daily": 0, "weekly": 1, "monthly": 2}
 
 
 def _daily_periods(start: str, end: str) -> list[str]:
+    """把有效日期范围展开为包含首尾的 ISO 日期列表。
+
+    Raises:
+        ValueError: 日期格式无效，或开始日期晚于结束日期。
+        OverflowError: 范围包含最大支持日期，循环递增时越界。
+    """
     first = date.fromisoformat(start)
     last = date.fromisoformat(end)
     if first > last:
@@ -49,6 +55,11 @@ def _daily_periods(start: str, end: str) -> list[str]:
 
 
 def _parse_week(period: str) -> date:
+    """把 ``YYYY-Www`` 周标识解析为该 ISO 周的周一。
+
+    Raises:
+        ValueError: 格式无效，或年份与周数组合不存在。
+    """
     match = re.fullmatch(r"(\d{4})-W(\d{2})", period)
     if not match:
         raise ValueError(f"invalid ISO week: {period!r}")
@@ -56,6 +67,12 @@ def _parse_week(period: str) -> date:
 
 
 def _week_periods(start: str, end: str) -> list[str]:
+    """把有效 ISO 周范围展开为包含首尾的周标识列表。
+
+    Raises:
+        ValueError: 周标识无效，或开始周晚于结束周。
+        OverflowError: 范围末周接近最大支持日期，循环递增时越界。
+    """
     first = _parse_week(start)
     last = _parse_week(end)
     if first > last:
@@ -70,6 +87,11 @@ def _week_periods(start: str, end: str) -> list[str]:
 
 
 def _parse_month(period: str) -> tuple[int, int]:
+    """把 ``YYYY-MM`` 标识解析为年份和月份。
+
+    Raises:
+        ValueError: 格式无效或月份不存在。
+    """
     match = re.fullmatch(r"(\d{4})-(\d{2})", period)
     if not match:
         raise ValueError(f"invalid month: {period!r}")
@@ -79,6 +101,11 @@ def _parse_month(period: str) -> tuple[int, int]:
 
 
 def _month_periods(start: str, end: str) -> list[str]:
+    """把有效月份范围展开为包含首尾的 ``YYYY-MM`` 列表。
+
+    Raises:
+        ValueError: 月份标识无效，或开始月份晚于结束月份。
+    """
     first = _parse_month(start)
     last = _parse_month(end)
     if first > last:
@@ -95,6 +122,7 @@ def _month_periods(start: str, end: str) -> list[str]:
 
 
 def _periods(layer: RegenerationLayer, start: str, end: str) -> list[str]:
+    """按已校验的派生层展开请求范围内的周期。"""
     if layer == "daily":
         return _daily_periods(start, end)
     if layer == "weekly":
@@ -103,6 +131,7 @@ def _periods(layer: RegenerationLayer, start: str, end: str) -> list[str]:
 
 
 def _path(root: Path, layer: RegenerationLayer, period: str) -> Path:
+    """返回指定派生层和周期的 live 日记路径。"""
     return root / "diary" / _LAYER_DIR[layer] / f"{period}.md"
 
 
@@ -111,6 +140,7 @@ def _expected_source_hash(
     layer: RegenerationLayer,
     period: str,
 ) -> str | None:
+    """计算当前上游内容的来源哈希；没有上游内容时返回 ``None``。"""
     if layer == "daily":
         from trowel_py.memory.compress.daily_generation import _source_hash
 
@@ -130,6 +160,15 @@ def _state_target(
     period: str,
     mode: RegenerationMode,
 ) -> RegenerationTarget | None:
+    """比较 live 派生物与当前来源，并按模式决定是否生成目标。
+
+    没有上游内容时直接跳过；有上游但没有 live 文件时归入 ``missing``。
+    已有文件且状态为 ``failed`` 或 ``fallback`` 时优先归入 ``failed``，否则
+    来源哈希、生成版本或状态任一不符便归入 ``stale``，全部相同才是
+    ``current``。``all`` 会选中这些非跳过目标，并把目标 reason 写为
+    ``all``。版本仅以 ``isinstance(value, int)`` 读取，因此 bool 也会作为
+    整数参与比较，其他类型记为 ``None``。
+    """
     expected_hash = _expected_source_hash(root, layer, period)
     if expected_hash is None:
         return None
@@ -178,11 +217,13 @@ def _state_target(
 
 
 def _week_for_day(day: str) -> str:
+    """返回 ISO 日期所属的 ``YYYY-Www`` 周标识。"""
     year, week, _weekday = date.fromisoformat(day).isocalendar()
     return f"{year}-W{week:02d}"
 
 
 def _month_for_week(week: str) -> str:
+    """返回 ISO 周的周一所属的 ``YYYY-MM`` 月份。"""
     return _parse_week(week).strftime("%Y-%m")
 
 
@@ -192,6 +233,13 @@ def _cascade_target(
     period: str,
     dependencies: tuple[str, ...],
 ) -> RegenerationTarget:
+    """为受上游重生成影响的周或月创建级联目标。
+
+    规划时尚无新的上游产物，因此不会计算预期来源哈希；live 文件存在时，
+    读取其中的来源哈希和生成版本。执行器会等 ``dependencies`` 全部成功后
+    再生成并校验产物。live 版本只接受 ``isinstance(value, int)`` 的值，
+    包括 bool，其他类型记为 ``None``。
+    """
     path = _path(root, layer, period)
     current_hash = ""
     current_version: int | None = None
@@ -223,7 +271,29 @@ def plan_regeneration(
     to_period: str,
     mode: str,
 ) -> RegenerationPlan:
-    """只读取 live 派生物并持久化一份不可变重生成计划。"""
+    """检查请求范围并持久化一份不可变重生成计划。
+
+    本函数不改写 live 派生物。所选日目标按 ISO 周合并为一个周目标，该周目标
+    依赖同周全部所选日目标；月目标再依赖周一落在该月的全部周目标。周请求
+    同样按周一所属月份生成月目标。每个目标的依赖 key 会排序，最终目标按日、
+    周、月及各层周期排序。即使没有目标，也会保存并返回空计划。
+
+    Args:
+        root: memory 根目录。
+        layer: 起始派生层，必须是 ``daily``、``weekly`` 或 ``monthly``。
+        from_period: 起始层请求范围的首个周期，包含在范围内。
+        to_period: 起始层请求范围的末个周期，包含在范围内。
+        mode: ``missing``、``failed``、``stale`` 或 ``all``。
+
+    Returns:
+        已写入 ``meta/regeneration/plans`` 的新计划。
+
+    Raises:
+        ValueError: 层级、模式或周期范围无效。
+        OverflowError: 日或周范围递增超出日期类型上限。
+        UnicodeError: 上游来源文件或 live 派生文件不是有效 UTF-8。
+        OSError: 读取上游来源或 live 派生文件，或保存计划失败。
+    """
     if layer not in _LAYER_ORDER:
         raise ValueError(f"invalid regeneration layer: {layer!r}")
     if mode not in {"missing", "failed", "stale", "all"}:

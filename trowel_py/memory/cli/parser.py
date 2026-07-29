@@ -1,4 +1,4 @@
-"""Memory CLI 参数模型。"""
+"""定义 ``trowel-py memory`` 的子命令、参数和帮助文本。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构造 memory 子命令解析器。"""
+    """构造要求命令行指定一个 Memory 子命令的参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="trowel-py memory",
         description="memory subsystem",

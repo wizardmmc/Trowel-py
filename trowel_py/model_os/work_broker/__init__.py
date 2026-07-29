@@ -86,18 +86,31 @@ class DenialReason(Enum):
 
 
 class StaleWorkLease(Exception):
-    """active-lease 门禁发现 lease 已释放、过期或被接管。"""
+    """操作引用的 lease 已失效，或 fencing token 与当前租约不匹配。
+
+    Attributes:
+        lease_id: 被拒绝操作所引用的 lease ID。
+        fencing_token: 被拒绝操作所携带的 fencing token。
+    """
 
     def __init__(self, lease_id: str, fencing_token: int) -> None:
+        """保存被拒 lease 的 ID 和 fencing token。"""
+
         self.lease_id = lease_id
         self.fencing_token = fencing_token
         super().__init__(f"stale work lease: lease_id={lease_id} token={fencing_token}")
 
 
 class IdempotencyConflict(Exception):
-    """同一幂等 key 被用于不同请求指纹。"""
+    """同一幂等标识被用于不同的请求指纹或清理参数。
+
+    Attributes:
+        idempotency_key: 发生冲突的请求幂等键或清理命令 ID。
+    """
 
     def __init__(self, idempotency_key: str) -> None:
+        """保存发生语义冲突的幂等键。"""
+
         self.idempotency_key = idempotency_key
         super().__init__(
             f"idempotency_key reused for a different request: {idempotency_key}"
@@ -106,7 +119,16 @@ class IdempotencyConflict(Exception):
 
 @dataclass(frozen=True)
 class BudgetDimensions:
-    """预算上限；某轴为 None 表示该轴不限。"""
+    """模型工作的多轴预算上限。
+
+    上限为 0 表示该轴不允许产生任何用量。
+
+    Attributes:
+        calls: 模型调用次数上限；None 表示不限次数。
+        tokens: 输入与输出 token 总数上限；None 表示不限 token。
+        cost: provider 报告的费用上限；None 表示不限费用。
+        wall_seconds: 累计墙钟时间的秒数上限；None 表示不限时间。
+    """
 
     calls: int | None = None
     tokens: int | None = None
@@ -114,7 +136,7 @@ class BudgetDimensions:
     wall_seconds: int | None = None
 
     def exceeded_by(self, totals: "UsageTotals") -> bool:
-        """任一已知轴达到上限即超限；费用未知时只跳过 cost 轴。"""
+        """任一设置上限的计量值达到上限即返回 True；费用未知时不检查 cost。"""
 
         if self.calls is not None and totals.calls >= self.calls:
             return True
@@ -139,6 +161,21 @@ class BrokerPolicy:
     """带版本的仲裁策略。
 
     每账号并发大于一时，用量在调用结束后才入账，因此 default cap 是软上限。
+
+    Attributes:
+        policy_version: 写入 lease、用量和决策记录的策略版本。
+        default_cap: default 请求的每日用量上限；按工作类型、provider 和账号
+            统计，请求提供 work_item_id 时再限定到该 WorkItem。
+        default_quota_used_threshold: 把模型调用额度判为低位的已用百分比阈值，
+            取值范围为 0 到 100。default 会拒绝达到阈值的账号，其他未指定账号
+            的工作类别会用它调整账号尝试顺序。
+        default_ask_human_on_quota_sensitive: 因模型调用额度不足而拒绝 default
+            请求时，是否在结果中请求人工处理。
+        default_tick_max_lag_seconds: DEFAULT_DROP 允许的最大调度延迟秒数。
+        concurrency_per_account: 每个 provider 账号可同时持有的槽位数。
+        lease_ttl_seconds: 新 lease 的默认有效秒数。
+        glm_account_order: 未指定 GLM 账号时的尝试顺序。
+        codex_account_order: 未指定 Codex 账号时的尝试顺序。
     """
 
     policy_version: str = "workbroker-v0"
@@ -155,14 +192,20 @@ class BrokerPolicy:
     codex_account_order: tuple[str, ...] = ("codex",)
 
     def replace(self, **overrides: Any) -> "BrokerPolicy":
+        """返回应用指定字段覆盖后的新策略。"""
+
         return replace(self, **overrides)
 
     def account_order(self, provider: Provider) -> tuple[str, ...]:
+        """返回 provider 对应的账号尝试顺序。"""
+
         if provider is Provider.GLM:
             return self.glm_account_order
         return self.codex_account_order
 
     def __post_init__(self) -> None:
+        """校验租期、并发、额度阈值、预算和账号列表。"""
+
         if self.lease_ttl_seconds <= 0:
             raise ValueError("BrokerPolicy.lease_ttl_seconds must be positive")
         if self.concurrency_per_account < 1:
@@ -207,6 +250,8 @@ class WorkRequest:
     idempotency_key: str | None = None
 
     def __post_init__(self) -> None:
+        """校验 catch-up 条件、时间和预算范围。"""
+
         if self.catchup is CatchupPolicy.MAINTENANCE_MERGE:
             if self.kind is not WorkKind.MAINTENANCE:
                 raise ValueError(
@@ -230,7 +275,7 @@ class WorkRequest:
 
     @property
     def fingerprint(self) -> str:
-        """幂等身份。
+        """返回幂等键所绑定的请求指纹。
 
         priority、scheduled_for、deadline、budget_cap 与 model_tier 故意不参与。
         """
@@ -283,7 +328,18 @@ class WorkDenial:
 
 @dataclass(frozen=True)
 class UsageRecord:
-    """一次用量观测；归因字段取自 lease，调用方只提供用量与观测身份。"""
+    """一次模型用量观测；归因字段从 lease 复制。
+
+    Attributes:
+        calls: 本次观测包含的模型调用次数。
+        input_tokens: 本次观测包含的输入 token 数。
+        output_tokens: 本次观测包含的输出 token 数。
+        cost: provider 报告的本次费用；None 表示费用未知。
+        wall_seconds: 本次观测的墙钟秒数；None 表示未报告。
+        occurred_at: 用量发生时的带时区 ISO 时间；写入用量时必须提供非空值。
+        observation_id: 可选的观测 ID；None 表示不去重，提供时在同一 lease
+            内去重。
+    """
 
     calls: int = 0
     input_tokens: int = 0
@@ -296,7 +352,15 @@ class UsageRecord:
 
 @dataclass(frozen=True)
 class UsageTotals:
-    """聚合用量；范围内任一费用未知时，cost 保持 None。"""
+    """指定范围内的聚合用量。
+
+    Attributes:
+        calls: 模型调用总次数。
+        input_tokens: 输入 token 总数。
+        output_tokens: 输出 token 总数。
+        cost: provider 报告的费用总额；范围内任一费用未知时为 None。
+        wall_seconds: 已报告的墙钟秒数总和。
+    """
 
     calls: int
     input_tokens: int
@@ -306,6 +370,8 @@ class UsageTotals:
 
 
 def _default_now() -> datetime:
+    """返回当前 UTC 时间。"""
+
     return datetime.now(timezone.utc)
 
 
@@ -324,6 +390,17 @@ class WorkBroker:
         read_model: QuotaReadModel | None = None,
         now_fn: Callable[[], datetime] | None = None,
     ) -> None:
+        """绑定数据库、仲裁策略、额度读模型和可替换时钟。
+
+        Args:
+            db_path: WorkBroker 使用的 SQLite 数据库路径；``":memory:"`` 表示
+                独立的内存数据库。
+            policy: 仲裁策略；None 表示使用默认策略。
+            read_model: 额度快照读模型；None 表示所有账号的额度状态均未知。
+            now_fn: 返回带时区 UTC 当前时间的函数；None 表示使用系统当前 UTC
+                时间。
+        """
+
         self._path = Path(db_path)
         self._policy = policy or BrokerPolicy()
         self._read_model = read_model
@@ -335,9 +412,13 @@ class WorkBroker:
 
     @property
     def policy(self) -> BrokerPolicy:
+        """返回当前仲裁策略。"""
+
         return self._policy
 
     def open(self) -> None:
+        """打开 SQLite 连接并确保 journal 与 broker schema 存在。"""
+
         with self._lock:
             self._conn = self._create_connection()
             with self._conn:
@@ -350,18 +431,22 @@ class WorkBroker:
             )
 
     def open_recover(self) -> int:
-        """打开连接并释放过期 lease；新持有者产生时才递增 fencing token。"""
+        """打开连接并返回已释放的过期 lease 数量；此过程不递增 fencing token。"""
 
         self.open()
         return self.recover()
 
     def close(self) -> None:
+        """关闭 broker 的共享 SQLite 连接。"""
+
         with self._lock:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
 
     def _create_connection(self) -> sqlite3.Connection:
+        """创建行对象和 IMMEDIATE 写事务连接，并为文件数据库请求 WAL。"""
+
         conn = sqlite3.connect(str(self._path), timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.isolation_level = "IMMEDIATE"
@@ -401,7 +486,7 @@ class WorkBroker:
             return self._arbitrate_body(req, now)
 
     def begin_call(self, lease_id: str, fencing_token: int) -> None:
-        """发起模型调用前标记 started，关闭 foreground 的抢占窗口。"""
+        """标记模型调用已开始，使 default 不再可被 foreground 抢占。"""
 
         with self._lock, self._tx():
             assert self._conn is not None
@@ -470,7 +555,10 @@ class WorkBroker:
     def renew(
         self, lease_id: str, fencing_token: int, *, ttl_seconds: int | None = None
     ) -> WorkLease:
-        """延长活跃 lease；已过期的持有者不能借续约复活。"""
+        """把活跃 lease 的到期时间重设为当前时间加 TTL。
+
+        ttl_seconds 为 None 时使用策略默认值；已过期的持有者不能借续约复活。
+        """
 
         ttl = ttl_seconds if ttl_seconds is not None else self._policy.lease_ttl_seconds
         if ttl <= 0:
@@ -487,7 +575,11 @@ class WorkBroker:
             return replace(self._row_to_lease(row), expires_at=expires_iso)
 
     def complete(self, lease_id: str, fencing_token: int) -> bool:
-        """推进关联的 maintenance catch-up watermark 后释放槽；无关联时仅释放。"""
+        """完成 lease，并推进关联的 maintenance catch-up watermark。
+
+        成功释放时返回 True；lease 不存在或已释放时返回 False。尚未回收的过期
+        lease 仍可完成，但 fencing token 不匹配时会抛出 StaleWorkLease。
+        """
 
         with self._lock, self._tx():
             assert self._conn is not None
@@ -514,7 +606,11 @@ class WorkBroker:
             return True
 
     def release(self, lease_id: str, fencing_token: int) -> bool:
-        """放弃 lease 而不推进 catch-up；尚未回收的过期 lease 也允许清理。"""
+        """放弃 lease 而不推进 catch-up。
+
+        成功释放时返回 True；lease 不存在或已释放时返回 False。尚未回收的过期
+        lease 仍可释放，但 fencing token 不匹配时会抛出 StaleWorkLease。
+        """
 
         with self._lock, self._tx():
             assert self._conn is not None
@@ -537,11 +633,15 @@ class WorkBroker:
     def report_rate_limit(
         self, provider: Provider, account_id: str, *, cooldown_seconds: int
     ) -> None:
+        """在内存中记录 provider 账号的临时限流截止时间。"""
+
         expiry = self._now().timestamp() + cooldown_seconds
         with self._lock:
             self._cooldowns[(provider, account_id)] = expiry
 
     def active_leases(self) -> tuple[WorkLease, ...]:
+        """返回当前未释放且未过期的全部 WorkLease。"""
+
         with self._lock:
             assert self._conn is not None
             now_iso = self._now().isoformat()
@@ -562,6 +662,23 @@ class WorkBroker:
         task_id: str | None = None,
         model_tier: ModelTier | None = None,
     ) -> UsageTotals:
+        """按可选条件聚合已记录用量。
+
+        多个条件按 AND 组合，每个 ``None`` 都表示不按该字段筛选。
+
+        Args:
+            day: UTC 日期，格式为 YYYY-MM-DD。
+            work_kind: 工作类别筛选条件。
+            provider: 模型 provider 筛选条件。
+            account_id: provider 账号筛选条件。
+            task_id: Task 归属筛选条件。
+            model_tier: 请求方预估档位的筛选条件。
+
+        Returns:
+            匹配记录的聚合用量。没有记录时各计数和费用均为 0；范围内任一记录的
+            费用未知时 cost 为 ``None``。
+        """
+
         with self._lock, self._tx():
             return self._totals_in_tx(
                 day=day,
@@ -573,6 +690,8 @@ class WorkBroker:
             )
 
     def recover(self) -> int:
+        """释放全部已过期 lease，并返回释放数量。"""
+
         with self._lock, self._tx():
             assert self._conn is not None
             now_iso = self._now().isoformat()
@@ -592,6 +711,8 @@ class WorkBroker:
     def _arbitrate_body(
         self, req: WorkRequest, now: datetime
     ) -> WorkLease | WorkDenial:
+        """依次检查账号限流、模型额度、预算和槽位，并返回授权或拒绝。"""
+
         candidates = self._candidate_accounts(req, now)
         if not candidates:
             return WorkDenial(DenialReason.NO_ACCOUNT, "no accounts configured")
@@ -633,7 +754,10 @@ class WorkBroker:
     def _after_grant(
         self, req: WorkRequest, lease: WorkLease, now: datetime
     ) -> WorkLease | WorkDenial:
-        """在仲裁事务内原子写入 lease、幂等映射与 catch-up claim。"""
+        """在已写入 lease 的事务中登记幂等映射与 catch-up claim。
+
+        claim 竞争失败时释放刚取得的 lease。
+        """
 
         assert self._conn is not None
         if req.catchup is CatchupPolicy.MAINTENANCE_MERGE:
@@ -681,6 +805,8 @@ class WorkBroker:
         )
 
     def _catchup_gate(self, req: WorkRequest, now: datetime) -> WorkDenial | None:
+        """合并 maintenance 补跑或丢弃过期 default tick。"""
+
         if req.catchup is CatchupPolicy.DEFAULT_DROP:
             if req.scheduled_for is not None:
                 scheduled = self._parse_iso(req.scheduled_for)
@@ -704,6 +830,11 @@ class WorkBroker:
     def _try_acquire_any_slot(
         self, req: WorkRequest, account: str, now: datetime
     ) -> tuple[WorkLease | None, float | None]:
+        """按账号并发槽顺序尝试取得 lease。
+
+        未取得时，同时返回可用于计算重试等待的最早活跃槽位到期时间。
+        """
+
         earliest: float | None = None
         for idx in range(self._policy.concurrency_per_account):
             slot = self._slot_id(req.provider, account, idx)
@@ -795,6 +926,8 @@ class WorkBroker:
         return self._row_to_lease(row) if row is not None else None
 
     def _release_in_tx(self, lease_id: str, now: datetime) -> None:
+        """在当前事务中释放 lease。"""
+
         assert self._conn is not None
         self._conn.execute(
             "UPDATE work_leases SET released_at=? WHERE lease_id=? "
@@ -838,6 +971,8 @@ class WorkBroker:
         )
 
     def _in_cooldown(self, provider: Provider, account: str, now: datetime) -> bool:
+        """判断账号是否仍处于内存限流冷却期。"""
+
         expiry = self._cooldowns.get((provider, account))
         if expiry is None:
             return False
@@ -847,6 +982,8 @@ class WorkBroker:
         return True
 
     def _quota_low(self, provider: Provider, account: str) -> bool:
+        """判断账号的模型调用额度是否已进入低位。"""
+
         return self._quota_state(provider, account) == "low"
 
     def _quota_state(self, provider: Provider, account: str) -> str:
@@ -866,6 +1003,8 @@ class WorkBroker:
         return "healthy"
 
     def _budget_exhausted(self, req: WorkRequest, account: str, now: datetime) -> bool:
+        """判断请求范围内的已用额度是否达到生效预算。"""
+
         cap = self._narrow_cap(self._policy.default_cap, req.budget_cap)
         totals = self._totals_in_tx(
             work_kind=WorkKind.DEFAULT,
@@ -933,6 +1072,8 @@ class WorkBroker:
         return self._row_to_lease(row)
 
     def _next_fence_in_tx(self, slot: str) -> int:
+        """在当前事务中递增并返回槽位的 fencing token。"""
+
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT last_token FROM work_fence_counters WHERE slot=?", (slot,)
@@ -946,6 +1087,8 @@ class WorkBroker:
         return new_token
 
     def _active_holder_expiry(self, slot: str, now: datetime) -> float | None:
+        """返回槽位当前活跃持有者的过期时间戳。"""
+
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT expires_at FROM work_leases WHERE slot=? AND released_at IS NULL "
@@ -959,6 +1102,8 @@ class WorkBroker:
     def _retry_after(
         self, earliest_expiry: float | None, now: datetime
     ) -> float | None:
+        """把最早槽位过期时间转换为最小重试等待秒数。"""
+
         if earliest_expiry is None:
             return None
         return max(0.1, earliest_expiry - now.timestamp())
@@ -1017,6 +1162,8 @@ class WorkBroker:
         )
 
     def _decide_granted_cap(self, req: WorkRequest) -> BudgetDimensions | None:
+        """根据工作类型决定 lease 最终携带的预算上限。"""
+
         if req.kind is WorkKind.DEFAULT:
             return self._narrow_cap(self._policy.default_cap, req.budget_cap)
         return None
@@ -1036,13 +1183,19 @@ class WorkBroker:
 
     @staticmethod
     def _slot_id(provider: Provider, account: str, idx: int) -> str:
+        """生成 provider、账号和并发序号共同确定的槽 ID。"""
+
         return _run_slot_id(provider, account, idx)
 
     @staticmethod
     def _cap_to_json(cap: BudgetDimensions | None) -> str | None:
+        """把可选预算上限编码为 lease 表中的 JSON。"""
+
         return _run_cap_to_json(cap, dumps=json.dumps)
 
     def _row_to_lease(self, row: sqlite3.Row) -> WorkLease:
+        """把 SQLite 行转换为 WorkLease。"""
+
         return _run_row_to_lease(
             row,
             loads=json.loads,
@@ -1055,6 +1208,8 @@ class WorkBroker:
 
     @staticmethod
     def _parse_iso(value: str) -> datetime:
+        """解析带时区的 ISO 时间并统一转换到 UTC。"""
+
         return _run_parse_iso(
             value,
             fromisoformat=lambda candidate: datetime.fromisoformat(candidate),
@@ -1063,6 +1218,8 @@ class WorkBroker:
 
     @staticmethod
     def _utc_day(occurred_at: str) -> str:
+        """返回一次用量发生时间对应的 UTC 日期。"""
+
         return _run_utc_day(
             occurred_at,
             parse_iso=lambda candidate: WorkBroker._parse_iso(candidate),
@@ -1083,6 +1240,8 @@ class WorkBroker:
 
     @staticmethod
     def _validate_usage(usage: UsageRecord) -> None:
+        """校验用量时间，并拒绝负的计量值与非有限费用。"""
+
         _run_validate_usage(
             usage,
             parse_iso_resolver=lambda: WorkBroker._parse_iso,

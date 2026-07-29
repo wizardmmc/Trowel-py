@@ -1,4 +1,4 @@
-"""profile 与建议队列的 HTTP 路由，所有读写都经过 memory store。"""
+"""提供用户画像读写和画像建议审核的 HTTP 路由。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ router = APIRouter()
 
 
 def _to_dto(p: Profile) -> ProfileDTO:
+    """把用户画像转换为 HTTP 响应模型。"""
     return ProfileDTO(
         ability=p.ability,
         methodology=p.methodology,
@@ -38,6 +39,7 @@ def _to_dto(p: Profile) -> ProfileDTO:
 
 
 def _to_suggestion_dto(s: Suggestion) -> SuggestionDTO:
+    """把一条画像建议转换为 HTTP 响应模型。"""
     return SuggestionDTO(
         id=s.id,
         dimension=s.dimension,
@@ -51,7 +53,7 @@ def _to_suggestion_dto(s: Suggestion) -> SuggestionDTO:
 @router.get("")
 @router.get("/")
 def get_profile(store: MemoryStore = Depends(get_profile_store)) -> dict:
-    """返回用户画像；首次使用时返回空画像。"""
+    """读取当前用户画像；没有可用画像时，五个维度和更新时间为空，来源为 ``user-edit``。"""
     logger.info("get /api/profile")
     profile = store.load_profile()
     return {"success": True, "data": _to_dto(profile).model_dump(), "error": None}
@@ -63,7 +65,7 @@ def put_profile(
     update: ProfileUpdate,
     store: MemoryStore = Depends(get_profile_store),
 ) -> dict:
-    """通过 store 写入五个画像维度。"""
+    """用请求内容完整替换五个画像维度；未传入的维度按空字符串写入。"""
     logger.info("put /api/profile (source=%s)", update.source)
     try:
         fresh = write_profile(store, update)
@@ -75,12 +77,12 @@ def put_profile(
 
 @router.get("/suggestions")
 def get_suggestions(store: MemoryStore = Depends(get_profile_store)) -> dict:
-    """返回等待用户审核的画像建议。"""
+    """返回当前画像提炼策略生成且仍待用户审核的建议。"""
     logger.info("get /api/profile/suggestions")
     try:
         items = pending_suggestions(store.root)
     except ValueError as e:
-        # 队列损坏时返回稳定错误，不能通过全局 500 响应泄露内部路径。
+        # 队列内容触发 ValueError 时返回固定文案，不把异常细节带入响应。
         logger.warning("get /api/profile/suggestions: corrupt queue: %s", e)
         return {"success": False, "data": None, "error": "建议队列读取失败"}
     return {
@@ -96,7 +98,7 @@ def patch_suggestion(
     update: SuggestionStatusUpdate,
     store: MemoryStore = Depends(get_profile_store),
 ) -> dict:
-    """记录用户接受或丢弃建议的决定，但不直接写入 profile.md。"""
+    """把指定 ID 的全部建议标记为已接受或已丢弃，不写入画像正文。"""
     logger.info("patch /api/profile/suggestions/%s -> %s", suggestion_id, update.status)
     try:
         update_suggestion_status(store.root, suggestion_id, update.status)

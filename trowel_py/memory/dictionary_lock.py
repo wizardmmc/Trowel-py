@@ -1,7 +1,8 @@
-"""协调字典读取与重建发布的 ``fcntl`` 文件锁。
+"""协调 Dictionary 索引读取与发布之间的 ``fcntl`` 文件锁。
 
-发布路径持有排他锁，搜索与只读检查持有共享锁，避免读取期间替换 L1 文件或多个
-重建同时发布。非 Unix 平台没有 ``flock``，此锁会降级为空操作。
+发布路径在替换 L0/L1 并记录成功状态时持有排他锁，检查与搜索路径持有共享锁，
+避免读取期间换代或多个发布相互交错。当前 Python 无法导入 ``fcntl`` 时，
+此锁退化为空操作。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - 非 Unix 平台
+except ImportError:  # pragma: no cover - 当前 Python 不提供 fcntl
     fcntl = None  # type: ignore[assignment]
 
 _DICT_LOCK_REL = "meta/.dictionary.lock"
@@ -20,7 +21,24 @@ _DICT_LOCK_REL = "meta/.dictionary.lock"
 
 @contextlib.contextmanager
 def dictionary_lock(root: Path | str, *, exclusive: bool):
-    """发布使用 ``LOCK_EX``，读取使用 ``LOCK_SH``。"""
+    """在支持 ``fcntl`` 的平台阻塞等待并持有 Dictionary 共享锁或排他锁。
+
+    锁文件固定为 Memory 根目录下的 ``meta/.dictionary.lock``。调用 ``flock``
+    时未使用 ``LOCK_NB``，因此会等待冲突锁释放；正常退出时先解锁再关闭文件
+    描述符。当前 Python 无法导入 ``fcntl`` 时直接进入上下文，不提供互斥。
+
+    Args:
+        root: Dictionary 所在的 Memory 根目录。
+        exclusive: True 时使用排他锁保护发布，False 时使用共享锁保护读取。
+
+    Yields:
+        已取得锁的受保护上下文；无法导入 ``fcntl`` 时则是不加锁的上下文。
+
+    Raises:
+        OSError: 无法创建、打开、加锁、解锁或关闭锁文件。加锁失败也会进入
+            清理流程；解锁失败会跳过关闭，且解锁或关闭异常可能替代加锁异常
+            或上下文内原有异常。
+    """
     if fcntl is None:
         yield
         return

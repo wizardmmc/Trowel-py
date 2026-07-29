@@ -1,3 +1,5 @@
+"""把上下文样本事件折叠为每个 ``(episode_id, native_session_id)`` 的最新观测。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -13,7 +15,14 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ContextFoldRuntime:
-    """Reducer 运行时依赖；调用时解析以保留既有 patch seam。"""
+    """保存 reducer 门面在每次调用时传入的上下文折叠依赖。
+
+    Attributes:
+        decode_sample: 解码事件 payload，并以 event envelope 的
+            ``native_session_id`` 作为样本归属。
+        context_state_factory: 使用组合键、解码后的样本和事件时间构造最新观测状态。
+        snapshot_replace: 复制原快照，替换 ``context_observations`` 并返回新快照。
+    """
 
     decode_sample: Callable[..., Any]
     context_state_factory: Callable[..., Any]
@@ -26,7 +35,22 @@ def apply_context_sample(
     *,
     runtime: ContextFoldRuntime,
 ) -> Snapshot:
-    # session 归属只信任 envelope，不能由 payload 自报。
+    """按事件时间保留每个 ``(episode_id, native_session_id)`` 的最新观测。
+
+    ``event.native_session_id`` 为空时，在解码 payload 前返回原快照。否则先解码
+    payload，并只使用 event envelope 的 ``native_session_id`` 确定会话归属，
+    不读取 payload 中的同名字段。解码完成后再比较时间：``occurred_at`` 早于已有
+    观测时返回原快照，等于或晚于已有观测时由当前事件替换它。
+
+    Args:
+        snap: 归约事件前的派生状态快照。
+        event: 携带样本 payload、组合键和发生时间的事件 envelope。
+        runtime: 解码样本、构造观测状态和更新快照所需的依赖。
+
+    Returns:
+        缺少 ``event.native_session_id`` 或事件早于已有观测时返回原快照，否则
+        返回包含当前观测的新快照。
+    """
     native = event.native_session_id
     if not native:
         return snap

@@ -17,11 +17,30 @@ _STATE_REL = "meta/tidy-state.json"
 
 
 def state_path(root: Path | str) -> Path:
+    """返回 Memory 根目录下固定的 Tidy 水位文件路径。
+
+    Args:
+        root: Memory 根目录。
+
+    Returns:
+        ``<root>/meta/tidy-state.json``。
+    """
     return Path(root) / _STATE_REL
 
 
 def load_state(root: Path | str) -> TidyState:
-    """缺失或损坏的文件保守降级为空水位。"""
+    """读取 Tidy 水位，无法读取或解析时返回空状态。
+
+    文件不存在、读取失败或 JSON 损坏都会从空水位重新开始，并仅对后两种情况
+    记录警告。成功解码的 JSON 交给 :meth:`TidyState.from_dict` 恢复；非字典
+    值返回空状态，类型或格式无效的周月周期分别置空。
+
+    Args:
+        root: Memory 根目录。
+
+    Returns:
+        文件中的水位；无法恢复时为 ``TidyState()``。
+    """
     path = state_path(root)
     if not path.exists():
         return TidyState()
@@ -37,7 +56,18 @@ def load_state(root: Path | str) -> TidyState:
 
 
 def save_state(root: Path | str, state: TidyState) -> None:
-    """同目录写临时文件后原子替换正式水位。"""
+    """将 Tidy 水位写入同目录临时文件，再原子替换正式文件。
+
+    临时文件固定为 ``tidy-state.json.tmp``；并发调用不会获得额外锁保护，写入
+    或替换失败也可能遗留该文件。
+
+    Args:
+        root: Memory 根目录；缺失的 ``meta`` 目录会自动创建。
+        state: 待持久化的完整水位。
+
+    Raises:
+        OSError: 创建目录、写临时文件或替换正式文件失败。
+    """
     path = state_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
@@ -56,7 +86,23 @@ def advance_watermark(
     period: str,
     now: datetime,
 ) -> TidyState:
-    """推进一个 scope，同时保留另一个 scope 的当前水位。"""
+    """覆盖一个周期水位，保留另一周期水位并持久化结果。
+
+    ``scope == "weekly"`` 时覆盖周水位，其他值均按月水位处理。``period`` 不
+    校验格式或先后顺序，因此调用方也可以覆盖为更早水位。
+
+    Args:
+        root: Memory 根目录。
+        scope: 要覆盖的周期范围。
+        period: 新水位文本。
+        now: 用于生成 ``updated_at`` 的时间。
+
+    Returns:
+        已写入文件的新状态。
+
+    Raises:
+        OSError: 创建目录、写临时文件或替换正式状态文件失败。
+    """
     previous = load_state(root)
     stamp = now.isoformat()
     updated = (
@@ -72,7 +118,24 @@ def tidy_status(
     root: Path | str,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """只读返回当前水位和待补的已完成周期。"""
+    """返回周月水位及各自尚待处理的已完成周期。
+
+    文件缺失或损坏时按空水位计算，因此每个范围只列出最近一个已完成周期。
+    待处理列表使用周期枚举器的默认上限，不包含当前进行中的周期。
+
+    Args:
+        root: Memory 根目录。
+        now: 计算已完成周期的基准时间；省略时使用本地当前时间。
+
+    Returns:
+        含 ``weekly``、``monthly`` 和 ``updated_at`` 的状态字典；前两个字段
+        各含 ``last_successful`` 与 ``pending``。
+
+    Raises:
+        ValueError: 已保存的月水位推进后得到无法解析的五位年份。
+        OverflowError: 基准时间的上一周期或已保存周水位的下一周期超出
+            ``datetime`` 支持范围。
+    """
     now = now or datetime.now()
     state = load_state(root)
     return {

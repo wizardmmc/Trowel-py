@@ -1,3 +1,5 @@
+"""创建 FastAPI 应用，并管理 Agent、Memory 和后台任务的生命周期。"""
+
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -86,6 +88,8 @@ async def lifespan(app: FastAPI):
         from trowel_py.memory.tidy_scheduler import TidyScheduler
 
         def _tidy_provider_factory():
+            """创建 Memory 整理任务调用模型所用的客户端。"""
+
             from trowel_py.config import load_llm_config
             from trowel_py.llm.client import AnthropicProvider
 
@@ -211,6 +215,8 @@ def bootstrap_layer_one() -> bool:
 
 
 def create_app() -> FastAPI:
+    """创建 FastAPI 应用，并注册中间件、路由和静态前端。"""
+
     app = FastAPI(lifespan=lifespan)
 
     from fastapi.middleware.cors import CORSMiddleware
@@ -227,6 +233,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, object]:
+        """返回后端存活状态。"""
+
         return {
             "success": True,
             "data": {"status": "ok"},
@@ -235,6 +243,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     def global_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        """将未处理异常转换成统一的 500 错误响应。"""
+
         logger.error(
             "Unhandled exception on %s %s: %s", request.method, request.url.path, exc
         )
@@ -268,6 +278,14 @@ def create_app() -> FastAPI:
         # 非 API 路径回退到 index.html，使前端路由刷新后仍能恢复。
         @app.get("/{full_path:path}")
         def _spa_fallback(full_path: str) -> object:
+            """为未匹配的路径返回前端资源，API 路径则返回 JSON 404。
+
+            非 API 路径存在静态文件时直接返回，否则回退到 SPA 入口。
+
+            Args:
+                full_path: 请求路径中去掉开头斜杠后的部分。
+            """
+
             if full_path.startswith("api/"):
                 return JSONResponse(
                     status_code=404,
@@ -302,6 +320,8 @@ def _resolve_web_dist(here: Path) -> Path | None:
 
 
 def _find_web_dist() -> Path | None:
+    """查找当前安装位置可用的前端构建目录。"""
+
     return _resolve_web_dist(Path(__file__).resolve().parent)
 
 

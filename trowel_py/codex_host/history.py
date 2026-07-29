@@ -1,4 +1,8 @@
-"""把公开 ``thread/read`` transcript 转为独立的 Codex history 事件流。"""
+"""将 Codex ``thread/read`` 快照重建为可回放的内部事件。
+
+重建过程只读取快照中的已知字段，并为输出事件重新编号。未知或畸形条目会被跳过，
+不会阻断同一线程中其余历史的回放。
+"""
 
 from __future__ import annotations
 
@@ -27,7 +31,20 @@ def events_from_thread(
     translator: CodexTranslator | None = None,
     include_turn_started: bool = False,
 ) -> list[CodexEvent]:
-    """只转换已知 item；单个未知或漂移 item 不阻断其余 turn。"""
+    """按快照顺序重建消息、工具活动和轮次终态事件。
+
+    Args:
+        session_id: 接收重放事件的 Trowel 会话 ID。
+        thread: ``thread/read`` 返回的 Codex thread 对象。
+        translator: 用于重建工具、子 Agent 活动和终态事件的 translator；省略时
+            创建无状态实例。
+        include_turn_started: 是否为每个有 ID 的 turn 合成 ``TURN_STARTED``。合成
+            事件标记为自主执行且不参与记忆写入。
+
+    Returns:
+        从 1 开始连续编号的历史事件。未知条目、无效字段和无法翻译的单个条目会被
+        跳过。
+    """
 
     native_thread_id = thread.get("id")
     thread_id = native_thread_id if isinstance(native_thread_id, str) else None
@@ -41,6 +58,8 @@ def events_from_thread(
         item_id: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> None:
+        """按当前事件数分配序号并追加一个历史事件。"""
+
         events.append(
             CodexEvent(
                 session_id=session_id,
@@ -87,7 +106,7 @@ def events_from_thread(
                 elif item_type == "agentMessage":
                     text = item.get("text")
                     if isinstance(text, str) and text:
-                        # live 最终消息会被 adapter 丢弃；静态 history 必须作为 delta 下发。
+                        # Adapter 会丢弃实时最终消息；历史正文需作为 delta 才能显示。
                         append(
                             CodexEventType.ASSISTANT_DELTA,
                             turn_id=turn_id,
@@ -132,6 +151,8 @@ def events_from_thread(
 
 
 def _user_text(content: Any) -> str:
+    """合并用户消息中的非空文本片段。"""
+
     if not isinstance(content, list):
         return ""
     return "\n".join(
@@ -145,6 +166,8 @@ def _user_text(content: Any) -> str:
 
 
 def _reasoning_text(item: Mapping[str, Any]) -> str:
+    """合并思考条目中的摘要和正文片段。"""
+
     fragments: list[str] = []
     for field in ("summary", "content"):
         value = item.get(field)
@@ -162,6 +185,8 @@ def _append_tool_events(
     item: Mapping[str, Any],
     translator: CodexTranslator,
 ) -> None:
+    """从工具快照重建启动和完成事件；协议错误只跳过当前条目。"""
+
     params = {"threadId": thread_id, "turnId": turn_id, "item": item}
     try:
         translated = translator.translate("item/started", params)
@@ -182,6 +207,8 @@ def _append_activity_event(
     item: Mapping[str, Any],
     translator: CodexTranslator,
 ) -> None:
+    """按快照状态重建子 Agent 活动事件；协议错误只跳过当前条目。"""
+
     method = "item/started" if item.get("status") == "inProgress" else "item/completed"
     try:
         translated = translator.translate(
@@ -202,6 +229,11 @@ def _append_terminal(
     turn: Mapping[str, Any],
     translator: CodexTranslator,
 ) -> None:
+    """为 completed、interrupted 或 failed 轮次追加终态事件。
+
+    缺少 thread ID、尚未结束或无法翻译的轮次不会产生事件。
+    """
+
     if thread_id is None or turn.get("status") not in {
         "completed",
         "interrupted",
@@ -220,6 +252,8 @@ def _append_terminal(
 
 
 def _stamp(session_id: str, seq: int, item: TranslatedItem) -> CodexEvent:
+    """补充会话 ID 和序号，原样保留中间事件的 Codex 路由字段与 payload。"""
+
     return CodexEvent(
         session_id=session_id,
         seq=seq,

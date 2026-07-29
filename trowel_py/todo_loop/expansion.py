@@ -1,7 +1,8 @@
-"""在 CC 会话中执行 todo 六步理解，并解析为结构化结果。
+"""调用 Claude Code 按六步流程理解 todo 文本，并将回复解析为结构化结果。
 
-调用方负责提供已注入 profile 与 memory 的 host。解析失败、字段缺失或非法
-confidence 只降级为低置信结果；宽松解析不能把非字符串脏值强制转成字符串。
+调用方必须提供已注入 profile 和 memory 的 host。回复不是合法 JSON 对象时，
+返回不含复述、候选、假设和验收标准的低置信度结果。对象内缺失或类型错误的字段
+采用空值、默认理由或 ``low``，不会通过 ``str()`` 强制转成文本。
 """
 
 from __future__ import annotations
@@ -19,7 +20,13 @@ _VALID_CONFIDENCE: frozenset[str] = frozenset({"high", "medium", "low"})
 
 @dataclass(frozen=True)
 class Assumption:
-    """显式假设；只有真正的布尔 ``True`` 才表示存在代码或 memory 锚点。"""
+    """记录 Claude Code 为理解 todo 而作出的假设。
+
+    Attributes:
+        text: 假设的具体内容。
+        has_anchor: 是否能在代码或 memory 中找到支持这项假设的依据；只有布尔值
+            ``True`` 表示有依据。
+    """
 
     text: str
     has_anchor: bool
@@ -27,6 +34,17 @@ class Assumption:
 
 @dataclass(frozen=True)
 class ExpansionResult:
+    """记录 Claude Code 对 todo 的理解结果。
+
+    Attributes:
+        recap: 用大白话复述的 todo 意图。
+        candidates: todo 可能指向的改动对象或解释。
+        assumptions: 理解 todo 时采用的显式假设。
+        acceptance_criteria: 用于确认 todo 已完成的可观察标准。
+        confidence: 对当前理解的把握程度，取 ``high``、``medium`` 或 ``low``。
+        confidence_reason: 采用当前把握程度的原因。
+    """
+
     recap: str
     candidates: tuple[str, ...]
     assumptions: tuple[Assumption, ...]
@@ -36,11 +54,29 @@ class ExpansionResult:
 
 
 class CCHost(Protocol):
-    def send(self, message: str) -> str: ...
+    """定义 todo 扩展使用的 Claude Code 消息接口。"""
+
+    def send(self, message: str) -> str:
+        """将提示词交给 Claude Code 并返回原始回复。
+
+        Args:
+            message: 已组装的六步理解提示词。
+
+        Returns:
+            Claude Code 返回的完整文本。
+        """
+        ...
 
 
 def build_expansion_prompt(todo_text: str) -> str:
-    """依赖 CC system prompt 中已有的 profile 与 memory，不在此重复注入。"""
+    """生成要求 Claude Code 分六步理解 todo 的提示词。
+
+    提示词直接使用 Claude Code system prompt 中已有的 profile 和 memory，不会
+    重复注入这些上下文。
+
+    Args:
+        todo_text: 用户记录的 todo 原文。
+    """
     return (
         "你在模拟 trowel 张六步理解层的一次执行。你 system prompt 里已有用户画像和 "
         "memory——按它理解用户意图。\n\n"
@@ -70,7 +106,14 @@ def build_expansion_prompt(todo_text: str) -> str:
 
 
 def parse_expansion(cc_output: str) -> ExpansionResult:
-    """宽松解析 CC JSON；任何结构问题都降级，且不字符串化类型错误的字段。"""
+    """将 Claude Code 的 JSON 回复解析为结构化结果。
+
+    无法解析 JSON 或顶层不是对象时，返回低置信度的空结果；其余非法字段分别
+    采用安全默认值。
+
+    Args:
+        cc_output: Claude Code 返回的原始文本。
+    """
     try:
         data = json.loads(cc_output)
     except (json.JSONDecodeError, TypeError):
@@ -100,14 +143,26 @@ def parse_expansion(cc_output: str) -> ExpansionResult:
 
 
 def expand_todo(todo_text: str, host: CCHost) -> ExpansionResult:
-    """通过已注入上下文的 host 执行六步扩展。"""
+    """让 Claude Code 按六步流程理解 todo，并解析其回复。
+
+    Args:
+        todo_text: 用户记录的 todo 原文。
+        host: 消息接口，其 system prompt 已包含用户的 profile 和 memory。
+    """
     prompt = build_expansion_prompt(todo_text)
     raw = host.send(prompt)
     return parse_expansion(raw)
 
 
 def _low(*, recap: str, reason: str) -> ExpansionResult:
-    """空 candidates 明确表示未完成候选枚举，供下游识别降级结果。"""
+    """生成不含候选解释的低置信度结果。
+
+    空 candidates 明确表示未完成候选枚举，供下游识别降级结果。
+
+    Args:
+        recap: 已成功取得的 todo 意图复述；没有可用复述时为空字符串。
+        reason: 将结果降为低置信度的原因。
+    """
     return ExpansionResult(
         recap=recap,
         candidates=(),
@@ -119,7 +174,13 @@ def _low(*, recap: str, reason: str) -> ExpansionResult:
 
 
 def _to_str_tuple(value: object) -> tuple[str, ...]:
-    """只接收非空字符串项，不能把脏值通过 ``str()`` 伪装成有效内容。"""
+    """从列表中提取去除首尾空白后的非空字符串。
+
+    其他类型的列表项会被丢弃，不会通过 ``str()`` 强制转换。
+
+    Args:
+        value: Claude Code 回复中的候选解释或验收标准字段。
+    """
     if not isinstance(value, list):
         return ()
     return tuple(
@@ -128,7 +189,14 @@ def _to_str_tuple(value: object) -> tuple[str, ...]:
 
 
 def _to_assumptions(value: object) -> tuple[Assumption, ...]:
-    """跳过非法项；缺失 ``has_anchor`` 时按无锚点处理。"""
+    """从列表中提取含有非空文本的假设。
+
+    非对象项和没有有效文本的对象会被丢弃；``has_anchor`` 只有等于布尔值
+    ``True`` 时才表示存在依据。
+
+    Args:
+        value: Claude Code 回复中的假设字段。
+    """
     if not isinstance(value, list):
         return ()
     out: list[Assumption] = []
@@ -145,7 +213,11 @@ def _to_assumptions(value: object) -> tuple[Assumption, ...]:
 
 
 def _coerce_confidence(value: object) -> Confidence:
-    """非法 confidence 一律降级为 ``low``。"""
+    """将 confidence 字段规范为 ``high``、``medium`` 或 ``low``。
+
+    Args:
+        value: Claude Code 回复中的 confidence 字段；无法识别时按 ``low`` 处理。
+    """
     if isinstance(value, str) and value.strip() in _VALID_CONFIDENCE:
         return value.strip()  # type: ignore[return-value]
     return "low"

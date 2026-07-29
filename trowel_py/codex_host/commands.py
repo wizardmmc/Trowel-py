@@ -1,4 +1,4 @@
-"""按已验证的 Codex 协议版本发布 Trowel 原生命令。"""
+"""列出由 Trowel 接管的 Codex 原生命令，并识别对应的 slash 输入。"""
 
 from __future__ import annotations
 
@@ -60,7 +60,15 @@ _VALIDATED_COMMANDS: tuple[dict[str, Any], ...] = (
 
 
 def command_roster(version: str | None) -> list[dict[str, Any]]:
-    """未知版本不继承旧能力，避免 override 模式把漂移协议暴露给界面。"""
+    """返回指定 Codex 版本已验证的原生命令。
+
+    Args:
+        version: 当前 Codex CLI 版本；尚未连接或无法读取时为 None。
+
+    Returns:
+        每项命令的名称、界面说明、动作和运行中可用性。未验证的版本返回空列表，
+        避免向界面暴露可能已经变化的协议能力。
+    """
 
     if version != SUPPORTED_CODEX_VERSION:
         return []
@@ -68,7 +76,7 @@ def command_roster(version: str | None) -> list[dict[str, Any]]:
 
 
 def reserved_command_name(text: str) -> str | None:
-    """识别必须由 Trowel 本地处理的首个 slash token。"""
+    """返回消息开头由 Trowel 接管的 slash 命令名；没有则返回 None。"""
 
     match = _COMMAND_TOKEN.match(text)
     if match is None:

@@ -1,3 +1,5 @@
+"""玩家、玩家资料和库存行的数据模型。"""
+
 from datetime import datetime
 from typing import Literal
 
@@ -16,6 +18,8 @@ class Player(BaseModel):
 
 
 class PlayerProfile(Player):
+    """附带等级和升级所需经验的玩家资料。"""
+
     level: int = Field(default=1)
     xp_to_next_level: int
 

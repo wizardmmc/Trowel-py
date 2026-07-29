@@ -36,6 +36,17 @@ class CodexTurnJournal:
         session_kind: str = "user",
         now_fn: NowFn | None = None,
     ) -> None:
+        """准备轮次日志目录，并保存后续登记轮次所需的会话信息。
+
+        Args:
+            memory_root: memory 数据目录；轮次日志和会话数据库均位于该目录下。
+            trowel_session_id: 这些 Codex 轮次所属的 Trowel 会话 ID。
+            workdir: 会话使用的工作目录，登记轮次时一并保存。
+            memory_enabled: 创建会话时冻结的 memory 开关，登记轮次时一并保存。
+            profile_enabled: 创建会话时冻结的 profile 开关，登记轮次时一并保存。
+            session_kind: 会话类别；daily review 只读取 ``"user"`` 会话的轮次。
+            now_fn: 生成日志记录时间的时钟；未提供时使用本地当前时间。
+        """
         self._root = memory_root
         self._trowel_session_id = trowel_session_id
         self._workdir = workdir
@@ -47,7 +58,7 @@ class CodexTurnJournal:
         self._excluded: set[tuple[str, str]] = set()
         self._failed: set[tuple[str, str]] = set()
         self._handles: dict[tuple[str, str], IO[str]] = {}
-        # Codex session 创建发生在 native turn 前；这里失败可安全拒绝创建。
+        # Trowel 会话在 Codex 原生轮次开始前创建，因此初始化失败可直接阻止会话启动。
         (self._root / "meta" / "codex-turns").mkdir(parents=True, exist_ok=True)
         conn = open_sessions_db(self._root)
         try:
@@ -56,7 +67,20 @@ class CodexTurnJournal:
             conn.close()
 
     def record(self, event: CodexEvent, binding: Any | None) -> None:
-        """同步追加单条事件；transport 回调返回前保证 terminal 已封口。"""
+        """记录一条 Codex 事件，并在终态事件落盘后封存对应轮次。
+
+        缺少 thread ID 或 turn ID 的事件会被忽略。首次看到轮次时会固化当前模型
+        绑定；``TURN_STARTED`` 明确标记 ``memory_eligible=False`` 时，整个轮次
+        不再写入。写日志失败时会关闭句柄并重新抛出异常，随后静默忽略该轮次的
+        其他事件。
+
+        Args:
+            event: 已规范化的 Codex 事件。
+            binding: 当前模型绑定；首次登记轮次时读取模型、推理强度和供应商。
+
+        Raises:
+            OSError: 写入轮次日志失败。
+        """
 
         if not event.thread_id or not event.turn_id:
             return
@@ -119,6 +143,7 @@ class CodexTurnJournal:
         effort: str,
         provider: str,
     ) -> None:
+        """登记首次看到的原生轮次，并固化其会话归属和模型绑定。"""
         conn = open_sessions_db(self._root)
         try:
             create_sessions_repository(conn).register_codex_turn(
@@ -139,6 +164,7 @@ class CodexTurnJournal:
             conn.close()
 
     def _turn_path(self, thread_id: str, turn_id: str) -> Path:
+        """用 thread ID 和 turn ID 各自 SHA-256 摘要的前 20 个十六进制字符组成路径。"""
         thread_key = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:20]
         turn_key = hashlib.sha256(turn_id.encode("utf-8")).hexdigest()[:20]
         return self._root / "meta" / "codex-turns" / thread_key / f"{turn_key}.jsonl"
@@ -152,6 +178,7 @@ class CodexTurnJournal:
         *,
         sync: bool,
     ) -> None:
+        """追加一条规范化事件；``sync`` 为真时在返回前同步到磁盘。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = event.as_dict()
         payload["timestamp"] = now.astimezone().isoformat(timespec="microseconds")
@@ -166,6 +193,7 @@ class CodexTurnJournal:
             os.fsync(handle.fileno())
 
     def _close_handle(self, key: tuple[str, str]) -> None:
+        """关闭并移除指定轮次的日志句柄，忽略关闭阶段的 I/O 错误。"""
         handle = self._handles.pop(key, None)
         if handle is not None:
             with suppress(OSError):
@@ -173,6 +201,11 @@ class CodexTurnJournal:
 
 
 def _terminal_status(event: CodexEvent) -> str | None:
+    """返回终态事件的状态，缺失时按事件类型生成默认值。
+
+    ``FINISHED`` 和 ``INTERRUPTED`` 默认使用各自的事件类型，非
+    ``native_error`` 的 ``ERROR`` 默认使用 ``"failed"``。其他事件返回 None。
+    """
     if event.type in _TERMINAL_TYPES:
         return str(event.payload.get("status") or event.type.value)
     if event.type is CodexEventType.ERROR and event.payload.get("kind") != "native_error":
@@ -181,6 +214,10 @@ def _terminal_status(event: CodexEvent) -> str | None:
 
 
 def _completed_at(payload: Mapping[str, Any], fallback: datetime) -> str:
+    """把 payload 中的完成时间转换为本地无时区的 ISO 字符串。
+
+    数字按 Unix 时间戳解析，字符串按 ISO 格式解析；缺失或无法解析时使用记录时间。
+    """
     raw = payload.get("completed_at")
     if isinstance(raw, (int, float)):
         return datetime.fromtimestamp(raw).isoformat(timespec="microseconds")
@@ -198,7 +235,17 @@ def _completed_at(payload: Mapping[str, Any], fallback: datetime) -> str:
 
 
 def recover_sealed_codex_turns(memory_root: Path) -> int:
-    """修复 terminal 已 fsync、但 completed transaction 未提交的崩溃窗口。"""
+    """根据已落盘的终态事件封存数据库中尚未完成的 Codex 轮次。
+
+    日志末条非空记录必须是 JSON 对象，其原生 ID 必须匹配数据库轮次，payload
+    必须是对象，事件类型与状态必须属于支持的组合，且 timestamp 必须可解析。
+
+    Args:
+        memory_root: 包含会话数据库和轮次日志的 memory 数据目录。
+
+    Returns:
+        本次成功封存的轮次数量。
+    """
 
     conn = open_sessions_db(memory_root)
     recovered = 0
@@ -226,6 +273,11 @@ def _read_terminal(
     thread_id: str,
     turn_id: str,
 ) -> tuple[str, str] | None:
+    """校验日志末条非空记录，并返回可用于封存轮次的状态和完成时间。
+
+    仅接受 ``finished/completed``、``interrupted/interrupted`` 和
+    ``error/failed`` 三组事件类型与状态。
+    """
     last_line = ""
     try:
         with path.open(encoding="utf-8") as handle:
@@ -260,6 +312,7 @@ def _read_terminal(
 
 
 def _parse_recorded_at(value: object) -> datetime | None:
+    """把 ISO 格式的日志记录时间解析为本地无时区时间。"""
     if not isinstance(value, str) or not value.strip():
         return None
     try:

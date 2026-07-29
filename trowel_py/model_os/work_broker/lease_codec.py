@@ -8,17 +8,31 @@ from typing import Any, Protocol, TypeVar
 
 
 class _BudgetCap(Protocol):
-    @property
-    def calls(self) -> int | None: ...
+    """声明预算上限编码所需的四个计量轴。"""
 
     @property
-    def tokens(self) -> int | None: ...
+    def calls(self) -> int | None:
+        """返回调用次数上限；None 表示不限次数。"""
+
+        ...
 
     @property
-    def cost(self) -> float | None: ...
+    def tokens(self) -> int | None:
+        """返回输入与输出 token 总数上限；None 表示不限 token。"""
+
+        ...
 
     @property
-    def wall_seconds(self) -> int | None: ...
+    def cost(self) -> float | None:
+        """返回 provider 报告的费用上限；None 表示不限费用。"""
+
+        ...
+
+    @property
+    def wall_seconds(self) -> int | None:
+        """返回累计墙钟时间的秒数上限；None 表示不限时间。"""
+
+        ...
 
 
 _Budget = TypeVar("_Budget")
@@ -30,6 +44,16 @@ def cap_to_json(
     *,
     dumps: Callable[[dict[str, Any]], str],
 ) -> str | None:
+    """把可选预算上限编码为 lease 表的 granted_cap 字段。
+
+    Args:
+        cap: 要编码的预算上限；None 表示 broker 不设内部预算。
+        dumps: 把四个预算轴编码为 JSON 的函数。
+
+    Returns:
+        编码后的 JSON；cap 为 None 时不调用 dumps 并直接返回 None。
+    """
+
     if cap is None:
         return None
     return dumps(
@@ -52,6 +76,25 @@ def row_to_lease(
     work_kind_type: Callable[[Any], Any],
     model_tier_type: Callable[[Any], Any],
 ) -> _Lease:
+    """把 WorkBroker 的 SQLite 行转换为调用方指定的 lease 对象。
+
+    granted_cap 为 None、空字符串或 0 时会还原为 None；JSON 中缺少的预算轴
+    会以 None 传给 budget_dimensions_type。解析 JSON、转换枚举或整数，或者
+    调用构造器失败时，异常原样向上传递。
+
+    Args:
+        row: 包含完整 WorkBroker lease 列的 SQLite 行。
+        loads: 解析 granted_cap JSON 的函数。
+        budget_dimensions_type: 用四个可选计量轴构造预算上限的函数。
+        work_lease_type: 用持久化字段构造 lease 的函数。
+        provider_type: 把 provider 字段转换为公开类型的函数。
+        work_kind_type: 把 work_kind 字段转换为公开类型的函数。
+        model_tier_type: 把 model_tier 字段转换为公开类型的函数。
+
+    Returns:
+        由 work_lease_type 构造的 lease 对象。
+    """
+
     cap_json = row["granted_cap"]
     granted_cap = None
     if cap_json:

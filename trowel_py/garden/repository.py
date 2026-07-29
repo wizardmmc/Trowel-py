@@ -1,17 +1,26 @@
+"""查询花园展示所需的卡片、复习状态和统计。"""
+
 import sqlite3
 from datetime import datetime, timezone
 
 
 def create_garden_repository(conn: sqlite3.Connection):
+    """用指定数据库连接创建花园数据仓库。"""
     return GardenRepository(conn)
 
 
 class GardenRepository:
+    """负责花园植物和统计数据的数据库查询。"""
+
     def __init__(self, conn: sqlite3.Connection) -> None:
+        """保存花园查询使用的数据库连接。"""
         self.conn = conn
 
     def get_all_plants(self) -> list[dict]:
-        """保留尚无复习状态的卡片，其状态字段返回 `None`。"""
+        """联表返回所有卡片及其复习状态。
+
+        保留尚无复习状态的卡片，其状态字段返回 `None`。
+        """
         rows = self.conn.execute(
             "select c.id, c.title, c.category, c.explanation, "
             "s.state, s.stability, s.reps, s.due "
@@ -20,6 +29,7 @@ class GardenRepository:
         return [dict(row) for row in rows]
 
     def get_stats(self) -> dict:
+        """统计植物总数、到期数和开花率。"""
         now = datetime.now(timezone.utc).isoformat()
         row = self.conn.execute(
             "select count(*) as total_plants, "

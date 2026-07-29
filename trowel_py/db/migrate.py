@@ -1,3 +1,5 @@
+"""查找、校验并执行尚未运行的 SQL 迁移文件。"""
+
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +17,7 @@ def _pending_migration_files(
     conn: sqlite3.Connection,
     migrations_dir: Path,
 ) -> list[Path]:
+    """按文件名返回迁移目录中尚未执行的 SQL 文件。"""
     executed = {
         row["name"] for row in conn.execute("SELECT name from _migrations").fetchall()
     }
@@ -26,6 +29,7 @@ def _pending_migration_files(
 
 
 def _sql_statements(script: str) -> list[str]:
+    """将迁移脚本拆成 SQLite 认为完整的 SQL 语句。"""
     statements: list[str] = []
     start = 0
     for end, character in enumerate(script):
@@ -43,6 +47,7 @@ def _sql_statements(script: str) -> list[str]:
 
 
 def _strip_sql_leading_whitespace(text: str) -> str:
+    """移除 SQL 开头的空白字符和字节顺序标记。"""
     start = 0
     while start < len(text):
         character = text[start]
@@ -53,6 +58,7 @@ def _strip_sql_leading_whitespace(text: str) -> str:
 
 
 def _first_sql_keyword(statement: str) -> str | None:
+    """跳过开头注释并返回首个 SQL 关键字。"""
     remaining = _strip_sql_leading_whitespace(statement)
     while remaining:
         if remaining.startswith("--"):
@@ -78,6 +84,7 @@ def _first_sql_keyword(statement: str) -> str | None:
 
 
 def _validate_migration_script(migration: Path, script: str) -> None:
+    """拒绝自行控制事务的迁移脚本。"""
     for statement in _sql_statements(script):
         keyword = _first_sql_keyword(statement)
         if keyword in _TRANSACTION_CONTROL_STATEMENTS:
@@ -88,6 +95,7 @@ def _validate_migration_script(migration: Path, script: str) -> None:
 
 
 def _run_migration(conn: sqlite3.Connection, migration: Path) -> None:
+    """原子执行一个迁移文件并记录其文件名。"""
     migration_script = migration.read_text()
     _validate_migration_script(migration, migration_script)
     name_literal = conn.execute("SELECT quote(?)", (migration.name,)).fetchone()[0]
@@ -107,7 +115,10 @@ def _run_migration(conn: sqlite3.Connection, migration: Path) -> None:
 
 
 def run_migrations(conn: sqlite3.Connection, migrations_dir: str | None = None) -> None:
-    """按文件名顺序原子执行迁移；连接和脚本均不得自行持有事务。"""
+    """创建迁移记录表并按文件名执行尚未运行的迁移。
+
+    每个迁移单独原子执行；连接和脚本均不得自行持有事务。
+    """
     if conn.in_transaction:
         raise RuntimeError("run_migrations does not accept an active transaction")
 

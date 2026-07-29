@@ -9,7 +9,11 @@ from trowel_py.memory.types import Note
 
 
 class _Hash(Protocol):
-    def hexdigest(self) -> str: ...
+    """摘要工厂返回值必须提供的最小接口。"""
+
+    def hexdigest(self) -> str:
+        """返回十六进制摘要文本。"""
+        ...
 
 
 def compute_source_hash(
@@ -17,6 +21,18 @@ def compute_source_hash(
     *,
     digest: Callable[[bytes], _Hash],
 ) -> str:
+    """计算 active 语料中索引相关字段的稳定摘要。
+
+    每条记录由 stem、标题、摘要、排序后的标签和状态组成，记录按 stem 排序；
+    调用方应保证 stem 唯一。
+
+    Args:
+        corpus: 由 Note 文件名 stem 和内容组成的 active 语料。
+        digest: 接收 UTF-8 字节并返回摘要对象的工厂。
+
+    Returns:
+        十六进制摘要的前 16 个字符。
+    """
     rows: list[str] = []
     for stem, note in sorted(corpus, key=lambda item: item[0]):
         tags = ",".join(sorted(note.tags))
@@ -30,6 +46,19 @@ def compute_rendered_hash(
     *,
     digest: Callable[[bytes], _Hash],
 ) -> str:
+    """计算 L0 与全部 L1 原文的稳定摘要。
+
+    L0 原文作为首段，各 L1 原文按映射键排序后依次追加，段之间用两个换行符
+    拼接；映射键只决定顺序，不进入摘要。
+
+    Args:
+        l0_text: 完整 L0 文本。
+        l1_files: 领域名到完整 L1 文本的映射。
+        digest: 接收 UTF-8 字节并返回摘要对象的工厂。
+
+    Returns:
+        十六进制摘要的前 16 个字符。
+    """
     parts = [l0_text] + [l1_files[key] for key in sorted(l1_files)]
     return digest("\n\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
@@ -39,6 +68,17 @@ def parse_l0(
     *,
     domain_pattern: Any,
 ) -> list[tuple[str, int]]:
+    """逐行匹配 L0 文本，解析领域名和声明的 Note 数量。
+
+    Args:
+        l0_text: 要逐行解析的完整 L0 文本。
+        domain_pattern: 对每一行调用 ``match`` 的模式；前两个捕获组须分别
+            返回领域名和可由 ``int`` 转换的数量文本。
+
+    Returns:
+        按文本顺序排列的 ``(领域名, 声明数量)`` 列表；``match`` 未命中的行
+        被忽略。
+    """
     domains: list[tuple[str, int]] = []
     for line in l0_text.splitlines():
         match = domain_pattern.match(line)
@@ -53,6 +93,18 @@ def parse_l1_stems(
     anchor_pattern: Any,
     legacy_pattern: Any,
 ) -> list[str]:
+    """从 L1 解析 Note 文件名 stem，并兼容旧路径格式。
+
+    只要 ``anchor_pattern`` 找到结果，就完全忽略 ``legacy_pattern`` 的结果。
+
+    Args:
+        l1_text: 要解析的完整 L1 文本。
+        anchor_pattern: 查找当前 HTML anchor 中 stem 的模式。
+        legacy_pattern: 查找旧版 Note 路径中 stem 的模式。
+
+    Returns:
+        当前 anchor 中的 stem；不存在 anchor 时返回旧路径中的 stem。
+    """
     anchored = anchor_pattern.findall(l1_text)
     if anchored:
         return anchored
@@ -73,6 +125,37 @@ def evaluate(
     parse_l0: Callable[[str], list[tuple[str, int]]],
     parse_l1_stems: Callable[[str], list[str]],
 ) -> dict[str, Any]:
+    """比较 active 语料、L0/L1 内容和已保存状态。
+
+    L0 缺失时直接报告 missing。L0 存在时，结构差异、非 consistent 状态以及
+    要求基线时的来源或渲染摘要差异都会报告 stale；否则报告 consistent。
+
+    L0 缺失时，全部 active stem 都列入 ``missing_active``，现存 L1 文件都
+    列入 ``orphan_l1_files``；残留 L1 仍用于统计已索引和 inactive stem，
+    两个摘要匹配字段返回 None。
+
+    ``duplicate_entries`` 的 ``count`` 是同一 stem 在全部 L1 中的总出现次数，
+    ``domains`` 是这些出现位置所属领域的排序去重列表。
+    ``baseline_required`` 只决定摘要差异是否影响最终状态；结构差异和非
+    consistent 状态始终参与判定。没有渲染摘要基线时按匹配处理，并跳过渲染
+    摘要计算。
+
+    Args:
+        corpus: 参与 Dictionary 构建的 active 语料。
+        l0_text: L0 原文；None 表示根索引缺失。
+        l1_files: 领域名到 L1 原文的映射。
+        state_hash: 上次成功构建时保存的来源摘要；None 会报告来源摘要不匹配。
+        state_status: 已保存的 Dictionary 状态。
+        state_rendered_hash: 上次成功发布时保存的渲染摘要；None 会按匹配处理。
+        baseline_required: 来源和渲染摘要差异是否参与状态判定。
+        source_hash: 计算当前 active 语料摘要的函数。
+        rendered_hash: 计算当前 L0/L1 渲染摘要的函数。
+        parse_l0: 从 L0 解析领域名和声明数量的函数。
+        parse_l1_stems: 从 L1 解析 Note stem 的函数。
+
+    Returns:
+        包含状态、结构差异和摘要匹配结果的一致性报告。
+    """
     active_stems = {stem for stem, _note in corpus}
     current_hash = source_hash(corpus)
 
@@ -136,10 +219,10 @@ def evaluate(
     ]
 
     source_hash_matches = state_hash is not None and state_hash == current_hash
-    # staging 尚未建立可信基线，因此忽略所有 hash 差异；state 状态仍具权威性。
+    # 无需可信基线时仍报告摘要匹配结果，只是不让差异改变最终状态。
     hash_dirty = not source_hash_matches if baseline_required else False
     state_untrusted = state_status != "consistent"
-    # 首次成功发布前没有 rendered baseline，此时不把缺少基线当作内容漂移。
+    # 没有渲染摘要基线时短路为匹配，不调用渲染摘要函数。
     rendered_hash_matches = (
         state_rendered_hash is None
         or state_rendered_hash == rendered_hash(l0_text, l1_files)

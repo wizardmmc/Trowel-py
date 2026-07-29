@@ -200,9 +200,16 @@ _EPISODE_FENCED_KINDS = frozenset(
 
 
 class LeaseConflict(Exception):
-    """CAS lease 抢占败给其他活跃 owner 时抛出。"""
+    """获取资源 lease 遇到占用或幂等冲突时抛出。
+
+    Attributes:
+        resource_type: 发生冲突的资源类型。
+        resource_id: 发生冲突的资源 ID。
+    """
 
     def __init__(self, resource_type: str, resource_id: str) -> None:
+        """保存发生冲突的资源类型和 ID。"""
+
         self.resource_type = resource_type
         self.resource_id = resource_id
         super().__init__(
@@ -211,13 +218,18 @@ class LeaseConflict(Exception):
 
 
 class ForegroundConflict(Exception):
-    """抢占 foreground 败给另一个 Task 时抛出。
+    """foreground 已由其他 Task 占用时抛出。
 
     foreground 是没有 TTL 的单行持久化记录，同一时刻只能由一个 Task 持有。
     同一 owner 重试会静默返回，不同 owner 则抛出本异常。
+
+    Attributes:
+        current_owner: 当前 foreground Task ID；记录异常状态时未知则为 None。
     """
 
     def __init__(self, current_owner: str | None) -> None:
+        """保存当前 foreground 持有者。"""
+
         self.current_owner = current_owner
         super().__init__(f"foreground already held by task_id={current_owner!r}")
 
@@ -227,9 +239,15 @@ class WarmFull(Exception):
 
     warm 是固定容量缓存，溢出时必须显式替换：调用方先把已有 warm Task 降到
     backlog，再提升新 Task。异常携带当前 warm Task ID，供调用方或界面展示选择。
+
+    Attributes:
+        limit: warm Task 数量上限。
+        warm_task_ids: 抛出异常时的 warm Task ID。
     """
 
     def __init__(self, limit: int, warm_task_ids: tuple[str, ...]) -> None:
+        """保存容量上限和当前 warm Task 列表。"""
+
         self.limit = limit
         self.warm_task_ids = warm_task_ids
         super().__init__(
@@ -238,27 +256,45 @@ class WarmFull(Exception):
 
 
 class TaskCommandError(Exception):
-    """Task 命令违反状态转换、对象存在性或来源权限不变量时抛出。"""
+    """Task 命令违反状态转换、对象存在性或来源权限不变量时抛出。
+
+    Attributes:
+        reason: 命令被拒绝的原因。
+    """
 
     def __init__(self, reason: str) -> None:
+        """保存 Task 命令被拒绝的原因。"""
+
         self.reason = reason
         super().__init__(reason)
 
 
 class EpisodeCommandError(Exception):
-    """Episode 命令违反状态、所有权或 checkpoint/snapshot 契约时抛出。"""
+    """Episode 命令违反状态、所有权或 checkpoint/snapshot 契约时抛出。
+
+    Attributes:
+        reason: 命令被拒绝的原因。
+    """
 
     def __init__(self, reason: str) -> None:
+        """保存 Episode 命令被拒绝的原因。"""
+
         self.reason = reason
         super().__init__(reason)
 
 
 class StaleWriterRejected(Exception):
-    """受 fencing 保护的 Episode 写入携带陈旧所有权 token 时抛出。
+    """Episode 写入无法证明仍持有有效 ownership lease 时抛出。
 
-    写入者的 ``(lease_id, owner, fencing_token)`` 与实时 ownership lease 不符时，
-    先拒绝权威状态变更，再记录 ``late_write_rejected`` 审计事件。同一 ``event_id``
-    已持久化的幂等重试不抛出；``append_event`` 直接返回原 seq，不再校验 fencing。
+    结构化 Episode 命令以已落盘的同一事件 ID 重试时，返回原序号且不再校验实时
+    lease。新写入未通过 fencing 校验时，权威事务回滚；外层事务随后尽力记录
+    ``late_write_rejected``，审计失败仍抛出原异常。
+
+    Attributes:
+        episode_id: 被拒绝写入所属的 Episode ID。
+        reason: 写入被拒绝的原因。
+        attempted_token: 调用方提交的 fencing token；未提供时为 None。
+        current_token: 当前 ownership lease 的 fencing token；没有 lease 时为 None。
     """
 
     def __init__(
@@ -268,6 +304,8 @@ class StaleWriterRejected(Exception):
         attempted_token: int | None = None,
         current_token: int | None = None,
     ) -> None:
+        """保存 Episode ID、拒绝原因及调用方与当前 lease 的 fencing token。"""
+
         self.episode_id = episode_id
         self.reason = reason
         self.attempted_token = attempted_token
@@ -285,6 +323,8 @@ def _now_iso() -> str:
 
 
 def _payload_json(payload: dict[str, Any]) -> tuple[str, str]:
+    """用 Store 的脱敏规则稳定编码 payload 并计算内容哈希。"""
+
     return _run_payload_json(
         payload,
         redact_fn=redact_payload,
@@ -295,6 +335,8 @@ def _payload_json(payload: dict[str, Any]) -> tuple[str, str]:
 
 
 def _dumps(value: Any) -> str:
+    """用 Store 的脱敏规则稳定编码 journal 字段。"""
+
     return _run_dumps(
         value,
         redact_fn=redact_payload,
@@ -323,6 +365,8 @@ _DECISION_INSERT_SQL = (
 
 
 def _event_params(event: EventEnvelope, payload_text: str, payload_hash: str) -> tuple:
+    """按 events 表列顺序生成事件写入参数。"""
+
     return _run_event_params(
         event,
         payload_text,
@@ -331,14 +375,20 @@ def _event_params(event: EventEnvelope, payload_text: str, payload_hash: str) ->
 
 
 def _event_identity(event: EventEnvelope, payload_hash: str) -> tuple:
+    """返回不含墙钟时间的事件语义身份。"""
+
     return _run_event_identity(event, payload_hash)
 
 
 def _event_row_identity(row: sqlite3.Row, payload_hash: str) -> tuple:
+    """从 SQLite 行还原事件语义身份，忽略调用方本次计算的 payload 哈希。"""
+
     return _run_event_row_identity(row, payload_hash, int_fn=int)
 
 
 def _decision_params(decision: DecisionRecord) -> tuple:
+    """按 decisions 表列顺序生成脱敏决策写入参数。"""
+
     return _run_decision_params(
         decision,
         dumps_fn=_dumps,
@@ -347,10 +397,14 @@ def _decision_params(decision: DecisionRecord) -> tuple:
 
 
 def _lease_from_row(row: sqlite3.Row) -> Lease:
+    """把 SQLite 行转换为 Lease。"""
+
     return _run_lease_from_row(row, lease_type=Lease, int_fn=int)
 
 
 def _event_from_row(row: sqlite3.Row) -> EventEnvelope:
+    """把 SQLite 行转换为 EventEnvelope。"""
+
     return _run_event_from_row(
         row,
         event_type=EventEnvelope,
@@ -361,6 +415,8 @@ def _event_from_row(row: sqlite3.Row) -> EventEnvelope:
 
 
 def _decision_from_row(row: sqlite3.Row) -> DecisionRecord:
+    """把 SQLite 行转换为 DecisionRecord。"""
+
     return _run_decision_from_row(
         row,
         decision_type=DecisionRecord,
@@ -387,10 +443,14 @@ def _validate_work_item(kind: WorkItemKind, task_id: str | None) -> None:
 
 
 def _pending_to_payload(p: PendingDescriptor) -> dict[str, Any]:
+    """把 Episode 待处理状态编码为 snapshot payload。"""
+
     return _run_pending_to_payload(p)
 
 
 def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
+    """从 snapshot payload 还原 Episode 待处理状态。"""
+
     return _run_pending_from_payload(
         p,
         pending_type=PendingDescriptor,
@@ -399,6 +459,8 @@ def _pending_from_payload(p: dict[str, Any]) -> PendingDescriptor:
 
 
 def _snapshot_to_payload(s: EpisodeSnapshot) -> dict[str, Any]:
+    """把 EpisodeSnapshot 编码为可脱敏持久化的字典。"""
+
     return _run_snapshot_to_payload(
         s,
         encode_pending=_pending_to_payload,
@@ -406,6 +468,8 @@ def _snapshot_to_payload(s: EpisodeSnapshot) -> dict[str, Any]:
 
 
 def _validate_episode_snapshot(snapshot: EpisodeSnapshot, payload_text: str) -> None:
+    """校验快照大小、后续步骤数量以及已完成项和副作用的证据引用。"""
+
     _run_validate_snapshot(
         snapshot,
         payload_text,
@@ -415,6 +479,8 @@ def _validate_episode_snapshot(snapshot: EpisodeSnapshot, payload_text: str) -> 
 
 
 def _snapshot_from_payload(p: dict[str, Any]) -> EpisodeSnapshot:
+    """从持久化 payload 还原 EpisodeSnapshot。"""
+
     return _run_snapshot_from_payload(
         p,
         decode_pending=_pending_from_payload,
@@ -479,12 +545,13 @@ class ModelOsStore:
             self._conn = None
 
     def _create_connection(self) -> sqlite3.Connection:
-        """创建可跨 FastAPI worker 线程使用的 WAL connection。
+        """创建可跨 FastAPI worker 线程使用的 SQLite connection。
 
         ``check_same_thread=False`` 允许 TestClient 的 anyio portal 线程访问；
         结构化命令的原子性由 ``_tx`` 显式 ``BEGIN IMMEDIATE`` 保证。
         ``isolation_level="IMMEDIATE"`` 仍覆盖直接使用 connection context 的
         bootstrap/兼容路径，lease CAS 的最终仲裁由 partial unique index 完成。
+        文件数据库启用 WAL；内存数据库保持 SQLite 的 memory journal。
         """
 
         conn = sqlite3.connect(str(self._path), timeout=10, check_same_thread=False)
@@ -663,7 +730,9 @@ class ModelOsStore:
     ) -> Lease:
         """以 CAS 原子取得携带 fencing token 的 lease。
 
-        其他活跃 lease 已占用资源时抛出 ``LeaseConflict``，过期 lease 则原子接管。
+        其他未释放且未过期的 lease 已占用资源时抛出 ``LeaseConflict``。未命中原
+        幂等请求时可原子接管过期 lease；同一幂等键命中过期 lease 时仍冲突，调用方
+        必须使用新的授权请求。
         ``idempotency_key`` 以 ``(resource_type, resource_id)`` 为作用域：同 owner
         返回原 lease，不同 owner 冲突，其他资源可独立复用该键。每次授权从
         ``lease_fence_counters`` 取得严格递增的 token，使接管前的持有者无法继续写入。
@@ -831,7 +900,7 @@ class ModelOsStore:
         raise LeaseConflict(resource_type, resource_id)
 
     def release_lease(self, lease_id: str) -> bool:
-        """按 ID 释放 lease；仅实际释放活跃 lease 时返回 ``True``。"""
+        """按 ID 标记尚未释放的 lease；仅实际更新一行时返回 ``True``。"""
 
         assert self._conn is not None
         with self._tx():
@@ -842,6 +911,8 @@ class ModelOsStore:
             return cur.rowcount == 1
 
     def _read_active_leases(self) -> tuple[Lease, ...]:
+        """返回当前尚未释放且未过期的全部 lease。"""
+
         assert self._conn is not None
         now_str = _now_iso()
         rows = self._conn.execute(
@@ -948,7 +1019,7 @@ class ModelOsStore:
     ) -> int:
         """追加只供 reducer 审计的 ``CONTEXT_GENERATION_BOUNDARY`` 事件。
 
-        边界事件必须先于边界后的样本落盘，确保回放重建相同 generation 顺序。
+        边界事件必须先于新一代样本落盘，以保留代次切换的审计顺序。
         ``generation`` 在此只供审计，ContextSample 的派生值来自计算器。
         """
 
@@ -1036,6 +1107,8 @@ class ModelOsStore:
         return int(d_row["seq"]), int(e_row["seq"])
 
     def _pair_already_present(self, decision_id: str, event_id: str) -> bool:
+        """判断指定 Decision 和 Event 是否都已写入。"""
+
         assert self._conn is not None
         d = self._conn.execute(
             "SELECT 1 FROM decisions WHERE decision_id=?", (decision_id,)
@@ -1147,6 +1220,8 @@ class ModelOsStore:
                 raise
 
     def _read_foreground_task_id(self) -> str | None:
+        """从实时单行表读取当前 foreground Task。"""
+
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT task_id FROM foreground_claim WHERE id=1"
@@ -1192,18 +1267,24 @@ class ModelOsStore:
         return int(row["seq"])
 
     def _require_task(self, snap: Snapshot, task_id: str) -> TaskState:
+        """从派生快照读取 Task，不存在时拒绝命令。"""
+
         task = next((t for t in snap.tasks if t.task_id == task_id), None)
         if task is None:
             raise TaskCommandError(f"unknown task_id={task_id!r}")
         return task
 
     def _require_non_terminal(self, task: TaskState) -> None:
+        """拒绝对终态 Task 执行后续命令。"""
+
         if task.status.is_terminal:
             raise TaskCommandError(
                 f"task {task.task_id!r} is terminal ({task.status.value})"
             )
 
     def _require_status(self, task: TaskState, allowed: set[TaskStatus]) -> None:
+        """要求 Task 当前状态属于命令允许的来源状态。"""
+
         if task.status not in allowed:
             allowed_str = sorted(s.value for s in allowed)
             raise TaskCommandError(
@@ -1226,6 +1307,8 @@ class ModelOsStore:
         provenance: Provenance = Provenance.MACHINE_OBSERVATION,
         work_item_id: str | None = None,
     ) -> EventEnvelope:
+        """构造带 Store policy 和新事件 ID 的内核 Task 事件。"""
+
         event_type = EventEnvelope
         event_id = f"{kind}.{uuid4().hex}"
         occurred_at = _now_iso()
@@ -1336,6 +1419,8 @@ class ModelOsStore:
         self._task_commands.release_foreground()
 
     def _set_waiting(self, task_id: str, waiting: WaitingCondition) -> None:
+        """在独立事务中把 Task 置为指定等待状态。"""
+
         with self._tx():
             self._set_waiting_in_tx(task_id, waiting)
 
@@ -1510,6 +1595,8 @@ class ModelOsStore:
         self._task_commands.append_constraint(task_id, constraint)
 
     def set_warm_rank(self, task_id: str, warm_rank: int | None) -> None:
+        """为非终态 Task 设置人工 warm 排序，进入 warm 后生效。"""
+
         self._task_commands.set_warm_rank(task_id, warm_rank)
 
     def change_authorization(
@@ -1538,6 +1625,8 @@ class ModelOsStore:
     _EPISODE_OWNERSHIP_RESOURCE_TYPE = "episode_ownership"
 
     def _read_episode_lease_row(self, episode_id: str) -> sqlite3.Row | None:
+        """读取 Episode 当前未释放的 ownership lease 行。"""
+
         assert self._conn is not None
         return self._conn.execute(
             "SELECT * FROM leases WHERE resource_type='episode_ownership' "
@@ -1710,6 +1799,8 @@ class ModelOsStore:
         )
 
     def _require_episode(self, snap: Snapshot, episode_id: str) -> EpisodeState:
+        """从派生快照读取 Episode，不存在时拒绝命令。"""
+
         ep = snap.episode_by_id(episode_id)
         if ep is None:
             raise EpisodeCommandError(f"unknown episode_id={episode_id!r}")
@@ -1731,6 +1822,8 @@ class ModelOsStore:
         )
 
     def _next_snapshot_version_in_tx(self, episode_id: str) -> int:
+        """返回当前事务中 Episode 的下一个 snapshot 版本号。"""
+
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT COALESCE(MAX(version), 0) AS v FROM episode_snapshots "
@@ -1750,7 +1843,8 @@ class ModelOsStore:
         """取得或重新取得 Episode 的 ownership lease。
 
         返回后续受 fencing 保护写入所需的 token；相同 Episode、幂等键与 owner 的
-        重试返回原 lease。
+        重试只在原 lease 尚未过期时返回原对象。已过期时拒绝，调用方必须使用新的
+        授权请求。
         """
 
         return self.acquire_lease(
@@ -1762,10 +1856,10 @@ class ModelOsStore:
         )
 
     def release_episode_ownership(self, episode_id: str) -> bool:
-        """释放 Episode 的有效 ownership lease。
+        """释放 Episode 当前尚未标记释放的 ownership lease。
 
-        实际存在有效 lease 时返回 ``True``。关闭和失败会与生命周期事件一并释放；
-        暂停则保留 lease，供后续继续执行。
+        即使 lease 已经过期，实际更新一行仍返回 ``True``。关闭和失败会与生命周期
+        事件一并释放；暂停则保留 lease，供后续继续执行。
         """
 
         assert self._conn is not None
@@ -1870,8 +1964,9 @@ class ModelOsStore:
 
         ``previous_snapshot_ref`` 记录接力基线，首次可为 ``None``。绑定 session 并
         受 fencing 保护地转为 ACTIVE 前不允许进度写入，``native_session_id`` 保持
-        ``None``。当前没有公开的 STARTING → ACTIVE 命令，后续入口须校验当前 lease
-        三元组。幂等重试仅在原 lease 仍有效且 owner 相同时返回原对象；lease 已接管
+        ``None``。STARTING Episode 只能通过
+        ``bind_episode_runtime(..., activate=True)`` 在写入完整原生会话身份后转为
+        ACTIVE。幂等重试仅在原 lease 仍有效且 owner 相同时返回原对象；lease 已接管
         或释放时分别抛出 ``LeaseConflict`` 或 ``EpisodeCommandError``。
         """
 
@@ -2001,6 +2096,8 @@ class ModelOsStore:
         work_item_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
+        """在当前事务中追加受 ownership fencing 保护的状态事件。"""
+
         payload: dict[str, Any] = {"new_status": new_status.value}
         if extra_payload:
             payload.update(extra_payload)
@@ -2176,7 +2273,11 @@ class ModelOsStore:
             )
 
     def read_episode_snapshot(self, ref: SnapshotRef) -> EpisodeSnapshot:
-        """按精确引用读取快照；行缺失、摘要不符或提交事件缺失时均拒绝。"""
+        """读取精确快照引用，并核对快照行与提交事件的绑定。
+
+        引用中的哈希和提交事件 ID 必须与快照行相同，提交事件必须属于同一 Episode
+        且类型合法。本方法不重新计算 ``payload_json`` 的哈希。
+        """
 
         assert self._conn is not None
         row = self._conn.execute(
@@ -2773,13 +2874,13 @@ class ModelOsStore:
         recovery_snapshot: EpisodeSnapshot | None = None,
         recovery_checkpoint_key: str | None = None,
     ) -> None:
-        """根据用户或内核确认退出 RECONCILE_REQUIRED，不受 fencing 保护。
+        """根据人工确认退出 RECONCILE_REQUIRED，不受 fencing 保护。
 
         ``close`` 必须留下 recovery_partial 快照；调用方未提供时由最后快照与 journal
-        构造。外部 reconcile 决策没有 ownership lease，不能另发受 fencing 保护的
-        checkpoint 事件，因此快照身份随本次 resolve 事件记录。``resume_safe`` 把
-        Episode 置为 SUSPENDED_READY，并恢复 Task、WorkItem，随后由调用方另行激活。
-        事件来源为 ``USER_DECISION``，表示现实状态已经人工确认。
+        构造。本入口不接收 expected lease，不能另发受 fencing 保护的 checkpoint
+        事件，因此快照身份随本次 resolve 事件记录。``resume_safe`` 把 Episode 置为
+        SUSPENDED_READY，并恢复 Task、WorkItem，随后由调用方另行激活。事件来源为
+        ``USER_DECISION``，表示现实状态已经人工确认。
         """
 
         assert self._conn is not None
@@ -2952,8 +3053,9 @@ class ModelOsStore:
     ) -> tuple[EpisodeSnapshot, str]:
         """选择 reconcile close 使用的 recovery_partial 快照。
 
-        调用方未提供时，从最后快照和 journal 高水位构造，避免关闭时丢失工作现场。
-        返回快照及所用 checkpoint_key。
+        调用方未提供时，基于最后快照和后续副作用事件构造保守快照。结果保留基线
+        产物、transcript 以及已证实或待核对的副作用，并清除无法确认的判断、等待条件
+        和下一步。返回快照及所用 checkpoint_key。
         """
 
         if recovery_snapshot is not None:
@@ -2998,6 +3100,13 @@ class ModelOsStore:
         prev_ref: SnapshotRef | None = None,
         events: tuple[EventEnvelope, ...] = (),
     ) -> EpisodeSnapshot:
+        """把基线和调用方提供的副作用事件折叠为保守恢复快照。
+
+        ``journal_through_seq`` 只记录结果覆盖的 journal 水位；调用方负责让
+        ``events`` 与该水位一致。结果保留基线产物、transcript 以及已证实或待核对的
+        副作用；清除无法确认的当前判断、等待条件和下一步。
+        """
+
         return _run_build_recovery_partial(
             work_item_goal=work_item_goal,
             task_constraints_ref=task_constraints_ref,
@@ -3165,9 +3274,9 @@ class ModelOsStore:
     ) -> Lease:
         """在调用方事务内接管 Episode 的 ownership lease。
 
-        活跃 lease 必须已过期或不存在，否则抛出 ``LeaseConflict``。旧行保留并标记
-        释放，fencing token 递增后插入新 lease，使新 owner 能在同一事务写入受保护的
-        RECOVERING 转换。
+        若存在未释放的 ownership lease，它必须已经过期；没有未释放 lease 时也可
+        取得新 ownership。旧行保留并标记释放，fencing token 递增后插入新 lease，
+        使新 owner 能在同一事务写入受保护的 RECOVERING 转换。
         """
 
         assert self._conn is not None
@@ -3261,7 +3370,7 @@ class ModelOsStore:
         idempotency_key: str,
         reason: str,
     ) -> Lease:
-        """接管 ownership lease 已过期的 Episode。
+        """接管 ownership 已过期或缺失的非终态 Episode。
 
         一个 IMMEDIATE 事务内验证 Episode 非终态，以更高 fencing token 接管 lease，
         再写入 RECOVERING；失败时 lease 一并回滚，避免崩溃留下孤立 lease。调用方随后
@@ -3461,7 +3570,8 @@ class ModelOsStore:
 
         ``done`` 必须提供 ``evidence_ref``；``unknown_requires_reconcile`` 会同时写入
         未确认事件，禁止在核实现实状态前重放。以 ``(action_ref, idempotency_key)``
-        幂等，已落盘的崩溃重试不追加重复事件或 UnknownAction。
+        幂等，已落盘的崩溃重试不追加重复事件或 UnknownAction。同一键已存在时保留
+        首次记录并直接返回，不比较其余字段；调用方不得把同一键复用于不同副作用结果。
         """
 
         assert self._conn is not None

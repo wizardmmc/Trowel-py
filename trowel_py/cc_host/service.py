@@ -63,11 +63,13 @@ from trowel_py.model_os.self_assembler import build_session_injection
 logger = logging.getLogger(__name__)
 
 def _wf_debug(msg: str) -> None:
-    """保留调用位作为诊断接缝，默认不产生 I/O。"""
+    """保留 workflow 调试调用点，默认不输出内容。"""
     pass
 
 
 def _user_msg(text: str) -> bytes:
+    """将用户文本编码为 CC stream-json 输入行。"""
+
     payload = {
         "type": "user",
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
@@ -82,7 +84,20 @@ def _control_response_msg(
     updated_input: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> bytes:
-    """编码 AskUserQuestion 回包；allow 时 `updatedInput` 必须包含 `answers`。"""
+    """编码 `AskUserQuestion` 的 stream-json 回包。
+
+    allow 时 `updated_input` 必须包含 `answers`；deny 可通过 `message`
+    说明取消原因。
+
+    Args:
+        request_id: 要回答的 CC `control_request` ID。
+        behavior: CC 接受的 `allow` 或 `deny` 行为。
+        updated_input: allow 回包中的更新后工具输入；不需要时为 `None`。
+        message: deny 回包中的说明文字；不需要时为 `None`。
+
+    Returns:
+        以换行结尾的 UTF-8 stream-json 输入。
+    """
     response: dict[str, Any] = {"behavior": behavior}
     if updated_input is not None:
         response["updatedInput"] = updated_input
@@ -100,6 +115,13 @@ def _control_response_msg(
 
 
 async def _default_spawner(args: list[str], kwargs: dict[str, Any]) -> Any:
+    """使用 asyncio 启动 CC 子进程。
+
+    Args:
+        args: CC 命令行参数。
+        kwargs: 传给 `asyncio.create_subprocess_exec` 的启动选项。
+    """
+
     return await asyncio.create_subprocess_exec(*args, **kwargs)
 
 
@@ -135,6 +157,40 @@ class CCHost:
         profile_enabled: bool = True,
         self_enabled: bool = True,
     ) -> None:
+        """创建单会话 host 并保存进程、注入和运行时配置。
+
+        构造时不启动 CC；首次 ``send()`` 或 ``start_native()`` 才创建子进程。
+
+        Args:
+            session_id: Trowel 分配的会话 ID。
+            workdir: CC 子进程使用的工作目录。
+            model: 启动 CC 时传入的模型；``None`` 或空字符串使用 Trowel 默认模型。
+            effort: 启动 CC 时传入的思考强度；``None`` 或空字符串使用默认值。
+            permission_mode: 传给 CC 的权限模式。
+            permission_prompt_tool: 处理 CC 权限交互的工具名；``None`` 或空字符串
+                表示不注册。
+            resume_from: 要继续的原生 CC 会话 ID；``None`` 表示新会话。
+            proxy_base_url: CC 请求使用的本地代理地址；``None`` 表示不设置。
+            settings_path: 提供 provider 环境变量的 CC settings 文件；``None``
+                表示不读取。
+            spawner: 接收 argv 和启动选项的异步子进程创建器。
+            now: 返回单调时间的函数，用于检测 stdout 静默。
+            stalled_threshold_mild: 发布轻度静默警告前的秒数。
+            stalled_threshold_severe: 发布严重静默警告前的秒数。
+            stalled_threshold_kill: 将静默视为错误并结束轮次前的秒数。
+            stalled_tick: 读取 stdout 和检查静默状态的间隔秒数。
+            session_registrar: 保存 Memory 会话记录和水位的注册器；``None`` 使用
+                默认持久化实现。
+            session_kind: 写入 Memory 会话记录的会话来源。
+            agent_mcp_enabled: 是否启用跨 Agent 委派工具。
+            mcp_config: 候选 MCP 配置文件；启用 Agent MCP 或由本 host 拥有时
+                传给 CC，否则忽略。
+            owned_mcp_config: 该配置是否由本 host 拥有并在关闭时删除。
+            memory_enabled: 是否向会话提供 Memory 内容和读取入口。
+            profile_enabled: 是否向会话提供用户画像。
+            self_enabled: 是否向会话提供 Trowel 的持续身份信息。
+        """
+
         self.session_id = session_id
         self.workdir = workdir
         # routes 与 hub 会读取；send 或断线 drain 持有 stdout reader 时为 True。
@@ -198,42 +254,68 @@ class CCHost:
 
     @property
     def cc_session_id(self) -> str | None:
+        """返回 CC 原生会话 ID；首次初始化前可能为空。"""
+
         return self._cc_session_id
 
     @property
     def model(self) -> str | None:
+        """返回启动 CC 时请求的模型。"""
+
         return self._model
 
     @property
     def effective_model(self) -> str | None:
+        """返回 CC 初始化或 assistant 消息确认的实际模型。"""
+
         return self._effective_model
 
     @property
     def _model_for_display(self) -> str:
+        """返回适合本地状态消息展示的模型名称。"""
+
         return self._model or "(cc default)"
 
     @property
     def _effort_for_display(self) -> str:
+        """返回适合本地状态消息展示的 effort 名称。"""
+
         return self.effort or "(cc default)"
 
     @property
     def is_dead(self) -> bool:
+        """判断当前 CC 子进程是否不存在或已经退出。"""
+
         return self._proc is None or self._proc.returncode is not None
 
     @property
     def memory_enabled(self) -> bool:
+        """返回当前会话是否启用 memory。"""
+
         return self._memory_enabled
 
     @property
     def profile_enabled(self) -> bool:
+        """返回当前会话是否启用 profile 注入。"""
+
         return self._profile_enabled
 
     @property
     def self_enabled(self) -> bool:
+        """返回当前会话是否启用持续主体注入。"""
+
         return self._self_enabled
 
     async def _spawn(self, resume_from: str | None) -> Any:
         # memory 读取失败只能降级注入，不能阻止 CC 启动。
+        """组装注入、启动参数和环境后拉起 CC 子进程。
+
+        Memory 或 Self 注入构造失败时记录警告并继续启动。
+
+        Args:
+            resume_from: 要继续的原生 CC 会话 ID；`None` 表示新进程不恢复会话。
+        """
+
         try:
             memory_text = build_memory_injection(
                 date.today().isoformat(),
@@ -280,7 +362,11 @@ class CCHost:
         return await self._spawner(args, kwargs)
 
     def _build_spawn_env(self) -> dict[str, str] | None:
-        """返回代理与 MCP 环境；`None` 表示完整继承父进程环境。"""
+        """构造代理与 MCP 启动环境。
+
+        不需要任何增量时返回 `None`，让子进程完整继承父环境；否则返回
+        已合并父环境的完整映射。
+        """
         if not self._proxy_base_url:
             env: dict[str, str] | None = None
         else:
@@ -306,6 +392,8 @@ class CCHost:
         return env
 
     async def _ensure_process(self) -> None:
+        """复用存活进程，或启动新 CC 进程并更新运行标识。"""
+
         if self._proc is not None and self._proc.returncode is None:
             return
         resume: str | None = None
@@ -356,7 +444,10 @@ class CCHost:
             pass
 
     async def close(self) -> None:
-        """关闭后台 drain 和会话子进程。"""
+        """关闭后台 drain、workflow watcher 和会话子进程。
+
+        host 拥有的 MCP 配置文件也会被删除。
+        """
         # drain 持有 stdout reader，终止进程前必须先取消它。
         if self._drain_task is not None and not self._drain_task.done():
             self._drain_task.cancel()
@@ -371,11 +462,11 @@ class CCHost:
             Path(self._mcp_config).unlink(missing_ok=True)
 
     async def reload(self) -> None:
-        """丢弃进程内旧上下文，使 revert 后的下一轮从截断 jsonl 恢复。"""
+        """结束当前 CC 子进程，使 revert 后的下一轮从截断的 JSONL 恢复。"""
         await self._kill()
 
     async def _prepare_checkpoint(self) -> tuple[str, bool]:
-        """首轮复用启动 checkpoint；后续轮次在线程池中保存新快照。"""
+        """Git 工作区首轮复用启动 checkpoint，后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
         if not checkpoint.is_git_repo(self.workdir):
             return uuid.uuid4().hex, False
@@ -435,7 +526,7 @@ class CCHost:
             _wf_debug(f"memory session register failed (ignored): {exc}")
 
     async def _maybe_update_completed(self) -> None:
-        """在逻辑终态等待 completed watermark 落地。"""
+        """在线程池中更新当前 CC 会话已完整处理的 transcript 水位。"""
         if not self._cc_session_id:
             return
         jsonl_path = self._jsonl_path(self._cc_session_id)
@@ -445,7 +536,7 @@ class CCHost:
         )
 
     def _update_completed_blocking(self, jsonl_path: str) -> None:
-        """水位更新失败不能中断 CC turn。"""
+        """同步更新当前 CC 会话的 completed 水位；失败时不影响当前轮次。"""
         if not self._cc_session_id:
             return
         try:
@@ -458,6 +549,8 @@ class CCHost:
             _wf_debug(f"memory completed-offset update failed (ignored): {exc}")
 
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
+        """同步保存会话首轮前的 checkpoint。"""
+
         try:
             checkpoint.save(
                 self.workdir,
@@ -473,6 +566,8 @@ class CCHost:
     def _save_checkpoint_blocking(
         self, turn_id: str, jsonl_path: str, offset: int
     ) -> bool:
+        """同步保存指定轮次前的 checkpoint。"""
+
         try:
             checkpoint.save(
                 self.workdir,
@@ -486,6 +581,8 @@ class CCHost:
         return True
 
     def _jsonl_path(self, cc_session_id: str) -> Path:
+        """返回指定 CC 会话的主 transcript 路径。"""
+
         return (
             cc_projects_root()
             / workdir_to_slug(self.workdir)
@@ -860,7 +957,15 @@ class CCHost:
                 self._sync_kill()
 
     async def answer_elicit(self, answers: dict[str, str]) -> bool:
-        """向待处理 AskUserQuestion 写入 allow；成功后才清除 pending。"""
+        """向待处理 `AskUserQuestion` 写入 allow 回包。
+
+        Args:
+            answers: 按问题文本索引的答案，原样写入 `updatedInput.answers`。
+
+        Returns:
+            写入成功时返回 `True` 并清除待回答请求；无待回答请求或写入失败时
+            返回 `False`，且保留待回答请求。
+        """
         async with self._elicit_lock:
             pending = self._pending_elicit
             if pending is None:
@@ -897,7 +1002,11 @@ class CCHost:
             return ok
 
     async def _safe_write(self, payload: bytes) -> bool:
-        """断管或写入失败时返回 False，不让异常逃出控制流程。"""
+        """写入 CC stdin，并将断管或 I/O 失败转为 `False`。
+
+        Args:
+            payload: 要写入的完整 stream-json 输入行。
+        """
         try:
             await self._write(payload)
             return True
@@ -905,6 +1014,8 @@ class CCHost:
             return False
 
     async def _write(self, payload: bytes) -> None:
+        """将一行 stream-json 写入当前 CC 进程并等待 stdin 排空。"""
+
         proc = self._proc
         proc.stdin.write(payload)
         await proc.stdin.drain()
@@ -970,6 +1081,9 @@ class CCHost:
         """通过 stream-json 的 end_session 控制请求关闭 CC。
 
         启动、写入或超时失败也必须返回 SessionExitedEvent，避免前端卡住。
+
+        Yields:
+            一条携带最终退出码的 `SessionExitedEvent`；无法获取退出码时使用 0。
         """
         payload = (
             json.dumps(
@@ -1021,7 +1135,7 @@ class CCHost:
         yield SessionExitedEvent(type="session_exited", returncode=rc or 0)
 
     def _local_answer(self, action: LocalCommand) -> TrowelEvent:
-        """根据最近 result 本地回答 /cost 或 /status，不访问 CC。"""
+        """根据最近 result 本地回答 `/cost` 或 `/status`，不访问 CC。"""
         if action.kind == "cost":
             f = self._last_finished
             if f is None:
@@ -1048,9 +1162,16 @@ class CCHost:
     def _backfill_subagent_usage(
         self, tev: SubagentProgressEvent
     ) -> SubagentProgressEvent:
-        """用子代理 transcript 回填 task_* 的空 usage。
+        """用子代理 transcript 汇总值覆盖 task_* 事件的 token 和工具调用用量。
 
         progress 与 completed 都需读取，以保持运行中和终态展示一致。
+
+        Args:
+            tev: 可能缺少 usage 的子代理进度事件。
+
+        Returns:
+            合并 transcript 用量后的新事件；无会话 ID、任务刚启动或无可用
+            transcript 时返回原事件。
         """
         if not self._cc_session_id or not tev.task_id:
             return tev

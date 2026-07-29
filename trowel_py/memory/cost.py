@@ -1,4 +1,4 @@
-"""daily review 的客观 session 成本提取，不判断 pain。"""
+"""提取 daily review 使用的会话 token 数、轮数和错误数。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,13 @@ from typing import Any
 
 @dataclass(frozen=True)
 class SessionCost:
-    """仅包含客观信号；pain 由提炼 agent 作语义判断。"""
+    """记录会话的 token 数、轮数和错误数，不判断会话是否包含痛点。
+
+    Attributes:
+        total_tokens: 输入和输出 token 的合计数；具体算法取决于数据来源。
+        num_turns: 会话轮数；从 JSONL 提取时，用 assistant 事件条数作为近似值。
+        error_count: 错误次数；从 JSONL 提取时，统计标记为错误的工具结果。
+    """
 
     total_tokens: int
     num_turns: int
@@ -20,6 +26,17 @@ class SessionCost:
 def extract_session_cost(
     usage: dict[str, Any] | None, num_turns: int, error_count: int
 ) -> SessionCost:
+    """把调用方提供的用量、轮数和错误数整理为会话成本。
+
+    Args:
+        usage: 包含 ``input_tokens`` 和 ``output_tokens`` 的用量；为 None 或缺少
+            字段时，相应 token 数按 0 计算。
+        num_turns: 调用方统计的会话轮数。
+        error_count: 调用方统计的错误次数。
+
+    Returns:
+        包含 token 总数、轮数和错误数的会话成本。
+    """
     usage = usage or {}
     inp = int(usage.get("input_tokens") or 0)
     out = int(usage.get("output_tokens") or 0)
@@ -31,12 +48,20 @@ def extract_session_cost(
 
 
 def extract_cost_from_jsonl(jsonl_path: str | Path) -> SessionCost:
-    """按 CC 2.1.197 真实持久 JSONL 的计量语义提取客观成本。
+    """从 Claude Code 持久化 JSONL 中提取会话成本。
 
-    持久文件没有 live stdout 的 ``result`` 或 ``system/init`` 行。input 与 cache
-    input 是累积值，只取最后一个 assistant；output 是逐轮增量，需要求和。
-    assistant 行数仅作为 turn 代理，error 来自 user 内的
-    ``tool_result.is_error``。文件不可读时返回全零，由 agent 从 transcript 判断。
+    Claude Code 2.1.197 的持久文件没有实时 stdout 中的 ``result`` 或
+    ``system/init`` 行。本函数取最后一条 assistant 事件的输入与缓存输入 token，
+    累加每条 assistant 事件的输出 token，并用 assistant 事件条数近似会话轮数。
+    错误数来自 user 事件中的 ``tool_result.is_error``。这些值按持久化事件近似
+    计算，不是 Claude Code 提供的权威会话统计。空行、非 JSON 行和无效 JSON 行
+    会被跳过；文件不存在或因文件系统错误无法读取时返回全零。
+
+    Args:
+        jsonl_path: Claude Code 会话的持久化 JSONL 文件路径。
+
+    Returns:
+        按上述规则计算的 token 总数、轮次数和错误数。
     """
     last_input = 0
     total_output = 0
