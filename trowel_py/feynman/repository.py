@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class FeynmanSession:
+    """一次费曼练习的问题、回答和评估结果。"""
+
     id: str
     card_id: str
     question: str
@@ -21,14 +23,19 @@ class FeynmanSession:
 
 
 def create_feynman_repository(conn: sqlite3.Connection) -> FeynmanRepository:
+    """用指定数据库连接创建费曼练习数据仓库。"""
     return FeynmanRepository(conn)
 
 
 class FeynmanRepository:
+    """负责费曼练习会话的数据库读写。"""
+
     def __init__(self, conn: sqlite3.Connection) -> None:
+        """保存费曼练习数据使用的数据库连接。"""
         self.conn = conn
 
     def find_by_id(self, session_id: str) -> FeynmanSession | None:
+        """按会话 ID 查找一次费曼练习。"""
         row = self.conn.execute(
             "select id, card_id, question, user_answer, accuracy, completeness, feedback, missed_points, created_at from feynman_sessions where id = ?",
             (session_id,),
@@ -46,7 +53,10 @@ class FeynmanRepository:
         return [self._row_to_session(row) for row in rows]
 
     def create(self, session: FeynmanSession) -> FeynmanSession:
-        """只写入提问阶段字段；外键错误由 SQLite 原样抛出。"""
+        """创建一条尚未回答的费曼练习会话。
+
+        只写入提问阶段字段；外键错误由 SQLite 原样抛出。
+        """
         cursor = self.conn.execute(
             "insert into feynman_sessions (id, card_id, question) values (?, ?, ?)",
             (session.id, session.card_id, session.question),
@@ -66,7 +76,10 @@ class FeynmanRepository:
         feedback: str,
         missed_points: list[str],
     ) -> None:
-        """缺失会话必须失败，避免把评估写入静默降为无操作。"""
+        """将用户回答和模型评估写回练习会话。
+
+        缺失会话必须失败，避免把评估写入静默降为无操作。
+        """
         cursor = self.conn.execute(
             "update feynman_sessions set user_answer = ?, accuracy = ?, "
             "completeness = ?, feedback = ?, missed_points = ? where id = ?",
@@ -86,6 +99,7 @@ class FeynmanRepository:
 
     @staticmethod
     def _row_to_session(row: sqlite3.Row) -> FeynmanSession:
+        """将数据库行还原为费曼练习会话。"""
         d = dict(row)
         if d["missed_points"] is not None:
             d["missed_points"] = json.loads(d["missed_points"])

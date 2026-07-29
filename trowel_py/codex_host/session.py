@@ -57,7 +57,10 @@ _SENDABLE_STATES: frozenset[CodexSessionState] = frozenset(
 
 
 class CodexSession:
-    """一个 Trowel 会话对应的 Codex thread 状态机与事件队列。"""
+    """协调一个 Trowel 会话的 Codex thread 绑定、turn 状态和有序事件队列。
+
+    进程和协议传输由 manager 共享，本对象只保存会话级事实与待提交设置。
+    """
 
     def __init__(
         self,
@@ -65,9 +68,17 @@ class CodexSession:
         *,
         event_sink: Callable[[CodexEvent, ThreadBinding | None], None] | None = None,
     ) -> None:
+        """创建会话状态机及其独立事件队列。
+
+        Args:
+            config: 会话身份、thread 恢复入口和原生启动配置。
+            event_sink: 每个事件入队前调用的可选旁路接收器；异常只记录告警，
+                不阻断事件入队。
+        """
+
         self._config = config
         self._event_sink = event_sink
-        # resume 先放入最小绑定以选择 thread/resume，响应回来后再覆盖真实事实。
+        # 初始 thread ID 只构成 resume 路由所需的占位绑定；原生响应随后覆盖其余事实。
         self._binding: ThreadBinding | None
         if config.initial_thread_id is not None:
             self._binding = ThreadBinding(
@@ -84,39 +95,49 @@ class CodexSession:
         self._state: CodexSessionState = CodexSessionState.IDLE
         self._seq: int = 0
         self._session_started_emitted: bool = False
-        # begin_send 到 RUNNING 之间也必须拒绝并发发送。
+        # 显式发送的抢先 turn/started 只记录 ID；record_turn_started、
+        # record_autonomous_turn_started 或 abort_send 结束预留前拒绝并发发送。
         self._sending: bool = False
         self._autonomous_start: bool = False
         self._memory_eligible: bool = True
-        # turn/start 响应后的抢先通知先缓存，保证 USER 与 TURN_STARTED 排在前面。
+        # 发送预留期间缓存普通翻译事件，待对应 TURN_STARTED 入队后再按序发出。
         self._turn_started: bool = False
         self._native_turn_started_id: str | None = None
         self._has_started_turn: bool = False
         self._pending: list[TranslatedItem] = []
         self._queue: asyncio.Queue[CodexEvent] = asyncio.Queue()
         self._pending_turn_settings: tuple[str, str] | None = None
-        # 暂存 (approval, sandbox) preset 字符串对，在下次 turn/start 作为 override
-        # 发送；permission 与 model/effort 是独立维度，不与 _pending_turn_settings 合并。
+        # 权限 preset 与 model/effort 分别暂存和清理，避免更新一组时覆盖另一组。
         self._pending_permission_override: tuple[str | None, str | None] | None = None
 
     @property
     def config(self) -> CodexSessionConfig:
+        """返回当前会话配置；权限更新会用新实例替换该值。"""
+
         return self._config
 
     @property
     def session_id(self) -> str:
+        """返回跨 thread 重连和权限配置替换保持不变的 Trowel 会话 ID。"""
+
         return self._config.trowel_session_id
 
     @property
     def thread_id(self) -> str | None:
+        """返回当前绑定的 Codex 线程 ID；尚未绑定时为空。"""
+
         return self._binding.thread_id if self._binding is not None else None
 
     @property
     def binding(self) -> ThreadBinding | None:
+        """返回当前 Codex 线程的已知配置和身份信息。"""
+
         return self._binding
 
     @property
     def current_turn_id(self) -> str | None:
+        """返回已记录为活动状态的 Codex turn ID；启动预留期间为空。"""
+
         return self._current_turn_id
 
     @property
@@ -134,14 +155,26 @@ class CodexSession:
 
     @property
     def state(self) -> CodexSessionState:
+        """返回已记录 turn 的状态；发送预留由 ``has_in_flight_turn`` 另行反映。"""
+
         return self._state
 
     @property
     def is_new_thread(self) -> bool:
+        """判断是否没有 thread 绑定；初始恢复 ID 的占位绑定也视为已有 thread。"""
+
         return self._binding is None
 
     def queue_turn_settings(self, model: str, effort: str) -> None:
-        """为下一个 turn 暂存原子 model/effort 对；活动 turn 期间拒绝修改。"""
+        """为下一个 turn 暂存不可拆分的 model/effort 设置。
+
+        Args:
+            model: 下次 ``turn/start`` 请求使用的模型 ID。
+            effort: 与该模型一起提交的推理强度。
+
+        Raises:
+            TurnConflictError: 会话正在发送或已有活动 turn。
+        """
 
         if self._sending or self._state not in _SENDABLE_STATES:
             raise TurnConflictError(
@@ -154,6 +187,9 @@ class CodexSession:
         """返回下一个 turn 的原子设置对。
 
         初次发送回退到会话配置，后续没有暂存设置时返回空对。
+
+        Returns:
+            应传给下次 ``turn/start`` 的 model/effort；两个 ``None`` 表示省略。
         """
 
         if self._pending_turn_settings is not None:
@@ -164,10 +200,9 @@ class CodexSession:
 
     @property
     def can_queue_permission_override(self) -> bool:
-        """当前是否允许排队 permission override（活动 turn 期间不允许）。
+        """返回当前是否允许为下一个 turn 排队权限覆盖。
 
-        供 PATCH 路径在持久化前做只读检查，避免 ``BindingStore.put`` 已写盘、
-        ``queue_permission_override`` 再抛错的部分成功。
+        PATCH 路径在持久化前读取此值，避免 binding 已写盘后才因活动 turn 拒绝更新。
         """
 
         return not self._sending and self._state in _SENDABLE_STATES
@@ -175,11 +210,18 @@ class CodexSession:
     def queue_permission_override(
         self, *, approval: str | None, sandbox: str | None
     ) -> None:
-        """为下一个 turn 暂存 permission preset；活动 turn 期间拒绝修改。
+        """为下一个 turn 暂存不可拆分的 approval/sandbox preset。
 
         ``approval`` 与 ``sandbox`` 取自 ``_CODEX_PERMISSION_PRESETS`` 映射，
-        保持 preset 的原子语义；``follow`` preset 排队 ``(None, None)`` 覆盖
-        之前的非空请求。override 在 ``commit_turn_settings`` 后清空。
+        ``follow`` preset 用 ``(None, None)`` 覆盖之前的非空请求。原生
+        ``turn/start`` 接受设置后，由 ``commit_turn_settings()`` 清空暂存值。
+
+        Args:
+            approval: Codex approval policy 名称；``None`` 表示不覆盖。
+            sandbox: Codex sandbox 模式；``None`` 表示不覆盖。
+
+        Raises:
+            TurnConflictError: 会话正在发送或已有活动 turn。
         """
 
         if not self.can_queue_permission_override:
@@ -192,8 +234,11 @@ class CodexSession:
     def next_turn_permission_override(self) -> tuple[str | None, str | None]:
         """返回下一个 turn 的 permission override。
 
-        首次发送回退到会话配置的 approval/sandbox；已有活动 turn 且未暂存时
+        首次发送回退到会话配置的 approval/sandbox；首次 turn 之后未暂存覆盖时
         返回 ``(None, None)``，表示不向原生发送 override 字段。
+
+        Returns:
+            应传给下次 ``turn/start`` 的 approval/sandbox 对。
         """
 
         if self._pending_permission_override is not None:
@@ -205,16 +250,14 @@ class CodexSession:
     def apply_permission_override(
         self, *, approval: str | None, sandbox: str | None
     ) -> None:
-        """同步替换 live ``config`` 的 approval/sandbox，让重连读取新值。
+        """同步替换会话配置中的 approval/sandbox，供重连读取。
 
-        与 ``queue_permission_override`` 互补：queue 写 ``_pending`` 供下次
-        ``turn/start`` override 使用、活动 turn 期间拒绝；apply 直接替换
-        ``_config``，影响 ``thread_resume_params``（重连路径）的输出，不参与
-        活动 turn 的并发仲裁——只在 PATCH 路径成功 queue 之后调用。
+        此方法不做活动 turn 仲裁，只在 PATCH 路径成功排队权限覆盖后调用。若只更新
+        暂存值和持久 binding，重连仍会从旧会话配置生成 ``thread/resume`` 参数。
 
-        重连路径只读 ``_config``：若只更新 ``_pending`` 与持久 binding，
-        ``thread_resume_params`` 仍输出旧值，host 重连会用旧 approval/sandbox
-        覆盖用户刚选的权限。``None`` 入参表示清空，让重连不再发送 override。
+        Args:
+            approval: 重连时使用的 approval policy；``None`` 表示清空覆盖。
+            sandbox: 重连时使用的 sandbox 模式；``None`` 表示清空覆盖。
         """
 
         self._config = replace(
@@ -226,7 +269,18 @@ class CodexSession:
     def commit_turn_settings(
         self, *, model: str | None, effort: str | None
     ) -> CodexEvent | None:
-        """仅在 turn/start 被接受后提交设置，并按需发出 model_changed。"""
+        """在 ``turn/start`` 被接受后提交暂存设置。
+
+        有 thread 绑定时总会清空权限覆盖；model 或 effort 至少一项非空时更新绑定、
+        清空 model/effort 暂存值并发出 ``MODEL_CHANGED``。
+
+        Args:
+            model: 原生请求接受的模型；``None`` 表示保持绑定中的值。
+            effort: 原生请求接受的推理强度；``None`` 表示保持绑定中的值。
+
+        Returns:
+            设置模型或推理强度时产生的事件；无绑定或两项均为空时返回 ``None``。
+        """
 
         if self._binding is None:
             return None
@@ -257,7 +311,15 @@ class CodexSession:
     def begin_send(
         self, *, autonomous: bool = False, memory_eligible: bool = True
     ) -> None:
-        """为新 turn 预留会话；已有活动或启动中的 turn 时拒绝。"""
+        """为新 turn 建立发送预留；已有活动 turn 或发送预留时拒绝。
+
+        Args:
+            autonomous: 预留是否用于没有本地用户消息的原生自主 turn。
+            memory_eligible: 自主 turn 是否允许进入 memory 流程。
+
+        Raises:
+            TurnConflictError: 已有发送预留或当前状态不允许启动新 turn。
+        """
 
         if self._sending or self._state not in _SENDABLE_STATES:
             raise TurnConflictError(
@@ -271,7 +333,12 @@ class CodexSession:
         self._pending = []
 
     def abort_send(self) -> None:
-        """启动编排提前失败时释放发送预留，同时保留待提交设置。"""
+        """在启动编排失败后结束发送预留，同时保留待提交设置。
+
+        若原生 ``turn/started`` 已先到达，则将其登记为没有 ``USER`` 事件的自主
+        turn，先发出 ``TURN_STARTED``，再按原顺序发出缓存通知；否则仅清理本次
+        启动暂态。
+        """
 
         native_turn_id = self._native_turn_started_id
         pending = self._pending
@@ -290,14 +357,25 @@ class CodexSession:
         self._memory_eligible = True
 
     def attach_thread_binding(self, result: Mapping[str, Any]) -> ThreadBinding:
-        """用最新原生响应覆盖绑定；服务端事实始终优先。"""
+        """解析最新原生响应并覆盖当前 thread 绑定。
+
+        Args:
+            result: ``thread/start``、``thread/resume`` 或 ``thread/read`` 的结果。
+
+        Returns:
+            由服务端事实构成的新绑定。
+        """
 
         binding = parse_thread_binding(result)
         self._binding = binding
         return binding
 
     def emit_session_started_if_first(self) -> CodexEvent | None:
-        """每个会话只发出一次包含有效事实的 SESSION_STARTED。"""
+        """首次取得 thread 绑定后发出一次 ``SESSION_STARTED``。
+
+        Returns:
+            首次发出的事件；尚无绑定或已经发出时返回 ``None``。
+        """
 
         if self._session_started_emitted or self._binding is None:
             return None
@@ -330,6 +408,16 @@ class CodexSession:
         """本地发出 USER 与 TURN_STARTED，并进入 RUNNING。
 
         Codex 不回显本轮用户输入，因此 USER 事件必须由会话补齐。
+
+        Args:
+            turn_id: ``turn/start`` 响应中的原生 turn ID。
+            user_text: 用于补齐 ``USER`` 事件的本地输入正文。
+
+        Returns:
+            本次产生的起始事件及随后按序冲刷的缓存事件。
+
+        Raises:
+            TurnConflictError: 尚无 thread 绑定，或响应 ID 与抢先通知不一致。
         """
 
         if self._binding is None:
@@ -378,7 +466,22 @@ class CodexSession:
         return [user_event, turn_event, *flushed]
 
     def record_native_turn_started(self, turn_id: str) -> CodexEvent | None:
-        """登记 app-server 自主启动的 turn；显式 send 的回显只用于校验。"""
+        """处理 app-server 的 ``turn/started`` 通知。
+
+        显式发送预留只保存 ID，等待本地补齐 ``USER``；自主发送预留立即完成；
+        没有预留的原生自主 turn 直接发出 ``TURN_STARTED``。重复通知不重复发出
+        事件。
+
+        Args:
+            turn_id: 通知携带的原生 turn ID。
+
+        Returns:
+            自主 turn 的起始事件；显式发送对应的 ``turn/started`` 通知或重复通知
+            返回 ``None``。
+
+        Raises:
+            TurnConflictError: 尚无 thread 绑定，或另一 turn 已处于活动状态。
+        """
 
         if self._binding is None:
             raise TurnConflictError(
@@ -415,7 +518,20 @@ class CodexSession:
         return event
 
     def record_autonomous_turn_started(self, turn_id: str) -> list[CodexEvent]:
-        """完成已预留的原生自主 turn，不合成用户消息。"""
+        """记录不合成用户消息的自主 turn。
+
+        有发送预留时结束预留并冲刷缓存；无预留时按原生 ``turn/started`` 通知
+        处理。
+
+        Args:
+            turn_id: 原生响应或通知确认的 turn ID。
+
+        Returns:
+            起始事件及随后按序冲刷的缓存事件；重复通知可能返回空列表。
+
+        Raises:
+            TurnConflictError: 尚无 thread 绑定，或响应 ID 与抢先通知不一致。
+        """
 
         if self._binding is None:
             raise TurnConflictError(
@@ -459,7 +575,14 @@ class CodexSession:
         return [turn_event, *flushed]
 
     def emit_translated(self, item: TranslatedItem) -> CodexEvent | None:
-        """处理翻译后的通知；pre-turn 窗口先缓存，记录 turn 后再顺序发出。"""
+        """发出翻译后的通知，或在起始事件尚未落队时暂存。
+
+        Args:
+            item: 已翻译但尚未补充会话序号的通知。
+
+        Returns:
+            已入队的事件；暂存等待 turn 起始事件时返回 ``None``。
+        """
 
         if self._sending and not self._turn_started:
             self._pending.append(item)
@@ -469,14 +592,25 @@ class CodexSession:
         return event
 
     def emit_child_translated(self, item: TranslatedItem) -> CodexEvent:
-        """Emit a child-thread event without mutating the root turn state machine."""
+        """发出子线程事件，但不改变主线程的 turn 状态。
+
+        Args:
+            item: 已翻译的子线程通知。
+        """
 
         return self._emit(item)
 
     def mark_host_exited(
         self, reason: str, *, exit_code: int | None = None
     ) -> CodexEvent:
-        """为活动 turn 合成 HOST_EXITED 终态，同时保留 thread 绑定以供恢复。"""
+        """清理 turn 暂态、将会话标为失败并发出 ``HOST_EXITED``。
+
+        thread 绑定会保留以供恢复；即使没有已记录的活动 turn，也会发出状态事件。
+
+        Args:
+            reason: 面向调用方的退出原因。
+            exit_code: 原生进程退出码；未知时为 ``None``。
+        """
 
         self._sending = False
         self._autonomous_start = False
@@ -500,6 +634,13 @@ class CodexSession:
     def emit_host_status(
         self, status: HostStatusKind, *, reason: str | None = None
     ) -> CodexEvent:
+        """发出 Codex 进程状态事件，不改变当前 turn 状态。
+
+        Args:
+            status: 要上报的进程状态。
+            reason: 可选的状态原因。
+        """
+
         return self._emit(
             host_status_item(status, thread_id=self.thread_id, reason=reason)
         )
@@ -513,17 +654,29 @@ class CodexSession:
         return out
 
     async def events(self) -> AsyncIterator[CodexEvent]:
-        """从当前会话的独立队列按序持续产出事件。"""
+        """等待并按序持续产出当前会话的事件。
+
+        Yields:
+            队列中的下一个事件；迭代不会自行结束。
+        """
 
         while True:
             event = await self._queue.get()
             yield event
 
     def _next_seq(self) -> int:
+        """按事件发出顺序分配会话内单调递增、从 1 开始的序号。"""
+
         self._seq += 1
         return self._seq
 
     def _stamp(self, item: TranslatedItem) -> CodexEvent:
+        """为翻译结果补上会话 ID 和递增序号。
+
+        Args:
+            item: 尚未绑定 Trowel 会话序号的翻译结果。
+        """
+
         return CodexEvent(
             session_id=self._config.trowel_session_id,
             seq=self._next_seq(),
@@ -535,11 +688,18 @@ class CodexSession:
         )
 
     def _emit(self, item: TranslatedItem, *, also_terminal: bool = False) -> CodexEvent:
+        """补齐事件身份，尽力写入旁路接收器后放入会话队列。
+
+        Args:
+            item: 待发出的翻译结果。
+            also_terminal: 兼容参数，当前未使用。
+        """
+
         event = self._stamp(item)
         if self._event_sink is not None:
             try:
                 self._event_sink(event, self._binding)
-            except Exception:  # noqa: BLE001 - memory 旁路失败不能打断原生 turn。
+            except Exception:  # noqa: BLE001 - 旁路失败不能打断原生 turn。
                 _log.warning(
                     "Codex turn journal failed for session=%s turn=%s; "
                     "turn remains unsealed for memory",
@@ -551,7 +711,15 @@ class CodexSession:
         return event
 
     def _apply_terminal_state(self, item: TranslatedItem) -> None:
-        """应用 turn 终态；native_error 只上报，不结束仍可能重试的 turn。"""
+        """按翻译事件更新当前 turn 的终态。
+
+        ``FINISHED`` 转为 ``IDLE``，``INTERRUPTED`` 转为 ``INTERRUPTED``，
+        非 ``native_error`` 的 ``ERROR`` 转为 ``FAILED``；``native_error``
+        仅上报并保留活动状态。
+
+        Args:
+            item: 可能携带 turn 终态的翻译结果。
+        """
 
         if item.type is CodexEventType.FINISHED:
             self._current_turn_id = None

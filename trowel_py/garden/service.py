@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _plant_from_row(row: dict) -> dict:
+    """将卡片和复习状态的联表结果转换成植物数据。"""
     state = row.get("state")
     plant_stage = get_plant_stage(state) if state is not None else "seed"
     return {

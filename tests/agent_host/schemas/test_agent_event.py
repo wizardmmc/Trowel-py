@@ -13,10 +13,22 @@ from trowel_py.schemas.agent_host import (
 class TestEnvelopeShape:
     def test_json_schema_exposes_current_contract_description(self) -> None:
         assert AgentEvent.model_json_schema()["description"] == (
-            "live stream 与 history replay 共用的 host-neutral envelope。\n\n"
-            "``seq`` 只在同一 session 内比较，用于去重和发现缺口；``turn_id`` 与\n"
-            "``item_id`` 在原生协议提供时保持关联语义。payload 的逐类型校验由各 "
-            "runtime\ntranslator 负责，本模型只拒绝共享词汇之外的 ``type``。"
+            "表示 Claude Code 与 Codex 在实时事件流和历史回放中共用的事件。\n\n"
+            "事件内容由对应运行工具的转换代码负责校验；本模型只检查事件类型是否"
+            "已经登记。\n\n"
+            "Attributes:\n"
+            '    schema_version: 事件格式版本；序列化后的字段名为 schema，当前固定为\n'
+            '        "agent-event-v1"。\n'
+            "    session_id: 事件所属的 Trowel 会话 ID。\n"
+            '    runtime: 产生事件的运行工具，值为 "claude_code" 或 "codex"。\n'
+            "    seq: 该 Trowel 会话实际发出事件的连续序号，从 1 开始，用于去重和发现\n"
+            "        事件缺失。\n"
+            "    type: 事件类型，必须属于 AGENT_EVENT_TYPES。\n"
+            "    thread_id: Codex thread ID；Claude Code 事件不使用该字段。\n"
+            "    turn_id: 事件所属的轮次 ID。\n"
+            "    item_id: 事件关联的工具调用或其他 Codex 条目 ID，用于关联同一条目的\n"
+            "        启动、更新和完成事件。\n"
+            "    payload: 随事件类型变化的具体内容。"
         )
 
     def test_minimal_event_serialises_to_v1_envelope(self) -> None:

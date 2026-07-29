@@ -1,4 +1,4 @@
-"""选择下一个 Codex turn 使用的模型与 reasoning effort。"""
+"""为 Codex 的下一轮交互选择可用的模型和思考强度。"""
 
 from __future__ import annotations
 
@@ -7,15 +7,23 @@ from typing import Any, Mapping, Sequence
 
 
 class UnknownModelError(ValueError):
-    """所选模型不在原生 catalog 中。"""
+    """所选模型不在 Codex 提供的模型列表中。"""
 
 
 class NoUsableEffortError(ValueError):
-    """所选模型没有可用的请求值或默认 effort。"""
+    """所选模型没有可用的思考强度设置。"""
 
 
 @dataclass(frozen=True)
 class TurnSettings:
+    """保存下一轮 Codex 交互最终采用的模型和思考强度。
+
+    Attributes:
+        model: 最终采用的 Codex 模型 ID。
+        effort: 最终采用的思考强度。
+        adjusted: 是否因原选择不可用而改用了模型的默认思考强度。
+    """
+
     model: str
     effort: str
     adjusted: bool
@@ -33,7 +41,29 @@ def select_turn_settings(
     native_effort: str | None,
     configured_effort: str | None,
 ) -> TurnSettings:
-    """依次选择请求、存储、原生、配置值；不支持的 effort 回落到模型原生默认值。"""
+    """按来源优先级选择下一轮 Codex 使用的模型和思考强度。
+
+    优先使用本次请求，其次使用持久化记录、当前 Codex 会话和启动配置。没有指定
+    模型时使用模型列表中的默认项；思考强度不可用时改用该模型的默认值。
+
+    Args:
+        catalog: Codex 提供的模型及其可用思考强度列表。
+        requested_model: 本次请求明确指定的模型。
+        stored_model: 会话绑定中保存的模型。
+        native_model: 当前 Codex 会话实际使用的模型。
+        configured_model: 创建 Codex 会话时配置的模型。
+        requested_effort: 本次请求明确指定的思考强度。
+        stored_effort: 会话绑定中保存的思考强度。
+        native_effort: 当前 Codex 会话实际使用的思考强度。
+        configured_effort: 创建 Codex 会话时配置的思考强度。
+
+    Returns:
+        最终可用的模型、思考强度及是否发生调整。
+
+    Raises:
+        UnknownModelError: 最终选出的模型不在 Codex 模型列表中。
+        NoUsableEffortError: 所选模型没有可用的思考强度。
+    """
 
     default_row = next(
         (item for item in catalog if item.get("is_default") is True),

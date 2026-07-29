@@ -1,3 +1,5 @@
+"""将 CC 的 `system` 消息翻译为 Trowel 运行时事件。"""
+
 from __future__ import annotations
 
 import logging
@@ -19,7 +21,7 @@ from trowel_py.cc_host.schemas import (
 _IGNORE_SYSTEM_SUBTYPES = frozenset(
     {
         "post_turn_summary",
-        # task_updated 与 notification 重复且缺少关联 ID，不单独映射。
+        # task_updated 与 task_notification 重复且缺少关联 ID，不单独映射。
         "task_updated",
         "session_state_changed",
         "files_persisted",
@@ -37,6 +39,19 @@ def translate_system_event(
     as_text_fn: Callable[[Any], str],
     logger: logging.Logger,
 ) -> list[TrowelEvent]:
+    """按 `system.subtype` 生成对应事件。
+
+    已知但无消费用途的 subtype 静默忽略，未知 subtype 记录 debug 日志后丢弃。
+
+    Args:
+        ev: CC `system` 消息字典。
+        as_text_fn: 将 `local_command_output.content` 转成文本的函数。
+        logger: 记录未知 subtype 的日志器。
+
+    Returns:
+        翻译得到的单个事件列表；消息被忽略或无法映射时返回空列表。
+    """
+
     sub = ev.get("subtype")
     if sub in _IGNORE_SYSTEM_SUBTYPES:
         return []
@@ -57,7 +72,7 @@ def translate_system_event(
             )
         ]
     if sub == "api_retry":
-        # attempt 属于上游单次请求，禁止在本地跨重试轮次累加。
+        # attempt 是上游单次请求内的计数，本地直接透传，不跨 api_retry 消息累加。
         return [
             RetryingEvent(
                 attempt=_as_int(ev.get("attempt")) or 0,
@@ -75,7 +90,7 @@ def translate_system_event(
             )
         ]
     if sub == "status":
-        # 阶段字段兼容 subtype2 与 stage，均缺失时显式标记 unknown。
+        # 阶段优先取非空 subtype2，其次取非空 stage；两者均为空时标记 unknown。
         stage = ev.get("subtype2") or ev.get("stage") or "unknown"
         return [StatusEvent(stage=stage)]
     if sub == "compact_boundary":
@@ -87,7 +102,8 @@ def translate_system_event(
     if sub == "local_command_output":
         return [LocalCommandEvent(content=as_text_fn(ev.get("content")))]
     if sub == "thinking_tokens":
-        # thinking_tokens 是正文到达前维持思考状态的心跳。
+        # thinking_tokens 是思考内容到达前的心跳；estimated_tokens 是截至当前
+        # 心跳的累计思考 token 估算值。
         return [
             ThinkingProgressEvent(
                 estimated_tokens=int(ev.get("estimated_tokens", 0)),
@@ -116,7 +132,7 @@ def translate_system_event(
             )
         ]
     if sub == "task_notification":
-        # 原样传递终态；字段缺失时标记 unknown，不能伪装成成功。
+        # 保留上游终态；status 缺失或为空时标记 unknown，不能伪装成成功。
         return [
             SubagentProgressEvent(
                 tool_use_id=ev.get("tool_use_id", ""),
@@ -130,7 +146,23 @@ def translate_system_event(
 
 
 def _as_int(value: Any) -> int | None:
-    # bool 不是有效计数；上游小数在事件边界截断，避免 schema 拒绝。
+    """将 `api_retry` 的可选计数字段转换为整数。
+
+    布尔值和 `None` 返回 `None`，整数原样返回，有限浮点数由 `int()` 向零截断。
+    其他值调用 `int(value)`，仅捕获 `TypeError` 和 `ValueError`；其余异常向上传播。
+
+    Args:
+        value: CC 消息中的原始计数值。
+
+    Returns:
+        转换后的整数；值为 `None`、布尔值，或其他值转换时触发 `TypeError` 或
+        `ValueError`，则返回 `None`。
+
+    Raises:
+        ValueError: 浮点数是 `NaN`。
+        OverflowError: 浮点数是正无穷或负无穷。
+    """
+
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):

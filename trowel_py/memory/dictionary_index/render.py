@@ -1,4 +1,4 @@
-"""从 active notes 派生 dictionary 的 L0/L1 文本，不写入磁盘。"""
+"""从 active Note 派生 Dictionary 的 L0/L1 文本，不写入磁盘。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from trowel_py.llm.client import LLMProvider
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
 
-# 保持拆分前的 logger name，避免既有日志过滤规则失效。
+# 日志名属于部署过滤契约，不随包内模块路径变化。
 logger = logging.getLogger("trowel_py.memory.dictionary")
 
 _CLUSTER_SYSTEM_PROMPT = (
@@ -31,6 +31,18 @@ def derive_dictionary_full(
     root: Path | str,
     provider: LLMProvider,
 ) -> dict[str, Any]:
+    """从可解析的 active Note 派生完整 L0、L1 和领域结构。
+
+    模型返回同名领域时，``domains`` 和 L0 保留重复项；L1 映射以领域名为键，
+    因此只保留最后一个同名领域的文本。
+
+    Args:
+        root: Note 所在的 Memory 根目录。
+        provider: 对 Note 进行领域聚类的模型客户端。
+
+    Returns:
+        包含 L0 文本、各领域 L1 文本和领域结构的映射。
+    """
     store = MemoryStore(root)
     notes_with_id = store.load_notes_with_id({"status": "active"})
     domains = _cluster_notes(notes_with_id, provider)
@@ -50,6 +62,18 @@ def _cluster_notes(
     notes_with_id: list[tuple[str, Note]],
     provider: LLMProvider,
 ) -> list[dict[str, Any]]:
+    """让模型把 active Note 分组为 Dictionary 领域。
+
+    空语料直接返回空列表，不调用 provider。非空语料按从 1 开始的序号发送给
+    provider。
+
+    Args:
+        notes_with_id: Note 文件名 stem 与内容的列表。
+        provider: 执行领域聚类的模型客户端。
+
+    Returns:
+        解析并补齐未归类 Note 后的领域列表。
+    """
     if not notes_with_id:
         return []
     lines = [
@@ -65,6 +89,24 @@ def _parse_cluster(
     response: str,
     notes_with_id: list[tuple[str, Note]],
 ) -> list[dict[str, Any]]:
+    """解析模型分组，并把未分配 Note 放入 ``misc``。
+
+    函数贪婪截取响应中第一个 ``{`` 到最后一个 ``}`` 之间的文本。没有匹配或
+    截取结果无法解码时，全部 Note 回退到 ``misc``；其他合法 JSON 的结构错误
+    不会回退，可能抛出下列异常。没有解析出有效 Note 引用的领域会被丢弃，
+    重复 Note 引用和重复领域名均不去重。
+
+    Args:
+        response: provider 返回的文本。
+        notes_with_id: 可被分组的 Note 文件名 stem 与内容列表。
+
+    Returns:
+        清理领域名并解析 Note 引用后的领域列表。
+
+    Raises:
+        AttributeError: JSON 顶层或领域项不是对象。
+        TypeError: 领域集合或 Note 引用不是可迭代值。
+    """
     match = re.search(r"\{.*\}", response, re.DOTALL)
     if not match:
         logger.warning("dictionary: no JSON in cluster response")
@@ -124,6 +166,19 @@ def _resolve_note_ids(
     notes_with_id: list[tuple[str, Note]],
     valid_stems: set[str],
 ) -> list[str]:
+    """把模型返回的序号或 stem 解析为真实 Note 文件名 stem。
+
+    精确匹配 stem 优先；否则把值按从 1 开始的序号解释。未知 stem、越界序号
+    和非整数值被忽略，重复值保留。
+
+    Args:
+        values: 模型返回的 Note 引用。
+        notes_with_id: 按 prompt 序号排列的 Note 列表。
+        valid_stems: 可以直接接受的 Note 文件名 stem。
+
+    Returns:
+        按输入顺序解析出的真实 stem 列表。
+    """
     note_ids: list[str] = []
     for value in values:
         text = str(value)
@@ -142,6 +197,15 @@ def _resolve_note_ids(
 def _fallback_to_misc(
     notes_with_id: list[tuple[str, Note]],
 ) -> list[dict[str, Any]]:
+    """生成一个包含全部输入 Note 的 ``misc`` 领域。
+
+    Args:
+        notes_with_id: 要放入 fallback 领域的 Note 列表。
+
+    Returns:
+        仅包含 ``misc`` 的领域列表；输入为空时仍返回一个 ``note_ids`` 为空的
+        ``misc`` 领域。
+    """
     return [
         {
             "name": "misc",
@@ -153,12 +217,34 @@ def _fallback_to_misc(
 
 
 def _slugify_domain(name: str) -> str:
+    """把模型给出的领域名清理为 L1 文件名 stem。
+
+    空白和斜杠折叠为连字符，仅保留 ASCII 字母数字、连字符及 Unicode
+    U+4E00–U+9FFF 范围字符；结果转为小写，清理后为空则返回 ``misc``。
+
+    Args:
+        name: 模型返回的领域名。
+
+    Returns:
+        可用于 L1 文件名的 stem。
+    """
     slug = re.sub(r"[\s/]+", "-", name.strip())
     slug = re.sub(r"[^a-zA-Z0-9一-鿿-]", "", slug)
     return slug.lower() or "misc"
 
 
 def _render_l0(domains: list[dict[str, Any]]) -> str:
+    """把领域列表渲染为根索引 L0。
+
+    每个领域的声明数量直接取 ``note_ids`` 长度；即使 L1 渲染随后跳过缺失
+    Note，L0 数量也不会减少。
+
+    Args:
+        domains: 含名称、描述、触发词和 Note stem 的领域列表。
+
+    Returns:
+        以换行结尾的 L0 文本；空列表仍返回根索引说明。
+    """
     lines = [
         "这是 memory 笔记的根索引。先用下面的领域列表定位该去哪个 L1，"
         "再 read 对应 L1 文件找具体笔记。",
@@ -181,6 +267,17 @@ def _render_l1(
     domain: dict[str, Any],
     notes_by_id: dict[str, Note],
 ) -> str:
+    """把一个领域及其现存 Note 渲染为 L1。
+
+    ``note_ids`` 中不在 ``notes_by_id`` 的 stem 被跳过。
+
+    Args:
+        domain: 含名称、描述和 Note stem 的领域。
+        notes_by_id: Note 文件名 stem 到内容的映射。
+
+    Returns:
+        以换行结尾的领域 L1 文本。
+    """
     lines = [f"# {domain['name']}", ""]
     if domain["description"]:
         lines.extend([f"{domain['description']}。", ""])
@@ -192,6 +289,18 @@ def _render_l1(
 
 
 def _render_l1_entry(stem: str, note: Note) -> str:
+    """渲染一条可供检索和一致性检查读取的 L1 Note 条目。
+
+    标签非空时按原顺序用 ``, `` 拼接为触发词，否则使用标题。返回文本同时
+    包含旧路径格式和保存原始 stem 的 HTML anchor；一致性检查优先解析 anchor。
+
+    Args:
+        stem: Note 文件名 stem。
+        note: 要渲染的 Note。
+
+    Returns:
+        单行 Markdown 列表项。
+    """
     # HTML anchor 不受 Markdown code span 转义影响，供一致性检查还原原始 stem。
     triggers = ", ".join(note.tags) if note.tags else note.title
     return (

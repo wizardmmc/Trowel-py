@@ -1,6 +1,7 @@
 """列出指定工作目录下可恢复的 CC 历史会话。
 
-扫描范围包括该目录的全部 CC 会话，不限于 Trowel 创建的记录。
+扫描范围包括该目录中所有符合恢复列表过滤规则的 CC 主会话，不限于 Trowel
+创建的记录。
 """
 from __future__ import annotations
 
@@ -14,29 +15,49 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 只读文件首尾以限制内存；头部需覆盖首条用户消息前的大块元数据。
+# 标题扫描只读文件首尾以限制内存；64 KiB 头部用于越过首条消息前的大块元数据。
 _HEAD_BYTES = 65536
 _TAIL_BYTES = 8192
 
-# sidechain 标记只在首行生效。
+# 只检查 JSONL 首行的 sidechain 标记。
 _SIDECHAIN_FIRST_LINE = re.compile(r'"isSidechain"\s*:\s*true')
 
 
 @dataclass(frozen=True)
 class SessionSummary:
+    """保存一个可恢复 CC 会话在历史列表中展示的信息。
+
+    Attributes:
+        cc_session_id: 从 JSONL 文件名取得的原生 CC 会话 UUID。
+        title: 按 customTitle、aiTitle、lastPrompt、头部首条非 tool_result 用户
+            文本的顺序取得的非空标题。
+        updated_at: JSONL 文件的修改时间，单位为 Unix 秒。
+    """
+
     cc_session_id: str
     title: str
-    updated_at: float  # 文件修改时间，Unix 秒
+    updated_at: float
 
 
 @dataclass(frozen=True)
 class SessionConfigSummary:
+    """保存 CC 历史会话最后确认的模型、思考强度和权限。
+
+    Attributes:
+        model: init 或 assistant 消息最后报告的非空模型；未报告时为 `None`。
+        effort: attachment response 最后报告的非空思考强度；未报告时为 `None`。
+        permission_mode: 顶层事件或 attachment response 最后报告的非空权限模式；
+            未报告时为 `None`。
+    """
+
     model: str | None
     effort: str | None
     permission_mode: str | None
 
 
 def cc_projects_root() -> Path:
+    """返回 CC 保存本地项目会话的根目录。"""
+
     return Path.home() / ".claude" / "projects"
 
 
@@ -45,11 +66,19 @@ def workdir_to_slug(workdir: str | os.PathLike) -> str:
 
     解析符号链接后，将每个非 ASCII 字母数字字符替换为连字符。
     当前未复现 CC 对超过 200 字符路径的哈希截断，超长路径可能无法命中。
+
+    Args:
+        workdir: 要映射到 CC projects 子目录的工作目录。
+
+    Returns:
+        CC projects 根目录下对应的子目录名。
     """
     return re.sub(r"[^a-zA-Z0-9]", "-", str(os.path.realpath(workdir)))
 
 
 def _is_valid_uuid_session_id(stem: str) -> bool:
+    """判断 JSONL 文件名主体是否是合法的 CC 会话 UUID。"""
+
     try:
         uuid.UUID(stem)
     except (ValueError, AttributeError, TypeError):
@@ -58,14 +87,32 @@ def _is_valid_uuid_session_id(stem: str) -> bool:
 
 
 def count_sessions(workdir: str | os.PathLike) -> int:
-    """复用恢复列表的过滤规则，避免裸 glob 计入 sidechain 和元数据文件。"""
+    """按恢复列表的过滤规则统计工作目录中的可恢复 CC 会话。
+
+    Args:
+        workdir: 要统计历史会话的工作目录。
+
+    Returns:
+        排除 sidechain、非 UUID 文件和无标题 transcript 后的会话数。
+    """
     return len(list_sessions(workdir))
 
 
 def read_session_config(
     workdir: str | os.PathLike, cc_session_id: str
 ) -> SessionConfigSummary | None:
-    """从主 transcript 顺序提取最后一组已确认的 CC 配置事实。"""
+    """顺序扫描主 transcript，提取最后报告的模型、思考强度和权限。
+
+    无效会话 ID、文件缺失或不可读，以及没有任何已识别配置时返回 `None`。
+    `<synthetic>` assistant 模型不作为实际模型。
+
+    Args:
+        workdir: CC 会话所属的工作目录。
+        cc_session_id: 要读取的原生 CC 会话 UUID。
+
+    Returns:
+        各字段最后一个非空配置值；无法取得任何配置时返回 `None`。
+    """
 
     if not _is_valid_uuid_session_id(cc_session_id):
         return None
@@ -140,7 +187,19 @@ def read_session_config(
 def list_sessions(
     workdir: str | os.PathLike, *, limit: int | None = None
 ) -> list[SessionSummary]:
-    """返回按更新时间倒序排列的可恢复会话，可限制数量。"""
+    """列出工作目录中按文件修改时间倒序排列的可恢复 CC 会话。
+
+    只接收 UUID 命名且能提取非空标题的主 transcript。单个文件在扫描中消失、
+    读取失败或标题提取抛出异常时跳过，不影响其他结果。
+
+    Args:
+        workdir: 要扫描历史会话的工作目录。
+        limit: 修改时间倒序排序后使用的切片上限；`None` 返回全部，非负数返回前
+            `limit` 条，负数按 Python 切片语义移除末尾相应条数。
+
+    Returns:
+        通过过滤的会话摘要；项目目录不存在时返回空列表。
+    """
     slug = workdir_to_slug(workdir)
     proj_dir = cc_projects_root() / slug
     if not proj_dir.is_dir():
@@ -153,13 +212,13 @@ def list_sessions(
             mtime = f.stat().st_mtime
             title = _extract_title(f)
         except OSError:
-            # CC 可能在扫描期间轮转文件。
+            # CC 可能在扫描期间移动或删除文件，单个文件失败不影响列表。
             continue
         except Exception as exc:  # noqa: BLE001 — 单个坏文件不能阻断整个列表
             logger.debug("skipping unparseable session file %s: %s", f, exc)
             continue
         if title == "":
-            # 无可展示标题的文件不加入恢复列表。
+            # sidechain 和只含元数据的 transcript 都没有可展示标题。
             continue
         out.append(
             SessionSummary(
@@ -175,7 +234,14 @@ def list_sessions(
 
 
 def _read_head_tail(path: Path) -> tuple[str, str]:
-    """以 UTF-8 容错解码并返回文件的有界首尾文本。"""
+    """以 UTF-8 容错解码并返回 JSONL 文件的有界首尾文本。
+
+    Args:
+        path: 要读取的 transcript 文件。
+
+    Returns:
+        最多 64 KiB 的头部和最多 8 KiB 的尾部；文件不超过头部上限时两者相同。
+    """
     size = path.stat().st_size
     head_text = ""
     tail_text = ""
@@ -193,9 +259,16 @@ def _read_head_tail(path: Path) -> tuple[str, str]:
 
 
 def _extract_title(path: Path) -> str:
-    """按 customTitle、aiTitle、lastPrompt、首条用户文本选择标题。
+    """按 customTitle、aiTitle、lastPrompt、首条真实用户文本的顺序选择标题。
 
-    首行为 sidechain 标记或无法提取标题时返回空字符串。
+    标题字段在各自的有界切片中取最后一个字符串值。首行为 sidechain 标记或
+    无法提取标题时返回空字符串。
+
+    Args:
+        path: 要提取标题的主 transcript 文件。
+
+    Returns:
+        选中的标题；sidechain 或无可用标题时返回空字符串。
     """
     head, tail = _read_head_tail(path)
 
@@ -216,21 +289,37 @@ def _extract_title(path: Path) -> str:
 
 
 def _last_string_field(blob: str, field: str) -> str:
-    """从不完整 JSONL 文本中提取字段最后一个字符串值。"""
+    """从可能不完整的 JSONL 文本中提取字段最后一个字符串值。
+
+    Args:
+        blob: transcript 的头部或尾部文本切片。
+        field: 要查找的 JSON 字段名。
+
+    Returns:
+        解码 JSON 转义后的最后一个值；没有匹配时返回空字符串。值的转义无法
+        解码时返回捕获到的原始字符串体。
+    """
     pattern = re.compile(r'"' + re.escape(field) + r'"\s*:\s*"((?:[^"\\]|\\.)*)"')
     matches = pattern.findall(blob)
     if not matches:
         return ""
     raw = matches[-1]
     try:
-        # 捕获的是 JSON 字符串体，需要再次解码转义。
+        # 正则只捕获 JSON 字符串体，这里补回引号以解码其中的转义。
         return json.loads('"' + raw + '"')
     except json.JSONDecodeError:
         return raw
 
 
 def _first_user_text_from_head(head: str) -> str:
-    """从头部切片提取首条真实用户文本，忽略工具结果回显。"""
+    """从头部切片提取首条真实用户文本，并忽略工具结果回显。
+
+    Args:
+        head: transcript 的头部文本切片。
+
+    Returns:
+        第一条可用用户文本；没有时返回空字符串。
+    """
     for raw in head.splitlines():
         line = raw.strip()
         if not line:
@@ -242,7 +331,7 @@ def _first_user_text_from_head(head: str) -> str:
         if ev.get("type") != "user":
             continue
         content = ev.get("message", {}).get("content")
-        # tool_result 也封装为 user 事件，不能作为会话标题。
+        # CC 把 tool_result 也封装为 user 事件，但它不是用户输入。
         if isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content
         ):
@@ -254,6 +343,15 @@ def _first_user_text_from_head(head: str) -> str:
 
 
 def _extract_text(content: object) -> str:
+    """从用户消息正文中取出字符串内容或第一个 text 块。
+
+    Args:
+        content: CC 用户消息的 `message.content` 值。
+
+    Returns:
+        直接字符串或第一个 text 块的文本；正文形态不支持时返回空字符串。
+    """
+
     if isinstance(content, str):
         return content
     if isinstance(content, list):

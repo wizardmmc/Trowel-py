@@ -28,11 +28,24 @@ _REVIEW_JOB_REGISTERED = False
 
 @dataclass(frozen=True)
 class ReviewScheduleConfig:
+    """记录 Daily review 的启用状态和每日本地触发时刻。
+
+    Attributes:
+        review_time: 每天按本地时钟触发 review 的时刻。
+        review_enabled: 是否在应用启动时启用补跑和每日循环。
+    """
+
     review_time: time
     review_enabled: bool
 
 
 def _parse_time(raw: str | None) -> time:
+    """解析 ``HH:MM`` 本地运行时刻，缺失或非法时返回默认时刻。
+
+    Args:
+        raw: TOML 中 ``[memory].review_time`` 的原始值，预期格式为 ``HH:MM``。
+    """
+
     if not raw:
         return DEFAULT_REVIEW_TIME
     try:
@@ -46,7 +59,12 @@ def _parse_time(raw: str | None) -> time:
 
 
 def _parse_enabled(raw: Any, *, present: bool) -> bool:
-    """只接受 TOML bool，避免字符串 ``"false"`` 被 Python 当成真值。"""
+    """读取启用开关，只接受 TOML bool，缺失或非法时返回默认值。
+
+    Args:
+        raw: ``review_enabled`` 的解析结果。
+        present: 配置中是否明确写了 ``review_enabled``；只影响非法值告警。
+    """
     if isinstance(raw, bool):
         return raw
     if present:
@@ -59,7 +77,14 @@ def _parse_enabled(raw: Any, *, present: bool) -> bool:
 
 
 def load_review_config(config_path: Path | None = None) -> ReviewScheduleConfig:
-    """读取 ``[memory]`` 调度配置；缺失、损坏或非法值均回退默认值。"""
+    """从 TOML 的 ``[memory]`` 表读取 Daily review 调度配置。
+
+    配置文件、表或字段缺失，以及文件不可读、TOML 损坏或字段非法时，相应字段
+    回退为每日 02:30 和启用状态。
+
+    Args:
+        config_path: 要读取的配置文件；为 None 时按项目规则查找配置。
+    """
     path = config_path or paths.find_config_path()
     if not path.exists():
         return ReviewScheduleConfig(DEFAULT_REVIEW_TIME, DEFAULT_REVIEW_ENABLED)
@@ -102,6 +127,18 @@ class MemoryReviewScheduler:
         now_fn: NowFn | None = None,
         sleep_fn: SleepFn | None = None,
     ) -> None:
+        """配置调度时间和派发依赖。
+
+        Args:
+            config: review 的启用状态和本地触发时刻。
+            memory_root: 调度事件传给 review job 的 Memory 根目录。
+            dispatch_fn: 在线程中同步派发 review 事件的函数；为 ``None`` 时使用
+                默认 hook registry。
+            now_fn: 返回用于计算 review 日期的本地时间；带时区的值按其本地
+                时钟字段使用，不转换时区。
+            sleep_fn: 每日循环使用的异步等待函数。
+        """
+
         self._config = config
         self._memory_root = memory_root
         self._dispatch: DispatchFn = dispatch_fn or _default_dispatch
@@ -112,10 +149,12 @@ class MemoryReviewScheduler:
 
     @property
     def tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """返回当前 catch-up 和每日循环任务的只读快照。"""
+
         return tuple(self._tasks)
 
     async def start(self) -> None:
-        """启动补跑和每日循环；禁用或已启动时保持幂等。"""
+        """启动一次立即补跑和每日循环；禁用或已启动时不重复创建任务。"""
         if self._started or not self._config.review_enabled:
             return
         self._started = True
@@ -144,10 +183,12 @@ class MemoryReviewScheduler:
         self._started = False
 
     async def _catchup(self) -> None:
+        """应用启动后立即派发一次昨天的 review。"""
+
         await self._run_once(label="catchup")
 
     async def _daily_loop(self) -> None:
-        """等待目标时刻并循环派发；sleep 期间取消时正常退出。"""
+        """每天等到配置时刻后派发 review，等待被取消时正常退出。"""
         while True:
             try:
                 wait = seconds_until(self._config.review_time, self._now())

@@ -1,7 +1,10 @@
+"""创建采用项目统一设置的 SQLite 连接。"""
+
 import sqlite3
 
 
 def create_db(db_path: str = "trowel.db") -> sqlite3.Connection:
+    """打开 SQLite 数据库并设置行读取、WAL 和外键选项。"""
     conn = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # WAL 允许读取与写入并行；外键检查是 SQLite 的连接级开关。

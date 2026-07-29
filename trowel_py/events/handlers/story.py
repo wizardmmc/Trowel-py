@@ -1,3 +1,5 @@
+"""从已学卡片中随机生成知识回顾事件。"""
+
 from typing import TYPE_CHECKING, cast
 
 from trowel_py.events.types import GameState
@@ -12,13 +14,19 @@ if TYPE_CHECKING:
 
 
 class StoryHandler:
+    """选择一张已学卡片并展示它的标题和解释。"""
+
     def can_trigger(self, state: GameState) -> bool:
+        """只允许至少有一张已学卡片时继续执行。"""
+
         if len(state.learned_card_ids) > 0:
             return True
         else:
             return False
 
     def execute(self, state: GameState, deps: EventDependencies) -> EventResult:
+        """随机选择已学卡片并生成知识回顾内容。"""
+
         card_id = deps.rng.choice(state.learned_card_ids)
         # learned_card_ids 来自受外键约束的 FSRS 行，因此对应卡片必然存在。
         card = cast("Card", deps.card_repo.find_by_id(card_id))

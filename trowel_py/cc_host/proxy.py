@@ -33,11 +33,21 @@ _DUMP_RESP_HEAD_BYTES = 3000
 
 
 def _proxy_debug() -> bool:
+    """判断是否启用可能含敏感信息的本地反代诊断。
+
+    `PROXY_DEBUG` 只要是非空字符串即视为启用。
+    """
+
     return bool(os.environ.get("PROXY_DEBUG"))
 
 
 def _summarize_body(raw: bytes) -> dict:
-    """提取缓存诊断摘要，不记录完整 prompt、message 或 tool schema。"""
+    """提取缓存诊断摘要，不展开 message 或 tool schema。
+
+    system 文本和非法 JSON 只记录有限长度的前缀，但其中仍可能包含完整的短
+    prompt 或其他敏感信息，只能用于本机诊断。空请求体、非法 JSON 和非对象
+    JSON 分别返回带状态标记的摘要。
+    """
     if not raw:
         return {"_empty": True}
     try:
@@ -79,7 +89,11 @@ def _summarize_body(raw: bytes) -> dict:
 
 
 def load_settings_env(settings_path: Path | str) -> dict[str, str]:
-    """读取 CC settings 的 env；文件缺失或损坏时按空配置降级。"""
+    """读取 CC settings 的 `env`，并把键和值统一转换为字符串。
+
+    文件缺失、读取失败、JSON 损坏或 `env` 不是对象时返回空字典。文件若
+    不是 UTF-8 编码，则由调用方处理 `UnicodeDecodeError`。
+    """
     path = Path(settings_path)
     if not path.is_file():
         return {}
@@ -97,7 +111,11 @@ def build_proxy_env(
     settings_env: dict[str, str],
     proxy_base_url: str,
 ) -> dict[str, str]:
-    """构造由调用方合并的 env 增量，固定反代路由并保留 provider 配置。"""
+    """构造由调用方合并的环境变量增量。
+
+    返回值复制 `settings_env`，覆盖 `ANTHROPIC_BASE_URL` 并标记 provider 由
+    host 管理；本函数不读取或合并进程环境。
+    """
     delta = dict(settings_env)
     delta["ANTHROPIC_BASE_URL"] = proxy_base_url
     delta["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] = "1"
@@ -105,6 +123,8 @@ def build_proxy_env(
 
 
 def _is_billing_header_block(block: object) -> bool:
+    """判断 system 条目是否是 CC `-p` 附加的 billing block。"""
+
     if not isinstance(block, dict):
         return False
     text = block.get("text")
@@ -114,10 +134,11 @@ def _is_billing_header_block(block: object) -> bool:
 
 
 def replace_system_identity(body: dict) -> dict:
-    """删除 -p billing block 并替换 TUI identity，始终返回独立副本。
+    """删除所有 `-p` billing block，并将首个可识别的 identity 替换为 TUI identity。
 
-    其他 system block、cache_control、tools 与 messages 保持原样；无法识别
-    system 时返回等值副本，不能因缓存优化阻断请求。
+    其他 system block、cache_control、tools 与 messages 保持原值，返回结果始终
+    与输入对象相互独立。`system` 不是列表时返回等值的深拷贝；列表中没有可识别
+    的 identity 时仍会删除匹配的 billing block。
     """
     system = body.get("system")
     if not isinstance(system, list):
@@ -137,11 +158,11 @@ def replace_system_identity(body: dict) -> dict:
 
 
 def should_replace(real_base_url: str) -> bool:
-    """仅对已有缓存差分证据的上游启用 rewrite。"""
+    """根据 URL 是否包含已验证的 host 片段判断是否启用重写。"""
     return any(host in real_base_url for host in _REPLACE_HOSTS)
 
 
-# httpx 会按真实 URL/body 重建 host 与 content-length；其余逐跳 header 也不转发。
+# 请求侧由 httpx 重建 host 和 content-length；请求与响应都不转发逐跳 header。
 _HOP_BY_HOP: set[str] = {
     "connection",
     "content-length",
@@ -157,11 +178,20 @@ _HOP_BY_HOP: set[str] = {
 
 
 def _filter_headers(headers) -> dict[str, str]:
+    """移除请求或响应中不能端到端透传的 header。
+
+    Args:
+        headers: 待过滤的请求或响应 header 集合。
+    """
+
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
 
 def _maybe_rewrite_system(raw: bytes, real_base_url: str) -> bytes:
-    """只为目标上游重写 JSON；空 body 或解析失败时原字节透传。"""
+    """只为目标上游重写 JSON 对象，并返回紧凑编码的 UTF-8 字节。
+
+    空请求体、非目标上游、非法 JSON 或非对象 JSON 均原字节透传。
+    """
     if not raw or not should_replace(real_base_url):
         return raw
     try:
@@ -171,12 +201,20 @@ def _maybe_rewrite_system(raw: bytes, real_base_url: str) -> bytes:
     if not isinstance(body, dict):
         return raw
     new_body = replace_system_identity(body)
-    # rewrite 会重新序列化；紧凑编码避免额外扩大请求体。
+    # 重写后会重新序列化；紧凑编码避免额外扩大请求体。
     return json.dumps(new_body, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 async def _forward(request: Request, path: str) -> StreamingResponse:
-    """按原顺序流式转发上游响应，并在消费结束或断开时关闭 response。"""
+    """以 POST 流式转发请求，并在响应消费结束或断开时关闭上游连接。
+
+    请求和响应都会过滤不能透传的 header。开启诊断时旁路收集响应前 3000 字节；
+    最终诊断文件写入失败不会中断响应收尾。
+
+    Args:
+        request: 当前 FastAPI 请求；应用状态需提供共享 HTTP 客户端和真实上游地址。
+        path: 拼接到真实上游地址后的相对路径。
+    """
     client = request.app.state.cc_http_client
     real_base_url = request.app.state.cc_real_base_url
 
@@ -210,6 +248,12 @@ async def _forward(request: Request, path: str) -> StreamingResponse:
     dump_buf: bytearray | None = bytearray() if debug else None
 
     async def pipe() -> AsyncIterator[bytes]:
+        """逐块转发响应，并在流结束时关闭上游连接。
+
+        Yields:
+            上游响应的原始字节块。
+        """
+
         try:
             async for chunk in upstream_resp.aiter_raw():
                 if dump_buf is not None and len(dump_buf) < _DUMP_RESP_HEAD_BYTES:
@@ -255,8 +299,8 @@ async def proxy_messages(request: Request) -> StreamingResponse:
 
 @router.post("/v1/{rest:path}")
 async def proxy_passthrough(request: Request, rest: str) -> StreamingResponse:
-    """流式转发 CC 调用的其他 `/v1/*` 路径，例如 `count_tokens`。
+    """流式转发 CC 调用的其他 `/v1/*` 路径，例如 `/v1/messages/count_tokens`。
 
-    所有路径与 `/v1/messages` 共用请求重写和上游转发链路。
+    这些路径与 `/v1/messages` 共用请求重写和上游转发链路。
     """
     return await _forward(request, f"v1/{rest}")

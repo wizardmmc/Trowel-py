@@ -1,3 +1,5 @@
+"""定义 HTTP 响应和数据库读取共用的事件日志模型。"""
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field

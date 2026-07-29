@@ -27,6 +27,16 @@ _CODEX_PERMISSION_PRESETS: dict[str, tuple[str | None, str | None]] = {
 
 @dataclass(frozen=True)
 class PreparedCodexSession:
+    """保存已经准备完成、等待 Session Hub 注册的 Codex 会话。
+
+    Attributes:
+        session_id: 准备阶段生成的 Trowel 会话 ID。
+        session: 已配置启动参数、MCP 和轮次日志的 Codex 会话。
+        permission_preset: 最终采用的权限模式；创建请求未指定时为 "follow"。
+        injection_hash: 注入正文的内容指纹，不保存正文。
+        declared_mcp_roster: Trowel 为该会话请求挂载的 MCP 名称。
+    """
+
     session_id: str
     session: CodexSession
     permission_preset: str
@@ -41,6 +51,19 @@ def prepare_codex_session(
     permission_presets: Mapping[str, tuple[str | None, str | None]],
     fingerprint: Callable[[str], str],
 ) -> PreparedCodexSession:
+    """根据创建请求准备尚未注册的 Codex 会话及其绑定信息。
+
+    Memory 或 Self 注入失败时降级为空；会话注册和绑定持久化由 Session Hub 完成。
+
+    Args:
+        req: 已校验的 Agent 会话创建请求。
+        session_id_factory: 生成 Trowel 会话 ID 的函数。
+        permission_presets: 权限模式到操作确认策略和沙箱模式的对应关系。
+        fingerprint: 计算注入正文内容指纹的函数。
+
+    Returns:
+        已配置完成、等待 Session Hub 注册的 Codex 会话。
+    """
     from trowel_py.codex_host import CodexSession, CodexSessionConfig
     from trowel_py.codex_host.session import (
         build_default_trowel_agent_mcp,
@@ -54,7 +77,7 @@ def prepare_codex_session(
     session_id = session_id_factory()
     preset = req.permission_preset or "follow"
     approval_policy, sandbox = permission_presets[preset]
-    # 兼容仍直接传 approval_policy 与 sandbox 的旧调用者。
+    # 未选择权限模式时，继续接受旧接口直接传入的操作确认策略和沙箱模式。
     if req.permission_preset is None and (
         req.approval_policy is not None or req.sandbox is not None
     ):
@@ -62,7 +85,7 @@ def prepare_codex_session(
         sandbox = req.sandbox
 
     memory_root = resolve_memory_root()
-    # memory 文本组装失败时降级为空，仍继续创建会话。
+    # Memory 内容生成失败时不阻止会话创建，改为空内容继续。
     try:
         memory_text = build_memory_injection(
             date.today().isoformat(),
@@ -76,7 +99,7 @@ def prepare_codex_session(
             exc_info=True,
         )
         memory_text = ""
-    # Memory 为空或失败时仍尝试组装 Self，不能让笔记故障阻止主体上下文。
+    # Memory 内容为空时仍单独生成 Self，不能让 Memory 故障同时丢失身份信息。
     try:
         injection_text = build_session_injection(
             self_enabled=req.self_enabled,
@@ -95,9 +118,9 @@ def prepare_codex_session(
         )
         injection_text = ""
 
-    # 指纹失败必须先于 MCP 构造、manager 注册和 binding 持久化。
+    # 先计算内容指纹；失败时不再构造 MCP，也不会返回可供注册和持久化的会话。
     injection_hash = fingerprint(injection_text)
-    # memory 关闭时不注册 Trowel MCP，关闭该工具读取路径。
+    # 关闭 Memory 时不挂载记忆检索 MCP，确保会话无法通过该工具读取 Memory。
     trowel_memory_mcp = (
         build_default_trowel_memory_mcp(
             trowel_session_id=session_id,
@@ -162,6 +185,7 @@ def _injection_fingerprint(text: str) -> str:
     短指纹只用于变化比对，不作为唯一标识或安全摘要。
     """
 
+    # TODO(refactor)：可提炼，在被调用的地方给上“生成供 binding 持久化的 48 位注入指纹；空正文保持空字符串。”这种语义解释
     if not text:
         return ""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]

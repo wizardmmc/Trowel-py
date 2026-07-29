@@ -9,16 +9,36 @@ logger = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
+    """记录从对话中提取的一条用户或助手文本消息。
+
+    Attributes:
+        role: 消息发送方，只能是 ``"user"`` 或 ``"assistant"``。
+        content: 消息的纯文本；多个文本块之间用换行符连接，不包含思考和工具块。
+    """
+
     role: Literal["user", "assistant"]
     content: str
 
 
 class JsonlParseError(ValueError):
-    """仅表示输入整体不可用；单行错误由解析器跳过。"""
+    """输入为空或只含空白字符时抛出；单行解析错误不会触发此异常。"""
 
 
 def parse_jsonl(text: str) -> list[ChatMessage]:
-    """空白输入抛出 ``JsonlParseError``，其余无法提取的行直接跳过。"""
+    """按原顺序提取 Claude Code JSONL 中的用户和助手文本消息。
+
+    无法解析的 JSON、非消息记录、字段不完整的消息和其他角色会被逐行跳过；
+    所有非空行都不可用时返回空列表。
+
+    Args:
+        text: 完整的 JSONL 对话记录。
+
+    Returns:
+        从有效记录中提取的消息。
+
+    Raises:
+        JsonlParseError: 输入为空或只包含空白字符。
+    """
     if not text or not text.strip():
         raise JsonlParseError("empty input: nothing to parse")
 
@@ -62,7 +82,7 @@ def parse_jsonl(text: str) -> list[ChatMessage]:
 
 
 def _extract_message(obj: Any) -> dict[str, str] | None:
-    """兼容 ``message`` 包装与裸消息两种记录形状。"""
+    """从 ``message`` 包装或裸记录中提取角色和文本，不可用时返回 ``None``。"""
     source = (
         obj.get("message")
         if isinstance(obj, dict) and isinstance(obj.get("message"), dict)
@@ -78,7 +98,10 @@ def _extract_message(obj: Any) -> dict[str, str] | None:
 
 
 def _content_to_text(content: Any) -> str:
-    """CC 内容块只提取 ``text``，忽略思考与工具块。"""
+    """把 Claude Code 消息内容转成纯文本，不可用时返回空字符串。
+
+    字符串会原样保留；内容块列表只拼接 ``text`` 块，忽略思考和工具块。
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):

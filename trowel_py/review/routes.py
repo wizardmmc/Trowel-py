@@ -1,3 +1,5 @@
+"""提供到期卡片、评分提交和复习统计接口。"""
+
 from fastapi import APIRouter, Depends
 from trowel_py.review.service import (
     get_due_cards,
@@ -18,7 +20,10 @@ router = APIRouter()
 
 
 def _get_conn():
-    """请求结束时提交并关闭连接，异常路径也不回滚。"""
+    """为一次请求提供数据库连接。
+
+    请求结束时提交并关闭连接，异常路径也不回滚。
+    """
     conn = create_db()
     try:
         yield conn
@@ -28,10 +33,12 @@ def _get_conn():
 
 
 def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+    """为请求创建卡片数据仓库。"""
     return create_card_repository(conn)
 
 
 def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> ReviewRepository:
+    """为请求创建复习数据仓库。"""
     return create_review_repository(conn)
 
 

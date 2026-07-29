@@ -1,4 +1,4 @@
-"""额度只读模型的 HTTP 接口；wire 层不会暴露 provider 原始字段。"""
+"""提供各模型服务商额度的只读 HTTP 接口，响应不包含各窗口的 ``raw`` 字段。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ router = APIRouter()
 
 
 def snapshot_to_wire(snapshot: QuotaSnapshot) -> dict[str, Any]:
+    """把统一额度快照转换为不含各窗口 ``raw`` 字段的 HTTP 响应数据。"""
+
     return {
         "provider": snapshot.provider.value,
         "account_id": snapshot.account_id,
@@ -31,13 +33,17 @@ def snapshot_to_wire(snapshot: QuotaSnapshot) -> dict[str, Any]:
 
 
 def _read_model(request: Request) -> QuotaReadModel | None:
+    """返回 FastAPI 应用持有的额度读模型；没有可用读模型时返回 ``None``。"""
+
     return getattr(request.app.state, "quota_read_model", None)
 
 
 @router.get("/api/quota")
 async def list_quota(request: Request) -> dict[str, Any]:
     """返回所有已知账户的额度快照。"""
-    # 保持 async route，使读取与 scheduler/observer 写入都留在事件循环线程。
+
+    # 保持异步端点，避免 FastAPI 把读取放入线程池；调度任务和 SessionHub
+    # 回调都在应用事件循环中写入。
     model = _read_model(request)
     snapshots = model.all() if model is not None else ()
     return {

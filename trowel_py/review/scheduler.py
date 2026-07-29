@@ -33,7 +33,10 @@ _PLANT_STAGES = {
 def schedule_review(
     state: FSRSState, rating: int, now: datetime | None = None
 ) -> tuple[FSRSState, ReviewLog]:
-    """非法 `rating` 保持字典查找的 `KeyError` 语义。"""
+    """根据本次评分计算新的复习状态和复习记录。
+
+    非法 `rating` 保持字典查找的 `KeyError` 语义。
+    """
     if now is None:
         now = datetime.now(timezone.utc)
 
@@ -77,12 +80,18 @@ def schedule_review(
 
 
 def get_plant_stage(state: int) -> str:
-    """未知状态按新卡回退为 `seed`。"""
+    """将复习状态转换成卡片展示使用的植物阶段。
+
+    未知状态按新卡回退为 `seed`。
+    """
     return _PLANT_STAGES.get(state, "seed")
 
 
 def _state_to_card(state: FSRSState) -> fsrs.Card:
-    """`reps == 0` 时忽略其余持久化字段，按 py-fsrs 新卡构造。"""
+    """将项目的复习状态转换成 py-fsrs 卡片。
+
+    `reps == 0` 时忽略其余持久化字段，按 py-fsrs 新卡构造。
+    """
     if state.reps == 0:
         return fsrs.Card()
 
@@ -107,6 +116,7 @@ def _card_to_state(
     prev_lapses: int,
     rating: ReviewRating,
 ) -> FSRSState:
+    """将 py-fsrs 结果转回项目复习状态并累计复习和遗忘次数。"""
     # 只有遗忘后进入 Relearning 才累计一次 lapse。
     is_lapse = rating == 1 and card.state == fsrs.State.Relearning
     return FSRSState(
@@ -124,7 +134,10 @@ def _card_to_state(
 
 
 def _our_state_to_fsrs(state: FSRSStateCode) -> fsrs.State:
-    """数据库的 New(0) 在 py-fsrs 中无对应值，按 Learning 映射。"""
+    """将项目的数字状态转换成 py-fsrs 状态。
+
+    数据库的 New(0) 在 py-fsrs 中无对应值，按 Learning 映射。
+    """
     mapping = {
         0: fsrs.State.Learning,
         1: fsrs.State.Learning,
@@ -135,6 +148,7 @@ def _our_state_to_fsrs(state: FSRSStateCode) -> fsrs.State:
 
 
 def _fsrs_to_our_state(state: fsrs.State) -> FSRSStateCode:
+    """将 py-fsrs 状态转换成项目使用的数字状态。"""
     mapping: dict[fsrs.State, FSRSStateCode] = {
         fsrs.State.Learning: 1,
         fsrs.State.Review: 2,

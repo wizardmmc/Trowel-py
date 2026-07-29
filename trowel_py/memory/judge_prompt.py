@@ -1,11 +1,11 @@
-"""判效 agent 的结构化输出 schema 与提示词模板。"""
+"""定义判效 agent 的冻结输出 schema、词表和提示词模板。"""
 
 from __future__ import annotations
 
-# novelty 代表需要写入新知识，不属于检索或意识漏召回。
+# ``novelty`` 表示当时没有相关笔记，是待写入的新知识，不属于 recall miss。
 MISS_ATTRIBUTIONS = ("retrieval_miss", "awareness_miss")
 
-# 与 access_log.Outcome 共用词表，避免结构化日志和判效结果出现分叉。
+# 须与 access_log.Outcome 和 judgements.Outcome 保持一致，由契约测试冻结。
 HIT_OUTCOMES = ("helpful", "harmful", "unused", "unknown")
 
 JUDGE_SCHEMA = """\
@@ -80,7 +80,21 @@ def build_judge_prompt(
     access_log_summary: str,
     dictionary_index: str,
 ) -> str:
-    """注入路径、检索证据和索引；逐项替换避免 JSON 花括号被解析为占位符。"""
+    """把会话路径、访问证据和 Memory 索引注入冻结模板。
+
+    函数依次全量替换三类完整占位符，不使用 ``str.format()``，因此 schema
+    的 JSON 花括号保持原样。替换按路径、访问证据、索引的顺序执行；较早输入
+    若包含较后的占位符文本，仍会被后续步骤替换。
+
+    Args:
+        jsonl_path: 被判效会话 JSONL 的路径文本。
+        access_log_summary: 已按被判效会话过滤的访问记录摘要。
+        dictionary_index: 可供 agent 核验真实 Note ID 的 Memory 索引。
+
+    Returns:
+        已填入三项上下文的判效提示词；除占位符替换及其级联结果外，其他模板
+        文本保持不变。
+    """
     return (
         JUDGE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
         .replace("{access_log_summary}", access_log_summary)

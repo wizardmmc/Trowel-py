@@ -1,4 +1,4 @@
-"""Episode 恢复快照的纯事实折叠；journal 读取与持久化仍由 Store 负责。"""
+"""根据已有快照和 journal 事实构造 Episode 恢复快照，不负责读写持久化。"""
 
 from __future__ import annotations
 
@@ -25,6 +25,34 @@ def build_recovery_partial(
     recovery_source: SnapshotSource,
     side_effect_event_kind: EventKind,
 ) -> EpisodeSnapshot:
+    """用上次快照和后续 journal 事实构造保守的恢复快照。
+
+    只保留上次快照中已完成或需要核对的副作用。后续事件只有在 outcome 为
+    ``done`` 且带 ``evidence_ref`` 时才算完成；已完成事实会取代同一
+    ``action_ref`` 的未知记录。恢复结果把当前判断置为 unknown，清除等待条件和
+    下一步，不自动重放无法确认的工作。
+
+    Args:
+        work_item_goal: 恢复后继续遵循的 WorkItem 目标。
+        task_constraints_ref: 关联 Task 的 ID，用于指向其约束；没有关联 Task 时为
+            None。
+        prev: 上次已提交的 Episode 快照；没有可用基线时为 None。
+        journal_through_seq: 调用方确认的 journal 高水位，原样记录到恢复快照。
+        prev_ref: ``prev`` 对应的已提交快照引用；没有 ``prev`` 时忽略。
+        events: 调用方预先筛选出的当前 Episode 在
+            ``(prev.journal_through_seq, journal_through_seq]`` 内的事件。本函数只
+            折叠其中类型为 ``side_effect_event_kind`` 的副作用结果；没有 ``prev``
+            时区间下界为 0。
+        snapshot_type: 构造恢复快照的类型。
+        side_effect_type: 构造副作用记录的类型。
+        recovery_source: 恢复快照 ``source`` 字段使用的来源标识。
+        side_effect_event_kind: 表示副作用结果的事件类型；其他事件会被忽略。
+
+    Returns:
+        保留已证实副作用、基线产物和原生 transcript 引用的恢复快照；没有基线时
+        产物和 transcript 为空。
+    """
+
     done_side_effects = [
         side_effect
         for side_effect in (prev.side_effects if prev else ())

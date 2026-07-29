@@ -1,4 +1,4 @@
-"""汇总 CC 的本地 skill、command、plugin 与内置 slash items。"""
+"""汇总 CC 的项目、用户、plugin、内置项和 init roster 中的 slash 补全项。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ from trowel_py.cc_host.frontmatter import (
     parse_frontmatter as _run_parse_frontmatter,
 )
 
-# 内置描述可能落后于已安装的 CC；init roster 负责补齐名称。
+# 内置描述可能落后于已安装的 CC；init roster 用于补齐缺少的名称。
 BUNDLED_SKILLS: dict[str, str] = {
     "update-config": "配置 cc harness (settings.json)：自动行为 / hooks / 权限 / 环境变量",
     "keybindings": "自定义键盘快捷键，改 ~/.claude/keybindings.json",
@@ -42,7 +42,7 @@ BUILTIN_COMMANDS: dict[str, str] = {
     "status": "显示当前模型 / effort / 进程状态",
 }
 
-# Headless CC 无法执行这些 TUI/debug 命令，不能把它们暴露到补全列表。
+# Headless CC 无法执行这些 TUI/debug 命令，因此只在补充 init roster 名称时过滤。
 _CC_TUI_COMMANDS: frozenset[str] = frozenset({
     "clear", "compact", "config", "context", "heapdump", "reload-skills",
     "usage", "insights", "goal",
@@ -51,7 +51,15 @@ _CC_TUI_COMMANDS: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class SlashItem:
-    """`/cc/slash-items` 返回的一条补全项。"""
+    """表示 `/cc/slash-items` 返回的一条补全项。
+
+    Attributes:
+        name: 输入斜杠后使用的命令或 skill 名称；plugin 项包含 marketplace 前缀。
+        description: frontmatter 或内置映射提供的说明；没有说明时为空字符串。
+        source: 来源标记，取值为 `project`、`user`、`plugin`、`bundled` 或
+            `builtin`。
+        type: 补全项类别，记录为 `skill` 或 `command`。
+    """
 
     name: str
     description: str
@@ -60,11 +68,30 @@ class SlashItem:
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
+    """通过共享解析器读取 skill 或 command 的简化 frontmatter。
+
+    Args:
+        text: 要解析的 Markdown 文本。
+
+    Returns:
+        解析出的字符串键值；没有完整 frontmatter 时返回空字典。
+    """
+
     return _run_parse_frontmatter(text)
 
 
 def _scan_skills(root: Path) -> dict[str, str]:
-    """读取 skill 子目录；缺少 name 时回退到目录名。"""
+    """扫描目录下各 skill 子目录的 `SKILL.md`。
+
+    frontmatter 缺少 `name` 时使用子目录名，缺少 `description` 时使用空字符串；
+    根目录缺失、条目不是目录、缺少 `SKILL.md` 或文件不可读时跳过。
+
+    Args:
+        root: 直接包含各 skill 子目录的目录。
+
+    Returns:
+        skill 名称与说明的对应表。
+    """
     if not root.is_dir():
         return {}
     out: dict[str, str] = {}
@@ -84,7 +111,16 @@ def _scan_skills(root: Path) -> dict[str, str]:
 
 
 def _scan_commands(root: Path) -> dict[str, str]:
-    """读取 command Markdown，以文件名作为命令名。"""
+    """扫描目录下的 command Markdown，并以文件名主体作为命令名。
+
+    缺少 `description` 时使用空字符串；根目录缺失或文件不可读时跳过。
+
+    Args:
+        root: 直接包含 command Markdown 的目录。
+
+    Returns:
+        命令名与说明的对应表。
+    """
     if not root.is_dir():
         return {}
     out: dict[str, str] = {}
@@ -98,7 +134,17 @@ def _scan_commands(root: Path) -> dict[str, str]:
 
 
 def _scan_plugins(plugins_root: Path) -> dict[str, str]:
-    """读取 marketplace 的 skill 与 command；同名时 skill 优先。"""
+    """扫描各 marketplace 的 skill 和 command，并添加 marketplace 名称前缀。
+
+    每项名称使用 `<marketplace>:<目录或文件名>`；同名 skill 和 command 同时存在时
+    保留 skill。目录、定义文件缺失或定义文件不可读时跳过。
+
+    Args:
+        plugins_root: 包含 `marketplaces` 子目录的 CC plugin 根目录。
+
+    Returns:
+        带 marketplace 前缀的补全项名称与说明对应表。
+    """
     mp_root = plugins_root / "marketplaces"
     if not mp_root.is_dir():
         return {}
@@ -142,7 +188,25 @@ def list_slash_items(
     plugins_dir: Path | None = None,
     init_roster: list[str] | None = None,
 ) -> list[SlashItem]:
-    """按 project、user、plugin、bundled、builtin、init floor 去重汇总。"""
+    """按来源优先级合并、去重并排序 CC slash 补全项。
+
+    同名项只保留最先出现者，优先级依次为 project skill、project command、user
+    skill、user command、plugin、bundled、builtin 和 init roster。init roster 只
+    补名称，过滤 `mcp__` 工具和 headless CC 无法执行的 TUI/debug 命令。结果按
+    `type`、`name` 升序排列。
+
+    Args:
+        workdir: 用于查找 `.claude/skills` 和 `.claude/commands` 的项目目录。
+        user_skills_dir: 用户 skill 目录；`None` 使用 `~/.claude/skills`。
+        user_commands_dir: 用户 command 目录；`None` 使用 `~/.claude/commands`。
+        project_skills_dir: 项目 skill 目录；`None` 使用工作目录下的默认路径。
+        project_commands_dir: 项目 command 目录；`None` 使用工作目录下的默认路径。
+        plugins_dir: CC plugin 根目录；`None` 使用 `~/.claude/plugins`。
+        init_roster: CC init 消息报告的 slash 名称；`None` 表示不补充。
+
+    Returns:
+        按类别和名称排序且名称唯一的补全项。
+    """
     wd = Path(workdir)
     us = user_skills_dir or (Path.home() / ".claude" / "skills")
     uc = user_commands_dir or (Path.home() / ".claude" / "commands")

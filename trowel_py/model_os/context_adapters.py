@@ -21,6 +21,21 @@ def codex_events_from_agent(
     str_fn: Callable[[object], str],
     isinstance_fn: Callable[[object, Any], bool],
 ) -> list[_CodexUsage | _CodexCompaction]:
+    """把 Codex 用量和压缩 AgentEvent 转换为标准事件，忽略其余事件。
+
+    Args:
+        events: 按发生顺序排列的统一 AgentEvent。
+        mapping_type: 用于识别事件 payload 和嵌套字段是否为映射的类型。
+        usage_type: Codex 标准用量事件的构造器。
+        compaction_type: Codex 标准压缩事件的构造器。
+        opt_str_fn: 把可空事件字段转换为字符串的函数。
+        opt_int_fn: 把可空用量字段转换为整数的函数。
+        str_fn: 把压缩阶段转换为字符串的函数。
+        isinstance_fn: 按 ``mapping_type`` 判断字段是否为映射的函数。
+
+    Returns:
+        按输入顺序生成的 Codex 标准用量和压缩事件。
+    """
     out: list[_CodexUsage | _CodexCompaction] = []
     for event in events:
         type_ = event.get("type")
@@ -72,6 +87,18 @@ def cc_events_from_agent(
     opt_str_fn: Callable[[object], str | None],
     isinstance_fn: Callable[[object, Any], bool],
 ) -> list[_CcEvent]:
+    """把 CC 用量和压缩边界 AgentEvent 转换为标准事件，忽略其余事件。
+
+    Args:
+        events: 按发生顺序排列的统一 AgentEvent。
+        mapping_type: 用于识别事件 payload 和 usage 是否为映射的类型。
+        event_type: CC 标准事件的构造器。
+        opt_str_fn: 把可空事件字段转换为字符串的函数。
+        isinstance_fn: 按 ``mapping_type`` 判断字段是否为映射的函数。
+
+    Returns:
+        按输入顺序生成的 CC 标准用量和压缩边界事件。
+    """
     out: list[_CcEvent] = []
     for event in events:
         type_ = event.get("type")

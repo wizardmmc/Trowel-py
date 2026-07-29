@@ -49,11 +49,14 @@ _FILE_APPROVAL_METHOD = "item/fileChange/requestApproval"
 class CodexHostManagerState(str, Enum):
     """manager 生命周期。
 
+    除 ``ready`` 且 client 仍打开的情况外，``ensure_ready`` 都会发起新连接。
+
     Transitions::
 
-        stopped --ensure_ready--> starting --ok--> ready
-        ready --EOF--> degraded --ensure_ready--> starting
-        any --close--> closing --done--> stopped
+        non-usable --ensure_ready--> starting --success--> ready
+        starting --failure--> degraded
+        ready --unexpected close--> degraded
+        any --close--> closing --success--> stopped
     """
 
     STOPPED = "stopped"
@@ -68,6 +71,12 @@ class OrphanDiagnostic:
     """无法路由的通知诊断。
 
     orphan 只记录而不抛出，避免阻塞消息总线，也绝不能进入其他会话。
+
+    Attributes:
+        method: 原生通知方法名。
+        thread_id: 通知携带的 Codex thread ID；缺失时为 None。
+        turn_id: 通知携带的 Codex turn ID；缺失时为 None。
+        reason: 无法路由的稳定原因码。
     """
 
     method: str
@@ -90,6 +99,14 @@ class CodexHostManager:
         translator: CodexTranslator | None = None,
         pending_request_timeout_s: float = _PENDING_REQUEST_TIMEOUT_S,
     ) -> None:
+        """初始化共享连接、会话路由和待决请求登记表。
+
+        Args:
+            client_factory: app-server client 工厂；省略时创建真实 ``AppServerClient``。
+            translator: 原生通知翻译器；省略时创建无状态实例。
+            pending_request_timeout_s: 命令审批等待答复的秒数。
+        """
+
         self._client_factory: ClientFactory = (
             client_factory or self._default_client_factory
         )
@@ -112,34 +129,48 @@ class CodexHostManager:
 
     @property
     def state(self) -> CodexHostManagerState:
+        """返回共享 Codex 进程的当前生命周期状态。"""
+
         return self._state
 
     @property
     def client(self) -> AppServerClient | None:
+        """返回当前 Codex 连接；尚未启动或连接已失效时为空。"""
+
         return self._client
 
     @property
     def orphans(self) -> list[OrphanDiagnostic]:
+        """返回无法归属到会话的通知诊断副本。"""
+
         return list(self._orphans)
 
     @property
     def translator(self) -> CodexTranslator:
+        """返回当前使用的 Codex 事件翻译器。"""
+
         return self._translator
 
     @property
     def connection_generation(self) -> int:
+        """返回最近一次连接启动尝试的代际编号；尚未尝试时为 0。"""
+
         return self._active_generation
 
     def register(self, session: CodexSession) -> None:
-        """注册本地 session（同 id 覆盖）；thread 路由由 send 的挂载流程管理。"""
+        """登记本地 session；同 ID 会替换登记项，但不会改写已有 thread 路由。"""
 
         self._sessions[session.session_id] = session
 
     def get_session(self, session_id: str) -> CodexSession | None:
+        """按 Trowel 会话 ID 查找 Codex 会话。"""
+
         return self._sessions.get(session_id)
 
     @property
     def session_ids(self) -> tuple[str, ...]:
+        """按注册顺序返回全部 Trowel 会话 ID。"""
+
         return tuple(self._sessions.keys())
 
     def unregister(self, session_id: str) -> CodexSession | None:
@@ -157,6 +188,8 @@ class CodexHostManager:
         return session
 
     def session_for_thread(self, thread_id: str) -> CodexSession | None:
+        """查找当前负责指定 Codex 线程的 Trowel 会话。"""
+
         return self._thread_to_session.get(thread_id)
 
     def _require_registered(self, session: CodexSession) -> None:
@@ -213,6 +246,11 @@ class CodexHostManager:
             return client
 
     async def close(self) -> None:
+        """依次关闭共享连接与监听任务，再清除本次连接的挂载状态。
+
+        client 关闭异常会直接向上传播，此时后续清理不会执行，状态保持 ``closing``。
+        """
+
         self._state = CodexHostManagerState.CLOSING
         self._close_generation_requests(
             self._active_generation, reason="app-server manager closed"
@@ -314,6 +352,8 @@ class CodexHostManager:
         return dict(thread)
 
     async def get_goal(self, session: CodexSession) -> dict[str, Any] | None:
+        """读取当前会话绑定线程的目标。"""
+
         binding = await self.attach(session)
         client = await self.ensure_ready()
         result = await client.request(
@@ -337,6 +377,20 @@ class CodexHostManager:
         token_budget: int | None = None,
         token_budget_supplied: bool = False,
     ) -> dict[str, Any]:
+        """更新当前会话绑定线程的目标字段并返回完整目标。
+
+        Args:
+            session: 目标所属的 Trowel 会话。
+            objective: 新目标正文；None 表示不更新。
+            status: 新目标状态；None 表示不更新。
+            token_budget: 新 token 预算；可在显式提供时传 None 清空预算。
+            token_budget_supplied: 是否将 ``token_budget`` 写入请求，用于区分省略字段和
+                显式清空。
+
+        Returns:
+            app-server 更新后的完整 goal 对象。
+        """
+
         binding = await self.attach(session)
         client = await self.ensure_ready()
         params: dict[str, Any] = {"threadId": binding.thread_id}
@@ -355,6 +409,8 @@ class CodexHostManager:
         return dict(goal)
 
     async def clear_goal(self, session: CodexSession) -> bool:
+        """清除当前会话绑定线程的目标。"""
+
         binding = await self.attach(session)
         client = await self.ensure_ready()
         result = await client.request(
@@ -373,7 +429,11 @@ class CodexHostManager:
         *,
         before_start: BeforeTurnStart | None = None,
     ) -> None:
-        """在空闲 thread 上启动原生压缩，并与 turn 启动共享会话预留。"""
+        """在空闲 thread 上启动原生压缩，并与 turn 启动共享会话预留。
+
+        ``before_start`` 在 thread 挂载后、请求压缩前同步执行；回调或请求失败都会
+        释放会话预留。
+        """
 
         self._require_registered(session)
         session.begin_send(autonomous=True, memory_eligible=False)
@@ -398,7 +458,11 @@ class CodexHostManager:
         *,
         before_start: BeforeTurnStart | None = None,
     ) -> dict[str, str]:
-        """启动 inline 原生 review，并登记不含 USER 事件的自主 turn。"""
+        """启动 inline 原生 review，并登记不含 USER 事件的自主 turn。
+
+        review 必须复用当前 thread；返回值同时包含确认后的 thread ID 和 turn ID。
+        ``before_start`` 在 thread 挂载后、原生 review 启动前同步执行。
+        """
 
         self._require_registered(session)
         session.begin_send(memory_eligible=False)
@@ -440,7 +504,10 @@ class CodexHostManager:
             raise
 
     async def attach(self, session: CodexSession) -> ThreadBinding:
-        """按当前连接代际 start/resume thread，但不启动 turn。"""
+        """在当前连接中 start 或 resume thread，但不启动 turn。
+
+        同一会话在一个连接代际内只加载一次；已有 thread 不能同时归属其他会话。
+        """
 
         self._require_registered(session)
         client = await self.ensure_ready()
@@ -579,7 +646,7 @@ class CodexHostManager:
     def answer_request(
         self, session_id: str, request_id: str, decision: str
     ) -> PendingRequest:
-        """校验归属与决策后，一次性解决待处理审批。"""
+        """校验会话归属和决策值后，一次性解决待处理审批。"""
 
         request = self._pending_requests.resolve(session_id, request_id, decision)
         session = self._sessions.get(session_id)
@@ -588,6 +655,8 @@ class CodexHostManager:
         return request
 
     def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
+        """返回指定会话保留的全部待决请求记录。"""
+
         return self._pending_requests.list_for_session(session_id)
 
     async def _handle_server_request(
@@ -597,7 +666,12 @@ class CodexHostManager:
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """登记已验证归属的审批，并等待一次性答复。"""
+        """登记已验证归属的审批，并等待一次性答复。
+
+        所有 ``fileChange`` 审批当前都立即返回 decline；该上游请求结构没有提供路径、
+        diff 或可选决策，无法交给用户判断。命令审批等待用户答复，超时后由登记表
+        生成拒绝结果。
+        """
 
         session = self._request_session(generation, method, native_request_id, params)
         kind = (
@@ -639,7 +713,7 @@ class CodexHostManager:
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """向所属 session 暴露未知请求，再安全拒绝。"""
+        """若能解析归属则发送 unsupported 事件，随后抛出不支持请求错误。"""
 
         try:
             session = self._request_session(
@@ -683,6 +757,8 @@ class CodexHostManager:
     def _emit_request_event(
         session: CodexSession, request: PendingRequest
     ) -> None:
+        """将待决请求的当前状态发到所属会话。"""
+
         session.emit_translated(
             TranslatedItem(
                 type=CodexEventType.APPROVAL_REQUEST,
@@ -825,6 +901,8 @@ class CodexHostManager:
     def _record_orphan(
         self, method: str, thread_id: str | None, turn_id: str | None, reason: str
     ) -> None:
+        """追加无法路由的诊断并写 debug 日志，不向任何会话发事件。"""
+
         diag = OrphanDiagnostic(
             method=method, thread_id=thread_id, turn_id=turn_id, reason=reason
         )
@@ -855,7 +933,7 @@ class CodexHostManager:
         await self._on_unexpected_exit(client)
 
     async def _on_unexpected_exit(self, client: AppServerClient) -> None:
-        """进入 degraded，并终止所有仍在途的 turn。"""
+        """进入 degraded，关闭本代审批，并将本地在途 turn 标记为 host_exited。"""
 
         if client is not self._client:
             # 旧 watcher 可能晚于新连接返回，不能让陈旧 EOF 降级当前连接。
@@ -885,17 +963,25 @@ class CodexHostManager:
     def _broadcast_host_status(
         self, status: HostStatusKind, *, reason: str | None
     ) -> None:
+        """向当前已注册会话广播进程状态；之后注册的会话不会补收。"""
+
         for session in self._sessions.values():
             session.emit_host_status(status, reason=reason)
 
     @staticmethod
     def _default_client_factory() -> AppServerClient:
+        """返回未启动的默认 client；handler 注册与启动由 ``ensure_ready`` 完成。"""
+
         return AppServerClient()
 
     def _thread_start_params(self, session: CodexSession) -> dict[str, Any]:
+        """保留会话配置中的非空覆盖项，并合并启用的 Trowel MCP 服务。"""
+
         return manager_params.thread_start_params(session)
 
     def _thread_resume_params(self, session: CodexSession) -> dict[str, Any]:
+        """为已有 binding 重发工作目录、权限覆盖和不持久化的 MCP 配置。"""
+
         return manager_params.thread_resume_params(session)
 
     @staticmethod
@@ -908,6 +994,8 @@ class CodexHostManager:
         approval: str | None = None,
         sandbox: str | None = None,
     ) -> dict[str, Any]:
+        """构造文本输入，并只发送本轮显式提供的模型、推理强度和权限覆盖。"""
+
         return manager_params.turn_start_params(
             thread_id,
             text,
@@ -932,12 +1020,14 @@ def _extract_thread_id(params: Mapping[str, Any]) -> str | None:
 
 
 def _extract_turn_id_from_params(params: Mapping[str, Any]) -> str | None:
+    """读取通知顶层的非空轮次 ID。"""
+
     value = params.get("turnId")
     return value if isinstance(value, str) and value else None
 
 
 def _extract_turn_id(turn_result: Mapping[str, Any]) -> str:
-    """提取通知路由所需的 ``turn.id``；缺失即表示协议漂移。"""
+    """从启动响应提取已创建的 ``turn.id``；缺失即表示协议漂移。"""
 
     turn = turn_result.get("turn")
     if not isinstance(turn, Mapping) or not turn.get("id"):

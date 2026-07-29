@@ -1,9 +1,24 @@
-"""解析 CC skill 与 slash command 使用的轻量 frontmatter。"""
+"""解析 Claude Code skill 和 slash command Markdown 开头的简化 frontmatter。"""
 
 from __future__ import annotations
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
+    """解析文本开头的简化 frontmatter。
+
+    这里只识别 ``key: value`` 和 ``|``、``>``、``|-``、``|+``、``>-``、``>+``
+    六种块标量标记，不是完整的 YAML 解析器。值的首尾是相同的单引号或双引号时
+    会去掉引号，但不会处理转义。六种块标量都会忽略空行，并把非空缩进行用空格
+    连接。重复键以最后一次出现的值为准。
+
+    Args:
+        text: 待解析的 Markdown 文本。
+
+    Returns:
+        解析出的字符串键值；文本不以 ``---`` 开头或找不到后续 ``---`` 时为空
+        字典。
+    """
+
     if not text.startswith("---"):
         return {}
     parts = text.split("---", 2)

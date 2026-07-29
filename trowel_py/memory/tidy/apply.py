@@ -1,4 +1,4 @@
-"""Tidy 计划的快照、应用与回滚事务。"""
+"""保存 Tidy 计划快照，执行 Note 变更并支持按快照回滚。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,17 @@ _SNAPSHOTS_DIR = "meta/snapshots"
 
 @contextlib.contextmanager
 def _tidy_lock(root: Path):
-    """串行化同一 memory root 的 recompute、快照和应用序列。"""
+    """尝试独占同一记忆目录的 Tidy 流程。
+
+    不支持 ``fcntl`` 的平台不加锁；支持时采用非阻塞文件锁，锁已被占用会
+    抛出 ``BlockingIOError``。调用方负责把需要串行化的完整流程放入上下文。
+
+    Args:
+        root: 记忆目录；锁文件写入其 ``meta`` 子目录。
+
+    Yields:
+        进入互斥区后将控制权交还调用方；不支持 ``fcntl`` 时直接交还。
+    """
     if fcntl is None:
         yield
         return
@@ -48,7 +58,27 @@ def _tidy_lock(root: Path):
 
 
 def apply_plan(root: Path | str, plan: TidyPlan) -> dict[str, Any]:
-    """校验并应用计划；任一步失败都会从应用前快照恢复 notes。"""
+    """校验并执行计划，同时保存执行前的 Note 快照。
+
+    执行前会重新校验计划，并确认每个目标 Note 的 ``content_hash`` 仍与操作
+    中的 ``expected_revision`` 一致；操作未提供该值时改用
+    ``source_snapshot``。同一 ``plan_id`` 重跑时会替换 Note 快照并重写
+    ``plan.json``，已有 ``report.json`` 只在本次操作全部完成后重写。仅操作
+    循环中的异常会触发 ``notes`` 恢复；报告写入失败不会撤销已执行的变更。
+    本函数不自行获取 Tidy 锁。
+
+    Args:
+        root: 记忆目录。
+        plan: 已生成的整理计划。
+
+    Returns:
+        计划 ID、已处理目标和操作总数。
+
+    Raises:
+        ValueError: 计划无效、目标在执行前缺失，或 ``content_hash`` 与计划记录
+            不一致。
+        Exception: 快照、Note 更新、恢复或报告写入失败时透传底层异常。
+    """
     root_path = Path(root)
     errors = validate_plan(root_path, plan)
     if errors:
@@ -145,7 +175,21 @@ def apply_plan(root: Path | str, plan: TidyPlan) -> dict[str, Any]:
 
 
 def rollback_plan(root: Path | str, plan_id: str) -> None:
-    """从应用前快照恢复 notes，复制失败时保留回滚前状态。"""
+    """用指定计划的执行前快照替换当前 ``notes``。
+
+    若当前 ``notes`` 存在，先将它改名为 ``notes.trash``。复制快照失败时会
+    删除未完成的新目录，并在存在旧目录时将其改回 ``notes``；复制成功后
+    删除旧目录。本函数只恢复 Note 文件，不恢复报告或其他派生产物，也不
+    自行获取 Tidy 锁。
+
+    Args:
+        root: 记忆目录。
+        plan_id: 要恢复的计划 ID。
+
+    Raises:
+        FileNotFoundError: 快照中没有 ``notes`` 目录。
+        Exception: 目录改名、复制、恢复或清理失败时透传底层异常。
+    """
     snap_dir = Path(root) / _SNAPSHOTS_DIR / plan_id
     notes_backup = snap_dir / "notes"
     if not notes_backup.exists():
@@ -167,6 +211,16 @@ def rollback_plan(root: Path | str, plan_id: str) -> None:
 
 
 def _plan_to_dict(plan: TidyPlan) -> dict[str, Any]:
+    """把计划展开为快照 JSON 使用的字典。
+
+    该转换不重新校验计划；操作证据和核心候选会转成列表，其余字段沿用原值。
+
+    Args:
+        plan: 要序列化的整理计划。
+
+    Returns:
+        保留全部计划字段和操作顺序的字典。
+    """
     return {
         "plan_id": plan.plan_id,
         "source_snapshot": plan.source_snapshot,

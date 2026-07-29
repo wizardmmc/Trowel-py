@@ -1,1 +1,1 @@
-"""供 WorkBroker 和前端读取的跨 provider 额度模型。"""
+"""读取并统一表示各模型服务商的额度，供 WorkBroker 和前端使用。"""

@@ -1,3 +1,5 @@
+"""提供宠物状态、喂食、互动和装备接口。"""
+
 import logging
 import random
 import sqlite3
@@ -16,7 +18,10 @@ router = APIRouter()
 
 
 def _get_conn():
-    """请求结束时提交并关闭连接，异常路径也不回滚。"""
+    """为一次请求提供数据库连接。
+
+    请求结束时提交并关闭连接，异常路径也不回滚。
+    """
     conn = create_db()
     try:
         yield conn
@@ -26,14 +31,17 @@ def _get_conn():
 
 
 def _get_pet_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PetRepository:
+    """为请求创建宠物数据仓库。"""
     return create_pet_repository(conn)
 
 
 def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRepository:
+    """为请求创建玩家数据仓库。"""
     return create_player_repository(conn)
 
 
 def _get_brain() -> PetBrain:
+    """为请求创建固定文本宠物回应器。"""
     return TemplateBrain()
 
 

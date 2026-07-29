@@ -1,4 +1,4 @@
-"""ContextSample journal payload 的无 I/O 编解码。"""
+"""在上下文占用样本与持久化 payload 之间转换，不执行 I/O。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,17 @@ _Sample = TypeVar("_Sample")
 
 
 def sample_to_dict(sample: Any) -> dict[str, object]:
+    """把上下文占用样本转换为不含会话 ID 的 payload。
+
+    会话 ID 由调用方在 payload 外保存；写入 journal 时保存在 EventEnvelope 中。
+
+    Args:
+        sample: 待持久化的上下文占用样本。
+
+    Returns:
+        不含 ``native_session_id`` 的样本字段；``confidence`` 和
+        ``unavailable_reason`` 写入枚举字符串值。
+    """
     return {
         "main_or_subagent": sample.main_or_subagent,
         "turn_id": sample.turn_id,
@@ -41,6 +52,26 @@ def sample_from_dict(
     str_fn: Callable[[object], str],
     int_fn: Callable[[object], int],
 ) -> _Sample:
+    """使用 payload 和调用方提供的会话 ID 恢复上下文占用样本。
+
+    会话 ID 只使用 ``native_session_id`` 参数，不读取 ``data`` 中的同名字段。
+
+    Args:
+        data: 保存的样本字段，不含原生会话 ID。
+        native_session_id: payload 外保存的原生会话 ID；journal 回放时来自
+            EventEnvelope。
+        sample_type: 上下文占用样本的构造器。
+        opt_str_fn: 转换可选文本字段的函数。
+        opt_int_fn: 转换可选整数字段的函数。
+        opt_float_fn: 转换可选浮点数字段的函数。
+        confidence_type: 从字符串恢复观测可信度枚举的构造器。
+        unavailable_reason_type: 从字符串恢复不可用原因的构造器。
+        str_fn: 转换必填文本字段和枚举值的函数。
+        int_fn: 转换压缩代次的函数。
+
+    Returns:
+        使用指定会话 ID 的上下文占用样本。
+    """
     return sample_type(
         native_session_id=native_session_id,
         main_or_subagent=data["main_or_subagent"],

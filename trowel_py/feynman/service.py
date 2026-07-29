@@ -34,6 +34,7 @@ class EvaluateResult:
 
 
 def _question_prompt(card: Card) -> str:
+    """将卡片内容整理成生成费曼问题的模型输入。"""
     lines = [f"卡片标题：{card.title}", f"卡片解释：{card.explanation}"]
     if card.example:
         lines.append(f"示例： {card.example}")
@@ -45,6 +46,7 @@ def _evaluation_prompt(
     card: Card,
     user_answer: str,
 ) -> str:
+    """将问题、卡片解释和用户回答整理成评估输入。"""
     return (
         f"问题：{session.question}\n"
         f"卡片解释：{card.explanation}\n"

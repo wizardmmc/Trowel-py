@@ -1,4 +1,4 @@
-"""Daily 摘要的缓存、回退、重建扫描与落盘。"""
+"""管理 Daily 派生摘要的缓存复用、失败回退、重建扫描和写入。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,13 @@ logger = logging.getLogger("trowel_py.memory.compress")
 
 
 def _existing_daily_usable(root_path: Path, date_str: str, shash: str) -> bool:
-    """判断旧摘要能否在本次重新生成失败后继续保留。"""
+    """判断已有成功 Daily 能否在当前来源的重新生成失败后保留。
+
+    Args:
+        root_path: memory 数据目录。
+        date_str: 要检查的 Daily 日期，格式为 ``YYYY-MM-DD``。
+        shash: 当前 Episode 来源的内容哈希。
+    """
     path = root_path / "diary" / "daily" / f"{date_str}.md"
     if not path.exists():
         return False
@@ -41,7 +47,13 @@ def _existing_daily_usable(root_path: Path, date_str: str, shash: str) -> bool:
 
 
 def _existing_daily_ok(root_path: Path, date_str: str, shash: str) -> bool:
-    """仅复用来源、预算和生成版本都匹配的成功摘要。"""
+    """判断已有 Daily 是否为当前来源和生成版本的可复用成功摘要。
+
+    Args:
+        root_path: memory 数据目录。
+        date_str: 要检查的 Daily 日期，格式为 ``YYYY-MM-DD``。
+        shash: 当前 Episode 来源的内容哈希。
+    """
     path = root_path / "diary" / "daily" / f"{date_str}.md"
     if not _existing_daily_usable(root_path, date_str, shash):
         return False
@@ -61,6 +73,16 @@ def _write_daily(
     shash: str,
     status: str,
 ) -> None:
+    """将 Daily 正文和生成元数据写入 Diary。
+
+    Args:
+        store: 负责写入 memory 数据目录的存储对象。
+        date_str: Daily 对应的日期，格式为 ``YYYY-MM-DD``。
+        body: 要写入的 Markdown 正文。
+        source_segments: 正文所依据的 Episode segment ID。
+        shash: 全部结构化来源的内容摘要，用于判断缓存是否过期。
+        status: 本次产物的生成状态，例如 ``"ok"`` 或 ``"fallback"``。
+    """
     store.write_diary(
         {
             "type": "diary",
@@ -81,7 +103,14 @@ def _write_daily(
 def _write_fallback_body(
     store: MemoryStore, date_str: str, source_segments: list[str], shash: str
 ) -> None:
-    """只写可追溯来源的短提示，不把未压缩经历伪装成摘要。"""
+    """写入指向 Episode 来源的短提示，不把未压缩经历冒充 Daily 摘要。
+
+    Args:
+        store: 负责写入 memory 数据目录的存储对象。
+        date_str: fallback 对应的日期，格式为 ``YYYY-MM-DD``。
+        source_segments: fallback 要列出的 Episode segment ID。
+        shash: 当前 Episode 来源的内容哈希，写入元数据供后续重建判断。
+    """
     seg_list = "\n".join(f"- {s}" for s in source_segments) or "- (无来源)"
     body = (
         f"# {date_str}\n\n"
@@ -98,7 +127,22 @@ def compress_daily(
     *,
     force: bool = False,
 ) -> str:
-    """生成一天的结构化摘要；没有 episode 时不伪造空日记。"""
+    """从指定日期的 Episode 来源生成并写入 Daily 摘要。
+
+    现有 Daily 为成功状态、来源哈希与当前来源一致、生成版本匹配且正文未超
+    预算时，默认不再调用模型。生成失败时优先保留同源且未超预算的成功旧摘要，
+    否则写入只列出来源的 fallback。
+
+    Args:
+        root: memory 数据目录。
+        date_str: 要生成摘要的日期，格式为 ``YYYY-MM-DD``。
+        provider: 生成结构化摘要条目的模型客户端。
+        force: 是否跳过缓存命中检查并重新生成；失败时仍可保留可用旧摘要。
+
+    Returns:
+        当天存在 Episode 来源时返回 ``date_str``，无论命中缓存、保留旧摘要还是
+        写入新摘要或 fallback；没有来源时返回空字符串，且不调用模型或写文件。
+    """
     root_path = Path(root)
     store = MemoryStore(root_path)
     sources = store.project_daily_sources(date_str)
@@ -126,13 +170,14 @@ def compress_daily(
         if len(body) <= _DAILY_BUDGET:
             _write_daily(store, date_str, body, source_segments, shash, "ok")
             return date_str
-        # 单条摘要仍超限时不能截断句子，只能降级为 fallback。
+        # 预算选择只删除完整条目，并为每个已有 section 保留一项；
+        # 剩余正文仍超限时只能写 fallback。
         logger.warning(
             "daily %s: body still %d chars after whole-bullet selection; fallback",
             date_str,
             len(body),
         )
-    # 生成版本升级失败不能覆盖来源未变且仍可用的旧摘要。
+    # 只要旧摘要来源未变且仍可用，重新生成失败就不覆盖它。
     if preserve_on_failure:
         logger.warning(
             "daily %s: regeneration failed; preserving previous usable daily",
@@ -144,7 +189,17 @@ def compress_daily(
 
 
 def write_fallback_daily(root: Path | str, date_str: str) -> str:
-    """无 provider 时写可追溯的 fallback；没有 episode 时不落盘。"""
+    """为指定日期写入可追溯的 Daily fallback。
+
+    当天存在 Episode 来源时会覆盖该日期已有的 Daily；没有来源时不写文件。
+
+    Args:
+        root: memory 数据目录。
+        date_str: fallback 对应的日期，格式为 ``YYYY-MM-DD``。
+
+    Returns:
+        写入成功时返回 ``date_str``；当天没有 Episode 来源时返回空字符串且不写文件。
+    """
     root_path = Path(root)
     store = MemoryStore(root_path)
     sources = store.project_daily_sources(date_str)
@@ -157,7 +212,18 @@ def write_fallback_daily(root: Path | str, date_str: str) -> str:
 
 
 def daily_dates_needing_rebuild(root: Path | str) -> list[str]:
-    """找出缺失、失败、过期或来源变化的 daily 派生缓存。"""
+    """返回存在 Episode 来源但需要重建 Daily 的日期。
+
+    候选日期从 Episode 顶层的 ``activity_dates``、``review_date``、各 segment 的
+    ``activity_dates``，以及旧版 Episode 正文的日期标题中收集。对应 Daily 缺失、
+    状态不是 ``"ok"``、来源哈希变化、生成版本过期或正文超出预算时，日期才会返回。
+
+    Args:
+        root: memory 数据目录。
+
+    Returns:
+        按日期升序排列的 ``YYYY-MM-DD`` 字符串。
+    """
     root_path = Path(root)
     episodes_dir = root_path / "episodes"
     dates: set[str] = set()

@@ -1,4 +1,4 @@
-"""Tidy 计划的纯校验边界。"""
+"""只读校验 Tidy 计划的目标、修订字段和订正链。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,20 @@ _REVISE_ALLOWED_FIELDS = frozenset(
 def _validate_revise_op(
     root: Path, op: TidyOperation, id_map: dict[str, str]
 ) -> list[str]:
-    """只允许 revise 修改内容属性，并复核修改后的 schema。"""
+    """校验 ``revise`` 字段白名单和修改后的 Note schema。
+
+    非白名单字段会立即返回错误，不再读取目标或模拟 schema；字段白名单通过
+    但目标不存在时返回空列表，由调用方报告目标缺失。未被 frontmatter 解析层
+    处理的读取或字段转换异常直接传播。
+
+    Args:
+        root: 记忆目录。
+        op: 要校验的 ``revise`` 操作。
+        id_map: Note 记忆 ID 到文件 stem 的映射。
+
+    Returns:
+        字段白名单或模拟 schema 错误。
+    """
     errs: list[str] = []
     bad = sorted(set(op.new_fields) - _REVISE_ALLOWED_FIELDS)
     if bad:
@@ -55,7 +68,17 @@ def _validate_revise_op(
 
 
 def _memory_id_to_stem(root: Path) -> dict[str, str]:
-    """建立稳定 ID 到文件名的映射，跳过尚未迁移的旧笔记。"""
+    """建立 Note 记忆 ID 到文件 stem 的映射。
+
+    ``memory_id`` 为空的 Note 会被跳过；重复 ID 保留路径排序最后一个文件的
+    stem。
+
+    Args:
+        root: 记忆目录。
+
+    Returns:
+        非空记忆 ID 到文件 stem 的映射。
+    """
     store = MemoryStore(root)
     return {
         note.memory_id: stem
@@ -65,7 +88,22 @@ def _memory_id_to_stem(root: Path) -> dict[str, str]:
 
 
 def validate_plan(root: Path, plan: TidyPlan) -> list[str]:
-    """返回目标、字段和完整订正链上的全部校验错误。"""
+    """校验计划引用、``revise`` 字段及合并后的订正链。
+
+    订正图先读取现有 ``superseded_by``，再按计划顺序覆盖同一目标的出边。
+    每个操作都优先取非空 ``by``，否则取 ``canonical``；因此畸形的
+    ``merge_sources`` 同时携带两者时，校验图可能与执行时采用的 ``canonical``
+    不同。本函数不检查各操作目标的 ``content_hash``；``apply_plan`` 会在执行
+    前按 ``expected_revision`` 或 ``source_snapshot`` 复核。读取和字段转换中
+    未被存储层处理的异常直接传播。
+
+    Args:
+        root: 记忆目录。
+        plan: 要校验的整理计划。
+
+    Returns:
+        按操作检查顺序排列的错误；无错误时为空列表。
+    """
     errors: list[str] = []
     id_map = _memory_id_to_stem(root)
     for op in plan.operations:
@@ -101,11 +139,19 @@ def validate_plan(root: Path, plan: TidyPlan) -> list[str]:
 
 
 def _has_cycle(edges: dict[str, str]) -> bool:
-    """判断 target 到 replacer 的有向图是否成环。"""
+    """判断每个节点至多一条出边的订正图是否成环。
+
+    Args:
+        edges: 被替代 Note 到替代 Note 的映射。
+
+    Returns:
+        任一连通路径形成有向环时为 ``True``。
+    """
     WHITE, GRAY, BLACK = 0, 1, 2
     color: dict[str, int] = {node: WHITE for node in set(edges) | set(edges.values())}
 
     def dfs(node: str) -> bool:
+        """深度遍历一个节点，并报告是否回到当前递归路径。"""
         color[node] = GRAY
         nxt = edges.get(node)
         if nxt is not None:

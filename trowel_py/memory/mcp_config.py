@@ -9,6 +9,25 @@ from pathlib import Path
 
 
 def _config_path(trowel_session_id: str) -> Path:
+    """按环境变量优先级确定当前会话的 MCP 配置路径。
+
+    ``TROWEL_MCP_CONFIG`` 非空时优先使用：会话 ID 为空则原样返回该路径；
+    否则在同目录的文件 stem 后追加 ``-<session_id>``，保留原后缀，无后缀时
+    补 ``.json``。未设置该变量时，文件写入 ``TROWEL_MCP_CONFIG_DIR``；目录
+    变量也未设置时使用 ``~/.trowel/mcp-configs``。文件名是
+    ``<session_id>.json``，空会话 ID 则为 ``memory.json``。目录变量被显式
+    设为空字符串时，``Path("")`` 指向当前目录，不会使用默认目录。
+
+    会话 ID 不做文件名清洗；调用方必须提供不含路径分隔符或 ``..`` 的安全文件
+    名片段，并自行避免不同会话写入同一路径。
+
+    Args:
+        trowel_session_id: 用于区分配置文件的 Trowel 会话 ID；空字符串表示使用
+            共享的无会话路径。
+
+    Returns:
+        根据环境和会话 ID 计算出的目标配置路径。
+    """
     legacy = os.environ.get("TROWEL_MCP_CONFIG")
     if legacy:
         legacy_path = Path(legacy)

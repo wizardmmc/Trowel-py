@@ -1,8 +1,11 @@
-"""受环境变量控制的原始协议录制器。
+"""受环境变量控制的 Codex app-server 协议录制器。
 
-录制默认关闭，启用后也必须先经 ``redact_message`` 脱敏再写盘。每行 JSONL 为
-``{"t": <epoch>, "dir": "in"|"out", "msg": <redacted>}``；transport 负责调用
-生命周期，recorder 只持有文件。
+这里的“原始”消息指翻译为统一事件前的入站和出站载荷。写盘前会经
+``redact_message`` 遮盖可识别的凭据，但会话正文和本机路径仍可能保留，因此
+录制文件仍是敏感数据。每行 JSONL 的结构为
+``{"t": <Unix 秒时间戳>, "dir": "in"|"out", "msg": <redacted>}``。首次启用的
+``record()`` 调用会创建父目录，并以追加模式打开或创建文件；transport 在连接
+关闭时调用 ``close()``。
 """
 
 from __future__ import annotations
@@ -19,10 +22,16 @@ RECORDER_ENV_FLAG = "TROWEL_CODEX_RECORD"
 
 
 def recording_enabled(target: Path | str) -> bool:
-    """检查目标路径是否被显式允许录制。
+    """根据环境变量判断目标文件是否允许录制。
 
-    ``TROWEL_CODEX_RECORD=1`` 等布尔值允许任意目标；路径值只允许完全匹配的
-    recorder，避免测试意外开启同进程中的其他录制器。
+    ``TROWEL_CODEX_RECORD`` 未设置或为空时禁用录制；值为 ``1``、``true``、
+    ``True`` 或 ``yes`` 时允许任意目标，其他非空值只允许与目标按 ``Path``
+    词法比较相等的路径，不解析绝对路径或符号链接。路径限定可避免测试意外开启
+    同一进程中的其他录制器。
+
+    Args:
+        target: 待写入的 JSONL 文件。
+
     """
 
     flag = os.environ.get(RECORDER_ENV_FLAG, "").strip()
@@ -34,12 +43,21 @@ def recording_enabled(target: Path | str) -> bool:
 
 
 class RawRecorder:
-    """启用后将脱敏协议追加到 JSONL。
+    """将翻译前的协议消息脱敏后追加到 JSONL。
 
-    文件在首次写入时惰性打开；禁用状态下所有方法均为空操作，调用方无需另加分支。
+    是否启用在构造时确定，后续环境变量变化不会影响实例。首次启用的
+    ``record()`` 调用才会打开文件；禁用时 ``record()`` 和 ``close()`` 均为空
+    操作，不创建目录或文件。两个方法都不捕获异常，异常会向调用方传播。
     """
 
     def __init__(self, path: Path, *, clock: Any = time.time) -> None:
+        """配置追加目标，并读取一次录制开关。
+
+        Args:
+            path: JSONL 追加写入路径；父目录在首次启用的 ``record()`` 调用时创建。
+            clock: 为每条记录提供 Unix 时间戳的无参数调用对象。
+        """
+
         self._path = path
         self._clock = clock
         self._handle: BinaryIO | None = None
@@ -47,10 +65,18 @@ class RawRecorder:
 
     @property
     def enabled(self) -> bool:
+        """返回构造实例时读取到的录制开关。"""
+
         return self._enabled
 
     def record(self, direction: str, message: Any) -> None:
-        """追加一条脱敏消息；``out`` 表示发往 server，``in`` 表示来自 server。"""
+        """脱敏并追加一条消息，随后立即刷新文件缓冲区。
+
+        Args:
+            direction: 消息方向；``out`` 表示发往 app-server，``in`` 表示来自
+                app-server。
+            message: 待录制的原始协议载荷；本方法先脱敏，再写入 ``msg`` 字段。
+        """
 
         if not self._enabled:
             return
@@ -68,7 +94,7 @@ class RawRecorder:
         self._handle.flush()
 
     def close(self) -> None:
-        """关闭已打开的文件；重复调用不产生副作用。"""
+        """关闭当前文件句柄；可重复调用，后续写入会以追加模式重新打开文件。"""
 
         if self._handle is not None:
             self._handle.close()

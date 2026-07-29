@@ -9,7 +9,10 @@ from enum import Enum
 
 
 class Runtime(str, Enum):
-    """枚举值同时写入持久化文件和 API wire shape，不能作为内部名称改写。"""
+    """标识会话由 Claude Code 还是 Codex 运行。
+
+    枚举值同时写入持久化文件和 API 数据，不能作为内部名称改写。
+    """
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
@@ -55,6 +58,8 @@ class SessionBinding:
     delegation_depth: int = 0
 
     def to_dict(self) -> dict[str, object]:
+        """转换为可持久化的字典。"""
+
         return {
             "session_id": self.session_id,
             "runtime": self.runtime.value,

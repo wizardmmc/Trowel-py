@@ -1,4 +1,9 @@
-"""定义 Codex host 的内部事件边界。"""
+"""定义 Codex Host 在 Trowel 内部传递事件时使用的数据模型。
+
+``TranslatedItem`` 表示尚未绑定 Trowel 会话和序号的中间事件，可由 translator、
+manager 或 session 创建。实时事件经 ``CodexSession`` 补充会话 ID 和递增序号后，
+形成 ``CodexEvent``。
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,12 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping
 
-# 共享只读空映射，避免为无 payload 的事件重复分配字典。
+# 无字段事件复用同一个不可变 payload，避免重复分配空字典。
 _EMPTY_PAYLOAD: Mapping[str, Any] = MappingProxyType({})
 
 
 class CodexEventType(str, Enum):
-    """Codex translator 与 manager 使用的内部事件判别符。"""
+    """区分 Codex Host 内部事件的稳定判别符。"""
 
     SESSION_STARTED = "session_started"
     MODEL_CHANGED = "model_changed"
@@ -46,7 +51,7 @@ class CodexEventType(str, Enum):
 
 
 class HostStatusKind(str, Enum):
-    """前端可见的 host 状态，与 manager 内部生命周期状态分离。"""
+    """可发送到前端的 Host 状态，不表示 manager 的内部生命周期。"""
 
     READY = "ready"
     DEGRADED = "degraded"
@@ -57,9 +62,14 @@ class HostStatusKind(str, Enum):
 
 @dataclass(frozen=True)
 class TranslatedItem:
-    """尚未绑定 trowel 会话和序号的翻译结果。
+    """尚未绑定 Trowel 会话和序号的内部中间事件。
 
-    manager 按 thread_id 路由，所属 session 再补 session_id 和单会话 seq。
+    Attributes:
+        type: 内部事件类型。
+        thread_id: Codex thread ID；账户级通知等无所属 thread 的事件为 None。
+        turn_id: Codex turn ID；不属于某个 turn 的事件为 None。
+        item_id: Codex item ID；非 item 事件为 None。
+        payload: 事件字段的只读顶层映射；嵌套值不保证不可变。
     """
 
     type: CodexEventType
@@ -71,7 +81,17 @@ class TranslatedItem:
 
 @dataclass(frozen=True)
 class CodexEvent:
-    """已由 session 盖章的内部事件；seq 只在所属会话内单调。"""
+    """已绑定 Trowel 会话并分配序号的内部事件。
+
+    Attributes:
+        session_id: 接收该事件的 Trowel 会话 ID。
+        seq: 所属会话内单调递增的事件序号。
+        type: 内部事件类型。
+        thread_id: Codex thread ID；事件未绑定 thread 时为 None。
+        turn_id: Codex turn ID；事件不属于某个 turn 时为 None。
+        item_id: Codex item ID；非 item 事件为 None。
+        payload: 事件字段的只读顶层映射；嵌套值不保证不可变。
+    """
 
     session_id: str
     seq: int
@@ -82,7 +102,7 @@ class CodexEvent:
     payload: Mapping[str, Any] = field(default=_EMPTY_PAYLOAD)
 
     def as_dict(self) -> dict[str, Any]:
-        """返回事件字典；payload 只复制顶层映射。"""
+        """按 ``codex-event-v1`` schema 序列化事件，并浅复制 payload。"""
 
         return {
             "schema": "codex-event-v1",
@@ -98,7 +118,7 @@ class CodexEvent:
 
 
 def immutable_payload(**fields: Any) -> Mapping[str, Any]:
-    """冻结 payload 的顶层键映射，不复制或冻结嵌套值。"""
+    """将事件字段复制为只读顶层映射；嵌套值保持原引用。"""
 
     return MappingProxyType(dict(fields))
 
@@ -110,7 +130,17 @@ def host_status_item(
     reason: str | None = None,
     exit_code: int | None = None,
 ) -> TranslatedItem:
-    """把 manager/transport 状态合成为 HOST_STATUS 中间事件。"""
+    """创建 Host 状态中间事件，省略值为 None 的可选诊断字段。
+
+    Args:
+        status: 对外发送的 Host 状态。
+        thread_id: 关联的 Codex thread ID；状态不关联特定 thread 时为 None。
+        reason: 状态原因；未知或无需说明时为 None。
+        exit_code: app-server 退出码；进程未退出或退出码未知时为 None。
+
+    Returns:
+        等待 session 分配会话 ID 和序号的 ``HOST_STATUS`` 事件。
+    """
 
     payload_fields: dict[str, Any] = {"status": status.value}
     if reason is not None:

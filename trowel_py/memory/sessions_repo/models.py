@@ -37,21 +37,41 @@ class SessionBinding:
 
 @runtime_checkable
 class SessionRegistrar(Protocol):
-    """CCHost 注册 session 和推进完成水位所需的最小接口。"""
+    """约束 CCHost 登记会话和记录完成水位所需的同步接口。"""
 
-    def register(self, rec: SessionRecord) -> None: ...
+    def register(self, rec: SessionRecord) -> None:
+        """登记一个 Claude Code 会话记录。
+
+        Args:
+            rec: 要登记的 Claude Code 会话记录。
+        """
+        ...
 
     def update_completed(
         self,
         cc_session_id: str,
         completed_bytes: int,
         when: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """记录 Claude Code 会话可安全提炼到的 transcript 字节位置。
+
+        Args:
+            cc_session_id: 要更新的 Claude Code 原生会话 ID。
+            completed_bytes: 完整 turn 结束后的 transcript 字节位置。
+            when: 水位的记录时间；None 表示由实现生成。
+        """
+        ...
 
 
 @dataclass(frozen=True)
 class IncrementalSegment:
-    """一个尚未提炼的已完成 session 区间。"""
+    """描述 Claude Code transcript 中待提炼的半开字节区间。
+
+    Attributes:
+        session: 区间所属的会话及当前水位快照。
+        start: 区间起始字节位置，包含该位置。
+        end: 区间结束字节位置，不包含该位置。
+    """
 
     session: SessionRecord
     start: int
@@ -81,6 +101,10 @@ class CodexTurnRecord:
 
 @dataclass(frozen=True)
 class CodexIncrementalSegment:
-    """尚未提炼且已经原生 terminal 封口的 Codex turn。"""
+    """包装一个已经封口且尚未提炼的 Codex 轮次。
+
+    Attributes:
+        turn: 满足增量提炼条件的轮次记录。
+    """
 
     turn: CodexTurnRecord

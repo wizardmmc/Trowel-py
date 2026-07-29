@@ -1,3 +1,5 @@
+"""提供 Daily review 入口，并重新导出 ``run_one_session`` 与 ``DistillError``。"""
+
 from __future__ import annotations
 
 import contextlib
@@ -27,9 +29,22 @@ logger = logging.getLogger(__name__)
 
 @contextlib.contextmanager
 def _review_lock(root: Path):
-    """阻止定时任务与手动 review 同时处理同一 memory root。
+    """尝试独占同一 Memory 根目录的 review 进程锁。
 
-    非 Unix 平台没有 ``flock``，此处保持原有 no-op 行为，由调用方保证单实例。
+    支持 ``flock`` 时以非阻塞方式锁定 ``meta/.review.lock``；锁文件会保留，
+    正常退出或上下文主体抛错时会尝试解锁再关闭 fd。导入 ``fcntl`` 失败时
+    不加锁，由调用方保证不会并发执行。竞争失败会先关闭 fd 再重新抛出；
+    首次 flock 的其他错误或解锁错误直接传播，当前实现可能来不及关闭 fd。
+
+    Args:
+        root: 要互斥处理的 Memory 根目录。
+
+    Yields:
+        锁已取得时进入受保护的上下文；无法导入 ``fcntl`` 时直接进入。
+
+    Raises:
+        BlockingIOError: 另一进程已经持有该锁。
+        OSError: 无法创建、打开或操作锁文件。
     """
     if fcntl is None:
         yield

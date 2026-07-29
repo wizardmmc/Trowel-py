@@ -14,6 +14,19 @@ def payload_json(
     sha256_fn: Callable[[bytes], Any],
     str_type: Callable[[Any], str],
 ) -> tuple[str, str]:
+    """脱敏编码 Event payload，并计算编码结果的短内容哈希。
+
+    Args:
+        payload: 要写入 events 表的原始 payload。
+        redact_fn: 返回 payload 脱敏副本的函数。
+        json_dumps: 接受 ``json.dumps`` 兼容参数的 JSON 编码函数。
+        sha256_fn: 根据字节串创建 SHA-256 哈希对象的函数。
+        str_type: JSON 编码不支持某个值时使用的字符串转换函数。
+
+    Returns:
+        脱敏 JSON 文本，以及以 ``sha256:`` 开头的 12 位短内容哈希。
+    """
+
     redacted = redact_fn(payload)
     text = json_dumps(
         redacted,
@@ -32,6 +45,18 @@ def dumps(
     json_dumps: Callable[..., str],
     str_type: Callable[[Any], str],
 ) -> str:
+    """脱敏并稳定编码一个 journal 内容字段。
+
+    Args:
+        value: 要编码的字段值。
+        redact_fn: 返回字段脱敏副本的函数。
+        json_dumps: 接受 ``json.dumps`` 兼容参数的 JSON 编码函数。
+        str_type: JSON 编码不支持某个值时使用的字符串转换函数。
+
+    Returns:
+        保留非 ASCII 字符并按对象键排序的 JSON 文本。
+    """
+
     return json_dumps(
         redact_fn(value),
         ensure_ascii=False,
@@ -45,6 +70,17 @@ def event_params(
     payload_text: str,
     payload_hash: str,
 ) -> tuple[Any, ...]:
+    """按 events 表列顺序生成 Event 写入参数。
+
+    Args:
+        event: 提供 events 表各结构字段的 Event 对象。
+        payload_text: 已脱敏编码的 payload JSON。
+        payload_hash: ``payload_text`` 对应的短内容哈希。
+
+    Returns:
+        与 Store 的 events 插入语句 18 个占位符一一对应的参数。
+    """
+
     return (
         event.event_id,
         event.kind,
@@ -68,7 +104,17 @@ def event_params(
 
 
 def event_identity(event: Any, payload_hash: str) -> tuple[Any, ...]:
-    # occurred_at 不参与逻辑身份；重试可发生在不同墙钟时间。
+    """从 Event 构造用于核对幂等冲突的语义字段元组。
+
+    Args:
+        event: 要提取语义身份的 Event。
+        payload_hash: Event 脱敏 payload 的短内容哈希。
+
+    Returns:
+        不含 Event ID 和发生时间的语义字段元组。
+    """
+
+    # 同一 Event 的重试可以使用新的 occurred_at，因此发生时间不参与身份比较。
     return (
         event.kind,
         event.source,
@@ -94,6 +140,18 @@ def event_row_identity(
     *,
     int_fn: Callable[[Any], int],
 ) -> tuple[Any, ...]:
+    """从 events 表行还原用于核对幂等冲突的语义字段元组。
+
+    Args:
+        row: 包含 Event 持久化字段的 SQLite 行。
+        payload_hash: 调用方本次编码的 payload 哈希；当前实现不读取该值，身份
+            始终使用行内已持久化的 ``payload_hash``。
+        int_fn: 把非空 fencing token 转换为整数的函数。
+
+    Returns:
+        与 :func:`event_identity` 字段顺序一致的已持久化语义身份。
+    """
+
     fencing_token = row["fencing_token"]
     return (
         row["kind"],
@@ -120,6 +178,17 @@ def decision_params(
     dumps_fn: Callable[[Any], str],
     redact_fn: Callable[[Any], Any],
 ) -> tuple[Any, ...]:
+    """按 decisions 表列顺序生成 Decision 写入参数。
+
+    Args:
+        decision: 提供 decisions 表各字段的 Decision 对象。
+        dumps_fn: 脱敏并稳定编码信号、候选项和预算的函数。
+        redact_fn: 清理原因码的函数。
+
+    Returns:
+        与 decisions 插入语句 15 个占位符一一对应的参数。
+    """
+
     return (
         decision.decision_id,
         decision.kind,
@@ -153,6 +222,17 @@ def lease_from_row(
     lease_type: Callable[..., Any],
     int_fn: Callable[[Any], int],
 ) -> Any:
+    """把 leases 表行转换为调用方指定的 Lease 对象。
+
+    Args:
+        row: 包含 Lease 持久化字段的 SQLite 行。
+        lease_type: 使用关键字参数创建 Lease 对象的构造函数。
+        int_fn: 把持久化 fencing token 转换为整数的函数。
+
+    Returns:
+        由 ``lease_type`` 创建的 Lease 对象。
+    """
+
     return lease_type(
         lease_id=row["lease_id"],
         resource_type=row["resource_type"],
@@ -173,6 +253,19 @@ def event_from_row(
     json_loads: Callable[[str], Any],
     int_fn: Callable[[Any], int],
 ) -> Any:
+    """把 events 表行转换为调用方指定的 Event 对象。
+
+    Args:
+        row: 包含 Event 持久化字段的 SQLite 行。
+        event_type: 使用关键字参数创建 Event 对象的构造函数。
+        provenance_type: 把持久化来源值转换为 Event 来源类别的函数。
+        json_loads: 解码 payload JSON 的函数。
+        int_fn: 把非空 fencing token 转换为整数的函数。
+
+    Returns:
+        由 ``event_type`` 创建且 payload 已解码的 Event 对象。
+    """
+
     return event_type(
         event_id=row["event_id"],
         kind=row["kind"],
@@ -202,6 +295,20 @@ def decision_from_row(
     decision_type: Callable[..., Any],
     json_loads: Callable[[str], Any],
 ) -> Any:
+    """把 decisions 表行转换为调用方指定的 Decision 对象。
+
+    ``None`` 或空字符串预算按未记录处理；其他真值交给 JSON 解码器，因此
+    ``"null"``、``"0"`` 和 ``"false"`` 会分别恢复为 None、0 和 False。
+
+    Args:
+        row: 包含 Decision 持久化字段的 SQLite 行。
+        decision_type: 使用关键字参数创建 Decision 对象的构造函数。
+        json_loads: 解码信号、候选项和非空预算 JSON 的函数。
+
+    Returns:
+        由 ``decision_type`` 创建且结构字段已解码的 Decision 对象。
+    """
+
     return decision_type(
         decision_id=row["decision_id"],
         kind=row["kind"],

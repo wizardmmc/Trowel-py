@@ -1,4 +1,4 @@
-"""Draft 的硬校验与 procedure 软告警。"""
+"""提供 Draft 落盘硬校验和 procedure 内容软告警。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,25 @@ def validate_draft(
     verification_tiers: Collection[str],
     legal_source_refs: set[str] | None,
 ) -> list[str]:
+    """按遍历顺序收集新草稿的全部落盘门禁错误。
+
+    检查范围包括 Note 标题非空和枚举、Diary 日期非空、非空旧
+    ``events``、仅在 ``items`` 为空时拒绝的旧结构化列表，以及 v2 各类
+    事件的必填字段、状态和来源引用。事件数量和文本长度不在此处设限。每个
+    事件的空引用列表、空引用和重复引用只报告首个命中的结构错误，非法引用
+    另行报告。
+
+    Args:
+        draft: 已解析的完整草稿。
+        note_kinds: 允许写入的 Note 种类。
+        verification_tiers: 允许写入的验证等级。
+        legal_source_refs: 允许引用的来源行标识；为 ``None`` 时不检查引用
+            是否属于当前来源。
+
+    Returns:
+        先按顺序收集全部 Note 错误，再逐个 Diary 收集 Diary 自身及其事件
+        错误；空列表表示通过门禁。
+    """
     errors: list[str] = []
     for index, note in enumerate(draft.notes):
         if not note.title.strip():
@@ -104,6 +123,19 @@ def procedure_warnings(
     *,
     elements: Mapping[str, Sequence[str]],
 ) -> list[str]:
+    """用关键词启发式报告 procedure Note 可能缺少的组成部分。
+
+    仅检查 ``kind`` 恰为 ``"procedure"`` 的 Note。空正文只产生一条告警；
+    其余正文通过不区分大小写的子串匹配逐项检查，告警顺序由 Note 和
+    ``elements`` 的遍历顺序决定。结果不参与落盘门禁。
+
+    Args:
+        draft: 已解析的完整草稿。
+        elements: 组成部分名称到可识别关键词的映射。
+
+    Returns:
+        可能缺少正文或组成部分的告警。
+    """
     warnings: list[str] = []
     for index, note in enumerate(draft.notes):
         if note.kind != "procedure":

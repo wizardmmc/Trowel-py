@@ -31,7 +31,7 @@ class Attribution:
 
     @property
     def attributed(self) -> bool:
-        """是否已解析到 CC 会话。"""
+        """判断记录是否已归到某个 Claude Code 会话。"""
         return self.basis != "unattributed"
 
     @property
@@ -48,11 +48,20 @@ class AttributionIndex:
         by_trowel: dict[str, SessionBinding],
         cc_kinds: dict[str, str],
     ) -> None:
+        """保存解析访问记录所需的会话绑定和类型映射。
+
+        Args:
+            by_trowel: Trowel 会话 ID 到持久化会话绑定的映射。
+            cc_kinds: Claude Code 会话 ID 到会话用途的映射。
+        """
+
         self._by_trowel = by_trowel
         self._cc_kinds = cc_kinds
 
     @classmethod
     def empty(cls) -> "AttributionIndex":
+        """返回不包含任何会话映射的归因索引。"""
+
         return cls({}, {})
 
     @classmethod
@@ -63,7 +72,17 @@ class AttributionIndex:
 
     @classmethod
     def from_root(cls, root: Path | str) -> "AttributionIndex":
-        """从 Memory 根目录加载索引；数据库缺失时不创建文件并降级为空索引。"""
+        """从 Memory 根目录的会话数据库加载归属索引。
+
+        数据库缺失时不创建文件；数据库存在时，会按会话仓储的初始化逻辑补齐
+        schema。现有数据库无法打开、初始化或加载时返回空索引。
+
+        Args:
+            root: Memory 根目录。
+
+        Returns:
+            数据库当前内容对应的索引；无法读取数据库时为空索引。
+        """
         if not (Path(root) / "meta" / "sessions.db").exists():
             return cls.empty()
         try:
@@ -98,7 +117,14 @@ class AttributionIndex:
         )
 
     def trowel_ids_for_cc(self, cc_session_id: str) -> set[str]:
-        """返回绑定到同一 CC 会话的全部 Trowel 会话标识。"""
+        """查找绑定到指定 Claude Code 会话的全部 Trowel 会话 ID。
+
+        Args:
+            cc_session_id: 要查询的 Claude Code 会话 ID。
+
+        Returns:
+            当前索引中绑定到该会话的 Trowel 会话 ID 集合。
+        """
         return {
             b.trowel_session_id
             for b in self._by_trowel.values()

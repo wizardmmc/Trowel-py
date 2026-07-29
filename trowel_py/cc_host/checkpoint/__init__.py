@@ -1,4 +1,4 @@
-"""管理 CC turn 的 Git 快照、恢复与 transcript 截断。"""
+"""保存和恢复 Claude Code 轮次开始前的 Git 文件快照，并同步回退会话日志。"""
 
 from __future__ import annotations
 
@@ -11,20 +11,31 @@ from trowel_py.cc_host.checkpoint import git as checkpoint_git
 from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 
 _ENABLE_ENV = "TROWEL_CHECKPOINT_ENABLE"
-# 快照可能纳入未忽略的本地文件，必须保持显式 opt-in。
+# 快照会包含未被 Git 忽略的本地文件，因此必须由环境变量显式开启。
 
 
 class NotAGitRepoError(RuntimeError):
-    """workdir 不在 Git 工作树中。"""
+    """表示工作目录不属于任何 Git 工作树。"""
 
 
 class UnknownCheckpointError(RuntimeError):
-    """指定 turn 没有 checkpoint ref。"""
+    """表示指定轮次没有可恢复的 checkpoint ref。"""
 
 
 @dataclass(frozen=True)
 class CheckpointMeta:
-    """持久化在 checkpoint commit message 中的恢复信息。"""
+    """记录 checkpoint commit message 中的恢复信息。
+
+    Attributes:
+        turn_id: Trowel 分配的逻辑轮次 ID，同时用作私有 ref 的末段。
+        cc_session_id: 用于重新定位会话日志的 Claude Code 会话 ID；未记录时为
+            None。
+        jsonl_offset: 轮次开始前的非负日志字节位置；未记录或无法解析时为 None。
+            只有它与 ``cc_session_id`` 都非 None 时，恢复操作才会尝试截断日志。
+        created_at: checkpoint commit 的创建时间。新快照使用保留微秒的 ISO 8601
+            UTC 时间；旧元数据缺失该字段时为空字符串。``list_checkpoints`` 用它
+            排序。
+    """
 
     turn_id: str
     cc_session_id: str | None
@@ -33,10 +44,14 @@ class CheckpointMeta:
 
 
 def is_enabled() -> bool:
+    """判断 ``TROWEL_CHECKPOINT_ENABLE`` 是否精确设为 ``1``。"""
+
     return os.environ.get(_ENABLE_ENV) == "1"
 
 
 def is_git_repo(workdir: str | os.PathLike) -> bool:
+    """判断工作目录是否位于 Git 工作树中。"""
+
     return checkpoint_git.is_git_repo(workdir)
 
 
@@ -47,9 +62,26 @@ def save(
     cc_session_jsonl_path: str | None = None,
     jsonl_offset: int | None = None,
 ) -> CheckpointMeta:
-    """把 turn 前的文件写入私有 ref，不改 HEAD/index/worktree。
+    """为指定轮次记录恢复信息，并在功能开启时保存当前文件快照。
 
-    快照包含 tracked 与非忽略 untracked；默认关闭时只返回元数据。
+    快照包含已跟踪文件和未被 Git 忽略的未跟踪文件，写入私有 ref，不改变
+    HEAD、index 或工作区。功能关闭时仍校验仓库并返回元数据，但不创建 ref。
+
+    Args:
+        workdir: 该轮次运行所在的 Git 工作目录。
+        turn_id: Trowel 分配的逻辑轮次 ID，同时用作私有 ref 的末段。
+        cc_session_jsonl_path: Claude Code 会话日志路径；只提取文件名中的会话 ID，
+            不把本机路径写入 commit message。没有关联日志时为 None。
+        jsonl_offset: 轮次开始前会话日志的字节长度，恢复时截断到此位置；不需要
+            回退日志时为 None。
+
+    Returns:
+        本次快照的恢复信息；功能关闭时也会返回。
+
+    Raises:
+        NotAGitRepoError: ``workdir`` 不属于 Git 工作树。
+        RuntimeError: 创建或更新 checkpoint 所需的 Git 命令失败。
+        OSError: 无法启动 Git 或创建临时 index。
     """
 
     root = _require_repo(workdir)
@@ -73,7 +105,30 @@ def save(
 
 
 def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
-    """恢复 index/worktree 并截断 transcript，HEAD 保持不动。"""
+    """把 index、工作区和会话日志恢复到指定轮次开始前。
+
+    恢复会用 checkpoint 的单一文件树重写 index 和工作区。checkpoint 之后对
+    快照内文件的修改和删除会丢失，之后新增且未被 Git 忽略的文件和目录会被
+    删除；HEAD 和用户分支的提交历史不变。该操作恢复文件内容，但不恢复保存时
+    的暂存边界。
+
+    关联日志存在且长于记录位置时，会删除该位置之后的内容。Git 恢复先于日志
+    截断，两步不是原子操作。
+
+    Args:
+        workdir: 保存 checkpoint 时使用的 Claude Code 工作目录；用于确定 Git
+            仓库并重新定位会话日志。
+        turn_id: 要恢复到的 Trowel 逻辑轮次 ID。
+
+    Returns:
+        checkpoint 中读取到的恢复信息。
+
+    Raises:
+        NotAGitRepoError: ``workdir`` 不属于 Git 工作树。
+        UnknownCheckpointError: 指定轮次没有 checkpoint ref。
+        RuntimeError: 读取或恢复 checkpoint 所需的 Git 命令失败。
+        OSError: 无法启动 Git 或读写会话日志。
+    """
 
     root = _require_repo(workdir)
     commit_oid = checkpoint_git.resolve_checkpoint(root, turn_id)
@@ -89,7 +144,20 @@ def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
 
 
 def list_checkpoints(workdir: str | os.PathLike) -> list[CheckpointMeta]:
-    """按创建时间从新到旧读取当前仓库的 checkpoint。"""
+    """按创建时间从新到旧读取工作目录所属仓库的 checkpoint。
+
+    路径不属于 Git 工作树时返回空列表。
+
+    Args:
+        workdir: 用于确定目标 Git 仓库的工作目录。
+
+    Returns:
+        仓库中可读取的 checkpoint 恢复信息。
+
+    Raises:
+        RuntimeError: 枚举或读取 checkpoint ref 所需的 Git 命令失败。
+        OSError: 无法启动 Git。
+    """
 
     if not is_git_repo(workdir):
         return []
@@ -103,7 +171,20 @@ def list_checkpoints(workdir: str | os.PathLike) -> list[CheckpointMeta]:
 
 
 def gc(workdir: str | os.PathLike, *, keep: int = 50) -> int:
-    """删除超过保留数量的旧 checkpoint ref。"""
+    """删除超过保留数量的旧 checkpoint ref。
+
+    Args:
+        workdir: 用于确定目标 Git 仓库的工作目录。
+        keep: 从最新开始保留的 checkpoint ref 数量；必须为非负数，0 表示全部
+            删除。
+
+    Returns:
+        实际删除的 ref 数量；路径不属于 Git 工作树时为 0。
+
+    Raises:
+        RuntimeError: 枚举或删除 checkpoint ref 所需的 Git 命令失败。
+        OSError: 无法启动 Git。
+    """
 
     if not is_git_repo(workdir):
         return 0
@@ -112,13 +193,34 @@ def gc(workdir: str | os.PathLike, *, keep: int = 50) -> int:
 
 
 def _require_repo(workdir: str | os.PathLike) -> str:
+    """取得工作目录所属 Git 工作树的根目录。
+
+    Args:
+        workdir: 要解析的工作目录。
+
+    Returns:
+        Git 工作树根目录。
+
+    Raises:
+        NotAGitRepoError: ``workdir`` 不属于 Git 工作树。
+    """
+
     if not is_git_repo(workdir):
         raise NotAGitRepoError(f"{workdir} is not a git work tree")
     return checkpoint_git.top_level(workdir)
 
 
 def _session_id_from_path(jsonl_path: str | None) -> str | None:
-    """只提取文件名中的 session id，避免把本机路径写入 Git 历史。"""
+    """从会话日志文件名提取 Claude Code 会话 ID。
+
+    只保留文件名 stem，避免把本机路径写入私有 checkpoint commit 的消息正文。
+
+    Args:
+        jsonl_path: Claude Code 会话日志路径；没有日志时为 None。
+
+    Returns:
+        不含扩展名的文件名；输入为空或文件名为空时为 None。
+    """
 
     if not jsonl_path:
         return None
@@ -129,6 +231,16 @@ def _derive_jsonl_path(
     workdir: str | os.PathLike,
     cc_session_id: str | None,
 ) -> Path | None:
+    """根据工作目录和 Claude Code 会话 ID 得到会话日志路径。
+
+    Args:
+        workdir: 会话运行所在的工作目录。
+        cc_session_id: Claude Code 会话 ID；尚未取得时为 None。
+
+    Returns:
+        预计的 JSONL 日志路径；会话 ID 为空时为 None。
+    """
+
     if not cc_session_id:
         return None
     return cc_projects_root() / workdir_to_slug(workdir) / f"{cc_session_id}.jsonl"
@@ -139,12 +251,30 @@ def _meta_for_commit(
     turn_id: str,
     commit_oid: str,
 ) -> CheckpointMeta:
+    """从 checkpoint commit message 中读取指定轮次的恢复信息。
+
+    Args:
+        root: Git 工作树根目录。
+        turn_id: checkpoint 所属的 Trowel 逻辑轮次 ID。
+        commit_oid: 保存 checkpoint 的 commit 对象 ID。
+
+    Returns:
+        从 commit message 解码出的恢复信息。
+    """
+
     body = checkpoint_git.read_checkpoint_message(root, commit_oid)
     return _decode_message(body, turn_id)
 
 
 def _truncate_file(path: str, offset: int) -> None:
-    """按字节截断；offset 落在半行时回退到上一条完整 JSONL。"""
+    """把会话日志截断到指定字节位置之前的最后一个完整行边界。
+
+    文件不存在或指定位置不小于文件长度时不做处理。
+
+    Args:
+        path: 要截断的 JSONL 会话日志路径。
+        offset: 轮次开始前记录的字节长度；落在行中间时会回退到上一行末尾。
+    """
 
     transcript = Path(path)
     if not transcript.is_file():
@@ -167,11 +297,20 @@ def _truncate_file(path: str, offset: int) -> None:
 
 
 def _now_iso() -> str:
+    """返回带微秒的当前 UTC 时间。"""
+
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
 
 
 def _encode_message(meta: CheckpointMeta) -> str:
-    """只序列化 session id，不把绝对 transcript 路径写入 commit。"""
+    """把恢复信息编码为不含本机会话日志路径的 commit message。
+
+    Args:
+        meta: 要持久化的 checkpoint 恢复信息。
+
+    Returns:
+        可写入 checkpoint commit 的消息正文。
+    """
 
     cc_session_id = meta.cc_session_id or ""
     jsonl_offset = "" if meta.jsonl_offset is None else str(meta.jsonl_offset)
@@ -184,7 +323,20 @@ def _encode_message(meta: CheckpointMeta) -> str:
 
 
 def _decode_message(body: str, turn_id: str) -> CheckpointMeta:
-    """容忍缺失和畸形字段；旧版 jsonl-path 不再读取。"""
+    """从 commit message 解码 checkpoint 恢复信息。
+
+    ``turn_id`` 直接使用参数，不读取正文中的 ``checkpoint:`` 行。缺少
+    ``cc-session``、``jsonl-offset`` 或 ``created`` 时分别得到 None、None 或
+    空字符串；无法解析的 ``jsonl-offset`` 也得到 None。``created`` 不校验格式，
+    旧版 ``jsonl-path`` 始终忽略。
+
+    Args:
+        body: checkpoint commit 的完整消息正文。
+        turn_id: 当前 checkpoint ref 对应的 Trowel 逻辑轮次 ID。
+
+    Returns:
+        解码后的恢复信息。
+    """
 
     cc_session_id: str | None = None
     jsonl_offset: int | None = None

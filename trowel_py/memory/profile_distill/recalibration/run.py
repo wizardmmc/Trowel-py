@@ -1,4 +1,8 @@
-"""画像重校准的隔离重放与产物落盘。"""
+"""在独立 staging 目录重放画像提炼并写入可审计产物。
+
+本模块不主动更新 live Profile、建议队列、水位或 sessions 数据库；运行期间
+检测到 live 文件变化时，只把结果标记为不完整。
+"""
 
 from __future__ import annotations
 
@@ -42,7 +46,17 @@ logger = logging.getLogger("trowel_py.memory.profile_recalibrate")
 
 
 def _copy_live_to_baseline(root: Path, baseline: Path) -> None:
-    """复制现存 live 文件，缺失文件保持缺失。"""
+    """把调用时存在的三个 live 文件复制到 baseline。
+
+    缺失文件不创建占位，已有目标会被覆盖；函数不会清理 baseline 中的旧文件。
+
+    Args:
+        root: live Profile、建议队列和水位所在的 Memory 根目录。
+        baseline: 保存同名基线副本的目录。
+
+    Raises:
+        OSError: 无法创建目录、读取源文件或写入副本。
+    """
     baseline.mkdir(parents=True, exist_ok=True)
     for _name, rel in (_LIVE_PROFILE, _LIVE_SUGGESTIONS, _LIVE_WATERMARK):
         src = root / rel
@@ -61,6 +75,24 @@ def _manifest(
     status: str,
     live_changed_during_run: bool = False,
 ) -> dict[str, Any]:
+    """组装 ``manifest.json`` 的内存结构。
+
+    会话条目只记录 ID、冻结 offset 和 JSONL 路径；输入摘要始终使用计划阶段
+    的 live 摘要。
+
+    Args:
+        run_id: 本次重放的标识。
+        created_at: 本次重放使用的创建时间文本。
+        scope_all: 是否选择全部候选会话。
+        from_date: from 范围的起始日期；all 范围时为 ``None``。
+        live_hashes: 计划阶段冻结的 live 文件摘要。
+        sessions: 按计划顺序冻结的会话。
+        status: 要写入 manifest 的运行状态。
+        live_changed_during_run: 运行期间 live 摘要是否变化。
+
+    Returns:
+        可直接序列化为 manifest 的新字典。
+    """
     return {
         "run_id": run_id,
         "policy_version": PROFILE_DISTILL_POLICY_VERSION,
@@ -90,7 +122,23 @@ def _aggregate_report(
     staging_dir: str,
     outcomes: list[tuple[FrozenSession, tuple[Suggestion, ...], GateStats, str]],
 ) -> RecalibrationRunResult:
-    """聚合逐会话结果、门禁统计与 staged suggestions。"""
+    """按计划顺序聚合逐会话结果、门禁统计和 staged 建议。
+
+    outcome 的错误文本非空即计为失败；因此缺失 JSONL 也进入失败会话统计。
+    ``status`` 由调用方决定，不根据失败计数重新推导。
+
+    Args:
+        run_id: 本次重放的标识。
+        created_at: 本次重放使用的创建时间文本。
+        scope_all: 是否选择全部候选会话。
+        from_date: from 范围的起始日期；all 范围时为 ``None``。
+        status: 原样写入结果的运行状态。
+        staging_dir: 返回给调用方的隔离产物目录文本。
+        outcomes: 依次包含冻结会话、接受建议、门禁统计和错误文本的结果。
+
+    Returns:
+        会话成败、门禁丢弃项、建议维度和正文长度的聚合结果。
+    """
     failed = [s.cc_session_id for (s, _a, _st, err) in outcomes if err]
     ok = sum(1 for (_s, _a, _st, err) in outcomes if not err)
     staged: list[Suggestion] = []
@@ -141,7 +189,42 @@ async def run_recalibration(
     run_id: str | None = None,
     created_at: str | None = None,
 ) -> RecalibrationRunResult:
-    """在隔离 staging 目录中重放冻结的用户会话。"""
+    """在隔离 staging 目录中顺序重放冻结的用户会话。
+
+    函数先生成只读计划，再复制当时存在的 live 文件并写入 ``running``
+    manifest。每个可用会话都从空 Profile 开始，只用本轮此前接受的建议去重；
+    接受项不会写回 live 队列。缺失 JSONL 会计入失败会话，但本身不会把运行
+    状态改为 ``incomplete``。
+
+    agent 或门禁在 ``drive_and_gate`` 内抛出的异常会转成单会话失败，并继续
+    后续会话。会话准备、live 摘要或产物写入异常则向上传播，可能留下
+    ``running`` manifest 或部分产物。最终 manifest、staged 建议和报告依次
+    覆盖写入，不构成事务。运行结束时只要有处理异常或 live 摘要变化，状态
+    就是 ``incomplete``。
+
+    Args:
+        root: sessions 数据库、live 文件和 staging 目录所在的 Memory 根目录。
+        scope_all: 是否选择全部候选会话。
+        from_date: from 范围的起始日期；使用该范围时必须不是 ``None``。
+        proxy_base_url: 传给默认 CCHost 的非空代理地址；自定义 factory 自行
+            处理运行时配置。
+        settings_path: 传给默认 CCHost 的 provider settings 路径。
+        host_factory: 可选的测试或替代 host 构造器。
+        run_id: ``None`` 或空字符串时生成 UUID；其他文本未经校验便参与路径
+            拼接，绝对路径或 ``..`` 可越出 staging 根目录，复用旧值还会沿用
+            旧 baseline、工作目录和草稿。
+        created_at: ``None`` 或空字符串时使用当前本地时间的 ISO 文本；其他
+            文本不校验，前 10 个字符直接作为建议日期。
+
+    Returns:
+        聚合后的运行状态、会话统计、门禁统计和 staged 建议。
+
+    Raises:
+        RecalibrationScopeError: all 和 from 范围同时指定或均未指定。
+        ValueError: ``proxy_base_url`` 为空。
+        OSError: 无法检查输入路径、复制 live 文件、创建目录或写入产物。
+        sqlite3.Error: sessions 数据库无法只读打开或查询。
+    """
     _validate_scope(scope_all=scope_all, from_date=from_date)
     if not proxy_base_url:
         raise ValueError("--run requires --proxy-base-url (never bypass the proxy)")
@@ -156,7 +239,7 @@ async def run_recalibration(
     staging.mkdir(parents=True, exist_ok=True)
     _copy_live_to_baseline(root, baseline)
 
-    # 先写 running，避免中断的重放被误认为已完成。
+    # 先写 running，使会话处理结束前的中断保留未完成状态。
     manifest_path = staging / _MANIFEST_FILE
     manifest_path.write_text(
         json.dumps(
@@ -180,7 +263,7 @@ async def run_recalibration(
     had_failure = False
     for frozen in plan.sessions:
         if not frozen.jsonl_exists:
-            # 来源缺失会记入报告，但不是重放处理失败。
+            # 来源缺失进入失败统计，但不单独把运行状态改为 incomplete。
             outcomes.append((frozen, (), GateStats(), "missing jsonl"))
             continue
         session = SessionRecord(
@@ -208,7 +291,7 @@ async def run_recalibration(
                 settings_path=settings_path,
                 host_factory=host_factory,
                 date_str=stamp[:10],
-                # 真实 CCHost 必须使用空 registrar，避免污染 sessions.db。
+                # 默认 CCHost 使用空 registrar，避免重放会话写入 sessions.db。
                 session_registrar=_NULL_REGISTRAR,
             )
         except DistillError as exc:
@@ -221,7 +304,7 @@ async def run_recalibration(
             outcomes.append((frozen, (), GateStats(), str(exc)))
             continue
         except Exception as exc:  # noqa: BLE001
-            # 未预期异常也要完成产物落盘，不能让 manifest 停在 running。
+            # 未预期的 drive_and_gate 异常也记为单会话失败，以便继续后续会话。
             had_failure = True
             logger.exception(
                 "recalibrate: unexpected error on %s (run marked incomplete)",

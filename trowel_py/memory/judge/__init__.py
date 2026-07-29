@@ -32,9 +32,10 @@ _DRAFT_FILE = "judgement-draft.json"
 
 
 class JudgeError(Exception):
-    """judge 未完成或未产生有效草稿。"""
+    """表示事件流未出现 ``finished``，或判效草稿缺失、无法解析。"""
 
 
+# 草稿解析器处理输入时会从包入口导入 JudgeError；先定义异常，再集中导入子模块实现。
 from trowel_py.memory.judge.draft import _coerce_bool, _parse_draft  # noqa: E402
 from trowel_py.memory.judge.evidence import (  # noqa: E402
     _dictionary_index,
@@ -47,6 +48,7 @@ def _summarize_access_log(
     cc_session_id: str,
     index: AttributionIndex,
 ) -> str:
+    """读取访问日志并汇总归属于指定 CC 会话的搜索和正文读取。"""
     return _summarize_access_log_impl(
         root,
         cc_session_id,
@@ -60,6 +62,10 @@ def _ensure_judge_workdir(
     memory_root: Path,
     cc_session_id: str,
 ) -> Path:
+    """创建并返回 ``judge-work/<date>/<session>`` 判效目录。
+
+    已存在的目录会复用，函数不会清理其中的旧草稿。
+    """
     workdir = memory_root.parent / _JUDGE_WORKDIR_NAME / date_str / cc_session_id
     workdir.mkdir(parents=True, exist_ok=True)
     return workdir
@@ -72,6 +78,32 @@ async def _judge_session_inner(
     host_factory: HostFactory | None,
     segment_id: str = "",
 ) -> JudgementReport:
+    """运行一次会话判效并保存过滤后的报告。
+
+    函数先用会话原始记录、访问证据和 Dictionary 构造提示词，再使用注入的
+    host 或新的 ``eval`` CCHost。事件流中至少须出现一次 ``finished``；随后
+    读取工作目录中的 ``judgement-draft.json``。目录会复用且不清理，因此本轮
+    未覆写文件时可能读取遗留草稿。只要 host 存在 ``close``，无论发送是否成功
+    都会在 ``finally`` 中等待关闭；若关闭也失败，关闭异常会覆盖发送异常。
+    解析后会丢弃当前 Memory 中不存在的 Note ID，再保存报告。本函数不隔离
+    异常。
+
+    Args:
+        session: 要判效的 CC 会话记录。
+        review_date: 判效工作目录使用的日期路径段。
+        memory_root: 读取证据、Dictionary、Note 并保存报告的 Memory 根目录。
+        host_factory: 可选 host 构造器，接收会话和工作目录；为 ``None`` 时用
+            随机新 session ID、上述判效目录和 Memory MCP 配置创建 eval
+            CCHost。
+        segment_id: 写入报告的可选来源片段 ID。
+
+    Returns:
+        已移除未知 Note ID 且完成持久化的判效报告。
+
+    Raises:
+        JudgeError: 事件流未出现 ``finished``，或草稿缺失、不是可解析的 JSON
+            对象。
+    """
     store = MemoryStore(memory_root)
     attribution = AttributionIndex.from_root(memory_root)
     access_summary = _summarize_access_log(
@@ -146,7 +178,22 @@ async def judge_session(
     host_factory: HostFactory | None = None,
     segment_id: str = "",
 ) -> JudgementReport | None:
-    """判定单个会话；任何失败均隔离为 None。"""
+    """判定单个会话，并把普通异常隔离为 ``None``。
+
+    日志、host、解析、过滤或保存阶段抛出的 ``Exception`` 都会记录警告且不
+    影响 review；任务取消等不属于 ``Exception`` 的退出信号仍会传播。
+
+    Args:
+        session: 要判效的 CC 会话记录。
+        review_date: 仅用于组织判效工作目录的日期路径段。
+        memory_root: 读取判效上下文并保存报告的 Memory 根目录。
+        host_factory: 可选 host 构造器，接收会话和判效目录。
+        segment_id: 写入报告的可选来源片段 ID。
+
+    Returns:
+        成功时返回已保存且过滤未知 Note ID 的报告；任一 ``Exception`` 发生时
+        返回 ``None``。
+    """
     try:
         return await _judge_session_inner(
             session,
@@ -155,7 +202,7 @@ async def judge_session(
             host_factory,
             segment_id,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 判效是旁路，普通失败不能中断 review。
         logger.warning(
             "judge failed for %s (isolated; review unaffected): %s",
             session.cc_session_id,

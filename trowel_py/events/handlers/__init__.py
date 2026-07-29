@@ -1,3 +1,5 @@
+"""创建各类事件处理器，并按事件类型注册。"""
+
 from trowel_py.events.types import EventType
 from trowel_py.events.handlers.types import EventHandler
 from .feynman import FeynmanHandler

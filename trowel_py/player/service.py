@@ -1,3 +1,5 @@
+"""计算玩家等级、连续天数并编排金币和库存变化。"""
+
 import logging
 from datetime import datetime
 
@@ -18,7 +20,10 @@ LEVEL_STEP = 50
 
 
 def calculate_level(total_xp: int) -> int:
-    """等级 n 的累计经验门槛为 ``n * (n - 1) * 50``。"""
+    """根据累计经验计算玩家等级。
+
+    等级 n 的累计经验门槛为 ``n * (n - 1) * 50``。
+    """
     level = 1
     while total_xp >= (level + 1) * level * LEVEL_STEP:
         level += 1
@@ -26,11 +31,13 @@ def calculate_level(total_xp: int) -> int:
 
 
 def xp_to_next_level(total_xp: int, level: int) -> int:
+    """计算从当前经验到下一等级门槛还差多少经验。"""
     next_threshold = (level + 1) * level * LEVEL_STEP
     return next_threshold - total_xp
 
 
 def get_profile(player_repo: PlayerRepository) -> PlayerProfile:
+    """返回附带等级和升级差额的默认玩家资料。"""
     player = player_repo.find_or_create()
     level = calculate_level(player.xp)
     logger.info(
@@ -49,7 +56,10 @@ def get_profile(player_repo: PlayerRepository) -> PlayerProfile:
 
 
 def add_xp(delta: int, player_repo: PlayerRepository) -> int:
-    """``delta`` 可为负数；返回变更后的等级。"""
+    """修改玩家经验并返回变更后的等级。
+
+    ``delta`` 可为负数。
+    """
     player = player_repo.find_or_create()
     old_level = calculate_level(player.xp)
     player_repo.update_xp(delta)
@@ -60,12 +70,18 @@ def add_xp(delta: int, player_repo: PlayerRepository) -> int:
 
 
 def add_coins(delta: int, player_repo: PlayerRepository) -> None:
-    """``delta`` 为负数时扣除金币。"""
+    """按增量修改玩家金币。
+
+    ``delta`` 为负数时扣除金币。
+    """
     player_repo.update_coins(delta)
 
 
 def spend_coins(item_id: str, player_repo: PlayerRepository) -> str:
-    """商品不存在或余额不足时抛出 ``ValueError``。"""
+    """扣除商品价格并把商品加入玩家库存。
+
+    商品不存在或余额不足时抛出 ``ValueError``。
+    """
     if item_id not in ITEM_PRICES:
         raise ValueError(f"unknown item: {item_id}")
     price = ITEM_PRICES[item_id]
@@ -82,7 +98,10 @@ def spend_coins(item_id: str, player_repo: PlayerRepository) -> str:
 
 
 def update_streak(player_repo: PlayerRepository, now: datetime) -> int:
-    """同日保持不变，相隔一天加一，间隔更久则重置为一天。"""
+    """根据最近活跃日期更新连续天数。
+
+    同日保持不变，相隔一天加一，间隔更久则重置为一天。
+    """
     player = player_repo.find_or_create()
     last_active = player.last_active
     diff_days = (now.date() - last_active.date()).days
@@ -100,4 +119,5 @@ def update_streak(player_repo: PlayerRepository, now: datetime) -> int:
 
 
 def get_inventory(player_repo: PlayerRepository) -> list[InventoryItem]:
+    """返回默认玩家的全部库存物品。"""
     return player_repo.find_inventory()

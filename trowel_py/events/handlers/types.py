@@ -1,4 +1,4 @@
-"""事件 handler 的输入依赖、纯结果与行为协议。"""
+"""定义事件处理器需要的外部对象、执行结果和统一接口。"""
 
 from __future__ import annotations
 import random
@@ -16,7 +16,7 @@ from trowel_py.garden.repository import GardenRepository
 
 @dataclass(frozen=True)
 class EventResult:
-    """只描述事件与奖励意图；handler 不在此阶段写数据库。"""
+    """保存事件内容和待发放奖励；事件处理器在此阶段不写数据库。"""
 
     event_type: EventType
     description: str
@@ -28,6 +28,8 @@ class EventResult:
 
 @dataclass(frozen=True)
 class EventDependencies:
+    """集中保存事件处理器需要的数据读写对象、时间和随机数。"""
+
     player_repo: PlayerRepository
     review_repo: ReviewRepository
     card_repo: CardRepository
@@ -38,5 +40,14 @@ class EventDependencies:
 
 
 class EventHandler(Protocol):
-    def can_trigger(self, state: GameState) -> bool: ...
-    def execute(self, state: GameState, deps: EventDependencies) -> EventResult: ...
+    """规定所有事件处理器都要提供的判断和执行操作。"""
+
+    def can_trigger(self, state: GameState) -> bool:
+        """判断当前游戏状态是否允许处理器执行。"""
+
+        ...
+
+    def execute(self, state: GameState, deps: EventDependencies) -> EventResult:
+        """执行事件并返回待发放的奖励和展示内容。"""
+
+        ...

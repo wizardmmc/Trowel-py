@@ -1,4 +1,4 @@
-"""Memory 非 tidy 子命令。"""
+"""执行 Memory CLI 的领域命令，并提供当前周、月的周期标识。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ from pathlib import Path
 
 
 def current_iso_week() -> str:
-    """返回当前 ISO 周。"""
+    """返回本地今天所属的 ISO 周，格式为 ``YYYY-Www``。"""
     year, week, _ = date.today().isocalendar()
     return f"{year}-W{week:02d}"
 
 
 def current_month() -> str:
-    """返回当前月份。"""
+    """返回本地今天所属的月份，格式为 ``YYYY-MM``。"""
     return date.today().strftime("%Y-%m")
 
 
@@ -26,6 +26,20 @@ def _run_dictionary_command(
     root: Path,
     ensure_dict_fn: Callable[[Path], None],
 ) -> int:
+    """执行 Dictionary 重建、只读检查或旧 Note 迁移命令。
+
+    只有 ``migrate --apply`` 成功后才调用字典收敛函数。
+
+    Args:
+        args: 已解析的命令参数。``dict-rebuild`` 和 ``migrate`` 读取
+            ``apply``，默认只预览，传入 ``--apply`` 才写入；``dict-check``
+            不读取额外参数。
+        root: 本次命令读写的 Memory 根目录。
+        ensure_dict_fn: 迁移写入后检查并收敛 Dictionary 的函数。
+
+    Returns:
+        命令处理并输出报告后返回 0。
+    """
     if args.cmd == "dict-rebuild":
         from trowel_py.config import load_llm_config
         from trowel_py.llm.client import AnthropicProvider
@@ -57,6 +71,17 @@ def _run_dictionary_command(
 
 
 def _run_core_command(args: Namespace, root: Path) -> int:
+    """提名 Core 候选，或推进候选的批准、激活状态。
+
+    Args:
+        args: 已解析的 ``core`` 参数。``nominate`` 读取 Note 文件名去掉
+            ``.md`` 后的 ``note_stem``；``approve`` 读取 ``candidate_id``；
+            ``activate`` 读取 ``memory_id``。
+        root: 本次命令读写的 Memory 根目录。
+
+    Returns:
+        命令处理完成时返回 0。
+    """
     from trowel_py.memory.core_ops import (
         activate_core_item,
         approve_candidate,
@@ -76,6 +101,14 @@ def _run_core_command(args: Namespace, root: Path) -> int:
 
 
 def _run_metrics(root: Path) -> int:
+    """计算并输出 Memory 健康指标和使用质量指标。
+
+    Args:
+        root: 要读取的 Memory 根目录。
+
+    Returns:
+        指标成功输出时返回 0。
+    """
     from trowel_py.memory.north_star import compute_north_star, memory_usage_metrics
 
     report = {
@@ -87,6 +120,17 @@ def _run_metrics(root: Path) -> int:
 
 
 def _run_promotion(args: Namespace, root: Path) -> int:
+    """按指定策略评估 Core 晋升候选，并输出差距报告。
+
+    默认只读评估；传入 ``--apply`` 时写入或刷新候选文件。
+
+    Args:
+        args: 已解析的策略文件路径和 ``--apply`` 开关。
+        root: 本次评估使用的 Memory 根目录。
+
+    Returns:
+        报告成功输出时返回 0。
+    """
     from trowel_py.memory.promotion import evaluate_promotion
     from trowel_py.memory.promotion_policy import PromotionPolicy, load_policy
 
@@ -97,6 +141,16 @@ def _run_promotion(args: Namespace, root: Path) -> int:
 
 
 def _run_profile_recalibration(args: Namespace, root: Path) -> int:
+    """只读计划或隔离运行一次 Profile 历史重校准。
+
+    Args:
+        args: 已解析的重校准参数。范围由 ``all`` 或 ``from_date`` 二选一；
+            ``run`` 为假时只生成计划，为真时还需提供 ``proxy_base_url``。
+        root: 提供历史会话并保存隔离产物的 Memory 根目录。
+
+    Returns:
+        计划或重放报告输出后返回 0；范围无效或运行时缺少代理地址时返回 2。
+    """
     from trowel_py.memory.profile_recalibrate import (
         RecalibrationRunResult,
         RecalibrationScopeError,
@@ -108,7 +162,7 @@ def _run_profile_recalibration(args: Namespace, root: Path) -> int:
         if not args.proxy_base_url:
             print("[memory] profile-recalibrate --run needs --proxy-base-url")
             return 2
-        # 代理会剥离 provider 环境变量，必须显式传入 Claude settings。
+        # 使用代理时，CCHost 需从 Claude settings 读取并透传 provider 环境变量。
         settings_path = Path.home() / ".claude" / "settings.json"
         try:
             run_result: RecalibrationRunResult = asyncio.run(
@@ -139,6 +193,17 @@ def _run_profile_recalibration(args: Namespace, root: Path) -> int:
 
 
 def _run_regeneration(args: Namespace, root: Path) -> int:
+    """计划、隔离运行或显式发布一次日周月派生物重生成。
+
+    Args:
+        args: 已解析的重生成参数。``run`` 接收 plan ID，``apply`` 接收
+            run ID；两者均未提供时，由 ``layer``、``from_period``、
+            ``to_period`` 和 ``mode`` 构成新计划。
+        root: 本次重生成使用的 Memory 根目录。
+
+    Returns:
+        报告输出后返回 0；新建计划缺少必需参数时返回 2。
+    """
     from trowel_py.memory.regeneration import (
         apply_regeneration,
         plan_regeneration,
@@ -180,7 +245,16 @@ def run_domain_command(
     *,
     ensure_dict_fn: Callable[[Path], None],
 ) -> int:
-    """执行不依赖根 CLI 回调的领域命令。"""
+    """分发 Dictionary、Core、指标、晋升、Profile 重校准或重生成命令。
+
+    Args:
+        args: 根 Memory 解析器生成的命令参数。
+        root: 本次命令使用的 Memory 根目录。
+        ensure_dict_fn: Note 迁移写入后收敛 Dictionary 的函数。
+
+    Returns:
+        具体命令的返回码；无法识别的命令返回 2。
+    """
     if args.cmd in {"dict-rebuild", "dict-check", "migrate"}:
         return _run_dictionary_command(args, root, ensure_dict_fn)
     if args.cmd == "core":

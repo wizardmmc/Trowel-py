@@ -49,6 +49,12 @@ _WS_SLASH = re.compile(r"[\s/]+")
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any] | None, str]:
+    """拆分 Markdown 开头的 YAML frontmatter 和正文。
+
+    仅接受各占一行的 ``---`` 起止标记。缺少有效起止标记时返回
+    ``(None, 原文)``；YAML 无法解析或解析结果不是映射时返回
+    ``(None, 结束标记后的正文)``。
+    """
 
     if not text.startswith("---"):
         return None, text
@@ -71,6 +77,10 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any] | None, str]:
 
 
 def _dump_frontmatter(fm: dict[str, Any], body: str) -> str:
+    """按映射插入顺序序列化 YAML，并原样追加 Markdown 正文。
+
+    输出固定使用各占一行的 ``---`` 起止标记、块式 YAML 和 Unicode 文本。
+    """
 
     dumped = yaml.safe_dump(
         fm, sort_keys=False, allow_unicode=True, default_flow_style=False
@@ -79,7 +89,10 @@ def _dump_frontmatter(fm: dict[str, Any], body: str) -> str:
 
 
 def _coerce_meta_str(value: object) -> str:
-    """把 YAML 自动解析的日期恢复为稳定 ISO 字符串。"""
+    """把 YAML 日期转为 ISO 文本，并把其他值转为字符串。
+
+    ``datetime.date`` 及其子类使用 ``isoformat()``；其他假值统一变为空字符串。
+    """
 
     if isinstance(value, datetime.date):
         return value.isoformat()
@@ -87,12 +100,21 @@ def _coerce_meta_str(value: object) -> str:
 
 
 def _safe_snapshot_name(value: object) -> str:
+    """把元数据值整理为 Profile 快照文件名片段。
+
+    斜杠、反斜杠和 NUL 字节序列替换为下划线，再去掉两端空白与开头句点；
+    结果为空时返回 ``unknown``。
+    """
 
     text = re.sub(r"[\\/\x00]+", "_", _coerce_meta_str(value)).strip().lstrip(".")
     return text or "unknown"
 
 
 def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:
+    """按固定顺序放置已知 Note 字段，再保留调用方的扩展字段。
+
+    名称以 ``__`` 开头的内部字段不会进入 frontmatter；扩展字段保持输入顺序。
+    """
 
     fm: dict[str, Any] = {k: entry[k] for k in _NOTE_KEY_ORDER if k in entry}
     for key, val in entry.items():
@@ -102,7 +124,14 @@ def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
-    """缺失 status 的旧 note 继续按 retired 字段解释生命周期。"""
+    """把 Note frontmatter 和正文转换为值对象。
+
+    frontmatter 缺失或 ``type`` 不是 ``note`` 时返回 None。假值 ``status`` 按
+    旧 ``retired`` 布尔字段恢复为 ``retired`` 或 ``active``；未知 status
+    不在此处校验。数值字段通过 ``int()`` 转换，无法转换时异常直接传播；
+    derivation 条目仅在 ``derivation_from_dict()`` 返回 None 时跳过，其余异常
+    继续传播。
+    """
     if not fm or fm.get("type") != "note":
         return None
 
@@ -149,6 +178,11 @@ def _note_from_fm(fm: dict[str, Any] | None, body: str = "") -> Note | None:
 
 
 def _diary_from_fm(fm: dict[str, Any] | None, body: str = "") -> Diary | None:
+    """把 Diary frontmatter 和正文转换为值对象。
+
+    frontmatter 缺失或 ``type`` 不是 ``diary`` 时返回 None；字段值不在此处
+    校验，缺失的 layer 按 ``day`` 处理。
+    """
     if not fm or fm.get("type") != "diary":
         return None
     return Diary(
@@ -162,6 +196,11 @@ def _diary_from_fm(fm: dict[str, Any] | None, body: str = "") -> Diary | None:
 
 
 def _core_item_from_dict(d: object) -> CoreItem | None:
+    """把映射转换为 Core 条目，非映射输入返回 None。
+
+    文本字段会调用 ``str()``，缺失的 scope 和 status 分别使用
+    ``high-risk`` 与 ``seed``；枚举取值不在此处校验。
+    """
 
     if not isinstance(d, dict):
         return None
@@ -175,7 +214,11 @@ def _core_item_from_dict(d: object) -> CoreItem | None:
 
 
 def _matches(note: Note, filter: dict[str, Any]) -> bool:
-    """保留 retired 过滤别名，供旧调用方跨迁移期使用。"""
+    """判断 Note 是否同时满足支持的筛选条件。
+
+    ``status`` 执行精确比较，``retired`` 作为布尔兼容别名映射到 status，
+    ``tag`` 要求标签存在；同时提供多个条件时必须全部满足，未知键被忽略。
+    """
 
     if "status" in filter and note.status != filter["status"]:
         return False
@@ -191,6 +234,12 @@ def _matches(note: Note, filter: dict[str, Any]) -> bool:
 
 
 def _slugify(title: str) -> str:
+    """把 Note 标题规范化为文件 stem。
+
+    首尾空白先移除，连续空白或 ``/`` 替换为连字符，再删除
+    ``<>:"\\|?*`` 和 ASCII ``0x00``–``0x1F`` 控制字符；结果为空时返回
+    ``untitled``。
+    """
 
     s = _WS_SLASH.sub("-", title.strip())
     s = _ILLEGAL.sub("", s)

@@ -1,3 +1,5 @@
+"""把 Task 生命周期事件折叠为当前 TaskState。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -26,6 +28,8 @@ def _update_task(
     current: TaskState,
     **updates: Any,
 ) -> Snapshot:
+    """复制当前 TaskState 并替换快照中的同 ID Task。"""
+
     return _replace_task(snap, task_id, replace(current, **updates))
 
 
@@ -34,6 +38,8 @@ def task_from_created(
     *,
     task_state_factory: Callable[..., TaskState],
 ) -> TaskState:
+    """从 task.created 事件构造初始 TaskState。"""
+
     p = event.payload
     return task_state_factory(
         task_id=p["task_id"],
@@ -56,6 +62,8 @@ def task_from_created(
 
 
 def _find_task(snap: Snapshot, task_id: str | None) -> TaskState | None:
+    """在快照中查找第一个指定 ID 的 Task。"""
+
     if task_id is None:
         return None
     return next((task for task in snap.tasks if task.task_id == task_id), None)
@@ -64,6 +72,8 @@ def _find_task(snap: Snapshot, task_id: str | None) -> TaskState | None:
 def _replace_task(
     snap: Snapshot, task_id: str | None, new_state: TaskState
 ) -> Snapshot:
+    """替换快照中全部同 ID Task，缺少 ID 时保持原样。"""
+
     if task_id is None:
         return snap
     # 畸形快照出现重复 ID 时沿用旧 reducer 语义，替换全部匹配位置。
@@ -76,6 +86,8 @@ def _replace_task(
 
 
 def _waiting_from_payload(p: dict[str, Any]) -> WaitingCondition:
+    """从事件 payload 恢复 Task 等待条件。"""
+
     raw_subtype = p.get("subtype")
     try:
         subtype = WaitingSubtype(raw_subtype) if raw_subtype else None
@@ -99,6 +111,8 @@ def _waiting_from_payload(p: dict[str, Any]) -> WaitingCondition:
 
 
 def _apply_task_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """应用普通 Task 状态变化，并在离开等待态时清除条件。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -123,6 +137,8 @@ def _apply_task_status_change(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_constraint_appended(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """幂等追加一条约束，不覆盖原始目标。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -139,6 +155,8 @@ def _apply_task_constraint_appended(snap: Snapshot, event: EventEnvelope) -> Sna
 
 
 def _apply_task_warm_changed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """应用 Task 的 warm 启用状态。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -152,6 +170,8 @@ def _apply_task_warm_changed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_warm_rank_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """应用 Task 在 warm 集合中的显式顺序。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -165,6 +185,8 @@ def _apply_task_warm_rank_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_waiting_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Task 设为事件声明的等待状态和条件。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -181,6 +203,8 @@ def _apply_task_waiting_set(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_waiting_cleared(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """清除 Task 等待条件并恢复为 ready。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -196,6 +220,8 @@ def _apply_task_waiting_cleared(snap: Snapshot, event: EventEnvelope) -> Snapsho
 
 
 def _apply_task_authorization_changed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """应用用户确认的新授权范围。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -209,6 +235,8 @@ def _apply_task_authorization_changed(snap: Snapshot, event: EventEnvelope) -> S
 
 
 def _apply_task_completed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """记录完成证据，并把 Task 结束为 done。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -232,6 +260,8 @@ def _apply_task_completed(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_cancelled(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """把 Task 结束为 cancelled，并释放 warm 和等待状态。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap
@@ -248,6 +278,8 @@ def _apply_task_cancelled(snap: Snapshot, event: EventEnvelope) -> Snapshot:
 
 
 def _apply_task_error_recorded(snap: Snapshot, event: EventEnvelope) -> Snapshot:
+    """记录不可自动重试的错误，并把 Task 结束为 error。"""
+
     current = _find_task(snap, event.task_id)
     if current is None:
         return snap

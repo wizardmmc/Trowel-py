@@ -19,6 +19,19 @@ def register_session(
     session_kind: str,
     registrar: SessionRegistrar | None,
 ) -> None:
+    """将 CC 会话、Trowel 会话 ID 和 transcript 路径登记到 Memory 会话库。
+
+    未注入 registrar 时打开默认 Memory 数据库，登记后始终关闭连接。
+
+    Args:
+        cc_session_id: CC 返回的原生会话 ID。
+        trowel_session_id: Trowel 分配的会话 ID。
+        workdir: CC 会话使用的工作目录。
+        jsonl_path: CC 保存该会话 transcript 的 JSONL 路径。
+        session_kind: 会话来源，例如 `user` 或 `delegate`。
+        registrar: 接收会话记录的注册器；`None` 表示使用默认 Memory 数据库。
+    """
+
     from trowel_py.memory.sessions_repo import SessionRecord
 
     now = datetime.now()
@@ -54,6 +67,17 @@ def update_completed(
     jsonl_path: str,
     registrar: SessionRegistrar | None,
 ) -> None:
+    """将 transcript 当前字节数保存为该 CC 会话的 completed 水位。
+
+    transcript 不存在或无法读取大小时保存 0。未注入 registrar 时使用默认
+    Memory 数据库，并在更新后始终关闭连接。
+
+    Args:
+        cc_session_id: 要更新的原生 CC 会话 ID。
+        jsonl_path: 已完整处理到轮次边界的 transcript 文件路径。
+        registrar: 接收水位更新的注册器；`None` 表示使用默认 Memory 数据库。
+    """
+
     try:
         completed_bytes = os.path.getsize(jsonl_path)
     except OSError:

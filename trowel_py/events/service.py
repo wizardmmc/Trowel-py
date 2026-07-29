@@ -1,3 +1,5 @@
+"""组装游戏状态，选择并执行事件。"""
+
 import logging
 import random
 from datetime import datetime
@@ -24,6 +26,8 @@ def build_game_state(
     review_repo: ReviewRepository,
     now: datetime,
 ) -> GameState:
+    """汇总玩家、卡片和复习数据，供事件选择与处理器判断。"""
+
     player = player_repo.find_or_create()
     all_cards = card_repo.find_all()
     due = review_repo.find_due(now.isoformat())
@@ -46,6 +50,8 @@ def trigger_event(
     now: datetime,
     rng: random.Random,
 ) -> EventLog | None:
+    """选择并执行一个可触发事件，发放奖励后返回事件日志。"""
+
     state = build_game_state(player_repo, card_repo, review_repo, now)
     cooldowns = event_repo.get_last_triggered_map()
     event_type = select_event(state, DEFAULT_EVENT_CONFIGS, cooldowns, now, rng)
@@ -74,4 +80,6 @@ def trigger_event(
 
 
 def get_history(event_repo: EventRepository, limit: int = 20) -> list[EventLog]:
+    """读取最近的事件日志。"""
+
     return event_repo.get_recent(limit)

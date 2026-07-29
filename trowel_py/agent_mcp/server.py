@@ -1,3 +1,5 @@
+"""通过 stdio MCP 提供阻塞委派和可交互委派工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,15 +36,34 @@ T = TypeVar("T")
 
 
 class DelegationError(RuntimeError):
+    """表示委派请求无效或执行失败。"""
+
     pass
 
 
 class DelegationCleanupError(DelegationError):
+    """表示无法确认子会话已中断，因此保留其绑定。"""
+
     pass
 
 
 @dataclass(frozen=True)
 class ParentContext:
+    """保存父会话身份，以及委派时必须复核或继承的配置。
+
+    Attributes:
+        session_id: 发起委派的 Trowel 会话 ID。
+        runtime: 父会话由 Claude Code 还是 Codex 运行，分别记录为
+            "claude_code" 或 "codex"。
+        workdir: 子会话必须继承的父会话工作目录。
+        permission: 环境快照或复核结果中记录的父会话权限模式；Claude Code 为
+            "bypassPermissions"，Codex 为 "danger-full-access"。
+        memory_enabled: 是否向子会话提供父会话可用的 Memory 内容和读取入口。
+        profile_enabled: 是否向子会话提供父会话可用的用户画像。
+        self_enabled: 是否向子会话提供父会话可用的 Trowel 持续身份信息。
+        delegation_depth: 父会话的委派深度；只有 0 允许继续委派。
+    """
+
     session_id: str
     runtime: str
     workdir: str
@@ -55,6 +76,22 @@ class ParentContext:
 
 @dataclass(frozen=True)
 class DelegationResult:
+    """保存一次阻塞委派的子会话结果和清理状态。
+
+    Attributes:
+        delegation_id: 本次阻塞委派的 ID。
+        parent_session_id: 通过当前绑定复核的父会话 ID。
+        child_session_id: Trowel 为子会话分配的 ID。
+        runtime: 子会话使用的 runtime。
+        answer: 按到达顺序拼接的子会话 text 事件内容。
+        terminal_event: 从子会话事件流观察到的成功终态类型。
+        event_counts: 按事件类型统计的子会话事件数量。
+        child_binding: 创建响应中的子会话绑定；成功结束后若能读取最新绑定，
+            则替换为该绑定。
+        cleanup_status: 子会话的清理结果，为 "deleted" 或 "preserved"。
+        cleanup_error: 删除失败的原因；成功删除时为 None。
+    """
+
     delegation_id: str
     parent_session_id: str
     child_session_id: str
@@ -67,6 +104,12 @@ class DelegationResult:
     cleanup_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """转换为分别记录观测事实、子会话回答和清理结果的工具响应。
+
+        Returns:
+            包含父子会话标识、观测事实、子会话回答和清理结果的字典。
+        """
+
         return {
             "delegation_id": self.delegation_id,
             "parent": {"trowel_session_id": self.parent_session_id},
@@ -94,6 +137,19 @@ class DelegationResult:
 
 
 def _bool_env(name: str, *, default: bool) -> bool:
+    """读取布尔环境变量，忽略首尾空白和大小写，只接受 true 或 false。
+
+    Args:
+        name: 要读取的环境变量名。
+        default: 环境变量不存在时使用的值。
+
+    Returns:
+        环境变量表示的布尔值，或变量不存在时的默认值。
+
+    Raises:
+        DelegationError: 环境变量存在，但值不是 true 或 false。
+    """
+
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -106,6 +162,8 @@ def _bool_env(name: str, *, default: bool) -> bool:
 
 
 def _parent_context() -> ParentContext:
+    """从环境变量读取父会话配置快照，并拒绝无效配置、权限模式不足或递归委派。"""
+
     session_id = os.environ.get("TROWEL_PARENT_SESSION_ID", "").strip()
     runtime = os.environ.get("TROWEL_PARENT_RUNTIME", "").strip()
     workdir_raw = os.environ.get("TROWEL_PARENT_WORKDIR", "").strip()
@@ -142,6 +200,8 @@ def _parent_context() -> ParentContext:
 
 
 def _server_base_url() -> str:
+    """读取 Trowel Agent API 地址，并要求使用有效的 HTTP 或 HTTPS URL。"""
+
     raw = os.environ.get("TROWEL_AGENT_BASE_URL", "").strip()
     if not raw:
         raise DelegationError("TROWEL_AGENT_BASE_URL is required")
@@ -158,6 +218,18 @@ def _create_body(
     model: str | None,
     effort: str | None,
 ) -> dict[str, Any]:
+    """构建不会递归委派、不会进入自动记忆提炼的子会话请求。
+
+    Args:
+        context: 已复核的父会话事实和功能开关。
+        runtime: 子会话使用的 runtime，为 "claude_code" 或 "codex"。
+        model: 请求子会话使用的模型；为 None 时不指定。
+        effort: 请求子会话使用的思考强度；为 None 时不指定。
+
+    Returns:
+        可发送给 Agent API 的子会话创建请求体。
+    """
+
     if runtime not in {"claude_code", "codex"}:
         raise ValueError(f"unsupported runtime: {runtime}")
     body: dict[str, Any] = {
@@ -184,6 +256,13 @@ def _create_body(
 
 
 def _binding_bool(data: dict[str, Any], field: str) -> bool:
+    """从父会话绑定记录中读取一个必须存在的布尔字段。
+
+    Args:
+        data: Agent API 返回的父会话绑定信息。
+        field: 要读取的字段名。
+    """
+
     value = data.get(field)
     if not isinstance(value, bool):
         raise DelegationError(f"parent binding has invalid {field}")
@@ -194,6 +273,18 @@ async def _verified_parent_context(
     client: httpx.AsyncClient,
     context: ParentContext,
 ) -> ParentContext:
+    """用当前绑定复核环境快照中的父会话身份、工作目录、委派资格和授权条件。
+
+    Args:
+        client: 用于读取父会话绑定的 Agent API 客户端。
+        context: MCP 进程启动时从环境变量取得的父会话配置快照。
+
+    Returns:
+        经当前绑定复核的父会话上下文。身份、runtime 和工作目录必须与环境
+        快照一致；Codex 的 sandbox、approval 和网络状态或 Claude Code 的
+        权限模式必须继续满足委派要求；功能开关取当前绑定值。
+    """
+
     response = await client.get(f"/api/agent/sessions/{context.session_id}")
     response.raise_for_status()
     payload = response.json()
@@ -249,6 +340,8 @@ async def _verified_parent_context(
 
 
 def _event_error(event: dict[str, Any]) -> str:
+    """从子会话错误终态中提取供父会话显示的原因。"""
+
     payload = event.get("payload")
     if isinstance(payload, dict):
         errors = payload.get("errors")
@@ -260,16 +353,22 @@ def _event_error(event: dict[str, Any]) -> str:
 
 
 async def _interrupt_session(client: httpx.AsyncClient, session_id: str) -> None:
+    """请求 Agent API 中断指定子会话。"""
+
     response = await client.post(f"/api/agent/sessions/{session_id}/interrupt")
     response.raise_for_status()
 
 
 async def _delete_session(client: httpx.AsyncClient, session_id: str) -> None:
+    """请求 Agent API 移除指定子会话，使 Trowel 不再管理它。"""
+
     response = await client.delete(f"/api/agent/sessions/{session_id}")
     response.raise_for_status()
 
 
 def _cleanup_timeout_seconds() -> float:
+    """读取委派清理时限的秒数，默认 10 秒且必须为正数。"""
+
     value = float(os.environ.get("TROWEL_DELEGATE_CLEANUP_TIMEOUT", "10"))
     if value <= 0:
         raise ValueError("TROWEL_DELEGATE_CLEANUP_TIMEOUT must be positive")
@@ -277,6 +376,18 @@ def _cleanup_timeout_seconds() -> float:
 
 
 async def _finish_cleanup(operation: Callable[[], Awaitable[T]]) -> T:
+    """等待一次清理操作完成，即使外层任务在等待期间被取消。
+
+    本函数不会重新抛出外层任务在等待期间收到的取消异常；清理操作自身的
+    异常、取消和超时仍向上传播。
+
+    Args:
+        operation: 尚未启动的异步清理操作。
+
+    Returns:
+        清理操作的返回值。
+    """
+
     timeout = _cleanup_timeout_seconds()
     cleanup = asyncio.create_task(asyncio.wait_for(operation(), timeout=timeout))
     while True:
@@ -293,6 +404,17 @@ async def _finish_cleanup(operation: Callable[[], Awaitable[T]]) -> T:
 async def _read_child_binding(
     client: httpx.AsyncClient, session_id: str, fallback: dict[str, Any]
 ) -> dict[str, Any]:
+    """读取子会话结束后的绑定信息，读取失败时保留已有信息。
+
+    Args:
+        client: 用于读取子会话的 Agent API 客户端。
+        session_id: 子会话的 Trowel 会话 ID。
+        fallback: 创建子会话时已经取得的绑定信息。
+
+    Returns:
+        最新绑定信息；请求或响应无效时返回 fallback。
+    """
+
     try:
         response = await client.get(f"/api/agent/sessions/{session_id}")
         response.raise_for_status()
@@ -313,6 +435,31 @@ async def delegate_agent(
     model: str | None = None,
     effort: str | None = None,
 ) -> DelegationResult:
+    """执行一次阻塞委派，等待子会话终态，并在返回或抛错前尝试清理。
+
+    创建子会话前会用 Agent API 复核父会话的当前绑定。调用被取消或委派
+    失败且尚未观察到终态时，先中断子会话；中断成功后才允许删除，中断
+    失败则保留绑定并抛出 DelegationCleanupError。成功委派后的删除失败
+    仍返回回答，并把清理状态标为 "preserved"；委派已经失败时，删除错误
+    附加到原异常。
+
+    Args:
+        client: 用于复核父会话并管理子会话的 Agent API 客户端。
+        context: MCP 进程启动时从环境变量取得的父会话配置快照。
+        runtime: 子会话使用的 runtime，为 "claude_code" 或 "codex"。
+        task: 交给子会话执行的任务。
+        model: 请求子会话使用的模型；为 None 时不指定。
+        effort: 请求子会话使用的思考强度；为 None 时不指定。
+
+    Returns:
+        子会话的成功回答、观察事实、最终绑定和清理结果。
+
+    Raises:
+        ValueError: 任务为空或子会话 runtime 不受支持。
+        DelegationError: 父会话无权委派、子会话响应无效或返回失败终态。
+        DelegationCleanupError: 中断失败，无法确认子会话可以安全移除。
+    """
+
     if not task.strip():
         raise ValueError("task must not be empty")
     delegation_id = uuid.uuid4().hex
@@ -421,6 +568,8 @@ async def delegate_agent(
 
 
 def _tool() -> types.Tool:
+    """定义一次性阻塞委派工具及其输入格式。"""
+
     return types.Tool(
         name=_TOOL_DELEGATE,
         description=(
@@ -447,6 +596,8 @@ def _tool() -> types.Tool:
 
 
 def _interactive_tools() -> list[types.Tool]:
+    """定义启动、回答、查询和关闭交互委派的四个工具。"""
+
     return [
         types.Tool(
             name=_TOOL_DELEGATE_START,
@@ -520,12 +671,16 @@ def _interactive_tools() -> list[types.Tool]:
 
 
 def _tools() -> list[types.Tool]:
+    """按固定顺序组装并校验 Agent MCP 的全部工具。"""
+
     tools = [_tool(), *_interactive_tools()]
     assert tuple(tool.name for tool in tools) == AGENT_MCP_TOOL_NAMES
     return tools
 
 
 def _text(payload: dict[str, Any]) -> list[types.TextContent]:
+    """把字典编码为单个 JSON MCP 文本结果。"""
+
     return [
         types.TextContent(
             type="text", text=json.dumps(payload, ensure_ascii=False)
@@ -537,6 +692,8 @@ def _interactive_parent(
     broker: InteractiveBroker,
     delegation_id: str,
 ) -> ParentContext:
+    """重新读取并校验 MCP 环境中的父会话配置，再确认交互委派句柄属于该会话。"""
+
     context = _parent_context()
     if broker.parent_session_id(delegation_id) != context.session_id:
         raise DelegationError("interactive delegation does not belong to this parent")
@@ -544,14 +701,39 @@ def _interactive_parent(
 
 
 def _build_server(broker: InteractiveBroker) -> Server:
+    """创建 MCP 服务，并注册工具列表和调用分发。
+
+    Args:
+        broker: 持有进程内交互委派状态的 broker。
+
+    Returns:
+        已注册委派工具处理器的 MCP 服务。
+    """
+
     server = Server(_SERVER_NAME)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
+        """返回当前 MCP 服务发布的全部委派工具。"""
+
         return _tools()
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+        """校验工具参数并分发到阻塞或交互委派实现。
+
+        阻塞委派、交互委派启动和回答操作会通过 Agent API 复核父会话的当前
+        绑定；查询和关闭操作只重新校验 MCP 环境中的父会话配置和句柄归属，
+        不读取 Agent API 当前绑定。
+
+        Args:
+            name: MCP 客户端请求调用的工具名称。
+            arguments: 工具调用携带的结构化参数。
+
+        Returns:
+            编码为 JSON 文本的工具结果。
+        """
+
         if name == _TOOL_DELEGATE:
             async with httpx.AsyncClient(
                 base_url=_server_base_url(), timeout=httpx.Timeout(None)
@@ -627,6 +809,8 @@ def _build_server(broker: InteractiveBroker) -> Server:
 
 
 async def main() -> None:
+    """运行 stdio MCP 服务，并在退出时尝试清理进程仍在管理的交互委派。"""
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     broker = InteractiveBroker(
         base_url=_server_base_url(), cleanup_timeout=_cleanup_timeout_seconds()

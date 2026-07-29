@@ -1,4 +1,8 @@
-"""Codex command 与 MCP tool item 的纯转换。"""
+"""把 Codex 命令执行和 MCP 工具通知转换为统一事件条目。
+
+调用方注入事件类型、校验器和构造器，使 translator 的兼容入口仍能在调用时替换
+这些依赖。
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,11 @@ def mcp_tool_name(
     isinstance_fn: Callable[[Any, Any], bool],
     str_type: Any,
 ) -> str:
+    """用非空字符串形式的 MCP 服务名和工具名生成显示名称。
+
+    只有一项符合条件时直接返回该项；两项都不符合时返回 ``"mcp"``。
+    """
+
     parts = [
         str_type(part)
         for part in (server, tool)
@@ -35,6 +44,13 @@ def command_actions(
     action_fields: Mapping[str, tuple[str, ...]],
     tuple_type: Callable[[Any], tuple[dict[str, Any], ...]],
 ) -> tuple[dict[str, Any], ...]:
+    """校验命令条目的 ``commandActions`` 并转换为公开动作列表。
+
+    ``item`` 是原生命令条目，``method`` 只用于标明协议异常来自哪种通知。
+    ``action_fields`` 定义允许的动作类型和公开字段；结构错误或未知类型通过
+    ``protocol_violation_type`` 拒绝，允许但缺失的字段保留为 None。
+    """
+
     raw_actions = require_fn(item, "commandActions", method)
     if not isinstance_fn(raw_actions, list_type):
         raise protocol_violation_type(
@@ -82,6 +98,12 @@ def command_started_item(
         tuple[dict[str, Any], ...],
     ],
 ) -> Any:
+    """把 ``item/started`` 中的命令执行条目转为统一的工具启动条目。
+
+    ``params`` 是通知参数，``item`` 是其中的 ``commandExecution`` 条目。
+    ``threadId``、``turnId`` 或 ``commandActions`` 缺失时由注入的校验器拒绝。
+    """
+
     return translated_item_type(
         type=event_type,
         thread_id=as_str_fn(require_fn(params, "threadId", "item/started")),
@@ -113,6 +135,12 @@ def command_completed_item(
         tuple[dict[str, Any], ...],
     ],
 ) -> Any:
+    """把 ``item/completed`` 中的命令执行条目转为统一的工具完成条目。
+
+    ``params`` 是通知参数，``item`` 是其中的 ``commandExecution`` 条目。
+    ``threadId``、``turnId`` 或 ``commandActions`` 缺失时由注入的校验器拒绝。
+    """
+
     return translated_item_type(
         type=event_type,
         thread_id=as_str_fn(require_fn(params, "threadId", "item/completed")),
@@ -145,7 +173,14 @@ def mcp_tool_started_item(
     item_kind: Any,
     mcp_tool_name_fn: Callable[[Any, Any], str],
 ) -> Any:
-    # 必填字段的读取顺序属于协议异常契约。
+    """把 ``item/started`` 中的 MCP 调用转为统一的工具启动条目。
+
+    ``params`` 是通知参数，``item`` 是其中的 ``mcpToolCall`` 条目。
+    ``threadId``、``turnId``、``server``、``tool``、``id`` 或 ``status`` 缺失时
+    由注入的校验器拒绝。
+    """
+
+    # 先读取服务名和工具名，使多个必填字段缺失时的首个错误保持稳定。
     server = require_fn(item, "server", "item/started(mcpToolCall)")
     tool = require_fn(item, "tool", "item/started(mcpToolCall)")
     return translated_item_type(
@@ -184,7 +219,14 @@ def mcp_tool_completed_item(
     item_kind: Any,
     mcp_tool_name_fn: Callable[[Any, Any], str],
 ) -> Any:
-    # 必填字段的读取顺序属于协议异常契约。
+    """把 ``item/completed`` 中的 MCP 调用转为统一的工具完成条目。
+
+    ``params`` 是通知参数，``item`` 是其中的 ``mcpToolCall`` 条目。
+    ``threadId``、``turnId``、``server``、``tool``、``id`` 或 ``status`` 缺失时
+    由注入的校验器拒绝。
+    """
+
+    # 先读取服务名和工具名，使多个必填字段缺失时的首个错误保持稳定。
     server = require_fn(item, "server", "item/completed(mcpToolCall)")
     tool = require_fn(item, "tool", "item/completed(mcpToolCall)")
     return translated_item_type(

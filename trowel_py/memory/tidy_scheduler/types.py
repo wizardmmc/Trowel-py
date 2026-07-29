@@ -1,4 +1,4 @@
-"""Tidy scheduler 的类型与默认时间。"""
+"""定义 Tidy 调度器使用的函数类型、周月调度范围和默认触发时间。"""
 
 from __future__ import annotations
 

@@ -10,7 +10,10 @@ from trowel_py.pet.types import PetMood
 
 @dataclass(frozen=True)
 class PetBrainInput:
-    """`context` 预留给其他实现；模板实现有意忽略它。"""
+    """生成宠物回应所需的心情和可选上下文。
+
+    `context` 预留给其他实现；模板实现有意忽略它。
+    """
 
     mood: PetMood
     context: dict[str, str] | None = None
@@ -18,13 +21,20 @@ class PetBrainInput:
 
 @dataclass(frozen=True)
 class PetResponse:
+    """宠物回应的文本和回应时心情。"""
+
     text: str
     mood: PetMood
 
 
 class PetBrain(Protocol):
+    """根据当前心情生成宠物回应的统一接口。"""
+
     def generate_response(self, input: PetBrainInput, rand: float) -> PetResponse:
-        """`rand` 由调用方注入，使模板选择可确定重放。"""
+        """根据宠物状态生成一句回应。
+
+        `rand` 由调用方注入，使模板选择可确定重放。
+        """
         ...
 
 
@@ -51,7 +61,10 @@ _DIALOGUE_TEMPLATES: dict[PetMood, tuple[str, ...]] = {
 
 
 class TemplateBrain:
+    """从每种心情的固定文本中选择宠物回应。"""
+
     def generate_response(self, input: PetBrainInput, rand: float) -> PetResponse:
+        """根据传入的随机值选择并返回一条心情文本。"""
         lines = _DIALOGUE_TEMPLATES[input.mood]
         index = min(int(rand * len(lines)), len(lines) - 1)
         return PetResponse(text=lines[index], mood=input.mood)

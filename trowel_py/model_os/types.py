@@ -18,6 +18,8 @@ class Provenance(str, Enum):
 
     @property
     def strength(self) -> int:
+        """返回状态归约时使用的来源优先级。"""
+
         order = {
             Provenance.USER_DECISION: 4,
             Provenance.MACHINE_OBSERVATION: 3,
@@ -29,6 +31,8 @@ class Provenance(str, Enum):
 
 
 class WorkItemKind(str, Enum):
+    """Model OS 可调度工作的类别。"""
+
     TASK = "task"
     DEFAULT = "default"
     MAINTENANCE = "maintenance"
@@ -37,6 +41,8 @@ class WorkItemKind(str, Enum):
 
 
 class WorkItemStatus(str, Enum):
+    """WorkItem 从待运行到结束的生命周期状态。"""
+
     PENDING = "pending"
     READY = "ready"
     RUNNING = "running"
@@ -48,6 +54,8 @@ class WorkItemStatus(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """报告 WorkItem 是否已经结束且不再运行。"""
+
         return self in (
             WorkItemStatus.DONE,
             WorkItemStatus.CANCELLED,
@@ -56,12 +64,16 @@ class WorkItemStatus(str, Enum):
 
 
 class TaskOrigin(str, Enum):
+    """Task 最初进入系统的来源。"""
+
     USER_REQUEST = "user_request"
     SELF_INITIATED = "self_initiated"
     ADOPTED_CANDIDATE = "adopted_candidate"
 
 
 class TaskStatus(str, Enum):
+    """Task 的长期推进、等待和结束状态。"""
+
     BACKLOG = "backlog"
     READY = "ready"
     RUNNING = "running"
@@ -74,10 +86,14 @@ class TaskStatus(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """报告 Task 是否已经结束。"""
+
         return self in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ERROR)
 
 
 class SessionPurpose(str, Enum):
+    """原生 Session 承载的工作用途。"""
+
     FOREGROUND = "foreground"
     DEFAULT = "default"
     INCUBATION = "incubation"
@@ -86,6 +102,8 @@ class SessionPurpose(str, Enum):
 
 
 class MemoryEligibility(str, Enum):
+    """原生 Session 内容进入正式 Memory 的资格。"""
+
     ELIGIBLE = "eligible"
     INELIGIBLE = "ineligible"
     ADOPTED = "adopted"
@@ -93,6 +111,8 @@ class MemoryEligibility(str, Enum):
 
 @dataclass(frozen=True)
 class WorkItem:
+    """统一承载 Task、默认态、孵化和维护工作的执行身份。"""
+
     work_item_id: str
     kind: WorkItemKind
     owner_ref: str
@@ -318,6 +338,8 @@ class Task:
 
 
 class EpisodeStatus(str, Enum):
+    """Episode 从启动、活动、等待到结束的生命周期状态。"""
+
     STARTING = "starting"
     ACTIVE = "active"
     YIELD_REQUESTED = "yield_requested"
@@ -332,6 +354,8 @@ class EpisodeStatus(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """报告 Episode 是否已经结束。"""
+
         return self in (EpisodeStatus.CLOSED, EpisodeStatus.FAILED)
 
 
@@ -372,6 +396,8 @@ class SideEffectRecord:
 
 @dataclass(frozen=True)
 class ArtifactRef:
+    """Episode snapshot 引用的一项外部产物。"""
+
     kind: str
     ref: str
 

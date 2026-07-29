@@ -1,3 +1,5 @@
+"""根据已学卡片的复习状态生成成长事件。"""
+
 from typing import TYPE_CHECKING, cast
 
 from trowel_py.events.types import GameState
@@ -14,13 +16,19 @@ if TYPE_CHECKING:
 
 
 class GrowthHandler:
+    """选择一张已学卡片并展示它当前的成长阶段。"""
+
     def can_trigger(self, state: GameState) -> bool:
+        """只允许至少有一张已学卡片时继续执行。"""
+
         if len(state.learned_card_ids) > 0:
             return True
         else:
             return False
 
     def execute(self, state: GameState, deps: EventDependencies) -> EventResult:
+        """随机选择已学卡片，并生成包含成长阶段的事件结果。"""
+
         card_id = deps.rng.choice(state.learned_card_ids)
         # learned_card_ids 来自受外键约束的 FSRS 行，卡片和复习状态必然存在。
         card = cast("Card", deps.card_repo.find_by_id(card_id))

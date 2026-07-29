@@ -1,4 +1,4 @@
-"""组装 CC 原生系统提示词追加内容。"""
+"""从 Memory 文件组装 CC 与 Codex 会话共用的系统提示词追加内容。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from trowel_py.memory.types import Diary
 
 logger = logging.getLogger(__name__)
 
-# 软预算只驱动 diary 降级；core 与 profile 不截断。
+# 软预算只逐层丢弃 Diary；core、profile、L0 和根路径均不截断。
 TOKEN_BUDGET = 30000
 
 
@@ -25,7 +25,25 @@ def build_memory_injection(
     memory_enabled: bool = True,
     profile_enabled: bool = True,
 ) -> str:
-    """按 core、profile、L0、diary、memory root 顺序组装注入。"""
+    """按开关组装 core、profile、L0、Diary 和 Memory 根路径。
+
+    ``profile_enabled`` 独立控制画像；``memory_enabled`` 控制其余四节，并在
+    开启时保证根路径和 search→read 指针存在。完整注入超过软预算时依次丢弃
+    早期 monthly、近半年 monthly、本月 weekly，并始终保留本周 daily。
+    core、profile、L0 和根路径不截断；降级后仍超预算时记录告警并返回超预算
+    正文。
+
+    Args:
+        now: 用于划分 Diary 时间窗口的 ISO 日期；非法值只跳过 Diary。
+        root: Memory 根目录；为 ``None`` 时按配置和默认规则解析。
+        memory_enabled: 是否注入 core、L0、Diary 和 Memory 根路径。
+        profile_enabled: 是否注入用户画像。
+
+    Returns:
+        以空行分隔的系统提示词追加文本。``memory_enabled`` 关闭时只返回
+        非空画像；画像也关闭或为空时返回空字符串。``memory_enabled`` 开启
+        时至少返回 Memory 根路径章节。
+    """
     store = MemoryStore(root if root is not None else resolve_memory_root())
     sections: list[str] = []
     if memory_enabled:
@@ -44,9 +62,9 @@ def build_memory_injection(
         return ""
     if not memory_enabled:
         return "\n\n".join(sections)
-    # memory 开启时始终给出根路径与 search→read 指针。
+    # 即使没有可注入内容，Memory 开启时也必须暴露主动检索入口。
     root_section = _render_memory_root(store.root)
-    # 超预算时只逐层丢弃低优先级 diary，本周 daily 最后保留。
+    # 从完整四层开始重算，超预算时逐层移除最低优先级的 Diary。
     body = "\n\n".join(sections + [root_section])
     for layers in (4, 3, 2, 1):
         diary = _render_diary(store, now, include_layers=layers)
@@ -66,7 +84,7 @@ def build_memory_injection(
 
 
 def _render_core(store: MemoryStore) -> str:
-    """渲染未退休的 layer-one 规则。"""
+    """按存储顺序编号渲染所有未退休的 Core 条目。"""
     items = [it for it in store.load_core_items() if it.status != "retired"]
     if not items:
         return ""
@@ -77,7 +95,7 @@ def _render_core(store: MemoryStore) -> str:
 
 
 def _render_profile(store: MemoryStore) -> str:
-    """按标准字段顺序渲染非空画像维度。"""
+    """按标准字段顺序渲染正文非空的画像维度。"""
     p = store.load_profile()
     blocks = [
         f"## {_FIELD_TO_TITLE[field]}\n{getattr(p, field)}"
@@ -90,7 +108,7 @@ def _render_profile(store: MemoryStore) -> str:
 
 
 def _render_l0(store: MemoryStore) -> str:
-    """渲染 dictionary L0 根索引。"""
+    """去除首尾空白后渲染 Dictionary L0；空索引不产生章节。"""
     text = store.load_dictionary_L0().strip()
     if not text:
         return ""
@@ -98,7 +116,7 @@ def _render_l0(store: MemoryStore) -> str:
 
 
 def _render_memory_root(root: Path) -> str:
-    """渲染 memory 根路径与检索工具用法。"""
+    """渲染绝对 Memory 根路径和 search→read 使用约束。"""
     return (
         "# memory 根路径 + 检索\n"
         f"根：{root.resolve()}\n"
@@ -108,7 +126,15 @@ def _render_memory_root(root: Path) -> str:
 
 
 def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> str:
-    """按近期层级渲染 diary；非法日期只跳过本节。"""
+    """按四级时间窗口渲染 Diary。
+
+    第一级包含 ``now`` 所在 ISO 周的 daily；第二级增加周一落在 ``now`` 所在
+    月份、且周期不是本周的 weekly；第三级增加周期落在 180 天前所在月份
+    （含）至本月（不含）的 monthly；第四级从更早的 monthly 中按周期字符串
+    倒序选前三条。Weekly 和 Monthly 的周期优先使用 ``period``，为空时回退
+    到 ``date``。``include_layers`` 小于等于 1 时仍保留第一级，大于 4 不
+    增加内容。非法 ``now`` 会记录告警并返回空字符串。
+    """
     try:
         today = date.fromisoformat(now)
     except ValueError:
@@ -135,7 +161,7 @@ def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> s
         for m in store.load_diary(layer="month")
         if this_month > (m.period or m.date) >= six_months_ago
     ]
-    # 早期 monthly 只保留最近三条，避免随月份无限增长。
+    # 更早 monthly 只取周期字符串倒序的前三条，限制长期增长。
     earlier_monthlies = sorted(
         [
             m
@@ -163,7 +189,7 @@ def _render_diary(store: MemoryStore, now: str, *, include_layers: int = 4) -> s
 
 
 def _format_diary(entries: list[Diary]) -> str:
-    """按日期倒序渲染 diary 条目。"""
+    """按 ``date`` 文本倒序渲染列表项，并清理正文首尾空白。"""
     lines: list[str] = []
     for d in sorted(entries, key=lambda e: e.date, reverse=True):
         body = d.body.strip()
@@ -172,6 +198,6 @@ def _format_diary(entries: list[Diary]) -> str:
 
 
 def _estimate_tokens(text: str) -> int:
-    """粗估 token：CJK 每字约 2 个，其余约每 4 字符 1 个。"""
+    """基础 CJK 字符按每字 2 token 计，其余字符总数除以 4 后向下取整。"""
     cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
     return cjk * 2 + (len(text) - cjk) // 4

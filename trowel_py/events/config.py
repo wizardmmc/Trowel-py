@@ -1,4 +1,7 @@
+"""定义各类事件的默认权重、冷却时间和卡片数量门槛。"""
+
 from __future__ import annotations
+
 from trowel_py.events.types import EventConfig
 
 DEFAULT_EVENT_CONFIGS: tuple[EventConfig, ...] = (

@@ -1,3 +1,5 @@
+"""复习状态和单次复习记录的数据模型。"""
+
 from datetime import datetime
 from typing import Literal
 

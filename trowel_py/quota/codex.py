@@ -1,7 +1,8 @@
-"""将 Codex 推送的 ``rate_limit_updated`` 事件折叠为统一额度快照。
+"""把 SessionHub 分发的 Codex 额度事件同步到统一额度读模型。
 
-``primary.resetsAt`` 来自真实录制，单位为秒；统一模型使用毫秒。translator
-只转换外层字段，``primary`` 内仍须按 camelCase 读取。
+Codex 原生通知中的 ``primary.resetsAt`` 是 Unix 秒级时间戳，统一模型的
+``QuotaWindow.resets_at`` 则是 Unix 毫秒时间戳。事件翻译层只转换外层字段；
+``primary`` 内的字段仍保留 Codex 的 camelCase 名称。
 """
 
 from __future__ import annotations
@@ -21,12 +22,12 @@ from trowel_py.quota.types import (
 
 DEFAULT_CODEX_ACCOUNT_ID = "codex"
 
-# turn 结束后不再收到主动推送，旧快照必须标记为过期。
+# SessionHub 的这三类事件都表示当前 turn 已结束，额度快照随之失效。
 _TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
 
 def _as_float(value: Any) -> float | None:
-    """接受有限数值，但拒绝 bool 和 NaN。"""
+    """把 int 或 float 转为 float，但拒绝 bool 和 NaN。"""
 
     if isinstance(value, bool):
         return None
@@ -36,13 +37,25 @@ def _as_float(value: Any) -> float | None:
 
 
 def _now_ms() -> int:
+    """返回当前 Unix 时间戳，单位为毫秒。"""
+
     return int(time.time() * 1000)
 
 
 def parse_codex_rate_limit(
     payload: Mapping[str, Any], *, account_id: str, fetched_at: int
 ) -> QuotaSnapshot:
-    """缺少 ``primary`` 或有效 ``usedPercent`` 时生成 ``NO_DATA`` 快照。"""
+    """把 Codex 额度事件中的 payload 转换为统一额度快照。
+
+    ``primary`` 不是映射，或 ``usedPercent`` 不是 ``int`` 或 ``float``、
+    为 ``bool`` 或 NaN 时，返回不含窗口的 ``NO_DATA`` 快照。
+
+    Args:
+        payload: ``rate_limit_updated`` 事件的额度数据；外层字段已转换为
+            snake_case，``primary`` 内仍保留 Codex 的 camelCase 字段名。
+        account_id: 记录在快照中的 Codex 账号 ID；读模型用它区分账号。
+        fetched_at: 事件处理时的 Unix 时间戳，单位为毫秒。
+    """
 
     primary = payload.get("primary")
     if not isinstance(primary, Mapping):
@@ -69,7 +82,7 @@ def parse_codex_rate_limit(
     resets = primary.get("resetsAt")
     resets_ms: int | None = None
     if isinstance(resets, (int, float)) and not isinstance(resets, bool):
-        resets_ms = int(resets * 1000)  # 秒统一为毫秒。
+        resets_ms = int(resets * 1000)
 
     plan_type = payload.get("plan_type")
     plan_level = plan_type if isinstance(plan_type, str) and plan_type else None
@@ -96,11 +109,27 @@ def make_codex_observer(
     account_id: str = DEFAULT_CODEX_ACCOUNT_ID,
     now_ms: Callable[[], int] | None = None,
 ) -> Callable[[Mapping[str, Any]], None]:
-    """构建同步 SessionHub observer，只折叠额度推送和 turn 终态。"""
+    """构建把 SessionHub 事件同步到额度读模型的处理函数。
+
+    该函数用 ``rate_limit_updated`` 更新快照；收到 ``finished``、
+    ``interrupted`` 或 ``error`` 时，将已有正常快照标记为 ``STALE``。
+
+    Args:
+        read_model: 保存各账号最新额度的进程内读模型。
+        account_id: 写入或标记过期时使用的 Codex 账号 ID。
+        now_ms: 创建快照时写入 ``fetched_at`` 的 Unix 毫秒时钟；为 None 时
+            读取系统时间。
+    """
 
     clock = now_ms or _now_ms
 
     def observe(envelope: Mapping[str, Any]) -> None:
+        """根据一条 SessionHub 事件更新 Codex 额度快照，或把它标记为过期。
+
+        Args:
+            envelope: SessionHub 分发的统一格式会话事件。
+        """
+
         if not isinstance(envelope, Mapping):
             return
         etype = envelope.get("type")

@@ -64,6 +64,8 @@ def _marker(value: Any) -> str:
 
 
 def _looks_like_secret_value(value: Any) -> bool:
+    """判断标量文本是否包含已知密钥、令牌或私网地址形态。"""
+
     if not isinstance(value, str):
         return False
     return any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS)

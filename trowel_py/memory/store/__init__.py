@@ -1,4 +1,8 @@
-"""File-backed memory store 的稳定入口。"""
+"""提供文件型 ``MemoryStore`` 的稳定导入入口。
+
+``MemoryStore`` 是唯一受支持的公开导出；下划线符号为模块拆分前的内部导入
+保留兼容入口，不属于公开 API。
+"""
 
 import logging
 

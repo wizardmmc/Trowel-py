@@ -1,4 +1,4 @@
-"""Weekly v3 的结构化生成、来源校验与预算选择。"""
+"""生成并校验结构化 Weekly，按完整条目控制主摘要与 bypass 预算。"""
 
 from __future__ import annotations
 
@@ -45,12 +45,27 @@ _SYSTEM_PROMPT = (
 
 @dataclass(frozen=True)
 class WeeklySource:
+    """保存一份参与 Weekly 生成的 Daily。
+
+    Attributes:
+        day: Daily 对应的 ISO 日期，也是模型可以引用的来源标识。
+        body: 发送给模型的完整 Daily 正文。
+    """
+
     day: str
     body: str
 
 
 @dataclass(frozen=True)
 class WeeklyItem:
+    """保存一条可追溯到 Daily 日期的 Weekly 主摘要。
+
+    Attributes:
+        type: 条目类型；生成结果只允许 outcome、decision、correction 或 open_loop。
+        text: 写入 Weekly 正文的完整条目文本。
+        source_days: 支持该条目的 Daily 日期，顺序沿用模型输出。
+    """
+
     type: str
     text: str
     source_days: tuple[str, ...]
@@ -58,17 +73,39 @@ class WeeklyItem:
 
 @dataclass(frozen=True)
 class WeeklyBypassItem:
+    """保存一条不进入 Weekly 主摘要的细节。
+
+    Attributes:
+        text: 写入 bypass 文件的完整条目文本。
+        source_days: 支持该条目的 Daily 日期，顺序沿用模型输出。
+    """
+
     text: str
     source_days: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class WeeklyGeneration:
+    """保存一次通过结构校验的 Weekly 模型结果。
+
+    Attributes:
+        items: Weekly 主摘要候选。
+        bypass: 三个固定类别各自保留的旁路条目；缺少的类别以空元组表示。
+    """
+
     items: tuple[WeeklyItem, ...]
     bypass: dict[str, tuple[WeeklyBypassItem, ...]]
 
 
 def required_sections(sources: list[WeeklySource]) -> set[str]:
+    """找出 Daily 中出现过且 Weekly 必须保留的分区。
+
+    Args:
+        sources: 本次 Weekly 使用的全部 Daily。
+
+    Returns:
+        正文中以二级标题出现的“进展”“更正”和“待续”分区集合。
+    """
     required: set[str] = set()
     for source in sources:
         for section in _SECTION_ORDER:
@@ -78,10 +115,28 @@ def required_sections(sources: list[WeeklySource]) -> set[str]:
 
 
 def _render_source(source: WeeklySource) -> str:
+    """把 Daily 正文连同可引用的来源日期渲染为模型输入。
+
+    Args:
+        source: 要发送给模型的 Daily。
+
+    Returns:
+        以 ``source_day`` 标题开头并去除正文首尾空白的文本。
+    """
     return f"## source_day: {source.day}\n{source.body.strip()}\n"
 
 
 def _source_chunks(sources: list[WeeklySource]) -> list[list[WeeklySource]]:
+    """按提示预算把 Daily 分成保持原顺序的完整批次。
+
+    单份 Daily 即使超过预算也不会被拆分或丢弃。
+
+    Args:
+        sources: 按日期排列的 Daily 来源。
+
+    Returns:
+        保持输入顺序的非空批次；没有来源时为空。
+    """
     chunks: list[list[WeeklySource]] = []
     current: list[WeeklySource] = []
     current_size = 0
@@ -99,6 +154,14 @@ def _source_chunks(sources: list[WeeklySource]) -> list[list[WeeklySource]]:
 
 
 def _user_prompt(sources: list[WeeklySource]) -> str:
+    """为一批 Daily 构造结构化 Weekly 生成提示。
+
+    Args:
+        sources: 当前批次的完整 Daily 来源。
+
+    Returns:
+        包含合法来源日期、完整正文和 JSON 输出格式的用户提示。
+    """
     rendered = "\n".join(_render_source(source) for source in sources)
     return (
         "本批 daily（每个 source_day 是唯一合法来源）：\n"
@@ -118,6 +181,17 @@ def _source_days(
     field: str,
     errors: list[str],
 ) -> tuple[str, ...] | None:
+    """校验模型条目中的来源日期，并把错误追加到共享列表。
+
+    Args:
+        value: 模型返回的 ``source_days`` 字段。
+        legal_days: 当前批次允许引用的 Daily 日期。
+        field: 条目在模型结果中的字段路径，用于定位错误。
+        errors: 收集校验错误的列表。
+
+    Returns:
+        非空、不重复且全部合法的日期元组；校验失败时返回 None。
+    """
     if not isinstance(value, list) or not value:
         errors.append(f"{field}: source_days must be a non-empty list")
         return None
@@ -140,6 +214,21 @@ def parse_and_validate(
     legal_days: set[str],
     required: set[str],
 ) -> tuple[WeeklyGeneration | None, list[str]]:
+    """解析模型返回的 Weekly JSON，并执行完整的来源与结构校验。
+
+    从第一个 ``{`` 开始解析一个 JSON 对象。主条目必须使用允许的类型，覆盖全部
+    ``legal_days`` 和 ``required`` 分区；主条目与 bypass 的来源日期都必须合法，
+    bypass 也不能出现未知类别。
+
+    Args:
+        raw: 模型返回的原始文本。
+        legal_days: 本批主条目和 bypass 可以引用的 Daily 日期。
+        required: Daily 中出现过、主条目必须保留的 Weekly 分区。
+
+    Returns:
+        校验成功时返回结构化结果和空错误列表；任一错误出现时返回 None 和全部
+        已收集的错误。
+    """
     errors: list[str] = []
     start = raw.find("{")
     if start < 0:
@@ -224,6 +313,18 @@ def _generate_chunk(
     provider: LLMProvider,
     sources: list[WeeklySource],
 ) -> WeeklyGeneration | None:
+    """生成一批 Daily 的 Weekly 候选，并校验其预算与覆盖范围。
+
+    首次结构或预算校验失败时，会把错误加入提示并重试一次。模型调用抛出异常时
+    立即失败，不再重试。
+
+    Args:
+        provider: 执行 Weekly 生成的模型客户端。
+        sources: 同一提示批次中的完整 Daily 来源。
+
+    Returns:
+        两次机会内通过结构、来源、分区和预算校验的结果；否则返回 None。
+    """
     prompt = _user_prompt(sources)
     legal_days = {source.day for source in sources}
     required = required_sections(sources)
@@ -265,6 +366,20 @@ def _compact_items(
     legal_days: set[str],
     required: set[str],
 ) -> tuple[WeeklyItem, ...] | None:
+    """让模型合并多批产生的超预算主条目。
+
+    首次校验失败时携带错误重试一次；模型调用抛出异常时立即失败。这里仅返回
+    主条目，原批次生成的 bypass 由调用方原样保留。
+
+    Args:
+        provider: 执行合并的模型客户端。
+        items: 各批生成并去重后的主条目。
+        legal_days: 合并结果必须覆盖的全部 Daily 日期。
+        required: 合并结果必须保留的 Weekly 分区。
+
+    Returns:
+        通过结构、覆盖和预算校验的主条目；两次均未通过时返回 None。
+    """
     candidates = json.dumps(
         [weekly_item_to_dict(item) for item in items],
         ensure_ascii=False,
@@ -307,6 +422,14 @@ def _compact_items(
 
 
 def _dedup_items(items: list[WeeklyItem]) -> list[WeeklyItem]:
+    """合并类型相同且正文仅空白不同的重复主条目。
+
+    Args:
+        items: 按模型重要性顺序排列的主条目。
+
+    Returns:
+        保持首次出现位置和文本的条目；重复项的来源日期按首次出现顺序合并。
+    """
     positions: dict[tuple[str, str], int] = {}
     out: list[WeeklyItem] = []
     for item in items:
@@ -329,6 +452,19 @@ def generate_weekly(
     provider: LLMProvider,
     sources: list[WeeklySource],
 ) -> WeeklyGeneration | None:
+    """从全部 Daily 生成一份结构化 Weekly 候选。
+
+    Daily 超出单次提示预算时按完整来源分批生成。各批主条目合并去重后，如果
+    保留全部日期和分区仍超出正文预算，则再调用模型做一次全局合并。任一批或
+    全局合并失败都会放弃整次生成；各批 bypass 不参与全局合并。
+
+    Args:
+        provider: 执行分批生成和必要时全局合并的模型客户端。
+        sources: 按日期排列的全部 Daily；为空时不调用模型。
+
+    Returns:
+        全部批次成功时返回主条目和三类 bypass；任一步失败时返回 None。
+    """
     items: list[WeeklyItem] = []
     bypass: dict[str, list[WeeklyBypassItem]] = {
         category: [] for category in BYPASS_CATEGORIES
@@ -364,6 +500,15 @@ def generate_weekly(
 
 
 def render_weekly(period: str, items: list[WeeklyItem]) -> str:
+    """把主条目按“进展”“更正”“待续”的顺序渲染为 Weekly。
+
+    Args:
+        period: 写入一级标题的 ISO 周标识。
+        items: 已校验类型的 Weekly 主条目。
+
+    Returns:
+        只包含非空分区的 Markdown 正文，并以换行结尾。
+    """
     by_section: dict[str, list[str]] = {section: [] for section in _SECTION_ORDER}
     for item in items:
         by_section[_SECTION_FOR_TYPE[item.type]].append(item.text)
@@ -382,6 +527,22 @@ def select_weekly_items(
     *,
     required_days: set[str] | None = None,
 ) -> list[WeeklyItem]:
+    """在预算超限时整条删除候选，同时保护分区和来源日期覆盖。
+
+    选择器优先从尾部删除 correction 和 open_loop，再删除其他类型；仅当同一
+    分区和条目涉及的每个受保护日期都有其他条目代表时才可删除。无法继续删除
+    时会返回当前结果，因此返回正文仍可能超过预算。
+
+    Args:
+        period: 渲染长度计算使用的 ISO 周标识。
+        items: 按重要性顺序排列的主条目。
+        budget: Weekly Markdown 正文的最大字符数。
+        required_days: 必须继续被条目覆盖的日期；None 或空集合时保护条目中出现
+            的全部日期。
+
+    Returns:
+        保持原顺序的完整条目列表。
+    """
     selected = list(items)
     protected_days = required_days or {
         day for item in selected for day in item.source_days
@@ -419,6 +580,15 @@ def select_bypass_items(
     items: tuple[WeeklyBypassItem, ...],
     budget: int = BYPASS_BUDGET,
 ) -> list[WeeklyBypassItem]:
+    """从尾部删除 bypass 条目，直到 Markdown 正文不超预算。
+
+    Args:
+        items: 按重要性从高到低排列的 bypass 条目。
+        budget: bypass Markdown 正文的最大字符数。
+
+    Returns:
+        能完整放入预算的前缀；单条也超限时为空。
+    """
     selected = list(items)
     while selected and len(render_bypass(selected)) > budget:
         selected.pop()
@@ -426,10 +596,26 @@ def select_bypass_items(
 
 
 def render_bypass(items: list[WeeklyBypassItem]) -> str:
+    """把 bypass 条目渲染为 Markdown 无序列表。
+
+    Args:
+        items: 要按当前顺序渲染的 bypass 条目。
+
+    Returns:
+        每条一行的列表；非空结果以换行结尾，空输入返回空字符串。
+    """
     return "\n".join(f"- {item.text}" for item in items) + ("\n" if items else "")
 
 
 def weekly_item_to_dict(item: WeeklyItem) -> dict[str, object]:
+    """把 Weekly 主条目转换为可写入 frontmatter 的字典。
+
+    Args:
+        item: 要序列化的主条目。
+
+    Returns:
+        保留类型、正文和来源日期的字典。
+    """
     return {
         "type": item.type,
         "text": item.text,
@@ -438,4 +624,12 @@ def weekly_item_to_dict(item: WeeklyItem) -> dict[str, object]:
 
 
 def bypass_item_to_dict(item: WeeklyBypassItem) -> dict[str, object]:
+    """把 Weekly bypass 条目转换为可写入 frontmatter 的字典。
+
+    Args:
+        item: 要序列化的 bypass 条目。
+
+    Returns:
+        保留正文和来源日期的字典。
+    """
     return {"text": item.text, "source_days": list(item.source_days)}

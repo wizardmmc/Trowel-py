@@ -17,7 +17,7 @@ def is_on_cooldown(
     cooldown_minutes: int,
     now: datetime,
 ) -> bool:
-    """未来触发时间仍视为冷却中；到达窗口边界即解除。"""
+    """判断指定事件是否仍在冷却时间内；到达时间边界即解除。"""
     last_triggered = cooldowns.get(event_type)
     if last_triggered is None:
         return False
@@ -31,7 +31,7 @@ def filter_eligible(
     cooldowns: Cooldowns,
     now: datetime,
 ) -> tuple[EventConfig, ...]:
-    """过滤结果保持输入配置的顺序。"""
+    """按卡片数量和冷却时间过滤可触发事件，并保持输入顺序。"""
     eligible = [
         c
         for c in configs

@@ -1,4 +1,4 @@
-"""judge 使用的检索证据与字典上下文。"""
+"""为 judge 整理会话访问记录和 Memory 索引上下文。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,26 @@ def _summarize_access_log(
     *,
     read_access_log_fn=read_access_log,
 ) -> str:
+    """汇总归属于指定 CC 会话的 Search 和 Read 记录。
+
+    归属由 ``AttributionIndex`` 解析，而非只信任日志自带的 CC 会话 ID。
+    Search 按 ``search_id`` 首次出现的顺序分组，查询取该组首条记录的值。
+    Search 候选中的 ``memory_id`` 是 Note 文件 stem，不是 ``Note.memory_id``；
+    空值过滤、重复值合并后按字典序排列。Read 保持日志顺序；计数包含空
+    ``memory_id`` 的 Read，展示列表则过滤空值。其他会话的记录不会进入结果，
+    未知 ``action`` 也会被忽略。
+
+    Args:
+        root: 访问日志所在的 Memory 根目录。
+        cc_session_id: 只保留归属于该 CC 会话的记录。
+        index: 解析 Trowel 绑定和 CC 会话归属的内存索引。
+        read_access_log_fn: 访问日志读取入口；judge 门面通过该参数传入其可替换
+            的 ``read_access_log``。
+
+    Returns:
+        供判效提示词使用的文本。没有归属记录时返回明确的无检索说明；有归属
+        记录但全是未知 ``action`` 时返回空字符串。
+    """
     records = [
         record
         for record in read_access_log_fn(root)
@@ -56,6 +76,19 @@ def _summarize_access_log(
 
 
 def _dictionary_index(store: MemoryStore) -> str:
+    """读取 L0 Dictionary，空缺时用现有 Note 生成最小索引。
+
+    非空 L0 会去除首尾空白后原样返回。回退索引使用持久化的
+    ``Note.memory_id``，不是 Note 文件 stem；只保留 ID 非空的 Note，并按
+    Store 返回顺序输出 ID 与摘要，不排序或去重。没有可用 Note 时返回明确的
+    空库说明。
+
+    Args:
+        store: 提供 L0 和现有 Note 的 Memory Store。
+
+    Returns:
+        L0 正文、最小 Note 索引或空库说明。
+    """
     index = store.load_dictionary_L0().strip()
     if index:
         return index

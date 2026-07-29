@@ -1,3 +1,5 @@
+"""发放事件奖励，并记录事件日志和冷却时间。"""
+
 import logging
 from datetime import datetime
 
@@ -15,6 +17,8 @@ def distribute(
     event_repo: EventRepository,
     now: datetime,
 ) -> EventLog:
+    """发放事件中的经验、金币或物品，并保存日志和冷却时间。"""
+
     if result.xp:
         player_repo.update_xp(result.xp)
     if result.coins:
@@ -44,4 +48,6 @@ def distribute(
 
 
 def _infer_item_type(item_id: str) -> str:
+    """根据物品 ID 前缀区分帽子和食物。"""
+
     return "hat" if item_id.startswith("hat_") else "food"

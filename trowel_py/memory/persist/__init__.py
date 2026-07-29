@@ -1,4 +1,8 @@
-"""提炼草稿落盘的稳定入口。"""
+"""提供提炼草稿的稳定持久化入口和结果类型。
+
+稳定 API 仅包括 ``persist_draft`` 和 ``PersistReport``；下划线名称属于内部
+实现，不应由调用方依赖。
+"""
 
 from .artifacts import _write_meta as _write_meta
 from .manifest import (

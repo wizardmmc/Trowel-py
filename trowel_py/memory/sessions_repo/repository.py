@@ -30,6 +30,13 @@ class SessionsRepository:
         *,
         migrate: bool = True,
     ) -> None:
+        """配置连接，并按需初始化或迁移 sessions schema。
+
+        Args:
+            conn: 仓储使用的 SQLite 连接；其 ``row_factory`` 会被覆盖。
+            migrate: 是否创建基础表并补齐兼容列；False 时假定 schema 已可用。
+        """
+
         self._conn = conn
         self._conn.row_factory = sqlite3.Row
         if migrate:
@@ -37,7 +44,7 @@ class SessionsRepository:
             self._conn.commit()
 
     def _ensure_columns(self) -> None:
-        """兼容仍显式调用旧私有迁移入口的代码。"""
+        """补齐现有 schema 的兼容列和增量索引，不显式提交事务。"""
         ensure_columns(self._conn)
 
     def register(self, rec: SessionRecord) -> None:
@@ -94,6 +101,11 @@ class SessionsRepository:
         return [row_to_record(row) for row in rows]
 
     def find_by_date(self, date: str) -> list[SessionRecord]:
+        """返回指定日期登记的全部 Claude Code 会话，按登记时间排序。
+
+        本查询不按提炼状态、会话类别或 Memory 资格过滤。
+        """
+
         rows = self._conn.execute(
             "SELECT * FROM sessions WHERE date = ? ORDER BY registered_at",
             (date,),
@@ -101,6 +113,15 @@ class SessionsRepository:
         return [row_to_record(row) for row in rows]
 
     def mark_extracted(self, cc_session_id: str, when: str) -> None:
+        """写入旧式整会话提炼完成时间。
+
+        找不到 ``cc_session_id`` 时静默提交空更新。
+
+        Args:
+            cc_session_id: 要标记的 Claude Code 原生会话 ID。
+            when: 要保存的提炼完成时间。
+        """
+
         self._conn.execute(
             "UPDATE sessions SET extracted_at = ? WHERE cc_session_id = ?",
             (when, cc_session_id),
@@ -113,7 +134,16 @@ class SessionsRepository:
         completed_bytes: int,
         when: str | None = None,
     ) -> None:
-        """只在完整 turn 边界推进可安全提炼的字节水位。"""
+        """覆盖会话的完成字节水位并提交。
+
+        本方法不验证字节位置或单调性，也不判断是否位于完整 turn 边界；调用方
+        负责只传入可安全提炼的位置。找不到会话时静默提交空更新。
+
+        Args:
+            cc_session_id: 要更新的 Claude Code 原生会话 ID。
+            completed_bytes: transcript 已完整结束的字节位置。
+            when: 水位记录时间；None 时使用本地当前时间。
+        """
         stamp = when or datetime.now().isoformat()
         self._conn.execute(
             "UPDATE sessions SET last_completed_offset = ?,"
@@ -207,7 +237,21 @@ class SessionsRepository:
         status: str,
         completed_at: str,
     ) -> None:
-        """只在 journal terminal 已持久化后推进原生 turn 完成水位。"""
+        """写入 Codex 原生轮次的终态和完成时间。
+
+        调用方必须先把终态日志同步到磁盘。本方法允许覆盖已有终态；找不到指定
+        轮次时抛出 ``KeyError``，且不提交或回滚连接上的事务。
+
+        Args:
+            thread_id: Codex 原生 thread ID。
+            turn_id: Codex 原生 turn ID。
+            status: ``completed``、``interrupted`` 或 ``failed``。
+            completed_at: 原生轮次的完成时间。
+
+        Raises:
+            ValueError: ``status`` 不是受支持的终态。
+            KeyError: 指定轮次尚未登记。
+        """
 
         if status not in {"completed", "interrupted", "failed"}:
             raise ValueError(f"unknown Codex terminal status: {status}")
@@ -223,6 +267,17 @@ class SessionsRepository:
     def find_incremental_codex(
         self, *, completed_before: str | None = None
     ) -> list[CodexIncrementalSegment]:
+        """返回尚未提炼的用户 Codex 轮次。
+
+        在用户轮次中，仅根据 ``completed_at`` 已写入且 ``extracted_at`` 为空
+        判断是否待提炼；不检查终态值、``memory_enabled`` 或 ``profile_enabled``。
+        结果按完成时间、登记时间、thread ID 和 turn ID 排序。
+
+        Args:
+            completed_before: 只返回完成时间严格早于该值的轮次；None 表示不设
+                上限。
+        """
+
         cutoff_sql = ""
         params: tuple[str, ...] = ()
         if completed_before is not None:
@@ -239,6 +294,12 @@ class SessionsRepository:
         return [CodexIncrementalSegment(row_to_codex_turn(row)) for row in rows]
 
     def find_unsealed_codex_turns(self) -> list[CodexTurnRecord]:
+        """返回 ``completed_at`` 为空的全部 Codex 轮次，供日志修复使用。
+
+        本查询不按会话类别或当前状态过滤，结果按登记时间、thread ID 和 turn ID
+        排序。
+        """
+
         rows = self._conn.execute(
             "SELECT * FROM codex_turns WHERE completed_at IS NULL"
             " ORDER BY registered_at, thread_id, turn_id"
@@ -252,6 +313,17 @@ class SessionsRepository:
         *,
         when: str | None = None,
     ) -> None:
+        """写入已封口 Codex 轮次的提炼完成时间。
+
+        只有 ``completed_at`` 已写入的轮次会更新；轮次不存在或尚未封口时静默
+        提交空更新，已有 ``extracted_at`` 也会被覆盖。
+
+        Args:
+            thread_id: Codex 原生 thread ID。
+            turn_id: Codex 原生 turn ID。
+            when: 提炼完成时间；None 时使用本地当前时间。
+        """
+
         stamp = when or datetime.now().isoformat()
         self._conn.execute(
             "UPDATE codex_turns SET extracted_at = ?"
@@ -266,6 +338,16 @@ class SessionsRepository:
         end_offset: int,
         when: str | None = None,
     ) -> None:
+        """覆盖 Claude Code 会话的提炼字节水位并提交。
+
+        本方法不验证字节位置或单调性；找不到会话时静默提交空更新。
+
+        Args:
+            cc_session_id: 要更新的 Claude Code 原生会话 ID。
+            end_offset: 已成功持久化到 Memory 的 transcript 结束位置。
+            when: 水位记录时间；None 时使用本地当前时间。
+        """
+
         stamp = when or datetime.now().isoformat()
         self._conn.execute(
             "UPDATE sessions SET last_extracted_offset = ?,"
@@ -316,6 +398,8 @@ class SessionsRepository:
         self,
         trowel_session_id: str,
     ) -> SessionBinding | None:
+        """按 Trowel 会话 ID 返回绑定，未找到时返回 None。"""
+
         row = self._conn.execute(
             "SELECT * FROM session_bindings WHERE trowel_session_id = ?",
             (trowel_session_id,),
@@ -326,6 +410,8 @@ class SessionsRepository:
         self,
         cc_session_id: str,
     ) -> list[SessionBinding]:
+        """返回同一 Claude Code 会话的全部绑定，按绑定时间排序。"""
+
         rows = self._conn.execute(
             "SELECT * FROM session_bindings WHERE cc_session_id = ? ORDER BY bound_at",
             (cc_session_id,),
@@ -333,10 +419,17 @@ class SessionsRepository:
         return [row_to_binding(row) for row in rows]
 
     def all_bindings(self) -> list[SessionBinding]:
+        """返回仓储中的全部会话绑定，不保证顺序。"""
+
         rows = self._conn.execute("SELECT * FROM session_bindings").fetchall()
         return [row_to_binding(row) for row in rows]
 
     def all_cc_kinds(self) -> dict[str, str]:
+        """返回非空 Claude Code 会话 ID 到会话类别的映射。
+
+        旧记录的 ``NULL`` 类别按 ``user`` 返回。
+        """
+
         rows = self._conn.execute(
             "SELECT cc_session_id, COALESCE(session_kind, 'user') FROM sessions"
         ).fetchall()
@@ -348,4 +441,14 @@ def create_sessions_repository(
     *,
     migrate: bool = True,
 ) -> SessionsRepository:
+    """用调用方提供的 SQLite 连接创建 sessions 仓储。
+
+    Args:
+        conn: 仓储使用的连接，仍由调用方关闭。
+        migrate: 是否在创建仓储时初始化和迁移 schema。
+
+    Returns:
+        共享该连接的 ``SessionsRepository``。
+    """
+
     return SessionsRepository(conn, migrate=migrate)

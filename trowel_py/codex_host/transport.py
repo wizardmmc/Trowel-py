@@ -52,17 +52,35 @@ _ERR_INTERNAL = -32603
 
 
 class SubprocessLike(Protocol):
+    """约束 transport 依赖的子进程最小接口，便于用测试进程替换 asyncio 进程。
+
+    Attributes:
+        stdin: 支持写入、等待写缓冲刷新、查询关闭状态和关闭操作的子进程标准输入。
+        stdout: 支持异步逐行读取的子进程标准输出。
+        stderr: 支持异步分块读取的子进程标准错误。
+        returncode: 已知的退出码；进程尚未退出时为 None。
+    """
+
     stdin: Any
     stdout: Any
     stderr: Any
 
     returncode: int | None
 
-    def terminate(self) -> None: ...
+    def terminate(self) -> None:
+        """请求子进程终止。"""
 
-    def kill(self) -> None: ...
+        ...
 
-    async def wait(self) -> int: ...
+    def kill(self) -> None:
+        """强制结束子进程。"""
+
+        ...
+
+    async def wait(self) -> int:
+        """等待子进程退出并返回退出码。"""
+
+        ...
 
 
 class AppServerClient:
@@ -82,6 +100,22 @@ class AppServerClient:
         close_term_s: float = _CLOSE_TERM_S,
         version_reader: Callable[[], Awaitable[CodexVersion]] | None = None,
     ) -> None:
+        """保存进程依赖与关闭策略，初始化一条尚未启动的连接。
+
+        Args:
+            codex_bin: 用于读取版本并启动 app-server 的 Codex 可执行文件。
+            client_info: ``initialize`` 请求中的客户端身份；省略时使用 Trowel 默认值。
+            expected_version: 已验证的 CLI 版本；None 表示跳过兼容性校验。
+            allow_version_override: 版本不匹配时仅告警并继续启动。
+            spawner: 接收命令参数和子进程选项的异步进程工厂。
+            recorder_dir: 录制文件目录；启用 ``TROWEL_CODEX_RECORD`` 后，消息追加到
+                该目录下的 ``codex-appserver-protocol.jsonl``。
+            env: 覆盖到父环境之上的子进程环境变量。
+            close_grace_s: 关闭 stdin 后等待进程自行退出的秒数。
+            close_term_s: 发送 TERM 后等待进程退出、再升级 KILL 的秒数。
+            version_reader: 替代 ``codex --version`` 的无参数异步版本读取器。
+        """
+
         self._codex_bin = codex_bin
         self._client_info = client_info or ClientInfo()
         self._expected_version = expected_version
@@ -117,10 +151,14 @@ class AppServerClient:
 
     @property
     def version(self) -> CodexVersion | None:
+        """返回 ``start()`` 读取的 Codex 版本；尚未读取时为空。"""
+
         return self._version
 
     @property
     def initialize_result(self) -> JsonObject | None:
+        """返回 app-server 对 ``initialize`` 请求的响应对象；尚未收到响应时为空。"""
+
         return self._initialize_result
 
     @property
@@ -136,6 +174,8 @@ class AppServerClient:
 
     @property
     def last_exit_code(self) -> int | None:
+        """返回 stdout reader 结束时读取到的进程退出码；状态未更新时为空。"""
+
         return self._last_exit_code
 
     @property
@@ -145,7 +185,14 @@ class AppServerClient:
         return "\n".join(self._stderr_lines[-40:])
 
     async def start(self) -> JsonObject:
-        """校验版本、启动进程并完成 initialize/initialized 握手。"""
+        """校验版本、启动进程并完成 ``initialize/initialized`` 握手。
+
+        版本不兼容时不会创建进程。发送 ``initialize`` 请求失败时会先关闭连接，再
+        原样上抛；发送 ``initialized`` 通知时的异常直接向调用方传播。
+
+        Returns:
+            app-server 对 ``initialize`` 请求返回的对象。
+        """
 
         version = (
             await self._version_reader()
@@ -190,6 +237,9 @@ class AppServerClient:
         """关闭连接并回收资源；重复调用不会再次执行关闭序列。
 
         顺序为：拒绝新请求、结束 pending、关闭 stdin、等待进程，再升级 TERM/KILL。
+
+        Args:
+            timeout: 关闭 stdin 后等待进程自行退出的秒数；省略时使用构造配置。
         """
 
         await self._shutdown(
@@ -197,6 +247,8 @@ class AppServerClient:
         )
 
     async def _shutdown(self, *, grace_s: float) -> None:
+        """只执行一次完整的连接关闭和进程回收。"""
+
         if not self._state.begin_closing():
             return
         # 所有 pending 必须收到同一个关闭原因，不能永久等待。
@@ -219,6 +271,8 @@ class AppServerClient:
         self._process = None
 
     async def _escalate(self, proc: SubprocessLike) -> None:
+        """进程未自行退出时，依次尝试终止和强制结束。"""
+
         try:
             proc.terminate()
         except (ProcessLookupError, OSError):
@@ -260,7 +314,11 @@ class AppServerClient:
         self._server_request_tasks.clear()
 
     async def _fail_all(self, error: Exception) -> None:
-        """以同一异常结束全部 pending，并将连接标为不可用。"""
+        """以同一异常结束全部 pending，并唤醒连接关闭等待者。
+
+        Args:
+            error: 设置给每个未完成响应 Future 的连接失败原因。
+        """
 
         self._state.fail_all(error)
         # 主动关闭和 reader EOF 都经此处唤醒 wait_closed。
@@ -269,7 +327,19 @@ class AppServerClient:
     async def request(
         self, method: str, params: JsonObject | None = None, *, timeout: float = 60.0
     ) -> JsonObject:
-        """发送 JSON-RPC 请求，并只接受相同 ID 的响应。"""
+        """发送带 UUID 的 JSON-RPC 请求，并等待相同 ID 的响应。
+
+        超时、取消或发送失败都会移除 pending 登记。JSON-RPC error 转为
+        ``ProtocolViolationError``；非对象 result 包装在 ``{"value": result}`` 中。
+
+        Args:
+            method: app-server 的 JSON-RPC 方法名。
+            params: 请求参数；None 表示不发送 ``params`` 字段。
+            timeout: 等待响应的秒数。
+
+        Returns:
+            服务端返回的结果对象，或包装后的非对象结果。
+        """
 
         if self.closed:
             raise TransportClosedError(
@@ -302,6 +372,13 @@ class AppServerClient:
         return response
 
     async def notify(self, method: str, params: JsonObject | None) -> None:
+        """发送不含 ID、也不等待响应的 JSON-RPC 通知。
+
+        Args:
+            method: app-server 的 JSON-RPC 方法名。
+            params: 通知参数；None 表示不发送 ``params`` 字段。
+        """
+
         if self.closed:
             raise TransportClosedError(
                 "app-server transport is closed; cannot send notification"
@@ -312,7 +389,10 @@ class AppServerClient:
         await self._send(message)
 
     async def _send(self, message: JsonObject) -> None:
-        """在 writer lock 内写一行 JSON；成功写出后才录制。"""
+        """在 writer lock 内写一行 JSON，并在成功写出后录制。
+
+        录制器异常发生在消息已发出之后，仍会向调用方传播。
+        """
 
         proc = self._process
         if proc is None or proc.stdin is None:
@@ -329,6 +409,13 @@ class AppServerClient:
     def register_server_request_handler(
         self, method: str, handler: ServerRequestHandler
     ) -> None:
+        """为一个服务端请求方法登记 handler；重复登记会替换旧 handler。
+
+        Args:
+            method: app-server 主动发起的 JSON-RPC 方法名。
+            handler: 接收请求 ID、方法名和参数对象的异步处理函数。
+        """
+
         self._server_handlers[method] = handler
 
     def register_unknown_server_request_handler(
@@ -338,15 +425,30 @@ class AppServerClient:
 
         fallback 必须抛出 ``ServerRequestUnsupportedError``，由 transport 返回
         method-not-found；它只能先暴露安全拒绝事件，不能猜测成功结果。
+
+        Args:
+            handler: 接收未知请求并执行观察与拒绝逻辑的异步处理函数。
         """
 
         self._unknown_server_handler = handler
 
     def add_notification_listener(self, listener: NotificationListener) -> None:
+        """追加一个在 reader task 内同步执行的通知监听器。
+
+        listener 不得阻塞；其异常只记录日志，不影响后续 listener 或读取循环。
+
+        Args:
+            listener: 接收方法名和参数对象的同步回调。
+        """
+
         self._notification_listeners.append(listener)
 
     async def _handle_server_request(self, message: JsonObject) -> None:
-        """分发服务端请求，并使用原请求 ID 返回结果或错误。"""
+        """分发服务端请求，并使用原请求 ID 返回结果或错误。
+
+        没有可用 handler 或 handler 主动拒绝时返回 method-not-found；其他异常返回
+        internal-error。非对象 ``params`` 作为空对象传给 handler。
+        """
 
         request_id = message["id"]
         method = str(message["method"])
@@ -394,7 +496,10 @@ class AppServerClient:
             )
 
     async def _read_loop(self) -> None:
-        """持续读取并分发 JSONL；异常或 EOF 都会结束全部 pending。"""
+        """持续读取并分发 JSONL；reader 异常或 EOF 会结束全部 pending。
+
+        单行编码或 JSON 错误只记录诊断并跳过，不终止读取循环。
+        """
 
         proc = self._process
         if proc is None or proc.stdout is None:
@@ -482,6 +587,8 @@ class AppServerClient:
                 _log.exception("notification listener raised on %s", method)
 
     def _on_invalid_message(self, message: Any) -> None:
+        """记录格式不符合 JSON-RPC 的消息。"""
+
         _log.warning(
             "app-server sent a message that is not a valid JSON-RPC object: %s",
             self._safe_payload(message),
@@ -498,10 +605,12 @@ class AppServerClient:
         )
 
     def _safe_payload(self, message: Any) -> Any:
+        """返回可安全写入诊断信息的脱敏消息。"""
+
         return redact_message(message)
 
     def _host_exit_reason(self, exit_code: int | None) -> TransportClosedError:
-        """构造 EOF 时共享给全部 pending 的已脱敏错误。"""
+        """构造 reader 结束时共享给全部 pending 的已脱敏错误。"""
 
         if self._state.closing:
             return TransportClosedError(
@@ -533,10 +642,14 @@ class AppServerClient:
             _log.debug("stderr drain ended", exc_info=True)
 
     def _append_stderr_line(self, line: str) -> None:
+        """将一行脱敏 stderr 加入最多 200 行的诊断缓冲。"""
+
         self._stderr_lines.append(redact_stderr(line))
         if len(self._stderr_lines) > self._stderr_max:
             del self._stderr_lines[: len(self._stderr_lines) - self._stderr_max]
 
     @staticmethod
     async def _default_spawner(args: list[str], kwargs: dict[str, Any]) -> Any:
+        """使用 asyncio 启动 Codex 子进程。"""
+
         return await asyncio.create_subprocess_exec(*args, **kwargs)

@@ -1,3 +1,5 @@
+"""花园接口使用的植物和统计数据模型。"""
+
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -6,6 +8,8 @@ from trowel_py.cards.models import Card as Card
 
 
 class PlantInfo(BaseModel):
+    """一张卡片在花园中的展示数据。"""
+
     card_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     category: str = Field(min_length=1)
