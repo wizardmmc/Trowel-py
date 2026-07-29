@@ -67,12 +67,18 @@ def test_tool_progress_is_dropped_without_seq_gap(adapter) -> None:
     assert third.seq == 2
 
 
-def test_unmapped_capability_event_is_dropped(adapter) -> None:
+def test_plan_event_is_mapped_without_sequence_gap(adapter) -> None:
     event = adapter.wrap(
-        make_codex_event(CodexEventType.PLAN_UPDATED, seq=1, payload={})
+        make_codex_event(
+            CodexEventType.PLAN_UPDATED,
+            seq=1,
+            payload={"explanation": None, "steps": ()},
+        )
     )
 
-    assert event is None
+    assert event is not None
+    assert event.type == "plan_updated"
+    assert event.seq == 1
 
 
 def test_route_error_shares_the_session_sequence(adapter) -> None:

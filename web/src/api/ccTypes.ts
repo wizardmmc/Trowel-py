@@ -18,6 +18,45 @@ export interface TurnStartEvent {
   readonly type: "turn_start";
   readonly turn_id: string;
   readonly revertible: boolean;
+  readonly autonomous?: boolean;
+}
+
+export type GoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface GoalUpdatedEvent {
+  readonly type: "goal_updated";
+  readonly objective: string;
+  readonly status: GoalStatus;
+  readonly token_budget: number | null;
+  readonly tokens_used: number;
+  readonly time_used_seconds: number;
+  readonly created_at: number;
+  readonly updated_at: number;
+}
+
+export interface GoalClearedEvent {
+  readonly type: "goal_cleared";
+}
+
+export interface PlanUpdatedEvent {
+  readonly type: "plan_updated";
+  readonly explanation: string | null;
+  readonly steps: readonly {
+    readonly step: string;
+    readonly status: "pending" | "inProgress" | "completed";
+  }[];
+}
+
+export interface TurnDiffUpdatedEvent {
+  readonly type: "turn_diff_updated";
+  readonly turn_id: string;
+  readonly diff: string;
 }
 
 export interface UserEvent {
@@ -142,6 +181,9 @@ export interface SubagentProgressEvent {
   readonly subagent_type?: string | null;
   readonly last_tool_name?: string | null;
   readonly usage?: Record<string, unknown> | null;
+  readonly agent_thread_id?: string | null;
+  readonly parent_thread_id?: string | null;
+  readonly agent_path?: string | null;
 }
 
 export interface ElicitationRequestEvent {
@@ -319,7 +361,11 @@ export type TrowelEvent =
   | UsageUpdatedEvent
   | HostStatusEvent
   | ApprovalRequestEvent
-  | RateLimitUpdatedEvent;
+  | RateLimitUpdatedEvent
+  | GoalUpdatedEvent
+  | GoalClearedEvent
+  | PlanUpdatedEvent
+  | TurnDiffUpdatedEvent;
 
 export const RECOVERABLE_ERROR_SUBCLASSES = new Set([
   "error_during_execution",

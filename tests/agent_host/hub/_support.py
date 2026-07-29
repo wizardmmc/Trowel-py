@@ -6,6 +6,7 @@ from typing import Any, AsyncIterator
 
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.cc_host.routes import OpenedCcSession
+from trowel_py.codex_host.commands import command_roster
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 
 
@@ -54,6 +55,11 @@ class FakeCodexManager:
         self.list_thread_calls: list[tuple[str, int]] = []
         self.read_thread_calls: list[str] = []
         self.attached: list[str] = []
+        self.goals: dict[str, dict[str, Any] | None] = {}
+        self.goal_sets: list[dict[str, Any]] = []
+        self.goal_clears: list[str] = []
+        self.compactions: list[str] = []
+        self.reviews: list[dict[str, Any]] = []
         self.attach_results: dict[str, dict[str, Any]] = {}
         self.models: list[dict[str, Any]] = [
             {
@@ -106,8 +112,32 @@ class FakeCodexManager:
     ) -> str:
 
         self.sent.append((session.session_id, text))
+        manages_turn_state = hasattr(session, "begin_send")
+        if manages_turn_state:
+            session.begin_send()
+        if getattr(session, "binding", None) is None and hasattr(
+            session, "attach_thread_binding"
+        ):
+            session.attach_thread_binding(
+                {
+                    "thread": {"id": "thread-1"},
+                    "model": "gpt-5.6-sol",
+                    "modelProvider": "openai",
+                    "cwd": session.config.workdir,
+                    "sandbox": {"mode": "read-only"},
+                    "approvalPolicy": "never",
+                }
+            )
         if before_turn_start is not None:
             before_turn_start(session)
+        for event in reversed(getattr(session, "_events", ())):
+            turn_id = getattr(event, "turn_id", None)
+            if isinstance(turn_id, str):
+                if manages_turn_state:
+                    session.record_turn_started(turn_id, text)
+                return turn_id
+        if manages_turn_state:
+            session.record_turn_started("fake-turn-id", text)
         return "fake-turn-id"
 
     async def interrupt(self, session: Any) -> None:
@@ -116,6 +146,9 @@ class FakeCodexManager:
     async def list_models(self) -> list[dict[str, Any]]:
 
         return self.models
+
+    async def list_commands(self) -> list[dict[str, Any]]:
+        return command_roster("0.144.0")
 
     async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
         self.list_thread_calls.append((cwd, limit))
@@ -128,7 +161,16 @@ class FakeCodexManager:
     async def attach(self, session: Any) -> Any:
         thread_id = session.config.initial_thread_id
         self.attached.append(session.session_id)
-        result = self.attach_results[thread_id]
+        result = self.attach_results.get(thread_id)
+        if result is None:
+            result = {
+                "thread": {"id": thread_id or "thread-1"},
+                "model": "gpt-5.6-sol",
+                "modelProvider": "openai",
+                "cwd": session.config.workdir,
+                "sandbox": {"mode": "read-only"},
+                "approvalPolicy": "never",
+            }
         return session.attach_thread_binding(result)
 
     def answer_request(self, session_id: str, request_id: str, decision: str) -> Any:
@@ -150,6 +192,48 @@ class FakeCodexManager:
     def list_requests(self, session_id: str) -> list[Any]:
 
         return []
+
+    async def get_goal(self, session: Any) -> dict[str, Any] | None:
+        return self.goals.get(session.session_id)
+
+    async def set_goal(self, session: Any, **fields: Any) -> dict[str, Any]:
+        self.goal_sets.append({"session_id": session.session_id, **fields})
+        binding = getattr(session, "binding", None)
+        goal = {
+            "threadId": getattr(binding, "thread_id", "thread-1"),
+            "objective": fields.get("objective") or "Existing objective",
+            "status": fields.get("status") or "active",
+            "tokenBudget": fields.get("token_budget"),
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 10,
+            "updatedAt": 11,
+        }
+        self.goals[session.session_id] = goal
+        return goal
+
+    async def clear_goal(self, session: Any) -> bool:
+        self.goal_clears.append(session.session_id)
+        self.goals[session.session_id] = None
+        return True
+
+    async def compact(self, session: Any, *, before_start=None) -> None:
+        await self.attach(session)
+        if before_start is not None:
+            before_start(session)
+        self.compactions.append(session.session_id)
+
+    async def start_review(
+        self, session: Any, target: dict[str, Any], *, before_start=None
+    ) -> dict[str, str]:
+        binding = await self.attach(session)
+        if before_start is not None:
+            before_start(session)
+        self.reviews.append({"session_id": session.session_id, "target": target})
+        return {
+            "review_thread_id": binding.thread_id,
+            "turn_id": "review-turn-1",
+        }
 
 
 class _FakeThreadBinding:

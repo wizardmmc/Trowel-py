@@ -95,6 +95,33 @@ export interface AgentSettingsSelection {
   readonly adjusted: boolean;
 }
 
+export type CodexCommandAction =
+  | "status"
+  | "compact"
+  | "review"
+  | "goal"
+  | "diff"
+  | "agent";
+
+export interface CodexCommand {
+  readonly name: string;
+  readonly description: string;
+  readonly source: "codex";
+  readonly action: CodexCommandAction;
+  readonly available_while_running: boolean;
+}
+
+export type CodexReviewTarget =
+  | { readonly type: "uncommittedChanges" }
+  | { readonly type: "baseBranch"; readonly branch: string }
+  | { readonly type: "commit"; readonly sha: string; readonly title?: string }
+  | { readonly type: "custom"; readonly instructions: string };
+
+export interface CodexReviewStartResult {
+  readonly reviewThreadId: string;
+  readonly turnId: string;
+}
+
 export interface AgentPendingRequest {
   readonly request_id: string;
   readonly session_id: string;
@@ -130,13 +157,29 @@ async function requestEnvelope<T, M = unknown>(
 ): Promise<ApiEnvelope<T, M>> {
   const response = await fetch(url, options);
   if (!response.ok) {
-    throw new Error(`Agent API error: ${response.status}`);
+    throw new Error(await readApiError(response));
   }
   const result: ApiEnvelope<T, M> = await response.json();
   if (!result.success || result.error) {
     throw new Error(result.error ?? "Agent API call failed");
   }
   return result;
+}
+
+async function readApiError(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object") {
+      const payload = body as Record<string, unknown>;
+      for (const key of ["error", "detail"] as const) {
+        const value = payload[key];
+        if (typeof value === "string" && value.trim()) return value;
+      }
+    }
+  } catch {
+    // 非 JSON 错误页不应遮蔽 HTTP 状态。
+  }
+  return `Agent API error: ${response.status}`;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -239,6 +282,41 @@ export async function listAgentModels(): Promise<readonly AgentModel[]> {
   return data.models;
 }
 
+export async function listCodexCommands(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<readonly CodexCommand[]> {
+  const data = await request<{ readonly commands: readonly CodexCommand[] }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/commands`,
+    { signal },
+  );
+  return data.commands;
+}
+
+export async function compactCodexSession(
+  sessionId: string,
+): Promise<{ readonly started: boolean }> {
+  return request<{ readonly started: boolean }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/commands/compact`,
+    { method: "POST" },
+  );
+}
+
+export async function startCodexReview(
+  sessionId: string,
+  target: CodexReviewTarget,
+): Promise<CodexReviewStartResult> {
+  const data = await request<{
+    readonly review_thread_id: string;
+    readonly turn_id: string;
+  }>(`${AGENT_API_BASE}/sessions/${sessionId}/commands/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  return { reviewThreadId: data.review_thread_id, turnId: data.turn_id };
+}
+
 export async function updateAgentSessionSettings(
   sessionId: string,
   selection: { readonly model: string; readonly effort: string },
@@ -261,6 +339,92 @@ export type PermissionPreset =
 
 export interface AgentPermissionSelection {
   readonly permission_preset: PermissionPreset;
+}
+
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface CodexGoalSnapshot {
+  readonly objective: string;
+  readonly status: CodexGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+interface CodexGoalWire {
+  readonly objective: string;
+  readonly status: CodexGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface SetCodexGoalInput {
+  readonly objective?: string;
+  readonly status?: CodexGoalStatus;
+  readonly token_budget?: number | null;
+}
+
+function normalizeGoal(goal: CodexGoalWire): CodexGoalSnapshot {
+  return { ...goal };
+}
+
+export async function getCodexGoal(
+  sessionId: string,
+): Promise<CodexGoalSnapshot | null> {
+  const data = await request<{ goal: CodexGoalWire | null }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+  );
+  return data.goal ? normalizeGoal(data.goal) : null;
+}
+
+export async function setCodexGoal(
+  sessionId: string,
+  update: SetCodexGoalInput,
+): Promise<CodexGoalSnapshot> {
+  const data = await request<{ goal: CodexGoalWire }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
+    },
+  );
+  return normalizeGoal(data.goal);
+}
+
+export async function clearCodexGoal(
+  sessionId: string,
+): Promise<{ cleared: boolean }> {
+  return request<{ cleared: boolean }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/goal`,
+    { method: "DELETE" },
+  );
+}
+
+export async function startCodexTurn(
+  sessionId: string,
+  text: string,
+): Promise<{ turnId: string }> {
+  const data = await request<{ turn_id: string }>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/turns`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+  );
+  return { turnId: data.turn_id };
 }
 
 export async function updateAgentPermissionPreset(
@@ -300,11 +464,24 @@ export function agentMessagesUrl(sessionId: string): string {
   return `${AGENT_API_BASE}/sessions/${sessionId}/messages`;
 }
 
+export function agentEventsUrl(sessionId: string): string {
+  return `${AGENT_API_BASE}/sessions/${sessionId}/events`;
+}
+
 export async function getAgentHistory(
   sessionId: string,
 ): Promise<readonly AgentEventLike[]> {
   return request<readonly AgentEventLike[]>(
     `${AGENT_API_BASE}/sessions/${sessionId}/history`,
+  );
+}
+
+export async function getCodexSubagentHistory(
+  sessionId: string,
+  threadId: string,
+): Promise<readonly AgentEventLike[]> {
+  return request<readonly AgentEventLike[]>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/subagents/${encodeURIComponent(threadId)}/history`,
   );
 }
 
@@ -315,6 +492,7 @@ export interface AgentEventLike {
   readonly runtime: Runtime;
   readonly seq: number;
   readonly type: string;
+  readonly thread_id: string | null;
   readonly turn_id: string | null;
   readonly item_id: string | null;
   readonly payload: Readonly<Record<string, unknown>>;

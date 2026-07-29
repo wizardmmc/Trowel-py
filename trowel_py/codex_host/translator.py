@@ -44,15 +44,12 @@ _IGNORED_METHODS: frozenset[str] = frozenset(
     {
         # start/resume 响应已生成 session_started，后续通知会重复且没有顶层 threadId。
         "thread/started",
-        # turn/start 响应已生成 TURN_STARTED，通知只是回显。
-        "turn/started",
         # 尚无可信 fixture 或消费契约。
         "mcpServer/startupStatus/updated",
         "serverRequest/resolved",
         "thread/turns/list",
         "thread/items/list",
         # 已有 handler，但仍受 manager 门控。
-        "turn/plan/updated",
         "warning",
         "guardianWarning",
         # shape 尚未验证，也没有 handler。
@@ -73,6 +70,9 @@ _TURN_COMPLETED = "completed"
 _TURN_INTERRUPTED = "interrupted"
 _TURN_FAILED = "failed"
 _TURN_IN_PROGRESS = "inProgress"
+_GOAL_STATUSES = frozenset(
+    {"active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"}
+)
 
 # item.type 路由表之外的类型不会猜测语义，而是返回空结果。
 _ITEM_COMMAND = "commandExecution"
@@ -80,8 +80,11 @@ _ITEM_AGENT_MSG = "agentMessage"
 _ITEM_REASONING = "reasoning"
 _ITEM_FILE_CHANGE = "fileChange"
 _ITEM_MCP_TOOL = "mcpToolCall"
-_ITEM_SUBAGENT = "subAgentActivity"  # started/completed 均未启用
+_ITEM_SUBAGENT = "subAgentActivity"
+_ITEM_COLLAB_AGENT_TOOL = "collabAgentToolCall"
 _ITEM_COMPACT = "contextCompaction"  # 仅 completed 形成边界
+_ITEM_REVIEW_ENTERED = "enteredReviewMode"
+_ITEM_REVIEW_EXITED = "exitedReviewMode"
 
 _FC_ADD = "add"
 _FC_DELETE = "delete"
@@ -190,8 +193,10 @@ class CodexTranslator:
             "thread/status/changed": self._on_thread_status,
             "error": self._on_error,
             "account/rateLimits/updated": self._on_rate_limits,
-            # 已登记 shape，但 manager 仍通过 _IGNORED_METHODS 阻止运行时路由。
+            "thread/goal/updated": self._on_goal_updated,
+            "thread/goal/cleared": self._on_goal_cleared,
             "turn/plan/updated": self._on_plan_updated,
+            "turn/diff/updated": self._on_turn_diff_updated,
             "warning": self._on_warning,
             "guardianWarning": self._on_warning,
         }
@@ -321,8 +326,9 @@ class CodexTranslator:
         if item_type == _ITEM_MCP_TOOL:
             return [self._mcp_tool_started_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
-            # 未取得可信 fixture，started/completed 均不路由。
-            return []
+            return [self._subagent_item(params, item)]
+        if item_type == _ITEM_COLLAB_AGENT_TOOL:
+            return [self._collab_agent_tool_item(params, item)]
         if item_type == _ITEM_COMPACT:
             # started 不是上下文代际边界，只有 completed 才关闭一代。
             return []
@@ -346,10 +352,14 @@ class CodexTranslator:
         if item_type == _ITEM_MCP_TOOL:
             return [self._mcp_tool_completed_item(params, item)]
         if item_type == _ITEM_SUBAGENT:
-            return []  # 未启用，不能仅凭已知 shape 发射事件
+            return [self._subagent_item(params, item)]
+        if item_type == _ITEM_COLLAB_AGENT_TOOL:
+            return [self._collab_agent_tool_item(params, item)]
         if item_type == _ITEM_COMPACT:
             # completed 是唯一可信的上下文代际边界。
             return [self._compaction_item(params, item)]
+        if item_type in (_ITEM_REVIEW_ENTERED, _ITEM_REVIEW_EXITED):
+            return [self._review_mode_item(params, item)]
         # reasoning 已通过 delta 输出；其他类型尚无稳定映射。
         return []
 
@@ -561,12 +571,54 @@ class CodexTranslator:
             )
         ]
 
-    # plan/warning 虽已登记 handler，manager 仍会在 translate 前丢弃；
+    # warning 虽已登记 handler，manager 仍会在 translate 前丢弃；
     # subagent 的 started/completed 也显式返回空。启用前必须取得可信 fixture。
     # compaction 不属于该门控：仅 completed 已形成运行时边界。
 
+    def _on_goal_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        method = "thread/goal/updated"
+        thread_id = _as_str(_require(params, "threadId", method))
+        goal = _require(params, "goal", method)
+        if not isinstance(goal, Mapping):
+            raise ProtocolViolationError(
+                f"notification {method!r} goal is not an object",
+                payload=dict(params),
+            )
+        status = _require(goal, "status", method)
+        if status not in _GOAL_STATUSES:
+            raise ProtocolViolationError(
+                f"notification {method!r} goal has unexpected status {status!r}",
+                payload=dict(goal),
+            )
+        turn_id = params.get("turnId")
+        return [
+            TranslatedItem(
+                type=CodexEventType.GOAL_UPDATED,
+                thread_id=thread_id,
+                turn_id=turn_id if isinstance(turn_id, str) else None,
+                payload=immutable_payload(
+                    objective=_as_str(_require(goal, "objective", method)),
+                    status=_as_str(status),
+                    token_budget=goal.get("tokenBudget"),
+                    tokens_used=_require(goal, "tokensUsed", method),
+                    time_used_seconds=_require(goal, "timeUsedSeconds", method),
+                    created_at=_require(goal, "createdAt", method),
+                    updated_at=_require(goal, "updatedAt", method),
+                ),
+            )
+        ]
+
+    def _on_goal_cleared(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
+        method = "thread/goal/cleared"
+        return [
+            TranslatedItem(
+                type=CodexEventType.GOAL_CLEARED,
+                thread_id=_as_str(_require(params, "threadId", method)),
+            )
+        ]
+
     def _on_plan_updated(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
-        """翻译尚未启用的 plan shape。
+        """翻译当前 turn 的完整 plan 快照。
 
         TurnPlanStep 没有 id，且只允许 pending/inProgress/completed；
         turn 中断由 turn 状态表达，不虚构 abandoned 步骤。
@@ -611,21 +663,52 @@ class CodexTranslator:
     def _subagent_item(
         self, params: Mapping[str, Any], item: Mapping[str, Any]
     ) -> TranslatedItem:
-        """翻译尚未启用的 subAgentActivity shape。
+        """翻译已由 Codex 0.144.0 真实录制确认的 activity shape。
 
         父 thread 事件不含 usage、summary 或逐工具明细；这些信息依赖订阅
         sub-thread，不能在此虚构。
         """
 
+        agent_thread_id = _require(item, "agentThreadId", "subAgentActivity")
         return TranslatedItem(
             type=CodexEventType.SUBAGENT_ACTIVITY,
             thread_id=_as_str(_require(params, "threadId", "item/*")),
             turn_id=_as_str(_require(params, "turnId", "item/*")),
             item_id=_as_str(item.get("id")),
             payload=immutable_payload(
+                source="subagent_activity",
                 kind=item.get("kind"),
-                agent_thread_id=item.get("agentThreadId"),
+                agent_thread_id=_as_str(agent_thread_id),
                 agent_path=item.get("agentPath"),
+            ),
+        )
+
+    def _collab_agent_tool_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """保留 0.144.0 collabAgentToolCall 的稀疏原生字段。"""
+
+        receiver_thread_ids = item.get("receiverThreadIds")
+        if not isinstance(receiver_thread_ids, list):
+            raise ProtocolViolationError(
+                "collabAgentToolCall.receiverThreadIds is not an array",
+                payload=dict(item),
+            )
+        return TranslatedItem(
+            type=CodexEventType.SUBAGENT_ACTIVITY,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(_require(item, "id", "collabAgentToolCall")),
+            payload=immutable_payload(
+                source="collab_agent_tool_call",
+                tool=item.get("tool"),
+                status=item.get("status"),
+                sender_thread_id=item.get("senderThreadId"),
+                receiver_thread_ids=tuple(_as_str(value) for value in receiver_thread_ids),
+                prompt=item.get("prompt"),
+                model=item.get("model"),
+                reasoning_effort=item.get("reasoningEffort"),
+                agents_states=item.get("agentsStates"),
             ),
         )
 
@@ -644,6 +727,47 @@ class CodexTranslator:
             item_id=_as_str(item.get("id")),
             payload=immutable_payload(),
         )
+
+    def _review_mode_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        review = _require(item, "review", "review mode item")
+        if not isinstance(review, str):
+            raise ProtocolViolationError(
+                "review mode item.review is not a string", payload=dict(item)
+            )
+        return TranslatedItem(
+            type=CodexEventType.REVIEW_MODE,
+            thread_id=_as_str(_require(params, "threadId", "item/*")),
+            turn_id=_as_str(_require(params, "turnId", "item/*")),
+            item_id=_as_str(_require(item, "id", "review mode item")),
+            payload=immutable_payload(
+                phase=(
+                    "entered"
+                    if item.get("type") == _ITEM_REVIEW_ENTERED
+                    else "exited"
+                ),
+                review=review,
+            ),
+        )
+
+    def _on_turn_diff_updated(
+        self, params: Mapping[str, Any]
+    ) -> list[TranslatedItem]:
+        method = "turn/diff/updated"
+        diff = _require(params, "diff", method)
+        if not isinstance(diff, str):
+            raise ProtocolViolationError(
+                "turn/diff/updated.diff is not a string", payload=dict(params)
+            )
+        return [
+            TranslatedItem(
+                type=CodexEventType.TURN_DIFF_UPDATED,
+                thread_id=_as_str(_require(params, "threadId", method)),
+                turn_id=_as_str(_require(params, "turnId", method)),
+                payload=immutable_payload(diff=diff),
+            )
+        ]
 
     def _on_warning(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
         """翻译尚未启用的 warning/guardianWarning shape。

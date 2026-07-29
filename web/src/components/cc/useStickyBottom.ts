@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const THRESHOLD_PX = 32;
 
@@ -6,6 +6,7 @@ export interface StickyBottom {
   readonly sticky: boolean;
   readonly unread: number;
   readonly stickyRef: React.MutableRefObject<boolean>;
+  readonly pauseFollowing: () => void;
   readonly jumpToBottom: () => void;
 }
 
@@ -13,12 +14,37 @@ export interface StickyBottom {
 export function useStickyBottom(
   scrollRef: React.RefObject<HTMLElement | null>,
   turnsCount: number,
+  sessionKey?: string | null,
 ): StickyBottom {
-  const [sticky, setSticky] = useState(true);
-  const [unread, setUnread] = useState(0);
+  const [viewState, setViewState] = useState({
+    sessionKey,
+    sticky: true,
+    unread: 0,
+  });
+  const activeViewState =
+    viewState.sessionKey === sessionKey
+      ? viewState
+      : { sessionKey, sticky: true, unread: 0 };
   const stickyRef = useRef(true);
   const turnsCountRef = useRef(turnsCount);
   const leftAtTurnsRef = useRef(0);
+  const currentSessionKeyRef = useRef(sessionKey);
+
+  useLayoutEffect(() => {
+    turnsCountRef.current = turnsCount;
+    if (currentSessionKeyRef.current !== sessionKey) {
+      currentSessionKeyRef.current = sessionKey;
+      stickyRef.current = true;
+      leftAtTurnsRef.current = turnsCount;
+    }
+  }, [sessionKey, turnsCount]);
+
+  const pauseFollowing = useCallback(() => {
+    if (!stickyRef.current) return;
+    stickyRef.current = false;
+    leftAtTurnsRef.current = turnsCountRef.current;
+    setViewState({ sessionKey, sticky: false, unread: 0 });
+  }, [sessionKey]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -29,25 +55,25 @@ export function useStickyBottom(
       if (atBottom) {
         if (!stickyRef.current) {
           stickyRef.current = true;
-          setSticky(true);
-          setUnread(0);
+          setViewState({ sessionKey, sticky: true, unread: 0 });
         }
-      } else if (stickyRef.current) {
-        stickyRef.current = false;
-        leftAtTurnsRef.current = turnsCountRef.current;
-        setSticky(false);
+      } else {
+        pauseFollowing();
       }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [scrollRef]);
+  }, [pauseFollowing, scrollRef, sessionKey]);
 
   useEffect(() => {
-    turnsCountRef.current = turnsCount;
     if (!stickyRef.current) {
-      setUnread(Math.max(0, turnsCount - leftAtTurnsRef.current));
+      setViewState({
+        sessionKey,
+        sticky: false,
+        unread: Math.max(0, turnsCount - leftAtTurnsRef.current),
+      });
     }
-  }, [turnsCount]);
+  }, [sessionKey, turnsCount]);
 
   const jumpToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -56,9 +82,14 @@ export function useStickyBottom(
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
     stickyRef.current = true;
-    setSticky(true);
-    setUnread(0);
-  }, [scrollRef]);
+    setViewState({ sessionKey, sticky: true, unread: 0 });
+  }, [scrollRef, sessionKey]);
 
-  return { sticky, unread, stickyRef, jumpToBottom };
+  return {
+    sticky: activeViewState.sticky,
+    unread: activeViewState.unread,
+    stickyRef,
+    pauseFollowing,
+    jumpToBottom,
+  };
 }

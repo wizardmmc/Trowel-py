@@ -50,8 +50,14 @@ def _model_changed(event: CodexEvent) -> MappedCodexEvent:
     )
 
 
-def _turn_started(_: CodexEvent) -> MappedCodexEvent:
-    return _mapped("turn_start", {"revertible": False})
+def _turn_started(event: CodexEvent) -> MappedCodexEvent:
+    return _mapped(
+        "turn_start",
+        {
+            "revertible": False,
+            "autonomous": event.payload.get("autonomous") is True,
+        },
+    )
 
 
 def _user(event: CodexEvent) -> MappedCodexEvent:
@@ -209,6 +215,14 @@ def _compaction(event: CodexEvent) -> MappedCodexEvent:
     return _mapped("compaction", payload)
 
 
+def _review_mode(event: CodexEvent) -> MappedCodexEvent:
+    phase = event.payload.get("phase")
+    label = "开始代码审查" if phase == "entered" else "代码审查结束"
+    review = event.payload.get("review")
+    content = f"{label}：{review}" if isinstance(review, str) and review else label
+    return _mapped("local_command", {"content": content})
+
+
 def _status(event: CodexEvent) -> MappedCodexEvent:
     return _mapped(
         "status",
@@ -289,12 +303,18 @@ _MAPPERS: dict[CodexEventType, Mapper] = {
     CodexEventType.APPROVAL_REQUEST: _passthrough,
     CodexEventType.USAGE_UPDATED: _passthrough,
     CodexEventType.RATE_LIMIT_UPDATED: _passthrough,
+    CodexEventType.GOAL_UPDATED: _passthrough,
+    CodexEventType.GOAL_CLEARED: _passthrough,
+    CodexEventType.PLAN_UPDATED: _passthrough,
+    CodexEventType.TURN_DIFF_UPDATED: _passthrough,
+    CodexEventType.REVIEW_MODE: _review_mode,
     CodexEventType.STATUS: _status,
     CodexEventType.FINISHED: _finished,
     CodexEventType.INTERRUPTED: _interrupted,
     CodexEventType.ERROR: _error,
     CodexEventType.HOST_STATUS: _passthrough,
     CodexEventType.COMPACTION: _compaction,
+    CodexEventType.SUBAGENT_ACTIVITY: _passthrough,
 }
 
 

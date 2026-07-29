@@ -97,6 +97,28 @@ def test_approval_request_keeps_verified_payload(adapter) -> None:
     assert event.payload["available_decisions"] == ["accept", "cancel"]
 
 
+def test_subagent_activity_keeps_native_thread_correlation(adapter) -> None:
+    event = adapter.wrap(
+        make_codex_event(
+            CodexEventType.SUBAGENT_ACTIVITY,
+            seq=5,
+            thread_id="parent-thread-1",
+            turn_id="parent-turn-1",
+            item_id="activity-1",
+            payload={
+                "source": "subagent_activity",
+                "kind": "started",
+                "agent_thread_id": "child-thread-1",
+                "agent_path": "/root/probe",
+            },
+        )
+    )
+
+    assert event.type == "subagent_activity"
+    assert event.thread_id == "parent-thread-1"
+    assert event.payload["agent_thread_id"] == "child-thread-1"
+
+
 def test_compaction_marks_completed_phase(adapter) -> None:
     event = adapter.wrap(
         make_codex_event(
@@ -109,6 +131,68 @@ def test_compaction_marks_completed_phase(adapter) -> None:
 
     assert event.type == "compaction"
     assert event.payload == {"kind": "contextCompaction", "phase": "completed"}
+
+
+def test_turn_diff_and_review_mode_reach_shared_vocabulary(adapter) -> None:
+    diff = adapter.wrap(
+        make_codex_event(
+            CodexEventType.TURN_DIFF_UPDATED,
+            seq=6,
+            turn_id="turn-1",
+            payload={"diff": "diff --git a/a b/a\n+x\n"},
+        )
+    )
+    review = adapter.wrap(
+        make_codex_event(
+            CodexEventType.REVIEW_MODE,
+            seq=7,
+            turn_id="turn-1",
+            payload={"phase": "entered", "review": "Review uncommitted changes"},
+        )
+    )
+
+    assert diff.type == "turn_diff_updated"
+    assert diff.payload["diff"].startswith("diff --git")
+    assert review.type == "local_command"
+    assert review.payload["content"] == "开始代码审查：Review uncommitted changes"
+
+
+def test_goal_and_plan_keep_native_snapshots(adapter) -> None:
+    goal = adapter.wrap(
+        make_codex_event(
+            CodexEventType.GOAL_UPDATED,
+            seq=6,
+            turn_id=None,
+            payload={
+                "objective": "Ship the right rail",
+                "status": "active",
+                "token_budget": 12000,
+                "tokens_used": 7448,
+                "time_used_seconds": 9,
+                "created_at": 10,
+                "updated_at": 11,
+            },
+        )
+    )
+    plan = adapter.wrap(
+        make_codex_event(
+            CodexEventType.PLAN_UPDATED,
+            seq=7,
+            payload={
+                "explanation": None,
+                "steps": ({"step": "Map state", "status": "inProgress"},),
+            },
+        )
+    )
+    cleared = adapter.wrap(
+        make_codex_event(CodexEventType.GOAL_CLEARED, seq=8, turn_id=None)
+    )
+
+    assert goal.type == "goal_updated"
+    assert goal.payload["tokens_used"] == 7448
+    assert plan.type == "plan_updated"
+    assert plan.payload["steps"] == ({"step": "Map state", "status": "inProgress"},)
+    assert cleared.type == "goal_cleared"
 
 
 def test_finished_maps_null_cost_fields(adapter) -> None:

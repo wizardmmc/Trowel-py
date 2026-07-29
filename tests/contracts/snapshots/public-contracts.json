@@ -287,17 +287,21 @@
       "elicit_request",
       "error",
       "finished",
+      "goal_cleared",
+      "goal_updated",
       "hook",
       "host_status",
       "interrupted",
       "local_command",
       "model_changed",
+      "plan_updated",
       "rate_limit_updated",
       "retrying",
       "session_exited",
       "session_started",
       "stalled_warning",
       "status",
+      "subagent_activity",
       "subagent_progress",
       "text",
       "thinking",
@@ -305,6 +309,7 @@
       "tool_call",
       "tool_progress",
       "tool_result",
+      "turn_diff_updated",
       "turn_start",
       "usage_updated",
       "user",
@@ -2419,6 +2424,49 @@
           }
         }
       },
+      "/api/agent/sessions/{session_id}/files": {
+        "get": {
+          "summary": "Get Session File",
+          "description": "只读打开当前会话工作目录内的普通文件。",
+          "operationId": "get_session_file_api_agent_sessions__session_id__files_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            },
+            {
+              "name": "path",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Path"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response"
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/{session_id}/interrupt": {
         "post": {
           "summary": "Interrupt Session",
@@ -2547,6 +2595,364 @@
                     "type": "object",
                     "additionalProperties": true,
                     "title": "Response Answer Session Request Api Agent Sessions  Session Id  Requests  Request Id  Answer Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/goal": {
+        "get": {
+          "summary": "Get Codex Goal",
+          "description": "读取 Codex thread 的原生 Goal；Claude Code 会话不适用。",
+          "operationId": "get_codex_goal_api_agent_sessions__session_id__goal_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Codex Goal Api Agent Sessions  Session Id  Goal Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Set Codex Goal",
+          "description": "创建或局部更新 Codex thread 的原生 Goal。",
+          "operationId": "set_codex_goal_api_agent_sessions__session_id__goal_put",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetCodexGoalRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Set Codex Goal Api Agent Sessions  Session Id  Goal Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Clear Codex Goal",
+          "description": "清除 Codex thread 的原生 Goal。",
+          "operationId": "clear_codex_goal_api_agent_sessions__session_id__goal_delete",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Clear Codex Goal Api Agent Sessions  Session Id  Goal Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/commands": {
+        "get": {
+          "summary": "List Codex Commands",
+          "description": "返回当前 CLI 版本经过验证的 session-scoped 命令 roster。",
+          "operationId": "list_codex_commands_api_agent_sessions__session_id__commands_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Codex Commands Api Agent Sessions  Session Id  Commands Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/commands/compact": {
+        "post": {
+          "summary": "Compact Codex Session",
+          "description": "调用 ``thread/compact/start``，不创建普通用户消息。",
+          "operationId": "compact_codex_session_api_agent_sessions__session_id__commands_compact_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Compact Codex Session Api Agent Sessions  Session Id  Commands Compact Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/commands/review": {
+        "post": {
+          "summary": "Start Codex Review",
+          "description": "按 0.144.0 ReviewTarget schema 启动 inline 原生审查。",
+          "operationId": "start_codex_review_api_agent_sessions__session_id__commands_review_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartCodexReviewRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Start Codex Review Api Agent Sessions  Session Id  Commands Review Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/events": {
+        "get": {
+          "summary": "Stream Codex Events",
+          "description": "常驻订阅 Codex live 事件；多个客户端共享一个原生队列 reader。",
+          "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/turns": {
+        "post": {
+          "summary": "Start Codex Turn",
+          "description": "启动一个 Codex turn，live 事件由常驻 events SSE 发送。",
+          "operationId": "start_codex_turn_api_agent_sessions__session_id__turns_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Start Codex Turn Api Agent Sessions  Session Id  Turns Post"
                   }
                 }
               }
@@ -2696,6 +3102,57 @@
           }
         }
       },
+      "/api/agent/sessions/{session_id}/subagents/{thread_id}/history": {
+        "get": {
+          "summary": "Get Subagent History",
+          "description": "Replay a Codex child thread after validating its root-session ownership.",
+          "operationId": "get_subagent_history_api_agent_sessions__session_id__subagents__thread_id__history_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            },
+            {
+              "name": "thread_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Thread Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Subagent History Api Agent Sessions  Session Id  Subagents  Thread Id  History Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/quota": {
         "get": {
           "summary": "List Quota",
@@ -2793,6 +3250,27 @@
           "title": "AnswerElicitRequest",
           "description": "回答待处理的 AskUserQuestion；`cancel` 会写入 deny control_response。"
         },
+        "BaseBranchReviewTarget": {
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "baseBranch",
+              "title": "Type"
+            },
+            "branch": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Branch"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "branch"
+          ],
+          "title": "BaseBranchReviewTarget"
+        },
         "BuyItemRequest": {
           "properties": {
             "item_id": {
@@ -2806,6 +3284,39 @@
             "item_id"
           ],
           "title": "BuyItemRequest"
+        },
+        "CommitReviewTarget": {
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "commit",
+              "title": "Type"
+            },
+            "sha": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Sha"
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Title"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "sha"
+          ],
+          "title": "CommitReviewTarget"
         },
         "CreateAgentSessionRequest": {
           "properties": {
@@ -3054,6 +3565,27 @@
           ],
           "title": "CreateSessionRequest",
           "description": "创建或恢复 CC 会话，并设置本次运行使用的模型、权限与注入开关。"
+        },
+        "CustomReviewTarget": {
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "custom",
+              "title": "Type"
+            },
+            "instructions": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Instructions"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "instructions"
+          ],
+          "title": "CustomReviewTarget"
         },
         "EquipRequest": {
           "properties": {
@@ -3360,6 +3892,91 @@
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。"
         },
+        "SetCodexGoalRequest": {
+          "properties": {
+            "objective": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Objective"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "paused",
+                    "blocked",
+                    "usageLimited",
+                    "budgetLimited",
+                    "complete"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            },
+            "token_budget": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1.0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Budget"
+            }
+          },
+          "type": "object",
+          "title": "SetCodexGoalRequest"
+        },
+        "StartCodexReviewRequest": {
+          "properties": {
+            "target": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/UncommittedChangesReviewTarget"
+                },
+                {
+                  "$ref": "#/components/schemas/BaseBranchReviewTarget"
+                },
+                {
+                  "$ref": "#/components/schemas/CommitReviewTarget"
+                },
+                {
+                  "$ref": "#/components/schemas/CustomReviewTarget"
+                }
+              ],
+              "title": "Target",
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "baseBranch": "#/components/schemas/BaseBranchReviewTarget",
+                  "commit": "#/components/schemas/CommitReviewTarget",
+                  "custom": "#/components/schemas/CustomReviewTarget",
+                  "uncommittedChanges": "#/components/schemas/UncommittedChangesReviewTarget"
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "target"
+          ],
+          "title": "StartCodexReviewRequest"
+        },
         "SubmitRequest": {
           "properties": {
             "card_id": {
@@ -3399,6 +4016,21 @@
           ],
           "title": "SuggestionStatusUpdate",
           "description": "用户对画像建议的接受或丢弃决定。"
+        },
+        "UncommittedChangesReviewTarget": {
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "uncommittedChanges",
+              "title": "Type"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "title": "UncommittedChangesReviewTarget"
         },
         "ValidationError": {
           "properties": {

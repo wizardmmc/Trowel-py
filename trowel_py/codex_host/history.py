@@ -17,6 +17,7 @@ from trowel_py.codex_host.translator import CodexTranslator
 
 _log = logging.getLogger(__name__)
 _TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall"})
+_ACTIVITY_ITEM_TYPES = frozenset({"subAgentActivity", "collabAgentToolCall"})
 
 
 def events_from_thread(
@@ -24,6 +25,7 @@ def events_from_thread(
     thread: Mapping[str, Any],
     *,
     translator: CodexTranslator | None = None,
+    include_turn_started: bool = False,
 ) -> list[CodexEvent]:
     """只转换已知 item；单个未知或漂移 item 不阻断其余 turn。"""
 
@@ -59,6 +61,12 @@ def events_from_thread(
             continue
         raw_turn_id = turn.get("id")
         turn_id = raw_turn_id if isinstance(raw_turn_id, str) else None
+        if include_turn_started and turn_id is not None:
+            append(
+                CodexEventType.TURN_STARTED,
+                turn_id=turn_id,
+                payload=immutable_payload(autonomous=True, memory_eligible=False),
+            )
         items = turn.get("items")
         if isinstance(items, list):
             for item in items:
@@ -97,6 +105,15 @@ def events_from_thread(
                         )
                 elif item_type in _TOOL_ITEM_TYPES and turn_id and thread_id:
                     _append_tool_events(
+                        events,
+                        session_id=session_id,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        item=item,
+                        translator=native_translator,
+                    )
+                elif item_type in _ACTIVITY_ITEM_TYPES and turn_id and thread_id:
+                    _append_activity_event(
                         events,
                         session_id=session_id,
                         thread_id=thread_id,
@@ -151,6 +168,27 @@ def _append_tool_events(
         translated += translator.translate("item/completed", params)
     except ProtocolViolationError:
         _log.debug("skipping malformed Codex history item", exc_info=True)
+        return
+    for native in translated:
+        events.append(_stamp(session_id, len(events) + 1, native))
+
+
+def _append_activity_event(
+    events: list[CodexEvent],
+    *,
+    session_id: str,
+    thread_id: str,
+    turn_id: str,
+    item: Mapping[str, Any],
+    translator: CodexTranslator,
+) -> None:
+    method = "item/started" if item.get("status") == "inProgress" else "item/completed"
+    try:
+        translated = translator.translate(
+            method, {"threadId": thread_id, "turnId": turn_id, "item": item}
+        )
+    except ProtocolViolationError:
+        _log.debug("skipping malformed Codex history activity", exc_info=True)
         return
     for native in translated:
         events.append(_stamp(session_id, len(events) + 1, native))

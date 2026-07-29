@@ -26,6 +26,14 @@ def _command_action_notifications() -> list[dict]:
     ]
 
 
+def _subagent_notifications() -> list[dict]:
+    return [
+        json.loads(line)
+        for line in (_FIXTURES / "subagent-0.144.0.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+
 def _by_method(method: str) -> dict:
 
     for msg in _notifications():

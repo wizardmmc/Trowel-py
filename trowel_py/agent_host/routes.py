@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from collections.abc import Awaitable, Callable
 from typing import Any, ParamSpec, TypeVar
 
@@ -23,14 +24,37 @@ from trowel_py.agent_host.hub import (
     SessionNotFoundError,
     SessionOperationError,
 )
+from trowel_py.agent_host.local_files import (
+    InvalidLocalFilePath,
+    LocalFileAccessError,
+    LocalFileNotFoundError,
+    iter_file_chunks,
+    open_local_file,
+)
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
     CreateAgentSessionRequest,
     PatchAgentSessionRequest,
+    SetCodexGoalRequest,
     SendMessageBody,
+    StartCodexReviewRequest,
 )
 
 router = APIRouter()
+
+_LOCAL_FILE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "sandbox allow-scripts; default-src 'none'; "
+        "script-src 'unsafe-inline' 'unsafe-eval' https:; "
+        "style-src 'unsafe-inline' https:; "
+        "img-src data: blob: https:; font-src data: https:; "
+        "media-src data: blob: https:; connect-src 'none'; "
+        "form-action 'none'; base-uri 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -161,6 +185,33 @@ def get_session(
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
+@router.get("/sessions/{session_id}/files", response_class=StreamingResponse)
+def get_session_file(
+    session_id: str,
+    path: str = Query(..., min_length=1),
+    hub: SessionHub = Depends(get_hub),
+) -> StreamingResponse:
+    """只读打开当前会话工作目录内的普通文件。"""
+
+    binding = hub.get(session_id)
+    if binding is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    try:
+        handle = open_local_file(binding.workdir, path)
+    except InvalidLocalFilePath as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LocalFileAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LocalFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return StreamingResponse(
+        iter_file_chunks(handle),
+        media_type=media_type,
+        headers=_LOCAL_FILE_HEADERS,
+    )
+
+
 @router.patch("/sessions/{session_id}")
 async def patch_session(
     session_id: str,
@@ -251,6 +302,123 @@ async def answer_session_request(
     }
 
 
+@router.get("/sessions/{session_id}/goal")
+async def get_codex_goal(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """读取 Codex thread 的原生 Goal；Claude Code 会话不适用。"""
+
+    goal = await _await_hub(hub.get_codex_goal, session_id)
+    return {"success": True, "data": {"goal": goal}, "error": None}
+
+
+@router.put("/sessions/{session_id}/goal")
+async def set_codex_goal(
+    session_id: str,
+    body: SetCodexGoalRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """创建或局部更新 Codex thread 的原生 Goal。"""
+
+    if not body.model_fields_set:
+        raise HTTPException(status_code=422, detail="Goal update requires at least one field")
+    goal = await _await_hub(
+        hub.set_codex_goal,
+        session_id,
+        objective=body.objective,
+        status=body.status,
+        token_budget=body.token_budget,
+        token_budget_supplied="token_budget" in body.model_fields_set,
+    )
+    return {"success": True, "data": {"goal": goal}, "error": None}
+
+
+@router.delete("/sessions/{session_id}/goal")
+async def clear_codex_goal(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """清除 Codex thread 的原生 Goal。"""
+
+    cleared = await _await_hub(hub.clear_codex_goal, session_id)
+    return {"success": True, "data": {"cleared": cleared}, "error": None}
+
+
+@router.get("/sessions/{session_id}/commands")
+async def list_codex_commands(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """返回当前 CLI 版本经过验证的 session-scoped 命令 roster。"""
+
+    commands = await _await_hub(hub.list_codex_commands, session_id)
+    return {"success": True, "data": {"commands": commands}, "error": None}
+
+
+@router.post("/sessions/{session_id}/commands/compact")
+async def compact_codex_session(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """调用 ``thread/compact/start``，不创建普通用户消息。"""
+
+    await _await_hub(hub.compact_codex, session_id)
+    return {"success": True, "data": {"started": True}, "error": None}
+
+
+@router.post("/sessions/{session_id}/commands/review")
+async def start_codex_review(
+    session_id: str,
+    body: StartCodexReviewRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """按 0.144.0 ReviewTarget schema 启动 inline 原生审查。"""
+
+    result = await _await_hub(
+        hub.start_codex_review,
+        session_id,
+        body.target.model_dump(exclude_none=True),
+    )
+    return {"success": True, "data": result, "error": None}
+
+
+@router.get("/sessions/{session_id}/events")
+def stream_codex_events(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> StreamingResponse:
+    """常驻订阅 Codex live 事件；多个客户端共享一个原生队列 reader。"""
+
+    # 在返回 200 前完成 runtime/归属检查。
+    _call_hub(hub.require_codex_session, session_id)
+
+    async def gen():
+        try:
+            async for event in hub.subscribe_codex_events(session_id):
+                yield _sse(event)
+        except SessionHubError as exc:
+            yield _sse(hub.error_envelope(session_id, exc))
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/turns")
+async def start_codex_turn(
+    session_id: str,
+    body: SendMessageBody,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """启动一个 Codex turn，live 事件由常驻 events SSE 发送。"""
+
+    turn_id = await _await_hub(hub.start_codex_turn, session_id, body.text)
+    return {
+        "success": True,
+        "data": {"turn_id": turn_id},
+        "error": None,
+    }
+
+
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: str,
@@ -321,6 +489,18 @@ async def get_session_history(
     """按 binding runtime 回放原生 history；序号独立从 1 开始。"""
 
     envelopes = await _await_hub(hub.history, session_id)
+    return {"success": True, "data": envelopes, "error": None}
+
+
+@router.get("/sessions/{session_id}/subagents/{thread_id}/history")
+async def get_subagent_history(
+    session_id: str,
+    thread_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """Replay a Codex child thread after validating its root-session ownership."""
+
+    envelopes = await _await_hub(hub.child_history, session_id, thread_id)
     return {"success": True, "data": envelopes, "error": None}
 
 

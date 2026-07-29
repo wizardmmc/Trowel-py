@@ -17,6 +17,9 @@ function mergeSubagent(
     subagent_type: event.subagent_type ?? prev?.subagent_type ?? null,
     last_tool_name: event.last_tool_name ?? prev?.last_tool_name ?? null,
     usage: event.usage ?? prev?.usage ?? null,
+    agentThreadId: event.agent_thread_id ?? prev?.agentThreadId ?? null,
+    parentThreadId: event.parent_thread_id ?? prev?.parentThreadId ?? null,
+    agentPath: event.agent_path ?? prev?.agentPath ?? null,
   };
 }
 
@@ -38,9 +41,13 @@ function mergeSubagentIntoTree(
     return { ...tool, childTools: tool.childTools.map(merge) };
   };
 
-  const result = items.map((item) =>
-    item.kind === "tool" ? merge(item) : item,
-  );
+  const result = items.map((item) => {
+    if (item.kind === "subagent" && item.toolUseId === toolUseId) {
+      found = true;
+      return { ...item, subagent: mergeSubagent(item.subagent, event) };
+    }
+    return item.kind === "tool" ? merge(item) : item;
+  });
   return found ? result : null;
 }
 

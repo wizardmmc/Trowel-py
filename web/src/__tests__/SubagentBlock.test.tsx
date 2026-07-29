@@ -1,10 +1,32 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { SubagentBlock } from "../components/cc/SubagentBlock";
 import type { SubagentState, ToolItem } from "../stores/ccStore";
 
 describe("SubagentBlock", () => {
+  it("opens a native Codex child thread from its inline block", () => {
+    const onOpen = vi.fn();
+    render(
+      <SubagentBlock
+        subagent={{
+          status: "started",
+          agentThreadId: "child-thread-1",
+          agentPath: "/root/probe",
+        }}
+        onOpen={onOpen}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /root\/probe/ }));
+
+    expect(onOpen).toHaveBeenCalledWith("child-thread-1");
+    expect(screen.getByTestId("subagent-child-thread-1")).toHaveAttribute(
+      "data-status",
+      "started",
+    );
+  });
+
   it("renders type + description + last tool + tokens while in progress", () => {
     const sub: SubagentState = {
       status: "progress",
@@ -37,12 +59,16 @@ describe("SubagentBlock", () => {
     expect(screen.queryByLabelText("进行中")).toBeNull();
   });
 
-  it.each(["failed", "cancelled", "unknown"] as const)(
-    "status %s stops the spinner",
-    (status) => {
+  it.each([
+    ["failed", "Failed"],
+    ["cancelled", "Interrupted"],
+    ["unknown", "Done"],
+  ] as const)(
+    "status %s stops the spinner and shows its terminal label",
+    (status, label) => {
       render(<SubagentBlock subagent={{ status }} />);
       expect(screen.queryByLabelText("进行中")).toBeNull();
-      expect(screen.getByText(/Done/)).toBeInTheDocument();
+      expect(screen.getByText(label)).toBeInTheDocument();
     },
   );
 
