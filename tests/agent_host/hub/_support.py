@@ -150,9 +150,17 @@ class FakeCodexManager:
     async def list_commands(self) -> list[dict[str, Any]]:
         return command_roster("0.144.0")
 
-    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
         self.list_thread_calls.append((cwd, limit))
-        return self.threads[:limit]
+        return [
+            thread for thread in self.threads if thread.get("id") not in excluded_ids
+        ][:limit]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.read_thread_calls.append(thread_id)

@@ -16,6 +16,10 @@ from typing import Any, Callable
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
 from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.codex_adapter import CodexEventAdapter
+from trowel_py.agent_host.delegate_identity import (
+    DelegateIdentityStore,
+    delegate_identity_path,
+)
 from trowel_py.agent_host.codex_launch import (
     _CODEX_PERMISSION_PRESETS,
     _injection_fingerprint,
@@ -151,6 +155,7 @@ class SessionHub:
         cc_settings_path: str | Path | None = None,
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
+        delegate_identity_store: DelegateIdentityStore | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -166,9 +171,15 @@ class SessionHub:
                 服务商所需的环境变量。
             codex_config_home: Codex 配置目录；创建会话前检查其中是否存在同名 MCP。
             event_observer: 接收每个通用事件的同步回调。
+            delegate_identity_store: 跨 binding 清理保留委派原生会话 ID 的本机索引；
+                未提供时在 binding 文件旁创建独立索引。
         """
 
         self._store = store
+        self._delegate_identities = delegate_identity_store or DelegateIdentityStore(
+            delegate_identity_path(store.path)
+        )
+        self._migrate_known_delegate_identities()
         self._codex = codex_manager
         self._cc_registry = (
             cc_registry if cc_registry is not None else _default_cc_registry()
@@ -200,6 +211,34 @@ class SessionHub:
         """是否已经配置 Codex 进程和 thread 管理器。"""
 
         return self._codex is not None
+
+    def _migrate_known_delegate_identities(self) -> None:
+        """把升级前仍保留 binding 的委派原生 ID 写入长期索引。"""
+
+        for binding in self._store.list_all():
+            self._remember_delegate_identity(binding)
+
+    def _remember_delegate_identity(
+        self,
+        binding: SessionBinding,
+        native_session_id: str | None = None,
+    ) -> None:
+        """在 binding 已确认是委派会话且已有原生 ID 时持久登记。
+
+        Args:
+            binding: 包含会话类别、运行工具和可选原生会话 ID 的 Trowel binding。
+            native_session_id: 运行时刚报告、尚未写回 binding 的原生会话 ID；未提供
+                时读取 binding 当前保存的值。
+        """
+
+        effective_native_id = native_session_id or binding.native_session_id
+        if (
+            binding.session_kind != "delegate"
+            or not isinstance(effective_native_id, str)
+            or not effective_native_id
+        ):
+            return
+        self._delegate_identities.add(binding.runtime, effective_native_id)
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
         """创建 Claude Code 或 Codex 会话，并保存对应的 Trowel 会话记录。
@@ -477,6 +516,7 @@ class SessionHub:
             name=opened.name,
         )
         self._store.put(binding)
+        self._remember_delegate_identity(binding)
         if req.session_kind == "user":
             self._active_id = opened.sid
         return binding
@@ -519,6 +559,7 @@ class SessionHub:
             declared_mcp_roster=prepared.declared_mcp_roster,
         )
         self._store.put(binding)
+        self._remember_delegate_identity(binding)
         if req.session_kind == "user":
             self._active_id = sid
         return binding
@@ -612,12 +653,21 @@ class SessionHub:
         except HistoryCursorError as exc:
             raise InvalidSessionRequestError(str(exc)) from exc
         required = offset + limit + 1
+        cc_delegate_ids = self._delegate_identities.ids(Runtime.CLAUDE_CODE)
+        codex_delegate_ids = self._delegate_identities.ids(Runtime.CODEX)
         cc_summaries = await asyncio.to_thread(
-            scan_cc_history, workdir, limit=required
+            scan_cc_history,
+            workdir,
+            limit=required,
+            excluded_ids=cc_delegate_ids,
         )
         codex_threads: list[dict[str, Any]] = []
         if self._codex is not None:
-            codex_threads = await self._codex.list_threads(cwd=workdir, limit=required)
+            codex_threads = await self._codex.list_threads(
+                cwd=workdir,
+                limit=required,
+                excluded_ids=codex_delegate_ids,
+            )
         return merge_history_page(
             cc_summaries,
             codex_threads,
@@ -1381,6 +1431,9 @@ class SessionHub:
         binding = self._store.get(session_id)
         if binding is None:
             return False
+        # 清理 binding 前再确认一次长期身份；索引失败时保留 binding，避免永久失去
+        # 该原生会话属于 delegate 的唯一可靠证据。
+        self._remember_delegate_identity(binding)
         if binding.runtime is Runtime.CLAUDE_CODE:
             # 复用旧 closer，保持 registry、多开索引与 active id 一致。
             from trowel_py.cc_host import routes as cc_routes
@@ -1691,6 +1744,11 @@ class SessionHub:
         model = getattr(host, "effective_model", None) or getattr(host, "model", None)
         if cc_session_id is None and model is None:
             return
+        binding = self._store.get(session_id)
+        if binding is None:
+            _log.debug("cc writeback skipped, binding %s gone", session_id)
+            return
+        self._remember_delegate_identity(binding, cc_session_id)
         try:
             self._store.update_native(
                 session_id,
@@ -1716,6 +1774,11 @@ class SessionHub:
         thread_binding = getattr(session, "binding", None)
         if thread_binding is None or not thread_binding.model:
             return
+        binding = self._store.get(session_id)
+        if binding is None:
+            _log.debug("codex writeback skipped, binding %s gone", session_id)
+            return
+        self._remember_delegate_identity(binding, thread_binding.thread_id)
         try:
             sandbox = getattr(thread_binding, "effective_sandbox", None)
             approval = getattr(thread_binding, "effective_approval", None)

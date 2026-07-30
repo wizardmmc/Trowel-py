@@ -31,7 +31,9 @@ async def test_history_pages_merge_both_runtimes_in_global_updated_order(
 ) -> None:
     hub, manager = history_hub
     cc = [
-        SessionSummary(cc_session_id=f"cc-{index:02}", title=f"CC {index}", updated_at=index * 2)
+        SessionSummary(
+            cc_session_id=f"cc-{index:02}", title=f"CC {index}", updated_at=index * 2
+        )
         for index in range(25)
     ]
     manager.threads = [
@@ -45,7 +47,11 @@ async def test_history_pages_merge_both_runtimes_in_global_updated_order(
     ]
     monkeypatch.setattr(
         "trowel_py.agent_host.history.scan_cc_history",
-        lambda _workdir, *, limit: sorted(cc, key=lambda row: row.updated_at, reverse=True)[:limit],
+        lambda _workdir, *, limit, excluded_ids=frozenset(): [
+            row
+            for row in sorted(cc, key=lambda row: row.updated_at, reverse=True)
+            if row.cc_session_id not in excluded_ids
+        ][:limit],
     )
 
     first, first_cursor = await hub.list_history("/workspace", limit=20, cursor=None)

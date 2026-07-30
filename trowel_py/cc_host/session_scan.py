@@ -185,7 +185,10 @@ def read_session_config(
 
 
 def list_sessions(
-    workdir: str | os.PathLike, *, limit: int | None = None
+    workdir: str | os.PathLike,
+    *,
+    limit: int | None = None,
+    excluded_ids: frozenset[str] = frozenset(),
 ) -> list[SessionSummary]:
     """列出工作目录中按文件修改时间倒序排列的可恢复 CC 会话。
 
@@ -196,6 +199,7 @@ def list_sessions(
         workdir: 要扫描历史会话的工作目录。
         limit: 修改时间倒序排序后使用的切片上限；`None` 返回全部，非负数返回前
             `limit` 条，负数按 Python 切片语义移除末尾相应条数。
+        excluded_ids: 在标题读取、排序和切片前排除的 Claude Code session ID。
 
     Returns:
         通过过滤的会话摘要；项目目录不存在时返回空列表。
@@ -207,6 +211,8 @@ def list_sessions(
     out: list[SessionSummary] = []
     for f in proj_dir.glob("*.jsonl"):
         if not _is_valid_uuid_session_id(f.stem):
+            continue
+        if f.stem in excluded_ids:
             continue
         try:
             mtime = f.stat().st_mtime
