@@ -62,4 +62,21 @@ describe("createCcStore — send admission", () => {
     expect(refused.connected).toBe(false);
     expect(refused.transportError).toMatch(/连接数已达上限/);
   });
+
+  it("delegate sessions do not consume the user running limit", async () => {
+    const store = createCcStore();
+    for (let index = 0; index < MAX_RUNNING; index += 1) {
+      mockCreate(`delegate-${index}`, { session_kind: "delegate" });
+      await store.getState().startSession({ workdir: `/delegate-${index}` });
+      void store.getState().send("background");
+    }
+    mockCreate("user");
+    await store.getState().startSession({ workdir: "/user" });
+
+    void store.getState().send("foreground");
+
+    expect(store.getState().sessions.user.abort).not.toBeNull();
+    expect(store.getState().sessions.user.transportError).toBeNull();
+    await releaseAllStreams();
+  });
 });

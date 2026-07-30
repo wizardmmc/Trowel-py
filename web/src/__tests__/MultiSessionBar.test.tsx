@@ -211,4 +211,25 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText(/1\/5 在跑/)).toBeInTheDocument();
     expect(screen.getByText(/2\/20 连接/)).toBeInTheDocument();
   });
+
+  it("hides delegate sessions from rows and user counts", () => {
+    setSessions(
+      {
+        user: makeSession({ name: "user" }),
+        delegate: makeSession({
+          name: "delegate",
+          sessionKind: "delegate",
+          abort: new AbortController(),
+        }),
+      },
+      "user",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("user")).toBeInTheDocument();
+    expect(screen.queryByText("delegate")).toBeNull();
+    expect(screen.getByText(/0\/5 在跑/)).toBeInTheDocument();
+    expect(screen.getByText(/1\/20 连接/)).toBeInTheDocument();
+  });
 });

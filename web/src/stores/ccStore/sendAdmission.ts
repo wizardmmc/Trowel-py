@@ -33,7 +33,8 @@ export function admitSessionSend(
   }
 
   const running = Object.values(sessions).filter(
-    (candidate) => candidate.abort !== null,
+    (candidate) =>
+      candidate.sessionKind !== "delegate" && candidate.abort !== null,
   ).length;
   if (running >= MAX_RUNNING) {
     return rejectWithError(
@@ -46,7 +47,10 @@ export function admitSessionSend(
 
   if (!session.connected) {
     const connectedCount = Object.values(sessions).filter(
-      (candidate) => candidate.connected && !candidate.meta.exited,
+      (candidate) =>
+        candidate.sessionKind !== "delegate" &&
+        candidate.connected &&
+        !candidate.meta.exited,
     ).length;
     if (connectedCount >= MAX_CONNECTIONS) {
       return rejectWithError(

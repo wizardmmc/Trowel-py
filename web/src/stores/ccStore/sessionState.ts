@@ -27,6 +27,7 @@ export interface PerSessionState extends ReducerState {
   readonly transportError: string | null;
   abort: AbortController | null;
   readonly connected: boolean;
+  readonly sessionKind?: "user" | "delegate";
   readonly memoryEnabled: boolean;
   readonly profileEnabled: boolean;
   readonly runtime: Runtime;
@@ -115,6 +116,7 @@ function createSessionState(
     transportError: null,
     abort: null,
     connected: identity.connected,
+    sessionKind: session.session_kind ?? "user",
     memoryEnabled: session.memory_enabled,
     profileEnabled: session.profile_enabled,
     runtime: session.runtime,

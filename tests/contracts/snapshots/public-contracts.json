@@ -2239,7 +2239,7 @@
       "/api/agent/sessions/active": {
         "get": {
           "summary": "List Active",
-          "description": "返回当前会话列表，以及各会话的连接、处理和选中状态。\n\n列表也包含尚未连接或已经断开的会话。active_id 只表示工作台当前选中的会话，\n不表示该会话正在执行任务。\n\nArgs:\n    hub: 用于读取会话及实时状态的 Session Hub。\n\nReturns:\n    统一响应。data.sessions 为会话列表，data.active_id 为当前选中的会话 ID；\n    没有选中会话时为 None。",
+          "description": "返回用户直接管理的会话，以及各会话的连接、处理和选中状态。\n\n列表不包含 Agent MCP 创建的委派子会话，但仍包含尚未连接或已经断开的用户\n会话。active_id 只表示工作台当前选中的用户会话，不表示该会话正在执行任务。\n\nArgs:\n    hub: 用于读取会话及实时状态的 Session Hub。\n\nReturns:\n    统一响应。data.sessions 为用户会话列表，data.active_id 为当前选中的用户\n    会话 ID；没有选中会话时为 None。",
           "operationId": "list_active_api_agent_sessions_active_get",
           "responses": {
             "200": {
@@ -2260,7 +2260,7 @@
       "/api/agent/sessions/{session_id}/activate": {
         "post": {
           "summary": "Activate Session",
-          "description": "把指定会话设为工作台当前选中的会话。\n\n此操作只改变选中状态，不会启动、中断或关闭任何会话。\n\nArgs:\n    session_id: 要切换到的会话 ID。\n    hub: 用于更新当前选中会话的 Session Hub。\n\nReturns:\n    统一响应。data.active_id 为切换后的会话 ID。\n\nRaises:\n    HTTPException: 找不到指定会话，此时返回 404。",
+          "description": "把指定用户会话设为工作台当前选中的会话。\n\n此操作只改变选中状态，不会启动、中断或关闭任何会话。\n\nArgs:\n    session_id: 要切换到的会话 ID。\n    hub: 用于更新当前选中会话的 Session Hub。\n\nReturns:\n    统一响应。data.active_id 为切换后的会话 ID。\n\nRaises:\n    HTTPException: 找不到指定会话时返回 404；指定会话不是用户会话时返回\n        422。",
           "operationId": "activate_session_api_agent_sessions__session_id__activate_post",
           "parameters": [
             {

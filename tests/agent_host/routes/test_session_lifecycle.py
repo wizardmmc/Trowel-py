@@ -70,6 +70,57 @@ def test_get_active_lists_mixed(
     }
 
 
+def test_get_active_excludes_delegates_but_id_routes_keep_working(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    user = create_session(client, cc_payload(workdir))
+    cc_delegate = create_session(
+        client,
+        cc_payload(workdir, session_kind="delegate"),
+    )
+    codex_delegate = create_session(
+        client,
+        codex_payload(workdir, session_kind="delegate"),
+    )
+
+    active = client.get("/api/agent/sessions/active").json()["data"]
+
+    assert [session["session_id"] for session in active["sessions"]] == [
+        user["session_id"]
+    ]
+    assert active["active_id"] == user["session_id"]
+    for delegate in (cc_delegate, codex_delegate):
+        session_id = delegate["session_id"]
+        assert client.get(f"/api/agent/sessions/{session_id}").status_code == 200
+        assert (
+            client.post(f"/api/agent/sessions/{session_id}/interrupt").status_code
+            == 200
+        )
+        assert client.delete(f"/api/agent/sessions/{session_id}").status_code == 200
+
+    assert (
+        client.get("/api/agent/sessions/active").json()["data"]["active_id"]
+        == user["session_id"]
+    )
+
+
+def test_activate_delegate_is_rejected(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    delegate = create_session(
+        client,
+        codex_payload(workdir, session_kind="delegate"),
+    )
+
+    response = client.post(
+        f"/api/agent/sessions/{delegate['session_id']}/activate"
+    )
+
+    assert response.status_code == 422
+
+
 def test_get_session_defaults_returns_latest_used_runtime_config(
     client: TestClient,
     hub: SessionHub,

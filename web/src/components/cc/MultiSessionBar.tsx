@@ -40,7 +40,8 @@ export function MultiSessionBar({
   const close = useCcStore((s) => s.closeSession);
 
   const connected = Object.entries(sessions).filter(
-    ([, s]) => s.connected && !s.meta.exited,
+    ([, s]) =>
+      s.sessionKind !== "delegate" && s.connected && !s.meta.exited,
   );
   const running = connected.filter(([, s]) => s.abort !== null).length;
   const connections = connected.length;

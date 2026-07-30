@@ -477,7 +477,8 @@ class SessionHub:
             name=opened.name,
         )
         self._store.put(binding)
-        self._active_id = opened.sid
+        if req.session_kind == "user":
+            self._active_id = opened.sid
         return binding
 
     def _create_codex(self, req: CreateAgentSessionRequest) -> SessionBinding:
@@ -518,7 +519,8 @@ class SessionHub:
             declared_mcp_roster=prepared.declared_mcp_roster,
         )
         self._store.put(binding)
-        self._active_id = sid
+        if req.session_kind == "user":
+            self._active_id = sid
         return binding
 
     def _refuse_on_trowel_mcp_collision(self, workdir: str) -> None:
@@ -750,21 +752,25 @@ class SessionHub:
         return binding
 
     def list_active(self) -> tuple[list[dict[str, Any]], str | None]:
-        """列出全部 Trowel 会话，并补充当前连接和轮次运行状态。
+        """列出用户直接管理的会话，并补充当前连接和轮次运行状态。
 
         Returns:
-            会话记录列表与当前选中的会话 ID。每条记录在原有字段外增加 connected 和
-            running；当前没有选中会话时，会话 ID 为 None。
+            用户会话记录列表与当前选中的用户会话 ID。每条记录在原有字段外增加
+            connected 和 running；当前没有选中用户会话时，会话 ID 为 None。
         """
 
         items: list[dict[str, Any]] = []
         for binding in self._store.list_all():
+            if binding.session_kind != "user":
+                continue
             item = binding.to_dict()
             connected, running = self._live_status(binding)
             item["connected"] = connected
             item["running"] = running
             items.append(item)
-        return items, self._active_id
+        user_ids = {str(item["session_id"]) for item in items}
+        active_id = self._active_id if self._active_id in user_ids else None
+        return items, active_id
 
     def _live_status(self, binding: SessionBinding) -> tuple[bool, bool]:
         """计算会话列表中的 connected 和 running 状态。
@@ -796,7 +802,7 @@ class SessionHub:
         return True, state_value == "running"
 
     def activate(self, session_id: str) -> str:
-        """将指定 Trowel 会话设为当前选中的会话。
+        """将指定用户会话设为当前选中的会话。
 
         选择 Claude Code 会话时，同时更新旧版 Claude Code 接口保存的当前会话 ID，
         保证两个接口状态一致。
@@ -809,9 +815,14 @@ class SessionHub:
 
         Raises:
             SessionNotFoundError: 找不到对应的 Trowel 会话。
+            SessionOperationError: 指定会话是后台委派会话，不能进入用户工作台。
         """
 
         binding = self._require(session_id)
+        if binding.session_kind != "user":
+            raise SessionOperationError(
+                "delegate session cannot become the current user session"
+            )
         self._active_id = session_id
         if binding.runtime is Runtime.CLAUDE_CODE:
             from trowel_py.cc_host import routes as cc_routes

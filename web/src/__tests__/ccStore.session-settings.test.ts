@@ -90,6 +90,36 @@ describe("createCcStore — backend session reconciliation", () => {
     await store.getState().refreshActiveSessions();
     expect(store.getState().sessions).toEqual({});
   });
+
+  it("ignores delegate rows if an old backend returns them", async () => {
+    const store = createCcStore();
+    listActiveSessions.mockResolvedValueOnce({
+      sessions: [
+        {
+          session_id: "delegate",
+          runtime: "codex",
+          native_session_id: "thread-delegate",
+          workdir: "/wd",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          permission: null,
+          memory_enabled: true,
+          profile_enabled: true,
+          capabilities: ["tools", "approval", "subagents"],
+          name: "internal",
+          connected: true,
+          running: true,
+          session_kind: "delegate",
+        },
+      ],
+      activeId: "delegate",
+    });
+
+    await store.getState().refreshActiveSessions();
+
+    expect(store.getState().sessions).toEqual({});
+    expect(store.getState().activeSid).toBeNull();
+  });
 });
 
 describe("createCcStore — memory/profile A/B switches", () => {

@@ -164,7 +164,8 @@ def open_cc_session_configured(
         max_connections=MAX_CONNECTIONS,
         host_factory=CCHost,
     )
-    set_active_session_id(sid)
+    if req.session_kind == "user":
+        set_active_session_id(sid)
     return OpenedCcSession(sid=sid, host=host, name=name)
 
 

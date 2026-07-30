@@ -309,9 +309,16 @@ export function createCcStore() {
         } catch {
           return;
         }
+        const userSessions = backend.filter(
+          (session) => (session.session_kind ?? "user") === "user",
+        );
         set((state) => {
-          const merged = { ...state.sessions };
-          for (const b of backend) {
+          const merged = Object.fromEntries(
+            Object.entries(state.sessions).filter(
+              ([, session]) => session.sessionKind !== "delegate",
+            ),
+          );
+          for (const b of userSessions) {
             if (merged[b.session_id]) continue;
             merged[b.session_id] = createReconciledSessionState(b);
           }
@@ -320,10 +327,10 @@ export function createCcStore() {
               ? state.activeSid
               : activeId && merged[activeId]
                 ? activeId
-                : state.activeSid;
+                : null;
           return { ...state, sessions: merged, activeSid };
         });
-        for (const session of backend) {
+        for (const session of userSessions) {
           if (session.runtime === "codex" && session.connected) {
             codexLive.watchInBackground(session.session_id);
             void codexLive.refreshGoal(session.session_id);
