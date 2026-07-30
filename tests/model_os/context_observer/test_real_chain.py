@@ -10,7 +10,9 @@ from trowel_py.model_os.context_observer import (
 class TestCcRealChain:
     def test_real_assistant_envelope_yields_context_sample(self):
         from trowel_py.cc_host.translator import Translator
-        from trowel_py.agent_host.cc_adapter import CcEventAdapter
+        from trowel_py.agent_host.runtimes.claude_code import (
+            ClaudeCodeEventAdapter,
+        )
 
         raw_assistant = {
             "type": "assistant",
@@ -29,7 +31,7 @@ class TestCcRealChain:
         trowel_events = Translator().translate(raw_assistant)
         # 内容事件不再携带 usage，必须在拆分前单独产出 ContextUsageEvent。
         assert "ContextUsageEvent" in {type(e).__name__ for e in trowel_events}
-        adapter = CcEventAdapter("s1")
+        adapter = ClaudeCodeEventAdapter("s1")
         agent_events = [
             ae.model_dump(by_alias=True)
             for ae in (adapter.wrap(e.model_dump()) for e in trowel_events)
@@ -50,7 +52,9 @@ class TestCcRealChain:
 
     def test_real_compact_boundary_carries_trigger(self):
         from trowel_py.cc_host.translator import Translator
-        from trowel_py.agent_host.cc_adapter import CcEventAdapter
+        from trowel_py.agent_host.runtimes.claude_code import (
+            ClaudeCodeEventAdapter,
+        )
 
         raw_boundary = {
             "type": "system",
@@ -58,7 +62,7 @@ class TestCcRealChain:
             "compactMetadata": {"trigger": "auto", "preTokens": 167000},
         }
         trowel_events = Translator().translate(raw_boundary)
-        adapter = CcEventAdapter("s1")
+        adapter = ClaudeCodeEventAdapter("s1")
         agent_events = [
             ae.model_dump(by_alias=True)
             for ae in (adapter.wrap(e.model_dump()) for e in trowel_events)

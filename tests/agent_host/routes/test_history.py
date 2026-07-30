@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 
 from tests.agent_host.routes.support import put_cc_binding
 from trowel_py.agent_host.binding import Runtime, make_binding
-from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import SessionHub
+from trowel_py.agent_host.runtimes.claude_code import ClaudeCodeEventAdapter
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 from trowel_py.schemas.cc_host import FinishedEvent, TextEvent, UserEvent
 
@@ -230,7 +230,7 @@ def test_error_envelope_uses_per_session_seq_not_fixed_one(
         workdir,
         native_session_id="cc-native-error",
     )
-    adapter = CcEventAdapter(session_id)
+    adapter = ClaudeCodeEventAdapter(session_id)
     for _ in range(3):
         adapter.wrap(TextEvent(text="x").model_dump())
     hub._cc_adapters[session_id] = adapter  # noqa: SLF001

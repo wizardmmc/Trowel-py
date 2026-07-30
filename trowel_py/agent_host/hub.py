@@ -13,13 +13,24 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from trowel_py.agent_capacity import (
+    DELEGATE_CONNECTION_LIMIT,
+    DELEGATE_RUNNING_LIMIT,
+    USER_CONNECTION_LIMIT,
+    USER_RUNNING_LIMIT,
+)
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
-from trowel_py.agent_host.cc_adapter import CcEventAdapter
-from trowel_py.agent_host.codex_adapter import CodexEventAdapter
+from trowel_py.agent_host.capacity import (
+    CapacityConflictError,
+    CapacityLimitError,
+    CapacityLimits,
+    SessionCapacityGate,
+)
 from trowel_py.agent_host.delegate_identity import (
     DelegateIdentityStore,
     delegate_identity_path,
 )
+from trowel_py.agent_host.lifecycle import SessionInFlightError, SessionLifecycle
 from trowel_py.agent_host.codex_launch import (
     _CODEX_PERMISSION_PRESETS,
     _injection_fingerprint,
@@ -31,6 +42,13 @@ from trowel_py.agent_host.codex_settings import (
     select_turn_settings,
 )
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.agent_host.runtimes import (
+    ClaudeCodeEventAdapter,
+    ClaudeCodeRuntimeAdapter,
+    CodexEventAdapter,
+    CodexRuntimeAdapter,
+    RuntimeSessionPort,
+)
 from trowel_py.codex_host.pending_requests import (
     PendingRequestConflictError,
     PendingRequestDecisionError,
@@ -53,9 +71,12 @@ CC_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "checkpoint", "workflow
 CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "subagents")
 
 # 连接上限按仍有 binding 的已注册 session/thread 计数，共享 manager 不合并名额。
-MAX_CONNECTIONS = 20
-# 公开兼容常量；Hub 当前未执行 running gate。
-MAX_RUNNING = 5
+MAX_CONNECTIONS = USER_CONNECTION_LIMIT
+# 用户会话的在跑上限仍由前端执行；该常量保留公开兼容。
+MAX_RUNNING = USER_RUNNING_LIMIT
+# 委派子会话由后端单独限制，两个 runtime 共用同一组连接和在跑名额。
+MAX_DELEGATE_CONNECTIONS = DELEGATE_CONNECTION_LIMIT
+MAX_DELEGATE_RUNNING = DELEGATE_RUNNING_LIMIT
 
 _TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
 
@@ -156,6 +177,8 @@ class SessionHub:
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
         delegate_identity_store: DelegateIdentityStore | None = None,
+        runtime_ports: Mapping[Runtime, RuntimeSessionPort] | None = None,
+        capacity_limits: CapacityLimits | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -173,13 +196,15 @@ class SessionHub:
             event_observer: 接收每个通用事件的同步回调。
             delegate_identity_store: 跨 binding 清理保留委派原生会话 ID 的本机索引；
                 未提供时在 binding 文件旁创建独立索引。
+            runtime_ports: 两种 runtime 的统一状态与关闭入口；未提供时根据 registry
+                和 Codex manager 构造默认适配器。
+            capacity_limits: 用户连接和委派资源池上限；未提供时使用生产默认值。
         """
 
         self._store = store
         self._delegate_identities = delegate_identity_store or DelegateIdentityStore(
             delegate_identity_path(store.path)
         )
-        self._migrate_known_delegate_identities()
         self._codex = codex_manager
         self._cc_registry = (
             cc_registry if cc_registry is not None else _default_cc_registry()
@@ -193,12 +218,37 @@ class SessionHub:
         self._event_observer = event_observer
         self._active_id: str | None = None
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
-        self._cc_adapters: dict[str, CcEventAdapter] = {}
+        self._cc_adapters: dict[str, ClaudeCodeEventAdapter] = {}
         self._codex_adapters: dict[str, CodexEventAdapter] = {}
         self._codex_event_subscribers: dict[
             str, set[asyncio.Queue[dict[str, Any] | None]]
         ] = {}
         self._codex_event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._runtime_ports: dict[Runtime, RuntimeSessionPort] = (
+            dict(runtime_ports)
+            if runtime_ports is not None
+            else {
+                Runtime.CLAUDE_CODE: ClaudeCodeRuntimeAdapter(self._cc_registry),
+                Runtime.CODEX: CodexRuntimeAdapter(self._codex),
+            }
+        )
+        self._capacity = SessionCapacityGate(
+            self._store,
+            self._runtime_ports,
+            capacity_limits
+            or CapacityLimits(
+                user_connections=MAX_CONNECTIONS,
+                delegate_connections=MAX_DELEGATE_CONNECTIONS,
+                delegate_running=MAX_DELEGATE_RUNNING,
+            ),
+        )
+        self._lifecycle = SessionLifecycle(
+            self._store,
+            self._delegate_identities,
+            self._runtime_ports,
+            self._capacity,
+        )
+        self._lifecycle.migrate_delegate_identities()
 
     @property
     def store(self) -> BindingStore:
@@ -211,34 +261,6 @@ class SessionHub:
         """是否已经配置 Codex 进程和 thread 管理器。"""
 
         return self._codex is not None
-
-    def _migrate_known_delegate_identities(self) -> None:
-        """把升级前仍保留 binding 的委派原生 ID 写入长期索引。"""
-
-        for binding in self._store.list_all():
-            self._remember_delegate_identity(binding)
-
-    def _remember_delegate_identity(
-        self,
-        binding: SessionBinding,
-        native_session_id: str | None = None,
-    ) -> None:
-        """在 binding 已确认是委派会话且已有原生 ID 时持久登记。
-
-        Args:
-            binding: 包含会话类别、运行工具和可选原生会话 ID 的 Trowel binding。
-            native_session_id: 运行时刚报告、尚未写回 binding 的原生会话 ID；未提供
-                时读取 binding 当前保存的值。
-        """
-
-        effective_native_id = native_session_id or binding.native_session_id
-        if (
-            binding.session_kind != "delegate"
-            or not isinstance(effective_native_id, str)
-            or not effective_native_id
-        ):
-            return
-        self._delegate_identities.add(binding.runtime, effective_native_id)
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
         """创建 Claude Code 或 Codex 会话，并保存对应的 Trowel 会话记录。
@@ -260,13 +282,13 @@ class SessionHub:
         req = self._inherit_resume_config(req)
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
-        if self._live_connection_count() >= MAX_CONNECTIONS:
-            raise SessionConflictError(
-                f"连接数已达上限（{MAX_CONNECTIONS}），请先关闭一些 session"
-            )
-        if req.runtime == "claude_code":
-            return self._create_cc(req)
-        return self._create_codex(req)
+        try:
+            with self._capacity.admit_connection(req.session_kind):
+                if req.runtime == "claude_code":
+                    return self._create_cc(req)
+                return self._create_codex(req)
+        except CapacityLimitError as exc:
+            raise SessionConflictError(str(exc)) from exc
 
     def _inherit_resume_config(
         self, req: CreateAgentSessionRequest
@@ -496,27 +518,30 @@ class SessionHub:
             raise InvalidSessionRequestError(str(exc)) from exc
         except CcCapacityError as exc:
             raise SessionConflictError(str(exc)) from exc
-        binding = make_binding(
-            session_id=opened.sid,
-            runtime=Runtime.CLAUDE_CODE,
-            native_session_id=req.resume_from,
-            workdir=req.workdir,
-            model=req.model,
-            effort=req.effort,
-            permission=cc_req.permission_mode,
-            memory_enabled=req.memory_enabled,
-            profile_enabled=req.profile_enabled,
-            self_enabled=req.self_enabled,
-            session_kind=req.session_kind,
-            memory_eligibility=req.memory_eligibility,
-            agent_mcp_enabled=req.agent_mcp_enabled,
-            parent_session_id=req.parent_session_id,
-            delegation_depth=req.delegation_depth,
-            capabilities=CC_CAPABILITIES,
-            name=opened.name,
-        )
-        self._store.put(binding)
-        self._remember_delegate_identity(binding)
+        try:
+            binding = make_binding(
+                session_id=opened.sid,
+                runtime=Runtime.CLAUDE_CODE,
+                native_session_id=req.resume_from,
+                workdir=req.workdir,
+                model=req.model,
+                effort=req.effort,
+                permission=cc_req.permission_mode,
+                memory_enabled=req.memory_enabled,
+                profile_enabled=req.profile_enabled,
+                self_enabled=req.self_enabled,
+                session_kind=req.session_kind,
+                memory_eligibility=req.memory_eligibility,
+                agent_mcp_enabled=req.agent_mcp_enabled,
+                parent_session_id=req.parent_session_id,
+                delegation_depth=req.delegation_depth,
+                capabilities=CC_CAPABILITIES,
+                name=opened.name,
+            )
+        except BaseException as exc:
+            self._lifecycle.abort_created(Runtime.CLAUDE_CODE, opened.sid, exc)
+            raise
+        self._lifecycle.commit_created(binding)
         if req.session_kind == "user":
             self._active_id = opened.sid
         return binding
@@ -536,30 +561,33 @@ class SessionHub:
         sid = prepared.session_id
         if self._codex is not None:
             self._codex.register(prepared.session)
-        binding = make_binding(
-            session_id=sid,
-            runtime=Runtime.CODEX,
-            native_session_id=req.resume_from,
-            workdir=req.workdir,
-            model=req.model,
-            effort=req.effort,
-            permission=None,
-            memory_enabled=req.memory_enabled,
-            profile_enabled=req.profile_enabled,
-            self_enabled=req.self_enabled,
-            session_kind=req.session_kind,
-            memory_eligibility=req.memory_eligibility,
-            agent_mcp_enabled=req.agent_mcp_enabled,
-            parent_session_id=req.parent_session_id,
-            delegation_depth=req.delegation_depth,
-            capabilities=CODEX_CAPABILITIES,
-            name=self._display_name(req.workdir),
-            permission_preset=prepared.permission_preset,
-            injection_hash=prepared.injection_hash,
-            declared_mcp_roster=prepared.declared_mcp_roster,
-        )
-        self._store.put(binding)
-        self._remember_delegate_identity(binding)
+        try:
+            binding = make_binding(
+                session_id=sid,
+                runtime=Runtime.CODEX,
+                native_session_id=req.resume_from,
+                workdir=req.workdir,
+                model=req.model,
+                effort=req.effort,
+                permission=None,
+                memory_enabled=req.memory_enabled,
+                profile_enabled=req.profile_enabled,
+                self_enabled=req.self_enabled,
+                session_kind=req.session_kind,
+                memory_eligibility=req.memory_eligibility,
+                agent_mcp_enabled=req.agent_mcp_enabled,
+                parent_session_id=req.parent_session_id,
+                delegation_depth=req.delegation_depth,
+                capabilities=CODEX_CAPABILITIES,
+                name=self._display_name(req.workdir),
+                permission_preset=prepared.permission_preset,
+                injection_hash=prepared.injection_hash,
+                declared_mcp_roster=prepared.declared_mcp_roster,
+            )
+        except BaseException as exc:
+            self._lifecycle.abort_created(Runtime.CODEX, sid, exc)
+            raise
+        self._lifecycle.commit_created(binding)
         if req.session_kind == "user":
             self._active_id = sid
         return binding
@@ -567,13 +595,13 @@ class SessionHub:
     def _refuse_on_trowel_mcp_collision(self, workdir: str) -> None:
         """任一受检配置层存在同名 MCP 时都无法保证 Trowel roster 隔离。"""
 
+        from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
         from trowel_py.codex_host.mcp_isolation import find_conflicting_mcp_server
         from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
-        from trowel_py.codex_host.session_types import TROWEL_AGENTS_SERVER_NAME
 
         for server_name in (
             TROWEL_NOTE_SEARCH_SERVER_NAME,
-            TROWEL_AGENTS_SERVER_NAME,
+            AGENT_MCP_SERVER_NAME,
         ):
             conflict = find_conflicting_mcp_server(
                 server_name,
@@ -702,9 +730,9 @@ class SessionHub:
             events = await asyncio.to_thread(
                 parse_history, binding.workdir, native_session_id
             )
-            adapter = CcEventAdapter(session_id)
+            cc_adapter = ClaudeCodeEventAdapter(session_id)
             return [
-                adapter.wrap(event.model_dump()).model_dump(by_alias=True)
+                cc_adapter.wrap(event.model_dump()).model_dump(by_alias=True)
                 for event in events
             ]
         if self._codex is None:
@@ -712,10 +740,10 @@ class SessionHub:
         from trowel_py.codex_host.history import events_from_thread
 
         thread = await self._codex.read_thread(native_session_id)
-        adapter = CodexEventAdapter(session_id)
+        codex_adapter = CodexEventAdapter(session_id)
         envelopes = []
         for event in events_from_thread(session_id, thread):
-            envelope = adapter.wrap(event)
+            envelope = codex_adapter.wrap(event)
             if envelope is not None:
                 envelopes.append(envelope.model_dump(by_alias=True))
         return envelopes
@@ -835,21 +863,16 @@ class SessionHub:
             connected 和 running 组成的二元组，顺序为 connected、running。
         """
 
-        if binding.runtime is Runtime.CLAUDE_CODE:
-            host = self._cc_registry.get(binding.session_id)
-            if host is None:
-                return False, False
-            return (not getattr(host, "is_dead", True)), bool(
-                getattr(host, "running", False)
-            )
-        if self._codex is None:
-            return False, False
-        session = self._codex.get_session(binding.session_id)
-        if session is None:
-            return False, False
-        state = getattr(session, "state", None)
-        state_value = getattr(state, "value", state)
-        return True, state_value == "running"
+        state = self._capacity.live_state(binding)
+        return state.connected, state.has_in_flight_turn
+
+    def _reserve_delegate_turn(self, binding: SessionBinding) -> object | None:
+        """预留委派在跑名额，并把容量拒绝转换为 Hub 冲突错误。"""
+
+        try:
+            return self._capacity.reserve_turn(binding)
+        except (CapacityConflictError, CapacityLimitError) as exc:
+            raise SessionConflictError(str(exc)) from exc
 
     def activate(self, session_id: str) -> str:
         """将指定用户会话设为当前选中的会话。
@@ -1152,21 +1175,26 @@ class SessionHub:
             RuntimeTurnError: 连接 thread、保存会话信息或启动压缩失败。
         """
 
-        session = self._require_codex_session(session_id)
-        codex = self._require_codex_runtime()
+        binding = self._require(session_id)
+        reservation = self._reserve_delegate_turn(binding)
         try:
-            await codex.compact(
-                session,
-                before_start=lambda attached: self._writeback_codex_before_turn(
-                    session_id, attached
-                ),
-            )
-        except TurnConflictError as exc:
-            raise SessionConflictError(str(exc)) from exc
-        except SessionHubError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeTurnError(f"codex compact failed: {exc}") from exc
+            session = self._require_codex_session(session_id)
+            codex = self._require_codex_runtime()
+            try:
+                await codex.compact(
+                    session,
+                    before_start=lambda attached: self._writeback_codex_before_turn(
+                        session_id, attached
+                    ),
+                )
+            except TurnConflictError as exc:
+                raise SessionConflictError(str(exc)) from exc
+            except SessionHubError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeTurnError(f"codex compact failed: {exc}") from exc
+        finally:
+            self._capacity.release_turn(reservation)
 
     async def start_codex_review(
         self, session_id: str, target: dict[str, Any]
@@ -1189,24 +1217,29 @@ class SessionHub:
             RuntimeTurnError: 启动审查失败。
         """
 
-        session = self._require_codex_session(session_id)
-        codex = self._require_codex_runtime()
+        binding = self._require(session_id)
+        reservation = self._reserve_delegate_turn(binding)
         try:
-            result = await codex.start_review(
-                session,
-                target,
-                before_start=lambda attached: self._writeback_codex_before_turn(
-                    session_id, attached
-                ),
-            )
-            self._writeback_codex_native(session_id, session)
-            return result
-        except TurnConflictError as exc:
-            raise SessionConflictError(str(exc)) from exc
-        except SessionHubError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeTurnError(f"codex review failed: {exc}") from exc
+            session = self._require_codex_session(session_id)
+            codex = self._require_codex_runtime()
+            try:
+                result = await codex.start_review(
+                    session,
+                    target,
+                    before_start=lambda attached: self._writeback_codex_before_turn(
+                        session_id, attached
+                    ),
+                )
+                self._writeback_codex_native(session_id, session)
+                return result
+            except TurnConflictError as exc:
+                raise SessionConflictError(str(exc)) from exc
+            except SessionHubError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeTurnError(f"codex review failed: {exc}") from exc
+        finally:
+            self._capacity.release_turn(reservation)
 
     async def set_codex_goal(
         self,
@@ -1431,36 +1464,61 @@ class SessionHub:
         binding = self._store.get(session_id)
         if binding is None:
             return False
-        # 清理 binding 前再确认一次长期身份；索引失败时保留 binding，避免永久失去
-        # 该原生会话属于 delegate 的唯一可靠证据。
-        self._remember_delegate_identity(binding)
-        if binding.runtime is Runtime.CLAUDE_CODE:
-            # 复用旧 closer，保持 registry、多开索引与 active id 一致。
-            from trowel_py.cc_host import routes as cc_routes
-
-            await cc_routes.close_cc_session(session_id, self._cc_registry)
-        elif self._codex is not None:
-            self._stop_codex_event_pump(session_id)
-            self._codex.unregister(session_id)
+        if binding.runtime not in self._runtime_ports:
+            raise RuntimeUnavailableError(f"{binding.runtime.value} host unavailable")
+        try:
+            await self._lifecycle.close(
+                binding,
+                require_idle=(
+                    binding.session_kind == "delegate"
+                    and binding.runtime is Runtime.CODEX
+                ),
+                busy_message="Codex 委派子会话仍在处理，尚不能确认清理完成",
+                before_runtime_close=lambda: self._stop_codex_event_pump(session_id),
+            )
+        except (CapacityConflictError, SessionInFlightError) as exc:
+            raise SessionConflictError(str(exc)) from exc
         # 删除 adapter，避免复用 id 继承旧序号。
         self._cc_adapters.pop(session_id, None)
         self._codex_adapters.pop(session_id, None)
-        self._store.delete(session_id)
         if self._active_id == session_id:
             self._active_id = None
         return True
 
     async def stream(self, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
-        """按 binding 产出统一事件；Codex 遇终态结束，CC 随 send 返回结束。"""
+        """原子取得委派在跑名额后，按 binding 产出统一事件。"""
 
         binding = self._require(session_id)
+        reservation = self._reserve_delegate_turn(binding)
+        try:
+            async for event in self._stream_admitted(binding, text):
+                yield event
+        finally:
+            self._capacity.release_turn(reservation)
+
+    async def _stream_admitted(
+        self,
+        binding: SessionBinding,
+        text: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """产出已经通过全局在跑准入的会话事件。
+
+        Args:
+            binding: 已通过准入的会话记录。
+            text: 要发送给会话的输入。
+
+        Yields:
+            Claude Code 或 Codex 转换后的统一事件。
+        """
+
+        session_id = binding.session_id
         if binding.runtime is Runtime.CLAUDE_CODE:
             host = self._cc_registry.get(session_id)
             if host is None:
                 raise SessionNotFoundError(f"cc session {session_id} not live")
             cc_adapter = self._cc_adapters.get(session_id)
             if cc_adapter is None:
-                cc_adapter = CcEventAdapter(session_id)
+                cc_adapter = ClaudeCodeEventAdapter(session_id)
                 self._cc_adapters[session_id] = cc_adapter
             async for event in host.send(text):
                 raw = dict(event) if isinstance(event, dict) else event.model_dump()
@@ -1535,26 +1593,31 @@ class SessionHub:
             RuntimeTurnError: Codex 未能接受输入或保存会话信息。
         """
 
-        session = self._require_codex_session(session_id)
-        codex = self._require_codex_runtime()
-        _reject_reserved_codex_command(text)
+        binding = self._require(session_id)
+        reservation = self._reserve_delegate_turn(binding)
         try:
-            turn_id = await codex.send(
-                session,
-                text,
-                before_turn_start=lambda attached: self._writeback_codex_before_turn(
-                    session_id, attached
-                ),
-            )
-            self._writeback_codex_native(session_id, session)
-            return turn_id
-        except TurnConflictError as exc:
-            raise SessionConflictError(str(exc)) from exc
-        except SessionHubError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("codex turn start failed for %s: %s", session_id, exc)
-            raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
+            session = self._require_codex_session(session_id)
+            codex = self._require_codex_runtime()
+            _reject_reserved_codex_command(text)
+            try:
+                turn_id = await codex.send(
+                    session,
+                    text,
+                    before_turn_start=lambda attached: self._writeback_codex_before_turn(
+                        session_id, attached
+                    ),
+                )
+                self._writeback_codex_native(session_id, session)
+                return turn_id
+            except TurnConflictError as exc:
+                raise SessionConflictError(str(exc)) from exc
+            except SessionHubError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("codex turn start failed for %s: %s", session_id, exc)
+                raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
+        finally:
+            self._capacity.release_turn(reservation)
 
     def subscribe_codex_events(
         self, session_id: str
@@ -1721,7 +1784,7 @@ class SessionHub:
         if binding.runtime is Runtime.CLAUDE_CODE:
             cc_adapter = self._cc_adapters.get(session_id)
             if cc_adapter is None:
-                cc_adapter = CcEventAdapter(session_id)
+                cc_adapter = ClaudeCodeEventAdapter(session_id)
                 self._cc_adapters[session_id] = cc_adapter
             return cc_adapter.error_event(detail).model_dump(by_alias=True)
         codex_adapter = self._codex_adapters.get(session_id)
@@ -1748,7 +1811,7 @@ class SessionHub:
         if binding is None:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
             return
-        self._remember_delegate_identity(binding, cc_session_id)
+        self._lifecycle.remember_delegate_identity(binding, cc_session_id)
         try:
             self._store.update_native(
                 session_id,
@@ -1778,7 +1841,7 @@ class SessionHub:
         if binding is None:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
             return
-        self._remember_delegate_identity(binding, thread_binding.thread_id)
+        self._lifecycle.remember_delegate_identity(binding, thread_binding.thread_id)
         try:
             sandbox = getattr(thread_binding, "effective_sandbox", None)
             approval = getattr(thread_binding, "effective_approval", None)
@@ -1823,26 +1886,6 @@ class SessionHub:
             or persisted.native_session_id != thread_id
         ):
             raise KeyError(session_id)
-
-    def _live_connection_count(self) -> int:
-        """统计当前占用会话名额的 Claude Code 会话和 Codex 线程。
-
-        多个 Codex 线程即使共用同一个管理进程，也会分别占用一个名额。
-
-        Returns:
-            当前已占用的会话名额数量。
-        """
-
-        cc_live = sum(
-            1 for sid in self._cc_registry if self._store.get(sid) is not None
-        )
-        codex_live = 0
-        if self._codex is not None:
-            codex_live = sum(
-                1 for sid in self._codex.session_ids if self._store.get(sid) is not None
-            )
-        return cc_live + codex_live
-
 
 def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
     """收集 Codex 线程记录中所有字符串形式的轮次 ID。

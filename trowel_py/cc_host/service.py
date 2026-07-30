@@ -259,6 +259,20 @@ class CCHost:
         return self._cc_session_id
 
     @property
+    def has_in_flight_turn(self) -> bool:
+        """判断实时发送或断线后的后台 drain 是否仍占用当前轮次。"""
+
+        return self.running or (
+            self._drain_task is not None and not self._drain_task.done()
+        )
+
+    @property
+    def session_kind(self) -> str:
+        """返回会话属于用户直接管理还是 Agent 委派。"""
+
+        return self._session_kind
+
+    @property
     def model(self) -> str | None:
         """返回启动 CC 时请求的模型。"""
 
@@ -458,6 +472,19 @@ class CCHost:
             self._drain_task = None
         self._workflow_watcher.close()
         await self._kill()
+        if self._owned_mcp_config and self._mcp_config:
+            Path(self._mcp_config).unlink(missing_ok=True)
+
+    def discard_unstarted(self) -> None:
+        """清理尚未启动的 host 及其自有 MCP 配置。
+
+        Raises:
+            RuntimeError: 会话已经启动，必须改走异步 close 流程。
+        """
+
+        if self._started or self._proc is not None or self._drain_task is not None:
+            raise RuntimeError("started CC session cannot use create rollback")
+        self._workflow_watcher.close()
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
 

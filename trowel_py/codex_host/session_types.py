@@ -7,11 +7,14 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from trowel_py.agent_mcp.launch import (
+    AGENT_MCP_SERVER_NAME,
+    build_agent_mcp_launch_spec,
+)
 from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
-from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
 
-TROWEL_AGENTS_SERVER_NAME = "trowel_agents"
+TROWEL_AGENTS_SERVER_NAME = AGENT_MCP_SERVER_NAME
 
 
 @dataclass(frozen=True)
@@ -98,29 +101,26 @@ class TrowelAgentMcpConfig:
             可合并到 ``config.mcp_servers`` 的单服务映射。
         """
 
+        launch = build_agent_mcp_launch_spec(
+            trowel_session_id=self.trowel_session_id,
+            runtime="codex",
+            workdir=self.workdir,
+            permission=self.permission,
+            base_url=self.base_url,
+            memory_enabled=self.memory_enabled,
+            profile_enabled=self.profile_enabled,
+            self_enabled=self.self_enabled,
+            delegation_depth=self.delegation_depth,
+            native_session_id=native_session_id,
+        )
         return {
             self.server_name: {
-                "command": sys.executable,
-                "args": ["-m", "trowel_py.agent_mcp.server"],
-                "env": {
-                    "TROWEL_AGENT_BASE_URL": self.base_url,
-                    "TROWEL_PARENT_SESSION_ID": self.trowel_session_id,
-                    "TROWEL_PARENT_RUNTIME": "codex",
-                    "TROWEL_PARENT_WORKDIR": self.workdir,
-                    "TROWEL_PARENT_PERMISSION": self.permission,
-                    "TROWEL_PARENT_MEMORY_ENABLED": str(
-                        self.memory_enabled
-                    ).lower(),
-                    "TROWEL_PARENT_PROFILE_ENABLED": str(
-                        self.profile_enabled
-                    ).lower(),
-                    "TROWEL_PARENT_SELF_ENABLED": str(self.self_enabled).lower(),
-                    "TROWEL_DELEGATION_DEPTH": str(self.delegation_depth),
-                    "TROWEL_NATIVE_SESSION_ID": native_session_id,
-                },
+                "command": launch.command,
+                "args": list(launch.module_args),
+                "env": dict(launch.env),
                 "required": True,
                 "startup_timeout_sec": 10.0,
-                "enabled_tools": list(AGENT_MCP_TOOL_NAMES),
+                "enabled_tools": list(launch.enabled_tools),
                 "default_tools_approval_mode": "approve",
             }
         }

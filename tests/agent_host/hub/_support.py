@@ -32,6 +32,12 @@ class FakeCcHost:
         self.interrupted = False
         self.cc_session_id: str | None = None
 
+    @property
+    def has_in_flight_turn(self) -> bool:
+        """返回测试 host 当前是否正在处理一轮输入。"""
+
+        return self.running
+
     async def send(self, text: str) -> AsyncIterator[dict[str, Any]]:
         self.running = True
         yield {"type": "text", "text": f"echo:{text}"}
@@ -41,6 +47,9 @@ class FakeCcHost:
         self.interrupted = True
 
     async def close(self) -> None:
+        self.closed = True
+
+    def discard_unstarted(self) -> None:
         self.closed = True
 
 
@@ -263,6 +272,12 @@ class FakeCodexSession:
         self._events = list(events)
         self.binding = _FakeThreadBinding(thread_id, model)
         self.state = "idle"
+
+    @property
+    def has_in_flight_turn(self) -> bool:
+        """根据测试会话状态判断是否仍有未结束轮次。"""
+
+        return self.state == "running"
 
     async def events(self) -> AsyncIterator[Any]:
         for ev in self._events:

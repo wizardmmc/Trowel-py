@@ -13,6 +13,8 @@ from typing import Any, TypeVar
 
 import httpx
 
+from trowel_py.agent_mcp.http_errors import agent_api_error_detail
+
 _ACTIONABLE_STATES = frozenset({"needs_guidance", "completed", "failed"})
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
 
@@ -460,7 +462,9 @@ class InteractiveBroker:
                 create_response = await client.post(
                     "/api/agent/sessions", json=create_body
                 )
-                create_response.raise_for_status()
+                create_error = agent_api_error_detail(create_response)
+                if create_error is not None:
+                    raise InteractiveDelegationError(create_error)
                 payload = create_response.json()
                 data = payload.get("data") if isinstance(payload, dict) else None
                 if not isinstance(data, dict) or not isinstance(
@@ -539,7 +543,12 @@ class InteractiveBroker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await record.transition("failed", error=repr(exc))
+            error = (
+                str(exc)
+                if isinstance(exc, InteractiveDelegationError)
+                else repr(exc)
+            )
+            await record.transition("failed", error=error)
 
 
 def _event_error(event: dict[str, Any]) -> str:

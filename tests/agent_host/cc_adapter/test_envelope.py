@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trowel_py.agent_host.cc_adapter import CcEventAdapter
+from trowel_py.agent_host.runtimes.claude_code import ClaudeCodeEventAdapter
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA, AgentEvent
 from trowel_py.schemas.cc_host import (
     FinishedEvent,
@@ -20,7 +20,7 @@ def _dump(model: object) -> dict:
 
 class TestEnvelopeWrapping:
     def test_session_started_wraps_with_seq_1(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(
             _dump(
                 SessionStartedEvent(
@@ -45,14 +45,14 @@ class TestEnvelopeWrapping:
         assert ev.payload["tools"] == ["Read", "Write"]
 
     def test_turn_start_stamps_turn_id(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(_dump(TurnStartEvent(turn_id="turn-42", revertible=True)))
         assert ev.type == "turn_start"
         assert ev.turn_id == "turn-42"
         assert ev.payload["revertible"] is True
 
     def test_text_payload_carries_text(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(_dump(TextEvent(text="hello ")))
         assert ev.type == "text"
         assert ev.payload == {"text": "hello "}
@@ -60,7 +60,7 @@ class TestEnvelopeWrapping:
         assert ev.item_id is None
 
     def test_tool_call_item_id_is_tool_use_id(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(
             _dump(
                 ToolCallEvent(
@@ -77,7 +77,7 @@ class TestEnvelopeWrapping:
         assert ev.payload["input"] == {"command": "pwd"}
 
     def test_tool_result_item_id_matches_its_tool_call(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         adapter.wrap(
             _dump(
                 ToolCallEvent(
@@ -95,7 +95,7 @@ class TestEnvelopeWrapping:
 
 class TestSeqCounter:
     def test_seq_increments_across_events(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         seqs = [
             adapter.wrap(_dump(TextEvent(text="a"))).seq,
             adapter.wrap(_dump(TextEvent(text="b"))).seq,
@@ -104,14 +104,14 @@ class TestSeqCounter:
         assert seqs == [1, 2, 3]
 
     def test_seq_is_per_session_not_shared(self) -> None:
-        a = CcEventAdapter(session_id="cc-1")
-        b = CcEventAdapter(session_id="cc-2")
+        a = ClaudeCodeEventAdapter(session_id="cc-1")
+        b = ClaudeCodeEventAdapter(session_id="cc-2")
         assert a.wrap(_dump(TextEvent(text="a"))).seq == 1
         assert b.wrap(_dump(TextEvent(text="b"))).seq == 1
         assert a.wrap(_dump(TextEvent(text="c"))).seq == 2
 
     def test_finished_does_not_reset_seq(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         adapter.wrap(_dump(TextEvent(text="a")))
         adapter.wrap(_dump(FinishedEvent(usage={}, total_cost_usd=0.001, num_turns=1)))
         assert adapter.wrap(_dump(TextEvent(text="b"))).seq == 3
@@ -119,13 +119,13 @@ class TestSeqCounter:
 
 class TestPayloadIsolation:
     def test_mutating_input_after_wrap_does_not_affect_envelope(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         original = _dump(TextEvent(text="hi"))
         ev = adapter.wrap(original)
         original["text"] = "TAMPERED"
         assert ev.payload["text"] == "hi"
 
     def test_type_is_not_duplicated_in_payload(self) -> None:
-        adapter = CcEventAdapter(session_id="cc-1")
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(_dump(TextEvent(text="hi")))
         assert "type" not in ev.payload

@@ -1,9 +1,11 @@
 from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from trowel_py.agent_host.hub import SessionHub
+from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.binding import Runtime, make_binding
 
 from tests.agent_host.routes.support import (
@@ -52,6 +54,34 @@ def test_post_sessions_invalid_runtime_422(
     )
 
     assert response.status_code == 422
+
+
+def test_delegate_connection_capacity_returns_stable_409(
+    hub_factory: Callable[[CapacityLimits | None], SessionHub],
+    client_factory: Callable[[SessionHub], TestClient],
+    workdir: Path,
+) -> None:
+    hub = hub_factory(
+        CapacityLimits(
+            user_connections=20,
+            delegate_connections=1,
+            delegate_running=5,
+        )
+    )
+    with client_factory(hub) as client:
+        create_session(
+            client,
+            cc_payload(workdir, session_kind="delegate"),
+        )
+        response = client.post(
+            "/api/agent/sessions",
+            json=codex_payload(workdir, session_kind="delegate"),
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "当前委派数量已满：连接上限为 1"
+    }
 
 
 def test_get_active_lists_mixed(

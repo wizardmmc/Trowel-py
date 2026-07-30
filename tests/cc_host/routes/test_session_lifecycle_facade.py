@@ -95,6 +95,7 @@ def test_open_facade_reads_current_route_state(
         "workdir_index": workdir_index,
         "session_names": session_names,
         "max_connections": 7,
+        "max_delegate_connections": routes.MAX_DELEGATE_CONNECTIONS,
         "host_factory": host_factory,
     }
     assert routes.get_active_session_id() == "new-session"
@@ -120,11 +121,122 @@ def test_open_cleans_owned_mcp_config_when_host_construction_fails(
             workdir_index={},
             session_names={},
             max_connections=1,
+            max_delegate_connections=1,
             host_factory=failing_factory,
         )
 
     assert config_path is not None
     assert not config_path.exists()
+
+
+def test_discard_unstarted_session_removes_registry_and_owned_mcp_config(
+    tmp_path: Path,
+) -> None:
+    registry: dict[str, routes.CCHost] = {}
+    workdir_index: dict[str, set[str]] = {}
+    session_names: dict[str, str] = {}
+    sid, host, _ = session_lifecycle.open_session(
+        CreateSessionRequest(workdir=str(tmp_path)),
+        registry,
+        proxy_base_url=None,
+        settings_path=None,
+        workdir_index=workdir_index,
+        session_names=session_names,
+        max_connections=1,
+        max_delegate_connections=1,
+        host_factory=routes.CCHost,
+    )
+    assert isinstance(host._mcp_config, str)
+    config_path = Path(host._mcp_config)
+    assert config_path.is_file()
+
+    assert (
+        session_lifecycle.discard_unstarted_session(
+            sid,
+            registry,
+            workdir_index=workdir_index,
+            session_names=session_names,
+        )
+        is True
+    )
+
+    assert registry == {}
+    assert workdir_index == {}
+    assert session_names == {}
+    assert not config_path.exists()
+
+
+def test_low_level_cc_capacity_counts_user_and_delegate_separately(
+    tmp_path: Path,
+) -> None:
+    registry = {
+        "delegate-1": SimpleNamespace(session_kind="delegate"),
+    }
+
+    def host_factory(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            session_kind=kwargs["session_kind"],
+            workdir=str(tmp_path),
+        )
+
+    sid, _, _ = session_lifecycle.open_session(
+        CreateSessionRequest(workdir=str(tmp_path), session_kind="user"),
+        registry,
+        proxy_base_url=None,
+        settings_path=None,
+        workdir_index={},
+        session_names={},
+        max_connections=1,
+        max_delegate_connections=1,
+        host_factory=host_factory,
+    )
+
+    assert sid in registry
+    assert registry[sid].session_kind == "user"
+    with pytest.raises(
+        session_lifecycle.CcCapacityError,
+        match="当前委派数量已满：连接上限为 1",
+    ):
+        session_lifecycle.open_session(
+            CreateSessionRequest(workdir=str(tmp_path), session_kind="delegate"),
+            registry,
+            proxy_base_url=None,
+            settings_path=None,
+            workdir_index={},
+            session_names={},
+            max_connections=1,
+            max_delegate_connections=1,
+            host_factory=host_factory,
+        )
+
+
+def test_low_level_cc_capacity_reads_real_host_session_kind(
+    tmp_path: Path,
+) -> None:
+    registry = {
+        "delegate-1": routes.CCHost(
+            "delegate-1",
+            tmp_path,
+            session_kind="delegate",
+        )
+    }
+
+    sid, _, _ = session_lifecycle.open_session(
+        CreateSessionRequest(workdir=str(tmp_path), session_kind="user"),
+        registry,
+        proxy_base_url=None,
+        settings_path=None,
+        workdir_index={},
+        session_names={},
+        max_connections=1,
+        max_delegate_connections=1,
+        host_factory=lambda *args, **kwargs: SimpleNamespace(
+            session_kind=kwargs["session_kind"],
+            workdir=str(tmp_path),
+        ),
+    )
+
+    assert sid in registry
 
 
 async def test_close_facade_reads_current_route_state(

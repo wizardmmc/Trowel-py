@@ -31,6 +31,30 @@ def _create_body(tmp_path: Path) -> dict[str, object]:
 
 
 @pytest.mark.anyio
+async def test_start_reports_connection_capacity_detail(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/agent/sessions"
+        return httpx.Response(
+            409,
+            json={"detail": "当前委派数量已满：连接上限为 5"},
+        )
+
+    broker = InteractiveBroker(
+        base_url="http://trowel.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await broker.start(
+        parent_session_id="parent-1",
+        task="work",
+        create_body=_create_body(tmp_path),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "当前委派数量已满：连接上限为 5"
+
+
+@pytest.mark.anyio
 async def test_guidance_continues_same_live_child_across_tool_calls(
     tmp_path: Path,
 ) -> None:

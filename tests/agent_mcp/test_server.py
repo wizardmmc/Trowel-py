@@ -96,6 +96,77 @@ def test_interactive_tools_only_publish_verified_claude_guidance() -> None:
 
 
 @pytest.mark.anyio
+async def test_delegate_reports_connection_capacity_detail(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/parent-1"):
+            return httpx.Response(200, json={"data": _parent_binding(tmp_path)})
+        if request.url.path == "/api/agent/sessions":
+            return httpx.Response(
+                409,
+                json={"detail": "当前委派数量已满：连接上限为 5"},
+            )
+        raise AssertionError(request.url)
+
+    async with httpx.AsyncClient(
+        base_url="http://trowel.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(
+            server.DelegationError,
+            match="当前委派数量已满：连接上限为 5",
+        ):
+            await server.delegate_agent(
+                client,
+                context=_context(tmp_path),
+                runtime="claude_code",
+                task="work",
+            )
+
+
+@pytest.mark.anyio
+async def test_delegate_reports_running_capacity_detail(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/parent-1"):
+            return httpx.Response(200, json={"data": _parent_binding(tmp_path)})
+        if request.url.path == "/api/agent/sessions":
+            return httpx.Response(200, json={"data": {"session_id": "child-full"}})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(
+                200,
+                content=_sse(
+                    {
+                        "type": "error",
+                        "payload": {
+                            "errors": [
+                                "当前委派数量已满：同时在跑上限为 5"
+                            ]
+                        },
+                    }
+                ),
+            )
+        if request.method == "DELETE":
+            return httpx.Response(200)
+        raise AssertionError(request.url)
+
+    async with httpx.AsyncClient(
+        base_url="http://trowel.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(
+            server.DelegationError,
+            match="当前委派数量已满：同时在跑上限为 5",
+        ):
+            await server.delegate_agent(
+                client,
+                context=_context(tmp_path),
+                runtime="codex",
+                task="work",
+            )
+
+
+@pytest.mark.anyio
 async def test_mcp_dispatch_revalidates_parent_before_responding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
