@@ -292,6 +292,7 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         *,
         proxy_base_url: str | None = None,
         settings_path: str | Path | None = None,
+        display_name: str | None = None,
     ) -> OpenedCcSession:
         del proxy_base_url, settings_path
         sid = "cc-" + uuid.uuid4().hex[:8]
@@ -309,7 +310,7 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         basename = Path(req.workdir).name or str(req.workdir)
         n = name_counts.get(basename, 0)
         name_counts[basename] = n + 1
-        name = basename if n == 0 else f"{basename} #{n + 1}"
+        name = display_name or (basename if n == 0 else f"{basename} #{n + 1}")
         return OpenedCcSession(sid=sid, host=host, name=name)
 
     return opener

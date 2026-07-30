@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,35 @@ from trowel_py.agent_host.binding import SessionBinding, binding_from_dict
 
 _SCHEMA_VERSION = 1
 _DEFAULT_PATH = Path.home() / ".trowel" / "agent_sessions.json"
+
+
+def next_session_display_name(workdir: str, occupied_names: Iterable[str]) -> str:
+    """为工作目录取得当前未使用的最小临时会话编号。
+
+    Args:
+        workdir: 新会话使用的工作目录。
+        occupied_names: 同目录当前可见用户会话已经使用的显示名称。
+
+    Returns:
+        编号 1 对应裸目录名，其余编号使用 ``目录 #N``。
+    """
+
+    basename = Path(workdir).name or workdir
+    numbered_prefix = f"{basename} #"
+    occupied_ordinals: set[int] = set()
+    for name in occupied_names:
+        if name == basename:
+            occupied_ordinals.add(1)
+            continue
+        if not name.startswith(numbered_prefix):
+            continue
+        suffix = name.removeprefix(numbered_prefix)
+        if suffix.isascii() and suffix.isdigit() and int(suffix) >= 2:
+            occupied_ordinals.add(int(suffix))
+    ordinal = 1
+    while ordinal in occupied_ordinals:
+        ordinal += 1
+    return basename if ordinal == 1 else f"{basename} #{ordinal}"
 
 
 def resolve_bindings_path() -> Path:

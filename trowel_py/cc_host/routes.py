@@ -144,6 +144,7 @@ def open_cc_session_configured(
     *,
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
+    display_name: str | None = None,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -154,6 +155,8 @@ def open_cc_session_configured(
         registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
         proxy_base_url: CC 子进程使用的代理地址；为 `None` 时不配置代理。
         settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
+        display_name: Agent Hub 已按双 runtime 可见集合分配的临时名称；为 `None`
+            时只根据旧版 CC 路由当前已登记的用户会话分配。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
@@ -170,6 +173,7 @@ def open_cc_session_configured(
         max_connections=MAX_CONNECTIONS,
         max_delegate_connections=MAX_DELEGATE_CONNECTIONS,
         host_factory=CCHost,
+        display_name=display_name,
     )
     if req.session_kind == "user":
         set_active_session_id(sid)

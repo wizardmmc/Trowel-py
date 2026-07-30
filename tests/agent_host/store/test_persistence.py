@@ -5,7 +5,11 @@ import json
 import pytest
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
-from trowel_py.agent_host.store import BindingStore, resolve_bindings_path
+from trowel_py.agent_host.store import (
+    BindingStore,
+    next_session_display_name,
+    resolve_bindings_path,
+)
 
 
 def _binding(**over: object) -> SessionBinding:
@@ -24,6 +28,23 @@ def _binding(**over: object) -> SessionBinding:
     )
     base.update(over)
     return make_binding(**base)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("occupied_names", "expected"),
+    [
+        ([], "proj"),
+        (["proj"], "proj #2"),
+        (["proj", "proj #3"], "proj #2"),
+        (["proj #2", "proj #3"], "proj"),
+        (["手动标题", "proj #x", "proj #1", "proj #²"], "proj"),
+    ],
+)
+def test_next_session_display_name_uses_smallest_available_ordinal(
+    occupied_names: list[str],
+    expected: str,
+) -> None:
+    assert next_session_display_name("/tmp/proj", occupied_names) == expected
 
 
 def test_put_get_roundtrip(tmp_path):

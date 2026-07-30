@@ -128,6 +128,7 @@ def test_create_cc_passes_only_explicit_launch_configuration(tmp_path: Path) -> 
     assert seen == {
         "proxy_base_url": "http://127.0.0.1:8123",
         "settings_path": tmp_path / "settings.json",
+        "display_name": "project",
     }
 
 

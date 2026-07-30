@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from trowel_py.agent_host.store import next_session_display_name
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.schemas import CreateSessionRequest
 
@@ -22,20 +23,32 @@ class CcCapacityError(Exception):
     """CC registry 已达到连接上限。"""
 
 
-def _display_name(workdir: str, workdir_index: dict[str, set[str]]) -> str:
-    """按工作目录名和同目录现有会话数生成显示名称。
+def _display_name(
+    workdir: str,
+    registry: dict[str, CCHost],
+    workdir_index: dict[str, set[str]],
+    session_names: dict[str, str],
+) -> str:
+    """按同目录已登记的用户会话生成显示名称。
 
     Args:
         workdir: 新会话使用的工作目录。
+        registry: 当前会话 ID 与 CC host 的对应表。
         workdir_index: 各工作目录当前包含的会话 ID。
+        session_names: 各会话 ID 已经使用的显示名称。
 
     Returns:
-        首个会话使用目录名，后续会话使用带序号的目录名。
+        当前未使用的最小临时会话编号。
     """
 
-    basename = Path(workdir).name or workdir
-    existing = len(workdir_index.get(workdir, ()))
-    return basename if existing == 0 else f"{basename} #{existing + 1}"
+    occupied_names = (
+        session_names[sid]
+        for sid in workdir_index.get(workdir, ())
+        if sid in session_names
+        and (host := registry.get(sid)) is not None
+        and host.session_kind == "user"
+    )
+    return next_session_display_name(workdir, occupied_names)
 
 
 def open_session(
@@ -49,6 +62,7 @@ def open_session(
     max_connections: int,
     max_delegate_connections: int,
     host_factory: Any,
+    display_name: str | None = None,
 ) -> tuple[str, CCHost, str]:
     """按会话类别检查连接池后，创建主机并写入调用方状态。"""
 
@@ -116,7 +130,12 @@ def open_session(
         Path(mcp_config).unlink(missing_ok=True)
         raise
     registry[sid] = host
-    name = _display_name(req.workdir, workdir_index)
+    name = display_name or _display_name(
+        req.workdir,
+        registry,
+        workdir_index,
+        session_names,
+    )
     workdir_index.setdefault(req.workdir, set()).add(sid)
     session_names[sid] = name
     return sid, host, name
