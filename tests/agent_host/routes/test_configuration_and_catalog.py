@@ -130,7 +130,7 @@ def test_get_history_returns_native_codex_threads_for_workdir(
 ) -> None:
     monkeypatch.setattr(
         "trowel_py.agent_host.history.scan_cc_history",
-        lambda _workdir, *, limit: [],
+        lambda _workdir, *, limit, excluded_ids=frozenset(): [],
     )
     hub._codex.threads = [  # type: ignore[union-attr]  # noqa: SLF001
         {

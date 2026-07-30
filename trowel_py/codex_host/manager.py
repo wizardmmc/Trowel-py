@@ -297,8 +297,23 @@ class CodexHostManager:
         version = str(client.version) if client.version is not None else None
         return command_roster(version)
 
-    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
-        """按更新时间列出指定 cwd 的默认交互 thread，不读取私有 rollout。"""
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """按更新时间列出指定 cwd 的默认交互 thread。
+
+        不读取私有 rollout。已确认属于 Trowel 委派子会话的 thread 在原生分页期间
+        排除，因此返回数量和后续合并分页不会被内部会话占用。
+
+        Args:
+            cwd: 只读取该工作目录下的 Codex thread。
+            limit: 最多返回的非排除 thread 数。
+            excluded_ids: 已确认属于 Trowel 委派子会话的 Codex thread ID。
+        """
 
         if limit <= 0:
             return []
@@ -323,7 +338,13 @@ class CodexHostManager:
                 isinstance(row, Mapping) for row in data
             ):
                 raise ProtocolViolationError("thread/list result.data is not an array")
-            rows.extend(dict(row) for row in data[: limit - len(rows)])
+            for row in data:
+                thread_id = row.get("id")
+                if isinstance(thread_id, str) and thread_id in excluded_ids:
+                    continue
+                rows.append(dict(row))
+                if len(rows) >= limit:
+                    break
 
             next_cursor = result.get("nextCursor")
             if next_cursor is not None and not isinstance(next_cursor, str):

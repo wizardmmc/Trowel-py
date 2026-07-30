@@ -15,10 +15,21 @@ class HistoryCursorError(ValueError):
     """表示历史分页游标格式错误或版本不受支持。"""
 
 
-def scan_cc_history(workdir: str, *, limit: int) -> list[SessionSummary]:
-    """读取指定工作目录中最近的 Claude Code 历史会话摘要。"""
+def scan_cc_history(
+    workdir: str,
+    *,
+    limit: int,
+    excluded_ids: frozenset[str] = frozenset(),
+) -> list[SessionSummary]:
+    """读取最近的 Claude Code 历史，并在截断前排除指定原生会话。
 
-    return list_sessions(workdir, limit=limit)
+    Args:
+        workdir: 要扫描历史会话的工作目录。
+        limit: 最多返回的非排除会话数。
+        excluded_ids: 已确认属于 Trowel 委派子会话的 Claude Code session ID。
+    """
+
+    return list_sessions(workdir, limit=limit, excluded_ids=excluded_ids)
 
 
 def encode_history_cursor(offset: int) -> str:

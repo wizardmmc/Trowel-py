@@ -53,6 +53,25 @@ def test_limit_caps_to_n_most_recent(fake_projects: Path) -> None:
     ]
 
 
+def test_excluded_ids_do_not_consume_limit(fake_projects: Path) -> None:
+    session_ids = [str(uuid4()) for _ in range(3)]
+    write_timed_sessions(
+        fake_projects,
+        list(zip(session_ids, [1, 2, 3], strict=True)),
+    )
+
+    sessions = session_scan.list_sessions(
+        "/workdir",
+        limit=2,
+        excluded_ids=frozenset({session_ids[2]}),
+    )
+
+    assert [session.cc_session_id for session in sessions] == [
+        session_ids[1],
+        session_ids[0],
+    ]
+
+
 def test_limit_none_returns_all(fake_projects: Path) -> None:
     session_ids = [str(uuid4()) for _ in range(5)]
     write_timed_sessions(

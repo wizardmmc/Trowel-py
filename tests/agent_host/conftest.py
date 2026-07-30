@@ -1,4 +1,4 @@
-"""隔离 Agent Host 测试的写入路径，并监测真实 binding 与 memory 数据库。"""
+"""隔离 Agent Host 测试路径，并监测真实会话索引与 memory 数据库。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pytest
 
 _REAL_DB = Path.home() / ".trowel" / "memory" / "meta" / "sessions.db"
 _REAL_BINDINGS = Path.home() / ".trowel" / "agent_sessions.json"
+_REAL_DELEGATES = Path.home() / ".trowel" / "agent_sessions.delegates.json"
 
 
 def _snapshot_file(path: Path) -> int | None:
@@ -43,13 +44,19 @@ def _isolate_agent_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> obje
         lambda config_path=None: tmp_path / "memory",
     )
     before_bindings = _snapshot_file(_REAL_BINDINGS)
+    before_delegates = _snapshot_file(_REAL_DELEGATES)
     before_db = _snapshot_real_db()
     yield
     after_bindings = _snapshot_file(_REAL_BINDINGS)
+    after_delegates = _snapshot_file(_REAL_DELEGATES)
     after_db = _snapshot_real_db()
     assert before_bindings == after_bindings, (
         f"agent_host test mutated the real agent_sessions.json: "
         f"{before_bindings} -> {after_bindings}"
+    )
+    assert before_delegates == after_delegates, (
+        f"agent_host test mutated the real delegate identity index: "
+        f"{before_delegates} -> {after_delegates}"
     )
     assert before_db == after_db, (
         f"agent_host test mutated the real sessions.db: {before_db} -> {after_db}"
