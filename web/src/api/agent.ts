@@ -20,6 +20,7 @@ export interface AgentSession {
   readonly name: string;
   readonly connected: boolean;
   readonly running: boolean;
+  readonly session_kind?: "user" | "delegate";
 }
 
 export interface CreateAgentSessionParams {

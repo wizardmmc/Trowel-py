@@ -226,17 +226,17 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
 def list_active(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """返回当前会话列表，以及各会话的连接、处理和选中状态。
+    """返回用户直接管理的会话，以及各会话的连接、处理和选中状态。
 
-    列表也包含尚未连接或已经断开的会话。active_id 只表示工作台当前选中的会话，
-    不表示该会话正在执行任务。
+    列表不包含 Agent MCP 创建的委派子会话，但仍包含尚未连接或已经断开的用户
+    会话。active_id 只表示工作台当前选中的用户会话，不表示该会话正在执行任务。
 
     Args:
         hub: 用于读取会话及实时状态的 Session Hub。
 
     Returns:
-        统一响应。data.sessions 为会话列表，data.active_id 为当前选中的会话 ID；
-        没有选中会话时为 None。
+        统一响应。data.sessions 为用户会话列表，data.active_id 为当前选中的用户
+        会话 ID；没有选中会话时为 None。
     """
 
     sessions, active_id = hub.list_active()
@@ -252,7 +252,7 @@ def activate_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """把指定会话设为工作台当前选中的会话。
+    """把指定用户会话设为工作台当前选中的会话。
 
     此操作只改变选中状态，不会启动、中断或关闭任何会话。
 
@@ -264,7 +264,8 @@ def activate_session(
         统一响应。data.active_id 为切换后的会话 ID。
 
     Raises:
-        HTTPException: 找不到指定会话，此时返回 404。
+        HTTPException: 找不到指定会话时返回 404；指定会话不是用户会话时返回
+            422。
     """
 
     active = _call_hub(hub.activate, session_id)

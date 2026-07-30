@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,37 @@ async def test_review_kind_session_never_enters_batch(tmp_path: Path) -> None:
     )
 
     # 用户 session 会依次被 refine 与 judge 使用，review session 始终被排除。
+    assert calls == ["user", "user"]
+
+
+async def test_delegate_session_never_enters_daily_review(tmp_path: Path) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.register(session("user", "/project"))
+    repo.register(
+        replace(
+            session("delegate", "/project"),
+            session_kind="delegate",
+        )
+    )
+    repo.update_completed("user", 4096)
+    repo.update_completed("delegate", 4096)
+    conn.close()
+
+    calls: list[str] = []
+
+    def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
+        calls.append(session_record.cc_session_id)
+        (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    await run_daily_review(
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=create_host,
+    )
+
     assert calls == ["user", "user"]
 
 

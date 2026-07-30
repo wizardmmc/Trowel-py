@@ -8,6 +8,7 @@ from trowel_py.agent_host.binding import Runtime
 from trowel_py.agent_host.hub import (
     SessionHub,
     SessionNotFoundError,
+    SessionOperationError,
 )
 from trowel_py.agent_host.store import BindingStore
 from tests.agent_host.hub._support import (
@@ -99,6 +100,44 @@ def test_activate_sets_active_id(hub: SessionHub, workdir: Path):
 
     # 切换 active 只改变视图焦点，不能销毁另一个 runtime 会话。
     assert cx.session_id in {s["session_id"] for s in sessions}
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+async def test_delegate_lifecycle_stays_outside_user_projection(
+    hub: SessionHub,
+    workdir: Path,
+    runtime: str,
+):
+    user = hub.create(cc_req(workdir))
+    hub.activate(user.session_id)
+    request = cc_req if runtime == "claude_code" else codex_req
+
+    delegate = hub.create(request(workdir, session_kind="delegate"))
+
+    sessions, active_id = hub.list_active()
+    assert [session["session_id"] for session in sessions] == [user.session_id]
+    assert active_id == user.session_id
+    assert hub.get(delegate.session_id) == delegate
+
+    await hub.interrupt(delegate.session_id)
+    assert await hub.delete(delegate.session_id) is True
+    assert hub.list_active()[1] == user.session_id
+
+
+def test_delegate_cannot_become_current_user_session(
+    hub: SessionHub,
+    workdir: Path,
+):
+    user = hub.create(cc_req(workdir))
+    delegate = hub.create(codex_req(workdir, session_kind="delegate"))
+
+    with pytest.raises(
+        SessionOperationError,
+        match="delegate session cannot become the current user session",
+    ):
+        hub.activate(delegate.session_id)
+
+    assert hub.list_active()[1] == user.session_id
 
 
 async def test_delete_cc_closes_host_and_drops_binding(

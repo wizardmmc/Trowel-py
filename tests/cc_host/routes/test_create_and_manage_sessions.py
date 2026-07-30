@@ -183,6 +183,24 @@ class TestMultiSession:
         assert resp.json()["data"]["active_id"] == sid1
         assert client.get("/api/cc/sessions/active").json()["data"]["active_id"] == sid1
 
+    def test_delegate_creation_keeps_current_user_session(self, tmp_path: Path):
+        client = _mini_app({})
+        user_sid = client.post(
+            "/api/cc/sessions", json={"workdir": str(tmp_path)}
+        ).json()["data"]["session_id"]
+
+        client.post(
+            "/api/cc/sessions",
+            json={
+                "workdir": str(tmp_path),
+                "session_kind": "delegate",
+                "delegation_depth": 1,
+            },
+        )
+
+        data = client.get("/api/cc/sessions/active").json()["data"]
+        assert data["active_id"] == user_sid
+
     def test_activate_unknown_session_404(self, tmp_path: Path):
         client = _mini_app({})
         resp = client.post("/api/cc/sessions/nope/activate")

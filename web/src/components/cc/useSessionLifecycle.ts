@@ -28,7 +28,11 @@ export function useSessionLifecycle({
       const current = useCcStore.getState();
       const activeSession =
         current.sessions[current.activeSid ?? ""];
-      if (!activeSession || activeSession.workdir !== workdir) {
+      if (
+        !activeSession ||
+        activeSession.sessionKind === "delegate" ||
+        activeSession.workdir !== workdir
+      ) {
         const defaults = await getAgentSessionDefaults().catch(() => null);
         await store.startSession({ workdir, ...defaults }).catch(() => {
           // mount 新建失败时保留空态，用户仍可手动重试。
