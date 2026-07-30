@@ -47,15 +47,30 @@ def open_session(
     workdir_index: dict[str, set[str]],
     session_names: dict[str, str],
     max_connections: int,
+    max_delegate_connections: int,
     host_factory: Any,
 ) -> tuple[str, CCHost, str]:
-    """创建主机并写入调用方持有的会话状态。"""
+    """按会话类别检查连接池后，创建主机并写入调用方状态。"""
 
     if not Path(req.workdir).is_dir():
         raise CcWorkdirNotFoundError("workdir does not exist")
-    if len(registry) >= max_connections:
+    limit = (
+        max_delegate_connections
+        if req.session_kind == "delegate"
+        else max_connections
+    )
+    same_kind_connections = sum(
+        1
+        for host in registry.values()
+        if host.session_kind == req.session_kind
+    )
+    if same_kind_connections >= limit:
+        if req.session_kind == "delegate":
+            raise CcCapacityError(
+                f"当前委派数量已满：连接上限为 {limit}"
+            )
         raise CcCapacityError(
-            f"连接数已达上限（{max_connections}），请先关闭一些 session"
+            f"连接数已达上限（{limit}），请先关闭一些 session"
         )
     sid = uuid.uuid4().hex
 
@@ -165,6 +180,33 @@ def init_roster_for_workdir(
         if roster:
             return roster
     return []
+
+
+def discard_unstarted_session(
+    session_id: str,
+    registry: dict[str, CCHost],
+    *,
+    workdir_index: dict[str, set[str]],
+    session_names: dict[str, str],
+) -> bool:
+    """撤销尚未启动的会话创建，并同步移除三张注册表。
+
+    该同步入口只用于创建后的持久化失败；已经启动的会话必须走异步
+    ``close_session``，避免跳过进程和后台任务清理。
+    """
+
+    host = registry.get(session_id)
+    if host is None:
+        return False
+    host.discard_unstarted()
+    registry.pop(session_id, None)
+    workdir = cast(str, host.workdir)
+    if session_id in workdir_index.get(workdir, set()):
+        workdir_index[workdir].discard(session_id)
+        if not workdir_index[workdir]:
+            workdir_index.pop(workdir, None)
+    session_names.pop(session_id, None)
+    return True
 
 
 async def close_session(

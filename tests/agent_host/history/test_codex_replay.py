@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trowel_py.agent_host.codex_adapter import CodexEventAdapter
+from trowel_py.agent_host.runtimes.codex import CodexEventAdapter
 from trowel_py.codex_host.history import events_from_thread
 
 

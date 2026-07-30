@@ -14,6 +14,11 @@ from tests.agent_host.hub._support import (
 from trowel_py.agent_host.hub import SessionHub
 from trowel_py.agent_host.store import BindingStore
 from trowel_py.cc_host.session_scan import SessionSummary
+from trowel_py.codex_host.events import (
+    CodexEventType,
+    TranslatedItem,
+    immutable_payload,
+)
 
 
 async def _consume(stream: Any) -> None:
@@ -49,6 +54,15 @@ async def test_delegate_history_stays_hidden_after_cleanup_and_restart(
     codex_delegate = hub.create(codex_req(workdir, session_kind="delegate"))
     await hub.start_codex_turn(codex_delegate.session_id, "review")
     codex_native_id = "thread-1"
+    codex_session = manager.get_session(codex_delegate.session_id)
+    codex_session.emit_translated(
+        TranslatedItem(
+            type=CodexEventType.FINISHED,
+            thread_id=codex_native_id,
+            turn_id="fake-turn-id",
+            payload=immutable_payload(status="completed"),
+        )
+    )
 
     assert await hub.delete(cc_delegate.session_id) is True
     assert await hub.delete(codex_delegate.session_id) is True

@@ -147,16 +147,30 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.agent_host import (
             BindingStore,
+            Runtime,
             SessionHub,
             resolve_bindings_path,
         )
+        from trowel_py.agent_host.runtimes import (
+            ClaudeCodeRuntimeAdapter,
+            CodexRuntimeAdapter,
+        )
+        from trowel_py.cc_host.routes import get_registry
+
+        cc_registry = get_registry()
+        runtime_ports = {
+            Runtime.CLAUDE_CODE: ClaudeCodeRuntimeAdapter(cc_registry),
+            Runtime.CODEX: CodexRuntimeAdapter(app.state.codex_host_manager),
+        }
 
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
+            cc_registry=cc_registry,
             cc_proxy_base_url=app.state.proxy_base_url,
             cc_settings_path=app.state.cc_settings_path,
             event_observer=quota_observer,
+            runtime_ports=runtime_ports,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
