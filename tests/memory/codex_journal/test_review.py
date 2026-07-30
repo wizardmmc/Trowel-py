@@ -78,7 +78,6 @@ def _host_factory(_session: SessionRecord, workdir: Path) -> ReviewHost:
                                 "kind": "outcome",
                                 "summary": "完成 Codex turn 会后提炼",
                                 "detail": "",
-                                "source_refs": ["L000001"],
                             }
                         ],
                     }

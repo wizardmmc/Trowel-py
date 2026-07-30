@@ -19,7 +19,6 @@ VALID_DRAFT = json.dumps(
                         "kind": "outcome",
                         "summary": "完成事件提炼",
                         "detail": "",
-                        "source_refs": ["L000001"],
                     }
                 ],
             }
@@ -56,12 +55,7 @@ def prepare_default_jsonl(path: Path) -> None:
 
     # 多个增量用例使用 4096 内的任意 offset，数据必须覆盖整个区间。
     path.write_text(
-        (
-            json.dumps(
-                {"type": "user", "timestamp": "2026-07-09T02:00:00.000Z"}
-            )
-            + "\n"
-        )
+        (json.dumps({"type": "user", "timestamp": "2026-07-09T02:00:00.000Z"}) + "\n")
         * 100,
         encoding="utf-8",
     )

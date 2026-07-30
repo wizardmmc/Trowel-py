@@ -184,7 +184,6 @@ async def test_in_range_diary_date_lands_and_advances(tmp_path: Path) -> None:
                             "kind": "outcome",
                             "summary": "完成事件提炼",
                             "detail": "",
-                            "source_refs": ["L000001"],
                         }
                     ],
                 }

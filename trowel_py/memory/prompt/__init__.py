@@ -38,7 +38,7 @@ def build_refine_prompt(
     或成本文本。
 
     Args:
-        jsonl_path: 注入模板的 numbered JSONL 路径文本。
+        jsonl_path: 注入模板的原始 JSONL 路径文本。
         cost_text: 注入模板的客观成本文本。
         start_offset: 可选的原 JSONL 起始字节偏移。
         end_offset: 可选的原 JSONL 结束字节偏移。

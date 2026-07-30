@@ -1,4 +1,4 @@
-"""批量提炼 CC 与 Codex 已封口片段，并维护 Daily 和 Dictionary 派生物。"""
+"""批量提炼 CC 与 Codex 已完成的会话范围，并维护 Daily 和 Dictionary 派生物。"""
 
 from __future__ import annotations
 

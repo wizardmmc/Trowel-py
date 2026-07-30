@@ -112,17 +112,16 @@ async def test_review_cutoff_leaves_today_cc_segment_pending(tmp_path: Path) -> 
         (workdir / "draft.json").write_text(
             json.dumps(
                 {
-                        "diary": [
-                            {
-                                "date": "2026-07-09",
-                                "items": [
-                                    {
-                                        "kind": "outcome",
-                                        "summary": "完成昨日会话提炼",
-                                        "detail": "",
-                                        "source_refs": ["L000001"],
-                                    }
-                                ],
+                    "diary": [
+                        {
+                            "date": "2026-07-09",
+                            "items": [
+                                {
+                                    "kind": "outcome",
+                                    "summary": "完成昨日会话提炼",
+                                    "detail": "",
+                                }
+                            ],
                         }
                     ]
                 }
@@ -236,4 +235,4 @@ async def test_refine_prompt_carries_only_incremental_range() -> None:
         end_offset=4096,
     )
     assert "来源范围" in incremental
-    assert "[2048, 4096]" in incremental
+    assert "[2048, 4096)" in incremental

@@ -1,4 +1,4 @@
-"""提炼已封口的 Codex 轮次，并通过共享持久化链写入 Memory。"""
+"""提炼已完成的 Codex 轮次，并通过共享持久化链写入 Memory。"""
 
 from __future__ import annotations
 
@@ -211,7 +211,7 @@ def _context_for_codex(
     均未知时不创建模型记录。
 
     Args:
-        turn: 已封口且尚未提炼的 Codex 轮次记录。
+        turn: 已完成且尚未提炼的 Codex 轮次记录。
         review_date: 本次 review 写入持久化记录的日期。
         activity_dates: 轮次完成时间对应的本地日期；完成时间缺失时使用登记
             时间，均无效时为空。

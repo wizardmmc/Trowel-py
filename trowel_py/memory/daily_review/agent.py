@@ -1,4 +1,4 @@
-"""为已封口的来源片段准备提炼输入，并驱动 host 生成、校验和修订草稿。"""
+"""把已完成的会话范围交给 Agent，并驱动 host 生成、校验和修订草稿。"""
 
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
 from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
 from trowel_py.memory.daily_review.workspace import ensure_review_workdir
-from trowel_py.memory.daily_review.source_refs import materialize_numbered_source
 from trowel_py.memory.sessions_repo import SessionRecord
 
 HostFactory = Callable[[SessionRecord, Path], Any]
 DerivationSink = Callable[[DerivationProvenance], None]
-_REFINE_PIPELINE_VERSION = 2
+_REFINE_PIPELINE_VERSION = 3
 _DISTILL_MODEL = "glm-5.1"
 
 
@@ -27,9 +26,22 @@ class DistillError(Exception):
     """表示当前来源片段未能产出通过门禁的草稿。"""
 
 
+def _remove_legacy_numbered_sources(workdir: Path) -> None:
+    """删除当前 review 会话目录中旧实现生成的编号来源副本。"""
+    for source_copy in workdir.glob("source-*.numbered.jsonl"):
+        try:
+            source_copy.unlink(missing_ok=True)
+        except OSError as exc:
+            raise DistillError(
+                "cannot remove legacy numbered source from review workdir"
+            ) from exc
+
+
 def _cost_text(cost: SessionCost) -> str:
     """把会话成本格式化为提炼提示中的英文键值行。"""
-    return f"tokens={cost.total_tokens} turns={cost.num_turns} errors={cost.error_count}"
+    return (
+        f"tokens={cost.total_tokens} turns={cost.num_turns} errors={cost.error_count}"
+    )
 
 
 async def _drive_host(host: Any, prompt: str) -> bool:
@@ -49,15 +61,11 @@ async def _drive_host(host: Any, prompt: str) -> bool:
     return finished
 
 
-def _read_draft(
-    draft_path: Path,
-    legal_source_refs: set[str],
-) -> tuple[Draft | None, list[str]]:
-    """解析草稿并检查其结构和来源引用。
+def _read_draft(draft_path: Path) -> tuple[Draft | None, list[str]]:
+    """解析草稿并检查其结构。
 
     Args:
         draft_path: 提炼 host 应写入的 ``draft.json`` 路径。
-        legal_source_refs: 编号来源副本中允许使用的全部 ``Lxxxxxx`` 引用。
 
     Returns:
         解析后的草稿和门禁错误。文件缺失或内容无法解析时草稿为 None；
@@ -69,7 +77,7 @@ def _read_draft(
         draft = parse_draft(draft_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         return None, [f"draft.json is malformed: {exc}"]
-    return draft, validate_draft(draft, legal_source_refs=legal_source_refs)
+    return draft, validate_draft(draft)
 
 
 def _revision_prompt(errors: list[str]) -> str:
@@ -79,7 +87,7 @@ def _revision_prompt(errors: list[str]) -> str:
         "你刚写的 draft.json 被 Python 门禁拒绝。只修改当前工作目录的 "
         "draft.json，按下面具体错误压缩、合并或补全；不要改 memory，不要写其他文件。\n\n"
         f"【门禁错误】\n{details}\n\n"
-        "保持原有事实、item kind 和 source_refs 语义，修好后回复“draft 已修正”。"
+        "保持原有事实和 item kind，修好后回复“draft 已修正”。"
     )
 
 
@@ -92,7 +100,7 @@ def _create_host(
 
     Args:
         session: 当前来源会话；仅传给注入的 host 工厂。
-        workdir: host 读取编号后的来源副本并写入 ``draft.json`` 的工作目录。
+        workdir: host 写入 ``draft.json`` 的隔离工作目录。
         host_factory: 自定义 host 工厂；为 None 时使用固定提炼模型创建真实
             Claude Code host。
 
@@ -139,10 +147,7 @@ def _derivation_for_host(host: Any) -> DerivationProvenance:
             effort=str(effort or ""),
             basis="host_config",
         )
-        if any(
-            isinstance(value, str) and value.strip()
-            for value in (model, effort)
-        )
+        if any(isinstance(value, str) and value.strip() for value in (model, effort))
         else None
     )
     run_id = getattr(host, "session_id", None)
@@ -167,12 +172,14 @@ async def run_one_session(
     derivation_sink: DerivationSink | None = None,
     source_runtime: str = "claude_code",
 ) -> Draft:
-    """为一个已封口来源片段生成并校验提炼草稿。
+    """为一个已经完成的会话范围生成并校验提炼草稿。
 
-    函数先把指定 JSONL 字节范围过滤为带行号的来源副本，并删除工作目录中的
-    旧 ``draft.json``。首次草稿未通过门禁时，会要求同一 host 修订一次；仍然
-    无效则抛出 ``DistillError``。已创建的 host 如果提供 ``close()``，无论
-    成功或失败都会关闭。
+    函数把原始 JSONL 路径和可选字节范围交给 Agent，并删除工作目录中的旧
+    ``draft.json`` 与旧实现遗留的编号来源副本。CC Agent 可回看范围以前的
+    上下文，但只能从范围内生成新记忆；Codex 直接读取一个已完整写入磁盘的
+    turn journal。首次草稿未通过门禁时，会要求同一 host 修订一次；仍然无效
+    则抛出 ``DistillError``。已创建的 host 如果提供 ``close()``，无论成功
+    或失败都会关闭。
 
     Args:
         session: 提供来源 JSONL 路径和原生会话 ID 的会话记录。
@@ -183,38 +190,38 @@ async def run_one_session(
         end_offset: 来源 JSONL 半开字节区间的终点；为 None 时读取到文件末尾。
         derivation_sink: 草稿通过门禁后接收派生来源记录的回调。
         source_runtime: 来源事件的 runtime；设为 ``"codex"`` 时在提示中声明
-            编号后的文件来自一个已完成的 Codex turn。
+            原始文件记录一个已经完成的 Codex turn。
 
     Returns:
-        通过结构和来源引用门禁的提炼草稿。
+        通过结构门禁的提炼草稿。
 
     Raises:
-        DistillError: 无法准备来源、host 未正常结束，或草稿修订后仍未通过门禁。
+        DistillError: 来源路径或范围无效、host 未正常结束，或草稿修订后仍未
+            通过门禁。
     """
     workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
     workdir.mkdir(parents=True, exist_ok=True)
-    try:
-        numbered = materialize_numbered_source(
-            Path(session.jsonl_path),
-            workdir,
-            start_offset=start_offset,
-            end_offset=end_offset,
-        )
-    except (OSError, ValueError) as exc:
+    _remove_legacy_numbered_sources(workdir)
+    source_path = Path(session.jsonl_path)
+    if not source_path.is_file():
+        raise DistillError(f"source JSONL is not a file for {session.cc_session_id}")
+    start = start_offset or 0
+    if start < 0 or (end_offset is not None and end_offset < start):
         raise DistillError(
-            f"cannot materialize source for {session.cc_session_id}: {exc}"
-        ) from exc
+            f"invalid source byte range [{start}, {end_offset}) "
+            f"for {session.cc_session_id}"
+        )
     cost = extract_cost_from_jsonl(session.jsonl_path)
     prompt = build_refine_prompt(
-        str(numbered.path),
+        str(source_path),
         _cost_text(cost),
         start_offset=start_offset,
         end_offset=end_offset,
     )
     if source_runtime == "codex":
         prompt = (
-            "【输入运行时】本次 numbered 文件来自 Trowel 持久化的单个 Codex "
-            "completed turn normalized event journal；不要补写文件外内容。\n\n"
+            "【输入运行时】本次原始文件是 Trowel 为单个已完成 Codex turn "
+            "持久化的 normalized event journal；读取完整文件，不要补写文件外内容。\n\n"
             + prompt
         )
     draft_path = workdir / "draft.json"
@@ -228,7 +235,7 @@ async def run_one_session(
             )
         errors: list[str] = []
         for attempt in range(2):
-            draft, errors = _read_draft(draft_path, set(numbered.refs))
+            draft, errors = _read_draft(draft_path)
             if draft is not None and not errors:
                 if derivation_sink is not None:
                     derivation_sink(_derivation_for_host(host))

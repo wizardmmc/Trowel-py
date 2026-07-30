@@ -1,4 +1,4 @@
-"""定义 Episode v2 草稿事件、严格解析和旧格式投影。"""
+"""定义结构化 Episode 草稿事件、严格解析和旧格式投影。"""
 
 from __future__ import annotations
 
@@ -13,13 +13,11 @@ class DraftOutcome:
     Attributes:
         summary: 结果摘要。
         detail: 可选的补充说明；空字符串表示没有补充。
-        source_refs: 支撑该事件的会话行标识。
         kind: 固定为 ``"outcome"`` 的事件种类。
     """
 
     summary: str
     detail: str
-    source_refs: tuple[str, ...]
     kind: Literal["outcome"] = field(default="outcome", init=False)
 
 
@@ -31,14 +29,12 @@ class DraftDecision:
         summary: 决策摘要。
         reason: 作出该决策的理由。
         status: 决策状态；整稿校验只接受 ``active`` 或 ``superseded``。
-        source_refs: 支撑该事件的会话行标识。
         kind: 固定为 ``"decision"`` 的事件种类。
     """
 
     summary: str
     reason: str
     status: str
-    source_refs: tuple[str, ...]
     kind: Literal["decision"] = field(default="decision", init=False)
 
 
@@ -50,14 +46,12 @@ class DraftCorrection:
         before: 被更正的原认识。
         after: 更正后的结论。
         reason: 更正依据。
-        source_refs: 支撑该事件的会话行标识。
         kind: 固定为 ``"correction"`` 的事件种类。
     """
 
     before: str
     after: str
     reason: str
-    source_refs: tuple[str, ...]
     kind: Literal["correction"] = field(default="correction", init=False)
 
 
@@ -69,14 +63,12 @@ class DraftOpenLoop:
         summary: 待续事项摘要。
         reason: 该事项仍需跟进或被关闭的原因。
         status: 事项状态；整稿校验只接受 ``active`` 或 ``closed``。
-        source_refs: 支撑该事件的会话行标识。
         kind: 固定为 ``"open_loop"`` 的事件种类。
     """
 
     summary: str
     reason: str
     status: str
-    source_refs: tuple[str, ...]
     kind: Literal["open_loop"] = field(default="open_loop", init=False)
 
 
@@ -87,13 +79,11 @@ class DraftEvidence:
     Attributes:
         summary: 观察摘要。
         detail: 可选的事实明细；空字符串表示没有明细。
-        source_refs: 支撑该事件的会话行标识。
         kind: 固定为 ``"evidence"`` 的事件种类。
     """
 
     summary: str
     detail: str
-    source_refs: tuple[str, ...]
     kind: Literal["evidence"] = field(default="evidence", init=False)
 
 
@@ -102,11 +92,11 @@ DraftEpisodeItem: TypeAlias = (
 )
 
 _ITEM_KEYS: dict[str, set[str]] = {
-    "outcome": {"kind", "summary", "detail", "source_refs"},
-    "decision": {"kind", "summary", "reason", "status", "source_refs"},
-    "correction": {"kind", "before", "after", "reason", "source_refs"},
-    "open_loop": {"kind", "summary", "reason", "status", "source_refs"},
-    "evidence": {"kind", "summary", "detail", "source_refs"},
+    "outcome": {"kind", "summary", "detail"},
+    "decision": {"kind", "summary", "reason", "status"},
+    "correction": {"kind", "before", "after", "reason"},
+    "open_loop": {"kind", "summary", "reason", "status"},
+    "evidence": {"kind", "summary", "detail"},
 }
 
 
@@ -114,7 +104,7 @@ def parse_episode_item(value: dict[str, Any]) -> DraftEpisodeItem:
     """按事件种类严格解析一个字典。
 
     这里只接受各事件种类规定的完整字段集合，并清理所有字符串首尾空白。
-    空字段、非法状态以及空白、重复或越界引用留给整稿校验处理。
+    空字段和非法状态留给整稿校验处理。
 
     Args:
         value: 待解析的事件字典。
@@ -124,8 +114,7 @@ def parse_episode_item(value: dict[str, Any]) -> DraftEpisodeItem:
 
     Raises:
         ValueError: ``kind`` 未知，或字段集合不完全匹配。
-        TypeError: ``kind`` 无法作为事件种类判断，文本字段不是字符串，或
-            ``source_refs`` 不是字符串列表。
+        TypeError: ``kind`` 无法作为事件种类判断，或文本字段不是字符串。
     """
     kind = value.get("kind")
     if kind not in _ITEM_KEYS:
@@ -136,48 +125,38 @@ def parse_episode_item(value: dict[str, Any]) -> DraftEpisodeItem:
         raise ValueError(
             f"{kind} keys must be exactly {sorted(expected)!r}; got {sorted(actual)!r}"
         )
-    refs = _string_tuple(value["source_refs"], field="source_refs")
     if kind == "outcome":
         return DraftOutcome(
             _string(value["summary"], field="summary"),
             _string(value["detail"], field="detail"),
-            refs,
         )
     if kind == "decision":
         return DraftDecision(
             _string(value["summary"], field="summary"),
             _string(value["reason"], field="reason"),
             _string(value["status"], field="status"),
-            refs,
         )
     if kind == "correction":
         return DraftCorrection(
             _string(value["before"], field="before"),
             _string(value["after"], field="after"),
             _string(value["reason"], field="reason"),
-            refs,
         )
     if kind == "open_loop":
         return DraftOpenLoop(
             _string(value["summary"], field="summary"),
             _string(value["reason"], field="reason"),
             _string(value["status"], field="status"),
-            refs,
         )
     return DraftEvidence(
         _string(value["summary"], field="summary"),
         _string(value["detail"], field="detail"),
-        refs,
     )
 
 
 def episode_item_to_dict(item: DraftEpisodeItem) -> dict[str, Any]:
-    """把事件转换成可直接进行 JSON 编码的字典。
-
-    元组形式的 ``source_refs`` 会还原为草稿协议要求的列表。
-    """
+    """把事件转换成可直接进行 JSON 编码的字典。"""
     payload = asdict(item)
-    payload["source_refs"] = list(item.source_refs)
     payload["kind"] = item.kind
     return payload
 
@@ -201,7 +180,7 @@ def episode_item_text(item: DraftEpisodeItem) -> str:
 def project_episode_items(
     items: tuple[DraftEpisodeItem, ...],
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """把 v2 事件投影为旧调用方使用的四组文本。
+    """把结构化事件投影为旧调用方使用的四组文本。
 
     返回值依次为结果、有效决策、更正和有效待续事项，并在各组内保留输入
     顺序。证据、已替代的决策和已关闭的待续事项不会进入旧格式。
@@ -228,16 +207,6 @@ def _string(value: object, *, field: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"episode item {field} must be a string")
     return value.strip()
-
-
-def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
-    """要求字段为字符串列表，并按原顺序清理成元组。
-
-    空列表、空字符串和重复引用由整稿校验处理。
-    """
-    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise TypeError(f"episode item {field} must be a list of strings")
-    return tuple(item.strip() for item in value)
 
 
 def _join_detail(summary: str, detail: str) -> str:
