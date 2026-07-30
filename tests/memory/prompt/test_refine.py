@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import trowel_py.memory.prompt as prompt_module
+from trowel_py.memory.daily_review.sources import (
+    JournalSlice,
+    ReviewSource,
+    render_review_source,
+)
 from trowel_py.memory.prompt import (
     DRAFT_SCHEMA,
     DUALTRACK_SIGNAL_WORDS,
@@ -46,7 +51,7 @@ def test_build_refine_prompt_fills_placeholders() -> None:
 
     assert "/x/y.jsonl" in prompt
     assert "tokens=100" in prompt
-    assert "{jsonl_path}" not in prompt
+    assert "{review_source}" not in prompt
     assert "{cost}" not in prompt
 
 
@@ -81,23 +86,29 @@ def test_episode_v3_prompt_omits_source_refs_and_old_hard_compression() -> None:
 
     assert "source_refs" not in prompt
     assert "numbered" not in prompt
-    assert "原始 JSONL" in prompt
+    assert "本次处理目标" in prompt
     assert "before" in prompt and "after" in prompt
     assert "每个日期四类合计最多" not in prompt
     assert "1600" not in prompt
 
 
 def test_cc_range_allows_context_before_start_and_forbids_tail() -> None:
+    source = render_review_source(
+        ReviewSource(
+            host_kind="claude_code",
+            context=(JournalSlice("/x/source.jsonl", 0, 100),),
+            target=(JournalSlice("/x/source.jsonl", 100, 200),),
+        )
+    )
     prompt = build_refine_prompt(
-        "/x/source.jsonl",
+        source,
         "tokens=1 turns=1 errors=0",
-        start_offset=100,
-        end_offset=200,
     )
 
+    assert "[0, 100)" in prompt
     assert "[100, 200)" in prompt
-    assert "起点以前" in prompt
-    assert "终点以后" in prompt
+    assert "历史上下文" in prompt
+    assert "未列出的文件内容" in prompt
 
 
 def test_refine_prompt_describes_four_diary_lists() -> None:
@@ -117,9 +128,9 @@ def test_facade_refine_patches_flow_to_builder(monkeypatch) -> None:
     monkeypatch.setattr(
         prompt_module,
         "REFINE_PROMPT_TEMPLATE",
-        "path={jsonl_path};cost={cost}",
+        "source={review_source};cost={cost}",
     )
 
     prompt = build_refine_prompt("/patched.jsonl", "patched-cost")
 
-    assert prompt == "path=/patched.jsonl;cost=patched-cost"
+    assert prompt == "source=/patched.jsonl;cost=patched-cost"

@@ -77,12 +77,11 @@ async def test_real_codex_turn_is_sealed_in_memory_journal() -> None:
             )
         finally:
             conn.close()
-        assert segment.turn.turn_id == turn_id
+        [turn] = segment.turns
+        assert turn.turn_id == turn_id
         lines = [
             json.loads(line)
-            for line in Path(segment.turn.journal_path)
-            .read_text(encoding="utf-8")
-            .splitlines()
+            for line in Path(turn.journal_path).read_text(encoding="utf-8").splitlines()
         ]
         assert lines[0]["type"] == "user"
         assert lines[-1]["type"] == "finished"

@@ -65,6 +65,7 @@
 |---|---|
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
 | `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
+| `memory/daily_review/sources/` | 并列定义 Claude Code 字节区间与 Codex turn journal 的历史上下文、处理目标、可用性和统一渲染 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
 | `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
 | `memory/profile_distill/` | gate、agent 驱动、批处理、prompt、独立水位、重校准与应用内调度 |
@@ -91,7 +92,7 @@
 | `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
 | `memory/draft/` | 提炼 draft 的稳定模型、宽松解析、硬校验与 procedure 软告警 |
 | `memory/draft/episode.py` | Episode kind-specific item、严格解析与 daily 文本投影 |
-| `memory/daily_review/agent.py` | 把原始 journal 路径和 CC 字节范围交给提炼 Agent，并校验草稿 |
+| `memory/daily_review/agent.py` | 消费已划分 context/target 的统一 ReviewSource，按目标计算成本并驱动、校验提炼草稿 |
 
 ## 前端
 

@@ -10,6 +10,11 @@ from tests.memory.daily_review.support import (
     factory,
     session,
 )
+from trowel_py.memory.daily_review.sources import (
+    JournalSlice,
+    ReviewSource,
+    render_review_source,
+)
 from trowel_py.memory.compress import write_fallback_daily
 from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.prompt import build_refine_prompt
@@ -225,14 +230,27 @@ async def test_review_date_comes_from_run_not_session_start(tmp_path: Path) -> N
 
 
 async def test_refine_prompt_carries_only_incremental_range() -> None:
-    whole = build_refine_prompt("fixture.jsonl", "tokens=0")
-    assert "增量范围" not in whole
+    whole = build_refine_prompt(
+        render_review_source(
+            ReviewSource(
+                host_kind="claude_code",
+                context=(),
+                target=(JournalSlice("fixture.jsonl"),),
+            )
+        ),
+        "tokens=0",
+    )
+    assert "完整文件" in whole
 
     incremental = build_refine_prompt(
-        "fixture.jsonl",
+        render_review_source(
+            ReviewSource(
+                host_kind="claude_code",
+                context=(JournalSlice("fixture.jsonl", 0, 2048),),
+                target=(JournalSlice("fixture.jsonl", 2048, 4096),),
+            )
+        ),
         "tokens=0",
-        start_offset=2048,
-        end_offset=4096,
     )
-    assert "来源范围" in incremental
+    assert "历史上下文" in incremental
     assert "[2048, 4096)" in incremental

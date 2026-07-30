@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime
+from hashlib import sha256
 
 from .database import (
     ensure_columns,
@@ -13,12 +16,23 @@ from .database import (
     row_to_record,
 )
 from .models import (
-    CodexIncrementalSegment,
+    CodexPendingFragment,
     CodexTurnRecord,
     IncrementalSegment,
     SessionBinding,
     SessionRecord,
 )
+
+
+def _codex_fragment_id(turns: list[CodexTurnRecord]) -> str:
+    """由确定的 thread 和有序 turn 集合生成稳定片段 ID。"""
+    first = turns[0]
+    if len(turns) == 1:
+        return f"codex:{first.thread_id}:{first.turn_id}"
+    digest = sha256(
+        "\0".join(turn.turn_id for turn in turns).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"codex:{first.thread_id}:fragment:{digest}"
 
 
 class SessionsRepository:
@@ -266,32 +280,116 @@ class SessionsRepository:
 
     def find_incremental_codex(
         self, *, completed_before: str | None = None
-    ) -> list[CodexIncrementalSegment]:
-        """返回尚未提炼的用户 Codex 轮次。
+    ) -> list[CodexPendingFragment]:
+        """领取并返回尚未提炼的用户 Codex 片段。
 
-        在用户轮次中，仅根据 ``completed_at`` 已写入且 ``extracted_at`` 为空
-        判断是否待提炼；不检查终态值、``memory_enabled`` 或 ``profile_enabled``。
-        结果按完成时间、登记时间、thread ID 和 turn ID 排序。
+        尚未归属片段的合格轮次按 thread 分组，并把本次成员关系写回数据库。
+        已归属但提炼失败的轮次保持原片段，不会吸收后来完成的新轮次。结果按
+        各片段首个轮次的完成时间、登记时间、thread ID 和 turn ID 排序。
 
         Args:
-            completed_before: 只返回完成时间严格早于该值的轮次；None 表示不设
-                上限。
+            completed_before: 只领取完成时间严格早于该值的新轮次；已有片段仅
+                在全部待提炼成员均早于该值时返回。None 表示不设上限。
         """
 
-        cutoff_sql = ""
-        params: tuple[str, ...] = ()
-        if completed_before is not None:
-            cutoff_sql = " AND completed_at < ?"
-            params = (completed_before,)
-        rows = self._conn.execute(
+        pending_rows = self._conn.execute(
             "SELECT * FROM codex_turns"
             " WHERE completed_at IS NOT NULL AND extracted_at IS NULL"
             " AND session_kind = 'user'"
-            + cutoff_sql
-            + " ORDER BY completed_at, registered_at, thread_id, turn_id",
-            params,
+            " ORDER BY completed_at, registered_at, thread_id, turn_id"
         ).fetchall()
-        return [CodexIncrementalSegment(row_to_codex_turn(row)) for row in rows]
+        assigned: dict[str, list[CodexTurnRecord]] = defaultdict(list)
+        unassigned: dict[str, list[CodexTurnRecord]] = defaultdict(list)
+        for row in pending_rows:
+            turn = row_to_codex_turn(row)
+            if turn.review_fragment_id:
+                assigned[turn.review_fragment_id].append(turn)
+            elif completed_before is None or (
+                turn.completed_at is not None and turn.completed_at < completed_before
+            ):
+                unassigned[turn.thread_id].append(turn)
+
+        claimed: list[CodexPendingFragment] = []
+        for turns in unassigned.values():
+            fragment_id = _codex_fragment_id(turns)
+            turn_ids = tuple(turn.turn_id for turn in turns)
+            placeholders = ",".join("?" for _ in turn_ids)
+            self._conn.execute("SAVEPOINT claim_codex_fragment")
+            cursor = self._conn.execute(
+                "UPDATE codex_turns SET review_fragment_id = ?"
+                " WHERE thread_id = ?"
+                f" AND turn_id IN ({placeholders})"
+                " AND review_fragment_id = ''"
+                " AND completed_at IS NOT NULL AND extracted_at IS NULL",
+                (fragment_id, turns[0].thread_id, *turn_ids),
+            )
+            if cursor.rowcount != len(turns):
+                self._conn.execute("ROLLBACK TO claim_codex_fragment")
+                self._conn.execute("RELEASE claim_codex_fragment")
+                raise RuntimeError("Codex fragment claim changed concurrently")
+            self._conn.execute("RELEASE claim_codex_fragment")
+            assigned_turns = tuple(
+                replace(turn, review_fragment_id=fragment_id) for turn in turns
+            )
+            claimed.append(CodexPendingFragment(fragment_id, assigned_turns))
+        if claimed:
+            self._conn.commit()
+
+        existing = [
+            CodexPendingFragment(fragment_id, tuple(turns))
+            for fragment_id, turns in assigned.items()
+            if completed_before is None
+            or all(
+                turn.completed_at is not None and turn.completed_at < completed_before
+                for turn in turns
+            )
+        ]
+        fragments = existing + claimed
+        fragments.sort(
+            key=lambda fragment: (
+                fragment.turns[0].completed_at or "",
+                fragment.turns[0].registered_at,
+                fragment.thread_id,
+                fragment.turns[0].turn_id,
+            )
+        )
+        return fragments
+
+    def find_extracted_codex_before(
+        self,
+        fragment: CodexPendingFragment,
+    ) -> tuple[CodexTurnRecord, ...]:
+        """返回同一 thread 中排在目标 fragment 前面的已提炼用户 turns。
+
+        本查询只提供 refine 和 judge 的历史上下文，不改变 fragment 成员或任何
+        水位。顺序与 ``find_incremental_codex()`` 的 turn 排序一致；目标以后
+        完成的 turn 即使已经提炼也不会返回。
+
+        Args:
+            fragment: 当前将要处理的 Codex pending fragment。
+
+        Returns:
+            按完成时间、登记时间和 turn ID 排列的历史 turns；没有历史时为空。
+
+        Raises:
+            ValueError: fragment 中的 turn 不存在于当前 repository。
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE thread_id = ? AND completed_at IS NOT NULL"
+            " AND session_kind = 'user'"
+            " ORDER BY completed_at, registered_at, turn_id",
+            (fragment.thread_id,),
+        ).fetchall()
+        turns = tuple(row_to_codex_turn(row) for row in rows)
+        positions = {turn.turn_id: index for index, turn in enumerate(turns)}
+        try:
+            first_target = min(positions[turn_id] for turn_id in fragment.turn_ids)
+        except KeyError as exc:
+            raise ValueError("Codex fragment turn is missing from repository") from exc
+        return tuple(
+            turn for turn in turns[:first_target] if turn.extracted_at is not None
+        )
 
     def find_unsealed_codex_turns(self) -> list[CodexTurnRecord]:
         """返回 ``completed_at`` 为空的全部 Codex 轮次，供日志修复使用。
@@ -313,10 +411,11 @@ class SessionsRepository:
         *,
         when: str | None = None,
     ) -> None:
-        """写入已封口 Codex 轮次的提炼完成时间。
+        """兼容旧入口，并原子推进指定 turn 所属的整个 Codex 片段。
 
-        只有 ``completed_at`` 已写入的轮次会更新；轮次不存在或尚未封口时静默
-        提交空更新，已有 ``extracted_at`` 也会被覆盖。
+        已领取 fragment 的 turn 会连同该 fragment 的全部待提炼成员一起推进；
+        尚未领取的 turn 单独推进。轮次不存在、尚未封口或已经推进时保持旧行为，
+        静默提交空更新。
 
         Args:
             thread_id: Codex 原生 thread ID。
@@ -324,12 +423,78 @@ class SessionsRepository:
             when: 提炼完成时间；None 时使用本地当前时间。
         """
 
-        stamp = when or datetime.now().isoformat()
-        self._conn.execute(
-            "UPDATE codex_turns SET extracted_at = ?"
-            " WHERE thread_id = ? AND turn_id = ? AND completed_at IS NOT NULL",
-            (stamp, thread_id, turn_id),
+        row = self._conn.execute(
+            "SELECT review_fragment_id FROM codex_turns"
+            " WHERE thread_id = ? AND turn_id = ?"
+            " AND completed_at IS NOT NULL AND extracted_at IS NULL",
+            (thread_id, turn_id),
+        ).fetchone()
+        if row is None:
+            self._conn.commit()
+            return
+        fragment_id = row["review_fragment_id"] or ""
+        if fragment_id:
+            rows = self._conn.execute(
+                "SELECT turn_id FROM codex_turns"
+                " WHERE thread_id = ? AND review_fragment_id = ?"
+                " AND completed_at IS NOT NULL AND extracted_at IS NULL"
+                " ORDER BY completed_at, registered_at, turn_id",
+                (thread_id, fragment_id),
+            ).fetchall()
+            included_turn_ids = tuple(str(item["turn_id"]) for item in rows)
+        else:
+            included_turn_ids = (turn_id,)
+        self.advance_codex_extracted_many(
+            thread_id,
+            included_turn_ids,
+            when=when,
         )
+
+    def advance_codex_extracted_many(
+        self,
+        thread_id: str,
+        turn_ids: tuple[str, ...],
+        *,
+        when: str | None = None,
+    ) -> None:
+        """在一个 SQLite 事务中推进一个 Codex 片段的全部 turn 水位。
+
+        只有同属 ``thread_id``、已经封口且尚未推进的全部 turn 都存在时才提交；
+        任一 turn 不符合条件会撤销本次全部更新。
+
+        Raises:
+            ValueError: turn 列表为空、重复，或无法完整原子更新。
+        """
+
+        if not turn_ids or len(turn_ids) != len(set(turn_ids)):
+            raise ValueError("Codex atomic advance requires unique turn ids")
+        stamp = when or datetime.now().isoformat()
+        placeholders = ",".join("?" for _ in turn_ids)
+        self._conn.execute("SAVEPOINT advance_codex_fragment")
+        rows = self._conn.execute(
+            "SELECT review_fragment_id FROM codex_turns"
+            " WHERE thread_id = ?"
+            f" AND turn_id IN ({placeholders})"
+            " AND completed_at IS NOT NULL AND extracted_at IS NULL",
+            (thread_id, *turn_ids),
+        ).fetchall()
+        fragment_ids = {str(row["review_fragment_id"] or "") for row in rows}
+        if len(rows) != len(turn_ids) or len(fragment_ids) != 1:
+            self._conn.execute("ROLLBACK TO advance_codex_fragment")
+            self._conn.execute("RELEASE advance_codex_fragment")
+            raise ValueError("Codex fragment could not advance atomically")
+        cursor = self._conn.execute(
+            "UPDATE codex_turns SET extracted_at = ?"
+            " WHERE thread_id = ?"
+            f" AND turn_id IN ({placeholders})"
+            " AND completed_at IS NOT NULL AND extracted_at IS NULL",
+            (stamp, thread_id, *turn_ids),
+        )
+        if cursor.rowcount != len(turn_ids):
+            self._conn.execute("ROLLBACK TO advance_codex_fragment")
+            self._conn.execute("RELEASE advance_codex_fragment")
+            raise ValueError("Codex fragment could not advance atomically")
+        self._conn.execute("RELEASE advance_codex_fragment")
         self._conn.commit()
 
     def advance_extracted(
@@ -366,9 +531,7 @@ class SessionsRepository:
             params: list[str] = []
         else:
             placeholders = ",".join("?" * len(exclude_kinds))
-            where_kind = (
-                "COALESCE(session_kind, 'user') NOT IN " f"({placeholders})"
-            )
+            where_kind = f"COALESCE(session_kind, 'user') NOT IN ({placeholders})"
             params = exclude_kinds
         rows = self._conn.execute(
             "SELECT * FROM sessions WHERE "

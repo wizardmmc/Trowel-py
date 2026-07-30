@@ -47,30 +47,53 @@ def extract_session_cost(
     )
 
 
-def extract_cost_from_jsonl(jsonl_path: str | Path) -> SessionCost:
-    """从 Claude Code 持久化 JSONL 中提取会话成本。
+def extract_cost_from_jsonl(
+    jsonl_path: str | Path,
+    *,
+    start_offset: int = 0,
+    end_offset: int | None = None,
+) -> SessionCost:
+    """从 journal 的目标字节区间提取近似会话成本。
 
     Claude Code 2.1.197 的持久文件没有实时 stdout 中的 ``result`` 或
     ``system/init`` 行。本函数取最后一条 assistant 事件的输入与缓存输入 token，
     累加每条 assistant 事件的输出 token，并用 assistant 事件条数近似会话轮数。
     错误数来自 user 事件中的 ``tool_result.is_error``。这些值按持久化事件近似
     计算，不是 Claude Code 提供的权威会话统计。空行、非 JSON 行和无效 JSON 行
-    会被跳过；文件不存在或因文件系统错误无法读取时返回全零。
+    会被跳过；文件不存在或因文件系统错误无法读取时返回全零。offset 按原始
+    UTF-8 文件字节计算，调用方应传入完整 JSONL 行边界。
 
     Args:
         jsonl_path: Claude Code 会话的持久化 JSONL 文件路径。
+        start_offset: 本次目标区间的起始字节，默认为文件开头。
+        end_offset: 本次目标区间的结束字节；None 表示文件末尾。
 
     Returns:
         按上述规则计算的 token 总数、轮次数和错误数。
+
+    Raises:
+        ValueError: offset 为负数，或结束位置不晚于起始位置。
     """
+    if start_offset < 0:
+        raise ValueError("cost range start must not be negative")
+    if end_offset is not None and end_offset <= start_offset:
+        raise ValueError("cost range end must be after start")
     last_input = 0
     total_output = 0
     assistant_count = 0
     error_count = 0
     try:
-        with open(str(jsonl_path), encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
+        with open(str(jsonl_path), "rb") as f:
+            f.seek(start_offset)
+            while end_offset is None or f.tell() < end_offset:
+                remaining = -1 if end_offset is None else end_offset - f.tell()
+                raw_line = f.readline(remaining)
+                if not raw_line:
+                    break
+                try:
+                    s = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
                 if not s or not s.startswith("{"):
                     continue
                 try:

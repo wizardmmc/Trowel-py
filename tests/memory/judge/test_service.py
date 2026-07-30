@@ -12,9 +12,11 @@ from tests.memory.judge.support import (
     FINISHED,
     _VALID_DRAFT,
     _factory,
+    _review_source,
     _seed_real_notes,
     _session,
 )
+from trowel_py.memory.daily_review.sources import JournalSlice, ReviewSource
 from trowel_py.memory.judge import judge_session
 from trowel_py.memory.judgements import (
     HitJudgement,
@@ -31,6 +33,7 @@ async def test_judge_session_parses_draft_and_saves(tmp_path: Path) -> None:
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([FINISHED], _VALID_DRAFT),
     )
     assert report is not None
@@ -47,6 +50,53 @@ async def test_judge_session_parses_draft_and_saves(tmp_path: Path) -> None:
     assert isinstance(report.recall_miss[0], MissJudgement)
     assert report.recall_miss[0].attribution == "retrieval_miss"
     assert load_judgement_report(root, "judged-1") == report
+
+
+async def test_judge_session_reads_ordered_codex_fragment_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    _seed_real_notes(root, ("real-note", "real-note-2"))
+    prompts: list[str] = []
+
+    class CapturingHost:
+        async def send(self, prompt: str):
+            prompts.append(prompt)
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def create_host(_session, workdir: Path) -> CapturingHost:
+        (workdir / "judgement-draft.json").write_text(
+            _VALID_DRAFT,
+            encoding="utf-8",
+        )
+        return CapturingHost()
+
+    first_path = tmp_path / "journals" / "turn-1.jsonl"
+    second_path = tmp_path / "journals" / "turn-2.jsonl"
+    first_path.parent.mkdir(parents=True)
+    first_path.write_text('{"type":"user"}\n', encoding="utf-8")
+    second_path.write_text('{"type":"assistant"}\n', encoding="utf-8")
+    first = str(first_path)
+    second = str(second_path)
+    report = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        review_source=ReviewSource(
+            host_kind="codex",
+            context=(JournalSlice(first),),
+            target=(JournalSlice(second),),
+        ),
+        host_factory=create_host,
+    )
+
+    assert report is not None
+    assert prompts[0].index(first) < prompts[0].index(second)
+    assert "历史上下文" in prompts[0]
+    assert "本次处理目标" in prompts[0]
 
 
 async def test_judge_session_drops_fabricated_memory_ids(tmp_path: Path) -> None:
@@ -85,6 +135,7 @@ async def test_judge_session_drops_fabricated_memory_ids(tmp_path: Path) -> None
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([FINISHED], draft),
     )
     assert report is not None
@@ -98,8 +149,30 @@ async def test_judge_session_returns_none_on_error_event(tmp_path: Path) -> None
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([ERROR], _VALID_DRAFT),
     )
+    assert report is None
+
+
+async def test_judge_session_does_not_start_host_when_target_is_missing(
+    tmp_path: Path,
+) -> None:
+    def unexpected_factory(_session, _workdir: Path):
+        raise AssertionError("missing target must not start judge host")
+
+    report = await judge_session(
+        _session(),
+        "2026-07-16",
+        tmp_path / "memory",
+        review_source=ReviewSource(
+            host_kind="codex",
+            context=(),
+            target=(JournalSlice(str(tmp_path / "missing-target.jsonl")),),
+        ),
+        host_factory=unexpected_factory,
+    )
+
     assert report is None
 
 
@@ -109,9 +182,36 @@ async def test_judge_session_returns_none_on_no_draft(tmp_path: Path) -> None:
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([FINISHED], draft_text=None),
     )
     assert report is None
+
+
+async def test_judge_session_does_not_reuse_previous_fragment_draft(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    _seed_real_notes(root, ("real-note", "real-note-2"))
+    first = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        review_source=_review_source(),
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+        segment_id="codex:thread:fragment:first",
+    )
+    second = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        review_source=_review_source(),
+        host_factory=_factory([FINISHED], draft_text=None),
+        segment_id="codex:thread:fragment:second",
+    )
+
+    assert first is not None
+    assert second is None
 
 
 async def test_judge_session_returns_none_on_bad_json(tmp_path: Path) -> None:
@@ -120,6 +220,7 @@ async def test_judge_session_returns_none_on_bad_json(tmp_path: Path) -> None:
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([FINISHED], "{not valid json"),
     )
     assert report is None
@@ -142,6 +243,7 @@ async def test_judge_session_closes_host_when_send_raises(tmp_path: Path) -> Non
         _session(),
         "2026-07-16",
         tmp_path / "memory",
+        review_source=_review_source(),
         host_factory=lambda session, workdir: FailingHost(),
     )
 
@@ -170,7 +272,12 @@ async def test_judge_session_cchost_eval_kind(
             pass
 
     monkeypatch.setattr("trowel_py.cc_host.service.CCHost", FakeCCHost)
-    report = await judge_session(_session(), "2026-07-16", root)
+    report = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        review_source=_review_source(),
+    )
     assert report is not None
     assert captured["session_kind"] == "eval"
     assert captured.get("mcp_config")
@@ -183,6 +290,7 @@ async def test_judge_session_no_access_log_still_works(tmp_path: Path) -> None:
         _session(),
         "2026-07-16",
         root,
+        review_source=_review_source(),
         host_factory=_factory([FINISHED], _VALID_DRAFT),
     )
     assert report is not None

@@ -12,6 +12,7 @@ from trowel_py.memory.daily_review.agent import (
     HostFactory,
     run_one_session,
 )
+from trowel_py.memory.daily_review.sources import build_claude_review_source
 from trowel_py.memory.activity_dates import extract_activity_dates
 from trowel_py.memory.draft import procedure_warnings
 from trowel_py.memory.dualtrack import audit_draft
@@ -106,6 +107,7 @@ async def run_daily_review_locked(
 
         for segment in segments:
             session = segment.session
+            review_source = build_claude_review_source(segment)
             derivation: DerivationProvenance | None = None
 
             def capture_derivation(value: DerivationProvenance) -> None:
@@ -118,9 +120,8 @@ async def run_daily_review_locked(
                     session,
                     date_str,
                     root,
+                    review_source=review_source,
                     host_factory=host_factory,
-                    start_offset=segment.start,
-                    end_offset=segment.end,
                     derivation_sink=capture_derivation,
                 )
             except DistillError as exc:
@@ -209,6 +210,7 @@ async def run_daily_review_locked(
                     root,
                     host_factory=host_factory,
                     segment_id=context.segment_id,
+                    review_source=review_source,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(

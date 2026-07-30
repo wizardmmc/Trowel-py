@@ -23,34 +23,25 @@ from .refine import build_refine_prompt as _build_refine_prompt
 
 
 def build_refine_prompt(
-    jsonl_path: str,
+    review_source: str,
     cost_text: str,
-    *,
-    start_offset: int | None = None,
-    end_offset: int | None = None,
 ) -> str:
-    """用当前 refine 模板构造会话提炼 prompt。
+    """用当前 refine 模板构造带明确上下文和目标边界的提炼 prompt。
 
-    底层实现先全局替换 ``{jsonl_path}``，再替换 ``{cost}``，因此路径文本
-    中的成本占位符也会被第二步替换。任一 offset 非 ``None`` 时添加增量
-    范围：起点 ``None`` 或 0 都写为 0，终点 ``None`` 写为 ``EOF``，0 和
-    负值原样保留。本函数不读取 JSONL，也不校验路径、offset 顺序、文件边界
+    底层实现先全局替换 ``{review_source}``，再替换 ``{cost}``，因此来源文本
+    中的成本占位符也会被第二步替换。本函数不读取 journal，也不校验来源文本
     或成本文本。
 
     Args:
-        jsonl_path: 注入模板的原始 JSONL 路径文本。
+        review_source: 已明确区分历史上下文和本次处理目标的路径与范围说明。
         cost_text: 注入模板的客观成本文本。
-        start_offset: 可选的原 JSONL 起始字节偏移。
-        end_offset: 可选的原 JSONL 结束字节偏移。
 
     Returns:
         使用调用时 ``REFINE_PROMPT_TEMPLATE`` 构造的完整 prompt。
     """
     return _build_refine_prompt(
-        jsonl_path,
+        review_source,
         cost_text,
-        start_offset=start_offset,
-        end_offset=end_offset,
         template=REFINE_PROMPT_TEMPLATE,
     )
 

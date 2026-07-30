@@ -194,7 +194,7 @@
         "type": "table",
         "name": "codex_turns",
         "table": "codex_turns",
-        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, session_kind TEXT NOT NULL DEFAULT 'user', PRIMARY KEY (thread_id, turn_id) )"
+        "sql": "CREATE TABLE codex_turns ( thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, trowel_session_id TEXT NOT NULL, workdir TEXT NOT NULL, journal_path TEXT NOT NULL, registered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT, extracted_at TEXT, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', memory_enabled INTEGER NOT NULL DEFAULT 1, profile_enabled INTEGER NOT NULL DEFAULT 1, session_kind TEXT NOT NULL DEFAULT 'user', review_fragment_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (thread_id, turn_id) )"
       },
       {
         "type": "table",
