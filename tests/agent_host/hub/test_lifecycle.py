@@ -91,6 +91,77 @@ def test_list_active_mixes_cc_and_codex(hub: SessionHub, workdir: Path):
     assert active_id == cx.session_id
 
 
+@pytest.mark.parametrize(
+    ("first_request", "second_request"),
+    [
+        (cc_req, codex_req),
+        (codex_req, cc_req),
+    ],
+)
+def test_visible_user_sessions_share_names_across_runtimes(
+    hub: SessionHub,
+    workdir: Path,
+    first_request,
+    second_request,
+) -> None:
+    first = hub.create(first_request(workdir))
+    second = hub.create(second_request(workdir))
+
+    assert first.name == workdir.name
+    assert second.name == f"{workdir.name} #2"
+
+
+@pytest.mark.parametrize("delegate_request", [cc_req, codex_req])
+def test_delegate_session_does_not_occupy_user_name(
+    hub: SessionHub,
+    workdir: Path,
+    delegate_request,
+) -> None:
+    hub.create(delegate_request(workdir, session_kind="delegate"))
+
+    user = hub.create(cc_req(workdir))
+
+    assert user.name == workdir.name
+
+
+@pytest.mark.parametrize("disconnected_request", [cc_req, codex_req])
+def test_disconnected_binding_does_not_occupy_user_name(
+    hub: SessionHub,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    disconnected_request,
+) -> None:
+    disconnected = hub.create(disconnected_request(workdir))
+    if disconnected.runtime is Runtime.CLAUDE_CODE:
+        cc_registry.pop(disconnected.session_id)
+    else:
+        codex_mgr.unregister(disconnected.session_id)
+
+    user = hub.create(codex_req(workdir))
+
+    assert user.name == workdir.name
+
+
+async def test_deleted_session_releases_smallest_available_name(
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    first = hub.create(cc_req(workdir))
+    second = hub.create(codex_req(workdir))
+    third = hub.create(codex_req(workdir))
+    assert [first.name, second.name, third.name] == [
+        workdir.name,
+        f"{workdir.name} #2",
+        f"{workdir.name} #3",
+    ]
+
+    assert await hub.delete(second.session_id) is True
+    replacement = hub.create(codex_req(workdir))
+
+    assert replacement.name == f"{workdir.name} #2"
+
+
 def test_activate_sets_active_id(hub: SessionHub, workdir: Path):
     cc = hub.create(cc_req(workdir))
     cx = hub.create(codex_req(workdir))
@@ -196,6 +267,25 @@ def test_restart_recovers_bindings_from_store(
     assert cx.session_id in bindings
     assert bindings[cc.session_id].runtime is Runtime.CLAUDE_CODE
     assert bindings[cx.session_id].runtime is Runtime.CODEX
+
+
+def test_restart_does_not_let_disconnected_history_occupy_name(
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    historical = hub.create(cc_req(workdir))
+
+    restarted = SessionHub(
+        BindingStore(hub._store.path),
+        codex_manager=FakeCodexManager(),
+        cc_registry={},
+        cc_opener=make_cc_opener({}, {}),
+        codex_config_home=workdir.parent,
+    )
+    new_session = restarted.create(codex_req(workdir))
+
+    assert historical.name == workdir.name
+    assert new_session.name == workdir.name
 
 
 async def test_interrupt_routes_to_cc(

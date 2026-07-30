@@ -61,7 +61,7 @@ from trowel_py.cc_host.session_lifecycle import (
     CcCapacityError,
     CcWorkdirNotFoundError,
 )
-from trowel_py.agent_host.store import BindingStore
+from trowel_py.agent_host.store import BindingStore, next_session_display_name
 from trowel_py.agent_host.events import AgentEvent
 
 _log = logging.getLogger(__name__)
@@ -507,12 +507,14 @@ class SessionHub:
             agent_mcp_enabled=req.agent_mcp_enabled,
             delegation_depth=req.delegation_depth,
         )
+        display_name = self._display_name(req.workdir)
         try:
             opened = self._cc_opener(
                 cc_req,
                 self._cc_registry,
                 proxy_base_url=self._cc_proxy_base_url,
                 settings_path=self._cc_settings_path,
+                display_name=display_name,
             )
         except CcWorkdirNotFoundError as exc:
             raise InvalidSessionRequestError(str(exc)) from exc
@@ -617,11 +619,16 @@ class SessionHub:
                 )
 
     def _display_name(self, workdir: str) -> str:
-        """用工作目录名称生成会话显示名称；同一目录的后续会话依次添加 #2、#3 等序号。"""
+        """根据同目录当前连接的用户会话分配最小可用临时编号。"""
 
-        basename = Path(workdir).name or str(workdir)
-        same_workdir = sum(1 for b in self._store.list_all() if b.workdir == workdir)
-        return basename if same_workdir == 0 else f"{basename} #{same_workdir + 1}"
+        occupied_names = (
+            binding.name
+            for binding in self._store.list_all()
+            if binding.workdir == workdir
+            and binding.session_kind == "user"
+            and self._live_status(binding)[0]
+        )
+        return next_session_display_name(workdir, occupied_names)
 
     def get(self, session_id: str) -> SessionBinding | None:
         """读取指定 Trowel 会话的持久化记录，找不到时返回 None。"""

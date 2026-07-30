@@ -97,6 +97,7 @@ def test_open_facade_reads_current_route_state(
         "max_connections": 7,
         "max_delegate_connections": routes.MAX_DELEGATE_CONNECTIONS,
         "host_factory": host_factory,
+        "display_name": None,
     }
     assert routes.get_active_session_id() == "new-session"
 
@@ -237,6 +238,28 @@ def test_low_level_cc_capacity_reads_real_host_session_kind(
     )
 
     assert sid in registry
+
+
+def test_low_level_cc_name_ignores_delegate_but_keeps_registered_users() -> None:
+    workdir = "/tmp/project"
+    registry = {
+        "user": SimpleNamespace(session_kind="user", is_dead=False),
+        "delegate": SimpleNamespace(session_kind="delegate", is_dead=False),
+        "dead": SimpleNamespace(session_kind="user", is_dead=True),
+    }
+
+    name = session_lifecycle._display_name(
+        workdir,
+        cast(dict[str, Any], registry),
+        {workdir: set(registry)},
+        {
+            "user": "project",
+            "delegate": "project #3",
+            "dead": "project #2",
+        },
+    )
+
+    assert name == "project #3"
 
 
 async def test_close_facade_reads_current_route_state(
