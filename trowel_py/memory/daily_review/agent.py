@@ -44,6 +44,30 @@ def _cost_text(cost: SessionCost) -> str:
     )
 
 
+def _source_reference(source_paths: tuple[Path, ...]) -> str:
+    """把一个或多个来源路径格式化为供 Agent 直接读取的有序说明。"""
+    if len(source_paths) == 1:
+        return str(source_paths[0])
+    paths = "\n".join(
+        f"{index}. {path}" for index, path in enumerate(source_paths, start=1)
+    )
+    return (
+        "以下路径按 turn 完成顺序组成同一 Codex 会话片段；"
+        "逐个读取，并把全部文件作为一个整体处理：\n"
+        f"{paths}"
+    )
+
+
+def _combined_cost(source_paths: tuple[Path, ...]) -> SessionCost:
+    """累加一组来源文件的近似 token、turn 和错误统计。"""
+    costs = tuple(extract_cost_from_jsonl(path) for path in source_paths)
+    return SessionCost(
+        total_tokens=sum(cost.total_tokens for cost in costs),
+        num_turns=sum(cost.num_turns for cost in costs),
+        error_count=sum(cost.error_count for cost in costs),
+    )
+
+
 async def _drive_host(host: Any, prompt: str) -> bool:
     """发送提示并耗尽 host 事件流，报告其中是否出现 ``finished`` 事件。
 
@@ -171,15 +195,16 @@ async def run_one_session(
     end_offset: int | None = None,
     derivation_sink: DerivationSink | None = None,
     source_runtime: str = "claude_code",
+    source_jsonl_paths: tuple[str, ...] | None = None,
 ) -> Draft:
     """为一个已经完成的会话范围生成并校验提炼草稿。
 
     函数把原始 JSONL 路径和可选字节范围交给 Agent，并删除工作目录中的旧
     ``draft.json`` 与旧实现遗留的编号来源副本。CC Agent 可回看范围以前的
-    上下文，但只能从范围内生成新记忆；Codex 直接读取一个已完整写入磁盘的
-    turn journal。首次草稿未通过门禁时，会要求同一 host 修订一次；仍然无效
-    则抛出 ``DistillError``。已创建的 host 如果提供 ``close()``，无论成功
-    或失败都会关闭。
+    上下文，但只能从范围内生成新记忆；Codex 直接读取一个或多个已完整写入
+    磁盘的 turn journal。首次草稿未通过门禁时，会要求同一 host 修订一次；
+    仍然无效则抛出 ``DistillError``。已创建的 host 如果提供 ``close()``，
+    无论成功或失败都会关闭。
 
     Args:
         session: 提供来源 JSONL 路径和原生会话 ID 的会话记录。
@@ -190,7 +215,9 @@ async def run_one_session(
         end_offset: 来源 JSONL 半开字节区间的终点；为 None 时读取到文件末尾。
         derivation_sink: 草稿通过门禁后接收派生来源记录的回调。
         source_runtime: 来源事件的 runtime；设为 ``"codex"`` 时在提示中声明
-            原始文件记录一个已经完成的 Codex turn。
+            原始文件分别记录同一片段中已经完成的 Codex turn。
+        source_jsonl_paths: 按 turn 顺序排列的来源文件；None 时只使用
+            ``session.jsonl_path``。多个来源不能再指定字节范围。
 
     Returns:
         通过结构门禁的提炼草稿。
@@ -202,27 +229,37 @@ async def run_one_session(
     workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
     workdir.mkdir(parents=True, exist_ok=True)
     _remove_legacy_numbered_sources(workdir)
-    source_path = Path(session.jsonl_path)
-    if not source_path.is_file():
+    source_paths = tuple(
+        Path(path)
+        for path in (
+            source_jsonl_paths
+            if source_jsonl_paths is not None
+            else (session.jsonl_path,)
+        )
+    )
+    if not source_paths or any(not path.is_file() for path in source_paths):
         raise DistillError(f"source JSONL is not a file for {session.cc_session_id}")
+    if len(source_paths) > 1 and (start_offset is not None or end_offset is not None):
+        raise DistillError("source byte ranges require exactly one JSONL")
     start = start_offset or 0
     if start < 0 or (end_offset is not None and end_offset < start):
         raise DistillError(
             f"invalid source byte range [{start}, {end_offset}) "
             f"for {session.cc_session_id}"
         )
-    cost = extract_cost_from_jsonl(session.jsonl_path)
+    cost = _combined_cost(source_paths)
     prompt = build_refine_prompt(
-        str(source_path),
+        _source_reference(source_paths),
         _cost_text(cost),
         start_offset=start_offset,
         end_offset=end_offset,
     )
     if source_runtime == "codex":
         prompt = (
-            "【输入运行时】本次原始文件是 Trowel 为单个已完成 Codex turn "
-            "持久化的 normalized event journal；读取完整文件，不要补写文件外内容。\n\n"
-            + prompt
+            "【输入运行时】本次来源是 Trowel 为一个或多个已完成 Codex turn "
+            "分别持久化的 normalized event journal；路径列表顺序就是 turn "
+            "顺序。读取全部完整文件，把它们视为同一 Codex 会话片段，"
+            "不要补写文件外内容。\n\n" + prompt
         )
     draft_path = workdir / "draft.json"
     draft_path.unlink(missing_ok=True)

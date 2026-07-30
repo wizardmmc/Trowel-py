@@ -142,7 +142,7 @@ async def test_codex_agent_uses_sealed_original_journal_without_byte_range(
 
     assert str(source) in prompts[0]
     assert "【来源范围】" not in prompts[0]
-    assert "单个已完成 Codex turn" in prompts[0]
+    assert "一个或多个已完成 Codex turn" in prompts[0]
     assert list((tmp_path / "review-daily-work").rglob("*.numbered.jsonl")) == []
 
 

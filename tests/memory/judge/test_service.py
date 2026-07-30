@@ -49,6 +49,42 @@ async def test_judge_session_parses_draft_and_saves(tmp_path: Path) -> None:
     assert load_judgement_report(root, "judged-1") == report
 
 
+async def test_judge_session_reads_ordered_codex_fragment_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    _seed_real_notes(root, ("real-note", "real-note-2"))
+    prompts: list[str] = []
+
+    class CapturingHost:
+        async def send(self, prompt: str):
+            prompts.append(prompt)
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def create_host(_session, workdir: Path) -> CapturingHost:
+        (workdir / "judgement-draft.json").write_text(
+            _VALID_DRAFT,
+            encoding="utf-8",
+        )
+        return CapturingHost()
+
+    first = "/journals/turn-1.jsonl"
+    second = "/journals/turn-2.jsonl"
+    report = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        host_factory=create_host,
+        source_jsonl_paths=(first, second),
+    )
+
+    assert report is not None
+    assert prompts[0].index(first) < prompts[0].index(second)
+
+
 async def test_judge_session_drops_fabricated_memory_ids(tmp_path: Path) -> None:
     root = tmp_path / "memory"
     _seed_real_notes(root, ("real-note",))
@@ -112,6 +148,30 @@ async def test_judge_session_returns_none_on_no_draft(tmp_path: Path) -> None:
         host_factory=_factory([FINISHED], draft_text=None),
     )
     assert report is None
+
+
+async def test_judge_session_does_not_reuse_previous_fragment_draft(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    _seed_real_notes(root, ("real-note", "real-note-2"))
+    first = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        host_factory=_factory([FINISHED], _VALID_DRAFT),
+        segment_id="codex:thread:fragment:first",
+    )
+    second = await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        host_factory=_factory([FINISHED], draft_text=None),
+        segment_id="codex:thread:fragment:second",
+    )
+
+    assert first is not None
+    assert second is None
 
 
 async def test_judge_session_returns_none_on_bad_json(tmp_path: Path) -> None:

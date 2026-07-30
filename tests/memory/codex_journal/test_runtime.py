@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from trowel_py.codex_host.events import (
     CodexEventType,
     TranslatedItem,
@@ -40,10 +42,7 @@ def _binding(thread_id: str = THREAD_ID) -> dict:
 
 def _real_notifications() -> list[dict]:
     fixture = (
-        Path(__file__).parents[2]
-        / "codex_host"
-        / "fixtures"
-        / "notifications.jsonl"
+        Path(__file__).parents[2] / "codex_host" / "fixtures" / "notifications.jsonl"
     )
     return [
         json.loads(line.replace("<uuid>", TURN_ID))
@@ -59,7 +58,9 @@ def _real_mcp_item() -> dict:
         / "thread-read-0.144.0.json"
     )
     thread = json.loads(fixture.read_text(encoding="utf-8"))["thread"]
-    return next(item for item in thread["turns"][0]["items"] if item["type"] == "mcpToolCall")
+    return next(
+        item for item in thread["turns"][0]["items"] if item["type"] == "mcpToolCall"
+    )
 
 
 def _real_file_change_events() -> list[dict]:
@@ -69,14 +70,15 @@ def _real_file_change_events() -> list[dict]:
         / "fixtures"
         / "file-change-add-modify-076.jsonl"
     )
-    return [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
+    return [
+        json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines()
+    ]
 
 
-def test_real_normalized_events_are_durable_before_turn_is_sealed(tmp_path: Path) -> None:
-    ticks = iter(
-        datetime(2026, 7, 23, 23, 58, second)
-        for second in range(20)
-    )
+def test_real_normalized_events_are_durable_before_turn_is_sealed(
+    tmp_path: Path,
+) -> None:
+    ticks = iter(datetime(2026, 7, 23, 23, 58, second) for second in range(20))
     journal = CodexTurnJournal(
         tmp_path,
         trowel_session_id="trowel-codex-1",
@@ -130,21 +132,20 @@ def test_real_normalized_events_are_durable_before_turn_is_sealed(tmp_path: Path
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        [segment] = repo.find_incremental_codex(
-            completed_before="2026-07-24T00:00:00"
-        )
+        [segment] = repo.find_incremental_codex(completed_before="2026-07-24T00:00:00")
     finally:
         conn.close()
 
-    assert segment.turn.thread_id == THREAD_ID
-    assert segment.turn.turn_id == TURN_ID
-    assert segment.turn.trowel_session_id == "trowel-codex-1"
-    assert segment.turn.memory_enabled is False
-    assert segment.turn.model == "gpt-5.6-sol"
-    assert segment.turn.effort == "high"
+    [turn] = segment.turns
+    assert turn.thread_id == THREAD_ID
+    assert turn.turn_id == TURN_ID
+    assert turn.trowel_session_id == "trowel-codex-1"
+    assert turn.memory_enabled is False
+    assert turn.model == "gpt-5.6-sol"
+    assert turn.effort == "high"
     lines = [
         json.loads(line)
-        for line in Path(segment.turn.journal_path).read_text(encoding="utf-8").splitlines()
+        for line in Path(turn.journal_path).read_text(encoding="utf-8").splitlines()
     ]
     types = [line["type"] for line in lines]
     tool_kinds = [
@@ -223,10 +224,10 @@ def test_unsolicited_autonomous_turn_remains_memory_eligible(tmp_path: Path) -> 
         [segment] = create_sessions_repository(conn).find_incremental_codex()
     finally:
         conn.close()
-    assert segment.turn.turn_id == TURN_ID
+    assert segment.turn_ids == (TURN_ID,)
 
 
-def test_two_completed_turns_use_native_turn_watermark(tmp_path: Path) -> None:
+def test_same_thread_completed_turns_form_one_pending_fragment(tmp_path: Path) -> None:
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
@@ -269,20 +270,208 @@ def test_two_completed_turns_use_native_turn_watermark(tmp_path: Path) -> None:
             completed_at="2026-07-23T10:05:00",
         )
 
-        first = repo.find_incremental_codex(
-            completed_before="2026-07-23T00:00:00"
-        )
-        repo.advance_codex_extracted(
-            "thread-1", "turn-1", when="2026-07-23T02:30:00"
-        )
-        second = repo.find_incremental_codex(
+        all_pending = repo.find_incremental_codex(
             completed_before="2026-07-24T00:00:00"
+        )
+        repo.advance_codex_extracted_many(
+            "thread-1",
+            ("turn-1", "turn-2"),
+            when="2026-07-24T02:30:00",
+        )
+        after_advance = repo.find_incremental_codex(
+            completed_before="2026-07-25T00:00:00"
         )
     finally:
         conn.close()
 
-    assert [item.turn.turn_id for item in first] == ["turn-1"]
-    assert [item.turn.turn_id for item in second] == ["turn-2"]
+    assert [item.turn_ids for item in all_pending] == [("turn-1", "turn-2")]
+    assert after_advance == []
+
+
+def test_failed_fragment_membership_does_not_absorb_later_turn(
+    tmp_path: Path,
+) -> None:
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        for index in (1, 2):
+            repo.register_codex_turn(
+                thread_id="thread-1",
+                turn_id=f"turn-{index}",
+                trowel_session_id=f"trowel-{index}",
+                workdir="/workspace",
+                journal_path=f"/journal/turn-{index}.jsonl",
+                registered_at=f"2026-07-22T10:0{index}:00",
+                model="gpt-5.6-sol",
+                effort="high",
+                provider="openai",
+                memory_enabled=True,
+                profile_enabled=True,
+            )
+            repo.complete_codex_turn(
+                "thread-1",
+                f"turn-{index}",
+                status="completed",
+                completed_at=f"2026-07-22T10:0{index}:30",
+            )
+
+        [claimed] = repo.find_incremental_codex()
+
+        repo.register_codex_turn(
+            thread_id="thread-1",
+            turn_id="turn-3",
+            trowel_session_id="trowel-3",
+            workdir="/workspace",
+            journal_path="/journal/turn-3.jsonl",
+            registered_at="2026-07-22T10:03:00",
+            model="gpt-5.6-sol",
+            effort="high",
+            provider="openai",
+            memory_enabled=True,
+            profile_enabled=True,
+        )
+        repo.complete_codex_turn(
+            "thread-1",
+            "turn-3",
+            status="completed",
+            completed_at="2026-07-22T10:03:30",
+        )
+        retried = repo.find_incremental_codex()
+    finally:
+        conn.close()
+
+    assert claimed.turn_ids == ("turn-1", "turn-2")
+    assert [(item.fragment_id, item.turn_ids) for item in retried] == [
+        (claimed.fragment_id, ("turn-1", "turn-2")),
+        (retried[1].fragment_id, ("turn-3",)),
+    ]
+    assert retried[1].fragment_id != claimed.fragment_id
+
+
+def test_codex_fragment_keeps_cutoff_and_user_session_kind_filters(
+    tmp_path: Path,
+) -> None:
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        cases = (
+            ("eligible-user", "2026-07-22T10:00:00", "user"),
+            ("future-user", "2026-07-24T10:00:00", "user"),
+            ("eligible-delegate", "2026-07-22T11:00:00", "delegate"),
+        )
+        for turn_id, completed_at, session_kind in cases:
+            repo.register_codex_turn(
+                thread_id="thread-1",
+                turn_id=turn_id,
+                trowel_session_id=f"trowel-{turn_id}",
+                workdir="/workspace",
+                journal_path=f"/journal/{turn_id}.jsonl",
+                registered_at=completed_at,
+                model="gpt-5.6-sol",
+                effort="high",
+                provider="openai",
+                memory_enabled=True,
+                profile_enabled=True,
+                session_kind=session_kind,
+            )
+            repo.complete_codex_turn(
+                "thread-1",
+                turn_id,
+                status="completed",
+                completed_at=completed_at,
+            )
+
+        [fragment] = repo.find_incremental_codex(completed_before="2026-07-23T00:00:00")
+        rows = conn.execute(
+            "SELECT turn_id, review_fragment_id FROM codex_turns ORDER BY turn_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert fragment.turn_ids == ("eligible-user",)
+    fragment_ids = {row["turn_id"]: row["review_fragment_id"] for row in rows}
+    assert fragment_ids["future-user"] == ""
+    assert fragment_ids["eligible-delegate"] == ""
+
+
+def test_atomic_codex_fragment_advance_rolls_back_if_any_turn_is_missing(
+    tmp_path: Path,
+) -> None:
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        repo.register_codex_turn(
+            thread_id="thread-1",
+            turn_id="turn-1",
+            trowel_session_id="trowel-1",
+            workdir="/workspace",
+            journal_path="/journal/turn-1.jsonl",
+            registered_at="2026-07-22T10:00:00",
+            model="gpt-5.6-sol",
+            effort="high",
+            provider="openai",
+            memory_enabled=True,
+            profile_enabled=True,
+        )
+        repo.complete_codex_turn(
+            "thread-1",
+            "turn-1",
+            status="completed",
+            completed_at="2026-07-22T10:01:00",
+        )
+
+        with pytest.raises(ValueError, match="atomic"):
+            repo.advance_codex_extracted_many(
+                "thread-1",
+                ("turn-1", "missing-turn"),
+                when="2026-07-22T11:00:00",
+            )
+        [pending] = repo.find_incremental_codex()
+    finally:
+        conn.close()
+
+    assert pending.turn_ids == ("turn-1",)
+
+
+def test_legacy_single_turn_advance_cannot_partially_advance_fragment(
+    tmp_path: Path,
+) -> None:
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        for index in (1, 2):
+            repo.register_codex_turn(
+                thread_id="thread-1",
+                turn_id=f"turn-{index}",
+                trowel_session_id=f"trowel-{index}",
+                workdir="/workspace",
+                journal_path=f"/journal/turn-{index}.jsonl",
+                registered_at=f"2026-07-22T10:0{index}:00",
+                model="gpt-5.6-sol",
+                effort="high",
+                provider="openai",
+                memory_enabled=True,
+                profile_enabled=True,
+            )
+            repo.complete_codex_turn(
+                "thread-1",
+                f"turn-{index}",
+                status="completed",
+                completed_at=f"2026-07-22T10:0{index}:30",
+            )
+        [fragment] = repo.find_incremental_codex()
+
+        repo.advance_codex_extracted(
+            "thread-1",
+            "turn-1",
+            when="2026-07-22T11:00:00",
+        )
+        pending = repo.find_incremental_codex()
+    finally:
+        conn.close()
+
+    assert fragment.turn_ids == ("turn-1", "turn-2")
+    assert pending == []
 
 
 def test_fsynced_terminal_repairs_watermark_after_commit_crash(
@@ -335,7 +524,7 @@ def test_fsynced_terminal_repairs_watermark_after_commit_crash(
         [recovered] = create_sessions_repository(conn).find_incremental_codex()
     finally:
         conn.close()
-    assert recovered.turn.turn_id == TURN_ID
+    assert recovered.turn_ids == (TURN_ID,)
 
 
 def test_event_write_failure_cannot_be_recovered_as_complete(

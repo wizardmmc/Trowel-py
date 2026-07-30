@@ -2,7 +2,7 @@
 
 from .database import open_sessions_db, open_sessions_db_readonly
 from .models import (
-    CodexIncrementalSegment,
+    CodexPendingFragment,
     CodexTurnRecord,
     IncrementalSegment,
     SessionBinding,
@@ -16,7 +16,7 @@ __all__ = [
     "SessionBinding",
     "SessionRecord",
     "CodexTurnRecord",
-    "CodexIncrementalSegment",
+    "CodexPendingFragment",
     "SessionRegistrar",
     "SessionsRepository",
     "create_sessions_repository",

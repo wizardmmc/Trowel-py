@@ -23,7 +23,7 @@ from trowel_py.memory.provenance import (
     ModelIdentity,
 )
 from trowel_py.memory.sessions_repo import (
-    CodexTurnRecord,
+    CodexPendingFragment,
     SessionRecord,
     SessionsRepository,
 )
@@ -65,29 +65,32 @@ async def review_codex_segments(
     """
     segments = repo.find_incremental_codex(completed_before=completed_before)
     logger.info(
-        "daily review: %d Codex completed turn(s) (date_str=%s)",
+        "daily review: %d Codex pending fragment(s), %d completed turn(s)"
+        " (date_str=%s)",
         len(segments),
+        sum(len(segment.turns) for segment in segments),
         date_str,
     )
     touched_dates: set[str] = set()
-    for segment in segments:
-        turn = segment.turn
-        journal_path = Path(turn.journal_path)
-        if not journal_path.is_file():
+    for fragment in segments:
+        first_turn = fragment.turns[0]
+        journal_paths = tuple(Path(path) for path in fragment.journal_paths)
+        missing_paths = tuple(path for path in journal_paths if not path.is_file())
+        if missing_paths:
             logger.warning(
-                "Codex journal missing for %s:%s (not advanced)",
-                turn.thread_id,
-                turn.turn_id,
+                "Codex journal(s) missing for fragment %s: %s (not advanced)",
+                fragment.fragment_id,
+                missing_paths,
             )
             continue
         session = SessionRecord(
-            cc_session_id=turn.thread_id,
-            trowel_session_id=turn.trowel_session_id,
-            workdir=turn.workdir,
-            date=(turn.completed_at or date_str)[:10],
-            jsonl_path=str(journal_path),
-            registered_at=turn.registered_at,
-            last_completed_at=turn.completed_at,
+            cc_session_id=fragment.thread_id,
+            trowel_session_id=first_turn.trowel_session_id,
+            workdir=first_turn.workdir,
+            date=(fragment.turns[-1].completed_at or date_str)[:10],
+            jsonl_path=str(journal_paths[0]),
+            registered_at=first_turn.registered_at,
+            last_completed_at=fragment.turns[-1].completed_at,
         )
         derivation: DerivationProvenance | None = None
 
@@ -104,80 +107,78 @@ async def review_codex_segments(
                 host_factory=host_factory,
                 derivation_sink=capture_derivation,
                 source_runtime="codex",
+                source_jsonl_paths=fragment.journal_paths,
             )
         except DistillError as exc:
             logger.warning(
-                "Codex distill failed for %s:%s (not advanced): %s",
-                turn.thread_id,
-                turn.turn_id,
+                "Codex distill failed for fragment %s (not advanced): %s",
+                fragment.fragment_id,
                 exc,
             )
             continue
 
-        # Codex 轮次按完成时间归属；空字节区间使日期优先取 completed_at，
-        # 缺失时回退 registered_at。
-        activity = extract_activity_dates(
-            journal_path,
-            0,
-            0,
-            last_completed_at=turn.completed_at,
-            registered_at=turn.registered_at,
-        )
-        bad_dates = _out_of_range_dates(draft.diary, activity.dates)
+        activity_dates, date_basis = _fragment_activity(fragment)
+        bad_dates = _out_of_range_dates(draft.diary, activity_dates)
         if bad_dates:
             logger.warning(
-                "Codex draft diary dates %s outside activity_dates %s for %s:%s "
+                "Codex draft diary dates %s outside activity_dates %s for %s "
                 "(not advanced)",
                 bad_dates,
-                activity.dates,
-                turn.thread_id,
-                turn.turn_id,
+                activity_dates,
+                fragment.fragment_id,
             )
             continue
 
         audit = audit_draft(draft)
         if not audit.clean:
             logger.warning(
-                "dualtrack leaks in Codex %s:%s: %s",
-                turn.thread_id,
-                turn.turn_id,
+                "dualtrack leaks in Codex %s: %s",
+                fragment.fragment_id,
                 [(leak.date, leak.signal, leak.snippet) for leak in audit.leaks],
             )
         warnings = procedure_warnings(draft)
         if warnings:
             logger.warning(
-                "procedure gaps in Codex %s:%s: %s",
-                turn.thread_id,
-                turn.turn_id,
+                "procedure gaps in Codex %s: %s",
+                fragment.fragment_id,
                 warnings,
             )
 
         context = _context_for_codex(
-            turn,
+            fragment,
             date_str,
-            activity_dates=activity.dates,
-            date_basis=activity.basis,
+            activity_dates=activity_dates,
+            date_basis=date_basis,
             derivation=derivation,
         )
         try:
             report = persist_draft(store, draft, context)
         except (OSError, ValueError) as exc:
             logger.warning(
-                "Codex persist failed for %s:%s (not advanced): %s",
-                turn.thread_id,
-                turn.turn_id,
+                "Codex persist failed for %s (not advanced): %s",
+                fragment.fragment_id,
                 exc,
             )
             continue
         if not report.ok:
             logger.warning(
-                "Codex persist incomplete for %s:%s (not advanced)",
-                turn.thread_id,
-                turn.turn_id,
+                "Codex persist incomplete for %s (not advanced)",
+                fragment.fragment_id,
             )
             continue
 
-        repo.advance_codex_extracted(turn.thread_id, turn.turn_id)
+        try:
+            repo.advance_codex_extracted_many(
+                fragment.thread_id,
+                fragment.turn_ids,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Codex fragment watermark failed for %s after persist: %s",
+                fragment.fragment_id,
+                exc,
+            )
+            continue
         touched_dates.update(entry.date for entry in draft.diary)
         try:
             await judge_session(
@@ -186,32 +187,32 @@ async def review_codex_segments(
                 root,
                 host_factory=host_factory,
                 segment_id=context.segment_id,
+                source_jsonl_paths=fragment.journal_paths,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Codex judge raised for %s:%s (isolated): %s",
-                turn.thread_id,
-                turn.turn_id,
+                "Codex judge raised for %s (isolated): %s",
+                fragment.fragment_id,
                 exc,
             )
     return touched_dates
 
 
 def _context_for_codex(
-    turn: CodexTurnRecord,
+    fragment: CodexPendingFragment,
     review_date: str,
     *,
     activity_dates: tuple[str, ...],
     date_basis: str,
     derivation: DerivationProvenance | None,
 ) -> PersistContext:
-    """为一个 Codex 轮次构造持久化上下文和来源记录。
+    """为一个 Codex 待提炼片段构造持久化上下文和来源记录。
 
     来源模型只取轮次首次登记时固化的 binding；模型、推理强度和 provider
     均未知时不创建模型记录。
 
     Args:
-        turn: 已完成且尚未提炼的 Codex 轮次记录。
+        fragment: 已领取且尚未提炼的 Codex 片段。
         review_date: 本次 review 写入持久化记录的日期。
         activity_dates: 轮次完成时间对应的本地日期；完成时间缺失时使用登记
             时间，均无效时为空。
@@ -222,42 +223,72 @@ def _context_for_codex(
         包含 Codex turn 来源、binding 模型信息、活动日期和提炼来源的持久化
         上下文。
     """
-    segment_id = f"codex:{turn.thread_id}:{turn.turn_id}"
-    source_models: tuple[ModelIdentity, ...] = ()
-    if any((turn.model, turn.effort, turn.provider)):
-        source_models = (
+    first_turn = fragment.turns[0]
+    last_turn = fragment.turns[-1]
+    source_models = tuple(
+        dict.fromkeys(
             ModelIdentity(
                 model=turn.model,
                 effort=turn.effort,
                 provider=turn.provider,
                 basis="binding",
-            ),
+            )
+            for turn in fragment.turns
+            if any((turn.model, turn.effort, turn.provider))
         )
+    )
+    trowel_session_ids = tuple(
+        dict.fromkeys(
+            turn.trowel_session_id for turn in fragment.turns if turn.trowel_session_id
+        )
+    )
     completed_segment = CompletedSegment(
-        segment_id=segment_id,
+        segment_id=fragment.fragment_id,
         host_kind="codex",
-        native_session_id=turn.thread_id,
-        trowel_session_ids=(turn.trowel_session_id,),
-        session_kind=turn.session_kind,
-        workdir=turn.workdir,
-        registered_at=turn.registered_at,
-        completed_at=turn.completed_at or "",
-        source=CodexTurnsSource(turn_ids=(turn.turn_id,)),
+        native_session_id=fragment.thread_id,
+        trowel_session_ids=trowel_session_ids,
+        session_kind=first_turn.session_kind,
+        workdir=first_turn.workdir,
+        registered_at=first_turn.registered_at,
+        completed_at=last_turn.completed_at or "",
+        source=CodexTurnsSource(turn_ids=fragment.turn_ids),
         source_models=source_models,
     )
     return PersistContext(
-        segment_id=segment_id,
-        cc_session_id=turn.thread_id,
-        workdir=turn.workdir,
-        registered_at=turn.registered_at,
+        segment_id=fragment.fragment_id,
+        cc_session_id=fragment.thread_id,
+        workdir=first_turn.workdir,
+        registered_at=first_turn.registered_at,
         review_date=review_date,
-        source_jsonl=turn.journal_path,
+        source_jsonl=first_turn.journal_path,
         activity_dates=activity_dates,
         date_basis=date_basis,
         processed_date=datetime.now().date().isoformat(),
         completed_segment=completed_segment,
         derivation=derivation,
     )
+
+
+def _fragment_activity(
+    fragment: CodexPendingFragment,
+) -> tuple[tuple[str, ...], str]:
+    """合并片段内各 turn 的活动日期，并记录其中最弱的回退依据。"""
+    dates: set[str] = set()
+    bases: set[str] = set()
+    for turn in fragment.turns:
+        activity = extract_activity_dates(
+            turn.journal_path,
+            0,
+            0,
+            last_completed_at=turn.completed_at,
+            registered_at=turn.registered_at,
+        )
+        dates.update(activity.dates)
+        bases.add(activity.basis)
+    for basis in ("registered_at", "completed_at", "jsonl_timestamp"):
+        if basis in bases:
+            return tuple(sorted(dates)), basis
+    return tuple(sorted(dates)), "jsonl_timestamp"
 
 
 def _out_of_range_dates(

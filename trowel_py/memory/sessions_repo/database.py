@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS codex_turns (
     memory_enabled      INTEGER NOT NULL DEFAULT 1,
     profile_enabled     INTEGER NOT NULL DEFAULT 1,
     session_kind        TEXT NOT NULL DEFAULT 'user',
+    review_fragment_id  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (thread_id, turn_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
@@ -72,6 +73,9 @@ _ADD_COLUMN_SQL = {
 _CODEX_ADD_COLUMN_SQL = {
     "session_kind": (
         "ALTER TABLE codex_turns ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'user'"
+    ),
+    "review_fragment_id": (
+        "ALTER TABLE codex_turns ADD COLUMN review_fragment_id TEXT NOT NULL DEFAULT ''"
     ),
 }
 
@@ -204,4 +208,5 @@ def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
         memory_enabled=bool(row["memory_enabled"]),
         profile_enabled=bool(row["profile_enabled"]),
         session_kind=row["session_kind"] or "user",
+        review_fragment_id=row["review_fragment_id"] or "",
     )

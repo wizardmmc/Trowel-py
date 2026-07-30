@@ -27,6 +27,64 @@ async def test_run_one_session_reads_draft(tmp_path: Path) -> None:
     assert draft.notes[0].verification == "verified"
 
 
+async def test_codex_fragment_passes_ordered_source_paths_without_combining(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "journals" / "turn-1.jsonl"
+    second = tmp_path / "journals" / "turn-2.jsonl"
+    first.parent.mkdir(parents=True)
+    for path, turn_id in ((first, "turn-1"), (second, "turn-2")):
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": "codex-event-v1",
+                    "type": "user",
+                    "turn_id": turn_id,
+                    "payload": {"text": turn_id},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    prompts: list[str] = []
+    review_workdirs: list[Path] = []
+
+    class CapturingHost:
+        async def send(self, prompt: str):
+            prompts.append(prompt)
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def create_host(_session: SessionRecord, workdir: Path) -> CapturingHost:
+        review_workdirs.append(workdir)
+        (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
+        return CapturingHost()
+
+    source_session = SessionRecord(
+        cc_session_id="thread-1",
+        workdir="/workspace",
+        date="2026-07-09",
+        jsonl_path=str(first),
+        registered_at="2026-07-09T10:00:00",
+    )
+    await run_one_session(
+        source_session,
+        "2026-07-09",
+        tmp_path / "memory",
+        host_factory=create_host,
+        source_runtime="codex",
+        source_jsonl_paths=(str(first), str(second)),
+    )
+
+    assert prompts[0].index(str(first)) < prompts[0].index(str(second))
+    assert "同一 Codex 会话片段" in prompts[0]
+    assert {
+        path.name for path in review_workdirs[0].iterdir() if path.name != "draft.json"
+    } == set()
+
+
 async def test_run_one_session_retries_legacy_episode_draft(
     tmp_path: Path,
 ) -> None:
