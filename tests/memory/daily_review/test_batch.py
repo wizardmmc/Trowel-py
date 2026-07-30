@@ -149,19 +149,18 @@ async def test_daily_review_keeps_all_session_episodes(tmp_path: Path) -> None:
                         "verification": "verified",
                     }
                 ],
-                    "diary": [
-                        {
-                            "date": "2026-07-09",
-                            "items": [
-                                {
-                                    "kind": "outcome",
-                                    "summary": f"锚点 {session_record.cc_session_id}",
-                                    "detail": "",
-                                    "source_refs": ["L000001"],
-                                }
-                            ],
-                        }
-                    ],
+                "diary": [
+                    {
+                        "date": "2026-07-09",
+                        "items": [
+                            {
+                                "kind": "outcome",
+                                "summary": f"锚点 {session_record.cc_session_id}",
+                                "detail": "",
+                            }
+                        ],
+                    }
+                ],
             }
         )
         (workdir / "draft.json").write_text(draft, encoding="utf-8")
@@ -264,7 +263,9 @@ async def test_schema_error_does_not_abort_or_advance_batch(
     assert [item.session.cc_session_id for item in pending] == ["s1"]
 
 
-async def test_illegal_episode_refs_do_not_replace_live_episode(tmp_path: Path) -> None:
+async def test_legacy_source_refs_in_new_draft_do_not_replace_live_episode(
+    tmp_path: Path,
+) -> None:
     memory_root = tmp_path / "memory"
     store = MemoryStore(memory_root)
     store.write_episode(

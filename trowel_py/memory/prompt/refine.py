@@ -45,35 +45,30 @@ DRAFT_SCHEMA = """\
         {
           "kind": "outcome",
           "summary": "完成或推进到什么可观察状态",
-          "detail": "影响恢复的文件、commit、测试或失败细节；没有则为空字符串",
-          "source_refs": ["L000001"]
+          "detail": "影响恢复的文件、commit、测试或失败细节；没有则为空字符串"
         },
         {
           "kind": "decision",
           "summary": "做了什么选择",
           "reason": "为什么这样选",
-          "status": "active | superseded",
-          "source_refs": ["L000002"]
+          "status": "active | superseded"
         },
         {
           "kind": "correction",
           "before": "原判断或原做法",
           "after": "更正后的判断或做法",
-          "reason": "什么证据促成更正",
-          "source_refs": ["L000003", "L000004"]
+          "reason": "什么证据促成更正"
         },
         {
           "kind": "open_loop",
           "summary": "还没完成什么；下一步或阻塞是什么",
           "reason": "为什么仍未完成",
-          "status": "active | closed",
-          "source_refs": ["L000005"]
+          "status": "active | closed"
         },
         {
           "kind": "evidence",
           "summary": "影响后续判断的观测证据",
-          "detail": "必要的命令、测试、错误或数值",
-          "source_refs": ["L000006"]
+          "detail": "必要的命令、测试、错误或数值"
         }
       ]
     }
@@ -90,8 +85,8 @@ REFINE_PROMPT_TEMPLATE = (
 你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记 + memory 根路径）——这模拟"我还记得点"。查已有笔记主动用 memory.search 工具（注入段里给了根路径和用法），别只靠注入的日记就当查过了。
 
 【输入】
-- 要提炼的 numbered JSONL 路径：{jsonl_path}
-  你自己 read 这个文件（绝对路径）。每个非空原始事件前只有一个 `Lxxxxxx<TAB>` 前缀，L 编号是 source ref，TAB 后仍是原始 runtime event。
+- 要提炼的原始 JSONL 路径：{jsonl_path}
+  你自己使用文件工具检查这个绝对路径，按文件里的真实 runtime event 提炼。
 - 客观成本（供痛感判断参考，Python 预提取）：{cost}
 
 【8 步流程】
@@ -136,7 +131,7 @@ REFINE_PROMPT_TEMPLATE = (
   - corrections：原判断/做法 -> 更正后的结论/做法（用户纠错、被证据推翻的旧判断）
   - open_loops：还没完成什么；下一步或阻塞是什么（仍有效的待办）
   - evidence：影响恢复或判断的真实观测，例如关键测试、错误、命令结果或数值
-- 每项必须独立可理解，并至少引用一个直接支持它的真实 L 编号；Python 会拒绝不存在、重复或空的 source_refs。
+- 每项必须独立可理解，并由原始会话内容直接支持。
 - decision 必须保留理由；correction 必须拆成 before / after 并写促成更正的证据；open_loop 只把片段结束时仍有效的事项标 active，已完成或放弃的标 closed。
 - episode 偏高召回。合并同一事实，但不要为了固定条数或字符预算提前丢掉恢复状态；文件、commit、测试、失败和阻塞只要影响恢复或判断就保留。
 - 不逐轮复述工具流水，也不补写 source 外的事实。无信息时 items 输出空列表，不写"无"。
@@ -182,7 +177,7 @@ def build_refine_prompt(
     ``template`` 在函数定义时绑定。
 
     Args:
-        jsonl_path: 注入模板的 numbered JSONL 路径文本。
+        jsonl_path: 注入模板的原始 JSONL 路径文本。
         cost_text: 注入模板的客观成本文本。
         start_offset: 可选的原 JSONL 起始字节偏移。
         end_offset: 可选的原 JSONL 结束字节偏移。
@@ -196,8 +191,8 @@ def build_refine_prompt(
         start = start_offset or 0
         end = "EOF" if end_offset is None else end_offset
         prompt = (
-            f"【来源范围】numbered 文件只包含原 jsonl 字节区间 [{start}, {end}]；"
-            "该区间之前的内容已提炼过，不要补写。\n\n"
-            + prompt
+            f"【来源范围】本轮只从原始 JSONL 的半开字节区间 [{start}, {end}) "
+            "生成新记忆。可以查看起点以前的内容来理解上下文，但不要把起点以前"
+            "已经提炼过的内容重复写入；不得读取或使用终点以后的内容。\n\n" + prompt
         )
     return prompt

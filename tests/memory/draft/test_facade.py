@@ -35,9 +35,9 @@ def test_facade_keeps_model_and_function_contracts() -> None:
         DraftDiary: (
             "(date: 'str', outcomes: 'tuple[str, ...]' = (), "
             "decisions: 'tuple[str, ...]' = (), "
-                "corrections: 'tuple[str, ...]' = (), "
-                "open_loops: 'tuple[str, ...]' = (), events: 'str' = '', "
-                "items: 'tuple[DraftEpisodeItem, ...]' = ()) -> None"
+            "corrections: 'tuple[str, ...]' = (), "
+            "open_loops: 'tuple[str, ...]' = (), events: 'str' = '', "
+            "items: 'tuple[DraftEpisodeItem, ...]' = ()) -> None"
         ),
         Draft: (
             "(notes: 'tuple[DraftNote, ...]' = (), "
@@ -46,10 +46,7 @@ def test_facade_keeps_model_and_function_contracts() -> None:
             "escalate_to_human: 'tuple[str, ...]' = ()) -> None"
         ),
         parse_draft: "(text: 'str') -> 'Draft'",
-        validate_draft: (
-            "(draft: 'Draft', *, legal_source_refs: 'set[str] | None' = None) "
-            "-> 'list[str]'"
-        ),
+        validate_draft: "(draft: 'Draft') -> 'list[str]'",
         procedure_warnings: "(draft: 'Draft') -> 'list[str]'",
         _parse_note: "(n: 'dict[str, Any]') -> 'DraftNote'",
         _parse_diary: "(d: 'dict[str, Any]') -> 'DraftDiary'",
@@ -200,7 +197,7 @@ def test_validation_uses_current_facade_policy(
         diary=(
             DraftDiary(
                 date="2026-07-23",
-                items=(DraftOutcome("x", "", ("L000001",)),),
+                items=(DraftOutcome("x", ""),),
             ),
         ),
     )
@@ -210,9 +207,7 @@ def test_validation_uses_current_facade_policy(
         "VERIFICATION_TIERS",
         ("custom-tier",),
     )
-    assert draft_module.validate_draft(draft, legal_source_refs=set()) == [
-        "diary[0].items[0].source_refs contains illegal refs: ['L000001']",
-    ]
+    assert draft_module.validate_draft(draft) == []
 
 
 def test_procedure_warnings_use_current_facade_elements(

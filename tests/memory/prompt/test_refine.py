@@ -73,16 +73,31 @@ def test_draft_schema_diary_uses_four_lists() -> None:
         assert kind in DRAFT_SCHEMA
 
 
-def test_episode_v2_prompt_has_source_refs_and_no_old_hard_compression() -> None:
+def test_episode_v3_prompt_omits_source_refs_and_old_hard_compression() -> None:
     prompt = build_refine_prompt(
-        "/x/source.numbered.jsonl",
+        "/x/source.jsonl",
         "tokens=1 turns=1 errors=0",
     )
 
-    assert "source_refs" in prompt
+    assert "source_refs" not in prompt
+    assert "numbered" not in prompt
+    assert "原始 JSONL" in prompt
     assert "before" in prompt and "after" in prompt
     assert "每个日期四类合计最多" not in prompt
     assert "1600" not in prompt
+
+
+def test_cc_range_allows_context_before_start_and_forbids_tail() -> None:
+    prompt = build_refine_prompt(
+        "/x/source.jsonl",
+        "tokens=1 turns=1 errors=0",
+        start_offset=100,
+        end_offset=200,
+    )
+
+    assert "[100, 200)" in prompt
+    assert "起点以前" in prompt
+    assert "终点以后" in prompt
 
 
 def test_refine_prompt_describes_four_diary_lists() -> None:

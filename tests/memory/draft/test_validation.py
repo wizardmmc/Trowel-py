@@ -41,7 +41,6 @@ def test_validate_does_not_cap_episode_item_count() -> None:
                                 "kind": "outcome",
                                 "summary": f"{item}{index}",
                                 "detail": "",
-                                "source_refs": [f"L{index + 1:06d}"],
                             }
                             for index in range(30)
                         ],
@@ -65,7 +64,6 @@ def test_validate_does_not_apply_old_item_character_cap() -> None:
                                 "kind": "outcome",
                                 "summary": "长" * 500,
                                 "detail": "",
-                                "source_refs": ["L000001"],
                             }
                         ],
                     }
@@ -155,26 +153,15 @@ def test_validate_accumulates_errors_in_stable_order() -> None:
         ),
         "notes[0] ' ': unknown verification 'wrong'",
         "diary[0]: missing date",
-        (
-            "diary[0]: legacy events are not allowed in a new draft; "
-            "use items"
-        ),
-        (
-            "diary[0]: legacy structured lists are not allowed in a new "
-            "draft; use items"
-        ),
+        ("diary[0]: legacy events are not allowed in a new draft; use items"),
+        ("diary[0]: legacy structured lists are not allowed in a new draft; use items"),
     ]
 
 
 def test_validate_rejects_legacy_structured_lists_in_new_draft() -> None:
-    draft = Draft(
-        diary=(DraftDiary(date="2026-07-20", outcomes=("旧格式",)),)
-    )
+    draft = Draft(diary=(DraftDiary(date="2026-07-20", outcomes=("旧格式",)),))
     assert validate_draft(draft) == [
-        (
-            "diary[0]: legacy structured lists are not allowed in a new "
-            "draft; use items"
-        )
+        ("diary[0]: legacy structured lists are not allowed in a new draft; use items")
     ]
 
 

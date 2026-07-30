@@ -54,7 +54,6 @@ async def test_run_one_session_retries_legacy_episode_draft(
                             "kind": "outcome",
                             "summary": "完成关键实现并通过相关验证",
                             "detail": "",
-                            "source_refs": ["L000001"],
                         }
                     ],
                 }

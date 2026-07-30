@@ -100,6 +100,43 @@ def test_apply_creates_one_episode_per_draft(tmp_path: Path) -> None:
     assert [p.stem for p in eps] == ["s1", "s2", "s3"]
 
 
+def test_apply_accepts_historical_structured_draft_with_source_refs(
+    tmp_path: Path,
+) -> None:
+    mem = tmp_path / "memory"
+    _register(mem, "s1")
+    dp = review_workdir_root(mem) / _DATE / "s1" / "draft.json"
+    dp.parent.mkdir(parents=True, exist_ok=True)
+    dp.write_text(
+        json.dumps(
+            {
+                "diary": [
+                    {
+                        "date": _DATE,
+                        "items": [
+                            {
+                                "kind": "outcome",
+                                "summary": "历史结构化结果",
+                                "detail": "",
+                                "source_refs": ["L000001"],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = repair_memory(mem, _DATE, apply=True)
+
+    assert report.episodes_created == 1
+    episode = (mem / "episodes" / "s1.md").read_text(encoding="utf-8")
+    assert "历史结构化结果" in episode
+    assert "episode_schema_version: 3" in episode
+    assert "source_refs" not in episode
+
+
 def test_apply_rebuilds_daily_with_all_anchors(tmp_path: Path) -> None:
     mem = tmp_path / "memory"
     for i, sid in enumerate(["s1", "s2", "s3"]):

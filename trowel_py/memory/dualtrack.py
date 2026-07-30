@@ -45,7 +45,7 @@ class DualtrackReport:
 def audit_draft(draft: Draft) -> DualtrackReport:
     """报告经历文本中疑似属于知识轨的信号，不阻断落盘，也不迁移内容。
 
-    ``items`` 非空时扫描全部 v2 事件，包括 evidence、已替代的决策和已关闭
+    ``items`` 非空时扫描全部结构化事件，包括 evidence、已替代的决策和已关闭
     的待续事项，并忽略四类旧列表；否则按 outcomes、decisions、corrections
     和 open_loops 的顺序拼接四类旧文本。两种情况都会另行追加旧
     ``events``，用换行拼成当天的待查文本。函数进行区分大小写的子串搜索，

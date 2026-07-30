@@ -30,12 +30,11 @@ def test_compress_daily_retries_on_bad_source_then_succeeds(tmp_path: Path) -> N
     assert len(provider.calls) == 2
     assert "- 真结果" in MemoryStore(tmp_path).load_diary(layer="day")[0].body
     assert (
-        require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"]
-        == "ok"
+        require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"] == "ok"
     )
 
 
-def test_compress_daily_projects_v2_reason_and_only_active_open_loops(
+def test_compress_daily_projects_reason_and_only_active_open_loops(
     tmp_path: Path,
 ) -> None:
     MemoryStore(tmp_path).write_episode(
@@ -56,24 +55,20 @@ def test_compress_daily_projects_v2_reason_and_only_active_open_loops(
                         "继续使用 GLM-5.1",
                         "长会话召回更完整",
                         "active",
-                        ("L000001",),
                     ),
                     DraftOpenLoop(
                         "补 command smoke",
                         "实验样本未覆盖",
                         "active",
-                        ("L000002",),
                     ),
                     DraftOpenLoop(
                         "旧阻塞",
                         "已经解决",
                         "closed",
-                        ("L000003",),
                     ),
                     DraftEvidence(
                         "schema gate 通过",
                         "7/7",
-                        ("L000004",),
                     ),
                 ),
             ),
@@ -134,8 +129,7 @@ def test_compress_daily_uses_short_source_aliases_for_llm_output(
     body = MemoryStore(tmp_path).load_diary(layer="day")[0].body
     assert "完成真实结果" in body
     assert (
-        require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"]
-        == "ok"
+        require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"] == "ok"
     )
     assert "【segment S1】" in provider.calls[0][1]
 
@@ -294,9 +288,7 @@ def test_compress_daily_single_oversized_item_falls_back(
 ) -> None:
     structured_episode(tmp_path, "s1", outcomes=("x",))
     huge = "巨" * 900
-    provider = FakeProvider(
-        items_json(("outcome", huge + "MARKER", "s1:0:end"))
-    )
+    provider = FakeProvider(items_json(("outcome", huge + "MARKER", "s1:0:end")))
     compress_daily(tmp_path, "2026-07-01", provider)
     assert (
         require_daily_frontmatter(tmp_path, "2026-07-01")["generation_status"]
