@@ -55,6 +55,31 @@ def test_extract_cost_from_jsonl_counts_real_shape(tmp_path: Path) -> None:
     assert c.error_count == 1
 
 
+def test_extract_cost_from_jsonl_only_counts_target_byte_range(
+    tmp_path: Path,
+) -> None:
+    history = (
+        '{"type":"user","message":{"content":[{"type":"tool_result",'
+        '"is_error":true}]}}\n'
+        '{"type":"assistant","message":{"usage":{"input_tokens":100,'
+        '"output_tokens":30}}}\n'
+    )
+    target = (
+        '{"type":"assistant","message":{"usage":{"input_tokens":150,'
+        '"cache_read_input_tokens":120,"output_tokens":40}}}\n'
+    )
+    jsonl = tmp_path / "incremental.jsonl"
+    jsonl.write_text(history + target, encoding="utf-8")
+
+    cost = extract_cost_from_jsonl(
+        jsonl,
+        start_offset=len(history.encode("utf-8")),
+        end_offset=jsonl.stat().st_size,
+    )
+
+    assert cost == SessionCost(total_tokens=310, num_turns=1, error_count=0)
+
+
 def test_extract_cost_from_jsonl_missing_file(tmp_path: Path) -> None:
     c = extract_cost_from_jsonl(tmp_path / "nope.jsonl")
     assert c.total_tokens == 0

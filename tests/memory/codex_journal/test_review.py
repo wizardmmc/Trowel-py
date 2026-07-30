@@ -239,6 +239,105 @@ async def test_same_thread_turns_use_one_refine_and_one_judge(
         conn.close()
 
 
+async def test_incremental_codex_review_separates_extracted_history_from_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    history_path = tmp_path / "journals" / "turn-history.jsonl"
+    target_path = tmp_path / "journals" / "turn-target.jsonl"
+    _register_turn(
+        memory_root,
+        history_path,
+        turn_id="turn-history",
+        completed_at="2026-07-09T09:05:00",
+    )
+    conn = open_sessions_db(memory_root)
+    try:
+        create_sessions_repository(conn).advance_codex_extracted(
+            "thread-review",
+            "turn-history",
+            when="2026-07-09T09:10:00",
+        )
+    finally:
+        conn.close()
+    _register_turn(
+        memory_root,
+        target_path,
+        turn_id="turn-target",
+        completed_at="2026-07-09T10:05:00",
+    )
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._resolve_provider",
+        lambda _provider: None,
+    )
+    prompts: list[str] = []
+
+    class CapturingHost(ReviewHost):
+        async def send(self, prompt: str):
+            prompts.append(prompt)
+            yield FINISHED
+
+    def capturing_factory(
+        _session: SessionRecord,
+        workdir: Path,
+    ) -> CapturingHost:
+        draft_name = (
+            "judgement-draft.json"
+            if workdir.parent.parent.name == "judge-work"
+            else "draft.json"
+        )
+        draft_text = (
+            json.dumps({"hits": [], "recall_miss": [], "summary": "ok"})
+            if draft_name == "judgement-draft.json"
+            else json.dumps(
+                {
+                    "diary": [
+                        {
+                            "date": "2026-07-09",
+                            "items": [
+                                {
+                                    "kind": "outcome",
+                                    "summary": "完成增量提炼",
+                                    "detail": "",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+        (workdir / draft_name).write_text(draft_text, encoding="utf-8")
+        return CapturingHost([FINISHED])
+
+    await run_daily_review(
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        eligible_before="2026-07-10T00:00:00",
+        host_factory=capturing_factory,
+    )
+
+    assert len(prompts) == 2
+    for prompt in prompts:
+        assert "历史上下文" in prompt
+        assert "本次处理目标" in prompt
+        assert str(history_path) in prompt
+        assert str(target_path) in prompt
+        assert prompt.index(str(history_path)) < prompt.index(str(target_path))
+
+    manifest_path = (
+        memory_root
+        / "meta"
+        / "persisted-segments"
+        / "codex:thread-review:turn-target.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source"]["source"] == {
+        "kind": "codex_turns",
+        "turn_ids": ["turn-target"],
+    }
+
+
 async def test_missing_journal_keeps_whole_codex_fragment_pending(
     tmp_path: Path,
     monkeypatch,

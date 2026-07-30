@@ -73,6 +73,7 @@ async def test_each_distilled_session_is_judged(
         review_date,
         root,
         *,
+        review_source,
         host_factory=None,
         segment_id="",
     ) -> None:

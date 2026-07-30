@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from trowel_py.memory.daily_review.sources import JournalSlice, ReviewSource
 from trowel_py.memory.sessions_repo import SessionRecord
 
 FINISHED = SimpleNamespace(type="finished")
@@ -69,6 +70,15 @@ def session(sid: str = "s1", workdir: str = "/proj") -> SessionRecord:
         date="2026-07-09",
         jsonl_path=_jsonl_path,
         registered_at="2026-07-09T10:00:00",
+    )
+
+
+def review_source(record: SessionRecord | None = None) -> ReviewSource:
+    path = record.jsonl_path if record is not None else _jsonl_path
+    return ReviewSource(
+        host_kind="claude_code",
+        context=(),
+        target=(JournalSlice(path),),
     )
 
 

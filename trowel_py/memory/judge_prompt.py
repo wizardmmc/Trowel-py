@@ -33,13 +33,16 @@ JUDGE_SCHEMA = """\
 
 JUDGE_PROMPT_TEMPLATE = (
     """\
-你是 trowel 的「判效」agent。任务：读一个 cc 会话，判断这个会话里 trowel 的笔记**用了没用、用了有没有用、有没有该用却没用**。
+你是 trowel 的「判效」agent。任务：读取一个已完成的会话片段，判断本次处理目标里 trowel 的笔记**用了没用、用了有没有用、有没有该用却没用**。
 
 你自动带着 trowel 的记忆注入（层一铁律 + dictionary L0 + 近期日记 + memory 根路径）。判断「该用没用」时，可以主动用 memory.search 验证某条笔记当时能不能搜到——但**你判断的是被评判会话当时的情况，不是你现在搜出来的情况**。
 
 【输入】
-- 被评判会话 jsonl 路径：{jsonl_path}
-  你自己 read 这个文件（绝对路径），看会话经过。
+- review 来源：
+{review_source}
+  你自己使用文件工具完整读取本次处理目标；只在理解指代和前因后果时按需查看
+  历史上下文。历史上下文不属于判效对象；hits、recall_miss 和 summary 只能
+  评价“本次处理目标”。
 - 该会话的检索记录（Python 预提取的硬证据，按被评判会话的 cc_session_id 过滤，不是你自己 search 产生的）：
 {access_log_summary}
   这是这个会话当时 search 了哪些 query、read 了哪些笔记的客观记录。
@@ -76,18 +79,18 @@ JUDGE_PROMPT_TEMPLATE = (
 
 
 def build_judge_prompt(
-    jsonl_path: str,
+    review_source: str,
     access_log_summary: str,
     dictionary_index: str,
 ) -> str:
-    """把会话路径、访问证据和 Memory 索引注入冻结模板。
+    """把 review 来源、访问证据和 Memory 索引注入冻结模板。
 
     函数依次全量替换三类完整占位符，不使用 ``str.format()``，因此 schema
     的 JSON 花括号保持原样。替换按路径、访问证据、索引的顺序执行；较早输入
     若包含较后的占位符文本，仍会被后续步骤替换。
 
     Args:
-        jsonl_path: 被判效会话 JSONL 的路径文本。
+        review_source: 已明确区分历史上下文和本次判效目标的路径与范围说明。
         access_log_summary: 已按被判效会话过滤的访问记录摘要。
         dictionary_index: 可供 agent 核验真实 Note ID 的 Memory 索引。
 
@@ -96,7 +99,7 @@ def build_judge_prompt(
         文本保持不变。
     """
     return (
-        JUDGE_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
+        JUDGE_PROMPT_TEMPLATE.replace("{review_source}", review_source)
         .replace("{access_log_summary}", access_log_summary)
         .replace("{dictionary_index}", dictionary_index)
     )

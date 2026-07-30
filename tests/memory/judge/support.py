@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from trowel_py.memory.access_log import AccessRecord
+from trowel_py.memory.daily_review.sources import JournalSlice, ReviewSource
 from trowel_py.memory.sessions_repo import SessionRecord
 
 FINISHED = SimpleNamespace(type="finished")
@@ -64,6 +65,14 @@ def _session(sid: str = "judged-1") -> SessionRecord:
         date="2026-07-16",
         jsonl_path="/x.jsonl",
         registered_at="2026-07-16T10:00:00",
+    )
+
+
+def _review_source(path: str = __file__) -> ReviewSource:
+    return ReviewSource(
+        host_kind="claude_code",
+        context=(),
+        target=(JournalSlice(path),),
     )
 
 

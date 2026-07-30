@@ -5,9 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.daily_review.support import FINISHED, session
+from tests.memory.daily_review.support import FINISHED, review_source, session
+from trowel_py.memory.daily_review.sources import (
+    JournalSlice,
+    ReviewSource,
+    build_claude_review_source,
+)
 from trowel_py.memory.review_job import run_one_session
-from trowel_py.memory.sessions_repo import SessionRecord
+from trowel_py.memory.sessions_repo import IncrementalSegment, SessionRecord
 
 
 def _valid_draft() -> str:
@@ -67,17 +72,24 @@ async def test_agent_uses_original_source_path_and_cc_byte_range(
         record,
         "2026-07-09",
         tmp_path / "memory",
-        start_offset=len(first.encode()),
-        end_offset=source.stat().st_size,
+        review_source=build_claude_review_source(
+            IncrementalSegment(
+                session=record,
+                start=len(first.encode()),
+                end=source.stat().st_size,
+            )
+        ),
         host_factory=lambda _session, workdir: Host(workdir),
     )
 
     assert not stale_numbered.exists()
     assert list((tmp_path / "review-daily-work").rglob("*.numbered.jsonl")) == []
     assert str(source) in prompts[0]
+    assert f"[0, {len(first.encode())})" in prompts[0]
     assert f"[{len(first.encode())}, {source.stat().st_size})" in prompts[0]
-    assert "起点以前" in prompts[0]
-    assert "终点以后" in prompts[0]
+    assert "历史上下文" in prompts[0]
+    assert "本次处理目标" in prompts[0]
+    assert "未列出的文件内容" in prompts[0]
 
 
 async def test_agent_accepts_draft_without_source_refs(tmp_path: Path) -> None:
@@ -99,6 +111,7 @@ async def test_agent_accepts_draft_without_source_refs(tmp_path: Path) -> None:
         session(),
         "2026-07-09",
         tmp_path / "memory",
+        review_source=review_source(),
         host_factory=lambda _session, workdir: Host(workdir),
     )
 
@@ -136,19 +149,23 @@ async def test_codex_agent_uses_sealed_original_journal_without_byte_range(
         record,
         "2026-07-09",
         tmp_path / "memory",
-        source_runtime="codex",
+        review_source=ReviewSource(
+            host_kind="codex",
+            context=(),
+            target=(JournalSlice(str(source)),),
+        ),
         host_factory=lambda _session, workdir: Host(workdir),
     )
 
     assert str(source) in prompts[0]
-    assert "【来源范围】" not in prompts[0]
-    assert "一个或多个已完成 Codex turn" in prompts[0]
+    assert "完整文件" in prompts[0]
+    assert "本次处理目标" in prompts[0]
     assert list((tmp_path / "review-daily-work").rglob("*.numbered.jsonl")) == []
 
 
-@pytest.mark.parametrize("source_runtime", ["claude_code", "codex"])
+@pytest.mark.parametrize("host_kind", ["claude_code", "codex"])
 async def test_production_distill_host_explicitly_uses_glm_5_1(
-    source_runtime: str,
+    host_kind: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -172,7 +189,11 @@ async def test_production_distill_host_explicitly_uses_glm_5_1(
         session(),
         "2026-07-09",
         tmp_path / "memory",
-        source_runtime=source_runtime,
+        review_source=ReviewSource(
+            host_kind=host_kind,  # type: ignore[arg-type]
+            context=(),
+            target=review_source().target,
+        ),
     )
 
     assert captured["model"] == "glm-5.1"

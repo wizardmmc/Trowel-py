@@ -72,18 +72,18 @@ def test_prompt_and_schema_bytes_are_frozen() -> None:
         "b4df088536a5ec71a3590ca9d270bfe8e87c6f34a1df1c9e7d83c64d454530d5"
     )
     assert sha256(JUDGE_PROMPT_TEMPLATE.encode("utf-8")).hexdigest() == (
-        "1dd40bacb97581f9ac8c887f15e93636219adbe71ff182c93f9f40521f99b375"
+        "cfe732e6864ecc629a71e4b7ec93f4b2903bbe86cc1fc921ef0adb08d63e32b4"
     )
 
 
 def test_build_judge_prompt_fills_placeholders() -> None:
     p = build_judge_prompt(
-        jsonl_path="/x/y.jsonl",
+        review_source="/x/y.jsonl",
         access_log_summary="search: 3 条; read: note-aaa",
         dictionary_index="note-aaa: 缓存一致性经验",
     )
     assert "/x/y.jsonl" in p
     assert "note-aaa" in p
-    assert "{jsonl_path}" not in p
+    assert "{review_source}" not in p
     assert "{access_log_summary}" not in p
     assert "{dictionary_index}" not in p

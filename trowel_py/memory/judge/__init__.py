@@ -10,6 +10,11 @@ from typing import Any, Callable
 
 from trowel_py.memory.access_log import AccessRecord, read_access_log
 from trowel_py.memory.attribution import AttributionIndex
+from trowel_py.memory.daily_review.sources import (
+    ReviewSource,
+    render_review_source,
+    resolve_available_review_source,
+)
 from trowel_py.memory.judge_prompt import build_judge_prompt
 from trowel_py.memory.judgements import (
     VALID_ATTRIBUTIONS,
@@ -71,33 +76,13 @@ def _ensure_judge_workdir(
     return workdir
 
 
-def _source_reference(
-    session: SessionRecord,
-    source_jsonl_paths: tuple[str, ...] | None,
-) -> str:
-    """返回 judge 提示使用的单一路径或有序 Codex journal 路径列表。"""
-    paths = (
-        source_jsonl_paths
-        if source_jsonl_paths is not None
-        else (session.jsonl_path or "",)
-    )
-    if len(paths) <= 1:
-        return paths[0] if paths else ""
-    listed = "\n".join(f"{index}. {path}" for index, path in enumerate(paths, start=1))
-    return (
-        "以下路径按 turn 完成顺序组成同一 Codex 会话片段；"
-        "判效时读取全部文件：\n"
-        f"{listed}"
-    )
-
-
 async def _judge_session_inner(
     session: SessionRecord,
     review_date: str,
     memory_root: Path,
     host_factory: HostFactory | None,
+    review_source: ReviewSource,
     segment_id: str = "",
-    source_jsonl_paths: tuple[str, ...] | None = None,
 ) -> JudgementReport:
     """运行一次会话判效并保存过滤后的报告。
 
@@ -117,9 +102,8 @@ async def _judge_session_inner(
         host_factory: 可选 host 构造器，接收会话和工作目录；为 ``None`` 时用
             随机新 session ID、上述判效目录和 Memory MCP 配置创建 eval
             CCHost。
+        review_source: 与 refine 相同的历史上下文和本次判效目标。
         segment_id: 写入报告的可选来源片段 ID。
-        source_jsonl_paths: 按 turn 顺序排列的 Codex fragment journal 路径；
-            None 时使用 ``session.jsonl_path``。
 
     Returns:
         已移除未知 Note ID 且完成持久化的判效报告。
@@ -135,8 +119,18 @@ async def _judge_session_inner(
         session.cc_session_id,
         attribution,
     )
+    available_source, omitted_context_count = resolve_available_review_source(
+        review_source
+    )
+    if omitted_context_count:
+        logger.warning(
+            "judge history context incomplete for %s: %d of %d source(s) available",
+            session.cc_session_id,
+            len(available_source.context),
+            len(review_source.context),
+        )
     prompt = build_judge_prompt(
-        _source_reference(session, source_jsonl_paths),
+        render_review_source(available_source),
         access_summary,
         _dictionary_index(store),
     )
@@ -200,9 +194,9 @@ async def judge_session(
     review_date: str,
     memory_root: Path,
     *,
+    review_source: ReviewSource,
     host_factory: HostFactory | None = None,
     segment_id: str = "",
-    source_jsonl_paths: tuple[str, ...] | None = None,
 ) -> JudgementReport | None:
     """判定单个会话，并把普通异常隔离为 ``None``。
 
@@ -213,10 +207,9 @@ async def judge_session(
         session: 要判效的 CC 会话记录。
         review_date: 仅用于组织判效工作目录的日期路径段。
         memory_root: 读取判效上下文并保存报告的 Memory 根目录。
+        review_source: 与 refine 相同的历史上下文和本次判效目标。
         host_factory: 可选 host 构造器，接收会话和判效目录。
         segment_id: 写入报告的可选来源片段 ID。
-        source_jsonl_paths: 按 turn 顺序排列的 Codex fragment journal 路径；
-            None 时使用 ``session.jsonl_path``。
 
     Returns:
         成功时返回已保存且过滤未知 Note ID 的报告；任一 ``Exception`` 发生时
@@ -228,8 +221,8 @@ async def judge_session(
             review_date,
             memory_root,
             host_factory,
+            review_source,
             segment_id,
-            source_jsonl_paths,
         )
     except Exception as exc:  # noqa: BLE001 - 判效是旁路，普通失败不能中断 review。
         logger.warning(

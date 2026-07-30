@@ -348,6 +348,51 @@ def test_failed_fragment_membership_does_not_absorb_later_turn(
     assert retried[1].fragment_id != claimed.fragment_id
 
 
+def test_codex_review_history_only_returns_extracted_turns_before_fragment(
+    tmp_path: Path,
+) -> None:
+    conn = open_sessions_db(tmp_path)
+    try:
+        repo = create_sessions_repository(conn)
+        for turn_id, completed_at in (
+            ("turn-history", "2026-07-22T09:00:00"),
+            ("turn-target", "2026-07-22T10:00:00"),
+            ("turn-later", "2026-07-24T10:00:00"),
+        ):
+            repo.register_codex_turn(
+                thread_id="thread-1",
+                turn_id=turn_id,
+                trowel_session_id=f"trowel-{turn_id}",
+                workdir="/workspace",
+                journal_path=f"/journal/{turn_id}.jsonl",
+                registered_at=completed_at,
+                model="gpt-5.6-sol",
+                effort="high",
+                provider="openai",
+                memory_enabled=True,
+                profile_enabled=True,
+            )
+            repo.complete_codex_turn(
+                "thread-1",
+                turn_id,
+                status="completed",
+                completed_at=completed_at,
+            )
+        repo.advance_codex_extracted(
+            "thread-1",
+            "turn-history",
+            when="2026-07-22T09:10:00",
+        )
+        [fragment] = repo.find_incremental_codex(completed_before="2026-07-23T00:00:00")
+
+        history = repo.find_extracted_codex_before(fragment)
+    finally:
+        conn.close()
+
+    assert fragment.turn_ids == ("turn-target",)
+    assert [turn.turn_id for turn in history] == ["turn-history"]
+
+
 def test_codex_fragment_keeps_cutoff_and_user_session_kind_filters(
     tmp_path: Path,
 ) -> None:

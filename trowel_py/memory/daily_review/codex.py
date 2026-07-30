@@ -12,6 +12,7 @@ from trowel_py.memory.daily_review.agent import (
     HostFactory,
     run_one_session,
 )
+from trowel_py.memory.daily_review.sources import build_codex_review_source
 from trowel_py.memory.draft import procedure_warnings
 from trowel_py.memory.dualtrack import audit_draft
 from trowel_py.memory.judge import judge_session
@@ -74,13 +75,16 @@ async def review_codex_segments(
     touched_dates: set[str] = set()
     for fragment in segments:
         first_turn = fragment.turns[0]
-        journal_paths = tuple(Path(path) for path in fragment.journal_paths)
-        missing_paths = tuple(path for path in journal_paths if not path.is_file())
-        if missing_paths:
+        try:
+            review_source = build_codex_review_source(
+                repo,
+                fragment,
+            )
+        except ValueError as exc:
             logger.warning(
-                "Codex journal(s) missing for fragment %s: %s (not advanced)",
+                "Codex review source invalid for fragment %s: %s (not advanced)",
                 fragment.fragment_id,
-                missing_paths,
+                exc,
             )
             continue
         session = SessionRecord(
@@ -88,7 +92,7 @@ async def review_codex_segments(
             trowel_session_id=first_turn.trowel_session_id,
             workdir=first_turn.workdir,
             date=(fragment.turns[-1].completed_at or date_str)[:10],
-            jsonl_path=str(journal_paths[0]),
+            jsonl_path=first_turn.journal_path,
             registered_at=first_turn.registered_at,
             last_completed_at=fragment.turns[-1].completed_at,
         )
@@ -104,10 +108,9 @@ async def review_codex_segments(
                 session,
                 date_str,
                 root,
+                review_source=review_source,
                 host_factory=host_factory,
                 derivation_sink=capture_derivation,
-                source_runtime="codex",
-                source_jsonl_paths=fragment.journal_paths,
             )
         except DistillError as exc:
             logger.warning(
@@ -187,7 +190,7 @@ async def review_codex_segments(
                 root,
                 host_factory=host_factory,
                 segment_id=context.segment_id,
-                source_jsonl_paths=fragment.journal_paths,
+                review_source=review_source,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

@@ -355,6 +355,42 @@ class SessionsRepository:
         )
         return fragments
 
+    def find_extracted_codex_before(
+        self,
+        fragment: CodexPendingFragment,
+    ) -> tuple[CodexTurnRecord, ...]:
+        """返回同一 thread 中排在目标 fragment 前面的已提炼用户 turns。
+
+        本查询只提供 refine 和 judge 的历史上下文，不改变 fragment 成员或任何
+        水位。顺序与 ``find_incremental_codex()`` 的 turn 排序一致；目标以后
+        完成的 turn 即使已经提炼也不会返回。
+
+        Args:
+            fragment: 当前将要处理的 Codex pending fragment。
+
+        Returns:
+            按完成时间、登记时间和 turn ID 排列的历史 turns；没有历史时为空。
+
+        Raises:
+            ValueError: fragment 中的 turn 不存在于当前 repository。
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE thread_id = ? AND completed_at IS NOT NULL"
+            " AND session_kind = 'user'"
+            " ORDER BY completed_at, registered_at, turn_id",
+            (fragment.thread_id,),
+        ).fetchall()
+        turns = tuple(row_to_codex_turn(row) for row in rows)
+        positions = {turn.turn_id: index for index, turn in enumerate(turns)}
+        try:
+            first_target = min(positions[turn_id] for turn_id in fragment.turn_ids)
+        except KeyError as exc:
+            raise ValueError("Codex fragment turn is missing from repository") from exc
+        return tuple(
+            turn for turn in turns[:first_target] if turn.extracted_at is not None
+        )
+
     def find_unsealed_codex_turns(self) -> list[CodexTurnRecord]:
         """返回 ``completed_at`` 为空的全部 Codex 轮次，供日志修复使用。
 
