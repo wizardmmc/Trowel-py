@@ -174,7 +174,7 @@ class TestLifespanIntegration:
         from trowel_py.memory import paths as memory_paths
         from trowel_py.memory import tidy as tidy_module
         from trowel_py.memory.daily_review import scheduler as review_scheduler
-        from trowel_py.memory.profile_distill import scheduler as distill_scheduler
+        from trowel_py.profile.distill import scheduler as distill_scheduler
 
         monkeypatch.setattr(memory_paths, "resolve_memory_root", lambda: tmp_path)
         monkeypatch.setattr(review_scheduler, "_default_dispatch", lambda _event: None)

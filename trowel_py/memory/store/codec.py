@@ -99,17 +99,6 @@ def _coerce_meta_str(value: object) -> str:
     return str(value or "")
 
 
-def _safe_snapshot_name(value: object) -> str:
-    """把元数据值整理为 Profile 快照文件名片段。
-
-    斜杠、反斜杠和 NUL 字节序列替换为下划线，再去掉两端空白与开头句点；
-    结果为空时返回 ``unknown``。
-    """
-
-    text = re.sub(r"[\\/\x00]+", "_", _coerce_meta_str(value)).strip().lstrip(".")
-    return text or "unknown"
-
-
 def _ordered_note_frontmatter(entry: dict[str, Any]) -> dict[str, Any]:
     """按固定顺序放置已知 Note 字段，再保留调用方的扩展字段。
 

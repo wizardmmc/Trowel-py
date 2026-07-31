@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from trowel_py.memory.types import ProfileDimension, SuggestionStatus
+from trowel_py.profile.models import ProfileDimension, SuggestionStatus
 
 
 class ProfileUpdate(BaseModel):

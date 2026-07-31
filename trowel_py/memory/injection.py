@@ -8,9 +8,10 @@ from pathlib import Path
 
 from trowel_py.memory.compress import _in_iso_week, _week_in_month
 from trowel_py.memory.paths import resolve_memory_root
-from trowel_py.memory.profile import _FIELD_TO_TITLE
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Diary
+from trowel_py.profile.rendering import render_profile as _render_profile
+from trowel_py.profile.repository import ProfileRepository
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def build_memory_injection(
         if core:
             sections.append(core)
     if profile_enabled:
-        profile = _render_profile(store)
+        profile = _render_profile(ProfileRepository(store.root))
         if profile:
             sections.append(profile)
     if memory_enabled:
@@ -92,19 +93,6 @@ def _render_core(store: MemoryStore) -> str:
     for i, it in enumerate(items, 1):
         lines.append(f"{i}. {it.imperative}")
     return "\n".join(lines)
-
-
-def _render_profile(store: MemoryStore) -> str:
-    """按标准字段顺序渲染正文非空的画像维度。"""
-    p = store.load_profile()
-    blocks = [
-        f"## {_FIELD_TO_TITLE[field]}\n{getattr(p, field)}"
-        for field in _FIELD_TO_TITLE
-        if getattr(p, field).strip()
-    ]
-    if not blocks:
-        return ""
-    return "# 用户画像\n\n" + "\n\n".join(blocks)
 
 
 def _render_l0(store: MemoryStore) -> str:
