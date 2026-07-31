@@ -1,3 +1,5 @@
+import { useState, type FormEvent } from "react";
+
 import { useCcStore } from "../../stores/ccStore";
 import {
   MAX_RUNNING,
@@ -30,6 +32,15 @@ function statusText(s: PerSessionState): string {
   return `${s.meta.model ?? "model"} · idle`;
 }
 
+function workdirName(workdir: string): string {
+  const normalized = workdir.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).pop() || workdir;
+}
+
+function sessionTitle(s: PerSessionState): string {
+  return s.displayTitle || "新会话";
+}
+
 export function MultiSessionBar({
   onNewSameWorkdir,
   onChangeWorkdir,
@@ -38,6 +49,9 @@ export function MultiSessionBar({
   const activeSid = useCcStore((s) => s.activeSid);
   const activate = useCcStore((s) => s.activateSession);
   const close = useCcStore((s) => s.closeSession);
+  const rename = useCcStore((s) => s.renameSessionTitle);
+  const [editingSid, setEditingSid] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
 
   const connected = Object.entries(sessions).filter(
     ([, s]) =>
@@ -47,11 +61,30 @@ export function MultiSessionBar({
   const connections = connected.length;
   const connectionFull = connections >= MAX_CONNECTIONS;
 
-  const ordered = [...connected].sort(([aId], [bId]) => {
-    if (aId === activeSid) return -1;
-    if (bId === activeSid) return 1;
-    return aId < bId ? -1 : 1;
-  });
+  const byWorkdir = new Map<
+    string,
+    Array<[string, PerSessionState]>
+  >();
+  for (const entry of connected) {
+    const workdir = entry[1].workdir;
+    const group = byWorkdir.get(workdir);
+    if (group) group.push(entry);
+    else byWorkdir.set(workdir, [entry]);
+  }
+  const groups = [...byWorkdir.entries()];
+
+  function beginRename(sid: string, s: PerSessionState): void {
+    setEditingSid(sid);
+    setDraft(sessionTitle(s));
+  }
+
+  function submitRename(event: FormEvent<HTMLFormElement>, sid: string): void {
+    event.preventDefault();
+    const title = draft.trim();
+    if (!title) return;
+    setEditingSid(null);
+    void rename(sid, title);
+  }
 
   return (
     <aside className="cc-multibar" aria-label="多开会话">
@@ -77,7 +110,7 @@ export function MultiSessionBar({
         </button>
       </div>
       <div className="cc-multibar__list">
-        {ordered.length === 0 && (
+        {connected.length === 0 && (
           <div className="cc-multibar__empty">
             暂无连接
             <br />
@@ -86,79 +119,146 @@ export function MultiSessionBar({
             </span>
           </div>
         )}
-        {ordered.map(([sid, s]) => {
-          const isActive = sid === activeSid;
+        {groups.map(([workdir, entries], groupIndex) => {
+          const labelId = `cc-workdir-${groupIndex}`;
           return (
-            <div
-              key={sid}
-              className={
-                "cc-multibar__item" +
-                (isActive ? " cc-multibar__item--active" : "")
-              }
+            <section
+              key={workdir}
+              className="cc-multibar__group"
+              role="group"
+              aria-labelledby={labelId}
             >
-              <button
-                type="button"
-                className="cc-multibar__main"
-                onClick={() => void activate(sid)}
-                title={s.workdir}
+              <div
+                id={labelId}
+                className="cc-multibar__group-title"
+                title={workdir}
               >
-                <span className="cc-multibar__row1">
-                  <span
-                    className={"cc-multibar__dot " + dotClass(s)}
-                    aria-hidden="true"
-                  />
-                  <span className="cc-multibar__name">{s.name}</span>
-                  <span
-                    className={`cc-runtime-badge cc-runtime-badge--${s.runtime}`}
-                    title={
-                      s.runtime === "codex" ? "Codex runtime" : "Claude Code runtime"
-                    }
-                  >
-                    {s.runtime === "codex" ? "Codex" : "CC"}
-                  </span>
-                </span>
-                <span className="cc-multibar__row2">{statusText(s)}</span>
-                <span
-                  className="cc-multibar__cond"
-                  title="Memory · Profile · 权限"
-                >
-                  <span
+                {workdirName(workdir)}
+              </div>
+              {entries.map(([sid, s]) => {
+                const isActive = sid === activeSid;
+                const title = sessionTitle(s);
+                return (
+                  <div
+                    key={sid}
                     className={
-                      s.memoryEnabled
-                        ? "cc-multibar__cond-on"
-                        : "cc-multibar__cond-off"
+                      "cc-multibar__item" +
+                      (isActive ? " cc-multibar__item--active" : "")
                     }
                   >
-                    M
-                  </span>
-                  <span className="cc-multibar__cond-sep">·</span>
-                  <span
-                    className={
-                      s.profileEnabled
-                        ? "cc-multibar__cond-on"
-                        : "cc-multibar__cond-off"
-                    }
-                  >
-                    P
-                  </span>
-                  {s.permission && (
-                    <>
-                      <span className="cc-multibar__cond-sep">·</span>
-                      <span className="cc-multibar__perm">{s.permission}</span>
-                    </>
-                  )}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="cc-multibar__close"
-                onClick={() => void close(sid)}
-                title="关闭"
-                aria-label={`关闭 ${s.name}`}
-              >
-                ×
-              </button>
-            </div>
+                    {editingSid === sid ? (
+                      <form
+                        className="cc-multibar__editor"
+                        onSubmit={(event) => submitRename(event, sid)}
+                      >
+                        <input
+                          autoFocus
+                          aria-label="会话标题"
+                          maxLength={80}
+                          value={draft}
+                          onChange={(event) => setDraft(event.target.value)}
+                        />
+                        <button type="submit" aria-label="保存标题">
+                          ✓
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="取消改名"
+                          onClick={() => setEditingSid(null)}
+                        >
+                          ×
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="cc-multibar__main"
+                          onClick={() => void activate(sid)}
+                          title={title}
+                        >
+                          <span className="cc-multibar__row1">
+                            <span
+                              className={"cc-multibar__dot " + dotClass(s)}
+                              aria-hidden="true"
+                            />
+                            <span
+                              className="cc-multibar__name"
+                              data-testid="session-title"
+                            >
+                              {title}
+                            </span>
+                            <span
+                              className={`cc-runtime-badge cc-runtime-badge--${s.runtime}`}
+                              title={
+                                s.runtime === "codex"
+                                  ? "Codex runtime"
+                                  : "Claude Code runtime"
+                              }
+                            >
+                              {s.runtime === "codex" ? "Codex" : "CC"}
+                            </span>
+                          </span>
+                          <span className="cc-multibar__row2">{statusText(s)}</span>
+                          <span
+                            className="cc-multibar__cond"
+                            title="Memory · Profile · 权限"
+                          >
+                            <span
+                              className={
+                                s.memoryEnabled
+                                  ? "cc-multibar__cond-on"
+                                  : "cc-multibar__cond-off"
+                              }
+                            >
+                              M
+                            </span>
+                            <span className="cc-multibar__cond-sep">·</span>
+                            <span
+                              className={
+                                s.profileEnabled
+                                  ? "cc-multibar__cond-on"
+                                  : "cc-multibar__cond-off"
+                              }
+                            >
+                              P
+                            </span>
+                            {s.permission && (
+                              <>
+                                <span className="cc-multibar__cond-sep">·</span>
+                                <span className="cc-multibar__perm">
+                                  {s.permission}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        </button>
+                        <div className="cc-multibar__actions">
+                          <button
+                            type="button"
+                            className="cc-multibar__action"
+                            onClick={() => beginRename(sid, s)}
+                            title="重命名"
+                            aria-label={`重命名 ${title}`}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            type="button"
+                            className="cc-multibar__action cc-multibar__action--close"
+                            onClick={() => void close(sid)}
+                            title="关闭"
+                            aria-label={`关闭 ${title}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </section>
           );
         })}
       </div>

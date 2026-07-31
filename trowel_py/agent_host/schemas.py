@@ -14,6 +14,19 @@ GoalStatus = Literal[
     "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"
 ]
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+SessionTitleText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[^\r\n]+$",
+    ),
+]
+ResumeTitleText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+]
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -27,6 +40,7 @@ class CreateAgentSessionRequest(BaseModel):
     runtime: RuntimeWire
     workdir: str = Field(min_length=1)
     resume_from: str | None = None
+    resume_title: ResumeTitleText | None = None
     model: str | None = None
     effort: str | None = None
     permission_mode: str | None = None
@@ -73,6 +87,26 @@ class SendMessageBody(BaseModel):
     """
 
     text: str = Field(min_length=1)
+
+
+class RenameAgentSessionRequest(BaseModel):
+    """携带用户手动指定的会话标题。
+
+    Attributes:
+        title: 去除首尾空白后的非空标题，最多 80 个字符。
+    """
+
+    title: SessionTitleText
+
+
+class GenerateAgentSessionTitleRequest(BaseModel):
+    """携带用于生成语义标题的首条用户消息。
+
+    Attributes:
+        text: 主会话收到的首条非空用户输入；标题任务只概括它，不执行它。
+    """
+
+    text: NonEmptyText
 
 
 class SetCodexGoalRequest(BaseModel):

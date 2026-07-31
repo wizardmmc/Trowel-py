@@ -4,6 +4,9 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 vi.mock("../api/agent", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  renameAgentSessionTitle: vi.fn().mockImplementation((_sid, title) =>
+    Promise.resolve({ display_title: title, title_source: "manual" }),
+  ),
   listAgentRequests: vi.fn().mockResolvedValue([]),
 }));
 
@@ -14,6 +17,7 @@ import {
   type PerSessionState,
 } from "../stores/ccStore";
 import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../api/agent";
+import { renameAgentSessionTitle as apiRenameSessionTitle } from "../api/agent";
 
 function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSessionState {
   return {
@@ -21,6 +25,8 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     workdir: "/wd",
     effort: null,
     name: "wd",
+    displayTitle: over.displayTitle ?? over.name ?? "wd",
+    titleSource: over.titleSource ?? "generated",
     revertEnabled: false,
     transportError: null,
     abort: null,
@@ -75,6 +81,55 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText("wiki")).toBeInTheDocument();
     const activeItem = screen.getByText("trowel-py").closest(".cc-multibar__item");
     expect(activeItem?.className).toMatch(/--active/);
+  });
+
+  it("groups sessions by full workdir and keeps creation order when active changes", () => {
+    setSessions(
+      {
+        s1: makeSession({
+          workdir: "/workspace/alpha",
+          name: "alpha",
+          displayTitle: "第一个任务",
+        }),
+        s2: makeSession({
+          workdir: "/workspace/alpha",
+          name: "alpha #2",
+          displayTitle: "第二个任务",
+        }),
+        s3: makeSession({
+          workdir: "/other/alpha",
+          name: "alpha",
+          displayTitle: "第三个任务",
+        }),
+      },
+      "s2",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    const groups = screen.getAllByRole("group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toHaveAccessibleName("alpha");
+    expect(groups[1]).toHaveAccessibleName("alpha");
+    const titles = screen.getAllByTestId("session-title").map((node) => node.textContent);
+    expect(titles).toEqual(["第一个任务", "第二个任务", "第三个任务"]);
+  });
+
+  it("shows a semantic title instead of the temporary numbered name", () => {
+    setSessions(
+      {
+        s1: makeSession({
+          name: "trowel-py #2",
+          displayTitle: "按目录聚合会话",
+        }),
+      },
+      "s1",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("按目录聚合会话")).toBeInTheDocument();
+    expect(screen.queryByText("trowel-py #2")).toBeNull();
   });
 
   it("shows the M·P condition marker per session", () => {
@@ -165,6 +220,29 @@ describe("MultiSessionBar", () => {
     fireEvent.click(screen.getByLabelText("关闭 a"));
     await waitFor(() => {
       expect(apiDeleteSession).toHaveBeenCalledWith("s1");
+    });
+  });
+
+  it("renames a session inline", async () => {
+    setSessions(
+      {
+        s1: makeSession({
+          displayTitle: "旧标题",
+          titleSource: "generated",
+        }),
+      },
+      "s1",
+    );
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    fireEvent.click(screen.getByLabelText("重命名 旧标题"));
+    const input = screen.getByRole("textbox", { name: "会话标题" });
+    fireEvent.change(input, { target: { value: "新标题" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => {
+      expect(apiRenameSessionTitle).toHaveBeenCalledWith("s1", "新标题");
+      expect(screen.getByText("新标题")).toBeInTheDocument();
     });
   });
 

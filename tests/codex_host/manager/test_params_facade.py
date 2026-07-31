@@ -102,6 +102,7 @@ def test_thread_start_params_preserve_full_config_and_key_order() -> None:
             approval_policy="never",
             sandbox="workspace-write",
             model="model",
+            base_instructions="base",
             developer_instructions="instructions",
         )
     )
@@ -114,6 +115,7 @@ def test_thread_start_params_preserve_full_config_and_key_order() -> None:
         "approvalPolicy",
         "sandbox",
         "model",
+        "baseInstructions",
         "developerInstructions",
     ]
     assert params == {
@@ -122,6 +124,7 @@ def test_thread_start_params_preserve_full_config_and_key_order() -> None:
         "approvalPolicy": "never",
         "sandbox": "workspace-write",
         "model": "model",
+        "baseInstructions": "base",
         "developerInstructions": "instructions",
     }
 

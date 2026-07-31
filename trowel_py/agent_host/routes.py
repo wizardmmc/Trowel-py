@@ -34,7 +34,9 @@ from trowel_py.agent_host.local_files import (
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
     CreateAgentSessionRequest,
+    GenerateAgentSessionTitleRequest,
     PatchAgentSessionRequest,
+    RenameAgentSessionRequest,
     SetCodexGoalRequest,
     SendMessageBody,
     StartCodexReviewRequest,
@@ -394,6 +396,56 @@ async def patch_session(
         )
         data = {**(data or {}), **permission}
     return {"success": True, "data": data, "error": None}
+
+
+@router.put("/sessions/{session_id}/title")
+def rename_session_title(
+    session_id: str,
+    body: RenameAgentSessionRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """保存用户手动指定的会话标题。
+
+    Args:
+        session_id: 要改名的用户会话 ID。
+        body: 已去除首尾空白的非空标题。
+        hub: 负责保存 binding 和原生会话标题索引的 Session Hub。
+
+    Returns:
+        统一响应。data 为更新后的完整会话记录。
+
+    Raises:
+        HTTPException: 会话不存在时返回 404，委派会话不能改名时返回 422。
+    """
+
+    binding = _call_hub(hub.rename_title, session_id, body.title)
+    return {"success": True, "data": binding.to_dict(), "error": None}
+
+
+@router.post("/sessions/{session_id}/title/generate")
+async def generate_session_title(
+    session_id: str,
+    body: GenerateAgentSessionTitleRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """保存首条提示词预览，并尝试异步生成语义标题。
+
+    标题模型失败不会使主会话请求失败，此时 data 中保留 prompt 来源的预览。
+
+    Args:
+        session_id: 收到首条用户输入的用户会话 ID。
+        body: 要概括而不执行的首条用户输入。
+        hub: 负责标题降级、生成和竞争处理的 Session Hub。
+
+    Returns:
+        统一响应。data 为当前最终生效的完整会话记录。
+
+    Raises:
+        HTTPException: 会话不存在时返回 404，委派会话不能生成标题时返回 422。
+    """
+
+    binding = await _await_hub(hub.generate_title, session_id, body.text)
+    return {"success": True, "data": binding.to_dict(), "error": None}
 
 
 @router.delete("/sessions/{session_id}")

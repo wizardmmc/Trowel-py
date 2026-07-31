@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+import threading
 from collections.abc import Iterable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -65,9 +69,8 @@ def resolve_bindings_path() -> Path:
 class BindingStore:
     """读写 Trowel 会话与原生运行时会话的持久化绑定。
 
-    每次操作都重新读取文件。单次写入通过替换同目录中的临时文件完成，但整个
-    读改写过程不提供跨进程事务；多个进程同时写入时，后完成的进程可能覆盖先前
-    进程的改动。
+    每次操作都重新读取文件。完整读改写周期使用进程内锁和跨进程文件锁串行化，
+    最终文件通过替换同目录中的临时文件原子发布。
 
     Attributes:
         path: 保存全部会话绑定的 JSON 文件路径。
@@ -83,6 +86,7 @@ class BindingStore:
         """
 
         self._path = path
+        self._thread_lock = threading.RLock()
 
     @property
     def path(self) -> Path:
@@ -144,6 +148,20 @@ class BindingStore:
                 pass
             raise
 
+    @contextmanager
+    def _lock(self, *, exclusive: bool) -> Iterator[None]:
+        """锁住一次读取或完整读改写周期，避免并发覆盖 binding。"""
+
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._path.with_name(self._path.name + ".lock")
+        with self._thread_lock, lock_path.open("a+b") as handle:
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(handle.fileno(), operation)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def put(self, binding: SessionBinding) -> None:
         """按 Trowel 会话 ID 新增或覆盖一个会话绑定。
 
@@ -151,9 +169,10 @@ class BindingStore:
             binding: 要持久化的完整会话绑定。
         """
 
-        sessions = self._load_raw()
-        sessions[binding.session_id] = binding.to_dict()
-        self._save_raw(sessions)
+        with self._lock(exclusive=True):
+            sessions = self._load_raw()
+            sessions[binding.session_id] = binding.to_dict()
+            self._save_raw(sessions)
 
     def get(self, session_id: str) -> SessionBinding | None:
         """按 Trowel 会话 ID 读取一个会话绑定。
@@ -169,7 +188,8 @@ class BindingStore:
             ValueError: 持久化记录包含未知的运行工具名称。
         """
 
-        raw = self._load_raw().get(session_id)
+        with self._lock(exclusive=False):
+            raw = self._load_raw().get(session_id)
         return binding_from_dict(raw) if raw is not None else None
 
     def list_all(self) -> list[SessionBinding]:
@@ -183,7 +203,9 @@ class BindingStore:
             ValueError: 任一持久化记录包含未知的运行工具名称。
         """
 
-        return [binding_from_dict(payload) for payload in self._load_raw().values()]
+        with self._lock(exclusive=False):
+            records = self._load_raw()
+        return [binding_from_dict(payload) for payload in records.values()]
 
     def delete(self, session_id: str) -> bool:
         """删除指定的会话绑定。
@@ -195,12 +217,13 @@ class BindingStore:
             记录原本存在并已删除时返回 ``True``，不存在时返回 ``False``。
         """
 
-        sessions = self._load_raw()
-        if session_id not in sessions:
-            return False
-        del sessions[session_id]
-        self._save_raw(sessions)
-        return True
+        with self._lock(exclusive=True):
+            sessions = self._load_raw()
+            if session_id not in sessions:
+                return False
+            del sessions[session_id]
+            self._save_raw(sessions)
+            return True
 
     def update_native(
         self,
@@ -243,32 +266,38 @@ class BindingStore:
             ValueError: 持久化记录包含未知的运行工具名称。
         """
 
-        existing = self.get(session_id)
-        if existing is None:
-            raise KeyError(session_id)
-        changes: dict[str, Any] = {
-            "updated_at": datetime.now().isoformat(timespec="microseconds")
-        }
-        if native_session_id is not None:
-            changes["native_session_id"] = native_session_id
-        if model is not None:
-            changes["model"] = model
-        if effort is not None:
-            changes["effort"] = effort
-        if permission is not None:
-            changes["permission"] = permission
-        if connected is not None:
-            changes["connected"] = connected
-        if running is not None:
-            changes["running"] = running
-        if effective_permission_profile is not None:
-            changes["effective_permission_profile"] = effective_permission_profile
-        if effective_sandbox is not None:
-            changes["effective_sandbox"] = effective_sandbox
-        if effective_approval is not None:
-            changes["effective_approval"] = effective_approval
-        if network_access is not None:
-            changes["network_access"] = network_access
-        updated = replace(existing, **changes)
-        self.put(updated)
-        return updated
+        with self._lock(exclusive=True):
+            sessions = self._load_raw()
+            raw = sessions.get(session_id)
+            if raw is None:
+                raise KeyError(session_id)
+            existing = binding_from_dict(raw)
+            changes: dict[str, Any] = {
+                "updated_at": datetime.now().isoformat(timespec="microseconds")
+            }
+            if native_session_id is not None:
+                changes["native_session_id"] = native_session_id
+            if model is not None:
+                changes["model"] = model
+            if effort is not None:
+                changes["effort"] = effort
+            if permission is not None:
+                changes["permission"] = permission
+            if connected is not None:
+                changes["connected"] = connected
+            if running is not None:
+                changes["running"] = running
+            if effective_permission_profile is not None:
+                changes["effective_permission_profile"] = (
+                    effective_permission_profile
+                )
+            if effective_sandbox is not None:
+                changes["effective_sandbox"] = effective_sandbox
+            if effective_approval is not None:
+                changes["effective_approval"] = effective_approval
+            if network_access is not None:
+                changes["network_access"] = network_access
+            updated = replace(existing, **changes)
+            sessions[session_id] = updated.to_dict()
+            self._save_raw(sessions)
+            return updated

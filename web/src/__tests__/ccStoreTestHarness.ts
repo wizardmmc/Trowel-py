@@ -23,6 +23,8 @@ vi.mock("../api/agent", () => ({
   getAgentHistory: vi.fn().mockResolvedValue([]),
   getCodexSubagentHistory: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
+  generateAgentSessionTitle: vi.fn(),
+  renameAgentSessionTitle: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
   agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
 }));
@@ -74,6 +76,8 @@ import {
   compactCodexSession,
   startCodexReview,
   updateAgentSessionSettings,
+  generateAgentSessionTitle,
+  renameAgentSessionTitle,
 } from "../api/agent";
 import { getEventStream } from "../api/ccStream";
 
@@ -91,6 +95,8 @@ export const apiStartCodexTurn = vi.mocked(startCodexTurn);
 export const apiCompactCodexSession = vi.mocked(compactCodexSession);
 export const apiStartCodexReview = vi.mocked(startCodexReview);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
+export const apiGenerateSessionTitle = vi.mocked(generateAgentSessionTitle);
+export const apiRenameSessionTitle = vi.mocked(renameAgentSessionTitle);
 export const apiGetEventStream = vi.mocked(getEventStream);
 
 let seqCounter = 0;
@@ -148,4 +154,32 @@ beforeEach(() => {
   stream.apply = null;
   stream.resolvers = [];
   seqCounter = 0;
+  apiGenerateSessionTitle.mockImplementation(async (_sid, text) => ({
+    ...mockAgentSessionForTitle(text),
+  }));
+  apiRenameSessionTitle.mockImplementation(async (_sid, title) => ({
+    ...mockAgentSessionForTitle(title),
+    display_title: title,
+    title_source: "manual",
+  }));
 });
+
+function mockAgentSessionForTitle(title: string): AgentSession {
+  return {
+    session_id: "s1",
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir: "/wd",
+    model: "glm-5.2",
+    effort: null,
+    permission: null,
+    memory_enabled: true,
+    profile_enabled: true,
+    capabilities: ["tools"],
+    name: "wd",
+    connected: true,
+    running: true,
+    display_title: title,
+    title_source: "generated",
+  };
+}

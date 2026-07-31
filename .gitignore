@@ -52,3 +52,4 @@ trowel_py/static/
 # ── Private notes (training log etc.) ───────────────────────────────────────
 docs/
 progress.txt
+tmp/

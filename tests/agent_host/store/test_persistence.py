@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import multiprocessing
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,6 +34,14 @@ def _binding(**over: object) -> SessionBinding:
     return make_binding(**base)  # type: ignore[arg-type]
 
 
+def _put_binding(path: str, ready: Any, done: Any) -> None:
+    """在独立进程中写入一个 binding。"""
+
+    ready.set()
+    BindingStore(Path(path)).put(_binding(session_id="child"))
+    done.set()
+
+
 @pytest.mark.parametrize(
     ("occupied_names", "expected"),
     [
@@ -49,13 +61,37 @@ def test_next_session_display_name_uses_smallest_available_ordinal(
 
 def test_put_get_roundtrip(tmp_path):
     store = BindingStore(tmp_path / "b.json")
-    store.put(_binding())
+    store.put(
+        _binding(
+            display_title="排查会话标题",
+            title_source="generated",
+        )
+    )
     got = store.get("s1")
     assert got is not None
     assert got.session_id == "s1"
     assert got.runtime is Runtime.CLAUDE_CODE
     assert got.native_session_id is None
     assert got.capabilities == ("tools",)
+    assert got.display_title == "排查会话标题"
+    assert got.title_source == "generated"
+
+
+def test_old_binding_defaults_to_new_title_state(tmp_path):
+    path = tmp_path / "b.json"
+    binding = _binding().to_dict()
+    del binding["display_title"]
+    del binding["title_source"]
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    got = BindingStore(path).get("s1")
+
+    assert got is not None
+    assert got.display_title == ""
+    assert got.title_source == "new"
 
 
 def test_put_overwrite_updates_fields(tmp_path):
@@ -189,6 +225,30 @@ def test_atomic_write_leaves_valid_json_no_tmp_fragment(tmp_path):
     assert "s1" in data["sessions"]
     assert data["sessions"]["s1"]["native_session_id"] == "cc-1"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_binding_writer_waits_for_cross_process_read_modify_write_lock(tmp_path):
+    path = tmp_path / "b.json"
+    lock_path = path.with_name(path.name + ".lock")
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    done = context.Event()
+    process = context.Process(
+        target=_put_binding,
+        args=(str(path), ready, done),
+    )
+
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        process.start()
+        assert ready.wait(timeout=5)
+        assert done.wait(timeout=0.2) is False
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert done.wait(timeout=5)
+    process.join(timeout=5)
+    assert process.exitcode == 0
+    assert BindingStore(path).get("child") is not None
 
 
 def test_resolve_bindings_path_env_override(tmp_path, monkeypatch):

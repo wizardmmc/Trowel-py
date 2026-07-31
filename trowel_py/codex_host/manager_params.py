@@ -10,8 +10,8 @@ from trowel_py.codex_host.session import CodexSession
 def thread_start_params(session: CodexSession) -> dict[str, Any]:
     """构造 ``thread/start`` 参数，并合并已启用的 Trowel MCP 服务。
 
-    工作目录和 ephemeral 标记始终发送；权限、模型和开发者指令只在会话配置显式
-    提供时发送。
+    工作目录和 ephemeral 标记始终发送；权限、模型、基础指令和开发者指令只在
+    会话配置显式提供时发送。
     """
 
     config = session.config
@@ -25,6 +25,8 @@ def thread_start_params(session: CodexSession) -> dict[str, Any]:
         params["sandbox"] = config.sandbox
     if config.model is not None:
         params["model"] = config.model
+    if config.base_instructions is not None:
+        params["baseInstructions"] = config.base_instructions
     if config.developer_instructions is not None:
         params["developerInstructions"] = config.developer_instructions
     servers: dict[str, Any] = {}
