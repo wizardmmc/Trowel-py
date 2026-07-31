@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 
 import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
 import type { ToolItem } from "../../stores/ccStore";
@@ -18,42 +18,90 @@ import {
 
 const WRITE_PREVIEW_LINES = 10;
 
-function DiffHunkView({ hunk }: { readonly hunk: DiffHunk }) {
-  const rows: ReactNode[] = [];
-  let oldLine = hunk.oldStart;
-  let newLine = hunk.newStart;
+interface DiffRow {
+  readonly key: string;
+  readonly hunkIndex: number;
+  readonly type: "add" | "remove" | "context";
+  readonly gutter: number;
+  readonly content: string;
+}
 
-  hunk.lines.forEach((raw, index) => {
-    // jsdiff 的文件末尾标记不是内容行，不能推进 gutter。
-    if (raw.startsWith("\\")) return;
-    const marker = raw.charAt(0);
-    const content = raw.slice(1);
-    let type: "add" | "remove" | "context";
-    let gutter: number | string;
-    if (marker === "+") {
-      type = "add";
-      gutter = newLine++;
-    } else if (marker === "-") {
-      type = "remove";
-      gutter = oldLine++;
-    } else {
-      type = "context";
-      gutter = oldLine;
-      oldLine++;
-      newLine++;
-    }
-    rows.push(
-      <div className="cc-tool__diff-line" data-type={type} key={index}>
-        <span className="cc-tool__diff-gutter">{gutter}</span>
-        <span className="cc-tool__diff-marker">
-          {type === "add" ? "+" : type === "remove" ? "−" : " "}
-        </span>
-        <span className="cc-tool__diff-content">{content}</span>
-      </div>,
-    );
+function rowsFromHunks(hunks: readonly DiffHunk[]): readonly DiffRow[] {
+  return hunks.flatMap((hunk, hunkIndex) => {
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+    const rows: DiffRow[] = [];
+    hunk.lines.forEach((raw, lineIndex) => {
+      // jsdiff 的文件末尾标记不是内容行，不能推进 gutter。
+      if (raw.startsWith("\\")) return;
+      const marker = raw.charAt(0);
+      const content = raw.slice(1);
+      let type: DiffRow["type"];
+      let gutter: number;
+      if (marker === "+") {
+        type = "add";
+        gutter = newLine++;
+      } else if (marker === "-") {
+        type = "remove";
+        gutter = oldLine++;
+      } else {
+        type = "context";
+        gutter = oldLine;
+        oldLine += 1;
+        newLine += 1;
+      }
+      rows.push({
+        key: `${hunkIndex}:${lineIndex}`,
+        hunkIndex,
+        type,
+        gutter,
+        content,
+      });
+    });
+    return rows;
   });
+}
 
-  return <div className="cc-tool__diff-hunk">{rows}</div>;
+function FileDiffPreview({ rows }: { readonly rows: readonly DiffRow[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? rows : rows.slice(0, WRITE_PREVIEW_LINES);
+  let previousHunk = visible[0]?.hunkIndex ?? 0;
+
+  return (
+    <div className="cc-tool__diff">
+      {visible.map((row) => {
+        const separated = row.hunkIndex !== previousHunk;
+        previousHunk = row.hunkIndex;
+        return (
+          <Fragment key={row.key}>
+            {separated && <div className="cc-tool__diff-sep">···</div>}
+            <div className="cc-tool__diff-line" data-type={row.type}>
+              <span className="cc-tool__diff-gutter">{row.gutter}</span>
+              <span className="cc-tool__diff-marker">
+                {row.type === "add" ? "+" : row.type === "remove" ? "−" : " "}
+              </span>
+              <span className="cc-tool__diff-content">{row.content}</span>
+            </div>
+          </Fragment>
+        );
+      })}
+      {rows.length > WRITE_PREVIEW_LINES && (
+        <button
+          type="button"
+          className="cc-tool__diff-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span>
+            {expanded
+              ? `收起为 ${WRITE_PREVIEW_LINES} 行`
+              : `展开全部 ${rows.length} 行`}
+          </span>
+          <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+        </button>
+      )}
+    </div>
+  );
 }
 
 function DiffBody({
@@ -65,19 +113,11 @@ function DiffBody({
   readonly add: number;
   readonly remove: number;
 }) {
+  const rows = useMemo(() => rowsFromHunks(hunks), [hunks]);
   return (
     <>
       <div className="cc-tool__diff-stat">{statSentence(add, remove)}</div>
-      <div className="cc-tool__diff">
-        {hunks.map((hunk, index) => (
-          <div key={index}>
-            <DiffHunkView hunk={hunk} />
-            {index < hunks.length - 1 && (
-              <div className="cc-tool__diff-sep">···</div>
-            )}
-          </div>
-        ))}
-      </div>
+      <FileDiffPreview rows={rows} />
     </>
   );
 }
@@ -92,27 +132,21 @@ function CreateBody({
   const lines = content.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   const total = lines.length;
-  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
-  const more = total - shown.length;
   const name = filePath.split("/").pop() || filePath;
+  const rows: readonly DiffRow[] = lines.map((line, index) => ({
+    key: `create:${index}`,
+    hunkIndex: 0,
+    type: "add",
+    gutter: index + 1,
+    content: line,
+  }));
 
   return (
     <>
       <div className="cc-tool__create-lines">
         Wrote <b>{total}</b> lines to <b>{name}</b>
       </div>
-      <div className="cc-tool__diff">
-        {shown.map((line, index) => (
-          <div className="cc-tool__diff-line" data-type="add" key={index}>
-            <span className="cc-tool__diff-gutter">{index + 1}</span>
-            <span className="cc-tool__diff-marker">+</span>
-            <span className="cc-tool__diff-content">{line}</span>
-          </div>
-        ))}
-        {more > 0 && (
-          <div className="cc-tool__create-more">… +{more} more lines</div>
-        )}
-      </div>
+      <FileDiffPreview rows={rows} />
     </>
   );
 }

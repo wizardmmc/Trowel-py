@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EventTimeline } from "../components/cc/EventTimeline";
 import type { TurnItem } from "../stores/ccStore";
 
@@ -168,6 +168,165 @@ describe("EventTimeline", () => {
     const { container } = render(<EventTimeline items={items} />);
     expect(container.querySelectorAll(".cc-tool")).toHaveLength(1);
     expect(screen.getByText("Bash")).toBeInTheDocument();
+  });
+
+  it("keeps every tool summary but auto-opens only the newest 4 diff details beyond the extreme threshold", () => {
+    const items: TurnItem[] = Array.from({ length: 34 }, (_, index) => ({
+      kind: "tool" as const,
+      toolUseId: `patch-${index}`,
+      toolName: "apply_patch",
+      input: { paths: [`/repo/file-${index}.ts`] },
+      status: "done" as const,
+      elapsedSeconds: 0.1,
+      result: "ok",
+      childTools: [],
+      writeDiff: {
+        type: "update" as const,
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: [`+line ${index}`],
+          },
+        ],
+      },
+    }));
+
+    const { container } = render(
+      <EventTimeline items={items} workdir="/repo" allowExtremeCompaction />,
+    );
+
+    expect(container.querySelectorAll(".cc-tool")).toHaveLength(34);
+    expect(
+      container.querySelectorAll('.cc-tool__summary[aria-expanded="true"]'),
+    ).toHaveLength(4);
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(4);
+
+    fireEvent.click(screen.getByRole("button", { name: /file-0\.ts/ }));
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(5);
+  });
+
+  it("mounts old Markdown as readable lightweight text and restores rich rendering on demand", () => {
+    const items: TurnItem[] = [];
+    for (let index = 0; index < 34; index += 1) {
+      items.push({ kind: "text", text: `# old text ${index}` });
+      items.push({
+        kind: "tool",
+        toolUseId: `patch-${index}`,
+        toolName: "apply_patch",
+        input: { paths: [`/repo/file-${index}.ts`] },
+        status: "done",
+        elapsedSeconds: 0.1,
+        result: "ok",
+        childTools: [],
+        writeDiff: {
+          type: "update",
+          hunks: [{
+            oldStart: 1,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: [`+line ${index}`],
+          }],
+        },
+      });
+    }
+
+    const { container, rerender } = render(
+      <EventTimeline items={items} workdir="/repo" allowExtremeCompaction />,
+    );
+
+    expect(container.querySelectorAll(".cc-tool")).toHaveLength(34);
+    expect(screen.getByText("# old text 0")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "old text 33" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "old text 0" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "渲染较早 Markdown" }));
+    expect(screen.getByRole("heading", { name: "old text 0" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "较早文字使用轻量显示" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <EventTimeline
+        items={[...items, {
+          kind: "tool",
+          toolUseId: "patch-later",
+          toolName: "apply_patch",
+          input: { paths: ["/repo/later.ts"] },
+          status: "done",
+          elapsedSeconds: 0.1,
+          result: "ok",
+          childTools: [],
+          writeDiff: {
+            type: "update",
+            hunks: [{
+              oldStart: 1,
+              oldLines: 0,
+              newStart: 1,
+              newLines: 1,
+              lines: ["+later"],
+            }],
+          },
+        }]}
+        workdir="/repo"
+        allowExtremeCompaction
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "old text 0" })).toBeInTheDocument();
+  });
+
+  it("does not compact a growing turn until bottom-following allows it", async () => {
+    const buildItems = (count: number): TurnItem[] =>
+      Array.from({ length: count }, (_, index) => ({
+        kind: "tool" as const,
+        toolUseId: `patch-${index}`,
+        toolName: "apply_patch",
+        input: { paths: [`/repo/file-${index}.ts`] },
+        status: "done" as const,
+        elapsedSeconds: 0.1,
+        result: "ok",
+        childTools: [],
+        writeDiff: {
+          type: "update" as const,
+          hunks: [{
+            oldStart: 1,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: [`+line ${index}`],
+          }],
+        },
+      }));
+    const { container, rerender } = render(
+      <EventTimeline items={buildItems(32)} allowExtremeCompaction={false} />,
+    );
+
+    rerender(
+      <EventTimeline items={buildItems(34)} allowExtremeCompaction={false} />,
+    );
+    expect(
+      container.querySelectorAll('.cc-tool__summary[aria-expanded="true"]'),
+    ).toHaveLength(32);
+    expect(screen.getByRole("button", { name: /file-0\.ts/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /file-33\.ts/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    rerender(
+      <EventTimeline items={buildItems(34)} allowExtremeCompaction />,
+    );
+    await waitFor(() =>
+      expect(
+        container.querySelectorAll('.cc-tool__summary[aria-expanded="true"]'),
+      ).toHaveLength(4),
+    );
+    expect(container.querySelectorAll(".cc-tool")).toHaveLength(34);
   });
 
   it("groups contiguous Codex exploration commands without merging child buttons", () => {

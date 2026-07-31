@@ -1,10 +1,16 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MutableRefObject,
+} from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type { Turn } from "../../stores/ccStore";
-import {
-  useCcStore,
-  useActiveSession,
-} from "../../stores/ccStore";
+import { useCcStore } from "../../stores/ccStore";
+import { useCcStoreFrameSelector } from "../../stores/ccFrameSelector";
 import type {
   AgentHistoryRow,
   CodexCommand,
@@ -48,11 +54,167 @@ const ACTIVE_PHASES = new Set([
   "compacting",
 ]);
 
+const EMPTY_TURNS: readonly Turn[] = [];
+
+interface SessionTranscriptPaneProps {
+  readonly activeSid: string | null;
+  readonly openedSubagentId: string | null;
+  readonly composerH: number;
+  readonly fallbackWorkdir: string;
+  readonly jumpToBottomRef: MutableRefObject<(() => void) | null>;
+  readonly onCloseSubagent: () => void;
+  readonly onRetryLast: () => void;
+  readonly onAnswer: (answers: Record<string, string>) => void;
+  readonly onCancel: () => void;
+  readonly onApprovalDecision: (requestId: string, decision: string) => void;
+  readonly onRevert: (turn: Turn) => void;
+  readonly onOpenSubagent: (threadId: string) => void;
+}
+
+/** 高频消息树单独按帧订阅；Header、Composer 不跟随文字 delta 重渲染。 */
+function SessionTranscriptPane({
+  activeSid,
+  openedSubagentId,
+  composerH,
+  fallbackWorkdir,
+  jumpToBottomRef,
+  onCloseSubagent,
+  onRetryLast,
+  onAnswer,
+  onCancel,
+  onApprovalDecision,
+  onRevert,
+  onOpenSubagent,
+}: SessionTranscriptPaneProps) {
+  const selectActive = useCallback(
+    (state: ReturnType<typeof useCcStore.getState>) =>
+      activeSid ? state.sessions[activeSid] ?? null : null,
+    [activeSid],
+  );
+  const active = useCcStoreFrameSelector(selectActive);
+  const phase = active?.phase ?? "idle";
+  const turns = active?.turns ?? EMPTY_TURNS;
+  const openedSubagent = openedSubagentId
+    ? active?.codexSubagents[openedSubagentId] ?? null
+    : null;
+  const viewPhase = openedSubagent?.state.phase ?? phase;
+  const viewTurns = openedSubagent?.state.turns ?? turns;
+  const streaming = ACTIVE_PHASES.has(phase);
+  const viewStreaming = openedSubagent
+    ? openedSubagent.status === "started" || openedSubagent.status === "progress"
+    : streaming;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { sticky, unread, pauseFollowing, jumpToBottom } = useStickyBottom(
+    scrollRef,
+    viewTurns.length,
+    `${activeSid ?? "none"}:${openedSubagentId ?? "root"}`,
+  );
+  jumpToBottomRef.current = jumpToBottom;
+  useEffect(
+    () => () => {
+      jumpToBottomRef.current = null;
+    },
+    [jumpToBottomRef],
+  );
+
+  return (
+    <>
+      <div
+        ref={scrollRef}
+        className="cc-view__scroll"
+        style={{ "--composer-h": `${composerH}px` } as CSSProperties}
+      >
+        {active ? (
+          <>
+            {openedSubagent && (
+              <nav className="cc-child-breadcrumb" aria-label="Subagent 路径">
+                <button type="button" onClick={onCloseSubagent}>
+                  {active.displayTitle || active.name}
+                </button>
+                <span aria-hidden="true">/</span>
+                <span>{openedSubagent.agentPath ?? openedSubagent.threadId}</span>
+              </nav>
+            )}
+            {openedSubagent?.historyError && (
+              <div className="cc-child-history-error" role="alert">
+                {openedSubagent.historyError}
+              </div>
+            )}
+            <MessageList
+              key={`${activeSid}:${openedSubagentId ?? "root"}`}
+              turns={viewTurns}
+              streaming={viewStreaming}
+              phase={viewPhase}
+              scrollRef={scrollRef}
+              sticky={sticky}
+              onLeaveBottom={pauseFollowing}
+              onRetryLast={openedSubagent ? undefined : onRetryLast}
+              onAnswer={onAnswer}
+              onCancel={onCancel}
+              onApprovalDecision={onApprovalDecision}
+              onRevert={openedSubagent ? undefined : onRevert}
+              workdir={active.workdir ?? fallbackWorkdir}
+              runtime={active.runtime}
+              sessionId={activeSid ?? undefined}
+              codexSubagents={active.codexSubagents}
+              onOpenSubagent={onOpenSubagent}
+              emptyLabel={
+                openedSubagent
+                  ? openedSubagent.historyLoading
+                    ? "正在读取 Subagent 记录…"
+                    : "尚未收到 Subagent 输出。"
+                  : undefined
+              }
+            />
+          </>
+        ) : (
+          <div className="cc-empty cc-empty--noactive">
+            <div>未选择 session</div>
+            <div className="cc-empty__hint">
+              点左侧多开栏选一个，或 + 新开一个。
+            </div>
+          </div>
+        )}
+      </div>
+      {active && !sticky && (
+        <button
+          type="button"
+          className="cc-jump-latest"
+          onClick={jumpToBottom}
+          aria-label="回到最新"
+        >
+          {unread > 0 && (
+            <span className="cc-jump-latest__dot" aria-hidden="true" />
+          )}
+          <svg
+            className="cc-jump-latest__arrow"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M6 13l6 6 6-6" />
+          </svg>
+          <span>{unread > 0 ? `${unread} 新` : "最新"}</span>
+        </button>
+      )}
+    </>
+  );
+}
+
 export function SessionView({
   workdir,
   onRequestChangeWorkdir,
 }: SessionViewProps) {
-  const active = useActiveSession();
+  const activeSid = useCcStore((s) => s.activeSid);
+  const active = useCcStore(
+    useShallow((state) => {
+      const session = activeSid ? state.sessions[activeSid] ?? null : null;
+      // turns 是唯一逐 delta 增长的大对象，由 SessionTranscriptPane 单独订阅。
+      return session ? { ...session, turns: EMPTY_TURNS } : null;
+    }),
+  );
+  const activeTurnCount = useCcStore((state) =>
+    activeSid ? state.sessions[activeSid]?.turns.length ?? 0 : 0,
+  );
   const startSession = useCcStore((s) => s.startSession);
   const loadHistoryIntoView = useCcStore((s) => s.loadHistoryIntoView);
   const loadCodexSubagentHistory = useCcStore(
@@ -64,7 +226,6 @@ export function SessionView({
   const cancelElicit = useCcStore((s) => s.cancelElicit);
   const answerApproval = useCcStore((s) => s.answerApproval);
   const revertTurn = useCcStore((s) => s.revertTurn);
-  const activeSid = useCcStore((s) => s.activeSid);
   const history = useCcStore((s) => s.history);
   const loadingHistory = useCcStore((s) => s.loadingHistory);
   const loadingMoreHistory = useCcStore((s) => s.loadingMoreHistory);
@@ -113,27 +274,15 @@ export function SessionView({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
+  const jumpToBottomRef = useRef<(() => void) | null>(null);
 
   const phase = active?.phase ?? "idle";
-  const turns = active?.turns ?? [];
   const openedSubagent = openedSubagentId
     ? active?.codexSubagents[openedSubagentId] ?? null
     : null;
-  const viewPhase = openedSubagent?.state.phase ?? phase;
-  const viewTurns = openedSubagent?.state.turns ?? turns;
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const { sticky, unread, pauseFollowing, jumpToBottom } = useStickyBottom(
-    scrollRef,
-    viewTurns.length,
-    `${activeSid ?? "none"}:${openedSubagentId ?? "root"}`,
-  );
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
   const streaming = ACTIVE_PHASES.has(phase);
-  const viewStreaming = openedSubagent
-    ? openedSubagent.status === "started" ||
-      openedSubagent.status === "progress"
-    : streaming;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
@@ -172,7 +321,10 @@ export function SessionView({
 
   useSessionLifecycle({
     workdir,
-    active,
+    activeWorkdir: active?.workdir ?? null,
+    activeConnected: active?.connected ?? false,
+    activeTurnCount,
+    activeHasAbort: Boolean(active?.abort),
     activeSid,
     refreshHistory,
     loadHistoryIntoView,
@@ -216,6 +368,9 @@ export function SessionView({
   }
 
   function handleRetryLast() {
+    const turns = activeSid
+      ? useCcStore.getState().sessions[activeSid]?.turns ?? EMPTY_TURNS
+      : EMPTY_TURNS;
     const last = turns[turns.length - 1];
     if (last) {
       void send(last.userText);
@@ -224,6 +379,9 @@ export function SessionView({
 
   const lostTurns = (() => {
     if (!revertTarget) return [];
+    const turns = activeSid
+      ? useCcStore.getState().sessions[activeSid]?.turns ?? EMPTY_TURNS
+      : EMPTY_TURNS;
     const idx = turns.findIndex((t) => t.id === revertTarget.id);
     return idx === -1 ? [] : turns.slice(idx);
   })();
@@ -347,85 +505,22 @@ export function SessionView({
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
         <SessionBanners active={active} activeSid={activeSid} />
-        <div
-          ref={scrollRef}
-          className="cc-view__scroll"
-          style={{ "--composer-h": `${composerH}px` } as CSSProperties}
-        >
-          {active ? (
-            <>
-              {openedSubagent && (
-                <nav className="cc-child-breadcrumb" aria-label="Subagent 路径">
-                  <button type="button" onClick={() => setOpenedSubagentId(null)}>
-                    {active.displayTitle || active.name}
-                  </button>
-                  <span aria-hidden="true">/</span>
-                  <span>{openedSubagent.agentPath ?? openedSubagent.threadId}</span>
-                </nav>
-              )}
-              {openedSubagent?.historyError && (
-                <div className="cc-child-history-error" role="alert">
-                  {openedSubagent.historyError}
-                </div>
-              )}
-              <MessageList
-                key={`${activeSid}:${openedSubagentId ?? "root"}`}
-                turns={viewTurns}
-                streaming={viewStreaming}
-                phase={viewPhase}
-                scrollRef={scrollRef}
-                sticky={sticky}
-                onLeaveBottom={pauseFollowing}
-                onRetryLast={openedSubagent ? undefined : handleRetryLast}
-                onAnswer={(answers) => void answerElicit(answers)}
-                onCancel={() => void cancelElicit()}
-                onApprovalDecision={(requestId, decision) =>
-                  void answerApproval(requestId, decision)
-                }
-                onRevert={openedSubagent ? undefined : (t) => setRevertTarget(t)}
-                workdir={active.workdir ?? workdir}
-                runtime={active.runtime}
-                sessionId={activeSid ?? undefined}
-                codexSubagents={active.codexSubagents}
-                onOpenSubagent={openSubagent}
-                emptyLabel={
-                  openedSubagent
-                    ? openedSubagent.historyLoading
-                      ? "正在读取 Subagent 记录…"
-                      : "尚未收到 Subagent 输出。"
-                    : undefined
-                }
-              />
-            </>
-          ) : (
-            <div className="cc-empty cc-empty--noactive">
-              <div>未选择 session</div>
-              <div className="cc-empty__hint">
-                点左侧多开栏选一个，或 + 新开一个。
-              </div>
-            </div>
-          )}
-        </div>
-        {active && !sticky && (
-          <button
-            type="button"
-            className="cc-jump-latest"
-            onClick={jumpToBottom}
-            aria-label="回到最新"
-          >
-            {unread > 0 && (
-              <span className="cc-jump-latest__dot" aria-hidden="true" />
-            )}
-            <svg
-              className="cc-jump-latest__arrow"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M12 5v14M6 13l6 6 6-6" />
-            </svg>
-            <span>{unread > 0 ? `${unread} 新` : "最新"}</span>
-          </button>
-        )}
+        <SessionTranscriptPane
+          activeSid={activeSid}
+          openedSubagentId={openedSubagentId}
+          composerH={composerH}
+          fallbackWorkdir={workdir}
+          jumpToBottomRef={jumpToBottomRef}
+          onCloseSubagent={() => setOpenedSubagentId(null)}
+          onRetryLast={handleRetryLast}
+          onAnswer={(answers) => void answerElicit(answers)}
+          onCancel={() => void cancelElicit()}
+          onApprovalDecision={(requestId, decision) =>
+            void answerApproval(requestId, decision)
+          }
+          onRevert={(turn) => setRevertTarget(turn)}
+          onOpenSubagent={openSubagent}
+        />
         <div ref={composerRef}>
           {!openedSubagent && (
             <>
@@ -467,7 +562,7 @@ export function SessionView({
             onRetryCodexCatalog={loadCodexModels}
             onSend={(text) => {
               void send(text);
-              requestAnimationFrame(() => jumpToBottom());
+              requestAnimationFrame(() => jumpToBottomRef.current?.());
             }}
             onInterrupt={() => void interrupt()}
             onUpdateSettings={(model, nextEffort) =>

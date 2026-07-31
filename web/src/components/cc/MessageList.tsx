@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -45,7 +46,7 @@ function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
   return "Agent";
 }
 
-function TurnCard({
+const TurnCard = memo(function TurnCard({
   turn,
   turnIndex,
   streaming,
@@ -59,6 +60,7 @@ function TurnCard({
   sessionId,
   codexSubagents,
   onOpenSubagent,
+  allowExtremeCompaction,
 }: {
   readonly turn: Turn;
   readonly turnIndex: number;
@@ -73,6 +75,7 @@ function TurnCard({
   readonly sessionId?: string;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
+  readonly allowExtremeCompaction: boolean;
 }) {
   const hasContent = turn.items.length > 0;
   const canRevert = turn.revertible && turn.turnId !== null && !streaming;
@@ -115,6 +118,7 @@ function TurnCard({
               sessionId={sessionId}
               codexSubagents={codexSubagents}
               onOpenSubagent={onOpenSubagent}
+              allowExtremeCompaction={allowExtremeCompaction}
             />
           </div>
         </div>
@@ -131,7 +135,7 @@ function TurnCard({
         )}
     </div>
   );
-}
+});
 
 export function MessageList({
   turns,
@@ -169,6 +173,7 @@ export function MessageList({
   } | null>(null);
   const loadingOlderRef = useRef(false);
   const touchStartYRef = useRef<number | null>(null);
+  const followFrameRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     visibleStartRef.current = visibleStart;
@@ -213,13 +218,26 @@ export function MessageList({
 
   useLayoutEffect(() => {
     if (!sticky) return;
-    const element = scrollRef?.current;
-    if (element && typeof element.scrollTo === "function") {
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
-    } else if (typeof endRef.current?.scrollIntoView === "function") {
-      endRef.current.scrollIntoView({ behavior: "auto", block: "end" });
-    }
+    if (followFrameRef.current !== null) return;
+    followFrameRef.current = window.requestAnimationFrame(() => {
+      followFrameRef.current = null;
+      const element = scrollRef?.current;
+      if (element && typeof element.scrollTo === "function") {
+        element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+      } else if (typeof endRef.current?.scrollIntoView === "function") {
+        endRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+      }
+    });
   }, [phase, scrollRef, sticky, streaming, turns]);
+
+  useEffect(
+    () => () => {
+      if (followFrameRef.current !== null) {
+        window.cancelAnimationFrame(followFrameRef.current);
+      }
+    },
+    [],
+  );
 
   const updateContext = useCallback(() => {
     const element = scrollRef?.current;
@@ -378,6 +396,7 @@ export function MessageList({
             sessionId={sessionId}
             codexSubagents={codexSubagents}
             onOpenSubagent={onOpenSubagent}
+            allowExtremeCompaction={sticky}
           />
         ))}
         <SpinnerLine />

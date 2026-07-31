@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { WriteDiff } from "../api/ccTypes";
@@ -128,10 +128,10 @@ describe("ToolBlock — Edit/Write rendering", () => {
     ).toMatch(/Wrote 3 lines/);
   });
 
-  it("Write create caps the preview at 10 lines", () => {
+  it("Write create previews 10 lines and can expand and collapse the whole file", () => {
     const content =
       `${Array.from({ length: 13 }, (_, index) => `line${index}`).join("\n")}\n`;
-    render(
+    const { container } = render(
       <ToolBlock
         item={tool({
           toolName: "Write",
@@ -141,7 +141,41 @@ describe("ToolBlock — Edit/Write rendering", () => {
         })}
       />,
     );
-    expect(screen.getByText(/\+3 more lines/)).toBeTruthy();
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "展开全部 13 行" }));
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(13);
+    fireEvent.click(screen.getByRole("button", { name: "收起为 10 行" }));
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(10);
+  });
+
+  it("Update previews 10 diff rows and exposes the complete diff on demand", () => {
+    const writeDiff: WriteDiff = {
+      type: "update",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 14,
+          lines: Array.from({ length: 14 }, (_, index) => `+line ${index + 1}`),
+        },
+      ],
+    };
+    const { container } = render(
+      <ToolBlock
+        item={tool({
+          toolName: "Write",
+          input: { file_path: "/x/y.ts", content: "fresh" },
+          writeDiff,
+          status: "done",
+          elapsedSeconds: 0.6,
+        })}
+      />,
+    );
+
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "展开全部 14 行" }));
+    expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(14);
   });
 
   it("Write overwrite uses writeDiff for stat and detail", () => {

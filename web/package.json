@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "perf:large-turn": "vite --host 127.0.0.1 --port 4174",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

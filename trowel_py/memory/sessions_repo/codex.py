@@ -103,6 +103,24 @@ class CodexTurnsRepository:
         ).fetchall()
         return [row_to_codex_turn(row) for row in rows]
 
+    def list_replayable_thread_turns(self, thread_id: str) -> list[CodexTurnRecord]:
+        """返回指定 thread 中已有完整终态日志的 turns。
+
+        本查询只供会话回放读取 normalized journal，不受 Memory/Profile 开关、
+        提炼水位或会话类别影响。尚未封口的 turn 可能仍停留在进程缓冲区，因此不
+        作为可靠的历史源返回。
+
+        Args:
+            thread_id: Codex 原生 thread ID。
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE thread_id = ? AND completed_at IS NOT NULL"
+            " ORDER BY completed_at, registered_at, turn_id",
+            (thread_id,),
+        ).fetchall()
+        return [row_to_codex_turn(row) for row in rows]
+
     def claim_pending_fragments(
         self,
         *,

@@ -200,6 +200,7 @@ class SessionHub:
         session_review_requester: SessionReviewRequester | None = None,
         title_generator: SessionTitleGenerator | None = None,
         title_store: SessionTitleStore | None = None,
+        codex_history_root: str | Path | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -226,6 +227,8 @@ class SessionHub:
                 保存首条提示词预览。
             title_store: 按原生会话 ID 保存标题的独立索引；未提供时在 binding
                 文件旁创建。
+            codex_history_root: Codex normalized turn journals 所在的 Memory 根目录；
+                未提供时只使用原生 ``thread/read`` 回放。
         """
 
         self._store = store
@@ -249,6 +252,9 @@ class SessionHub:
         )
         self._event_observer = event_observer
         self._session_review_requester = session_review_requester
+        self._codex_history_root = (
+            Path(codex_history_root) if codex_history_root is not None else None
+        )
         self._active_id: str | None = None
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
         self._cc_adapters: dict[str, ClaudeCodeEventAdapter] = {}
@@ -295,9 +301,7 @@ class SessionHub:
 
         return self._codex is not None
 
-    def _initial_title(
-        self, req: CreateAgentSessionRequest
-    ) -> tuple[str, TitleSource]:
+    def _initial_title(self, req: CreateAgentSessionRequest) -> tuple[str, TitleSource]:
         """恢复原生会话时取得 Trowel 标题或运行工具提供的标题。
 
         独立标题索引优先于历史接口刚读到的原生标题，使 binding 被关闭后，手动
@@ -416,9 +420,7 @@ class SessionHub:
         if generator is None:
             return binding
         try:
-            generated = await generator.generate(
-                binding.runtime, text, binding.workdir
-            )
+            generated = await generator.generate(binding.runtime, text, binding.workdir)
         except Exception:  # noqa: BLE001 - 标题是可降级的旁路任务。
             _log.warning(
                 "session title generation failed for %s",
@@ -534,10 +536,7 @@ class SessionHub:
         for field in ("model", "effort"):
             if field not in explicit and getattr(prepared, field) is None:
                 updates[field] = getattr(native, field)
-        if (
-            "permission_mode" not in explicit
-            and prepared.permission_mode is None
-        ):
+        if "permission_mode" not in explicit and prepared.permission_mode is None:
             updates["permission_mode"] = native.permission_mode
         return prepared.model_copy(update=updates)
 
@@ -941,9 +940,31 @@ class SessionHub:
         from trowel_py.codex_host.history import events_from_thread
 
         thread = await self._codex.read_thread(native_session_id)
+        turn_event_overrides = {}
+        if self._codex_history_root is not None:
+            from trowel_py.memory.codex_journal import read_thread_journal_events
+
+            try:
+                turn_event_overrides = await asyncio.to_thread(
+                    read_thread_journal_events,
+                    self._codex_history_root,
+                    native_session_id,
+                    session_id=session_id,
+                )
+            except Exception:  # noqa: BLE001 - 历史日志异常时保留原生回放能力。
+                _log.warning(
+                    "Codex normalized history unavailable for thread=%s; "
+                    "falling back to thread/read",
+                    native_session_id,
+                    exc_info=True,
+                )
         codex_adapter = CodexEventAdapter(session_id)
         envelopes = []
-        for event in events_from_thread(session_id, thread):
+        for event in events_from_thread(
+            session_id,
+            thread,
+            turn_event_overrides=turn_event_overrides,
+        ):
             envelope = codex_adapter.wrap(event)
             if envelope is not None:
                 envelopes.append(envelope.model_dump(by_alias=True))
@@ -1819,8 +1840,8 @@ class SessionHub:
                 turn_id = await codex.send(
                     session,
                     text,
-                    before_turn_start=lambda attached: self._writeback_codex_before_turn(
-                        session_id, attached
+                    before_turn_start=lambda attached: (
+                        self._writeback_codex_before_turn(session_id, attached)
                     ),
                 )
                 self._writeback_codex_native(session_id, session)
@@ -1835,9 +1856,7 @@ class SessionHub:
         finally:
             self._capacity.release_turn(reservation)
 
-    def subscribe_codex_events(
-        self, session_id: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    def subscribe_codex_events(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
         """持续返回指定 Codex 会话产生的事件。
 
         此订阅不会启动新一轮处理，也不会在某一轮结束时自动结束。多个订阅者会各自
@@ -1933,9 +1952,7 @@ class SessionHub:
                     continue
                 payload = envelope.model_dump(by_alias=True)
                 self._observe(payload)
-                for queue in tuple(
-                    self._codex_event_subscribers.get(session_id, ())
-                ):
+                for queue in tuple(self._codex_event_subscribers.get(session_id, ())):
                     queue.put_nowait(payload)
         except asyncio.CancelledError:
             raise
@@ -2105,6 +2122,7 @@ class SessionHub:
         ):
             raise KeyError(session_id)
 
+
 def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
     """收集 Codex 线程记录中所有字符串形式的轮次 ID。
 
@@ -2121,8 +2139,7 @@ def _native_turn_ids(thread: Mapping[str, Any]) -> set[str]:
     return {
         turn_id
         for turn in turns
-        if isinstance(turn, Mapping)
-        and isinstance((turn_id := turn.get("id")), str)
+        if isinstance(turn, Mapping) and isinstance((turn_id := turn.get("id")), str)
     }
 
 

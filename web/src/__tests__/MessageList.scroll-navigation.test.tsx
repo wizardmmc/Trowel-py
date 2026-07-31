@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList } from "../components/cc/MessageList";
 import type { Turn } from "../stores/ccStore";
@@ -78,6 +78,10 @@ function installScrollMetrics(pane: HTMLElement) {
 }
 
 describe("MessageList scroll window", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("mounts only the latest two turns, then prepends five without moving the reading anchor", () => {
     const turns = Array.from({ length: 8 }, (_, index) => makeTurn(index));
     render(<ScrollHarness turns={turns} />);
@@ -97,7 +101,12 @@ describe("MessageList scroll window", () => {
     expect(metrics.getScrollTop()).toBe(500);
   });
 
-  it("follows content growth immediately but preserves scrollTop while reading", () => {
+  it("follows content growth on the next frame but preserves scrollTop while reading", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
     const turns = [makeTurn(0)];
     const { rerender } = render(<ScrollHarness turns={turns} />);
     const pane = screen.getByTestId("scroll-pane");
@@ -110,6 +119,8 @@ describe("MessageList scroll window", () => {
         following
       />,
     );
+    expect(metrics.getScrollTop()).toBe(12);
+    act(() => frames.shift()?.(16));
     expect(metrics.getScrollTop()).toBe(100);
 
     metrics.setScrollTop(37);
@@ -120,6 +131,31 @@ describe("MessageList scroll window", () => {
       />,
     );
     expect(metrics.getScrollTop()).toBe(37);
+  });
+
+  it("coalesces repeated sticky content growth into one scroll per frame", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const turns = [makeTurn(0)];
+    const { rerender } = render(<ScrollHarness turns={turns} />);
+    const pane = screen.getByTestId("scroll-pane");
+    const metrics = installScrollMetrics(pane);
+    const scrollTo = vi.spyOn(pane, "scrollTo");
+    scrollTo.mockClear();
+
+    rerender(<ScrollHarness turns={[makeTurn(0, "first growth")]} />);
+    rerender(<ScrollHarness turns={[makeTurn(0, "second growth")]} />);
+
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+
+    act(() => frames.shift()?.(16));
+
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(metrics.getScrollTop()).toBe(100);
   });
 
   it("loads older turns from an upward wheel gesture when the latest window cannot scroll", () => {

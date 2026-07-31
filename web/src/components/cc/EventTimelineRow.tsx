@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
 import type {
@@ -36,9 +36,10 @@ interface EventTimelineRowProps {
   readonly thinkingComplete?: boolean;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
+  readonly suppressDiffAutoOpen?: boolean;
 }
 
-export function EventTimelineRow({
+function EventTimelineRowView({
   item,
   onRetryLast,
   isReplay,
@@ -50,6 +51,7 @@ export function EventTimelineRow({
   thinkingComplete,
   codexSubagents,
   onOpenSubagent,
+  suppressDiffAutoOpen,
 }: EventTimelineRowProps) {
   switch (item.kind) {
     case "thinking":
@@ -76,7 +78,13 @@ export function EventTimelineRow({
           />
         );
       }
-      return <ToolBlock item={item} workdir={workdir} />;
+      return (
+        <ToolBlock
+          item={item}
+          workdir={workdir}
+          suppressDiffAutoOpen={suppressDiffAutoOpen}
+        />
+      );
     }
     case "subagent":
       return (
@@ -126,6 +134,8 @@ export function EventTimelineRow({
       return null;
   }
 }
+
+export const EventTimelineRow = memo(EventTimelineRowView);
 
 function ChevronToggle({
   open,
