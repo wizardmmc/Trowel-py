@@ -13,8 +13,8 @@ from tests.cc_host.service._support import (
     result_ok,
 )
 from trowel_py.cc_host.service import CCHost
-from trowel_py.memory.store import MemoryStore
-from trowel_py.memory.types import Profile
+from trowel_py.profile.models import Profile
+from trowel_py.profile.repository import ProfileRepository
 from trowel_py.schemas.cc_host import ErrorEvent, FinishedEvent
 
 
@@ -35,7 +35,7 @@ def memory_root(
 
 
 def _seed_profile(root: Path) -> None:
-    MemoryStore(root).write_profile(
+    ProfileRepository(root).write_profile(
         Profile(ability="SPAWN_PROFILE_MARKER", updated="2026-07-14"),
         source="user-edit",
     )

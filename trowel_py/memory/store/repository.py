@@ -7,13 +7,12 @@ from pathlib import Path
 from .core import _CoreStore
 from .episodes import _EpisodeStore
 from .notes import _NotesStore
-from .profile_io import _ProfileStore
 
 
-class MemoryStore(_NotesStore, _EpisodeStore, _CoreStore, _ProfileStore):
-    """汇集同一根目录下 Note、Episode、Diary、Core 和 Profile 的文件操作。
+class MemoryStore(_NotesStore, _EpisodeStore, _CoreStore):
+    """汇集同一根目录下 Note、Episode、Diary 和 Core 的文件操作。
 
-    Note、Episode、Diary 和 Profile 支持写入；Core 仅提供读取。
+    Note、Episode 和 Diary 支持写入；Core 仅提供读取。
     构造时只保存路径，不创建目录、不解析为绝对路径，也不检查现有布局。
 
     Attributes:

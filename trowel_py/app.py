@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
     # 后台提炼启动失败不能阻断应用。
     try:
         from trowel_py.memory import paths as _distill_paths
-        from trowel_py.memory.profile_distill.scheduler import (
+        from trowel_py.profile.distill.scheduler import (
             ProfileDistillScheduler,
             load_distill_config,
         )

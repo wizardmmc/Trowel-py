@@ -52,7 +52,8 @@
 | `model_os/context_codec.py` / `context_adapters.py` | Context journal codec 与 AgentEvent 标准化 |
 | `model_os/work_broker/` | 模型资源仲裁、公开值对象、lease codec 与 SQLite schema |
 | `model_os/work_broker/policy.py` / `usage_persistence.py` | WorkBroker 确定性策略与事务内 usage 持久化 |
-| `memory/` / `profile/` | 长期记忆、检索、提炼与用户画像 |
+| `memory/` | 长期记忆、检索、日记/笔记提炼与会话来源仓储 |
+| `profile/` | 用户画像、建议队列、画像提炼、重校准与 HTTP 接口 |
 | `quota/` | provider 额度读取与归一化 |
 | `quota/glm/` | GLM quota 的稳定 client、payload 解析与 httpx transport |
 | `todo_loop/` | todo 展开与持续推进辅助 |
@@ -75,8 +76,6 @@
 | `memory/daily_review/processor.py` | 统一执行 refine、日期校验、持久化、水位推进和 judge |
 | `memory/daily_review/sources/` | 并列定义 Claude Code 字节区间与 Codex turn journal 的历史上下文、处理目标、可用性和统一渲染 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
-| `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
-| `memory/profile_distill/` | gate、agent 驱动、批处理、prompt、独立水位、重校准与应用内调度 |
 | `memory/compress/` | daily、weekly、monthly 的生成、来源校验、预算与缓存生命周期 |
 | `memory/compress/weekly_generation.py` | Weekly v3 结构化输出、source day/section 覆盖与 800 字完整 item 预算 |
 | `memory/compress/rollup_sources.py` / `monthly_generation.py` | 周月上游来源/hash 与月记完整句分层生成 |
@@ -89,9 +88,8 @@
 | `memory/cli/` | memory 命令参数、分发与维护操作 |
 | `memory/north_star/` | note 健康与会话级使用质量指标 |
 | `memory/prompt/` | refine 提炼与 daily compression prompt 契约 |
-| `memory/profile_suggestions/` | 画像建议编解码、带锁文件队列与状态策略入口 |
 | `memory/sessions_repo/` | session 数据契约、SQLite schema/连接，以及 `claude`、`codex`、`review_requests` 三个作用域仓储 |
-| `memory/store/` | file-backed memory 的 notes、diary、episode、profile 与 Markdown codec |
+| `memory/store/` | file-backed memory 的 notes、diary、episode 与 Markdown codec |
 | `memory/tidy/` | tidy 数据契约、计划校验、快照应用、LLM 计划与周期任务编排 |
 | `memory/tidy_scheduler/` | tidy 的时间计算、成功门禁、应用内生命周期与显式补跑 |
 | `memory/tidy_state/` | tidy 水位模型、原子持久化与已完成周期计算 |
@@ -101,6 +99,19 @@
 | `memory/draft/` | 提炼 draft 的稳定模型、宽松解析、硬校验与 procedure 软告警 |
 | `memory/draft/episode.py` | Episode kind-specific item、严格解析与 daily 文本投影 |
 | `memory/daily_review/agent.py` | 消费已划分 context/target 的统一 ReviewSource，按目标计算成本并驱动、校验提炼草稿 |
+
+### Profile 内部边界
+
+| 路径 | 职责 |
+|---|---|
+| `profile/models.py` / `document.py` | Profile 与建议值对象、`profile.md` 正文编解码和校验 |
+| `profile/repository.py` | Profile 文件读写与历史快照 |
+| `profile/suggestions/` | 建议编解码、带锁文件队列与状态策略 |
+| `profile/distill/` | prompt、agent 驱动、门禁、批处理、独立水位与应用内调度 |
+| `profile/distill/adapters/claude.py` | 把 Claude Code 完成水位转换为待提炼字节区间，并执行 Claude 来源提炼 |
+| `profile/distill/sources/` | 描述 Profile prompt 读取的会话来源与目标范围 |
+| `profile/recalibration/` | 历史计划、隔离重放、manifest 与报告产物 |
+| `profile/routes.py` / `schemas.py` / `service.py` | Profile HTTP 接口、DTO 与依赖装配 |
 
 ## 前端
 
