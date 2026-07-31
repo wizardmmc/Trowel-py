@@ -4,7 +4,11 @@ import pytest
 
 from trowel_py.profile.distill.prompt import (
     SUGGESTIONS_DRAFT_SCHEMA,
-    build_distill_prompt,
+    build_source_distill_prompt,
+)
+from trowel_py.profile.distill.sources.models import (
+    ProfileDistillSource,
+    ProfileJournalSlice,
 )
 from trowel_py.profile.models import Profile, Suggestion
 
@@ -13,19 +17,39 @@ def _profile(**dims: str) -> Profile:
     return Profile(updated="2026-07-14", **dims)
 
 
+def _prompt(
+    jsonl_path: str,
+    existing_suggestions: list[Suggestion],
+    existing_profile: Profile,
+) -> str:
+    """用统一来源构造 prompt 测试输入。"""
+    source = ProfileDistillSource(
+        runtime="claude_code",
+        source_id="session-1",
+        context=(),
+        target=(ProfileJournalSlice(jsonl_path),),
+        completed_at="2026-07-14T10:00:00",
+    )
+    return build_source_distill_prompt(
+        source,
+        existing_suggestions,
+        existing_profile,
+    )
+
+
 def test_prompt_embeds_session_jsonl_path() -> None:
-    p = build_distill_prompt("/x/y.jsonl", [], _profile())
+    p = _prompt("/x/y.jsonl", [], _profile())
     assert "/x/y.jsonl" in p
 
 
 def test_prompt_lists_five_dimensions() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     for title in ("能力水平", "方法论偏好", "表达风格", "长程目标", "其他"):
         assert title in p
 
 
 def test_prompt_embeds_draft_schema() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "suggestions-draft.json" in p
     assert "dimension" in p
     assert "rationale" in p
@@ -33,18 +57,18 @@ def test_prompt_embeds_draft_schema() -> None:
 
 
 def test_prompt_carries_incremental_dedup_rules() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "不产重复" in p
     assert "宁缺毋滥" in p
 
 
 def test_prompt_cold_start_marker_when_profile_empty() -> None:
-    p = build_distill_prompt("/x.jsonl", [], Profile())
+    p = _prompt("/x.jsonl", [], Profile())
     assert "冷启动" in p
 
 
 def test_prompt_embeds_existing_profile_content() -> None:
-    p = build_distill_prompt(
+    p = _prompt(
         "/x.jsonl",
         [],
         _profile(ability="熟悉缓存一致性", goal="完善性能基线"),
@@ -63,20 +87,26 @@ def test_prompt_embeds_existing_suggestions() -> None:
             date="2026-07-14",
         ),
     ]
-    p = build_distill_prompt("/x.jsonl", existing, _profile())
+    p = _prompt("/x.jsonl", existing, _profile())
     assert "会 FastAPI" in p
 
 
 def test_prompt_empty_queue_marker() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "队列为空" in p
 
 
-def test_prompt_incremental_range_header() -> None:
-    p = build_distill_prompt(
-        "/x.jsonl", [], _profile(), start_offset=1024, end_offset=2048
+def test_prompt_renders_incremental_source_range() -> None:
+    source = ProfileDistillSource(
+        runtime="claude_code",
+        source_id="session-1",
+        context=(ProfileJournalSlice("/x.jsonl", end_offset=1024),),
+        target=(ProfileJournalSlice("/x.jsonl", 1024, 2048),),
+        completed_at="2026-07-14T10:00:00",
     )
-    assert "增量范围" in p
+    p = build_source_distill_prompt(source, [], _profile())
+
+    assert "本次处理目标" in p
     assert "1024" in p
     assert "2048" in p
 
@@ -112,18 +142,18 @@ _V2_RULE_PHRASES = [
 
 @pytest.mark.parametrize("name, phrase", _V2_RULE_PHRASES)
 def test_prompt_carries_v2_hard_rule(name: str, phrase: str) -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert phrase in p, f"v2 hard rule {name!r} missing its phrase {phrase!r}"
 
 
 def test_prompt_v2_forbids_ability_from_questions() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "追问得深入" in p
     assert "不能代替能力证据" in p
 
 
 def test_prompt_v2_forbids_overclaim_words() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "研究级" in p
     assert "精通" in p
 
@@ -133,7 +163,25 @@ def test_prompt_v2_schema_body_caps_at_60_chars() -> None:
 
 
 def test_prompt_v2_self_check_block_present() -> None:
-    p = build_distill_prompt("/x.jsonl", [], _profile())
+    p = _prompt("/x.jsonl", [], _profile())
     assert "输出前自检" in p
     for q in ("把 AI 的劳动算给了用户", "正在问", "偶然选择", "去掉例子和赞美后"):
         assert q in p
+
+
+def test_source_prompt_separates_context_and_target() -> None:
+    source = ProfileDistillSource(
+        runtime="codex",
+        source_id="codex:thread-1:turn-2",
+        context=(ProfileJournalSlice("/journals/turn-1.jsonl"),),
+        target=(ProfileJournalSlice("/journals/turn-2.jsonl"),),
+        completed_at="2026-07-31T10:10:00",
+    )
+
+    prompt = build_source_distill_prompt(source, [], _profile())
+
+    assert "历史上下文" in prompt
+    assert "/journals/turn-1.jsonl" in prompt
+    assert "本次处理目标" in prompt
+    assert "/journals/turn-2.jsonl" in prompt
+    assert "建议证据只能来自 target 中的真实用户输入" in prompt

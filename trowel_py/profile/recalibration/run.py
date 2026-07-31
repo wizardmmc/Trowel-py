@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.profile.distill import DistillError, GateStats, drive_and_gate
-from trowel_py.profile.distill.prompt import build_distill_prompt
+from trowel_py.profile.distill.prompt import build_source_distill_prompt
+from trowel_py.profile.distill.sources.claude import (
+    build_claude_distill_source,
+)
 from trowel_py.profile.models import Profile, Suggestion
 from trowel_py.profile.suggestions import (
     PROFILE_DISTILL_POLICY_VERSION,
@@ -271,16 +274,21 @@ async def run_recalibration(
             continue
         workdir = work_root / frozen.cc_session_id
         workdir.mkdir(parents=True, exist_ok=True)
-        prompt = build_distill_prompt(
-            frozen.jsonl_path,
+        source = build_claude_distill_source(
+            source_id=frozen.cc_session_id,
+            jsonl_path=frozen.jsonl_path,
+            completed_at=frozen.registered_at,
+            start_offset=0,
+            end_offset=frozen.end_offset,
+        )
+        prompt = build_source_distill_prompt(
+            source,
             list(staged_so_far),
             Profile(),
-            start_offset=None,
-            end_offset=frozen.end_offset,
         )
         try:
             gated = await drive_and_gate(
-                frozen.cc_session_id,
+                source.source_id,
                 workdir,
                 prompt,
                 proxy_base_url=proxy_base_url,

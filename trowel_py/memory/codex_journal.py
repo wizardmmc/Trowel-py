@@ -43,7 +43,8 @@ class CodexTurnJournal:
             trowel_session_id: 这些 Codex 轮次所属的 Trowel 会话 ID。
             workdir: 会话使用的工作目录，登记轮次时一并保存。
             memory_enabled: 创建会话时冻结的 memory 开关，登记轮次时一并保存。
-            profile_enabled: 创建会话时冻结的 profile 开关，登记轮次时一并保存。
+            profile_enabled: 创建会话时冻结的 profile 注入开关，登记轮次时一并
+                保存；不控制已完成用户 turn 的 Profile 建议提炼资格。
             session_kind: 会话类别；daily review 只读取 ``"user"`` 会话的轮次。
             now_fn: 生成日志记录时间的时钟；未提供时使用本地当前时间。
         """

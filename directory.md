@@ -108,8 +108,10 @@
 | `profile/repository.py` | Profile 文件读写与历史快照 |
 | `profile/suggestions/` | 建议编解码、带锁文件队列与状态策略 |
 | `profile/distill/` | prompt、agent 驱动、门禁、批处理、独立水位与应用内调度 |
-| `profile/distill/adapters/claude.py` | 把 Claude Code 完成水位转换为待提炼字节区间，并执行 Claude 来源提炼 |
-| `profile/distill/sources/` | 描述 Profile prompt 读取的会话来源与目标范围 |
+| `profile/distill/adapters/` | Claude Code 字节水位与 Codex turn 分别适配为统一候选，并各自推进 Profile 处理记录 |
+| `profile/distill/processor.py` | 统一加载去重上下文、构造 prompt、驱动 Agent 并执行证据门禁 |
+| `profile/distill/sources/` | 统一描述 context/target，并分别构造 Claude 与 Codex 来源和校验 Codex target 用户证据 |
+| `profile/distill/state.py` | 在同一兼容状态文件中保存 Claude 字节水位和 Codex turn 处理记录 |
 | `profile/recalibration/` | 历史计划、隔离重放、manifest 与报告产物 |
 | `profile/routes.py` / `schemas.py` / `service.py` | Profile HTTP 接口、DTO 与依赖装配 |
 

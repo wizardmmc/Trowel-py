@@ -50,7 +50,9 @@ def test_backlog_treats_missing_completed_offset_as_zero() -> None:
 def test_source_preserves_jsonl_path_and_offsets() -> None:
     """来源适配不得改写现有 prompt 使用的路径和字节边界。"""
     source = build_claude_distill_source(
-        _session("s1", 90),
+        source_id="s1",
+        jsonl_path="/transcripts/s1.jsonl",
+        completed_at="2026-07-31T10:00:00",
         start_offset=10,
         end_offset=90,
     )
