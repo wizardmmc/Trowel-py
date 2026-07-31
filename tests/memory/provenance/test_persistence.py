@@ -108,7 +108,7 @@ async def test_cc_daily_review_persists_source_and_generator_end_to_end(
 
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(
+    repo.claude.register(
         SessionRecord(
             cc_session_id="cc-e2e",
             trowel_session_id="trowel-e2e",
@@ -118,7 +118,7 @@ async def test_cc_daily_review_persists_source_and_generator_end_to_end(
             registered_at="2026-07-09T10:00:00",
         )
     )
-    repo.update_completed(
+    repo.claude.update_completed(
         "cc-e2e",
         transcript.stat().st_size,
         "2026-07-09T11:00:00",

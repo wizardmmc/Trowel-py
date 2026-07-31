@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from trowel_py.memory.sessions_repo import (
     CodexPendingFragment,
-    SessionsRepository,
+    CodexTurnsRepository,
 )
 
 from .models import JournalSlice, ReviewSource
 
 
 def build_codex_review_source(
-    repo: SessionsRepository,
+    repo: CodexTurnsRepository,
     fragment: CodexPendingFragment,
 ) -> ReviewSource:
     """从 sessions registry 取得已提炼旧 turns，并把当前 fragment 作为目标。
@@ -26,7 +26,7 @@ def build_codex_review_source(
     Raises:
         ValueError: 历史 turn 属于其他 thread、尚未提炼，或与当前目标重复。
     """
-    extracted_history = repo.find_extracted_codex_before(fragment)
+    extracted_history = repo.list_extracted_before(fragment)
     target_ids = set(fragment.turn_ids)
     for turn in extracted_history:
         if turn.thread_id != fragment.thread_id:

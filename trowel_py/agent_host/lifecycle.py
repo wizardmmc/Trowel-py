@@ -103,8 +103,18 @@ class SessionLifecycle:
         require_idle: bool,
         busy_message: str,
         before_runtime_close: Callable[[], None] | None = None,
+        before_binding_delete: Callable[[], None] | None = None,
     ) -> None:
-        """阻止新轮次后关闭 runtime，并在关闭成功后删除 binding。"""
+        """阻止新轮次后关闭 runtime，并在必需写入完成后删除 binding。
+
+        Args:
+            binding: 要关闭的 Trowel 会话绑定。
+            require_idle: 是否在 runtime 仍有未结束轮次时拒绝关闭。
+            busy_message: 拒绝关闭活动会话时返回的说明。
+            before_runtime_close: 关闭 runtime 前执行的同步清理。
+            before_binding_delete: runtime 已关闭后、binding 删除前必须成功完成的
+                同步写入；失败时保留 binding 供调用方重试。
+        """
 
         self.remember_delegate_identity(binding)
         token = self._capacity.begin_close(binding.session_id)
@@ -115,6 +125,8 @@ class SessionLifecycle:
                 before_runtime_close()
             runtime = self._runtime_ports[binding.runtime]
             await runtime.close(binding.session_id)
+            if before_binding_delete is not None:
+                before_binding_delete()
             self._capacity.complete_close(binding.session_id, token)
         except BaseException:
             self._capacity.cancel_close(binding.session_id, token)

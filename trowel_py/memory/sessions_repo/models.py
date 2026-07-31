@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
-class SessionRecord:
+class ClaudeSessionRecord:
     """一个已注册的 Claude Code session。"""
 
     cc_session_id: str
@@ -23,9 +23,14 @@ class SessionRecord:
     last_extracted_offset: int | None = None
     last_extracted_at: str | None = None
 
+    @property
+    def native_session_id(self) -> str:
+        """返回宿主无关 review 接口使用的原生会话 ID。"""
+        return self.cc_session_id
+
 
 @dataclass(frozen=True)
-class SessionBinding:
+class ClaudeSessionBinding:
     """持久化的 trowel session 到 Claude Code session 映射。"""
 
     trowel_session_id: str
@@ -33,13 +38,35 @@ class SessionBinding:
     session_kind: str
     workdir: str
     bound_at: str
+    start_offset: int | None = None
+
+
+@dataclass(frozen=True)
+class ReviewRequest:
+    """记录一个用户会话关闭后尚未完成的即时 Memory review。
+
+    Attributes:
+        trowel_session_id: 已关闭的 Trowel 用户会话 ID，同时作为幂等键。
+        runtime: 会话使用的运行工具，值为 ``claude_code`` 或 ``codex``。
+        requested_at: 关闭流程持久化该请求的本地 ISO 时间，用于稳定排序。
+        native_session_id: CC 请求关闭时绑定的原生会话 ID；Codex 为空。
+        source_start_offset: CC 会话首次绑定时的完成水位；Codex 为空。
+        source_end_offset: CC 会话关闭时的完成水位；Codex 为空。
+    """
+
+    trowel_session_id: str
+    runtime: str
+    requested_at: str
+    native_session_id: str = ""
+    source_start_offset: int | None = None
+    source_end_offset: int | None = None
 
 
 @runtime_checkable
-class SessionRegistrar(Protocol):
+class ClaudeSessionRegistrar(Protocol):
     """约束 CCHost 登记会话和记录完成水位所需的同步接口。"""
 
-    def register(self, rec: SessionRecord) -> None:
+    def register(self, rec: ClaudeSessionRecord) -> None:
         """登记一个 Claude Code 会话记录。
 
         Args:
@@ -64,7 +91,7 @@ class SessionRegistrar(Protocol):
 
 
 @dataclass(frozen=True)
-class IncrementalSegment:
+class ClaudePendingSegment:
     """描述 Claude Code transcript 中待提炼的半开字节区间。
 
     Attributes:
@@ -73,9 +100,16 @@ class IncrementalSegment:
         end: 区间结束字节位置，不包含该位置。
     """
 
-    session: SessionRecord
+    session: ClaudeSessionRecord
     start: int
     end: int
+
+
+# 兼容现有内部导入；新代码使用带 Claude 前缀的规范名称。
+SessionRecord = ClaudeSessionRecord
+SessionBinding = ClaudeSessionBinding
+SessionRegistrar = ClaudeSessionRegistrar
+IncrementalSegment = ClaudePendingSegment
 
 
 @dataclass(frozen=True)

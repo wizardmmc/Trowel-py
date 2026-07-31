@@ -237,6 +237,85 @@ async def test_delete_unknown_returns_false(hub: SessionHub):
     assert await hub.delete("nope") is False
 
 
+@pytest.mark.parametrize("request_factory", [cc_req, codex_req])
+async def test_delete_user_session_persists_review_before_dropping_binding(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+    request_factory,
+) -> None:
+    requested = []
+    store = BindingStore(tmp_path / "review-bindings.json")
+    hub = SessionHub(
+        store,
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        session_review_requester=requested.append,
+    )
+    binding = hub.create(request_factory(workdir))
+
+    assert await hub.delete(binding.session_id) is True
+
+    assert requested == [binding]
+    assert store.get(binding.session_id) is None
+
+
+async def test_delete_internal_or_memory_disabled_session_does_not_request_review(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+) -> None:
+    requested = []
+    hub = SessionHub(
+        BindingStore(tmp_path / "review-bindings.json"),
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        session_review_requester=requested.append,
+    )
+    delegate = hub.create(cc_req(workdir, session_kind="delegate"))
+    memory_off = hub.create(codex_req(workdir, memory_enabled=False))
+
+    await hub.delete(delegate.session_id)
+    await hub.delete(memory_off.session_id)
+
+    assert requested == []
+
+
+async def test_review_enqueue_failure_keeps_binding_retryable(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+) -> None:
+    def fail_request(_binding) -> None:
+        raise OSError("sessions database unavailable")
+
+    store = BindingStore(tmp_path / "review-bindings.json")
+    hub = SessionHub(
+        store,
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        session_review_requester=fail_request,
+    )
+    binding = hub.create(cc_req(workdir))
+
+    with pytest.raises(OSError, match="sessions database unavailable"):
+        await hub.delete(binding.session_id)
+
+    assert store.get(binding.session_id) == binding
+
+
 def test_default_cc_registry_uses_public_getter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

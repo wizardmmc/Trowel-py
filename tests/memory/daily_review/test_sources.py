@@ -11,10 +11,10 @@ from trowel_py.memory.daily_review.sources import (
 )
 from trowel_py.memory.sessions_repo import (
     CodexPendingFragment,
+    CodexTurnsRepository,
     CodexTurnRecord,
     IncrementalSegment,
     SessionRecord,
-    SessionsRepository,
 )
 
 
@@ -66,14 +66,14 @@ def test_codex_source_exposes_extracted_turns_only_as_context() -> None:
     )
 
     class HistoryRepo:
-        def find_extracted_codex_before(
+        def list_extracted_before(
             self,
             _fragment: CodexPendingFragment,
         ) -> tuple[CodexTurnRecord, ...]:
             return (history,)
 
     source = build_codex_review_source(
-        cast(SessionsRepository, HistoryRepo()),
+        cast(CodexTurnsRepository, HistoryRepo()),
         fragment,
     )
 

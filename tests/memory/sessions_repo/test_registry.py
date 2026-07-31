@@ -86,7 +86,7 @@ def test_find_all_completed_ignores_review_extracted_state() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))
     repo.update_completed("a", 1000)
-    repo.advance_extracted("a", 1000)
+    repo.advance_segment("a", 1000)
     found = repo.find_all_completed_sessions()
     assert {session.cc_session_id for session in found} == {"a"}
 

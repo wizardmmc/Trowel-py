@@ -53,7 +53,7 @@ def test_old_schema_migrates_offset_columns(tmp_path) -> None:
         "last_extracted_offset",
         "last_extracted_at",
     } <= columns
-    assert len(repo.find_pending("2026-07-09")) == 1
+    assert len(repo.claude.find_pending("2026-07-09")) == 1
     conn.close()
 
 
@@ -65,6 +65,60 @@ def test_ensure_columns_idempotent(tmp_path) -> None:
     second = sqlite3.connect(str(database))
     create_sessions_repository(second)
     second.close()
+
+
+def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
+    database = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(database))
+    create_sessions_repository(conn)
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(session_review_requests)")
+    }
+
+    assert columns == {
+        "trowel_session_id",
+        "runtime",
+        "requested_at",
+        "native_session_id",
+        "source_start_offset",
+        "source_end_offset",
+    }
+    conn.close()
+
+
+def test_old_review_queue_migrates_frozen_source_columns(tmp_path) -> None:
+    database = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(database))
+    conn.executescript(
+        "CREATE TABLE session_review_requests ("
+        "trowel_session_id TEXT PRIMARY KEY,"
+        "runtime TEXT NOT NULL,"
+        "requested_at TEXT NOT NULL);"
+        "INSERT INTO session_review_requests VALUES ("
+        "'legacy-close', 'claude_code', '2026-07-31T10:00:00');"
+    )
+    conn.close()
+
+    migrated = sqlite3.connect(str(database))
+    repo = create_sessions_repository(migrated)
+    columns = {
+        row["name"]
+        for row in migrated.execute("PRAGMA table_info(session_review_requests)")
+    }
+    request = repo.review_requests.find("legacy-close")
+
+    assert {
+        "native_session_id",
+        "source_start_offset",
+        "source_end_offset",
+    } <= columns
+    assert request is not None
+    assert request.native_session_id == ""
+    assert request.source_start_offset is None
+    assert request.source_end_offset is None
+    migrated.close()
 
 
 def test_old_codex_schema_migrates_review_fragment_column(tmp_path) -> None:
@@ -103,7 +157,7 @@ def test_old_codex_schema_migrates_review_fragment_column(tmp_path) -> None:
     columns = {
         row["name"] for row in migrated.execute("PRAGMA table_info(codex_turns)")
     }
-    [fragment] = repo.find_incremental_codex()
+    [fragment] = repo.codex.claim_pending_fragments()
 
     assert "review_fragment_id" in columns
     assert fragment.turn_ids == ("turn-1",)

@@ -112,7 +112,10 @@ def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str]
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
-        sessions = {s.cc_session_id: s for s in repo.find_by_date(date_str)}
+        sessions = {
+            session.cc_session_id: session
+            for session in repo.claude.find_by_date(date_str)
+        }
     finally:
         conn.close()
 

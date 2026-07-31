@@ -71,7 +71,7 @@ def seed_session(
 ) -> None:
     conn = open_sessions_db(root)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id=cc_session_id,
                 workdir="/project",

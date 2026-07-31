@@ -125,7 +125,7 @@ def test_backfill_completed_sets_extracted_for_already_extracted(
     jsonl = tmp_path / "session.jsonl"
     jsonl.write_text("x" * 500)
     conn = open_sessions_db(memory_root)
-    create_sessions_repository(conn).register(
+    create_sessions_repository(conn).claude.register(
         SessionRecord(
             cc_session_id="s1",
             workdir="/project",
@@ -145,7 +145,7 @@ def test_backfill_completed_sets_extracted_for_already_extracted(
 
     assert rc == 0
     conn = open_sessions_db(memory_root)
-    record = create_sessions_repository(conn).find_by_date("2026-07-09")[0]
+    record = create_sessions_repository(conn).claude.find_by_date("2026-07-09")[0]
     conn.close()
     assert record.last_completed_offset == 500
     assert record.last_extracted_offset == 500

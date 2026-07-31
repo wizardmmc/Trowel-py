@@ -1,4 +1,5 @@
-"""在应用生命周期内调度 daily memory review。"""
+"""在应用生命周期内处理会话关闭请求，并调度每日 Memory review。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,13 +11,21 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from trowel_py.agent_host.binding import SessionBinding
 from trowel_py.memory import paths
+from trowel_py.memory.daily_review.requests import (
+    enqueue_session_review,
+    load_session_review_requests,
+)
 from trowel_py.memory.scheduling import seconds_until
 
 logger = logging.getLogger("trowel_py.memory.review_scheduler")
 
 DEFAULT_REVIEW_TIME: time = time(2, 30)
 DEFAULT_REVIEW_ENABLED: bool = True
+IMMEDIATE_RETRY_MIN_SECONDS = 1.0
+IMMEDIATE_RETRY_MAX_SECONDS = 300.0
+SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 30.0
 DispatchFn = Callable[[dict[str, Any]], None]
 NowFn = Callable[[], datetime]
 SleepFn = Callable[[float], Awaitable[None]]
@@ -116,7 +125,7 @@ def _default_dispatch(event: dict[str, Any]) -> None:
 
 
 class MemoryReviewScheduler:
-    """在应用进程内维护启动补跑和每日定时任务。"""
+    """串行处理即时关闭请求、启动补跑和每日定时任务。"""
 
     def __init__(
         self,
@@ -145,6 +154,10 @@ class MemoryReviewScheduler:
         self._now: NowFn = now_fn or datetime.now
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
         self._tasks: list[asyncio.Task[None]] = []
+        self._immediate_wakeup = asyncio.Event()
+        self._dispatch_lock = asyncio.Lock()
+        self._active_dispatches: set[asyncio.Task[None]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
 
     @property
@@ -154,20 +167,33 @@ class MemoryReviewScheduler:
         return tuple(self._tasks)
 
     async def start(self) -> None:
-        """启动一次立即补跑和每日循环；禁用或已启动时不重复创建任务。"""
-        if self._started or not self._config.review_enabled:
+        """启动关闭请求 worker，并按配置启动 catch-up 和每日循环。"""
+        if self._started:
             return
         self._started = True
+        self._loop = asyncio.get_running_loop()
         logger.info(
             "[memory] review scheduler started (daily at %s, root=%s)",
             self._config.review_time,
             self._memory_root,
         )
-        self._tasks.append(asyncio.create_task(self._catchup(), name="memory-review-catchup"))
-        self._tasks.append(asyncio.create_task(self._daily_loop(), name="memory-review-daily"))
+        self._tasks.append(
+            asyncio.create_task(
+                self._immediate_loop(),
+                name="memory-review-immediate",
+            )
+        )
+        self._immediate_wakeup.set()
+        if self._config.review_enabled:
+            self._tasks.append(
+                asyncio.create_task(self._catchup(), name="memory-review-catchup")
+            )
+            self._tasks.append(
+                asyncio.create_task(self._daily_loop(), name="memory-review-daily")
+            )
 
     async def stop(self) -> None:
-        """取消调度 task；线程中已开始的 review 不会被强制终止。"""
+        """停止调度，并有界等待已经进入线程的 review 完成。"""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -179,8 +205,99 @@ class MemoryReviewScheduler:
                 logger.exception(
                     "[memory] scheduler task %s raised on shutdown", task.get_name()
                 )
+        active = tuple(self._active_dispatches)
+        if active:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(asyncio.shield(task) for task in active),
+                        return_exceptions=True,
+                    ),
+                    timeout=SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[memory] %d review dispatch(es) still running after %.1fs",
+                    len(self._active_dispatches),
+                    SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+                )
         self._tasks.clear()
+        self._loop = None
         self._started = False
+
+    def request_session_review(self, binding: SessionBinding) -> None:
+        """先持久登记关闭请求，再唤醒不阻塞关闭操作的后台 worker。
+
+        Args:
+            binding: 已关闭 runtime、尚未删除持久 binding 的用户会话。
+        """
+
+        enqueue_session_review(self._memory_root, binding)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._immediate_wakeup.set)
+
+    async def _immediate_loop(self) -> None:
+        """持续处理持久队列；仍有任务时按上限退避重试。"""
+
+        retry_delay = IMMEDIATE_RETRY_MIN_SECONDS
+        while True:
+            try:
+                await self._immediate_wakeup.wait()
+            except asyncio.CancelledError:
+                logger.info("[memory] immediate review loop cancelled")
+                return
+            while True:
+                self._immediate_wakeup.clear()
+                try:
+                    requests = await asyncio.to_thread(
+                        load_session_review_requests,
+                        self._memory_root,
+                    )
+                except Exception:
+                    logger.exception("[memory] failed to read immediate review queue")
+                    requests = None
+                if requests is not None:
+                    for request in requests:
+                        event = {
+                            "date": request.requested_at[:10],
+                            "root": str(self._memory_root),
+                            "review_session_id": request.trowel_session_id,
+                        }
+                        try:
+                            async with self._dispatch_lock:
+                                await self._dispatch_in_thread(event)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.exception(
+                                "[memory] immediate review dispatch failed for %s",
+                                request.trowel_session_id,
+                            )
+                try:
+                    remaining = await asyncio.to_thread(
+                        load_session_review_requests,
+                        self._memory_root,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[memory] failed to re-read immediate review queue"
+                    )
+                    remaining = None
+                if remaining == []:
+                    retry_delay = IMMEDIATE_RETRY_MIN_SECONDS
+                    break
+                try:
+                    await asyncio.wait_for(
+                        self._immediate_wakeup.wait(),
+                        timeout=retry_delay,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                retry_delay = min(
+                    retry_delay * 2,
+                    IMMEDIATE_RETRY_MAX_SECONDS,
+                )
 
     async def _catchup(self) -> None:
         """应用启动后立即派发一次昨天的 review。"""
@@ -210,6 +327,22 @@ class MemoryReviewScheduler:
             "root": str(self._memory_root),
         }
         try:
-            await asyncio.to_thread(self._dispatch, event)
+            async with self._dispatch_lock:
+                await self._dispatch_in_thread(event)
         except Exception:
             logger.exception("[memory] review dispatch (%s) failed", label)
+
+    async def _dispatch_in_thread(self, event: dict[str, Any]) -> None:
+        """派发同步 review，并保留线程任务供关闭流程有界等待。"""
+
+        task = asyncio.create_task(asyncio.to_thread(self._dispatch, event))
+        self._active_dispatches.add(task)
+        task.add_done_callback(self._finish_dispatch)
+        await asyncio.shield(task)
+
+    def _finish_dispatch(self, task: asyncio.Task[None]) -> None:
+        """移除已结束线程任务，并领取异常避免孤儿 task 告警。"""
+
+        self._active_dispatches.discard(task)
+        if not task.cancelled():
+            task.exception()

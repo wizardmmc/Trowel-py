@@ -69,7 +69,10 @@
 | 路径 | 职责 |
 |---|---|
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
-| `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
+| `memory/daily_review/` | 提炼编排、runtime 适配、共享处理器、调度与持久化工作目录 |
+| `memory/daily_review/requests.py` | 持久登记用户会话关闭后的即时 review 请求 |
+| `memory/daily_review/adapters/` | 分别用 `claude.py` 和 `codex.py` 解释字节水位或 turn fragment，并适配为统一 ReviewUnit |
+| `memory/daily_review/processor.py` | 统一执行 refine、日期校验、持久化、水位推进和 judge |
 | `memory/daily_review/sources/` | 并列定义 Claude Code 字节区间与 Codex turn journal 的历史上下文、处理目标、可用性和统一渲染 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
 | `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
@@ -87,7 +90,7 @@
 | `memory/north_star/` | note 健康与会话级使用质量指标 |
 | `memory/prompt/` | refine 提炼与 daily compression prompt 契约 |
 | `memory/profile_suggestions/` | 画像建议编解码、带锁文件队列与状态策略入口 |
-| `memory/sessions_repo/` | session 数据契约、SQLite schema/连接与 registry 查询 |
+| `memory/sessions_repo/` | session 数据契约、SQLite schema/连接，以及 `claude`、`codex`、`review_requests` 三个作用域仓储 |
 | `memory/store/` | file-backed memory 的 notes、diary、episode、profile 与 Markdown codec |
 | `memory/tidy/` | tidy 数据契约、计划校验、快照应用、LLM 计划与周期任务编排 |
 | `memory/tidy_scheduler/` | tidy 的时间计算、成功门禁、应用内生命周期与显式补跑 |

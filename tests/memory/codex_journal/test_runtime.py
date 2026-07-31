@@ -19,7 +19,7 @@ from trowel_py.memory.codex_journal import (
     recover_sealed_codex_turns,
 )
 from trowel_py.memory.sessions_repo import (
-    SessionsRepository,
+    CodexTurnsRepository,
     create_sessions_repository,
     open_sessions_db,
 )
@@ -132,7 +132,7 @@ def test_real_normalized_events_are_durable_before_turn_is_sealed(
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        [segment] = repo.find_incremental_codex(completed_before="2026-07-24T00:00:00")
+        [segment] = repo.codex.claim_pending_fragments(completed_before="2026-07-24T00:00:00")
     finally:
         conn.close()
 
@@ -189,8 +189,8 @@ def test_memory_ineligible_autonomous_turn_is_not_registered(tmp_path: Path) -> 
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        assert repo.find_incremental_codex() == []
-        assert repo.find_unsealed_codex_turns() == []
+        assert repo.codex.claim_pending_fragments() == []
+        assert repo.codex.list_unsealed_turns() == []
     finally:
         conn.close()
     assert list((tmp_path / "meta" / "codex-turns").rglob("*.jsonl")) == []
@@ -221,7 +221,7 @@ def test_unsolicited_autonomous_turn_remains_memory_eligible(tmp_path: Path) -> 
 
     conn = open_sessions_db(tmp_path)
     try:
-        [segment] = create_sessions_repository(conn).find_incremental_codex()
+        [segment] = create_sessions_repository(conn).codex.claim_pending_fragments()
     finally:
         conn.close()
     assert segment.turn_ids == (TURN_ID,)
@@ -231,7 +231,7 @@ def test_same_thread_completed_turns_form_one_pending_fragment(tmp_path: Path) -
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        repo.register_codex_turn(
+        repo.codex.register_turn(
             thread_id="thread-1",
             turn_id="turn-1",
             trowel_session_id="trowel-1",
@@ -244,13 +244,13 @@ def test_same_thread_completed_turns_form_one_pending_fragment(tmp_path: Path) -
             memory_enabled=True,
             profile_enabled=True,
         )
-        repo.complete_codex_turn(
+        repo.codex.complete_turn(
             "thread-1",
             "turn-1",
             status="completed",
             completed_at="2026-07-22T10:05:00",
         )
-        repo.register_codex_turn(
+        repo.codex.register_turn(
             thread_id="thread-1",
             turn_id="turn-2",
             trowel_session_id="trowel-2",
@@ -263,22 +263,22 @@ def test_same_thread_completed_turns_form_one_pending_fragment(tmp_path: Path) -
             memory_enabled=True,
             profile_enabled=True,
         )
-        repo.complete_codex_turn(
+        repo.codex.complete_turn(
             "thread-1",
             "turn-2",
             status="completed",
             completed_at="2026-07-23T10:05:00",
         )
 
-        all_pending = repo.find_incremental_codex(
+        all_pending = repo.codex.claim_pending_fragments(
             completed_before="2026-07-24T00:00:00"
         )
-        repo.advance_codex_extracted_many(
+        repo.codex.advance_fragment(
             "thread-1",
             ("turn-1", "turn-2"),
             when="2026-07-24T02:30:00",
         )
-        after_advance = repo.find_incremental_codex(
+        after_advance = repo.codex.claim_pending_fragments(
             completed_before="2026-07-25T00:00:00"
         )
     finally:
@@ -295,7 +295,7 @@ def test_failed_fragment_membership_does_not_absorb_later_turn(
     try:
         repo = create_sessions_repository(conn)
         for index in (1, 2):
-            repo.register_codex_turn(
+            repo.codex.register_turn(
                 thread_id="thread-1",
                 turn_id=f"turn-{index}",
                 trowel_session_id=f"trowel-{index}",
@@ -308,16 +308,16 @@ def test_failed_fragment_membership_does_not_absorb_later_turn(
                 memory_enabled=True,
                 profile_enabled=True,
             )
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 "thread-1",
                 f"turn-{index}",
                 status="completed",
                 completed_at=f"2026-07-22T10:0{index}:30",
             )
 
-        [claimed] = repo.find_incremental_codex()
+        [claimed] = repo.codex.claim_pending_fragments()
 
-        repo.register_codex_turn(
+        repo.codex.register_turn(
             thread_id="thread-1",
             turn_id="turn-3",
             trowel_session_id="trowel-3",
@@ -330,13 +330,13 @@ def test_failed_fragment_membership_does_not_absorb_later_turn(
             memory_enabled=True,
             profile_enabled=True,
         )
-        repo.complete_codex_turn(
+        repo.codex.complete_turn(
             "thread-1",
             "turn-3",
             status="completed",
             completed_at="2026-07-22T10:03:30",
         )
-        retried = repo.find_incremental_codex()
+        retried = repo.codex.claim_pending_fragments()
     finally:
         conn.close()
 
@@ -359,7 +359,7 @@ def test_codex_review_history_only_returns_extracted_turns_before_fragment(
             ("turn-target", "2026-07-22T10:00:00"),
             ("turn-later", "2026-07-24T10:00:00"),
         ):
-            repo.register_codex_turn(
+            repo.codex.register_turn(
                 thread_id="thread-1",
                 turn_id=turn_id,
                 trowel_session_id=f"trowel-{turn_id}",
@@ -372,20 +372,20 @@ def test_codex_review_history_only_returns_extracted_turns_before_fragment(
                 memory_enabled=True,
                 profile_enabled=True,
             )
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 "thread-1",
                 turn_id,
                 status="completed",
                 completed_at=completed_at,
             )
-        repo.advance_codex_extracted(
+        repo.codex.advance_turn(
             "thread-1",
             "turn-history",
             when="2026-07-22T09:10:00",
         )
-        [fragment] = repo.find_incremental_codex(completed_before="2026-07-23T00:00:00")
+        [fragment] = repo.codex.claim_pending_fragments(completed_before="2026-07-23T00:00:00")
 
-        history = repo.find_extracted_codex_before(fragment)
+        history = repo.codex.list_extracted_before(fragment)
     finally:
         conn.close()
 
@@ -405,7 +405,7 @@ def test_codex_fragment_keeps_cutoff_and_user_session_kind_filters(
             ("eligible-delegate", "2026-07-22T11:00:00", "delegate"),
         )
         for turn_id, completed_at, session_kind in cases:
-            repo.register_codex_turn(
+            repo.codex.register_turn(
                 thread_id="thread-1",
                 turn_id=turn_id,
                 trowel_session_id=f"trowel-{turn_id}",
@@ -419,14 +419,14 @@ def test_codex_fragment_keeps_cutoff_and_user_session_kind_filters(
                 profile_enabled=True,
                 session_kind=session_kind,
             )
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 "thread-1",
                 turn_id,
                 status="completed",
                 completed_at=completed_at,
             )
 
-        [fragment] = repo.find_incremental_codex(completed_before="2026-07-23T00:00:00")
+        [fragment] = repo.codex.claim_pending_fragments(completed_before="2026-07-23T00:00:00")
         rows = conn.execute(
             "SELECT turn_id, review_fragment_id FROM codex_turns ORDER BY turn_id"
         ).fetchall()
@@ -445,7 +445,7 @@ def test_atomic_codex_fragment_advance_rolls_back_if_any_turn_is_missing(
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        repo.register_codex_turn(
+        repo.codex.register_turn(
             thread_id="thread-1",
             turn_id="turn-1",
             trowel_session_id="trowel-1",
@@ -458,7 +458,7 @@ def test_atomic_codex_fragment_advance_rolls_back_if_any_turn_is_missing(
             memory_enabled=True,
             profile_enabled=True,
         )
-        repo.complete_codex_turn(
+        repo.codex.complete_turn(
             "thread-1",
             "turn-1",
             status="completed",
@@ -466,12 +466,12 @@ def test_atomic_codex_fragment_advance_rolls_back_if_any_turn_is_missing(
         )
 
         with pytest.raises(ValueError, match="atomic"):
-            repo.advance_codex_extracted_many(
+            repo.codex.advance_fragment(
                 "thread-1",
                 ("turn-1", "missing-turn"),
                 when="2026-07-22T11:00:00",
             )
-        [pending] = repo.find_incremental_codex()
+        [pending] = repo.codex.claim_pending_fragments()
     finally:
         conn.close()
 
@@ -485,7 +485,7 @@ def test_legacy_single_turn_advance_cannot_partially_advance_fragment(
     try:
         repo = create_sessions_repository(conn)
         for index in (1, 2):
-            repo.register_codex_turn(
+            repo.codex.register_turn(
                 thread_id="thread-1",
                 turn_id=f"turn-{index}",
                 trowel_session_id=f"trowel-{index}",
@@ -498,20 +498,20 @@ def test_legacy_single_turn_advance_cannot_partially_advance_fragment(
                 memory_enabled=True,
                 profile_enabled=True,
             )
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 "thread-1",
                 f"turn-{index}",
                 status="completed",
                 completed_at=f"2026-07-22T10:0{index}:30",
             )
-        [fragment] = repo.find_incremental_codex()
+        [fragment] = repo.codex.claim_pending_fragments()
 
-        repo.advance_codex_extracted(
+        repo.codex.advance_turn(
             "thread-1",
             "turn-1",
             when="2026-07-22T11:00:00",
         )
-        pending = repo.find_incremental_codex()
+        pending = repo.codex.claim_pending_fragments()
     finally:
         conn.close()
 
@@ -538,7 +538,7 @@ def test_fsynced_terminal_repairs_watermark_after_commit_crash(
     session.attach_thread_binding(_binding())
     session.begin_send()
     session.record_turn_started(TURN_ID, "finish despite journal commit crash")
-    original_complete = SessionsRepository.complete_codex_turn
+    original_complete = CodexTurnsRepository.complete_turn
     crashed = False
 
     def crash_once(self, *args, **kwargs):
@@ -548,7 +548,7 @@ def test_fsynced_terminal_repairs_watermark_after_commit_crash(
             raise OSError("simulated crash after fsync")
         return original_complete(self, *args, **kwargs)
 
-    monkeypatch.setattr(SessionsRepository, "complete_codex_turn", crash_once)
+    monkeypatch.setattr(CodexTurnsRepository, "complete_turn", crash_once)
     terminal = _real_notifications()[8]
     terminal["params"]["threadId"] = THREAD_ID
     terminal["params"]["turn"]["id"] = TURN_ID
@@ -559,14 +559,14 @@ def test_fsynced_terminal_repairs_watermark_after_commit_crash(
     assert session.drain()[-1].type.value == "finished"
     conn = open_sessions_db(tmp_path)
     try:
-        assert create_sessions_repository(conn).find_incremental_codex() == []
+        assert create_sessions_repository(conn).codex.claim_pending_fragments() == []
     finally:
         conn.close()
 
     assert recover_sealed_codex_turns(tmp_path) == 1
     conn = open_sessions_db(tmp_path)
     try:
-        [recovered] = create_sessions_repository(conn).find_incremental_codex()
+        [recovered] = create_sessions_repository(conn).codex.claim_pending_fragments()
     finally:
         conn.close()
     assert recovered.turn_ids == (TURN_ID,)
@@ -610,6 +610,6 @@ def test_event_write_failure_cannot_be_recovered_as_complete(
     assert recover_sealed_codex_turns(tmp_path) == 0
     conn = open_sessions_db(tmp_path)
     try:
-        assert create_sessions_repository(conn).find_incremental_codex() == []
+        assert create_sessions_repository(conn).codex.claim_pending_fragments() == []
     finally:
         conn.close()

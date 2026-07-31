@@ -124,7 +124,7 @@ class CodexTurnJournal:
             return
         conn = open_sessions_db(self._root)
         try:
-            create_sessions_repository(conn).complete_codex_turn(
+            create_sessions_repository(conn).codex.complete_turn(
                 event.thread_id,
                 event.turn_id,
                 status=terminal,
@@ -146,7 +146,7 @@ class CodexTurnJournal:
         """登记首次看到的原生轮次，并固化其会话归属和模型绑定。"""
         conn = open_sessions_db(self._root)
         try:
-            create_sessions_repository(conn).register_codex_turn(
+            create_sessions_repository(conn).codex.register_turn(
                 thread_id=event.thread_id or "",
                 turn_id=event.turn_id or "",
                 trowel_session_id=self._trowel_session_id,
@@ -251,12 +251,12 @@ def recover_sealed_codex_turns(memory_root: Path) -> int:
     recovered = 0
     try:
         repo = create_sessions_repository(conn)
-        for turn in repo.find_unsealed_codex_turns():
+        for turn in repo.codex.list_unsealed_turns():
             terminal = _read_terminal(Path(turn.journal_path), turn.thread_id, turn.turn_id)
             if terminal is None:
                 continue
             status, completed_at = terminal
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 turn.thread_id,
                 turn.turn_id,
                 status=status,

@@ -15,7 +15,7 @@ def seed_legacy_session(memory_root: Path, session_id: str, jsonl_path: str) -> 
     """登记一条没有完成水位的旧会话。"""
     conn = open_sessions_db(memory_root)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id=session_id,
                 workdir="/project",
@@ -31,7 +31,7 @@ def seed_legacy_session(memory_root: Path, session_id: str, jsonl_path: str) -> 
 def completed_offset(memory_root: Path, session_id: str) -> int | None:
     conn = open_sessions_db(memory_root)
     try:
-        for record in create_sessions_repository(conn).find_by_date("2026-07-09"):
+        for record in create_sessions_repository(conn).claude.find_by_date("2026-07-09"):
             if record.cc_session_id == session_id:
                 return record.last_completed_offset
     finally:
@@ -44,7 +44,7 @@ def seed_user_session(memory_root: Path, session_id: str, jsonl_path: str) -> No
     conn = open_sessions_db(memory_root)
     try:
         repository = create_sessions_repository(conn)
-        repository.register(
+        repository.claude.register(
             SessionRecord(
                 cc_session_id=session_id,
                 workdir="/project",
@@ -53,6 +53,6 @@ def seed_user_session(memory_root: Path, session_id: str, jsonl_path: str) -> No
                 registered_at="2026-07-14T10:00:00",
             )
         )
-        repository.update_completed(session_id, 500)
+        repository.claude.update_completed(session_id, 500)
     finally:
         conn.close()

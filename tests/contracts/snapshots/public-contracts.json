@@ -180,6 +180,12 @@
       },
       {
         "type": "index",
+        "name": "idx_session_review_requests_order",
+        "table": "session_review_requests",
+        "sql": "CREATE INDEX idx_session_review_requests_order ON session_review_requests(requested_at, trowel_session_id)"
+      },
+      {
+        "type": "index",
         "name": "idx_sessions_date",
         "table": "sessions",
         "sql": "CREATE INDEX idx_sessions_date ON sessions(date)"
@@ -200,7 +206,13 @@
         "type": "table",
         "name": "session_bindings",
         "table": "session_bindings",
-        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL )"
+        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, start_offset INTEGER )"
+      },
+      {
+        "type": "table",
+        "name": "session_review_requests",
+        "table": "session_review_requests",
+        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER )"
       },
       {
         "type": "table",

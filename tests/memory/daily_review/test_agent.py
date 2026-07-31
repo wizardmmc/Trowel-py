@@ -13,9 +13,9 @@ from tests.memory.daily_review.support import (
     review_source,
     session,
 )
+from trowel_py.memory.daily_review.models import ReviewSession, ReviewSessionLike
 from trowel_py.memory.daily_review.sources import JournalSlice, ReviewSource
 from trowel_py.memory.review_job import DistillError, run_one_session
-from trowel_py.memory.sessions_repo import SessionRecord
 
 
 async def test_run_one_session_reads_draft(tmp_path: Path) -> None:
@@ -60,17 +60,14 @@ async def test_codex_fragment_passes_ordered_source_paths_without_combining(
         async def close(self) -> None:
             pass
 
-    def create_host(_session: SessionRecord, workdir: Path) -> CapturingHost:
+    def create_host(_session: ReviewSessionLike, workdir: Path) -> CapturingHost:
         review_workdirs.append(workdir)
         (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
         return CapturingHost()
 
-    source_session = SessionRecord(
-        cc_session_id="thread-1",
+    source_session = ReviewSession(
+        native_session_id="thread-1",
         workdir="/workspace",
-        date="2026-07-09",
-        jsonl_path=str(first),
-        registered_at="2026-07-09T10:00:00",
     )
     await run_one_session(
         source_session,
@@ -109,17 +106,14 @@ async def test_missing_history_context_is_omitted_without_blocking_target(
         async def close(self) -> None:
             pass
 
-    def create_host(_session: SessionRecord, workdir: Path) -> CapturingHost:
+    def create_host(_session: ReviewSessionLike, workdir: Path) -> CapturingHost:
         (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
         return CapturingHost()
 
     draft = await run_one_session(
-        SessionRecord(
-            cc_session_id="thread-context-gap",
+        ReviewSession(
+            native_session_id="thread-context-gap",
             workdir="/workspace",
-            date="2026-07-09",
-            jsonl_path=str(target),
-            registered_at="2026-07-09T10:00:00",
         ),
         "2026-07-09",
         tmp_path / "memory",
@@ -161,17 +155,14 @@ async def test_review_cost_only_counts_target_sources(tmp_path: Path) -> None:
         async def close(self) -> None:
             pass
 
-    def create_host(_session: SessionRecord, workdir: Path) -> CapturingHost:
+    def create_host(_session: ReviewSessionLike, workdir: Path) -> CapturingHost:
         (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
         return CapturingHost()
 
     await run_one_session(
-        SessionRecord(
-            cc_session_id="cost-target-only",
+        ReviewSession(
+            native_session_id="cost-target-only",
             workdir="/workspace",
-            date="2026-07-09",
-            jsonl_path=str(target),
-            registered_at="2026-07-09T10:00:00",
         ),
         "2026-07-09",
         tmp_path / "memory",
@@ -237,7 +228,7 @@ async def test_run_one_session_retries_legacy_episode_draft(
             pass
 
     def create_host(
-        _session: SessionRecord,
+        _session: ReviewSessionLike,
         workdir: Path,
     ) -> RevisingHost:
         (workdir / "draft.json").write_text(legacy, encoding="utf-8")
@@ -301,7 +292,7 @@ async def test_run_one_session_retries_unknown_feedback_kind(
             pass
 
     def create_host(
-        _session: SessionRecord,
+        _session: ReviewSessionLike,
         workdir: Path,
     ) -> RevisingHost:
         (workdir / "draft.json").write_text(invalid, encoding="utf-8")

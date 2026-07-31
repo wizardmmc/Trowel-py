@@ -144,6 +144,7 @@ class ConditionMismatchError(SessionConflictError):
 
 # 生产 opener 与测试替身共享调用协议但具体类型不同，因此保持宽松 Callable。
 CcOpener = Callable[..., Any]
+SessionReviewRequester = Callable[[SessionBinding], None]
 
 
 def _default_cc_registry() -> dict[str, Any]:
@@ -179,6 +180,7 @@ class SessionHub:
         delegate_identity_store: DelegateIdentityStore | None = None,
         runtime_ports: Mapping[Runtime, RuntimeSessionPort] | None = None,
         capacity_limits: CapacityLimits | None = None,
+        session_review_requester: SessionReviewRequester | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -199,6 +201,8 @@ class SessionHub:
             runtime_ports: 两种 runtime 的统一状态与关闭入口；未提供时根据 registry
                 和 Codex manager 构造默认适配器。
             capacity_limits: 用户连接和委派资源池上限；未提供时使用生产默认值。
+            session_review_requester: 用户会话关闭后持久登记 Memory review 的同步
+                回调；未提供时只执行原有关闭流程。
         """
 
         self._store = store
@@ -216,6 +220,7 @@ class SessionHub:
             Path(codex_config_home) if codex_config_home is not None else None
         )
         self._event_observer = event_observer
+        self._session_review_requester = session_review_requester
         self._active_id: str | None = None
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
         self._cc_adapters: dict[str, ClaudeCodeEventAdapter] = {}
@@ -1474,6 +1479,20 @@ class SessionHub:
         if binding.runtime not in self._runtime_ports:
             raise RuntimeUnavailableError(f"{binding.runtime.value} host unavailable")
         try:
+            review_requester = None
+            if (
+                binding.session_kind == "user"
+                and binding.memory_enabled
+                and self._session_review_requester is not None
+            ):
+
+                def persist_review_request() -> None:
+                    """在 binding 删除前持久登记当前用户会话的 Memory review。"""
+
+                    if self._session_review_requester is not None:
+                        self._session_review_requester(binding)
+
+                review_requester = persist_review_request
             await self._lifecycle.close(
                 binding,
                 require_idle=(
@@ -1482,6 +1501,7 @@ class SessionHub:
                 ),
                 busy_message="Codex 委派子会话仍在处理，尚不能确认清理完成",
                 before_runtime_close=lambda: self._stop_codex_event_pump(session_id),
+                before_binding_delete=review_requester,
             )
         except (CapacityConflictError, SessionInFlightError) as exc:
             raise SessionConflictError(str(exc)) from exc

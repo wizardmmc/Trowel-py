@@ -6,8 +6,8 @@ from pathlib import Path
 from tests.memory.daily_review.support import FINISHED, FakeHost
 from trowel_py.memory.review_job import run_daily_review
 from trowel_py.memory.sessions_repo import (
+    CodexTurnsRepository,
     SessionRecord,
-    SessionsRepository,
     create_sessions_repository,
     open_sessions_db,
 )
@@ -40,7 +40,7 @@ def _register_turn(
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
-        repo.register_codex_turn(
+        repo.codex.register_turn(
             thread_id=thread_id,
             turn_id=turn_id,
             trowel_session_id=trowel_session_id,
@@ -53,7 +53,7 @@ def _register_turn(
             memory_enabled=True,
             profile_enabled=False,
         )
-        repo.complete_codex_turn(
+        repo.codex.complete_turn(
             thread_id,
             turn_id,
             status="completed",
@@ -139,7 +139,7 @@ async def test_completed_codex_turn_uses_shared_memory_persist(
     assert manifest["derivation"]["run_id"] == "review-run-codex"
     conn = open_sessions_db(memory_root)
     try:
-        assert create_sessions_repository(conn).find_incremental_codex() == []
+        assert create_sessions_repository(conn).codex.claim_pending_fragments() == []
     finally:
         conn.close()
 
@@ -159,7 +159,7 @@ async def test_codex_persist_failure_does_not_advance_turn_watermark(
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(
-        "trowel_py.memory.daily_review.codex.persist_draft",
+        "trowel_py.memory.daily_review.processor.persist_draft",
         fail_persist,
     )
     await run_daily_review(
@@ -171,7 +171,7 @@ async def test_codex_persist_failure_does_not_advance_turn_watermark(
 
     conn = open_sessions_db(memory_root)
     try:
-        pending = create_sessions_repository(conn).find_incremental_codex()
+        pending = create_sessions_repository(conn).codex.claim_pending_fragments()
     finally:
         conn.close()
     assert [item.turn_ids for item in pending] == [("turn-review",)]
@@ -210,7 +210,7 @@ async def test_same_thread_turns_use_one_refine_and_one_judge(
 
     conn = open_sessions_db(memory_root)
     try:
-        [fragment] = create_sessions_repository(conn).find_incremental_codex(
+        [fragment] = create_sessions_repository(conn).codex.claim_pending_fragments(
             completed_before="2026-07-10T00:00:00"
         )
     finally:
@@ -234,7 +234,125 @@ async def test_same_thread_turns_use_one_refine_and_one_judge(
     }
     conn = open_sessions_db(memory_root)
     try:
-        assert create_sessions_repository(conn).find_incremental_codex() == []
+        assert create_sessions_repository(conn).codex.claim_pending_fragments() == []
+    finally:
+        conn.close()
+
+
+async def test_immediate_review_only_claims_closed_codex_session_turns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    _register_turn(
+        memory_root,
+        tmp_path / "journals" / "closed.jsonl",
+        turn_id="turn-closed",
+        trowel_session_id="agent-closed",
+        completed_at="2026-07-09T10:05:00",
+    )
+    _register_turn(
+        memory_root,
+        tmp_path / "journals" / "open.jsonl",
+        turn_id="turn-open",
+        trowel_session_id="agent-open",
+        completed_at="2026-07-09T10:10:00",
+    )
+    conn = open_sessions_db(memory_root)
+    try:
+        create_sessions_repository(conn).review_requests.enqueue(
+            "agent-closed",
+            runtime="codex",
+            requested_at="2026-07-09T12:00:00",
+        )
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._resolve_provider",
+        lambda _provider: None,
+    )
+
+    await run_daily_review(
+        event={"review_session_id": "agent-closed"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=_host_factory,
+    )
+
+    manifest_path = (
+        memory_root
+        / "meta"
+        / "persisted-segments"
+        / "codex:thread-review:turn-closed.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source"]["source"]["turn_ids"] == ["turn-closed"]
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        [remaining] = repo.codex.claim_pending_fragments()
+        assert remaining.turn_ids == ("turn-open",)
+        assert repo.review_requests.find("agent-closed") is None
+    finally:
+        conn.close()
+
+
+async def test_immediate_review_skips_preclaimed_cross_session_codex_fragment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    _register_turn(
+        memory_root,
+        tmp_path / "journals" / "a.jsonl",
+        turn_id="turn-a",
+        trowel_session_id="agent-a",
+        completed_at="2026-07-09T10:05:00",
+    )
+    _register_turn(
+        memory_root,
+        tmp_path / "journals" / "b.jsonl",
+        turn_id="turn-b",
+        trowel_session_id="agent-b",
+        completed_at="2026-07-09T10:10:00",
+    )
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        [preclaimed] = repo.codex.claim_pending_fragments()
+        assert preclaimed.turn_ids == ("turn-a", "turn-b")
+        repo.review_requests.enqueue(
+            "agent-a",
+            runtime="codex",
+            requested_at="2026-07-09T12:00:00",
+        )
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._resolve_provider",
+        lambda _provider: None,
+    )
+    calls: list[str] = []
+
+    def unexpected_factory(session_record: SessionRecord, _workdir: Path) -> ReviewHost:
+        calls.append(session_record.native_session_id)
+        return ReviewHost([FINISHED])
+
+    await run_daily_review(
+        event={"review_session_id": "agent-a"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=unexpected_factory,
+    )
+
+    assert calls == []
+    assert not (memory_root / "meta" / "persisted-segments").exists()
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        assert repo.review_requests.find("agent-a") is not None
+        [pending] = repo.codex.claim_pending_fragments()
+        assert pending.turn_ids == ("turn-a", "turn-b")
     finally:
         conn.close()
 
@@ -254,7 +372,7 @@ async def test_incremental_codex_review_separates_extracted_history_from_target(
     )
     conn = open_sessions_db(memory_root)
     try:
-        create_sessions_repository(conn).advance_codex_extracted(
+        create_sessions_repository(conn).codex.advance_turn(
             "thread-review",
             "turn-history",
             when="2026-07-09T09:10:00",
@@ -370,7 +488,7 @@ async def test_missing_journal_keeps_whole_codex_fragment_pending(
 
     conn = open_sessions_db(memory_root)
     try:
-        [pending] = create_sessions_repository(conn).find_incremental_codex()
+        [pending] = create_sessions_repository(conn).codex.claim_pending_fragments()
     finally:
         conn.close()
     assert pending.turn_ids == ("turn-1", "turn-2")
@@ -397,11 +515,11 @@ async def test_manifest_before_watermark_retry_does_not_duplicate_memory(
         "trowel_py.memory.daily_review.batch._resolve_provider",
         lambda _provider: None,
     )
-    original_advance = SessionsRepository.advance_codex_extracted_many
+    original_advance = CodexTurnsRepository.advance_fragment
     attempts = 0
 
     def fail_once(
-        self: SessionsRepository,
+        self: CodexTurnsRepository,
         thread_id: str,
         turn_ids: tuple[str, ...],
         *,
@@ -414,8 +532,8 @@ async def test_manifest_before_watermark_retry_does_not_duplicate_memory(
         original_advance(self, thread_id, turn_ids, when=when)
 
     monkeypatch.setattr(
-        SessionsRepository,
-        "advance_codex_extracted_many",
+        CodexTurnsRepository,
+        "advance_fragment",
         fail_once,
     )
 
@@ -432,6 +550,6 @@ async def test_manifest_before_watermark_retry_does_not_duplicate_memory(
     assert len(list((memory_root / "notes").glob("*.md"))) == 1
     conn = open_sessions_db(memory_root)
     try:
-        assert create_sessions_repository(conn).find_incremental_codex() == []
+        assert create_sessions_repository(conn).codex.claim_pending_fragments() == []
     finally:
         conn.close()
