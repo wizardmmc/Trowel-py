@@ -6,7 +6,7 @@ import {
   listAgentModels,
   listAgentRuntimes,
   type AgentModel,
-} from "../../api/agent";
+} from "../../agent/transport";
 import type { RuntimesState } from "./NewSessionDialog";
 
 export function useSessionCatalogs(workdir: string) {

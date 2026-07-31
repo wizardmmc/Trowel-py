@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 
-import { RECOVERABLE_ERROR_SUBCLASSES } from "../../api/ccTypes";
+import { RECOVERABLE_ERROR_SUBCLASSES } from "../../agent/transport";
+import type { PerSessionState } from "../../agent/application";
 import type {
   CompactBoundaryItem,
   ErrorItem,
@@ -8,8 +9,7 @@ import type {
   RetryingItem,
   ThinkingItem,
   TurnItem,
-  PerSessionState,
-} from "../../stores/ccStore";
+} from "../../agent/domain";
 import { ApprovalBlock } from "./ApprovalBlock";
 import { ElicitationBlock } from "./ElicitationBlock";
 import { SubagentBlock } from "./SubagentBlock";

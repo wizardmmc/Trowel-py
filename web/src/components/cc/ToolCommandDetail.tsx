@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { splitBashCommand } from "./bashCommand";
 import { getDisplayPath } from "./pathDisplay";
 import { asString } from "./toolPresentation";

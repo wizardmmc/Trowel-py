@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 
 export function isEditTool(name: string): boolean {

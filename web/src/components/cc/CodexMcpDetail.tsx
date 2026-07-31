@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { getCodexMcpPresentation } from "./codexMcpPresentation";
 
 export function CodexMcpDetail({ item }: { readonly item: ToolItem }) {

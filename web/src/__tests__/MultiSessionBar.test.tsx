@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-vi.mock("../api/agent", () => ({
+vi.mock("../agent/transport/api", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
   renameAgentSessionTitle: vi.fn().mockImplementation((_sid, title) =>

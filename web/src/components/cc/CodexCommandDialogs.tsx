@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { CodexReviewTarget } from "../../api/agent";
-import type { PerSessionState } from "../../stores/ccStore";
+import type { CodexReviewTarget } from "../../agent/transport";
+import type { PerSessionState } from "../../agent/application";
 
 export type CodexCommandDialogKind =
   | "status"

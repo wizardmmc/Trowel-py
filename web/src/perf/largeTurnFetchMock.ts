@@ -1,4 +1,4 @@
-import type { AgentSession } from "../api/agent";
+import type { AgentSession } from "../agent/transport";
 
 const LARGE_SESSION_ID = "fixture-large-turn";
 const LIGHT_SESSION_ID = "fixture-light-session";

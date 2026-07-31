@@ -1,4 +1,4 @@
-import type { Runtime } from "../../api/agent";
+import type { Runtime } from "../../agent/transport";
 
 interface SessionPreferencesProps {
   readonly runtime: Runtime;

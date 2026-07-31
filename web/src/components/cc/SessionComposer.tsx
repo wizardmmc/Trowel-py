@@ -2,8 +2,8 @@ import type { ModelOption, SlashItem } from "../../api/cc";
 import type {
   AgentModel,
   CodexCommand,
-} from "../../api/agent";
-import type { PerSessionState } from "../../stores/ccStore";
+} from "../../agent/transport";
+import type { PerSessionState } from "../../agent/application";
 import { Composer } from "./Composer";
 import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
 

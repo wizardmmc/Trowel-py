@@ -1,4 +1,4 @@
-import type { Runtime } from "../../api/agent";
+import type { Runtime } from "../../agent/transport";
 
 export interface RuntimeOption {
   readonly value: Runtime;

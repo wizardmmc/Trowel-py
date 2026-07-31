@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { getDisplayPath } from "./pathDisplay";
 
 export type CodexCommandVerb = "Read" | "List" | "Search" | "Run";

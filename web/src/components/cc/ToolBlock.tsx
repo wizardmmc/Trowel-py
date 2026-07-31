@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { getDisplayPath } from "./pathDisplay";
 import { getCodexCommandPresentation } from "./codexCommandPresentation";
 import {

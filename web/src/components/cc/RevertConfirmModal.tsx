@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { Turn } from "../../stores/ccStore";
+import type { Turn } from "../../agent/domain";
 
 interface RevertConfirmModalProps {
   readonly lostTurns: readonly Turn[];

@@ -1,9 +1,9 @@
 import type { ModelOption } from "../../api/cc";
-import type { AgentHistoryRow } from "../../api/agent";
+import type { AgentHistoryRow } from "../../agent/transport";
 import type {
   Phase,
   SessionMeta,
-} from "../../stores/ccStore";
+} from "../../agent/domain";
 import { SessionIdCopyButton } from "./SessionIdCopyButton";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { StatusBar } from "./StatusBar";

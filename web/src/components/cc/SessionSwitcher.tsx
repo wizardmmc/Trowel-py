@@ -6,7 +6,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import type { AgentHistoryRow } from "../../api/agent";
+import type { AgentHistoryRow } from "../../agent/transport";
 
 interface SessionSwitcherProps {
   readonly history: readonly AgentHistoryRow[];

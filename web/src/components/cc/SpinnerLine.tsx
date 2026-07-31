@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { useCcStore } from "../../stores/ccStore";
+import { useAgentStore } from "../../agent/application";
 
 const SPINNER_VERBS = [
   "Pondering", "Synthesizing", "Analyzing", "Thinking", "Working",
@@ -28,7 +28,7 @@ export function SpinnerLine() {
     thinkingTokens,
     stallWarning,
     effort,
-  } = useCcStore(
+  } = useAgentStore(
     useShallow((state) => {
       const active = state.activeSid
         ? state.sessions[state.activeSid] ?? null

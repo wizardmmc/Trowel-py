@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { QuestionInput, QuestionOption } from "../../api/ccTypes";
+import type { QuestionInput, QuestionOption } from "../../agent/transport";
 
 interface ElicitationNavBarProps {
   readonly questions: readonly QuestionInput[];

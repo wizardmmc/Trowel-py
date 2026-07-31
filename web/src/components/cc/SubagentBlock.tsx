@@ -1,9 +1,9 @@
 import { useState } from "react";
+import type { PerSessionState } from "../../agent/application";
 import type {
-  PerSessionState,
   SubagentState,
   ToolItem,
-} from "../../stores/ccStore";
+} from "../../agent/domain";
 import { ToolBlock } from "./ToolBlock";
 
 const CC_VISIBLE_RUNNING_TOOLS = 4;

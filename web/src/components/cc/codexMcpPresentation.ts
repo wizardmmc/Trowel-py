@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 
 export interface CodexMcpPresentation {
   readonly title: string | null;

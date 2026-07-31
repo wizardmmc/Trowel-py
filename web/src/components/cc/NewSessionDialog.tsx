@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { AgentModel, AgentRuntimeInfo, Runtime } from "../../api/agent";
+import type { AgentModel, AgentRuntimeInfo, Runtime } from "../../agent/transport";
 import type { ModelOption } from "../../api/cc";
 import {
   RUNTIME_LABEL,

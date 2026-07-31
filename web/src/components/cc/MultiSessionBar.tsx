@@ -1,19 +1,19 @@
 import { useState, type FormEvent } from "react";
 
-import { useCcStore } from "../../stores/ccStore";
-import { useCcStoreFrameSelector } from "../../stores/ccFrameSelector";
+import { useAgentStore } from "../../agent/application";
+import { useAgentStoreFrameSelector } from "../../agent/application";
 import {
   MAX_RUNNING,
   MAX_CONNECTIONS,
   type PerSessionState,
-} from "../../stores/ccStore";
+} from "../../agent/application";
 
 interface MultiSessionBarProps {
   readonly onNewSameWorkdir: () => void;
   readonly onChangeWorkdir: () => void;
 }
 
-const selectSessions = (state: ReturnType<typeof useCcStore.getState>) =>
+const selectSessions = (state: ReturnType<typeof useAgentStore.getState>) =>
   state.sessions;
 
 function dotClass(s: PerSessionState): string {
@@ -49,11 +49,11 @@ export function MultiSessionBar({
   onNewSameWorkdir,
   onChangeWorkdir,
 }: MultiSessionBarProps) {
-  const sessions = useCcStoreFrameSelector(selectSessions);
-  const activeSid = useCcStore((s) => s.activeSid);
-  const activate = useCcStore((s) => s.activateSession);
-  const close = useCcStore((s) => s.closeSession);
-  const rename = useCcStore((s) => s.renameSessionTitle);
+  const sessions = useAgentStoreFrameSelector(selectSessions);
+  const activeSid = useAgentStore((s) => s.activeSid);
+  const activate = useAgentStore((s) => s.activateSession);
+  const close = useAgentStore((s) => s.closeSession);
+  const rename = useAgentStore((s) => s.renameSessionTitle);
   const [editingSid, setEditingSid] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 

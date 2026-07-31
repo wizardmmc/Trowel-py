@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 
-import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
-import type { ToolItem } from "../../stores/ccStore";
+import type { DiffHunk, WriteDiff } from "../../agent/transport";
+import type { ToolItem } from "../../agent/domain";
 import { CodexMcpDetail } from "./CodexMcpDetail";
 import { isCodexMcp } from "./codexMcpPresentation";
 import { computeEditDiff, summarizeStat } from "./editDiff";

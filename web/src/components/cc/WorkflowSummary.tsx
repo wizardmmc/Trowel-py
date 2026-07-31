@@ -1,4 +1,4 @@
-import type { WorkflowItem } from "../../stores/ccReducer";
+import type { WorkflowItem } from "../../agent/domain";
 
 export function formatWorkflowTokens(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);

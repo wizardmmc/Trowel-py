@@ -1,5 +1,5 @@
 import { structuredPatch, type StructuredPatchHunk } from "diff";
-import type { DiffHunk } from "../../api/ccTypes";
+import type { DiffHunk } from "../../agent/transport";
 
 export interface EditDiff {
   readonly hunks: readonly DiffHunk[];

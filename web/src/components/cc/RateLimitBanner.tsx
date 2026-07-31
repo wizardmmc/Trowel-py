@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { RateLimitSnapshot, RateLimitWindow } from "../../api/ccTypes";
+import type { RateLimitSnapshot, RateLimitWindow } from "../../agent/transport";
 import {
   NEAR_THRESHOLD_PERCENT,
   REACHED_TYPE_LABEL,

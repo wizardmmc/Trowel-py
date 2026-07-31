@@ -1,8 +1,8 @@
 import type { ModelOption } from "../../api/cc";
 import type {
   AgentModel,
-} from "../../api/agent";
-import type { Turn } from "../../stores/ccStore";
+} from "../../agent/transport";
+import type { Turn } from "../../agent/domain";
 import { EffortPicker } from "./EffortPicker";
 import { ModelPicker } from "./ModelPicker";
 import {

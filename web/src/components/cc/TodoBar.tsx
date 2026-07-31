@@ -2,9 +2,9 @@ import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import {
-  useCcStore,
-  type Task,
-} from "../../stores/ccStore";
+  useAgentStore,
+} from "../../agent/application";
+import type { Task } from "../../agent/domain";
 import { CodexWorkRail } from "./CodexWorkRail";
 
 function statusIcon(status: Task["status"]): string {
@@ -24,7 +24,7 @@ interface TodoBarProps {
 }
 
 export function TodoBar({ drawerOpen = false, onCloseDrawer }: TodoBarProps) {
-  const active = useCcStore(
+  const active = useAgentStore(
     useShallow((state) => {
       const session = state.activeSid
         ? state.sessions[state.activeSid] ?? null
@@ -39,9 +39,9 @@ export function TodoBar({ drawerOpen = false, onCloseDrawer }: TodoBarProps) {
         : null;
     }),
   );
-  const activeSid = useCcStore((state) => state.activeSid);
-  const setCodexGoal = useCcStore((state) => state.setCodexGoal);
-  const clearCodexGoal = useCcStore((state) => state.clearCodexGoal);
+  const activeSid = useAgentStore((state) => state.activeSid);
+  const setCodexGoal = useAgentStore((state) => state.setCodexGoal);
+  const clearCodexGoal = useAgentStore((state) => state.clearCodexGoal);
   const tasks = active?.tasks ?? [];
   const [showCompleted, setShowCompleted] = useState(false);
 

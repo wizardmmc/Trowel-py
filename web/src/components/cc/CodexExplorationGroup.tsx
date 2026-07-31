@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { getCodexCommandPresentation } from "./codexCommandPresentation";
 import { ToolBlock } from "./ToolBlock";
 
