@@ -71,7 +71,7 @@ const REHYPE_PLUGINS: PluggableList = [
   [rehypeKatex, { throwOnError: false, strict: false, errorColor: "#cc0000" }],
 ];
 
-export function AssistantText({ text, sessionId, workdir }: AssistantTextProps) {
+function AssistantTextView({ text, sessionId, workdir }: AssistantTextProps) {
   const components: Components = {
     ...COMPONENTS,
     a: ({ href, children, ...props }) => {
@@ -116,3 +116,5 @@ export function AssistantText({ text, sessionId, workdir }: AssistantTextProps) 
     </div>
   );
 }
+
+export const AssistantText = React.memo(AssistantTextView);

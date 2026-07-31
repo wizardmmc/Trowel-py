@@ -30,6 +30,7 @@ def hub_factory(
             cc_opener=make_cc_opener(cc_registry, {}),
             # 指向临时目录，避免读取开发者真实的 Codex 配置。
             codex_config_home=tmp_path,
+            codex_history_root=tmp_path / "memory",
             capacity_limits=limits,
         )
 

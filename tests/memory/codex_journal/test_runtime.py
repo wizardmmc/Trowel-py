@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from trowel_py.codex_host.events import (
+    CodexEvent,
     CodexEventType,
     TranslatedItem,
     immutable_payload,
@@ -16,6 +17,7 @@ from trowel_py.codex_host.session_types import CodexSessionConfig
 from trowel_py.codex_host.translator import CodexTranslator
 from trowel_py.memory.codex_journal import (
     CodexTurnJournal,
+    read_thread_journal_events,
     recover_sealed_codex_turns,
 )
 from trowel_py.memory.sessions_repo import (
@@ -132,7 +134,9 @@ def test_real_normalized_events_are_durable_before_turn_is_sealed(
     conn = open_sessions_db(tmp_path)
     try:
         repo = create_sessions_repository(conn)
-        [segment] = repo.codex.claim_pending_fragments(completed_before="2026-07-24T00:00:00")
+        [segment] = repo.codex.claim_pending_fragments(
+            completed_before="2026-07-24T00:00:00"
+        )
     finally:
         conn.close()
 
@@ -160,6 +164,54 @@ def test_real_normalized_events_are_durable_before_turn_is_sealed(
     assert ("tool_started", "fileChange") in tool_kinds
     assert ("tool_completed", "fileChange") in tool_kinds
     assert types[-1] == "finished"
+
+
+def test_replay_reader_skips_a_corrupt_completed_journal(tmp_path: Path) -> None:
+    journal = CodexTurnJournal(
+        tmp_path,
+        trowel_session_id="history-session",
+        workdir="/workspace",
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    for event in (
+        CodexEvent(
+            "history-session",
+            1,
+            CodexEventType.USER,
+            THREAD_ID,
+            TURN_ID,
+            payload=immutable_payload(text="hello"),
+        ),
+        CodexEvent(
+            "history-session",
+            2,
+            CodexEventType.FINISHED,
+            THREAD_ID,
+            TURN_ID,
+            payload=immutable_payload(status="completed"),
+        ),
+    ):
+        journal.record(event, None)
+
+    conn = open_sessions_db(tmp_path)
+    try:
+        [turn] = create_sessions_repository(conn).codex.list_replayable_thread_turns(
+            THREAD_ID
+        )
+    finally:
+        conn.close()
+    with Path(turn.journal_path).open("a", encoding="utf-8") as handle:
+        handle.write("not-json\n")
+
+    assert (
+        read_thread_journal_events(
+            tmp_path,
+            THREAD_ID,
+            session_id="replayed-session",
+        )
+        == {}
+    )
 
 
 def test_memory_ineligible_autonomous_turn_is_not_registered(tmp_path: Path) -> None:
@@ -383,7 +435,9 @@ def test_codex_review_history_only_returns_extracted_turns_before_fragment(
             "turn-history",
             when="2026-07-22T09:10:00",
         )
-        [fragment] = repo.codex.claim_pending_fragments(completed_before="2026-07-23T00:00:00")
+        [fragment] = repo.codex.claim_pending_fragments(
+            completed_before="2026-07-23T00:00:00"
+        )
 
         history = repo.codex.list_extracted_before(fragment)
     finally:
@@ -426,7 +480,9 @@ def test_codex_fragment_keeps_cutoff_and_user_session_kind_filters(
                 completed_at=completed_at,
             )
 
-        [fragment] = repo.codex.claim_pending_fragments(completed_before="2026-07-23T00:00:00")
+        [fragment] = repo.codex.claim_pending_fragments(
+            completed_before="2026-07-23T00:00:00"
+        )
         rows = conn.execute(
             "SELECT turn_id, review_fragment_id FROM codex_turns ORDER BY turn_id"
         ).fetchall()

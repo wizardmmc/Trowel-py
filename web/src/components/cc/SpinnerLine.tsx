@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
-import { useActiveSession } from "../../stores/ccStore";
+import { useCcStore } from "../../stores/ccStore";
 
 const SPINNER_VERBS = [
   "Pondering", "Synthesizing", "Analyzing", "Thinking", "Working",
@@ -21,12 +22,26 @@ function pickVerb(): string {
 }
 
 export function SpinnerLine() {
-  const active = useActiveSession();
-  const phase = active?.phase ?? "idle";
-  const thinkingStartedAt = active?.meta.thinkingStartedAt ?? null;
-  const thinkingTokens = active?.meta.thinkingTokens ?? null;
-  const stallWarning = active?.meta.stallWarning ?? null;
-  const effort = active?.effort ?? null;
+  const {
+    phase,
+    thinkingStartedAt,
+    thinkingTokens,
+    stallWarning,
+    effort,
+  } = useCcStore(
+    useShallow((state) => {
+      const active = state.activeSid
+        ? state.sessions[state.activeSid] ?? null
+        : null;
+      return {
+        phase: active?.phase ?? "idle",
+        thinkingStartedAt: active?.meta.thinkingStartedAt ?? null,
+        thinkingTokens: active?.meta.thinkingTokens ?? null,
+        stallWarning: active?.meta.stallWarning ?? null,
+        effort: active?.effort ?? null,
+      };
+    }),
+  );
 
   const [verb, setVerb] = useState<string | null>(null);
   useEffect(() => {

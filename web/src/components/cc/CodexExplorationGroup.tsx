@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { ToolItem } from "../../stores/ccStore";
 import { getCodexCommandPresentation } from "./codexCommandPresentation";
 import { ToolBlock } from "./ToolBlock";
@@ -7,7 +9,7 @@ interface CodexExplorationGroupProps {
   readonly workdir?: string;
 }
 
-export function CodexExplorationGroup({ items, workdir }: CodexExplorationGroupProps) {
+function CodexExplorationGroupView({ items, workdir }: CodexExplorationGroupProps) {
   const running = items.some((item) => item.status === "running");
   const failed = items.filter((item) => item.status === "failed").length;
   const calls = items.length;
@@ -34,3 +36,19 @@ export function CodexExplorationGroup({ items, workdir }: CodexExplorationGroupP
     </section>
   );
 }
+
+function sameExploration(
+  previous: CodexExplorationGroupProps,
+  next: CodexExplorationGroupProps,
+): boolean {
+  return (
+    previous.workdir === next.workdir &&
+    previous.items.length === next.items.length &&
+    previous.items.every((item, index) => item === next.items[index])
+  );
+}
+
+export const CodexExplorationGroup = memo(
+  CodexExplorationGroupView,
+  sameExploration,
+);

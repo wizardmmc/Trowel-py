@@ -3,12 +3,14 @@ import { useEffect } from "react";
 import { getAgentSessionDefaults } from "../../api/agent";
 import {
   useCcStore,
-  type PerSessionState,
 } from "../../stores/ccStore";
 
 interface SessionLifecycleOptions {
   readonly workdir: string;
-  readonly active: PerSessionState | null;
+  readonly activeWorkdir: string | null;
+  readonly activeConnected: boolean;
+  readonly activeTurnCount: number;
+  readonly activeHasAbort: boolean;
   readonly activeSid: string | null;
   readonly refreshHistory: (workdir: string) => Promise<void>;
   readonly loadHistoryIntoView: () => Promise<void>;
@@ -16,7 +18,10 @@ interface SessionLifecycleOptions {
 
 export function useSessionLifecycle({
   workdir,
-  active,
+  activeWorkdir,
+  activeConnected,
+  activeTurnCount,
+  activeHasAbort,
   activeSid,
   refreshHistory,
   loadHistoryIntoView,
@@ -44,17 +49,17 @@ export function useSessionLifecycle({
   }, [workdir]);
 
   useEffect(() => {
-    if (active?.workdir) {
-      void refreshHistory(active.workdir);
+    if (activeWorkdir) {
+      void refreshHistory(activeWorkdir);
     }
-  }, [active?.workdir, refreshHistory]);
+  }, [activeWorkdir, refreshHistory]);
 
   useEffect(() => {
     if (
-      active &&
-      active.connected &&
-      active.turns.length === 0 &&
-      !active.abort
+      activeSid &&
+      activeConnected &&
+      activeTurnCount === 0 &&
+      !activeHasAbort
     ) {
       void loadHistoryIntoView();
     }

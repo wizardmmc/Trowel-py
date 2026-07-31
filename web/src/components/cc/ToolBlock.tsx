@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import type { ToolItem } from "../../stores/ccStore";
 import { getDisplayPath } from "./pathDisplay";
@@ -23,6 +23,8 @@ interface ToolBlockProps {
   readonly condensed?: boolean;
   readonly workdir?: string;
   readonly codexExploration?: boolean;
+  /** 超大 turn 只折叠旧详情；工具摘要始终保留。 */
+  readonly suppressDiffAutoOpen?: boolean;
 }
 
 function SummaryBrief({
@@ -105,11 +107,12 @@ function StatPill({
   );
 }
 
-export function ToolBlock({
+function ToolBlockView({
   item,
   condensed = false,
   workdir,
   codexExploration = false,
+  suppressDiffAutoOpen = false,
 }: ToolBlockProps) {
   const done = item.status === "done";
   const failed = item.status === "failed";
@@ -121,7 +124,7 @@ export function ToolBlock({
     : null;
   const mcpPresentation = codexMcp ? getCodexMcpPresentation(item) : null;
   const autoOpen =
-    (isDiffTool(item.toolName) && done) ||
+    (isDiffTool(item.toolName) && done && !suppressDiffAutoOpen) ||
     (codexCommand && (failed || codexExploration)) ||
     (codexMcp && failed);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
@@ -267,3 +270,5 @@ export function ToolBlock({
     </div>
   );
 }
+
+export const ToolBlock = memo(ToolBlockView);

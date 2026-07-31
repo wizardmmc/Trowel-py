@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from collections.abc import Sequence
 from typing import Any
 
 from trowel_py.codex_host.errors import ProtocolViolationError
@@ -30,6 +31,7 @@ def events_from_thread(
     *,
     translator: CodexTranslator | None = None,
     include_turn_started: bool = False,
+    turn_event_overrides: Mapping[str, Sequence[CodexEvent]] | None = None,
 ) -> list[CodexEvent]:
     """按快照顺序重建消息、工具活动和轮次终态事件。
 
@@ -40,6 +42,8 @@ def events_from_thread(
             创建无状态实例。
         include_turn_started: 是否为每个有 ID 的 turn 合成 ``TURN_STARTED``。合成
             事件标记为自主执行且不参与记忆写入。
+        turn_event_overrides: 已从 normalized journal 恢复的完整 turn 事件。命中
+            的 turn 整体使用该序列，不再读取 ``thread/read`` 中的不完整条目。
 
     Returns:
         从 1 开始连续编号的历史事件。未知条目、无效字段和无法翻译的单个条目会被
@@ -80,6 +84,25 @@ def events_from_thread(
             continue
         raw_turn_id = turn.get("id")
         turn_id = raw_turn_id if isinstance(raw_turn_id, str) else None
+        recorded = (
+            turn_event_overrides.get(turn_id)
+            if turn_event_overrides and turn_id
+            else None
+        )
+        if recorded:
+            for event in recorded:
+                events.append(
+                    CodexEvent(
+                        session_id=session_id,
+                        seq=len(events) + 1,
+                        type=event.type,
+                        thread_id=event.thread_id,
+                        turn_id=event.turn_id,
+                        item_id=event.item_id,
+                        payload=event.payload,
+                    )
+                )
+            continue
         if include_turn_started and turn_id is not None:
             append(
                 CodexEventType.TURN_STARTED,

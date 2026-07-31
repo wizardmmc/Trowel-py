@@ -1,7 +1,7 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import {
-  useActiveSession,
   useCcStore,
   type Task,
 } from "../../stores/ccStore";
@@ -24,7 +24,21 @@ interface TodoBarProps {
 }
 
 export function TodoBar({ drawerOpen = false, onCloseDrawer }: TodoBarProps) {
-  const active = useActiveSession();
+  const active = useCcStore(
+    useShallow((state) => {
+      const session = state.activeSid
+        ? state.sessions[state.activeSid] ?? null
+        : null;
+      return session
+        ? {
+            runtime: session.runtime,
+            goal: session.goal,
+            plan: session.plan,
+            tasks: session.tasks,
+          }
+        : null;
+    }),
+  );
   const activeSid = useCcStore((state) => state.activeSid);
   const setCodexGoal = useCcStore((state) => state.setCodexGoal);
   const clearCodexGoal = useCcStore((state) => state.clearCodexGoal);

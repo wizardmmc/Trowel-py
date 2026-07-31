@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
         )
         from trowel_py.agent_host.session_titles import NativeSessionTitleGenerator
         from trowel_py.cc_host.routes import get_registry
+        from trowel_py.memory.paths import resolve_memory_root
 
         cc_registry = get_registry()
         runtime_ports = {
@@ -177,6 +178,16 @@ async def lifespan(app: FastAPI):
 
             enqueue_session_review(memory_paths.resolve_memory_root(), binding)
 
+        try:
+            codex_history_root = resolve_memory_root()
+        except Exception:  # noqa: BLE001 - 配置异常不能让整个 Agent Hub 停用。
+            logger.warning(
+                "[agent] Codex normalized history disabled because Memory root "
+                "could not be resolved",
+                exc_info=True,
+            )
+            codex_history_root = None
+
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
@@ -191,6 +202,7 @@ async def lifespan(app: FastAPI):
                 cc_proxy_base_url=app.state.proxy_base_url,
                 cc_settings_path=app.state.cc_settings_path,
             ),
+            codex_history_root=codex_history_root,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

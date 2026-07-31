@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 import { useCcStore } from "../../stores/ccStore";
+import { useCcStoreFrameSelector } from "../../stores/ccFrameSelector";
 import {
   MAX_RUNNING,
   MAX_CONNECTIONS,
@@ -11,6 +12,9 @@ interface MultiSessionBarProps {
   readonly onNewSameWorkdir: () => void;
   readonly onChangeWorkdir: () => void;
 }
+
+const selectSessions = (state: ReturnType<typeof useCcStore.getState>) =>
+  state.sessions;
 
 function dotClass(s: PerSessionState): string {
   if (s.abort !== null) return "cc-multibar__dot--running";
@@ -45,7 +49,7 @@ export function MultiSessionBar({
   onNewSameWorkdir,
   onChangeWorkdir,
 }: MultiSessionBarProps) {
-  const sessions = useCcStore((s) => s.sessions);
+  const sessions = useCcStoreFrameSelector(selectSessions);
   const activeSid = useCcStore((s) => s.activeSid);
   const activate = useCcStore((s) => s.activateSession);
   const close = useCcStore((s) => s.closeSession);
