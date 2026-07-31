@@ -185,6 +185,7 @@ export function SessionView({
         workdir,
         runtime: row.runtime,
         resume_from: row.native_session_id,
+        resume_title: row.title,
       });
       await loadHistoryIntoView();
     } catch {
@@ -356,7 +357,7 @@ export function SessionView({
               {openedSubagent && (
                 <nav className="cc-child-breadcrumb" aria-label="Subagent 路径">
                   <button type="button" onClick={() => setOpenedSubagentId(null)}>
-                    {active.name}
+                    {active.displayTitle || active.name}
                   </button>
                   <span aria-hidden="true">/</span>
                   <span>{openedSubagent.agentPath ?? openedSubagent.threadId}</span>

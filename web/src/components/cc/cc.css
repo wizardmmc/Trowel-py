@@ -2952,7 +2952,7 @@
   padding: var(--space-xs);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-sm);
 }
 .cc-multibar__empty {
   padding: var(--space-md) var(--space-sm);
@@ -2964,6 +2964,26 @@
 .cc-multibar__empty-hint {
   font-size: 0.72rem;
   opacity: 0.85;
+}
+.cc-multibar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cc-multibar__group + .cc-multibar__group {
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+.cc-multibar__group-title {
+  overflow: hidden;
+  padding: 3px var(--space-sm) 4px;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cc-multibar__item {
   display: flex;
@@ -2995,7 +3015,14 @@
 .cc-multibar__main:hover {
   background: var(--garden-soft);
 }
-.cc-multibar__close {
+.cc-multibar__actions {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 22px;
+}
+.cc-multibar__action {
+  flex: 1;
   flex-shrink: 0;
   width: 22px;
   border: none;
@@ -3008,15 +3035,50 @@
   opacity: 0;
   transition: opacity 0.1s ease;
 }
-.cc-multibar__item:hover .cc-multibar__close,
-.cc-multibar__item--active .cc-multibar__close,
-.cc-multibar__close:focus-visible {
+.cc-multibar__item:hover .cc-multibar__action,
+.cc-multibar__item--active .cc-multibar__action,
+.cc-multibar__action:focus-visible {
   opacity: 0.7;
 }
-.cc-multibar__close:hover {
+.cc-multibar__action:hover {
+  opacity: 1;
+  color: var(--garden-green);
+  background: var(--garden-soft);
+}
+.cc-multibar__action--close:hover {
   opacity: 1;
   color: var(--color-error);
   background: var(--error-soft);
+}
+.cc-multibar__editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px 24px;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-xs);
+}
+.cc-multibar__editor input {
+  min-width: 0;
+  border: 1px solid var(--garden-green);
+  border-radius: var(--radius-sm);
+  padding: 5px 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  outline: none;
+}
+.cc-multibar__editor button {
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cc-multibar__editor button:hover {
+  background: var(--garden-soft);
+  color: var(--garden-green);
 }
 .cc-multibar__row1 {
   display: flex;

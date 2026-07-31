@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,7 +21,12 @@ from trowel_py.agent_capacity import (
     USER_CONNECTION_LIMIT,
     USER_RUNNING_LIMIT,
 )
-from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
+from trowel_py.agent_host.binding import (
+    Runtime,
+    SessionBinding,
+    TitleSource,
+    make_binding,
+)
 from trowel_py.agent_host.capacity import (
     CapacityConflictError,
     CapacityLimitError,
@@ -42,6 +49,11 @@ from trowel_py.agent_host.codex_settings import (
     select_turn_settings,
 )
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.agent_host.session_titles import (
+    SessionTitleGenerator,
+    clean_generated_title,
+    prompt_title,
+)
 from trowel_py.agent_host.runtimes import (
     ClaudeCodeEventAdapter,
     ClaudeCodeRuntimeAdapter,
@@ -62,6 +74,11 @@ from trowel_py.cc_host.session_lifecycle import (
     CcWorkdirNotFoundError,
 )
 from trowel_py.agent_host.store import BindingStore, next_session_display_name
+from trowel_py.agent_host.title_store import (
+    SessionTitleRecord,
+    SessionTitleStore,
+    resolve_title_store_path,
+)
 from trowel_py.agent_host.events import AgentEvent
 
 _log = logging.getLogger(__name__)
@@ -181,6 +198,8 @@ class SessionHub:
         runtime_ports: Mapping[Runtime, RuntimeSessionPort] | None = None,
         capacity_limits: CapacityLimits | None = None,
         session_review_requester: SessionReviewRequester | None = None,
+        title_generator: SessionTitleGenerator | None = None,
+        title_store: SessionTitleStore | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -203,9 +222,18 @@ class SessionHub:
             capacity_limits: 用户连接和委派资源池上限；未提供时使用生产默认值。
             session_review_requester: 用户会话关闭后持久登记 Memory review 的同步
                 回调；未提供时只执行原有关闭流程。
+            title_generator: 用低成本临时模型生成语义标题的异步实现；未提供时只
+                保存首条提示词预览。
+            title_store: 按原生会话 ID 保存标题的独立索引；未提供时在 binding
+                文件旁创建。
         """
 
         self._store = store
+        self._title_store = title_store or SessionTitleStore(
+            resolve_title_store_path(store.path)
+        )
+        self._title_generator = title_generator
+        self._title_lock = threading.Lock()
         self._delegate_identities = delegate_identity_store or DelegateIdentityStore(
             delegate_identity_path(store.path)
         )
@@ -266,6 +294,146 @@ class SessionHub:
         """是否已经配置 Codex 进程和 thread 管理器。"""
 
         return self._codex is not None
+
+    def _initial_title(
+        self, req: CreateAgentSessionRequest
+    ) -> tuple[str, TitleSource]:
+        """恢复原生会话时取得 Trowel 标题或运行工具提供的标题。
+
+        独立标题索引优先于历史接口刚读到的原生标题，使 binding 被关闭后，手动
+        标题和自动标题仍能在下次恢复时出现。
+        """
+
+        if req.session_kind != "user":
+            return "", "new"
+        native_session_id = req.resume_from
+        if native_session_id is None:
+            return "", "new"
+        saved = self._title_store.get(Runtime(req.runtime), native_session_id)
+        if saved is not None:
+            return saved.title, saved.source
+        if req.resume_title is not None:
+            return prompt_title(req.resume_title), "native"
+        return "", "new"
+
+    def _persist_native_title(self, binding: SessionBinding) -> None:
+        """在 binding 已取得原生会话 ID 后保存当前非空标题。"""
+
+        if (
+            binding.native_session_id is None
+            or not binding.display_title
+            or binding.title_source == "new"
+        ):
+            return
+        self._title_store.put(
+            SessionTitleRecord(
+                runtime=binding.runtime,
+                native_session_id=binding.native_session_id,
+                title=binding.display_title,
+                source=binding.title_source,
+                updated_at=binding.updated_at,
+            )
+        )
+
+    def _replace_title(
+        self,
+        binding: SessionBinding,
+        title: str,
+        source: TitleSource,
+    ) -> SessionBinding:
+        """更新 binding 标题并同步独立的原生会话标题索引。"""
+
+        updated = replace(
+            binding,
+            display_title=title,
+            title_source=source,
+            updated_at=datetime.now().isoformat(timespec="microseconds"),
+        )
+        self._store.put(updated)
+        self._persist_native_title(updated)
+        return updated
+
+    def rename_title(self, session_id: str, title: str) -> SessionBinding:
+        """把用户会话改为手动标题，后续后台生成不能覆盖它。
+
+        Args:
+            session_id: 要改名的 Trowel 会话 ID。
+            title: API 已去除首尾空白的非空标题。
+
+        Returns:
+            保存手动标题后的会话记录。
+
+        Raises:
+            SessionNotFoundError: 找不到指定会话。
+            SessionOperationError: 指定会话是内部委派会话。
+        """
+
+        with self._title_lock:
+            binding = self._require(session_id)
+            if binding.session_kind != "user":
+                raise SessionOperationError(
+                    "delegate session cannot have a display title"
+                )
+            return self._replace_title(binding, title, "manual")
+
+    async def generate_title(self, session_id: str, text: str) -> SessionBinding:
+        """先保存提示词预览，再尝试用临时低成本模型替换为语义标题。
+
+        模型失败或超时时保留提示词预览。等待模型期间若用户已经手动改名，模型结果
+        会被丢弃，避免迟到的后台任务覆盖用户选择。
+
+        Args:
+            session_id: 收到首条用户消息的 Trowel 会话 ID。
+            text: 要概括的首条真实用户消息。
+
+        Returns:
+            当前最终生效的会话记录。
+
+        Raises:
+            SessionNotFoundError: 找不到指定会话。
+            SessionOperationError: 指定会话是内部委派会话。
+        """
+
+        expected_prompt = prompt_title(text)
+        with self._title_lock:
+            binding = self._require(session_id)
+            if binding.session_kind != "user":
+                raise SessionOperationError(
+                    "delegate session cannot have a display title"
+                )
+            if binding.title_source not in {"new", "prompt"}:
+                return binding
+            if not expected_prompt:
+                return binding
+            if binding.title_source == "prompt":
+                if binding.display_title != expected_prompt:
+                    return binding
+                fallback = binding.display_title
+            else:
+                fallback = expected_prompt
+                binding = self._replace_title(binding, fallback, "prompt")
+        generator = self._title_generator
+        if generator is None:
+            return binding
+        try:
+            generated = await generator.generate(
+                binding.runtime, text, binding.workdir
+            )
+        except Exception:  # noqa: BLE001 - 标题是可降级的旁路任务。
+            _log.warning(
+                "session title generation failed for %s",
+                session_id,
+                exc_info=True,
+            )
+            return self._require(session_id)
+        cleaned = clean_generated_title(generated)
+        if cleaned is None:
+            return self._require(session_id)
+        with self._title_lock:
+            latest = self._require(session_id)
+            if latest.title_source != "prompt" or latest.display_title != fallback:
+                return latest
+            return self._replace_title(latest, cleaned, "generated")
 
     def create(self, req: CreateAgentSessionRequest) -> SessionBinding:
         """创建 Claude Code 或 Codex 会话，并保存对应的 Trowel 会话记录。
@@ -513,6 +681,7 @@ class SessionHub:
             delegation_depth=req.delegation_depth,
         )
         display_name = self._display_name(req.workdir)
+        display_title, title_source = self._initial_title(req)
         try:
             opened = self._cc_opener(
                 cc_req,
@@ -544,11 +713,14 @@ class SessionHub:
                 delegation_depth=req.delegation_depth,
                 capabilities=CC_CAPABILITIES,
                 name=opened.name,
+                display_title=display_title,
+                title_source=title_source,
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CLAUDE_CODE, opened.sid, exc)
             raise
         self._lifecycle.commit_created(binding)
+        self._persist_native_title(binding)
         if req.session_kind == "user":
             self._active_id = opened.sid
         return binding
@@ -566,6 +738,7 @@ class SessionHub:
             fingerprint=_injection_fingerprint,
         )
         sid = prepared.session_id
+        display_title, title_source = self._initial_title(req)
         if self._codex is not None:
             self._codex.register(prepared.session)
         try:
@@ -590,11 +763,14 @@ class SessionHub:
                 permission_preset=prepared.permission_preset,
                 injection_hash=prepared.injection_hash,
                 declared_mcp_roster=prepared.declared_mcp_roster,
+                display_title=display_title,
+                title_source=title_source,
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CODEX, sid, exc)
             raise
         self._lifecycle.commit_created(binding)
+        self._persist_native_title(binding)
         if req.session_kind == "user":
             self._active_id = sid
         return binding
@@ -708,12 +884,25 @@ class SessionHub:
                 limit=required,
                 excluded_ids=codex_delegate_ids,
             )
-        return merge_history_page(
+        rows, next_cursor = merge_history_page(
             cc_summaries,
             codex_threads,
             offset=offset,
             limit=limit,
         )
+        for row in rows:
+            try:
+                runtime = Runtime(str(row["runtime"]))
+                native_session_id = str(row["native_session_id"])
+            except (KeyError, ValueError):
+                continue
+            saved = self._title_store.get(runtime, native_session_id)
+            if saved is not None:
+                row["title"] = saved.title
+                row["title_source"] = saved.source
+            else:
+                row["title_source"] = "native"
+        return rows, next_cursor
 
     async def history(self, session_id: str) -> list[dict[str, Any]]:
         """读取指定会话的历史事件，并转换为通用 AgentEvent 格式。
@@ -1840,13 +2029,14 @@ class SessionHub:
             return
         self._lifecycle.remember_delegate_identity(binding, cc_session_id)
         try:
-            self._store.update_native(
+            updated = self._store.update_native(
                 session_id,
                 native_session_id=cc_session_id,
                 model=model,
                 effort=getattr(host, "effort", None),
                 permission=getattr(host, "permission_mode", None),
             )
+            self._persist_native_title(updated)
         except KeyError:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
 
@@ -1872,7 +2062,7 @@ class SessionHub:
         try:
             sandbox = getattr(thread_binding, "effective_sandbox", None)
             approval = getattr(thread_binding, "effective_approval", None)
-            self._store.update_native(
+            updated = self._store.update_native(
                 session_id,
                 native_session_id=thread_binding.thread_id,
                 model=thread_binding.model,
@@ -1885,6 +2075,7 @@ class SessionHub:
                 effective_approval=approval,
                 network_access=getattr(thread_binding, "network_access", None),
             )
+            self._persist_native_title(updated)
         except KeyError:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
 

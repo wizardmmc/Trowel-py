@@ -190,15 +190,34 @@ def build_default_trowel_memory_mcp(
 class CodexSessionConfig:
     """定义 Codex 会话的冻结输入。
 
-    developer_instructions 会覆盖用户 Codex 配置中的同名值，并非追加；
-    ephemeral=False 保留可供 app-server 重启后恢复的 native rollout；
-    memory MCP 为 None 时，本会话不附加 Trowel memory MCP。
+    ``base_instructions`` 和 ``developer_instructions`` 都在创建 thread 时生效；
+    具体的用户消息由 ``turn/start`` 另行发送。
+
+    Attributes:
+        trowel_session_id: Trowel 为会话分配的稳定 ID。
+        workdir: Codex thread 使用的工作目录。
+        model: 可选的模型 ID；为空时使用 Codex 配置的默认模型。
+        effort: 后续 ``turn/start`` 默认使用的推理强度。
+        base_instructions: Codex 基础指令的可选覆盖。为空时沿用 Codex 内置的
+            “编程 Agent”指令；传值时仅为当前 thread 替换这套默认指令，不修改
+            模型，也不包含具体的用户消息。
+        developer_instructions: 作为独立 developer 角色消息注入的附加规则。
+            传值会覆盖用户 Codex 配置中的同名值，而不是追加到该值之后；它不会
+            替换 ``base_instructions``。
+        approval_policy: thread 使用的审批策略；为空时使用 Codex 配置值。
+        sandbox: thread 使用的沙箱模式；为空时使用 Codex 配置值。
+        ephemeral: 是否只在内存中保存 thread；``False`` 会保留可供 app-server
+            重启后恢复的原生 rollout。
+        initial_thread_id: 要恢复的原生 Codex thread ID；为空时创建新 thread。
+        trowel_memory_mcp: 可选的 Trowel memory MCP 配置；为空时不附加。
+        trowel_agent_mcp: 可选的 Trowel agent MCP 配置；为空时不附加。
     """
 
     trowel_session_id: str
     workdir: str
     model: str | None = None
     effort: str | None = None
+    base_instructions: str | None = None
     developer_instructions: str | None = None
     approval_policy: str | None = None
     sandbox: str | None = None

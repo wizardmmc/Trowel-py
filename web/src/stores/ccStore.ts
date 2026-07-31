@@ -13,11 +13,13 @@ import {
   compactCodexSession as apiCompactCodexSession,
   deleteAgentSession as apiDeleteSession,
   getAgentHistory,
+  generateAgentSessionTitle as apiGenerateSessionTitle,
   getCodexSubagentHistory,
   interruptAgentSession as interruptSession,
   listActiveAgentSessions as listActiveSessions,
   listAgentHistory as listSessions,
   listAgentRequests,
+  renameAgentSessionTitle as apiRenameSessionTitle,
   setCodexGoal as apiSetCodexGoal,
   startCodexReview as apiStartCodexReview,
   startCodexTurn as apiStartCodexTurn,
@@ -45,6 +47,7 @@ import {
 import {
   createNewSessionState,
   createReconciledSessionState,
+  promptSessionTitle,
   type PerSessionState,
   type StartSessionParams,
 } from "./ccStore/sessionState";
@@ -85,6 +88,7 @@ interface CcState {
   selectSessionPermissionPreset: (preset: PermissionPreset) => Promise<void>;
   loadHistoryIntoView: () => Promise<void>;
   loadCodexSubagentHistory: (threadId: string) => Promise<void>;
+  renameSessionTitle: (sid: string, title: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerElicit: (answers: Record<string, string>) => Promise<void>;
@@ -319,8 +323,23 @@ export function createCcStore() {
             ),
           );
           for (const b of userSessions) {
-            if (merged[b.session_id]) continue;
-            merged[b.session_id] = createReconciledSessionState(b);
+            const existing = merged[b.session_id];
+            if (existing) {
+              const displayTitle = b.display_title ?? existing.displayTitle;
+              const titleSource = b.title_source ?? existing.titleSource;
+              if (
+                displayTitle !== existing.displayTitle ||
+                titleSource !== existing.titleSource
+              ) {
+                merged[b.session_id] = {
+                  ...existing,
+                  displayTitle,
+                  titleSource,
+                };
+              }
+            } else {
+              merged[b.session_id] = createReconciledSessionState(b);
+            }
           }
           const activeSid =
             state.activeSid && merged[state.activeSid]
@@ -635,6 +654,46 @@ export function createCcStore() {
         }
       },
 
+      renameSessionTitle: async (sid, title) => {
+        const normalized = title.trim();
+        if (!normalized) return;
+        try {
+          const updated = await apiRenameSessionTitle(sid, normalized);
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  displayTitle: updated.display_title ?? normalized,
+                  titleSource: updated.title_source ?? "manual",
+                  transportError: null,
+                },
+              },
+            };
+          });
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  transportError:
+                    error instanceof Error ? error.message : String(error),
+                },
+              },
+            };
+          });
+        }
+      },
+
       send: async (text) => {
         const sid = get().activeSid;
         if (!sid) {
@@ -665,6 +724,55 @@ export function createCcStore() {
           return { ...state, sessions: admission.sessions };
         });
         if (!accepted) return;
+
+        const admitted = get().sessions[sid];
+        if (admitted?.titleSource === "new") {
+          const fallback = promptSessionTitle(text);
+          if (fallback) {
+            set((state) => {
+              const session = state.sessions[sid];
+              if (!session || session.titleSource !== "new") return state;
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...session,
+                    displayTitle: fallback,
+                    titleSource: "prompt",
+                  },
+                },
+              };
+            });
+            void apiGenerateSessionTitle(sid, text)
+              .then((updated) => {
+                set((state) => {
+                  const session = state.sessions[sid];
+                  if (
+                    !session ||
+                    session.titleSource !== "prompt" ||
+                    session.displayTitle !== fallback
+                  ) {
+                    return state;
+                  }
+                  return {
+                    ...state,
+                    sessions: {
+                      ...state.sessions,
+                      [sid]: {
+                        ...session,
+                        displayTitle: updated.display_title ?? fallback,
+                        titleSource: updated.title_source ?? "prompt",
+                      },
+                    },
+                  };
+                });
+              })
+              .catch(() => {
+                // 标题是旁路增强；失败时保留已显示的首条提示词。
+              });
+          }
+        }
 
         if (runtime === "codex") {
           try {

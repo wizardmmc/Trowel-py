@@ -156,6 +156,7 @@ async def lifespan(app: FastAPI):
             ClaudeCodeRuntimeAdapter,
             CodexRuntimeAdapter,
         )
+        from trowel_py.agent_host.session_titles import NativeSessionTitleGenerator
         from trowel_py.cc_host.routes import get_registry
 
         cc_registry = get_registry()
@@ -185,6 +186,11 @@ async def lifespan(app: FastAPI):
             event_observer=quota_observer,
             runtime_ports=runtime_ports,
             session_review_requester=request_session_review,
+            title_generator=NativeSessionTitleGenerator(
+                codex_manager=app.state.codex_host_manager,
+                cc_proxy_base_url=app.state.proxy_base_url,
+                cc_settings_path=app.state.cc_settings_path,
+            ),
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

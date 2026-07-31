@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   apiCreateSession,
   apiDeleteSession,
+  apiGenerateSessionTitle,
   ev,
   mockCreate,
   releaseAllStreams,
@@ -27,6 +28,73 @@ describe("createCcStore — multi-session lifecycle", () => {
     expect(store.getState().sessions.s1.connected).toBe(false);
     const sending = store.getState().send("hi");
     expect(store.getState().sessions.s1.connected).toBe(true);
+    stream.apply!(ev("finished"));
+    await releaseAllStreams();
+    await sending;
+  });
+
+  it("shows the first prompt immediately, then applies the generated title", async () => {
+    const store = createCcStore();
+    const created = mockCreate("s1", {
+      name: "wd #2",
+      display_title: "",
+      title_source: "new",
+    });
+    await store.getState().startSession({ workdir: "/wd" });
+    let resolveTitle!: (session: ReturnType<typeof mockCreate>) => void;
+    apiGenerateSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+
+    const sending = store.getState().send("  实现   同目录\n聚合展示  ");
+    expect(store.getState().sessions.s1.displayTitle).toBe("实现 同目录 聚合展示");
+    expect(store.getState().sessions.s1.titleSource).toBe("prompt");
+
+    resolveTitle({
+      ...created,
+      display_title: "实现会话目录分组",
+      title_source: "generated",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getState().sessions.s1.displayTitle).toBe("实现会话目录分组");
+
+    stream.apply!(ev("finished"));
+    await releaseAllStreams();
+    await sending;
+  });
+
+  it("does not let a stale generated response overwrite a manual title", async () => {
+    const store = createCcStore();
+    const created = mockCreate("s1", {
+      display_title: "",
+      title_source: "new",
+    });
+    await store.getState().startSession({ workdir: "/wd" });
+    let resolveTitle!: (session: ReturnType<typeof mockCreate>) => void;
+    apiGenerateSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+
+    const sending = store.getState().send("第一条真实提示词");
+    await store.getState().renameSessionTitle("s1", "手动保留的标题");
+    resolveTitle({
+      ...created,
+      display_title: "迟到的自动标题",
+      title_source: "generated",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.getState().sessions.s1.displayTitle).toBe("手动保留的标题");
+    expect(store.getState().sessions.s1.titleSource).toBe("manual");
+
     stream.apply!(ev("finished"));
     await releaseAllStreams();
     await sending;

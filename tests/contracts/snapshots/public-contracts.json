@@ -2486,6 +2486,110 @@
           }
         }
       },
+      "/api/agent/sessions/{session_id}/title": {
+        "put": {
+          "summary": "Rename Session Title",
+          "description": "保存用户手动指定的会话标题。\n\nArgs:\n    session_id: 要改名的用户会话 ID。\n    body: 已去除首尾空白的非空标题。\n    hub: 负责保存 binding 和原生会话标题索引的 Session Hub。\n\nReturns:\n    统一响应。data 为更新后的完整会话记录。\n\nRaises:\n    HTTPException: 会话不存在时返回 404，委派会话不能改名时返回 422。",
+          "operationId": "rename_session_title_api_agent_sessions__session_id__title_put",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenameAgentSessionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Rename Session Title Api Agent Sessions  Session Id  Title Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/title/generate": {
+        "post": {
+          "summary": "Generate Session Title",
+          "description": "保存首条提示词预览，并尝试异步生成语义标题。\n\n标题模型失败不会使主会话请求失败，此时 data 中保留 prompt 来源的预览。\n\nArgs:\n    session_id: 收到首条用户输入的用户会话 ID。\n    body: 要概括而不执行的首条用户输入。\n    hub: 负责标题降级、生成和竞争处理的 Session Hub。\n\nReturns:\n    统一响应。data 为当前最终生效的完整会话记录。\n\nRaises:\n    HTTPException: 会话不存在时返回 404，委派会话不能生成标题时返回 422。",
+          "operationId": "generate_session_title_api_agent_sessions__session_id__title_generate_post",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateAgentSessionTitleRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Generate Session Title Api Agent Sessions  Session Id  Title Generate Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/{session_id}/interrupt": {
         "post": {
           "summary": "Interrupt Session",
@@ -3367,6 +3471,19 @@
               ],
               "title": "Resume From"
             },
+            "resume_title": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1000,
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resume Title"
+            },
             "model": {
               "anyOf": [
                 {
@@ -3677,6 +3794,21 @@
           "title": "FeedRequest",
           "description": "使用库存行 ID 指定要消耗的食物，而不是商品目录 ID。"
         },
+        "GenerateAgentSessionTitleRequest": {
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Text"
+            }
+          },
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "title": "GenerateAgentSessionTitleRequest",
+          "description": "携带用于生成语义标题的首条用户消息。\n\nAttributes:\n    text: 主会话收到的首条非空用户输入；标题任务只概括它，不执行它。"
+        },
         "GenerateRequest": {
           "properties": {
             "card_id": {
@@ -3840,6 +3972,23 @@
           ],
           "title": "ReExplainRequest",
           "description": "携带重新生成草稿解释所需的当前内容和用户偏好。\n\n草稿尚未保存，因此请求直接携带内容而不是卡片 ID。\n\nAttributes:\n    explanation: 当前解释，模型会根据它生成新的候选版本；至少包含 10 个字符。\n    title: 草稿标题，不能为空。\n    category: 草稿分类，不能为空。\n    user_hint: 用户希望采用的解释方向；为 ``None`` 或空字符串时不限定方向。"
+        },
+        "RenameAgentSessionRequest": {
+          "properties": {
+            "title": {
+              "type": "string",
+              "maxLength": 80,
+              "minLength": 1,
+              "pattern": "^[^\\r\\n]+$",
+              "title": "Title"
+            }
+          },
+          "type": "object",
+          "required": [
+            "title"
+          ],
+          "title": "RenameAgentSessionRequest",
+          "description": "携带用户手动指定的会话标题。\n\nAttributes:\n    title: 去除首尾空白后的非空标题，最多 80 个字符。"
         },
         "RevertRequest": {
           "properties": {

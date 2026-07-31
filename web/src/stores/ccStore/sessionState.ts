@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   Runtime,
+  SessionTitleSource,
 } from "../../api/agent";
 import {
   INITIAL_REDUCER_STATE,
@@ -23,6 +24,8 @@ export interface PerSessionState extends ReducerState {
   readonly workdir: string;
   readonly effort: string | null;
   readonly name: string;
+  readonly displayTitle: string;
+  readonly titleSource: SessionTitleSource;
   readonly revertEnabled: boolean;
   readonly transportError: string | null;
   abort: AbortController | null;
@@ -53,6 +56,7 @@ export interface StartSessionParams {
   readonly workdir: string;
   readonly runtime?: Runtime;
   readonly resume_from?: string;
+  readonly resume_title?: string;
   readonly model?: string;
   readonly effort?: string;
   readonly permission_mode?: string;
@@ -112,6 +116,8 @@ function createSessionState(
     workdir: identity.workdir,
     effort: identity.effort,
     name: identity.name,
+    displayTitle: session.display_title ?? "",
+    titleSource: session.title_source ?? "new",
     revertEnabled: session.capabilities.includes("checkpoint"),
     transportError: null,
     abort: null,
@@ -140,4 +146,11 @@ function createSessionState(
 
 function basename(workdir: string): string {
   return workdir.split("/").pop() || workdir;
+}
+
+/** 把首条用户消息压成会话栏可立即显示的单行标题。 */
+export function promptSessionTitle(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 80) return normalized;
+  return `${normalized.slice(0, 79).trimEnd()}…`;
 }

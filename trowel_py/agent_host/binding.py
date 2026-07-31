@@ -6,6 +6,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Literal, cast
+
+TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
+_TITLE_SOURCES: frozenset[str] = frozenset(
+    {"new", "native", "prompt", "generated", "manual"}
+)
 
 
 class Runtime(str, Enum):
@@ -56,6 +62,8 @@ class SessionBinding:
     agent_mcp_enabled: bool = True
     parent_session_id: str | None = None
     delegation_depth: int = 0
+    display_title: str = ""
+    title_source: TitleSource = "new"
 
     def to_dict(self) -> dict[str, object]:
         """转换为可持久化的字典。"""
@@ -89,6 +97,8 @@ class SessionBinding:
             "agent_mcp_enabled": self.agent_mcp_enabled,
             "parent_session_id": self.parent_session_id,
             "delegation_depth": self.delegation_depth,
+            "display_title": self.display_title,
+            "title_source": self.title_source,
         }
 
 
@@ -120,6 +130,8 @@ def make_binding(
     agent_mcp_enabled: bool = True,
     parent_session_id: str | None = None,
     delegation_depth: int = 0,
+    display_title: str = "",
+    title_source: TitleSource = "new",
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。"""
 
@@ -151,6 +163,8 @@ def make_binding(
         agent_mcp_enabled=agent_mcp_enabled,
         parent_session_id=parent_session_id,
         delegation_depth=delegation_depth,
+        display_title=display_title,
+        title_source=title_source,
         created_at=now,
         updated_at=now,
     )
@@ -167,6 +181,12 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(raw_delegation_depth, int)
         and not isinstance(raw_delegation_depth, bool)
         else 0
+    )
+    raw_title_source = data.get("title_source", "new")
+    title_source: TitleSource = (
+        cast(TitleSource, raw_title_source)
+        if isinstance(raw_title_source, str) and raw_title_source in _TITLE_SOURCES
+        else "new"
     )
     return SessionBinding(
         session_id=str(data["session_id"]),
@@ -229,4 +249,10 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             else None
         ),
         delegation_depth=delegation_depth,
+        display_title=(
+            str(data["display_title"])
+            if isinstance(data.get("display_title"), str)
+            else ""
+        ),
+        title_source=title_source,
     )

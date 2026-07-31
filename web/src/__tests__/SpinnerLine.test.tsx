@@ -17,6 +17,8 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     workdir: "/wd",
     effort: null,
     name: "wd",
+    displayTitle: "wd",
+    titleSource: "native",
     revertEnabled: false,
     transportError: null,
     abort: null,

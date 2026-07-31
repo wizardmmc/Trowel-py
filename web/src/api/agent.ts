@@ -1,5 +1,11 @@
 
 export type Runtime = "claude_code" | "codex";
+export type SessionTitleSource =
+  | "new"
+  | "native"
+  | "prompt"
+  | "generated"
+  | "manual";
 
 export interface AgentSession {
   readonly session_id: string;
@@ -18,6 +24,8 @@ export interface AgentSession {
   readonly profile_enabled: boolean;
   readonly capabilities: readonly string[];
   readonly name: string;
+  readonly display_title?: string;
+  readonly title_source?: SessionTitleSource;
   readonly connected: boolean;
   readonly running: boolean;
   readonly session_kind?: "user" | "delegate";
@@ -27,6 +35,7 @@ export interface CreateAgentSessionParams {
   readonly runtime: Runtime;
   readonly workdir: string;
   readonly resume_from?: string;
+  readonly resume_title?: string;
   readonly model?: string;
   readonly effort?: string;
   readonly permission_mode?: string;
@@ -59,6 +68,7 @@ export interface AgentHistoryRow {
   readonly runtime: Runtime;
   readonly native_session_id: string | null;
   readonly title: string;
+  readonly title_source?: SessionTitleSource;
   readonly updated_at: number | string;
 }
 
@@ -229,6 +239,31 @@ export async function activateAgentSession(
 
 export async function getAgentSession(sessionId: string): Promise<AgentSession> {
   return request<AgentSession>(`${AGENT_API_BASE}/sessions/${sessionId}`);
+}
+
+export async function renameAgentSessionTitle(
+  sessionId: string,
+  title: string,
+): Promise<AgentSession> {
+  return request<AgentSession>(`${AGENT_API_BASE}/sessions/${sessionId}/title`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function generateAgentSessionTitle(
+  sessionId: string,
+  text: string,
+): Promise<AgentSession> {
+  return request<AgentSession>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/title/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+  );
 }
 
 export async function deleteAgentSession(
