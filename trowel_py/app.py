@@ -148,6 +148,7 @@ async def lifespan(app: FastAPI):
         from trowel_py.agent_host import (
             BindingStore,
             Runtime,
+            SessionBinding,
             SessionHub,
             resolve_bindings_path,
         )
@@ -163,6 +164,18 @@ async def lifespan(app: FastAPI):
             Runtime.CODEX: CodexRuntimeAdapter(app.state.codex_host_manager),
         }
 
+        def request_session_review(binding: SessionBinding) -> None:
+            """持久登记关闭请求，并在可用时唤醒当前 Memory worker。"""
+
+            scheduler = app.state.memory_scheduler
+            if scheduler is not None:
+                scheduler.request_session_review(binding)
+                return
+            from trowel_py.memory import paths as memory_paths
+            from trowel_py.memory.daily_review.requests import enqueue_session_review
+
+            enqueue_session_review(memory_paths.resolve_memory_root(), binding)
+
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
@@ -171,6 +184,7 @@ async def lifespan(app: FastAPI):
             cc_settings_path=app.state.cc_settings_path,
             event_observer=quota_observer,
             runtime_ports=runtime_ports,
+            session_review_requester=request_session_review,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

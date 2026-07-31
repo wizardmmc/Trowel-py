@@ -22,7 +22,7 @@ def _register(
 ) -> None:
     conn = open_sessions_db(mem)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id=sid,
                 workdir=workdir,

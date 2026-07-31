@@ -65,7 +65,7 @@ def seed_session(
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        repo.register(
+        repo.claude.register(
             SessionRecord(
                 cc_session_id=sid,
                 workdir="/proj",
@@ -74,7 +74,7 @@ def seed_session(
                 registered_at=registered_at,
             )
         )
-        repo.update_completed(sid, completed)
+        repo.claude.update_completed(sid, completed)
         if kind != "user":
             conn.execute(
                 "UPDATE sessions SET session_kind=? WHERE cc_session_id=?",

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from trowel_py.memory.sessions_repo import IncrementalSegment
+from trowel_py.memory.sessions_repo import ClaudePendingSegment
 
 from .models import JournalSlice, ReviewSource
 
 
-def build_claude_review_source(segment: IncrementalSegment) -> ReviewSource:
+def build_claude_review_source(segment: ClaudePendingSegment) -> ReviewSource:
     """把 transcript 起点以前作为上下文，把新增字节区间作为目标。
 
     Args:

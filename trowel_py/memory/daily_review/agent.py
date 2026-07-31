@@ -18,13 +18,13 @@ from trowel_py.memory.daily_review.sources import (
     render_review_source,
     resolve_available_review_source,
 )
+from trowel_py.memory.daily_review.models import ReviewSessionLike
 from trowel_py.memory.daily_review.workspace import ensure_review_workdir
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
 from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
-from trowel_py.memory.sessions_repo import SessionRecord
 
-HostFactory = Callable[[SessionRecord, Path], Any]
+HostFactory = Callable[[ReviewSessionLike, Path], Any]
 DerivationSink = Callable[[DerivationProvenance], None]
 _REFINE_PIPELINE_VERSION = 3
 _DISTILL_MODEL = "glm-5.1"
@@ -153,7 +153,7 @@ def _revision_prompt(errors: list[str]) -> str:
 
 
 def _create_host(
-    session: SessionRecord,
+    session: ReviewSessionLike,
     workdir: Path,
     host_factory: HostFactory | None,
 ) -> Any:
@@ -223,7 +223,7 @@ def _derivation_for_host(host: Any) -> DerivationProvenance:
 
 
 async def run_one_session(
-    session: SessionRecord,
+    session: ReviewSessionLike,
     date_str: str,
     memory_root: Path,
     *,
@@ -254,12 +254,12 @@ async def run_one_session(
         DistillError: 目标来源不可用、host 未正常结束，或草稿修订后仍未通过
             门禁。
     """
-    workdir = ensure_review_workdir(date_str, memory_root) / session.cc_session_id
+    workdir = ensure_review_workdir(date_str, memory_root) / session.native_session_id
     workdir.mkdir(parents=True, exist_ok=True)
     _remove_legacy_numbered_sources(workdir)
     available_source = _available_review_source(
         review_source,
-        session.cc_session_id,
+        session.native_session_id,
     )
     cost = _target_cost(available_source.target)
     prompt = build_refine_prompt(
@@ -273,7 +273,7 @@ async def run_one_session(
     try:
         if not await _drive_host(host, prompt):
             raise DistillError(
-                f"agent did not finish cleanly for {session.cc_session_id}"
+                f"agent did not finish cleanly for {session.native_session_id}"
             )
         errors: list[str] = []
         for attempt in range(2):
@@ -285,9 +285,9 @@ async def run_one_session(
             if attempt == 0 and not await _drive_host(host, _revision_prompt(errors)):
                 raise DistillError(
                     "agent did not finish draft revision cleanly for "
-                    f"{session.cc_session_id}"
+                    f"{session.native_session_id}"
                 )
-        raise DistillError(f"invalid draft for {session.cc_session_id}: {errors}")
+        raise DistillError(f"invalid draft for {session.native_session_id}: {errors}")
     finally:
         close = getattr(host, "close", None)
         if close is not None:

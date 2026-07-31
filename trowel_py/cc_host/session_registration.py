@@ -56,7 +56,7 @@ def register_session(
 
     connection = open_sessions_db(resolve_memory_root())
     try:
-        create_sessions_repository(connection).register(record)
+        create_sessions_repository(connection).claude.register(record)
     finally:
         connection.close()
 
@@ -95,7 +95,7 @@ def update_completed(
 
     connection = open_sessions_db(resolve_memory_root())
     try:
-        create_sessions_repository(connection).update_completed(
+        create_sessions_repository(connection).claude.update_completed(
             cc_session_id,
             completed_bytes,
         )

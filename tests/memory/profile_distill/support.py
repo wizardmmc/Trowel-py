@@ -64,8 +64,8 @@ def seed_session(root: Path, sid: str = "s1", completed: int = 1000) -> None:
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        repo.register(session_record(sid))
-        repo.update_completed(sid, completed)
+        repo.claude.register(session_record(sid))
+        repo.claude.update_completed(sid, completed)
     finally:
         conn.close()
 

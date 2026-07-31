@@ -47,10 +47,10 @@ async def test_run_daily_review_persists_and_advances_all_segments(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.register(session("s2", "/proj2"))
-    repo.update_completed("s1", 4096)
-    repo.update_completed("s2", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.register(session("s2", "/proj2"))
+    repo.claude.update_completed("s1", 4096)
+    repo.claude.update_completed("s2", 4096)
     conn.close()
 
     await run_daily_review(
@@ -61,7 +61,7 @@ async def test_run_daily_review_persists_and_advances_all_segments(
 
     assert len(MemoryStore(memory_root).load_notes()) == 2
     conn = open_sessions_db(memory_root)
-    assert create_sessions_repository(conn).find_incremental() == []
+    assert create_sessions_repository(conn).claude.list_pending_segments() == []
     conn.close()
 
 
@@ -71,14 +71,14 @@ async def test_run_daily_review_keeps_failed_session_retryable(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("good", "/proj1"))
-    repo.register(session("bad", "/proj2"))
-    repo.update_completed("good", 4096)
-    repo.update_completed("bad", 4096)
+    repo.claude.register(session("good", "/proj1"))
+    repo.claude.register(session("bad", "/proj2"))
+    repo.claude.update_completed("good", 4096)
+    repo.claude.update_completed("bad", 4096)
     conn.close()
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
-        if session_record.cc_session_id == "good":
+        if session_record.native_session_id == "good":
             (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
             return FakeHost([FINISHED])
         return FakeHost([ERROR])
@@ -90,18 +90,275 @@ async def test_run_daily_review_keeps_failed_session_retryable(
     )
 
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert [item.session.cc_session_id for item in pending] == ["bad"]
     assert len(MemoryStore(memory_root).load_notes()) == 1
+
+
+async def test_immediate_review_only_processes_closed_cc_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.claude.register(
+        replace(session("closed", "/closed"), trowel_session_id="agent-closed")
+    )
+    repo.claude.register(replace(session("open", "/open"), trowel_session_id="agent-open"))
+    repo.claude.update_completed("closed", 4096)
+    repo.claude.update_completed("open", 4096)
+    repo.review_requests.enqueue(
+        "agent-closed",
+        runtime="claude_code",
+        requested_at="2026-07-09T12:00:00",
+    )
+    conn.close()
+    calls: list[str] = []
+    rebuilt_dates: list[str] = []
+
+    def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
+        calls.append(session_record.native_session_id)
+        (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
+        return FakeHost([FINISHED])
+
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._compress_or_aggregate",
+        lambda _root, day, _provider: rebuilt_dates.append(day),
+    )
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._maintain_dictionary",
+        lambda _root, _provider: None,
+    )
+
+    await run_daily_review(
+        event={"review_session_id": "agent-closed"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=create_host,
+    )
+
+    assert calls == ["closed", "closed"]
+    assert rebuilt_dates == ["2026-07-09"]
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        assert [item.session.cc_session_id for item in repo.claude.list_pending_segments()] == [
+            "open"
+        ]
+        assert repo.review_requests.find("agent-closed") is None
+    finally:
+        conn.close()
+
+
+async def test_each_closed_session_rebuilds_daily_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    for native_id, trowel_id in (("a", "agent-a"), ("b", "agent-b")):
+        repo.claude.register(
+            replace(
+                session(native_id, f"/{native_id}"),
+                trowel_session_id=trowel_id,
+            )
+        )
+        repo.claude.update_completed(native_id, 4096)
+        repo.review_requests.enqueue(
+            trowel_id,
+            runtime="claude_code",
+            requested_at="2026-07-09T12:00:00",
+        )
+    conn.close()
+    rebuilt_dates: list[str] = []
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._compress_or_aggregate",
+        lambda _root, day, _provider: rebuilt_dates.append(day),
+    )
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._maintain_dictionary",
+        lambda _root, _provider: None,
+    )
+
+    for trowel_id in ("agent-a", "agent-b"):
+        await run_daily_review(
+            event={"review_session_id": trowel_id},
+            memory_root=memory_root,
+            date_str="2026-07-09",
+            host_factory=factory([FINISHED], VALID_DRAFT),
+        )
+
+    assert rebuilt_dates == ["2026-07-09", "2026-07-09"]
+
+
+async def test_cc_close_snapshot_does_not_absorb_later_resumed_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.claude.register(
+        replace(
+            session("shared", "/shared"),
+            trowel_session_id="agent-a",
+        )
+    )
+    repo.claude.update_completed("shared", 2048)
+    repo.review_requests.enqueue(
+        "agent-a",
+        runtime="claude_code",
+        requested_at="2026-07-09T11:00:00",
+    )
+    repo.claude.register(
+        replace(
+            session("shared", "/shared"),
+            trowel_session_id="agent-b",
+            registered_at="2026-07-09T11:01:00",
+        )
+    )
+    repo.claude.update_completed("shared", 4096)
+    conn.close()
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._maintain_dictionary",
+        lambda _root, _provider: None,
+    )
+
+    await run_daily_review(
+        event={"review_session_id": "agent-a"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=factory([FINISHED], VALID_DRAFT),
+    )
+
+    manifests = sorted((memory_root / "meta" / "persisted-segments").glob("*.json"))
+    assert [path.name for path in manifests] == ["shared:0:2048.json"]
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        [remaining] = repo.claude.list_pending_segments()
+        assert (remaining.start, remaining.end) == (2048, 4096)
+        assert repo.review_requests.find("agent-a") is None
+    finally:
+        conn.close()
+
+
+async def test_cc_later_close_waits_for_unprocessed_earlier_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.claude.register(
+        replace(
+            session("shared", "/shared"),
+            trowel_session_id="agent-a",
+        )
+    )
+    repo.claude.update_completed("shared", 2048)
+    repo.claude.register(
+        replace(
+            session("shared", "/shared"),
+            trowel_session_id="agent-b",
+            registered_at="2026-07-09T11:01:00",
+        )
+    )
+    repo.claude.update_completed("shared", 4096)
+    repo.review_requests.enqueue(
+        "agent-b",
+        runtime="claude_code",
+        requested_at="2026-07-09T11:02:00",
+    )
+    conn.close()
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._maintain_dictionary",
+        lambda _root, _provider: None,
+    )
+    calls: list[str] = []
+
+    def unexpected_factory(session_record: SessionRecord, _workdir: Path):
+        calls.append(session_record.native_session_id)
+        return factory([FINISHED], VALID_DRAFT)(session_record, _workdir)
+
+    await run_daily_review(
+        event={"review_session_id": "agent-b"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=unexpected_factory,
+    )
+
+    assert calls == []
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        assert repo.review_requests.find("agent-b") is not None
+        [remaining] = repo.claude.list_pending_segments()
+        assert (remaining.start, remaining.end) == (0, 4096)
+    finally:
+        conn.close()
+
+
+async def test_failed_immediate_review_stays_queued_for_daily_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_root = tmp_path / "memory"
+    conn = open_sessions_db(memory_root)
+    repo = create_sessions_repository(conn)
+    repo.claude.register(replace(session("retry", "/retry"), trowel_session_id="agent-retry"))
+    repo.claude.update_completed("retry", 4096)
+    repo.review_requests.enqueue(
+        "agent-retry",
+        runtime="claude_code",
+        requested_at="2026-07-09T12:00:00",
+    )
+    conn.close()
+    monkeypatch.setattr(
+        "trowel_py.memory.daily_review.batch._maintain_dictionary",
+        lambda _root, _provider: None,
+    )
+
+    await run_daily_review(
+        event={"review_session_id": "agent-retry"},
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=factory([ERROR]),
+    )
+
+    conn = open_sessions_db(memory_root)
+    try:
+        assert (
+            create_sessions_repository(conn).review_requests.find("agent-retry")
+            is not None
+        )
+    finally:
+        conn.close()
+
+    await run_daily_review(
+        memory_root=memory_root,
+        date_str="2026-07-09",
+        host_factory=factory([FINISHED], VALID_DRAFT),
+    )
+
+    conn = open_sessions_db(memory_root)
+    try:
+        repo = create_sessions_repository(conn)
+        assert repo.review_requests.find("agent-retry") is None
+        assert repo.claude.list_pending_segments() == []
+    finally:
+        conn.close()
 
 
 async def test_review_kind_session_never_enters_batch(tmp_path: Path) -> None:
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("user", "/project"))
-    repo.register(
+    repo.claude.register(session("user", "/project"))
+    repo.claude.register(
         SessionRecord(
             cc_session_id="review-self",
             workdir="/runtime/review-daily-work/2026-07-09",
@@ -111,14 +368,14 @@ async def test_review_kind_session_never_enters_batch(tmp_path: Path) -> None:
             session_kind="review",
         )
     )
-    repo.update_completed("user", 4096)
-    repo.update_completed("review-self", 4096)
+    repo.claude.update_completed("user", 4096)
+    repo.claude.update_completed("review-self", 4096)
     conn.close()
 
     calls: list[str] = []
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
-        calls.append(session_record.cc_session_id)
+        calls.append(session_record.native_session_id)
         (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
         return FakeHost([FINISHED])
 
@@ -136,21 +393,21 @@ async def test_delegate_session_never_enters_daily_review(tmp_path: Path) -> Non
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("user", "/project"))
-    repo.register(
+    repo.claude.register(session("user", "/project"))
+    repo.claude.register(
         replace(
             session("delegate", "/project"),
             session_kind="delegate",
         )
     )
-    repo.update_completed("user", 4096)
-    repo.update_completed("delegate", 4096)
+    repo.claude.update_completed("user", 4096)
+    repo.claude.update_completed("delegate", 4096)
     conn.close()
 
     calls: list[str] = []
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
-        calls.append(session_record.cc_session_id)
+        calls.append(session_record.native_session_id)
         (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
         return FakeHost([FINISHED])
 
@@ -168,8 +425,8 @@ async def test_daily_review_keeps_all_session_episodes(tmp_path: Path) -> None:
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
     for session_id in ("s1", "s2", "s3"):
-        repo.register(session(session_id, f"/{session_id}"))
-        repo.update_completed(session_id, 4096)
+        repo.claude.register(session(session_id, f"/{session_id}"))
+        repo.claude.update_completed(session_id, 4096)
     conn.close()
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
@@ -177,7 +434,7 @@ async def test_daily_review_keeps_all_session_episodes(tmp_path: Path) -> None:
             {
                 "notes": [
                     {
-                        "title": f"结论 {session_record.cc_session_id}",
+                        "title": f"结论 {session_record.native_session_id}",
                         "verification": "verified",
                     }
                 ],
@@ -187,7 +444,7 @@ async def test_daily_review_keeps_all_session_episodes(tmp_path: Path) -> None:
                         "items": [
                             {
                                 "kind": "outcome",
-                                "summary": f"锚点 {session_record.cc_session_id}",
+                                "summary": f"锚点 {session_record.native_session_id}",
                                 "detail": "",
                             }
                         ],
@@ -215,10 +472,10 @@ async def test_daily_review_writes_one_episode_per_session(tmp_path: Path) -> No
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.register(session("s2", "/proj2"))
-    repo.update_completed("s1", 4096)
-    repo.update_completed("s2", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.register(session("s2", "/proj2"))
+    repo.claude.update_completed("s1", 4096)
+    repo.claude.update_completed("s2", 4096)
     conn.close()
 
     await run_daily_review(
@@ -238,8 +495,8 @@ async def test_persist_failure_does_not_advance_segment(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     def fail_episode_write(
@@ -258,7 +515,7 @@ async def test_persist_failure_does_not_advance_segment(
     )
 
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert [item.session.cc_session_id for item in pending] == ["s1"]
     assert not list((memory_root / "meta" / "persisted-segments").glob("*.json"))
@@ -271,15 +528,15 @@ async def test_schema_error_does_not_abort_or_advance_batch(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     def reject_schema(*_args: object, **_kwargs: object) -> None:
         raise ValueError("invalid note: kind=feedback")
 
     monkeypatch.setattr(
-        "trowel_py.memory.daily_review.batch.persist_draft",
+        "trowel_py.memory.daily_review.processor.persist_draft",
         reject_schema,
     )
 
@@ -290,7 +547,7 @@ async def test_schema_error_does_not_abort_or_advance_batch(
     )
 
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert [item.session.cc_session_id for item in pending] == ["s1"]
 
@@ -309,8 +566,8 @@ async def test_legacy_source_refs_in_new_draft_do_not_replace_live_episode(
 
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
     invalid = json.dumps(
         {
@@ -341,7 +598,7 @@ async def test_legacy_source_refs_in_new_draft_do_not_replace_live_episode(
     try:
         assert [
             item.session.cc_session_id
-            for item in create_sessions_repository(conn).find_incremental()
+            for item in create_sessions_repository(conn).claude.list_pending_segments()
         ] == ["s1"]
     finally:
         conn.close()
@@ -354,8 +611,8 @@ async def test_rerun_after_failure_lands_each_artifact_once(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     calls = 0
@@ -380,6 +637,6 @@ async def test_rerun_after_failure_lands_each_artifact_once(
     assert len(MemoryStore(memory_root).load_notes()) == 1
     assert (memory_root / "episodes" / "s1.md").exists()
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert pending == []

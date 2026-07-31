@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
+from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.memory.daily_review.scheduler import (
     DEFAULT_REVIEW_ENABLED,
     DEFAULT_REVIEW_TIME,
@@ -25,13 +28,19 @@ def _reset_register_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestSecondsUntil:
     def test_same_day_when_target_ahead(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 1, 0)) == pytest.approx(5400)
+        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 1, 0)) == pytest.approx(
+            5400
+        )
 
     def test_cross_midnight_when_target_passed(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 3, 0)) == pytest.approx(84600)
+        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 3, 0)) == pytest.approx(
+            84600
+        )
 
     def test_exact_now_rolls_to_tomorrow(self):
-        assert seconds_until(time(2, 30), datetime(2026, 7, 13, 2, 30, 0)) == pytest.approx(86400)
+        assert seconds_until(
+            time(2, 30), datetime(2026, 7, 13, 2, 30, 0)
+        ) == pytest.approx(86400)
 
 
 class TestLoadReviewConfig:
@@ -145,20 +154,23 @@ class TestSchedulerRunOnce:
 
 
 class TestSchedulerStartStop:
-    async def test_disabled_creates_no_tasks(self, tmp_path):
+    async def test_disabled_keeps_only_immediate_worker(self, tmp_path):
         sched = MemoryReviewScheduler(
-            _cfg(enabled=False), tmp_path, dispatch_fn=lambda _e: None, sleep_fn=_HangingSleep()
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=lambda _e: None,
+            sleep_fn=_HangingSleep(),
         )
         await sched.start()
-        assert sched.tasks == ()
+        assert len(sched.tasks) == 1
         await sched.stop()
 
-    async def test_start_creates_two_tasks(self, tmp_path):
+    async def test_start_creates_immediate_and_two_daily_tasks(self, tmp_path):
         sched = MemoryReviewScheduler(
             _cfg(), tmp_path, dispatch_fn=lambda _e: None, sleep_fn=_HangingSleep()
         )
         await sched.start()
-        assert len(sched.tasks) == 2
+        assert len(sched.tasks) == 3
         await sched.stop()
         assert sched.tasks == ()
 
@@ -183,6 +195,253 @@ class TestSchedulerStartStop:
         assert fired
         assert len(calls) == 1
         assert calls[0]["root"] == str(tmp_path)
+
+    async def test_close_request_is_persisted_before_background_dispatch(
+        self, tmp_path
+    ):
+        calls: list[dict] = []
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=calls.append,
+            sleep_fn=_HangingSleep(),
+        )
+        await sched.start()
+        binding = make_binding(
+            session_id="agent-1",
+            runtime=Runtime.CODEX,
+            native_session_id="thread-1",
+            workdir=str(tmp_path),
+            model="gpt-5.6-sol",
+            effort="high",
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            capabilities=(),
+            name="test",
+            session_kind="user",
+        )
+
+        sched.request_session_review(binding)
+
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        conn = open_sessions_db(tmp_path)
+        try:
+            assert (
+                create_sessions_repository(conn).review_requests.find("agent-1")
+                is not None
+            )
+        finally:
+            conn.close()
+        fired = await _wait_until(
+            lambda: any(call.get("review_session_id") == "agent-1" for call in calls)
+        )
+        await sched.stop()
+        assert fired
+
+    async def test_start_resumes_persisted_close_request(self, tmp_path):
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        conn = open_sessions_db(tmp_path)
+        repo = create_sessions_repository(conn)
+        repo.review_requests.enqueue(
+            "agent-before-restart",
+            runtime="claude_code",
+            requested_at="2026-07-31T10:00:00",
+        )
+        conn.close()
+        calls: list[dict] = []
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=calls.append,
+            sleep_fn=_HangingSleep(),
+        )
+
+        await sched.start()
+        fired = await _wait_until(
+            lambda: any(
+                call.get("review_session_id") == "agent-before-restart"
+                for call in calls
+            )
+        )
+        await sched.stop()
+
+        assert fired
+
+    async def test_immediate_worker_retries_persisted_request(self, tmp_path, monkeypatch):
+        from trowel_py.memory.daily_review import scheduler as rs_mod
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        monkeypatch.setattr(rs_mod, "IMMEDIATE_RETRY_MIN_SECONDS", 0.01)
+        monkeypatch.setattr(rs_mod, "IMMEDIATE_RETRY_MAX_SECONDS", 0.02)
+        attempts = 0
+
+        def dispatch(event: dict) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary failure")
+            conn = open_sessions_db(tmp_path)
+            try:
+                create_sessions_repository(conn).review_requests.complete(
+                    event["review_session_id"]
+                )
+            finally:
+                conn.close()
+
+        conn = open_sessions_db(tmp_path)
+        create_sessions_repository(conn).review_requests.enqueue(
+            "agent-retry",
+            runtime="codex",
+            requested_at="2026-07-31T10:00:00",
+        )
+        conn.close()
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=dispatch,
+        )
+
+        await sched.start()
+        retried = await _wait_until(lambda: attempts >= 2)
+        await sched.stop()
+
+        assert retried
+
+    async def test_lock_busy_request_retries_after_real_review_lock_releases(
+        self, tmp_path, monkeypatch
+    ):
+        fcntl = pytest.importorskip("fcntl")
+        from trowel_py.memory import review_job
+        from trowel_py.memory.daily_review import scheduler as rs_mod
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        monkeypatch.setattr(rs_mod, "IMMEDIATE_RETRY_MIN_SECONDS", 0.01)
+        monkeypatch.setattr(rs_mod, "IMMEDIATE_RETRY_MAX_SECONDS", 0.02)
+        attempts = 0
+        entered = 0
+
+        async def fake_review_body(
+            root,
+            _date_str,
+            _host_factory,
+            _provider,
+            _eligible_before,
+            review_session_id,
+        ) -> None:
+            nonlocal entered
+            entered += 1
+            conn = open_sessions_db(root)
+            try:
+                create_sessions_repository(conn).review_requests.complete(
+                    review_session_id
+                )
+            finally:
+                conn.close()
+
+        monkeypatch.setattr(review_job, "_run_daily_review_locked", fake_review_body)
+
+        def dispatch(event: dict) -> None:
+            nonlocal attempts
+            attempts += 1
+            review_job.run_daily_review_sync(event)
+
+        conn = open_sessions_db(tmp_path)
+        create_sessions_repository(conn).review_requests.enqueue(
+            "agent-lock-retry",
+            runtime="codex",
+            requested_at="2026-07-31T10:00:00",
+        )
+        conn.close()
+        lock_path = tmp_path / "meta" / ".review.lock"
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=dispatch,
+        )
+        try:
+            await sched.start()
+            assert await _wait_until(lambda: attempts >= 2)
+            assert entered == 0
+            conn = open_sessions_db(tmp_path)
+            try:
+                assert (
+                    create_sessions_repository(conn).review_requests.find(
+                        "agent-lock-retry"
+                    )
+                    is not None
+                )
+            finally:
+                conn.close()
+
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            assert await _wait_until(lambda: entered == 1)
+            conn = open_sessions_db(tmp_path)
+            try:
+                assert (
+                    create_sessions_repository(conn).review_requests.find(
+                        "agent-lock-retry"
+                    )
+                    is None
+                )
+            finally:
+                conn.close()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+            await sched.stop()
+
+    async def test_stop_waits_for_active_thread_dispatch(self, tmp_path):
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def dispatch(_event: dict) -> None:
+            started.set()
+            release.wait(timeout=2)
+
+        conn = open_sessions_db(tmp_path)
+        try:
+            create_sessions_repository(conn).review_requests.enqueue(
+                "agent-drain",
+                runtime="codex",
+                requested_at="2026-07-31T10:00:00",
+            )
+        finally:
+            conn.close()
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            dispatch_fn=dispatch,
+        )
+        await sched.start()
+        assert await _wait_until(started.is_set)
+
+        stopping = asyncio.create_task(sched.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        release.set()
+        await stopping
 
 
 class TestSchedulerDailyLoop:
@@ -230,10 +489,10 @@ class TestLifespanIntegration:
             sched = app.state.memory_scheduler
             assert sched is not None
             assert sched._started is True
-            assert len(sched.tasks) == 2
+            assert len(sched.tasks) == 3
         assert app.state.memory_scheduler.tasks == ()
 
-    def test_disabled_does_not_start(self, tmp_path, monkeypatch):
+    def test_disabled_starts_only_immediate_worker(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
 
         from trowel_py.app import create_app
@@ -244,11 +503,115 @@ class TestLifespanIntegration:
         monkeypatch.setattr(
             rs_mod,
             "load_review_config",
-            lambda *_a, **_k: rs_mod.ReviewScheduleConfig(rs_mod.DEFAULT_REVIEW_TIME, False),
+            lambda *_a, **_k: rs_mod.ReviewScheduleConfig(
+                rs_mod.DEFAULT_REVIEW_TIME, False
+            ),
         )
         app = create_app()
         with TestClient(app):
             sched = app.state.memory_scheduler
             assert sched is not None
-            assert sched._started is False
-            assert sched.tasks == ()
+            assert sched._started is True
+            assert len(sched.tasks) == 1
+
+    @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+    def test_delete_route_persists_and_dispatches_runtime_request(
+        self, tmp_path, monkeypatch, runtime
+    ):
+        from fastapi.testclient import TestClient
+
+        from trowel_py.app import create_app
+        from trowel_py.memory import paths as mem_paths
+        from trowel_py.memory.daily_review import scheduler as rs_mod
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        memory_root = tmp_path / "memory"
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        dispatched: list[dict] = []
+        monkeypatch.setattr(mem_paths, "resolve_memory_root", lambda: memory_root)
+        monkeypatch.setattr(rs_mod, "_default_dispatch", dispatched.append)
+        monkeypatch.setattr(
+            rs_mod,
+            "load_review_config",
+            lambda *_args, **_kwargs: rs_mod.ReviewScheduleConfig(
+                rs_mod.DEFAULT_REVIEW_TIME,
+                False,
+            ),
+        )
+        app = create_app()
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/agent/sessions",
+                json={"runtime": runtime, "workdir": str(workdir)},
+            )
+            assert created.status_code == 200
+            session_id = created.json()["data"]["session_id"]
+
+            closed = client.delete(f"/api/agent/sessions/{session_id}")
+
+            assert closed.status_code == 200
+            fired = asyncio.run(
+                _wait_until(
+                    lambda: any(
+                        event.get("review_session_id") == session_id
+                        for event in dispatched
+                    )
+                )
+            )
+            assert fired
+
+        conn = open_sessions_db(memory_root)
+        try:
+            request = create_sessions_repository(conn).review_requests.find(session_id)
+            assert request is not None
+            assert request.runtime == runtime
+        finally:
+            conn.close()
+
+    def test_close_still_persists_when_scheduler_start_fails(
+        self, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+
+        from trowel_py.app import create_app
+        from trowel_py.memory import paths as mem_paths
+        from trowel_py.memory.daily_review import scheduler as rs_mod
+        from trowel_py.memory.sessions_repo import (
+            create_sessions_repository,
+            open_sessions_db,
+        )
+
+        memory_root = tmp_path / "memory"
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        monkeypatch.setattr(mem_paths, "resolve_memory_root", lambda: memory_root)
+
+        async def fail_start(_self) -> None:
+            raise RuntimeError("scheduler unavailable")
+
+        monkeypatch.setattr(rs_mod.MemoryReviewScheduler, "start", fail_start)
+        app = create_app()
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/agent/sessions",
+                json={"runtime": "codex", "workdir": str(workdir)},
+            )
+            assert created.status_code == 200
+            session_id = created.json()["data"]["session_id"]
+
+            closed = client.delete(f"/api/agent/sessions/{session_id}")
+
+            assert closed.status_code == 200
+            assert app.state.memory_scheduler is None
+
+        conn = open_sessions_db(memory_root)
+        try:
+            request = create_sessions_repository(conn).review_requests.find(session_id)
+            assert request is not None
+            assert request.runtime == "codex"
+        finally:
+            conn.close()

@@ -99,14 +99,14 @@ async def test_run_daily_distill_only_processes_user_sessions(
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        repo.register(session_record("user"))
-        repo.register(session_record("rev"))
-        repo.register(session_record("dist"))
-        repo.register(session_record("delegate"))
-        repo.update_completed("user", 1000)
-        repo.update_completed("rev", 1000)
-        repo.update_completed("dist", 1000)
-        repo.update_completed("delegate", 1000)
+        repo.claude.register(session_record("user"))
+        repo.claude.register(session_record("rev"))
+        repo.claude.register(session_record("dist"))
+        repo.claude.register(session_record("delegate"))
+        repo.claude.update_completed("user", 1000)
+        repo.claude.update_completed("rev", 1000)
+        repo.claude.update_completed("dist", 1000)
+        repo.claude.update_completed("delegate", 1000)
         conn.execute(
             "UPDATE sessions SET session_kind='review' WHERE cc_session_id='rev'"
         )

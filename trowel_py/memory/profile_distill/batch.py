@@ -114,7 +114,7 @@ async def _run_daily_distill_locked(
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        candidates = repo.find_all_completed_sessions()
+        candidates = repo.claude.find_all_completed_sessions()
         processed = load_processed(root)
         backlog: list[tuple[SessionRecord, int, int]] = []
         for session in candidates:

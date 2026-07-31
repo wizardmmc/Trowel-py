@@ -136,7 +136,7 @@ def plan_recalibration(
         )
     try:
         repo = create_sessions_repository(conn, migrate=False)
-        records = repo.find_all_completed_sessions()
+        records = repo.claude.find_all_completed_sessions()
     finally:
         conn.close()
 

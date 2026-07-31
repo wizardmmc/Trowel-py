@@ -33,8 +33,8 @@ async def test_review_creates_reusable_lock_file(tmp_path: Path) -> None:
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -77,17 +77,17 @@ async def test_each_distilled_session_is_judged(
         host_factory=None,
         segment_id="",
     ) -> None:
-        judged.append(session_record.cc_session_id)
+        judged.append(session_record.native_session_id)
 
     monkeypatch.setattr(
-        "trowel_py.memory.daily_review.batch.judge_session",
+        "trowel_py.memory.daily_review.processor.judge_session",
         fake_judge,
     )
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -106,14 +106,14 @@ async def test_judge_failure_does_not_roll_back_review(
         raise RuntimeError("judge blew up")
 
     monkeypatch.setattr(
-        "trowel_py.memory.daily_review.batch.judge_session",
+        "trowel_py.memory.daily_review.processor.judge_session",
         fail_judge,
     )
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -123,7 +123,7 @@ async def test_judge_failure_does_not_roll_back_review(
     )
 
     conn = open_sessions_db(memory_root)
-    assert create_sessions_repository(conn).find_incremental() == []
+    assert create_sessions_repository(conn).claude.list_pending_segments() == []
     conn.close()
     assert len(MemoryStore(memory_root).load_notes()) == 1
 
@@ -132,7 +132,7 @@ def _seed_segment(memory_root: Path, session_id: str, jsonl_path: Path) -> int:
     size = write_jsonl(jsonl_path, ["2026-07-09T02:00:00.000Z"])
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(
+    repo.claude.register(
         SessionRecord(
             cc_session_id=session_id,
             workdir="/project",
@@ -141,7 +141,7 @@ def _seed_segment(memory_root: Path, session_id: str, jsonl_path: Path) -> int:
             registered_at="2026-07-09T10:00:00",
         )
     )
-    repo.update_completed(session_id, size)
+    repo.claude.update_completed(session_id, size)
     conn.close()
     return size
 
@@ -165,7 +165,7 @@ async def test_out_of_range_diary_date_keeps_segment_retryable(
     )
 
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert len(pending) == 1
     assert not (memory_root / "episodes" / "s1.md").exists()
@@ -199,7 +199,7 @@ async def test_in_range_diary_date_lands_and_advances(tmp_path: Path) -> None:
     )
 
     conn = open_sessions_db(memory_root)
-    pending = create_sessions_repository(conn).find_incremental()
+    pending = create_sessions_repository(conn).claude.list_pending_segments()
     conn.close()
     assert pending == []
     assert (memory_root / "episodes" / "s1.md").exists()

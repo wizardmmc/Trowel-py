@@ -157,7 +157,7 @@ def test_identity_counts_unattributed(tmp_path: Path) -> None:
 def test_identity_resolves_via_trowel_binding(tmp_path: Path) -> None:
     conn = open_sessions_db(tmp_path)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id="u1",
                 workdir="/project",

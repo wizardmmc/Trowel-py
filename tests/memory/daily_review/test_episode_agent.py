@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tests.memory.daily_review.support import FINISHED, review_source, session
+from trowel_py.memory.daily_review.models import ReviewSession
 from trowel_py.memory.daily_review.sources import (
     JournalSlice,
     ReviewSource,
@@ -124,12 +125,9 @@ async def test_codex_agent_uses_sealed_original_journal_without_byte_range(
 ) -> None:
     source = tmp_path / "turn.jsonl"
     source.write_text('{"type":"user"}\n', encoding="utf-8")
-    record = SessionRecord(
-        cc_session_id="codex-thread",
+    record = ReviewSession(
+        native_session_id="codex-thread",
         workdir="/project",
-        date="2026-07-09",
-        jsonl_path=str(source),
-        registered_at="2026-07-09T10:00:00",
     )
     prompts: list[str] = []
 

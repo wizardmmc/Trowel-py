@@ -67,8 +67,11 @@ class AttributionIndex:
     @classmethod
     def from_repo(cls, repo: SessionsRepository) -> "AttributionIndex":
         """从已打开的仓储加载绑定和会话类型。"""
-        by_trowel = {b.trowel_session_id: b for b in repo.all_bindings()}
-        return cls(by_trowel, repo.all_cc_kinds())
+        by_trowel = {
+            binding.trowel_session_id: binding
+            for binding in repo.claude.all_bindings()
+        }
+        return cls(by_trowel, repo.claude.all_cc_kinds())
 
     @classmethod
     def from_root(cls, root: Path | str) -> "AttributionIndex":
