@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { useRef } from "react";
+import { StrictMode, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList } from "../components/cc/MessageList";
+import { useStickyBottom } from "../components/cc/useStickyBottom";
 import type { Turn } from "../stores/ccStore";
 
 function makeTurn(index: number, text = `回答 ${index}`): Turn {
@@ -48,6 +49,71 @@ function ScrollHarness({
       />
     </div>
   );
+}
+
+function StickyScrollHarness({ turns }: { readonly turns: readonly Turn[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { sticky, stickyRef, pauseFollowing } = useStickyBottom(
+    scrollRef,
+    turns.length,
+    "sticky-repro",
+  );
+  return (
+    <>
+      <output data-testid="following-state">
+        {sticky ? "following" : "paused"}
+      </output>
+      <div ref={scrollRef} data-testid="sticky-scroll-pane">
+        <MessageList
+          turns={turns}
+          streaming
+          scrollRef={scrollRef}
+          sticky={sticky}
+          followingRef={stickyRef}
+          onLeaveBottom={pauseFollowing}
+        />
+      </div>
+    </>
+  );
+}
+
+function installGrowingScrollMetrics(
+  pane: HTMLElement,
+  initial: {
+    readonly scrollHeight: number;
+    readonly clientHeight: number;
+    readonly scrollTop: number;
+  },
+) {
+  let scrollHeight = initial.scrollHeight;
+  let scrollTop = initial.scrollTop;
+  Object.defineProperties(pane, {
+    clientHeight: { configurable: true, get: () => initial.clientHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeight },
+    scrollTop: {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    },
+  });
+  pane.scrollTo = ((options: ScrollToOptions) => {
+    const requested = Number(options.top ?? scrollTop);
+    scrollTop = Math.min(
+      Math.max(0, requested),
+      Math.max(0, scrollHeight - initial.clientHeight),
+    );
+  }) as typeof pane.scrollTo;
+  return {
+    getScrollTop: () => scrollTop,
+    setScrollTop: (value: number) => {
+      scrollTop = value;
+    },
+    setScrollHeight: (value: number) => {
+      scrollHeight = value;
+    },
+  };
 }
 
 function installScrollMetrics(pane: HTMLElement) {
@@ -156,6 +222,93 @@ describe("MessageList scroll window", () => {
 
     expect(scrollTo).toHaveBeenCalledTimes(1);
     expect(metrics.getScrollTop()).toBe(100);
+  });
+
+  it("schedules bottom follow after StrictMode replays mount effects", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      frames.delete(id);
+    });
+    const turns = [makeTurn(0)];
+    const { rerender } = render(
+      <StrictMode>
+        <ScrollHarness turns={turns} />
+      </StrictMode>,
+    );
+    const pane = screen.getByTestId("scroll-pane");
+    installScrollMetrics(pane);
+    const scrollTo = vi.spyOn(pane, "scrollTo");
+
+    rerender(
+      <StrictMode>
+        <ScrollHarness turns={[makeTurn(0, "streamed growth")]} />
+      </StrictMode>,
+    );
+    expect(frames).toHaveLength(1);
+    act(() => frames.values().next().value?.(16));
+
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps following when a prior bottom scroll reports after more content grows", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { rerender } = render(
+      <StickyScrollHarness turns={[makeTurn(0, "initial content")]} />,
+    );
+    const pane = screen.getByTestId("sticky-scroll-pane");
+    const metrics = installGrowingScrollMetrics(pane, {
+      scrollHeight: 1025,
+      clientHeight: 730,
+      scrollTop: 295,
+    });
+
+    act(() => frames.shift()?.(0));
+    metrics.setScrollHeight(1094);
+    rerender(
+      <StickyScrollHarness turns={[makeTurn(0, "first streamed growth")]} />,
+    );
+    act(() => frames.shift()?.(16));
+    expect(metrics.getScrollTop()).toBe(364);
+
+    metrics.setScrollHeight(1253);
+    rerender(
+      <StickyScrollHarness turns={[makeTurn(0, "second streamed growth")]} />,
+    );
+    act(() => pane.dispatchEvent(new Event("scroll")));
+
+    expect(screen.getByTestId("following-state")).toHaveTextContent("following");
+  });
+
+  it("does not run a queued bottom follow after the user starts reading", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    render(<StickyScrollHarness turns={[makeTurn(0, "streamed content")]} />);
+    const pane = screen.getByTestId("sticky-scroll-pane");
+    const metrics = installGrowingScrollMetrics(pane, {
+      scrollHeight: 1000,
+      clientHeight: 500,
+      scrollTop: 500,
+    });
+
+    act(() => pane.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 })));
+    metrics.setScrollTop(360);
+
+    expect(screen.getByTestId("following-state")).toHaveTextContent("paused");
+    act(() => frames.shift()?.(16));
+    expect(metrics.getScrollTop()).toBe(360);
   });
 
   it("loads older turns from an upward wheel gesture when the latest window cannot scroll", () => {

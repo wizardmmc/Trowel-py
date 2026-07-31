@@ -106,18 +106,18 @@ function SessionTranscriptPane({
     ? openedSubagent.status === "started" || openedSubagent.status === "progress"
     : streaming;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { sticky, unread, pauseFollowing, jumpToBottom } = useStickyBottom(
-    scrollRef,
-    viewTurns.length,
-    `${activeSid ?? "none"}:${openedSubagentId ?? "root"}`,
-  );
-  jumpToBottomRef.current = jumpToBottom;
-  useEffect(
-    () => () => {
+  const { sticky, unread, stickyRef, pauseFollowing, jumpToBottom } =
+    useStickyBottom(
+      scrollRef,
+      viewTurns.length,
+      `${activeSid ?? "none"}:${openedSubagentId ?? "root"}`,
+    );
+  useEffect(() => {
+    jumpToBottomRef.current = jumpToBottom;
+    return () => {
       jumpToBottomRef.current = null;
-    },
-    [jumpToBottomRef],
-  );
+    };
+  }, [jumpToBottom, jumpToBottomRef]);
 
   return (
     <>
@@ -149,6 +149,7 @@ function SessionTranscriptPane({
               phase={viewPhase}
               scrollRef={scrollRef}
               sticky={sticky}
+              followingRef={stickyRef}
               onLeaveBottom={pauseFollowing}
               onRetryLast={openedSubagent ? undefined : onRetryLast}
               onAnswer={onAnswer}

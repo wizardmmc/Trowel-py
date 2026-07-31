@@ -22,6 +22,7 @@ interface MessageListProps {
   readonly phase?: string;
   readonly scrollRef?: RefObject<HTMLDivElement | null>;
   readonly sticky?: boolean;
+  readonly followingRef?: RefObject<boolean>;
   readonly onLeaveBottom?: () => void;
   readonly onRetryLast?: () => void;
   readonly onAnswer?: (answers: Record<string, string>) => void;
@@ -144,6 +145,7 @@ export function MessageList({
   phase,
   scrollRef,
   sticky = true,
+  followingRef,
   onLeaveBottom,
   onRetryLast,
   onAnswer,
@@ -175,6 +177,7 @@ export function MessageList({
   const loadingOlderRef = useRef(false);
   const touchStartYRef = useRef<number | null>(null);
   const followFrameRef = useRef<number | null>(null);
+  const stickyStateRef = useRef(sticky);
 
   useLayoutEffect(() => {
     visibleStartRef.current = visibleStart;
@@ -218,10 +221,18 @@ export function MessageList({
   }, [scrollRef, visibleStart]);
 
   useLayoutEffect(() => {
-    if (!sticky) return;
+    stickyStateRef.current = sticky;
+    if (!sticky) {
+      if (followFrameRef.current !== null) {
+        window.cancelAnimationFrame(followFrameRef.current);
+        followFrameRef.current = null;
+      }
+      return;
+    }
     if (followFrameRef.current !== null) return;
     followFrameRef.current = window.requestAnimationFrame(() => {
       followFrameRef.current = null;
+      if (!(followingRef?.current ?? stickyStateRef.current)) return;
       const element = scrollRef?.current;
       if (element && typeof element.scrollTo === "function") {
         element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
@@ -229,12 +240,13 @@ export function MessageList({
         endRef.current.scrollIntoView({ behavior: "auto", block: "end" });
       }
     });
-  }, [phase, scrollRef, sticky, streaming, turns]);
+  }, [followingRef, phase, scrollRef, sticky, streaming, turns]);
 
   useEffect(
     () => () => {
       if (followFrameRef.current !== null) {
         window.cancelAnimationFrame(followFrameRef.current);
+        followFrameRef.current = null;
       }
     },
     [],

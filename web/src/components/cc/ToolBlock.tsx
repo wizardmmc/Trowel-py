@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useState } from "react";
 
 import type { ToolItem } from "../../agent/domain";
 import { getDisplayPath } from "./pathDisplay";
@@ -129,27 +129,6 @@ function ToolBlockView({
     (codexMcp && failed);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const open = openOverride ?? autoOpen;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const prevOpenRef = useRef(open);
-  const mountedRef = useRef(false);
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      prevOpenRef.current = open;
-      return;
-    }
-    if (!prevOpenRef.current && open) {
-      const el = rootRef.current;
-      if (el) {
-        requestAnimationFrame(() => {
-          if (typeof el.scrollIntoView === "function") {
-            el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-          }
-        });
-      }
-    }
-    prevOpenRef.current = open;
-  }, [open]);
   const seconds =
     item.elapsedSeconds !== null
       ? `${item.elapsedSeconds.toFixed(codexMcp ? 2 : 1)}s`
@@ -250,7 +229,6 @@ function ToolBlockView({
 
   return (
     <div
-      ref={rootRef}
       className={`cc-tool${codexExploration ? " cc-tool--exploration" : ""}`}
       data-status={item.status}
       data-codex-command={codexCommand || undefined}
