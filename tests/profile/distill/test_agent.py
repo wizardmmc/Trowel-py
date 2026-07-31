@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import trowel_py.profile.distill.adapters.claude as claude_adapter
+import trowel_py.profile.distill.processor as distill_processor
 from tests.profile.distill.support import (
     ERROR,
     FINISHED,
@@ -163,13 +163,13 @@ async def test_run_claude_session_feeds_only_current_policy_queue_to_dedup(
     )
 
     captured: dict[str, list] = {}
-    real_build = claude_adapter.build_distill_prompt
+    real_build = distill_processor.build_source_distill_prompt
 
-    def spy(jsonl_path: str, existing, profile, **kwargs):
+    def spy(source, existing, profile):
         captured["pvs"] = [suggestion.policy_version for suggestion in existing]
-        return real_build(jsonl_path, existing, profile, **kwargs)
+        return real_build(source, existing, profile)
 
-    monkeypatch.setattr(claude_adapter, "build_distill_prompt", spy)
+    monkeypatch.setattr(distill_processor, "build_source_distill_prompt", spy)
     await run_claude_session(
         session_record(),
         "2026-07-17",

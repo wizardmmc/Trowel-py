@@ -89,6 +89,20 @@ class CodexTurnsRepository:
             raise KeyError((thread_id, turn_id))
         self._conn.commit()
 
+    def list_completed_user_turns(self) -> list[CodexTurnRecord]:
+        """返回全部已封口用户 turns，供独立下游按自身水位筛选。
+
+        查询不读取 ``extracted_at``、``review_fragment_id``、
+        ``profile_enabled`` 或 ``memory_enabled``，因此 Memory 处理状态和会话
+        启动时的注入开关不会改变其他流水线的候选范围。
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE completed_at IS NOT NULL AND session_kind = 'user'"
+            " ORDER BY completed_at, registered_at, thread_id, turn_id"
+        ).fetchall()
+        return [row_to_codex_turn(row) for row in rows]
+
     def claim_pending_fragments(
         self,
         *,

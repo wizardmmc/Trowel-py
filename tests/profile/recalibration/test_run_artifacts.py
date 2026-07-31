@@ -4,6 +4,7 @@ from pathlib import Path
 from trowel_py.profile.recalibration import run_recalibration
 
 from .support import (
+    FINISHED,
     VALID_DRAFT,
     host_factory,
     live_hashes,
@@ -11,6 +12,49 @@ from .support import (
     seed_session,
     sha,
 )
+
+
+async def test_recalibration_prompt_uses_the_unified_claude_source(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    seed_live_files(root)
+    jsonl = tmp_path / "s1.jsonl"
+    jsonl.write_text("payload", encoding="utf-8")
+    seed_session(root, "s1", completed=500, jsonl_path=str(jsonl))
+    captured: dict[str, str] = {}
+
+    class CapturingHost:
+        async def send(self, prompt: str):
+            captured["prompt"] = prompt
+            yield FINISHED
+
+        async def close(self) -> None:
+            pass
+
+    def factory(source_id: str, workdir: Path) -> CapturingHost:
+        assert source_id == "s1"
+        (workdir / "suggestions-draft.json").write_text(
+            '{"suggestions":[]}',
+            encoding="utf-8",
+        )
+        return CapturingHost()
+
+    await run_recalibration(
+        root,
+        scope_all=True,
+        from_date=None,
+        proxy_base_url="http://x",
+        host_factory=factory,
+        run_id="unified-source",
+        created_at="2026-07-17T02:00:00",
+    )
+
+    prompt = captured["prompt"]
+    assert "- 来源身份：s1" in prompt
+    assert "- 来源运行时：claude_code" in prompt
+    assert f"{jsonl}；半开字节区间 [0, 500)" in prompt
 
 
 async def test_run_produces_staging_and_report(tmp_path: Path) -> None:

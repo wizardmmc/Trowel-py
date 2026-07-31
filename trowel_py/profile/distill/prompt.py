@@ -2,11 +2,14 @@
 
 模板属于机器契约；Python gate 另行强制数量、长度和来源约束。
 """
+
 from __future__ import annotations
 
 from typing import Sequence
 
 from trowel_py.profile.document import _FIELD_TO_TITLE
+from trowel_py.profile.distill.sources.models import ProfileDistillSource
+from trowel_py.profile.distill.sources.render import render_profile_source
 from trowel_py.profile.models import Profile, Suggestion
 
 # Schema 只指导 agent 输出；gate 补齐 id、date、status 和策略版本，
@@ -24,8 +27,9 @@ SUGGESTIONS_DRAFT_SCHEMA = """\
 }
 """
 
-DISTILL_PROMPT_TEMPLATE = """\
-你是 trowel 的「画像校准」agent。任务：读一个 cc 会话，只提炼少量、稳定、会实质改变 AI 后续行为的画像建议，交给用户确认采纳。画像不是人物小传，不是对用户的赞美或能力鉴定。
+DISTILL_PROMPT_TEMPLATE = (
+    """\
+你是 trowel 的「画像校准」agent。任务：读一份用户与 coding agent 的会话来源，只提炼少量、稳定、会实质改变 AI 后续行为的画像建议，交给用户确认采纳。画像不是人物小传，不是对用户的赞美或能力鉴定。
 
 画像五维（每条建议必须归入其中一维）：
 - ability（能力水平）：用户明确自述的背景，或能明确归因于用户本人完成的产物所证明的能力
@@ -35,8 +39,10 @@ DISTILL_PROMPT_TEMPLATE = """\
 - other（其他）：落不进上面四维、但会实际改变 AI 后续行为的稳定信息
 
 【输入】
-- 会话 jsonl 路径：{jsonl_path}
-  你自己 read 这个文件。重点扫所有 user 消息，以及 AskUserQuestion 里用户选的 other 自定义文本——这些是"用户是什么样的人"的活信号。
+- 会话来源：
+{source_description}
+  你自己 read 上述文件和区间。重点扫所有 user 消息，以及 AskUserQuestion 里用户选的 other 自定义文本——这些是"用户是什么样的人"的活信号。
+  context 只帮助理解指代和前因后果；建议证据只能来自 target 中的真实用户输入。
 - 已有画像（已经写进 profile 的，别重复给）：
 {profile_summary}
 - 现有建议队列（已经在排队等用户看了，别重复给）：
@@ -62,57 +68,43 @@ DISTILL_PROMPT_TEMPLATE = """\
 
 【输出】
 把结果写到当前工作目录的 suggestions-draft.json，严格按此 schema：
-""" + SUGGESTIONS_DRAFT_SCHEMA + """
+"""
+    + SUGGESTIONS_DRAFT_SCHEMA
+    + """
 id / date / status 不用你管（系统自动补）。只写 suggestions-draft.json 这一个文件，不要改 memory 目录。如果这个会话实在提炼不出合格建议，就写 {"suggestions": []}，诚实留空别凑数。完成后回复"草稿已写"。
 """
+)
 
 
-def build_distill_prompt(
-    jsonl_path: str,
+def build_source_distill_prompt(
+    source: ProfileDistillSource,
     existing_suggestions: Sequence[Suggestion],
     existing_profile: Profile,
-    *,
-    start_offset: int | None = None,
-    end_offset: int | None = None,
 ) -> str:
-    """把来源路径、现有 Profile 和建议摘要注入提炼模板。
+    """把统一来源、当前 Profile 和建议队列摘要注入提炼模板。
 
-    函数不筛选调用方提供的建议；policy version 或状态由调用方筛选。占位符按
-    ``jsonl_path``、``profile_summary``、``suggestions_summary`` 的顺序使用
-    ``str.replace`` 替换，普通 JSON 花括号不受影响。注入文本不会转义，因此
-    路径中的后两种占位符，以及 Profile 摘要中的建议占位符，也会在后续步骤
-    被替换。
-
-    只要任一 offset 不是 ``None``，就在提示前添加增量范围：缺失的起点按 0，
-    缺失的终点写为 ``EOF``。范围只约束 agent，不会在 Python 中读取或截取
-    JSONL，也不校验负数、顺序或文件边界。
+    函数不筛选调用方提供的建议；policy version 或状态由调用方负责。来源路径
+    只写进 prompt，由 Agent 自主读取，Python 不复制或拼接 transcript。
 
     Args:
-        jsonl_path: 写入提示的会话 JSONL 路径文本。
-        existing_suggestions: 作为去重上下文注入的建议；筛选责任在调用方。
+        source: 已区分 context 和 target 的运行时无关来源。
+        existing_suggestions: 作为去重上下文注入的当前策略建议。
         existing_profile: 作为去重上下文注入的当前五维 Profile。
-        start_offset: 可选的增量起始字节偏移。
-        end_offset: 可选的增量结束字节偏移。
 
     Returns:
-        已注入上下文及可选增量范围的完整 agent 提示。
+        可直接发送给 Profile 提炼 Agent 的完整提示。
     """
-    prompt = (
-        DISTILL_PROMPT_TEMPLATE.replace("{jsonl_path}", jsonl_path)
+    return (
+        DISTILL_PROMPT_TEMPLATE.replace(
+            "{source_description}",
+            render_profile_source(source),
+        )
         .replace("{profile_summary}", _format_profile_summary(existing_profile))
         .replace(
             "{suggestions_summary}",
             _format_suggestions_summary(existing_suggestions),
         )
     )
-    if start_offset is not None or end_offset is not None:
-        start = start_offset or 0
-        end = "EOF" if end_offset is None else end_offset
-        prompt = (
-            f"【增量范围】本次只为 jsonl 字节区间 [{start}, {end}] 产建议；"
-            "区间之前已提炼过，不要重复。\n\n" + prompt
-        )
-    return prompt
 
 
 def _format_profile_summary(profile: Profile) -> str:

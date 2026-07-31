@@ -17,12 +17,18 @@ except ImportError:  # pragma: no cover - 非 Unix 平台
 from trowel_py.memory.paths import resolve_memory_root
 from trowel_py.profile.distill.adapters.claude import (
     build_claude_backlog,
-    run_claude_session,
+)
+from trowel_py.profile.distill.adapters.codex import (
+    build_codex_backlog,
 )
 from trowel_py.profile.distill.agent import HostFactory
 from trowel_py.profile.distill.gate import DistillError
 from trowel_py.profile.distill.models import ProfileDistillCandidate
-from trowel_py.profile.distill.state import load_processed, mark_processed
+from trowel_py.profile.distill.processor import process_profile_source
+from trowel_py.profile.distill.state import (
+    load_codex_processed,
+    load_processed,
+)
 from trowel_py.profile.suggestions import append_suggestions
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
@@ -72,7 +78,7 @@ async def run_daily_distill(
     host_factory: HostFactory | None = None,
     date_str: str | None = None,
 ) -> None:
-    """串行提炼有新内容的 session；失败项不推进独立水位。"""
+    """串行提炼有新内容的 Claude 会话和 Codex turns。"""
     root = memory_root if memory_root is not None else resolve_memory_root()
     if date_str is None:
         date_str = datetime.now().date().isoformat()
@@ -92,16 +98,13 @@ async def _run_daily_distill_locked(
     host_factory: HostFactory | None,
     date_str: str,
 ) -> None:
-    """提炼每个已完成会话尚未处理的字节区间。
+    """按完成顺序串行提炼 Claude 字节区间和 Codex turns。
 
-    每个会话从独立 Profile 水位到最新 completed offset 之间形成 backlog，水位
-    不落后时跳过。起点为 0 时传给提示的值是 ``None``，终点始终是本轮读取到
-    的 completed offset。
-
-    会话依次执行。``DistillError`` 会记录警告并跳过当前会话且不推进水位；
-    门禁成功即使没有接受任何建议也会推进。存在建议时先追加队列，再写水位，
-    两步没有事务：队列成功而水位写入失败会在重试时再次处理该区间。其他异常
-    会中止剩余会话，但数据库连接始终关闭。
+    两种 runtime 各自把原始记录适配为共同候选和 ``context/target`` 来源。
+    ``DistillError`` 不推进当前水位；Codex 某 turn 失败后，本轮不再越过同
+    thread 的后续 turns。其他来源仍可继续。门禁成功即使没有建议也会推进；
+    有建议时先追加队列，再写独立 Profile 水位。两步没有事务，队列成功而
+    水位失败时重试仍会再次处理该来源。其他异常中止剩余来源。
 
     Args:
         root: Memory 根目录；用于 sessions 数据库、建议队列和独立水位。
@@ -118,34 +121,48 @@ async def _run_daily_distill_locked(
     conn = open_sessions_db(root)
     try:
         repo = create_sessions_repository(conn)
-        candidates = repo.claude.find_all_completed_sessions()
-        backlog = build_claude_backlog(candidates, load_processed(root))
+        claude_candidates = repo.claude.find_all_completed_sessions()
+        codex_candidates = repo.codex.list_completed_user_turns()
+        backlog: list[ProfileDistillCandidate] = [
+            *build_claude_backlog(claude_candidates, load_processed(root)),
+            *build_codex_backlog(
+                codex_candidates,
+                load_codex_processed(root),
+            ),
+        ]
+        backlog.sort(
+            key=lambda candidate: (
+                candidate.completed_at,
+                candidate.registered_at,
+                candidate.source_id,
+            )
+        )
         logger.info(
-            "profile distill: %d candidate(s), %d with new content (date_str=%s)",
-            len(candidates),
+            "profile distill: %d Claude candidate(s), %d Codex candidate(s),"
+            " %d pending source(s) (date_str=%s)",
+            len(claude_candidates),
+            len(codex_candidates),
             len(backlog),
             date_str,
         )
+        blocked_sequences: set[str] = set()
         for candidate in backlog:
-            candidate_identity: ProfileDistillCandidate = candidate
-            session = candidate.session
-            start = candidate.start_offset
-            end = candidate.end_offset
+            if candidate.sequence_id in blocked_sequences:
+                continue
             try:
-                suggestions = await run_claude_session(
-                    session,
+                suggestions = await process_profile_source(
+                    candidate.build_source(),
                     date_str,
                     root,
                     proxy_base_url=proxy_base_url,
                     settings_path=settings_path,
                     host_factory=host_factory,
-                    start_offset=start or None,
-                    end_offset=end,
                 )
             except DistillError as exc:
+                blocked_sequences.add(candidate.sequence_id)
                 logger.warning(
                     "profile distill failed for %s (skipped, not marked): %s",
-                    candidate_identity.label,
+                    candidate.label,
                     exc,
                 )
                 continue
@@ -154,12 +171,10 @@ async def _run_daily_distill_locked(
                 logger.info(
                     "profile distill: +%d suggestion(s) from %s",
                     len(suggestions),
-                    candidate_identity.label,
+                    candidate.label,
                 )
-            mark_processed(
+            candidate.mark_processed(
                 root,
-                session.cc_session_id,
-                end_offset=end,
                 at=datetime.now().isoformat(),
             )
     finally:

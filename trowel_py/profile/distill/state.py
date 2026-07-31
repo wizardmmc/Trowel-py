@@ -1,4 +1,4 @@
-"""读写独立于 Daily review 的 Profile 提炼字节水位。"""
+"""读写独立于 Daily review 的 Profile 提炼处理进度。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,21 @@ class ProcessedSession:
 
     cc_session_id: str
     end_offset: int
+    at: str
+
+
+@dataclass(frozen=True)
+class ProcessedCodexTurn:
+    """记录一个 Codex turn 已完成 Profile 提炼。
+
+    Attributes:
+        thread_id: Codex 原生 thread ID。
+        turn_id: thread 内唯一的原生 turn ID。
+        at: 成功通过门禁并写入建议队列后的记录时间。
+    """
+
+    thread_id: str
+    turn_id: str
     at: str
 
 
@@ -96,9 +111,84 @@ def load_processed(root: Path) -> dict[str, ProcessedSession]:
     return out
 
 
-def mark_processed(
-    root: Path, cc_session_id: str, end_offset: int, *, at: str
+def load_codex_processed(
+    root: Path,
+) -> dict[tuple[str, str], ProcessedCodexTurn]:
+    """读取 Profile 已处理的 Codex turn 记录。
+
+    旧版只有 ``processed`` Claude 字节水位时返回空映射。条目不是对象或缺少
+    非空 thread/turn ID 时跳过；重复身份由最后一条记录覆盖。
+
+    Args:
+        root: Memory 根目录。
+
+    Returns:
+        以 ``(thread_id, turn_id)`` 为键的 Codex 处理记录。
+
+    Raises:
+        OSError: 无法读取水位文件。
+        UnicodeDecodeError: 水位文件不是有效 UTF-8。
+        ValueError: 水位文件不是合法 JSON。
+        TypeError: ``codex_processed`` 存在但不可迭代。
+    """
+    path = _state_path(root)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"corrupt distill state at {path}: {exc}") from exc
+    raw = data.get("codex_processed", []) if isinstance(data, dict) else []
+    out: dict[tuple[str, str], ProcessedCodexTurn] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        thread_id = str(item.get("thread_id", "")).strip()
+        turn_id = str(item.get("turn_id", "")).strip()
+        if not thread_id or not turn_id:
+            continue
+        record = ProcessedCodexTurn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            at=str(item.get("at", "")),
+        )
+        out[(thread_id, turn_id)] = record
+    return out
+
+
+def _write_state(
+    root: Path,
+    claude: dict[str, ProcessedSession],
+    codex: dict[tuple[str, str], ProcessedCodexTurn],
 ) -> None:
+    """覆盖写入 Claude 字节水位和 Codex turn 处理记录。"""
+    path = _state_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "processed": [
+            {
+                "cc_session_id": record.cc_session_id,
+                "end_offset": record.end_offset,
+                "at": record.at,
+            }
+            for record in claude.values()
+        ],
+        "codex_processed": [
+            {
+                "thread_id": record.thread_id,
+                "turn_id": record.turn_id,
+                "at": record.at,
+            }
+            for record in codex.values()
+        ],
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def mark_processed(root: Path, cc_session_id: str, end_offset: int, *, at: str) -> None:
     """读取可加载的水位、替换指定会话，并覆盖写回状态文件。
 
     新会话追加在现有顺序末尾，已有会话只替换值而不改变位置。更新采用非原子
@@ -120,21 +210,38 @@ def mark_processed(
         OverflowError: 旧水位含无法转换为整数的非有限浮点数。
     """
     existing = load_processed(root)
+    codex = load_codex_processed(root)
     existing[cc_session_id] = ProcessedSession(
         cc_session_id=cc_session_id, end_offset=end_offset, at=at
     )
-    path = _state_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "processed": [
-            {
-                "cc_session_id": r.cc_session_id,
-                "end_offset": r.end_offset,
-                "at": r.at,
-            }
-            for r in existing.values()
-        ]
-    }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    _write_state(root, existing, codex)
+
+
+def mark_codex_processed(
+    root: Path,
+    thread_id: str,
+    turn_id: str,
+    *,
+    at: str,
+) -> None:
+    """记录一个 Codex turn 已完成 Profile 提炼并保留 Claude 水位。
+
+    调用方必须先成功持久化本 turn 生成的建议，再调用本函数。更新采用
+    read-modify-write，调用方必须持有 Profile 提炼进程锁。
+
+    Args:
+        root: Memory 根目录。
+        thread_id: Codex 原生 thread ID。
+        turn_id: thread 内唯一的原生 turn ID。
+        at: 本次写入使用的时间文本。
+    """
+    if not thread_id or not turn_id:
+        raise ValueError("Codex Profile watermark requires thread and turn ids")
+    claude = load_processed(root)
+    existing = load_codex_processed(root)
+    existing[(thread_id, turn_id)] = ProcessedCodexTurn(
+        thread_id=thread_id,
+        turn_id=turn_id,
+        at=at,
     )
+    _write_state(root, claude, existing)

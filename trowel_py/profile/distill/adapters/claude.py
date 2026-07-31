@@ -2,28 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from trowel_py.memory.sessions_repo import ClaudeSessionRecord
-from trowel_py.profile.distill.agent import (
-    HostFactory,
-    _ensure_distill_workdir,
-    drive_and_gate,
-)
-from trowel_py.profile.distill.prompt import build_distill_prompt
+from trowel_py.profile.distill.agent import HostFactory
+from trowel_py.profile.distill.processor import process_profile_source
 from trowel_py.profile.distill.sources.claude import build_claude_distill_source
-from trowel_py.profile.distill.state import ProcessedSession
+from trowel_py.profile.distill.sources.models import ProfileDistillSource
+from trowel_py.profile.distill.state import ProcessedSession, mark_processed
 from trowel_py.profile.models import Suggestion
-from trowel_py.profile.repository import ProfileRepository
-from trowel_py.profile.suggestions import (
-    PROFILE_DISTILL_POLICY_VERSION,
-    load_suggestions,
-)
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,6 +38,45 @@ class ClaudeDistillCandidate:
     def label(self) -> str:
         """返回日志使用的 Claude Code 原生会话 ID。"""
         return self.session.cc_session_id
+
+    @property
+    def source_id(self) -> str:
+        """返回 Claude Code 原生会话 ID 作为稳定来源身份。"""
+        return self.session.cc_session_id
+
+    @property
+    def completed_at(self) -> str:
+        """返回最新完成字节水位的记录时间。"""
+        return self.session.last_completed_at or self.session.registered_at
+
+    @property
+    def registered_at(self) -> str:
+        """返回 Claude Code 会话的登记时间。"""
+        return self.session.registered_at
+
+    @property
+    def sequence_id(self) -> str:
+        """返回失败时阻断同一 Claude 会话后续增量的身份。"""
+        return f"claude:{self.session.cc_session_id}"
+
+    def build_source(self) -> ProfileDistillSource:
+        """把已处理前缀和本次新增字节构造成统一来源。"""
+        return build_claude_distill_source(
+            source_id=self.session.cc_session_id,
+            jsonl_path=self.session.jsonl_path or "",
+            completed_at=self.completed_at,
+            start_offset=self.start_offset,
+            end_offset=self.end_offset,
+        )
+
+    def mark_processed(self, root: Path, *, at: str) -> None:
+        """推进当前 Claude 会话的 Profile 字节水位。"""
+        mark_processed(
+            root,
+            self.session.cc_session_id,
+            end_offset=self.end_offset,
+            at=at,
+        )
 
 
 def build_claude_backlog(
@@ -95,47 +123,18 @@ async def run_claude_session(
     end_offset: int | None = None,
 ) -> list[Suggestion]:
     """提炼一个 Claude Code 会话，只使用当前策略建议做去重。"""
-    repository = ProfileRepository(memory_root)
-    # 队列解析或校验错误只关闭去重；I/O 错误仍中止，避免掩盖存储故障。
-    try:
-        all_suggestions = load_suggestions(memory_root)
-    except ValueError:
-        logger.warning("distill: corrupt suggestion queue; deduping against empty")
-        all_suggestions = []
-    existing = [
-        suggestion
-        for suggestion in all_suggestions
-        if suggestion.policy_version == PROFILE_DISTILL_POLICY_VERSION
-    ]
     source = build_claude_distill_source(
-        session,
-        start_offset=start_offset,
+        source_id=session.cc_session_id,
+        jsonl_path=session.jsonl_path or "",
+        completed_at=session.last_completed_at or session.registered_at,
+        start_offset=start_offset or 0,
         end_offset=end_offset,
     )
-    prompt = build_distill_prompt(
-        source.jsonl_path,
-        existing,
-        repository.load_profile(),
-        start_offset=source.start_offset,
-        end_offset=source.end_offset,
-    )
-
-    base_workdir = _ensure_distill_workdir(date_str, memory_root)
-    workdir = base_workdir / source.source_id
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    gated = await drive_and_gate(
-        source.source_id,
-        workdir,
-        prompt,
+    return await process_profile_source(
+        source,
+        date_str,
+        memory_root,
         proxy_base_url=proxy_base_url,
         settings_path=settings_path,
         host_factory=host_factory,
-        date_str=date_str,
     )
-    logger.info(
-        "distill gate %s: %s",
-        source.source_id,
-        gated.stats.to_log_dict(),
-    )
-    return list(gated.accepted)

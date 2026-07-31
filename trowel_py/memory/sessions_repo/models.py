@@ -134,7 +134,8 @@ class CodexTurnRecord:
         effort: 首次登记该 turn 时固化的推理强度；无法确认时为空字符串。
         provider: 首次登记该 turn 时固化的模型供应商；无法确认时为空字符串。
         memory_enabled: 创建 Trowel 会话时冻结的 Memory 开关。
-        profile_enabled: 创建 Trowel 会话时冻结的画像提炼开关。
+        profile_enabled: 创建 Trowel 会话时冻结的画像注入开关；不控制已完成
+            用户 turn 是否进入后续 Profile 建议提炼。
         session_kind: Trowel 会话类别；daily review 只领取值为 ``"user"`` 的 turn。
         review_fragment_id: daily review 首次领取该 turn 时写入的片段 ID；空字符串
             表示尚未分组，相同非空值表示这些 turn 必须作为一个整体持久化并推进
