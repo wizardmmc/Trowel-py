@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { MessageList } from "../components/cc/MessageList";
@@ -111,7 +111,9 @@ describe("large-turn replay fixture", () => {
       '.cc-tool__summary[aria-expanded="false"]',
     );
     expect(collapsed).toHaveLength(124);
-    collapsed.forEach((button) => fireEvent.click(button));
+    act(() => {
+      collapsed.forEach((button) => button.click());
+    });
     expect(container.querySelectorAll(".cc-tool__diff-line")).toHaveLength(
       1_011,
     );
