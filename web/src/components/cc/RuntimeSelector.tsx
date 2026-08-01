@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { Runtime } from "../../api/agent";
+import type { Runtime } from "../../agent/transport";
 import {
   RUNTIME_OPTIONS,
   runtimeOptionIndex,

@@ -1,9 +1,9 @@
-import type { DirEntry } from "../../api/cc";
+import type { AgentDirectoryEntry } from "../../agent/application";
 
 interface WorkdirBrowserProps {
   readonly input: string;
   readonly parent: string;
-  readonly children: readonly DirEntry[];
+  readonly children: readonly AgentDirectoryEntry[];
   readonly isEmpty: boolean;
   readonly recents: readonly string[];
   readonly favorites: readonly string[];

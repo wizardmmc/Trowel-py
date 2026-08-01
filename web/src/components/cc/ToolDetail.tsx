@@ -1,16 +1,14 @@
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 
-import type { DiffHunk, WriteDiff } from "../../api/ccTypes";
-import type { ToolItem } from "../../stores/ccStore";
+import type { DiffHunk, WriteDiff } from "../../agent/transport";
+import type { ToolItem } from "../../agent/domain";
 import { CodexMcpDetail } from "./CodexMcpDetail";
 import { isCodexMcp } from "./codexMcpPresentation";
 import { computeEditDiff, summarizeStat } from "./editDiff";
-import {
-  isCommandTool,
-  ToolCommandDetail,
-} from "./ToolCommandDetail";
+import { ToolCommandDetail } from "./ToolCommandDetail";
 import {
   asString,
+  isCommandTool,
   isEditTool,
   parseCatN,
   statSentence,
@@ -65,13 +63,12 @@ function rowsFromHunks(hunks: readonly DiffHunk[]): readonly DiffRow[] {
 function FileDiffPreview({ rows }: { readonly rows: readonly DiffRow[] }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? rows : rows.slice(0, WRITE_PREVIEW_LINES);
-  let previousHunk = visible[0]?.hunkIndex ?? 0;
 
   return (
     <div className="cc-tool__diff">
-      {visible.map((row) => {
-        const separated = row.hunkIndex !== previousHunk;
-        previousHunk = row.hunkIndex;
+      {visible.map((row, index) => {
+        const separated =
+          index > 0 && row.hunkIndex !== visible[index - 1].hunkIndex;
         return (
           <Fragment key={row.key}>
             {separated && <div className="cc-tool__diff-sep">···</div>}

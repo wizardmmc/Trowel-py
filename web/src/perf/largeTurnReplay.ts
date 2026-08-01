@@ -1,9 +1,9 @@
-import type { AgentSession } from "../api/agent";
-import type { AgentEvent } from "../api/agentTypes";
-import type { DiffHunk } from "../api/ccTypes";
-import type { PerSessionState } from "../stores/ccStore/sessionState";
-import { reduceAgentEvent } from "../stores/ccStore/eventState";
-import { createNewSessionState } from "../stores/ccStore/sessionState";
+import type { PerSessionState } from "../agent/application";
+import {
+  createNewSessionState,
+  reduceAgentEvent,
+} from "../agent/application";
+import type { AgentEvent, AgentSession, DiffHunk } from "../agent/transport";
 
 const SESSION_ID = "fixture-large-turn";
 const THREAD_ID = "fixture-thread";

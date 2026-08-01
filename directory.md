@@ -120,9 +120,14 @@
 | 路径 | 职责 |
 |---|---|
 | `web/src/App.tsx` | 页面入口与顶层工具切换 |
-| `web/src/api/` | HTTP、SSE 与 wire types |
-| `web/src/stores/` | Zustand 状态与事件 reducer |
-| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的组件 |
+| `web/src/agent/domain/` | Agent session、turn、timeline item 与纯 reducer 的唯一 owner |
+| `web/src/agent/application/` | Agent Zustand store、会话命令、连接生命周期和 selector 的唯一 owner |
+| `web/src/agent/transport/` | Trowel Agent HTTP、SSE 与 wire DTO 的唯一 owner |
+| `web/src/agent/ui/` | 双 runtime 共用的会话 shell、消息列表、工作目录选择器与样式入口 |
+| `web/src/agent/index.ts` | 前端 Agent 领域的稳定公开 facade |
+| `web/src/api/` | 其他产品 API；Agent 旧路径在迁移期只保留显式兼容 re-export，`api/cc.ts` 仍持有 Claude Code 专属 API |
+| `web/src/stores/` | 其他产品 Zustand store；`ccStore`、`ccReducer` 与 frame selector 旧路径只保留兼容 re-export |
+| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的组件；`cc` 下通用会话入口为迁移期 facade，runtime 展示待 L05 拆分 |
 | `web/src/styles/` | 全局 token 与样式 |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |
 

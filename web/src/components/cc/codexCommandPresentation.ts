@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { getDisplayPath } from "./pathDisplay";
 
 export type CodexCommandVerb = "Read" | "List" | "Search" | "Run";
@@ -12,8 +12,6 @@ export interface CodexCommandPresentation {
   readonly kind: "exploration" | "run";
   readonly rows: readonly CodexCommandRow[];
   readonly fullCommand: string;
-  readonly callLabel: string;
-  readonly callBrief: string;
 }
 
 interface NativeAction {
@@ -22,6 +20,11 @@ interface NativeAction {
   readonly name?: string | null;
   readonly path?: string | null;
   readonly query?: string | null;
+}
+
+interface ActionPathDetail {
+  readonly text: string;
+  readonly fromCommand: boolean;
 }
 
 const EXPLORATION_ACTIONS = new Set<NativeAction["type"]>([
@@ -80,15 +83,39 @@ function readRange(command: string | null): string | null {
   return matched === null ? null : `lines ${matched[1]}–${matched[2]}`;
 }
 
+function displayActionPath(path: string, workdir?: string): string {
+  return getDisplayPath(path, workdir) || ".";
+}
+
+function actionPathDetail(
+  action: NativeAction,
+  workdir?: string,
+): ActionPathDetail | null {
+  if (action.path === null || action.path === undefined) return null;
+  const weakBasename =
+    action.path !== "." &&
+    !action.path.startsWith("/") &&
+    !action.path.includes("/");
+  if (weakBasename && action.command?.includes("/")) {
+    return { text: action.command, fromCommand: true };
+  }
+  return {
+    text: displayActionPath(action.path, workdir),
+    fromCommand: false,
+  };
+}
+
 function explorationRow(
   action: NativeAction,
   fullCommand: string,
   workdir?: string,
 ): CodexCommandRow {
   if (action.type === "read") {
-    const base = action.path
-      ? getDisplayPath(action.path, workdir)
-      : action.name ?? fallback(action, fullCommand);
+    const pathDetail = actionPathDetail(action, workdir);
+    const base =
+      pathDetail?.text ??
+      action.name ??
+      fallback(action, fullCommand);
     const range = readRange(action.command);
     return {
       verb: "Read",
@@ -96,14 +123,21 @@ function explorationRow(
     };
   }
   if (action.type === "listFiles") {
-    return { verb: "List", detail: action.path ?? "." };
+    return {
+      verb: "List",
+      detail: actionPathDetail(action, workdir)?.text ?? ".",
+    };
   }
+  const searchPath = actionPathDetail(action, workdir);
+  const searchDetail =
+    searchPath?.fromCommand
+      ? searchPath.text
+      : action.query && searchPath
+        ? `${action.query} in ${searchPath.text}`
+        : fallback(action, fullCommand);
   return {
     verb: "Search",
-    detail:
-      action.query && action.path
-        ? `${action.query} in ${action.path}`
-        : fallback(action, fullCommand),
+    detail: searchDetail,
   };
 }
 
@@ -123,39 +157,15 @@ export function getCodexCommandPresentation(
       kind: "run",
       rows: [{ verb: "Run", detail: unknown?.command ?? commandPreview(fullCommand) }],
       fullCommand,
-      callLabel: item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Ran",
-      callBrief: unknown?.command ?? commandPreview(fullCommand),
     };
   }
   const rows = actions.map((action) =>
     explorationRow(action, fullCommand, workdir),
   );
-  const counts = new Map<CodexCommandVerb, number>();
-  for (const row of rows) {
-    counts.set(row.verb, (counts.get(row.verb) ?? 0) + 1);
-  }
-  const onlyVerb = counts.size === 1 ? rows[0].verb : null;
-  const noun =
-    onlyVerb === "Read" ? "file" : onlyVerb === "List" ? "path" : "query";
-  const callLabel =
-    onlyVerb === null
-      ? `Explore ${rows.length} ${rows.length === 1 ? "action" : "actions"}`
-      : `${onlyVerb} ${rows.length} ${noun}${rows.length === 1 ? "" : "s"}`;
-  const callBrief =
-    onlyVerb === null
-      ? (["Read", "Search", "List"] as const)
-          .flatMap((verb) => {
-            const count = counts.get(verb) ?? 0;
-            return count > 0 ? [`${count} ${verb}`] : [];
-          })
-          .join(" · ")
-      : rows.map((row) => row.detail).join(", ");
   return {
     kind: "exploration",
     rows,
     fullCommand,
-    callLabel,
-    callBrief,
   };
 }
 

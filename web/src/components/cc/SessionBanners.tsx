@@ -1,4 +1,4 @@
-import type { PerSessionState } from "../../stores/ccStore";
+import type { PerSessionState } from "../../agent/application";
 import { RateLimitBanner } from "./RateLimitBanner";
 
 export function SessionBanners({

@@ -2,7 +2,7 @@ import { beforeEach, vi } from "vitest";
 import type { AgentSession } from "../api/agent";
 import type { AgentEvent } from "../api/agentTypes";
 
-vi.mock("../api/agent", () => ({
+vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn(),
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
   deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
@@ -39,7 +39,7 @@ export const stream = {
   resolvers: [] as Array<() => void>,
 };
 
-vi.mock("../api/ccStream", () => ({
+vi.mock("../agent/transport/stream", () => ({
   postMessageStream: vi.fn(
     (_url: string, _body: unknown, apply: (event: AgentEvent) => void) =>
       new Promise<void>((resolve) => {

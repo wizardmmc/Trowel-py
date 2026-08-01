@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { WorkflowAgentInfo } from "../../api/ccTypes";
-import type { WorkflowItem } from "../../stores/ccReducer";
+import type { WorkflowAgentInfo } from "../../agent/transport";
+import type { WorkflowItem } from "../../agent/domain";
 import { WorkflowPhaseRow } from "./WorkflowPhaseRow";
 import {
   briefWorkflowText,

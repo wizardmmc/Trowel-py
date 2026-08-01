@@ -1,4 +1,4 @@
-import type { RateLimitSnapshot, RateLimitWindow } from "../../api/ccTypes";
+import type { RateLimitSnapshot, RateLimitWindow } from "../../agent/transport";
 
 /** 协议没有“接近上限”信号，80% 是产品侧预警阈值。 */
 export const NEAR_THRESHOLD_PERCENT = 80;

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-vi.mock("../api/agent", () => ({
+vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn().mockResolvedValue({
     session_id: "s1",
     runtime: "claude_code",
@@ -43,7 +43,7 @@ vi.mock("../api/agent", () => ({
   agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
 }));
 
-vi.mock("../api/ccStream", () => ({
+vi.mock("../agent/transport/stream", () => ({
   postMessageStream: vi.fn(async () => {}),
   getEventStream: vi.fn(
     (

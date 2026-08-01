@@ -1,4 +1,4 @@
-import type { AnswerElicitBody, TrowelEvent } from "./ccTypes";
+import type { AnswerElicitBody, TrowelEvent } from "../agent/transport/events";
 
 const CC_API_BASE = "/api/cc";
 
@@ -193,16 +193,10 @@ export async function listSlashItems(
   );
 }
 
-export interface DirEntry {
-  readonly name: string;
-  readonly path: string;
-}
-
-export async function listDir(path: string): Promise<readonly DirEntry[]> {
-  return request<readonly DirEntry[]>(
-    `${CC_API_BASE}/list-dir?path=${encodeURIComponent(path)}`,
-  );
-}
+export {
+  listAgentDirectory as listDir,
+  type AgentDirectoryEntry as DirEntry,
+} from "../agent/transport/workdirs";
 
 export function messagesUrl(sessionId: string): string {
   return `${CC_API_BASE}/sessions/${sessionId}/messages`;

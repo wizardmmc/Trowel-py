@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { WorkflowAgentInfo, WorkflowPhaseInfo } from "../../api/ccTypes";
+import type { WorkflowAgentInfo, WorkflowPhaseInfo } from "../../agent/transport";
 import {
   briefWorkflowText,
   formatWorkflowTokens,

@@ -1,5 +1,5 @@
-import type { ApprovalDecision } from "../../api/ccTypes";
-import type { ApprovalItem } from "../../stores/ccStore";
+import type { ApprovalDecision } from "../../agent/transport";
+import type { ApprovalItem } from "../../agent/domain";
 
 interface ApprovalBlockProps {
   readonly item: ApprovalItem;

@@ -4,7 +4,7 @@ import {
   listCodexCommands,
   type CodexCommand,
   type Runtime,
-} from "../../api/agent";
+} from "../../agent/transport";
 
 interface RosterState {
   readonly requestKey: string | null;

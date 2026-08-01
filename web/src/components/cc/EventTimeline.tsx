@@ -1,10 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 
-import type {
-  PerSessionState,
-  ToolItem,
-  TurnItem,
-} from "../../stores/ccStore";
+import type { PerSessionState } from "../../agent/application";
+import type { ToolItem, TurnItem } from "../../agent/domain";
 import { AssistantText } from "./AssistantText";
 import { CodexExplorationGroup } from "./CodexExplorationGroup";
 import { EventTimelineRow } from "./EventTimelineRow";

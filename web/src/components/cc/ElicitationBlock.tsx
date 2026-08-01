@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ElicitationItem } from "../../stores/ccStore";
+import type { ElicitationItem } from "../../agent/domain";
 import {
   ElicitationNavBar,
   ElicitationOptionRow,

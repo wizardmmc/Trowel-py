@@ -1,4 +1,4 @@
-import type { Phase, SessionMeta } from "../../stores/ccStore";
+import type { Phase, SessionMeta } from "../../agent/domain";
 
 interface StatusBarProps {
   readonly phase: Phase;

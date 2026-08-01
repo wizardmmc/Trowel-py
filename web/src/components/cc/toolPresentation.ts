@@ -1,4 +1,4 @@
-import type { ToolItem } from "../../stores/ccStore";
+import type { ToolItem } from "../../agent/domain";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 
 export function isEditTool(name: string): boolean {
@@ -7,6 +7,10 @@ export function isEditTool(name: string): boolean {
 
 export function isDiffTool(name: string): boolean {
   return isEditTool(name) || name === "Write" || name === "apply_patch";
+}
+
+export function isCommandTool(name: string): boolean {
+  return name === "Bash" || name === "command";
 }
 
 const APPLY_PATCH_VERB: Readonly<Record<string, string>> = {

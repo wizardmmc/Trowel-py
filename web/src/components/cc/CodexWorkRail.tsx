@@ -4,7 +4,7 @@ import type {
   CodexGoal,
   CodexPlan,
   CodexPlanStep,
-} from "../../stores/ccStore";
+} from "../../agent/domain";
 
 interface CodexWorkRailProps {
   readonly goal: CodexGoal | null;

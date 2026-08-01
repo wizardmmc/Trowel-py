@@ -8,10 +8,12 @@ import {
   type ProfilerOnRenderCallback,
 } from "react";
 
-import { SessionView } from "../components/cc/SessionView";
-import { useCcStore } from "../stores/ccStore";
-import { reduceAgentEvent } from "../stores/ccStore/eventState";
-import type { PerSessionState } from "../stores/ccStore/sessionState";
+import {
+  reduceAgentEvent,
+  type PerSessionState,
+  useAgentStore,
+} from "../agent/application";
+import { SessionView } from "../agent/ui";
 import {
   LARGE_TURN_MANIFEST,
   buildLargeTurnReplay,
@@ -240,7 +242,7 @@ function installFixtureState(): void {
     ...replay.initialSession,
     abort: new AbortController(),
   };
-  useCcStore.setState((state) => ({
+  useAgentStore.setState((state) => ({
     ...state,
     sessions: {
       [LARGE_SESSION_ID]: large,
@@ -261,7 +263,7 @@ function installFixtureState(): void {
 function applyReplayEvent(eventIndex: number): void {
   const event = buildLargeTurnReplay().events[eventIndex];
   const started = performance.now();
-  useCcStore.setState((state) => {
+  useAgentStore.setState((state) => {
     const current = state.sessions[LARGE_SESSION_ID];
     if (!current) throw new Error("large-turn session is missing");
     const reduced = reduceAgentEvent(current, event);
@@ -313,7 +315,7 @@ export function LargeTurnHarness() {
           metrics.maxCommitContext = {
             durationMs: round(actualDuration),
             appliedEvents: metrics.appliedEvents,
-            activeSid: useCcStore.getState().activeSid,
+            activeSid: useAgentStore.getState().activeSid,
             page: document.querySelector(".large-turn-harness__placeholder")
               ? "placeholder"
               : "agent",
@@ -418,7 +420,7 @@ export function LargeTurnHarness() {
   }
 
   function toggleSession() {
-    const state = useCcStore.getState();
+    const state = useAgentStore.getState();
     const target =
       state.activeSid === LARGE_SESSION_ID
         ? LIGHT_SESSION_ID
