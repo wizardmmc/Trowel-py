@@ -1,3 +1,5 @@
+/** 为代码块提供带成功反馈的复制按钮。 */
+
 import { useEffect, useRef, useState } from "react";
 
 import { copyText } from "./copyText";

@@ -1,3 +1,5 @@
+/** 集中挂载会话回滚、新建、模型和 effort 弹层。 */
+
 import type { ModelOption } from "../../api/cc";
 import type {
   AgentModel,

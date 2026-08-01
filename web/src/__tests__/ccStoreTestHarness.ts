@@ -1,6 +1,7 @@
 import { beforeEach, vi } from "vitest";
-import type { AgentSession } from "../api/agent";
-import type { AgentEvent } from "../api/agentTypes";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
+import type { AgentSession } from "../agent/transport";
+import type { AgentEvent } from "../agent/transport";
 
 vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn(),
@@ -78,8 +79,8 @@ import {
   updateAgentSessionSettings,
   generateAgentSessionTitle,
   renameAgentSessionTitle,
-} from "../api/agent";
-import { getEventStream } from "../api/ccStream";
+} from "../agent/transport";
+import { getEventStream } from "../agent/transport";
 
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
 export const apiCreateSession = vi.mocked(createAgentSession);
@@ -121,10 +122,14 @@ export function ev(
   };
 }
 
-export function mockCreate(sid: string, over: Partial<AgentSession> = {}): AgentSession {
+export function mockCreate(
+  sid: string,
+  over: Partial<AgentSession> = {},
+): AgentSession {
+  const runtime = over.runtime ?? "claude_code";
   const session: AgentSession = {
     session_id: sid,
-    runtime: "claude_code",
+    runtime,
     native_session_id: null,
     workdir: "/wd",
     model: "glm-5.2",
@@ -132,7 +137,7 @@ export function mockCreate(sid: string, over: Partial<AgentSession> = {}): Agent
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation(runtime).expectedCapabilities,
     name: sid,
     connected: false,
     running: false,
@@ -175,7 +180,8 @@ function mockAgentSessionForTitle(title: string): AgentSession {
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools"],
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     name: "wd",
     connected: true,
     running: true,

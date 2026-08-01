@@ -11,7 +11,7 @@ import {
   mockCreate,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
 const GOAL = {
   objective: "Ship Goal and Plan",
@@ -23,9 +23,9 @@ const GOAL = {
   updatedAt: 11,
 };
 
-describe("createCcStore - Codex Goal and Plan", () => {
+describe("createAgentStore - Codex Goal and Plan", () => {
   it("loads Goal on session start and keeps it isolated per session", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     apiGetCodexGoal.mockResolvedValueOnce(GOAL).mockResolvedValueOnce(null);
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
@@ -41,7 +41,7 @@ describe("createCcStore - Codex Goal and Plan", () => {
   });
 
   it("restores watchers only for Codex sessions live in this backend process", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     const disconnected = {
       session_id: "old",
       runtime: "codex",
@@ -76,7 +76,7 @@ describe("createCcStore - Codex Goal and Plan", () => {
   });
 
   it("records a background watcher startup failure without rejecting session start", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     apiGetEventStream.mockRejectedValueOnce(new Error("watcher unavailable"));
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
 
@@ -91,7 +91,7 @@ describe("createCcStore - Codex Goal and Plan", () => {
   });
 
   it("uses the permanent watcher for autonomous turns and explicit sends", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
 
@@ -121,7 +121,7 @@ describe("createCcStore - Codex Goal and Plan", () => {
   });
 
   it("writes pause and clear through native Goal APIs", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     apiGetCodexGoal.mockResolvedValueOnce(GOAL);
     apiSetCodexGoal.mockResolvedValueOnce({ ...GOAL, status: "paused" });
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });

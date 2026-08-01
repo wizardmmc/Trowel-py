@@ -11,9 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime
-from trowel_py.agent_host.hub import (
+from trowel_py.agent_host.capabilities import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
+)
+from trowel_py.agent_host.hub import (
     InvalidSessionRequestError,
     RuntimeTurnError,
     RuntimeUnavailableError,

@@ -1,10 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useCcStoreFrameSelector } from "../stores/ccFrameSelector";
-import { useCcStore } from "../stores/ccStore";
+import { useAgentStoreFrameSelector } from "../agent/application";
+import { useAgentStore } from "../agent";
 
-describe("useCcStoreFrameSelector", () => {
+describe("useAgentStoreFrameSelector", () => {
   const frames: FrameRequestCallback[] = [];
 
   beforeEach(() => {
@@ -13,7 +13,7 @@ describe("useCcStoreFrameSelector", () => {
       frames.push(callback);
       return frames.length;
     });
-    useCcStore.setState((state) => ({ ...state, historyTotal: 0 }));
+    useAgentStore.setState((state) => ({ ...state, historyTotal: 0 }));
   });
 
   afterEach(() => {
@@ -23,15 +23,15 @@ describe("useCcStoreFrameSelector", () => {
   it("publishes many store updates once with the latest value on the next frame", () => {
     const renders: number[] = [];
     const { result } = renderHook(() => {
-      const value = useCcStoreFrameSelector((state) => state.historyTotal);
+      const value = useAgentStoreFrameSelector((state) => state.historyTotal);
       renders.push(value);
       return value;
     });
 
     act(() => {
-      useCcStore.setState((state) => ({ ...state, historyTotal: 1 }));
-      useCcStore.setState((state) => ({ ...state, historyTotal: 2 }));
-      useCcStore.setState((state) => ({ ...state, historyTotal: 3 }));
+      useAgentStore.setState((state) => ({ ...state, historyTotal: 1 }));
+      useAgentStore.setState((state) => ({ ...state, historyTotal: 2 }));
+      useAgentStore.setState((state) => ({ ...state, historyTotal: 3 }));
     });
 
     expect(result.current).toBe(0);
@@ -45,11 +45,11 @@ describe("useCcStoreFrameSelector", () => {
 
   it("does not schedule a frame when the selected value is unchanged", () => {
     renderHook(() =>
-      useCcStoreFrameSelector((state) => state.historyTotal),
+      useAgentStoreFrameSelector((state) => state.historyTotal),
     );
 
     act(() => {
-      useCcStore.setState((state) => ({
+      useAgentStore.setState((state) => ({
         ...state,
         historyError: "background change",
       }));

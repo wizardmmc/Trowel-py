@@ -1,12 +1,14 @@
+/** 按工具种类和 runtime 展示规则组织摘要、状态和详情。 */
+
 import { memo, useState } from "react";
 
 import type { ToolItem } from "../../agent/domain";
-import { getDisplayPath } from "./pathDisplay";
-import { getCodexCommandPresentation } from "./codexCommandPresentation";
+import { getDisplayPath } from "../../agent/runtimes/shared";
 import {
+  getCodexCommandPresentation,
   getCodexMcpPresentation,
   isCodexMcp,
-} from "./codexMcpPresentation";
+} from "../../agent/runtimes";
 import { ToolDetail } from "./ToolDetail";
 import {
   asString,
@@ -24,14 +26,17 @@ interface ToolBlockProps {
   readonly workdir?: string;
   /** 超大 turn 只折叠旧详情；工具摘要始终保留。 */
   readonly suppressDiffAutoOpen?: boolean;
+  readonly showCodexMcpPresentation?: boolean;
 }
 
 function SummaryBrief({
   item,
   workdir,
+  showCodexMcpPresentation,
 }: {
   readonly item: ToolItem;
   readonly workdir?: string;
+  readonly showCodexMcpPresentation: boolean;
 }) {
   if (item.toolName === "Skill") {
     const skill = asString(item.input.skill);
@@ -70,7 +75,7 @@ function SummaryBrief({
       <code className="cc-tool__brief cc-tool__brief--mono">{brief(row.detail, 72)}</code>
     ) : null;
   }
-  if (isCodexMcp(item)) {
+  if (showCodexMcpPresentation && isCodexMcp(item)) {
     const title = getCodexMcpPresentation(item).title;
     return title !== null ? (
       <span className="cc-tool__brief">{title}</span>
@@ -97,11 +102,12 @@ function ToolBlockView({
   condensed = false,
   workdir,
   suppressDiffAutoOpen = false,
+  showCodexMcpPresentation = true,
 }: ToolBlockProps) {
   const done = item.status === "done";
   const failed = item.status === "failed";
   const codexCommand = item.toolName === "command";
-  const codexMcp = isCodexMcp(item);
+  const codexMcp = showCodexMcpPresentation && isCodexMcp(item);
   const codexNative = codexCommand || codexMcp;
   const commandPresentation = codexCommand
     ? getCodexCommandPresentation(item, workdir)
@@ -139,7 +145,11 @@ function ToolBlockView({
       >
         {verb}
       </span>
-      <SummaryBrief item={item} workdir={workdir} />
+      <SummaryBrief
+        item={item}
+        workdir={workdir}
+        showCodexMcpPresentation={showCodexMcpPresentation}
+      />
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
       {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
@@ -205,7 +215,11 @@ function ToolBlockView({
       {summary}
       {expanded && (
         <div className="cc-tool__detail">
-          <ToolDetail item={item} workdir={workdir} />
+          <ToolDetail
+            item={item}
+            workdir={workdir}
+            showCodexMcpPresentation={showCodexMcpPresentation}
+          />
         </div>
       )}
     </div>

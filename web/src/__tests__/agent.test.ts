@@ -24,7 +24,7 @@ import {
   clearCodexGoal,
   startCodexTurn,
   updateAgentSessionSettings,
-} from "../api/agent";
+} from "../agent/transport";
 
 function mockEnvelope(data: unknown, ok = true, meta?: unknown): Response {
   return new Response(

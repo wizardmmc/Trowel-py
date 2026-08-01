@@ -1,3 +1,5 @@
+/** 将 REST 恢复的审批请求并入实时事件状态，同时保护当前 turn。 */
+
 import type { AgentPendingRequest } from "../../transport/api";
 import type { ApprovalRequestEvent } from "../../transport/events";
 import { reduceEvent } from "../../domain/reducer";

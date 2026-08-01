@@ -2,9 +2,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList } from "../components/cc/MessageList";
+import { MessageList } from "../agent/ui";
 import { useStickyBottom } from "../components/cc/useStickyBottom";
-import type { Turn } from "../stores/ccStore";
+import type { Turn } from "../agent";
 
 function makeTurn(index: number, text = `回答 ${index}`): Turn {
   return {

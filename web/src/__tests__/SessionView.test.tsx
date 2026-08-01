@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+const { CC_CAPABILITIES, CODEX_CAPABILITIES } = vi.hoisted(() => ({
+  CC_CAPABILITIES: [
+    "tools", "models", "effort", "permission", "question", "interrupt",
+    "slash_commands", "workflow", "tasks", "subagents", "checkpoint",
+    "revert", "mcp",
+  ] as const,
+  CODEX_CAPABILITIES: [
+    "tools", "models", "effort", "permission", "sandbox", "network_access",
+    "approval", "interrupt", "slash_commands", "goal", "plan", "review",
+    "subagents", "turn_diff", "mcp",
+  ] as const,
+}));
+
 vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn().mockResolvedValue({
     session_id: "s1",
@@ -12,7 +25,7 @@ vi.mock("../agent/transport/api", () => ({
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: CC_CAPABILITIES,
     name: "wd",
     connected: false,
     running: false,
@@ -65,11 +78,11 @@ vi.mock("../api/cc", () => ({
   answerElicit: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
-import { SessionView } from "../components/cc/SessionView";
-import { useCcStore } from "../stores/ccStore";
-import { createNewSessionState } from "../stores/ccStore/sessionState";
-import { reduceAgentEvent } from "../stores/ccStore/eventState";
-import type { AgentEvent } from "../api/agentTypes";
+import { SessionView } from "../agent/ui";
+import { useAgentStore } from "../agent";
+import { createNewSessionState } from "../agent/application/store/sessionState";
+import { reduceAgentEvent } from "../agent/application/store/eventState";
+import type { AgentEvent } from "../agent/transport";
 import {
   createAgentSession as createSession,
   getAgentSessionDefaults,
@@ -79,7 +92,7 @@ import {
   listCodexCommands,
   compactCodexSession,
   getCodexSubagentHistory,
-} from "../api/agent";
+} from "../agent/transport";
 import {
   loadNewSessionPreferences,
   saveNewSessionPreferences,
@@ -89,7 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAgentSessionDefaults).mockResolvedValue(null);
   localStorage.clear();
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
@@ -105,7 +118,7 @@ beforeEach(() => {
 describe("SessionView", () => {
   it("opens a Codex child timeline without a composer and returns to the parent", async () => {
     installCodexSession();
-    let current = useCcStore.getState().sessions.s1;
+    let current = useAgentStore.getState().sessions.s1;
     const apply = (event: AgentEvent) => {
       const result = reduceAgentEvent(current, event);
       if (result.kind === "updated") current = result.session;
@@ -137,7 +150,7 @@ describe("SessionView", () => {
         agent_path: "/root/probe",
       },
     });
-    useCcStore.setState({ sessions: { s1: current }, activeSid: "s1" });
+    useAgentStore.setState({ sessions: { s1: current }, activeSid: "s1" });
     vi.mocked(getCodexSubagentHistory).mockResolvedValueOnce([
       {
         schema: "agent-event-v1",
@@ -174,7 +187,7 @@ describe("SessionView", () => {
   });
 
   function installCodexSession() {
-    useCcStore.setState({
+    useAgentStore.setState({
       sessions: {
         s1: createNewSessionState(
           {
@@ -187,7 +200,7 @@ describe("SessionView", () => {
             permission: "Workspace write · on-request",
             memory_enabled: true,
             profile_enabled: true,
-            capabilities: ["tools", "approval"],
+            capabilities: CODEX_CAPABILITIES,
             name: "wd",
             connected: true,
             running: false,
@@ -227,12 +240,12 @@ describe("SessionView", () => {
     ]);
     render(<SessionView workdir="/wd" />);
 
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/status" } });
     fireEvent.click(await screen.findByRole("option", { name: /\/status/ }));
 
     expect(screen.getByRole("dialog", { name: "Codex 会话状态" })).toBeInTheDocument();
-    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+    expect(useAgentStore.getState().sessions.s1.turns).toHaveLength(0);
   });
 
   it("routes /compact to its command API and keeps it out of turns", async () => {
@@ -248,13 +261,13 @@ describe("SessionView", () => {
     ]);
     render(<SessionView workdir="/wd" />);
 
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/compact" } });
     fireEvent.click(await screen.findByRole("option", { name: /\/compact/ }));
 
     await waitFor(() => expect(vi.mocked(compactCodexSession)).toHaveBeenCalledWith("s1"));
     expect(await screen.findByText("上下文压缩已启动")).toBeInTheDocument();
-    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+    expect(useAgentStore.getState().sessions.s1.turns).toHaveLength(0);
   });
 
   it("shows the no-active-session prompt in the center when activeSid is null", () => {
@@ -266,7 +279,7 @@ describe("SessionView", () => {
 
   it("shows the active native session id immediately left of the workdir button", () => {
     const nativeSessionId = "019c1f22-96f2-7341-b85a-2f7244e63526";
-    useCcStore.setState({
+    useAgentStore.setState({
       sessions: {
         s1: createNewSessionState(
           {
@@ -279,7 +292,7 @@ describe("SessionView", () => {
             permission: "Full access · never",
             memory_enabled: true,
             profile_enabled: true,
-            capabilities: ["tools", "approval"],
+            capabilities: CODEX_CAPABILITIES,
             name: "wd",
             connected: true,
             running: false,
@@ -304,15 +317,15 @@ describe("SessionView", () => {
   it("reconcile 时按后端 connected 字段标记，temp(connected=false) 不进多开栏", async () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
-        { session_id: "temp1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "wd", connected: false, running: false },
+        { session_id: "temp1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: CC_CAPABILITIES, name: "wd", connected: false, running: false },
       ],
       activeId: "temp1",
     });
     render(<SessionView workdir="/wd" />);
     await waitFor(() => {
-      expect(useCcStore.getState().sessions["temp1"]).toBeDefined();
+      expect(useAgentStore.getState().sessions["temp1"]).toBeDefined();
     });
-    expect(useCcStore.getState().sessions["temp1"]?.connected).toBe(false);
+    expect(useAgentStore.getState().sessions["temp1"]?.connected).toBe(false);
     expect(screen.getByText(/暂无连接/)).toBeInTheDocument();
   });
 
@@ -327,19 +340,19 @@ describe("SessionView", () => {
       permission: null,
       memory_enabled: true,
       profile_enabled: true,
-      capabilities: ["tools", "approval", "checkpoint", "workflow"],
+      capabilities: CC_CAPABILITIES,
       name: params.workdir,
       connected: false,
       running: false,
     }));
     const { rerender } = render(<SessionView workdir="/a" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/a"));
+    await waitFor(() => expect(useAgentStore.getState().activeSid).toBe("sid-/a"));
 
     rerender(<SessionView workdir="/b" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/b"));
+    await waitFor(() => expect(useAgentStore.getState().activeSid).toBe("sid-/b"));
 
-    expect(useCcStore.getState().sessions["sid-/b"]?.workdir).toBe("/b");
-    expect(useCcStore.getState().sessions["sid-/a"]).toBeUndefined();
+    expect(useAgentStore.getState().sessions["sid-/b"]?.workdir).toBe("/b");
+    expect(useAgentStore.getState().sessions["sid-/a"]).toBeUndefined();
     expect(vi.mocked(listSessions).mock.calls.at(-1)?.[0]).toBe("/b");
   });
 
@@ -403,7 +416,7 @@ describe("SessionView", () => {
     render(<SessionView workdir="/wd" />);
 
     await waitFor(() => expect(vi.mocked(createSession)).toHaveBeenCalled());
-    expect(useCcStore.getState().activeSid).not.toBe("stale");
+    expect(useAgentStore.getState().activeSid).not.toBe("stale");
   });
 
   it("startSession 失败时历史仍刷新到当前 workdir（兜底，不停留在旧路径）", async () => {
@@ -416,7 +429,7 @@ describe("SessionView", () => {
   });
 
   it("renders the Codex host degraded banner when hostDegraded is set", () => {
-    useCcStore.setState({
+    useAgentStore.setState({
       sessions: {
         "c1": {
           turns: [],
@@ -446,7 +459,7 @@ describe("SessionView", () => {
           name: "wd",
           displayTitle: "wd",
           titleSource: "native",
-          revertEnabled: false,
+          checkpointAvailable: false,
           transportError: null,
           abort: null,
           connected: true,
@@ -455,7 +468,7 @@ describe("SessionView", () => {
           runtime: "codex",
           nativeSessionId: "thr-1",
           permission: "workspace-write",
-          capabilities: ["tools", "approval"],
+          capabilities: CODEX_CAPABILITIES,
           lastSeq: null,
           needsReplay: false,
         },
@@ -476,12 +489,12 @@ describe("SessionView", () => {
         runtime: "claude_code",
         label: "Claude Code",
         native: "claude -p",
-        capabilities: [],
+        capabilities: CC_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+    await waitFor(() => expect(useAgentStore.getState().activeSid).not.toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
     const high = await screen.findByRole("button", { name: "high" });
@@ -519,12 +532,12 @@ describe("SessionView", () => {
         runtime: "codex",
         label: "Codex",
         native: "app-server",
-        capabilities: [],
+        capabilities: CODEX_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+    await waitFor(() => expect(useAgentStore.getState().activeSid).not.toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
 
@@ -559,12 +572,12 @@ describe("SessionView", () => {
         runtime: "claude_code",
         label: "Claude Code",
         native: "claude -p",
-        capabilities: [],
+        capabilities: CC_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
+    await waitFor(() => expect(useAgentStore.getState().activeSid).not.toBeNull());
     vi.mocked(createSession).mockRejectedValueOnce(new Error("backend down"));
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));

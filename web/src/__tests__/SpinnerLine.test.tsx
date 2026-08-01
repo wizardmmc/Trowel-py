@@ -3,11 +3,12 @@ import { render, screen } from "@testing-library/react";
 import { act } from "react";
 
 import { SpinnerLine } from "../components/cc/SpinnerLine";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import {
-  useCcStore,
+  useAgentStore,
   INITIAL_REDUCER_STATE,
   type PerSessionState,
-} from "../stores/ccStore";
+} from "../agent";
 
 const SID = "s1";
 
@@ -19,7 +20,7 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     name: "wd",
     displayTitle: "wd",
     titleSource: "native",
-    revertEnabled: false,
+    checkpointAvailable: false,
     transportError: null,
     abort: null,
     connected: true,
@@ -28,7 +29,8 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     runtime: "claude_code",
     nativeSessionId: null,
     permission: null,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     lastSeq: null,
     needsReplay: false,
     ...over,
@@ -37,7 +39,7 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
 }
 
 function setActive(session: PerSessionState): void {
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: { [SID]: session },
     activeSid: SID,
   });
@@ -46,7 +48,7 @@ function setActive(session: PerSessionState): void {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(10000);
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
@@ -84,7 +86,7 @@ describe("SpinnerLine", () => {
   });
 
   it("renders nothing when there is no active session", () => {
-    useCcStore.setState({ activeSid: null, sessions: {} });
+    useAgentStore.setState({ activeSid: null, sessions: {} });
     render(<SpinnerLine />);
     expect(screen.queryByTestId("cc-spinner")).toBeNull();
   });

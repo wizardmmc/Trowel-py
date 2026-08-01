@@ -1,3 +1,5 @@
+/** 从额度快照计算预警级别和重置倒计时文案。 */
+
 import type { RateLimitSnapshot, RateLimitWindow } from "../../agent/transport";
 
 /** 协议没有“接近上限”信号，80% 是产品侧预警阈值。 */

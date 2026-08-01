@@ -1,3 +1,5 @@
+/** 根据 TaskCreate 和 TaskUpdate 工具事件维护会话任务列表。 */
+
 import type { ToolCallEvent } from "../../transport/events";
 import type { ReducerState, Task } from "./model";
 

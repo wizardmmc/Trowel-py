@@ -1,3 +1,5 @@
+/** 解析 Agent SSE 帧，并提供消息发送与持续订阅 transport。 */
+
 import type { AgentEvent } from "./agentEvent";
 
 const FRAME_DELIMITER = "\n\n";

@@ -1,3 +1,5 @@
+/** 在花园网格中展示一张卡片对应的植物摘要。 */
+
 import type { GardenPlant } from "../../api/client";
 import { PlantSVG } from "./plants/PlantSVG";
 

@@ -1,11 +1,16 @@
+/** 展示单个 turn 的事件序列，并限制超大 turn 的初始挂载量。 */
+
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 
 import type { PerSessionState } from "../../agent/application";
 import type { ToolItem, TurnItem } from "../../agent/domain";
+import {
+  CodexExplorationGroup,
+  isCodexExploration,
+  type RuntimePresentation,
+} from "../../agent/runtimes";
 import { AssistantText } from "./AssistantText";
-import { CodexExplorationGroup } from "./CodexExplorationGroup";
 import { EventTimelineRow } from "./EventTimelineRow";
-import { isCodexExploration } from "./codexCommandPresentation";
 import {
   asString,
   displayVerb,
@@ -13,7 +18,7 @@ import {
   isEditTool,
   summaryStat,
 } from "./toolPresentation";
-import { getDisplayPath } from "./pathDisplay";
+import { getDisplayPath } from "../../agent/runtimes/shared";
 import { ToolDetail } from "./ToolDetail";
 
 /** 正常 turn 全部默认预览；只在异常大的 turn 中保留最近一小段详情。 */
@@ -88,7 +93,7 @@ interface EventTimelineProps {
   readonly onCancel?: () => void;
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
   readonly sessionId?: string;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
@@ -103,7 +108,7 @@ export function EventTimeline({
   onCancel,
   onApprovalDecision,
   workdir,
-  runtime,
+  presentation,
   sessionId,
   codexSubagents,
   onOpenSubagent,
@@ -222,7 +227,7 @@ export function EventTimeline({
       // 相邻文本用空行连接，避免 Markdown 段落被合并。
       textBuf = textBuf ? `${textBuf}\n\n${item.text}` : item.text;
     } else if (
-      runtime === "codex" &&
+      presentation?.timelinePresenters.groupExplorationCommands &&
       item.kind === "tool" &&
       item.toolName === "command" &&
       isCodexExploration(item)
@@ -292,7 +297,7 @@ export function EventTimeline({
           onCancel={onCancel}
           onApprovalDecision={onApprovalDecision}
           workdir={workdir}
-          runtime={runtime}
+          presentation={presentation}
           codexSubagents={codexSubagents}
           onOpenSubagent={onOpenSubagent}
           thinkingComplete={

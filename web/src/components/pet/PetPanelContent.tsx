@@ -1,3 +1,5 @@
+/** 展示宠物状态、食物、装扮和近期事件。 */
+
 import type { RefObject } from "react";
 import type {
   EventLog,

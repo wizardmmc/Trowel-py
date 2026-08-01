@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   getCodexCommandPresentation,
   isCodexExploration,
-} from "../components/cc/codexCommandPresentation";
-import type { ToolItem } from "../stores/ccStore";
+} from "../agent/runtimes/codex";
+import type { ToolItem } from "../agent/domain";
 
 function command(input: Record<string, unknown>): ToolItem {
   return {

@@ -1,3 +1,5 @@
+/** 展示植物对应卡片的内容、复习状态和成长信息。 */
+
 import type { GardenPlant } from "../../api/client";
 import { PlantSVG } from "./plants/PlantSVG";
 

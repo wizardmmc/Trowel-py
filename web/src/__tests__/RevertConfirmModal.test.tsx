@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 import { RevertConfirmModal } from "../components/cc/RevertConfirmModal";
-import type { Turn } from "../stores/ccStore";
+import type { Turn } from "../agent";
 
 function turn(id: string, text: string): Turn {
   return {

@@ -1,3 +1,5 @@
+/** 定义统一 AgentEvent 信封，并转换为前端 reducer 使用的事件。 */
+
 import type { TrowelEvent } from "./events";
 
 export type Runtime = "claude_code" | "codex";

@@ -6,12 +6,12 @@ import {
   activateSession,
   listModels,
   listSlashItems,
-  listDir,
   getHistory,
   interruptSession,
   deleteSession,
   messagesUrl,
 } from "../api/cc";
+import { listAgentDirectory as listDir } from "../agent/transport";
 
 function mockFetchEnvelope(data: unknown, success = true) {
   return vi.fn().mockResolvedValue({

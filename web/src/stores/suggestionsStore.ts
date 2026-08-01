@@ -1,3 +1,5 @@
+/** 管理 Profile 建议的加载、采纳和丢弃状态。 */
+
 import { create } from "zustand";
 import {
   getSuggestions as getSuggestionsApi,

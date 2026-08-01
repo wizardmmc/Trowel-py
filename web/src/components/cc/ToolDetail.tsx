@@ -1,9 +1,10 @@
+/** 为命令、文件、MCP 和通用工具选择对应的详情视图。 */
+
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 
 import type { DiffHunk, WriteDiff } from "../../agent/transport";
 import type { ToolItem } from "../../agent/domain";
-import { CodexMcpDetail } from "./CodexMcpDetail";
-import { isCodexMcp } from "./codexMcpPresentation";
+import { CodexMcpDetail, isCodexMcp } from "../../agent/runtimes";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 import { ToolCommandDetail } from "./ToolCommandDetail";
 import {
@@ -180,8 +181,12 @@ function ReadBody({ result }: { readonly result: string }) {
   );
 }
 
-function renderDetail(item: ToolItem, workdir?: string): ReactNode {
-  if (isCodexMcp(item)) {
+function renderDetail(
+  item: ToolItem,
+  workdir: string | undefined,
+  showCodexMcpPresentation: boolean,
+): ReactNode {
+  if (showCodexMcpPresentation && isCodexMcp(item)) {
     return <CodexMcpDetail item={item} />;
   }
   if (isCommandTool(item.toolName)) {
@@ -255,9 +260,11 @@ function renderDetail(item: ToolItem, workdir?: string): ReactNode {
 export function ToolDetail({
   item,
   workdir,
+  showCodexMcpPresentation = true,
 }: {
   readonly item: ToolItem;
   readonly workdir?: string;
+  readonly showCodexMcpPresentation?: boolean;
 }) {
-  return <>{renderDetail(item, workdir)}</>;
+  return <>{renderDetail(item, workdir, showCodexMcpPresentation)}</>;
 }

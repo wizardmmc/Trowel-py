@@ -1,3 +1,5 @@
+/** 在等待首个响应时显示轮换动作词和累计耗时。 */
+
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 

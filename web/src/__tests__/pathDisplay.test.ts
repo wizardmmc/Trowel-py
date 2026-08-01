@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getDisplayPath } from "../components/cc/pathDisplay";
+import { getDisplayPath } from "../agent/runtimes/shared";
 
 describe("getDisplayPath", () => {
   it("returns the absolute path when workdir is undefined", () => {

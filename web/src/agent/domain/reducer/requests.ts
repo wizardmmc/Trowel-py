@@ -1,3 +1,5 @@
+/** 将提问和审批请求及其结果归约为可交互的时间线状态。 */
+
 import type {
   ApprovalRequestEvent,
   ElicitationRequestEvent,

@@ -1,3 +1,5 @@
+/** 定义并调用工作目录选择器使用的本地目录浏览接口。 */
+
 export interface AgentDirectoryEntry {
   readonly name: string;
   readonly path: string;

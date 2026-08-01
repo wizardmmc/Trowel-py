@@ -1,3 +1,5 @@
+/** 检查前端 Agent 的所有权边界、已删除入口和相对 import 环。 */
+
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -7,7 +9,6 @@ import ts from "typescript";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const sourceRoot = path.resolve(scriptDir, "../src");
-const agentRoot = path.join(sourceRoot, "agent");
 const sourceExtensions = new Set([".ts", ".tsx"]);
 const errors = [];
 
@@ -15,11 +16,15 @@ const requiredEntries = [
   "agent/domain/index.ts",
   "agent/application/index.ts",
   "agent/transport/index.ts",
+  "agent/runtimes/index.ts",
+  "agent/runtimes/shared/index.ts",
+  "agent/runtimes/claude-code/index.ts",
+  "agent/runtimes/codex/index.ts",
   "agent/ui/index.ts",
   "agent/index.ts",
 ];
 
-const legacyFacadeEntries = [
+const removedLegacyEntries = [
   "api/agent.ts",
   "api/agentTypes.ts",
   "api/ccStream.ts",
@@ -30,10 +35,25 @@ const legacyFacadeEntries = [
   "components/cc/MessageList.tsx",
   "components/cc/SessionView.tsx",
   "components/cc/WorkdirPicker.tsx",
+  "components/cc/ApprovalBlock.tsx",
+  "components/cc/CodexCommandDialogs.tsx",
+  "components/cc/CodexExplorationGroup.tsx",
+  "components/cc/CodexMcpDetail.tsx",
+  "components/cc/CodexWorkRail.tsx",
+  "components/cc/ElicitationBlock.tsx",
+  "components/cc/ElicitationControls.tsx",
+  "components/cc/ToolCommandOutput.tsx",
+  "components/cc/WorkflowPhaseRow.tsx",
+  "components/cc/WorkflowSummary.tsx",
+  "components/cc/WorkflowTree.tsx",
+  "components/cc/codexCommandPresentation.ts",
+  "components/cc/codexMcpPresentation.ts",
+  "components/cc/pathDisplay.ts",
+  "components/cc/useCodexCommandRoster.ts",
   "components/cc/useSessionLifecycle.ts",
 ];
 
-const legacyFacadeDirectories = ["stores/ccReducer", "stores/ccStore"];
+const removedLegacyDirectories = ["stores/ccReducer", "stores/ccStore"];
 const legacyImportPrefixes = [
   "api/agent",
   "api/agentTypes",
@@ -45,6 +65,21 @@ const legacyImportPrefixes = [
   "components/cc/MessageList",
   "components/cc/SessionView",
   "components/cc/WorkdirPicker",
+  "components/cc/ApprovalBlock",
+  "components/cc/CodexCommandDialogs",
+  "components/cc/CodexExplorationGroup",
+  "components/cc/CodexMcpDetail",
+  "components/cc/CodexWorkRail",
+  "components/cc/ElicitationBlock",
+  "components/cc/ElicitationControls",
+  "components/cc/ToolCommandOutput",
+  "components/cc/WorkflowPhaseRow",
+  "components/cc/WorkflowSummary",
+  "components/cc/WorkflowTree",
+  "components/cc/codexCommandPresentation",
+  "components/cc/codexMcpPresentation",
+  "components/cc/pathDisplay",
+  "components/cc/useCodexCommandRoster",
   "components/cc/useSessionLifecycle",
 ];
 
@@ -136,7 +171,7 @@ async function resolveRelativeImport(fromFile, specifier) {
 
 function agentLayer(filePath) {
   const file = relative(filePath);
-  for (const layer of ["domain", "application", "transport", "ui"]) {
+  for (const layer of ["domain", "application", "transport", "runtimes", "ui"]) {
     if (file.startsWith(`agent/${layer}/`)) return layer;
   }
   return null;
@@ -197,32 +232,16 @@ async function checkRequiredLayout() {
   }
 }
 
-async function checkFacade(filePath) {
-  if (!(await exists(filePath))) {
-    errors.push(`${relative(filePath)}: 缺少兼容 facade`);
-    return;
-  }
-  const sourceText = await readFile(filePath, "utf8");
-  const sourceFile = parseSource(filePath, sourceText);
-  if (!sourceText.includes("@deprecated") || !sourceText.includes("调用方清零")) {
-    errors.push(`${relative(filePath)}: facade 必须说明弃用和删除条件`);
-  }
-  if (sourceFile.statements.length === 0) {
-    errors.push(`${relative(filePath)}: facade 没有 re-export`);
-    return;
-  }
-  for (const statement of sourceFile.statements) {
-    if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) {
-      errors.push(`${relative(filePath)}: 兼容入口只能包含 re-export`);
-      continue;
+async function checkRemovedLegacyLayout() {
+  for (const entry of removedLegacyEntries) {
+    const filePath = path.join(sourceRoot, entry);
+    if (await exists(filePath)) {
+      errors.push(`${entry}: L05 后不得恢复旧 Agent import 入口`);
     }
-    if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const target = await resolveRelativeImport(
-      filePath,
-      statement.moduleSpecifier.text,
-    );
-    if (!target || !target.startsWith(agentRoot + path.sep)) {
-      errors.push(`${relative(filePath)}: re-export 必须指向 agent owner`);
+  }
+  for (const directory of removedLegacyDirectories) {
+    if (await exists(path.join(sourceRoot, directory))) {
+      errors.push(`${directory}: L05 后不得恢复旧 Agent facade 目录`);
     }
   }
 }
@@ -252,15 +271,7 @@ function detectCycles(graph) {
 }
 
 await checkRequiredLayout();
-
-for (const entry of legacyFacadeEntries) {
-  await checkFacade(path.join(sourceRoot, entry));
-}
-for (const directory of legacyFacadeDirectories) {
-  for (const filePath of await collectSourceFiles(path.join(sourceRoot, directory))) {
-    await checkFacade(filePath);
-  }
-}
+await checkRemovedLegacyLayout();
 
 const productionFiles = (await collectSourceFiles(sourceRoot)).filter(
   (filePath) => !relative(filePath).includes("__tests__/"),
@@ -294,6 +305,16 @@ for (const filePath of productionFiles) {
       );
     }
 
+    const targetPath = relative(target);
+    if (
+      !relative(filePath).startsWith("agent/runtimes/") &&
+      (/^agent\/runtimes\/(claude-code|codex)\//).test(targetPath)
+    ) {
+      errors.push(
+        `${relative(filePath)}: runtime 专属展示必须通过 agent/runtimes facade 导入`,
+      );
+    }
+
     if (layer === "ui" && relative(target).startsWith("api/")) {
       errors.push(`${relative(filePath)}: ui 应通过 application 读取 HTTP/SSE`);
     }
@@ -312,6 +333,18 @@ for (const filePath of productionFiles) {
       }
     } else if (layer === "application" && targetLayer === "ui") {
       errors.push(`${relative(filePath)}: application 不得反向依赖 ui`);
+    } else if (layer === "application" && targetLayer === "runtimes") {
+      errors.push(`${relative(filePath)}: application 不得依赖 presentation adapter`);
+    } else if (layer === "runtimes") {
+      if (targetLayer === "application" || targetLayer === "ui") {
+        errors.push(
+          `${relative(filePath)}: runtimes 只能解释统一状态，不能依赖 agent/${targetLayer}`,
+        );
+      } else if (targetLayer === "transport" && !record.typeOnly) {
+        errors.push(
+          `${relative(filePath)}: runtimes 只能读取 transport 类型，不能发起传输`,
+        );
+      }
     } else if (layer === "ui" && targetLayer === "transport") {
       errors.push(`${relative(filePath)}: ui 应通过 application 读取 transport`);
     }

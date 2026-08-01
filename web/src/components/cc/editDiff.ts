@@ -1,3 +1,5 @@
+/** 将编辑工具输入转换为统一 diff hunk 和增删行统计。 */
+
 import { structuredPatch, type StructuredPatchHunk } from "diff";
 import type { DiffHunk } from "../../agent/transport";
 

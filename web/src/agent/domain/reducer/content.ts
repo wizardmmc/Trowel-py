@@ -1,3 +1,5 @@
+/** 将文字与思考的增量事件合并为稳定的时间线条目。 */
+
 import type {
   TextEvent,
   ThinkingEvent,

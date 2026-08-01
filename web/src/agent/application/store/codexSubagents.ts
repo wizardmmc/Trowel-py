@@ -1,3 +1,5 @@
+/** 将 Codex 子线程事件和历史分别归约到根会话及对应 subagent。 */
+
 import type { SubagentProgressEvent } from "../../transport/events";
 import type { AgentEvent } from "../../transport/agentEvent";
 import type { AgentEventLike } from "../../transport/api";

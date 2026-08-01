@@ -1,3 +1,5 @@
+/** 展示单个 Agent 会话的消息时间线，并管理大回合挂载和滚动定位。 */
+
 import {
   memo,
   useCallback,
@@ -10,6 +12,7 @@ import {
 
 import type { PerSessionState } from "../application";
 import type { Turn } from "../domain";
+import type { RuntimePresentation } from "../runtimes";
 import { formatRunDuration } from "../../components/cc/durationLabel";
 import { EventTimeline } from "../../components/cc/EventTimeline";
 import { CurrentTurnContext } from "../../components/cc/CurrentTurnContext";
@@ -30,7 +33,7 @@ interface MessageListProps {
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
   readonly sessionId?: string;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
@@ -42,12 +45,6 @@ const OLDER_TURN_BATCH = 5;
 const LOAD_OLDER_THRESHOLD_PX = 24;
 const CONTEXT_ACTIVATION_PX = 44;
 
-function runtimeLabel(runtime?: string): "Codex" | "CC" | "Agent" {
-  if (runtime === "codex") return "Codex";
-  if (runtime === "claude_code") return "CC";
-  return "Agent";
-}
-
 const TurnCard = memo(function TurnCard({
   turn,
   turnIndex,
@@ -58,7 +55,7 @@ const TurnCard = memo(function TurnCard({
   onApprovalDecision,
   onRevert,
   workdir,
-  runtime,
+  presentation,
   sessionId,
   codexSubagents,
   onOpenSubagent,
@@ -73,14 +70,21 @@ const TurnCard = memo(function TurnCard({
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly onRevert?: (turn: Turn) => void;
   readonly workdir?: string;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
   readonly sessionId?: string;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
   readonly allowExtremeCompaction: boolean;
 }) {
   const hasContent = turn.items.length > 0;
-  const canRevert = turn.revertible && turn.turnId !== null && !streaming;
+  const canRevert =
+    turn.revertible &&
+    turn.turnId !== null &&
+    !streaming &&
+    (presentation?.supports(
+      "revert",
+      turn.status === "active" ? "live" : "history",
+    ) ?? true);
   const cleanedUserText = scrubUserText(turn.userText ?? "");
   return (
     <div
@@ -106,7 +110,9 @@ const TurnCard = memo(function TurnCard({
       )}
       {hasContent && (
         <div className="cc-msg cc-msg--assistant">
-          <span className="cc-msg__tag">{runtimeLabel(runtime)}</span>
+          <span className="cc-msg__tag">
+            {presentation?.shortLabel ?? "Agent"}
+          </span>
           <div className="cc-msg__body">
             <EventTimeline
               items={turn.items}
@@ -116,7 +122,7 @@ const TurnCard = memo(function TurnCard({
               onCancel={onCancel}
               onApprovalDecision={onApprovalDecision}
               workdir={workdir}
-              runtime={runtime}
+              presentation={presentation}
               sessionId={sessionId}
               codexSubagents={codexSubagents}
               onOpenSubagent={onOpenSubagent}
@@ -153,7 +159,7 @@ export function MessageList({
   onApprovalDecision,
   onRevert,
   workdir,
-  runtime,
+  presentation,
   sessionId,
   codexSubagents,
   onOpenSubagent,
@@ -380,7 +386,10 @@ export function MessageList({
   if (turns.length === 0) {
     return (
       <div className="cc-empty" data-testid="cc-empty">
-        <p>{emptyLabel ?? `输入一条消息开始与 ${runtimeLabel(runtime)} 对话。`}</p>
+        <p>
+          {emptyLabel ??
+            `输入一条消息开始与 ${presentation?.shortLabel ?? "Agent"} 对话。`}
+        </p>
       </div>
     );
   }
@@ -405,7 +414,7 @@ export function MessageList({
             onApprovalDecision={onApprovalDecision}
             onRevert={onRevert}
             workdir={workdir}
-            runtime={runtime}
+            presentation={presentation}
             sessionId={sessionId}
             codexSubagents={codexSubagents}
             onOpenSubagent={onOpenSubagent}

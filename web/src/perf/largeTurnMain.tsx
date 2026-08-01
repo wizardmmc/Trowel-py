@@ -1,3 +1,5 @@
+/** 挂载隔离的大回合性能回放页面。 */
+
 import { createRoot } from "react-dom/client";
 
 import "../styles/index.css";

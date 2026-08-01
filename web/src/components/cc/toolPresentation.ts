@@ -1,3 +1,5 @@
+/** 生成通用工具的动作名称、摘要、行数和状态文案。 */
+
 import type { ToolItem } from "../../agent/domain";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 

@@ -1,3 +1,5 @@
+/** 定义 Agent reducer 使用的会话、turn、时间线条目和任务状态。 */
+
 import type {
   ApprovalDecision,
   GoalStatus,

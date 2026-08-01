@@ -1,3 +1,5 @@
+/** 将 Codex 用量、host 状态和额度事件写入统一会话状态。 */
+
 import type {
   HostStatusEvent,
   RateLimitSnapshot,

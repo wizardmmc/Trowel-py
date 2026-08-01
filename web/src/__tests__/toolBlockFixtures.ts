@@ -1,4 +1,4 @@
-import type { ToolItem } from "../stores/ccStore";
+import type { ToolItem } from "../agent/domain";
 
 export function tool(over: Partial<ToolItem> = {}): ToolItem {
   return {

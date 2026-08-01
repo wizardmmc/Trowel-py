@@ -1,3 +1,5 @@
+/** 调用仍由 CC Host 提供的原生会话、命令和 checkpoint 接口。 */
+
 import type { AnswerElicitBody, TrowelEvent } from "../agent/transport/events";
 
 const CC_API_BASE = "/api/cc";
@@ -192,11 +194,6 @@ export async function listSlashItems(
     `${CC_API_BASE}/slash-items?workdir=${encodeURIComponent(workdir)}`,
   );
 }
-
-export {
-  listAgentDirectory as listDir,
-  type AgentDirectoryEntry as DirEntry,
-} from "../agent/transport/workdirs";
 
 export function messagesUrl(sessionId: string): string {
   return `${CC_API_BASE}/sessions/${sessionId}/messages`;

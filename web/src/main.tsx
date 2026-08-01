@@ -1,3 +1,5 @@
+/** 挂载 Trowel 主应用并加载全局样式。 */
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import 'lxgw-wenkai-webfont/style.css'

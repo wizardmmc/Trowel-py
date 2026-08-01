@@ -1,3 +1,4 @@
+/** 清理历史消息中不应展示给用户的 Claude Code 内部注入文本。 */
 
 const COMMAND_NAME_RE = /<command-name>\s*\/?\s*(\S+?)\s*<\/command-name>/;
 const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/;

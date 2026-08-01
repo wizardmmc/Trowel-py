@@ -1,3 +1,5 @@
+/** 根据卡片类别和成长阶段绘制对应植物。 */
+
 import { getCategoryColor } from "./categoryColors";
 
 export type PlantStage = "seed" | "sprout" | "tree" | "wilting";

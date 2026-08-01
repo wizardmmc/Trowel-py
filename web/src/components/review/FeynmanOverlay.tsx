@@ -1,3 +1,5 @@
+/** 协调费曼检验的出题、作答、评估和反馈覆盖层。 */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";

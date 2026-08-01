@@ -1,3 +1,5 @@
+/** 管理页面顶部短时显示的通知队列。 */
+
 import { create } from "zustand";
 
 interface Notification {

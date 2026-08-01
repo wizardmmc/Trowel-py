@@ -1,3 +1,5 @@
+/** 在嵌套工具树中查找、挂载和更新指定工具条目。 */
+
 import type { ReducerState, ToolItem, Turn, TurnItem } from "./model";
 
 /** 递归更新 turn item 树中匹配 toolUseId 的工具。 */

@@ -1,3 +1,5 @@
+/** 在紧凑弹层中选择模型及该模型支持的推理强度。 */
+
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
@@ -15,8 +17,8 @@ interface ModelEffortChipProps {
   readonly efforts?: readonly EffortControlOption[];
   readonly currentModelAlias: string | null;
   readonly currentEffort: string | null;
-  readonly onPickModel: (alias: string) => void;
-  readonly onPickEffort: (value: string) => void;
+  readonly onPickModel?: (alias: string) => void;
+  readonly onPickEffort?: (value: string) => void;
   readonly catalogError?: string | null;
   readonly onRetryCatalog?: () => void;
   readonly disabled?: boolean;
@@ -87,128 +89,138 @@ export function ModelEffortChip({
 
   return (
     <div className="cc-chip-group">
-      <div className={`cc-chip${open === "model" ? " cc-chip--open" : ""}`}>
-        <button
-          type="button"
-          ref={modelBtnRef}
-          className="cc-chip__btn"
-          onClick={() => toggle("model")}
-          disabled={disabled}
-          title={disabled ? "本轮结束后可切换" : undefined}
-          aria-label={`model: ${modelDisplay}（点击切换）`}
-        >
-          <span className="cc-chip__label">model</span>
-          <span className="cc-chip__value">{modelDisplay}</span>
-          <span className="cc-chip__caret" aria-hidden="true">▲</span>
-        </button>
-        {open === "model" && anchor && createPortal(
-          <>
-            <div className="cc-picker-backdrop" onClick={close} />
-            <div
-              className="cc-picker"
-              role="listbox"
-              aria-label="model 选项"
-              style={popoverStyle()}
-            >
-              {catalogError !== null && (
-                <div className="cc-picker__error" role="alert">
-                  <span>{catalogError}</span>
-                  {onRetryCatalog && (
-                    <button type="button" onClick={onRetryCatalog}>
-                      重试
-                    </button>
+      {onPickModel && (
+        <div className={`cc-chip${open === "model" ? " cc-chip--open" : ""}`}>
+          <button
+            type="button"
+            ref={modelBtnRef}
+            className="cc-chip__btn"
+            onClick={() => toggle("model")}
+            disabled={disabled}
+            title={disabled ? "本轮结束后可切换" : undefined}
+            aria-label={`model: ${modelDisplay}（点击切换）`}
+          >
+            <span className="cc-chip__label">model</span>
+            <span className="cc-chip__value">{modelDisplay}</span>
+            <span className="cc-chip__caret" aria-hidden="true">▲</span>
+          </button>
+          {open === "model" &&
+            anchor &&
+            createPortal(
+              <>
+                <div className="cc-picker-backdrop" onClick={close} />
+                <div
+                  className="cc-picker"
+                  role="listbox"
+                  aria-label="model 选项"
+                  style={popoverStyle()}
+                >
+                  {catalogError !== null && (
+                    <div className="cc-picker__error" role="alert">
+                      <span>{catalogError}</span>
+                      {onRetryCatalog && (
+                        <button type="button" onClick={onRetryCatalog}>
+                          重试
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {models.map((m) => {
+                    const sel = m.value === modelDisplay;
+                    return (
+                      <button
+                        key={m.value}
+                        type="button"
+                        role="option"
+                        aria-selected={sel}
+                        className={`cc-picker__item${sel ? " cc-picker__item--sel" : ""}`}
+                        onClick={() => {
+                          onPickModel(m.value);
+                          close();
+                        }}
+                      >
+                        <span className="cc-picker__row">
+                          <span className="cc-picker__name">{m.value}</span>
+                          {m.is_default && (
+                            <span className="cc-picker__tag">默认</span>
+                          )}
+                          <span className="cc-picker__real">{m.real_model}</span>
+                        </span>
+                        <span className="cc-picker__desc">{m.description}</span>
+                      </button>
+                    );
+                  })}
+                  {defaultModel && (
+                    <div className="cc-picker__foot">
+                      不设置时默认用 {defaultModel.value}
+                    </div>
                   )}
                 </div>
-              )}
-              {models.map((m) => {
-                const sel = m.value === modelDisplay;
-                return (
-                  <button
-                    key={m.value}
-                    type="button"
-                    role="option"
-                    aria-selected={sel}
-                    className={`cc-picker__item${sel ? " cc-picker__item--sel" : ""}`}
-                    onClick={() => {
-                      onPickModel(m.value);
-                      close();
-                    }}
-                  >
-                    <span className="cc-picker__row">
-                      <span className="cc-picker__name">{m.value}</span>
-                      {m.is_default && <span className="cc-picker__tag">默认</span>}
-                      <span className="cc-picker__real">{m.real_model}</span>
-                    </span>
-                    <span className="cc-picker__desc">{m.description}</span>
-                  </button>
-                );
-              })}
-              {defaultModel && (
-                <div className="cc-picker__foot">
-                  不设置时默认用 {defaultModel.value}
-                </div>
-              )}
-            </div>
-          </>,
-          document.body,
-        )}
-      </div>
+              </>,
+              document.body,
+            )}
+        </div>
+      )}
 
-      <div className={`cc-chip${open === "effort" ? " cc-chip--open" : ""}`}>
-        <button
-          type="button"
-          ref={effortBtnRef}
-          className="cc-chip__btn"
-          onClick={() => toggle("effort")}
-          disabled={disabled}
-          title={disabled ? "本轮结束后可切换" : undefined}
-          aria-label={`effort: ${effortDisplay}（点击切换）`}
-        >
-          <span className="cc-chip__label">effort</span>
-          <span className="cc-chip__value">{effortDisplay}</span>
-          <span className="cc-chip__caret" aria-hidden="true">▲</span>
-        </button>
-        {open === "effort" && anchor && createPortal(
-          <>
-            <div className="cc-picker-backdrop" onClick={close} />
-            <div
-              className="cc-picker"
-              role="listbox"
-              aria-label="effort 选项"
-              style={popoverStyle()}
-            >
-              {effortOptions.map((o) => {
-                const sel = o.value === effortDisplay;
-                return (
-                  <button
-                    key={o.value}
-                    type="button"
-                    role="option"
-                    aria-selected={sel}
-                    className={`cc-picker__item${sel ? " cc-picker__item--sel" : ""}`}
-                    onClick={() => {
-                      onPickEffort(o.value);
-                      close();
-                    }}
-                  >
-                    <span className="cc-picker__row">
-                      <span className="cc-picker__name">{o.value}</span>
-                      {(o.value === EFFORT_FALLBACK || o.isDefault) && (
-                        <span className="cc-picker__tag">默认</span>
-                      )}
-                    </span>
-                    <span className="cc-picker__desc">{o.description}</span>
-                  </button>
-                );
-              })}
-              <div className="cc-picker__foot">
-                不设置时默认用 {defaultEffort ?? EFFORT_FALLBACK}
-              </div>
-            </div>
-          </>,
-          document.body,
-        )}
-      </div>
+      {onPickEffort && (
+        <div className={`cc-chip${open === "effort" ? " cc-chip--open" : ""}`}>
+          <button
+            type="button"
+            ref={effortBtnRef}
+            className="cc-chip__btn"
+            onClick={() => toggle("effort")}
+            disabled={disabled}
+            title={disabled ? "本轮结束后可切换" : undefined}
+            aria-label={`effort: ${effortDisplay}（点击切换）`}
+          >
+            <span className="cc-chip__label">effort</span>
+            <span className="cc-chip__value">{effortDisplay}</span>
+            <span className="cc-chip__caret" aria-hidden="true">▲</span>
+          </button>
+          {open === "effort" &&
+            anchor &&
+            createPortal(
+              <>
+                <div className="cc-picker-backdrop" onClick={close} />
+                <div
+                  className="cc-picker"
+                  role="listbox"
+                  aria-label="effort 选项"
+                  style={popoverStyle()}
+                >
+                  {effortOptions.map((o) => {
+                    const sel = o.value === effortDisplay;
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        role="option"
+                        aria-selected={sel}
+                        className={`cc-picker__item${sel ? " cc-picker__item--sel" : ""}`}
+                        onClick={() => {
+                          onPickEffort(o.value);
+                          close();
+                        }}
+                      >
+                        <span className="cc-picker__row">
+                          <span className="cc-picker__name">{o.value}</span>
+                          {(o.value === EFFORT_FALLBACK || o.isDefault) && (
+                            <span className="cc-picker__tag">默认</span>
+                          )}
+                        </span>
+                        <span className="cc-picker__desc">{o.description}</span>
+                      </button>
+                    );
+                  })}
+                  <div className="cc-picker__foot">
+                    不设置时默认用 {defaultEffort ?? EFFORT_FALLBACK}
+                  </div>
+                </div>
+              </>,
+              document.body,
+            )}
+        </div>
+      )}
     </div>
   );
 }

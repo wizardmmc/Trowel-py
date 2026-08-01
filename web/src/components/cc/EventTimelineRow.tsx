@@ -1,3 +1,5 @@
+/** 按事件种类和 runtime capability 选择一条时间线记录的展示方式。 */
+
 import { memo, useState } from "react";
 
 import { RECOVERABLE_ERROR_SUBCLASSES } from "../../agent/transport";
@@ -10,19 +12,26 @@ import type {
   ThinkingItem,
   TurnItem,
 } from "../../agent/domain";
-import { ApprovalBlock } from "./ApprovalBlock";
-import { ElicitationBlock } from "./ElicitationBlock";
+import type {
+  AgentCapability,
+  RuntimePresentation,
+} from "../../agent/runtimes";
+import {
+  ApprovalBlock,
+  ElicitationBlock,
+  WorkflowTree,
+} from "../../agent/runtimes";
 import { SubagentBlock } from "./SubagentBlock";
 import { ToolBlock } from "./ToolBlock";
-import { WorkflowTree } from "./WorkflowTree";
 
-// 这些工具已有专属展示，不能在对话流中重复渲染。
-const HIDDEN_TOOLS = new Set([
-  "TaskCreate",
-  "TaskUpdate",
-  "TodoWrite",
-  "Workflow",
-]);
+// 这些工具已有专属展示；能力缺失时改为明确提示，不能静默吞掉记录。
+const TOOL_PRESENTATION_CAPABILITY: ReadonlyMap<string, AgentCapability> =
+  new Map<string, AgentCapability>([
+    ["TaskCreate", "tasks"],
+    ["TaskUpdate", "tasks"],
+    ["TodoWrite", "tasks"],
+    ["Workflow", "workflow"],
+  ]);
 
 interface EventTimelineRowProps {
   readonly item: TurnItem;
@@ -32,7 +41,7 @@ interface EventTimelineRowProps {
   readonly onCancel?: () => void;
   readonly onApprovalDecision?: (requestId: string, decision: string) => void;
   readonly workdir?: string;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
   readonly thinkingComplete?: boolean;
   readonly codexSubagents?: PerSessionState["codexSubagents"];
   readonly onOpenSubagent?: (threadId: string) => void;
@@ -47,7 +56,7 @@ function EventTimelineRowView({
   onCancel,
   onApprovalDecision,
   workdir,
-  runtime,
+  presentation,
   thinkingComplete,
   codexSubagents,
   onOpenSubagent,
@@ -58,13 +67,26 @@ function EventTimelineRowView({
       return (
         <ThinkingRow
           item={item}
-          runtime={runtime}
+          presentation={presentation}
           completed={Boolean(thinkingComplete)}
         />
       );
     case "tool": {
-      if (HIDDEN_TOOLS.has(item.toolName)) return null;
+      if (!supportsItem(presentation, "tools", isReplay)) {
+        return <CapabilityUnavailableRow capability="tools" />;
+      }
+      const dedicatedCapability = TOOL_PRESENTATION_CAPABILITY.get(item.toolName);
+      if (dedicatedCapability !== undefined) {
+        return supportsItem(presentation, dedicatedCapability, isReplay) ? (
+          null
+        ) : (
+          <CapabilityUnavailableRow capability={dedicatedCapability} />
+        );
+      }
       if (item.toolName === "Agent") {
+        if (!supportsItem(presentation, "subagents", isReplay)) {
+          return <CapabilityUnavailableRow capability="subagents" />;
+        }
         // 历史中可能缺少 task_* 事件，只能用工具终态推断 Agent 状态。
         const fallback =
           item.status === "done" || isReplay ? "completed" : "progress";
@@ -82,11 +104,19 @@ function EventTimelineRowView({
         <ToolBlock
           item={item}
           workdir={workdir}
+          showCodexMcpPresentation={supportsItem(
+            presentation,
+            "mcp",
+            isReplay,
+          )}
           suppressDiffAutoOpen={suppressDiffAutoOpen}
         />
       );
     }
     case "subagent":
+      if (!supportsItem(presentation, "subagents", isReplay)) {
+        return <CapabilityUnavailableRow capability="subagents" />;
+      }
       return (
         <SubagentBlock
           subagent={item.subagent}
@@ -108,8 +138,11 @@ function EventTimelineRowView({
     case "error":
       return <ErrorRow item={item} onRetryLast={onRetryLast} />;
     case "interrupted":
-      return <InterruptedRow item={item} runtime={runtime} />;
+      return <InterruptedRow item={item} presentation={presentation} />;
     case "elicit":
+      if (!supportsItem(presentation, "question", isReplay)) {
+        return <CapabilityUnavailableRow capability="question" />;
+      }
       return (
         <ElicitationBlock
           item={item}
@@ -119,6 +152,9 @@ function EventTimelineRowView({
         />
       );
     case "approval":
+      if (!supportsItem(presentation, "approval", isReplay)) {
+        return <CapabilityUnavailableRow capability="approval" />;
+      }
       // 短暂断线也会进入 replay，审批是否仍有效由后端注册表裁决。
       return (
         <ApprovalBlock
@@ -127,6 +163,9 @@ function EventTimelineRowView({
         />
       );
     case "workflow":
+      if (!supportsItem(presentation, "workflow", isReplay)) {
+        return <CapabilityUnavailableRow capability="workflow" />;
+      }
       return <WorkflowTree workflow={item} workdir={workdir} />;
     case "text":
       return null;
@@ -136,6 +175,31 @@ function EventTimelineRowView({
 }
 
 export const EventTimelineRow = memo(EventTimelineRowView);
+
+function supportsItem(
+  presentation: RuntimePresentation | undefined,
+  capability: AgentCapability,
+  isReplay: boolean | undefined,
+): boolean {
+  return (
+    presentation?.supports(
+      capability,
+      isReplay ? "history" : "live",
+    ) ?? true
+  );
+}
+
+function CapabilityUnavailableRow({
+  capability,
+}: {
+  readonly capability: AgentCapability;
+}) {
+  return (
+    <div className="cc-timeline__row cc-timeline__row--local" role="status">
+      当前会话未声明 {capability} 能力，相关记录没有按 runtime 专属样式展示。
+    </div>
+  );
+}
 
 function ChevronToggle({
   open,
@@ -153,23 +217,22 @@ function ChevronToggle({
 
 function ThinkingRow({
   item,
-  runtime,
+  presentation,
   completed,
 }: {
   readonly item: ThinkingItem;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
   readonly completed: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const codexVerb = completed ? "Reasoned" : "Reasoning";
-  const label =
-    runtime === "codex"
-      ? item.thinkingDurationSeconds !== undefined
-        ? `${codexVerb} for ${item.thinkingDurationSeconds}s`
-        : codexVerb
-      : item.thinkingDurationSeconds !== undefined
-        ? `Thought for ${item.thinkingDurationSeconds}s`
-        : "思考";
+  const label = presentation
+    ? presentation.timelinePresenters.thinkingLabel(
+        item.thinkingDurationSeconds,
+        completed,
+      )
+    : item.thinkingDurationSeconds !== undefined
+      ? `Thought for ${item.thinkingDurationSeconds}s`
+      : "思考";
   return (
     <div className="cc-timeline__row cc-timeline__row--thinking">
       <button
@@ -238,18 +301,13 @@ function CompactRow({ item }: { readonly item: CompactBoundaryItem }) {
 
 function InterruptedRow({
   item,
-  runtime,
+  presentation,
 }: {
   readonly item: InterruptedItem;
-  readonly runtime?: string;
+  readonly presentation?: RuntimePresentation;
 }) {
   void item;
-  const host =
-    runtime === "codex"
-      ? "Codex host"
-      : runtime === "claude_code"
-        ? "CC 进程"
-        : "Agent 进程";
+  const host = presentation?.headerStatus.interruptedHostLabel ?? "Agent 进程";
   return (
     <div className="cc-timeline__row cc-timeline__row--interrupted">
       <span className="cc-timeline__label">

@@ -1,3 +1,5 @@
+/** 定义宠物物品、心情和事件在前端使用的展示信息。 */
+
 import type { PetMood } from "../../api/client";
 
 export interface CatalogEntry {

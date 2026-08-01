@@ -1,9 +1,15 @@
+/** 连接会话状态与通用输入框，并按 runtime capability 开放操作。 */
+
 import type { ModelOption, SlashItem } from "../../api/cc";
 import type {
   AgentModel,
   CodexCommand,
 } from "../../agent/transport";
 import type { PerSessionState } from "../../agent/application";
+import {
+  filterCodexCommands,
+  getRuntimePresentation,
+} from "../../agent/runtimes";
 import { Composer } from "./Composer";
 import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
 
@@ -53,8 +59,18 @@ export function SessionComposer({
   const phase = active?.phase ?? "idle";
   const effort = active?.effort ?? null;
   const meta = active?.meta ?? null;
-  const ccControls = active?.runtime === "claude_code";
-  const codexControls = active?.runtime === "codex";
+  const presentation = active
+    ? getRuntimePresentation(active.runtime, active.capabilities)
+    : null;
+  const composerActions = presentation?.composerActions ?? null;
+  const usesSlashCommands = composerActions?.modelSelection === "slash_command";
+  const usesSessionPatch = composerActions?.modelSelection === "session_patch";
+  const usesCodexCommands = composerActions?.slashSource === "codex";
+  const usesClaudeRoster = composerActions?.slashSource === "claude_code";
+  const visibleCodexCommands =
+    presentation && usesCodexCommands
+      ? filterCodexCommands(presentation, codexCommands)
+      : [];
   const modelAlias = (() => {
     if (!meta?.model) return null;
     const found = ccModels.find(
@@ -91,7 +107,7 @@ export function SessionComposer({
     }),
   );
   const codexCurrentEffort = active?.pendingEffort ?? effort;
-  const codexSlashItems: readonly SlashItem[] = codexCommands.map((command) => ({
+  const codexSlashItems: readonly SlashItem[] = visibleCodexCommands.map((command) => ({
     name: command.name,
     description: command.description,
     source: "codex",
@@ -124,52 +140,62 @@ export function SessionComposer({
       }
       awaitingInput={phase === "awaiting_input"}
       onSend={onSend}
-      onInterrupt={onInterrupt}
+      onInterrupt={composerActions?.interrupt ? onInterrupt : undefined}
       slashItems={
-        ccControls ? slashItems : codexControls ? codexSlashItems : []
+        usesClaudeRoster ? slashItems : usesCodexCommands ? codexSlashItems : []
       }
-      slashLoading={codexControls && codexCommandsLoading}
-      slashError={codexControls ? codexCommandsError : null}
+      slashLoading={usesCodexCommands && codexCommandsLoading}
+      slashError={usesCodexCommands ? codexCommandsError : null}
       onRetrySlashItems={
-        codexControls ? onRetryCodexCommands : undefined
+        usesCodexCommands ? onRetryCodexCommands : undefined
       }
-      onLocalCommand={(item, rawText) => {
-        const command = codexCommands.find((candidate) => candidate.name === item.name);
-        if (command) onCodexCommand(command, rawText);
-      }}
+      onLocalCommand={
+        usesCodexCommands
+          ? (item, rawText) => {
+              const command = visibleCodexCommands.find(
+                (candidate) => candidate.name === item.name,
+              );
+              if (command) onCodexCommand(command, rawText);
+            }
+          : undefined
+      }
       models={
-        ccControls
+        usesSlashCommands
           ? ccModels
-          : codexControls
+          : usesSessionPatch
             ? codexModelOptions
             : []
       }
-      efforts={codexControls ? codexEfforts : undefined}
+      efforts={
+        composerActions?.effortSelection === "session_patch"
+          ? codexEfforts
+          : undefined
+      }
       currentModelAlias={
-        ccControls
+        usesSlashCommands
           ? modelAlias
-          : codexControls
+          : usesSessionPatch
             ? codexCurrentModel
             : null
       }
       currentEffort={
-        ccControls
+        composerActions?.effortSelection === "slash_command"
           ? effort
-          : codexControls
+          : composerActions?.effortSelection === "session_patch"
             ? codexCurrentEffort
             : null
       }
       onPickModel={
-        ccControls
+        usesSlashCommands
           ? (value) => onSend(`/model ${value}`)
-          : codexControls
+          : usesSessionPatch
             ? pickCodexModel
             : undefined
       }
       onPickEffort={
-        ccControls
+        composerActions?.effortSelection === "slash_command"
           ? (value) => onSend(`/effort ${value}`)
-          : codexControls
+          : composerActions?.effortSelection === "session_patch"
             ? (value) => {
                 if (selectedCodexModel) {
                   onUpdateSettings(selectedCodexModel.id, value);
@@ -177,13 +203,13 @@ export function SessionComposer({
               }
             : undefined
       }
-      modelCatalogError={codexControls ? codexCatalogError : null}
+      modelCatalogError={usesSessionPatch ? codexCatalogError : null}
       onRetryModelCatalog={
-        codexControls ? onRetryCodexCatalog : undefined
+        usesSessionPatch ? onRetryCodexCatalog : undefined
       }
       settingsDisabled={streaming}
       permissionFacts={
-        codexControls && active
+        composerActions?.permissionFacts && active
           ? {
               requested: active.permissionPreset ?? null,
               profile: active.effectivePermissionProfile ?? null,
@@ -200,15 +226,17 @@ export function SessionComposer({
           : null
       }
       onSelectPermissionPreset={
-        codexControls && onSelectPermissionPreset && !streaming
+        composerActions?.permissionFacts && onSelectPermissionPreset && !streaming
           ? onSelectPermissionPreset
           : undefined
       }
       onRequestModelPicker={
-        ccControls ? onRequestModelPicker : undefined
+        usesSlashCommands ? onRequestModelPicker : undefined
       }
       onRequestEffortPicker={
-        ccControls ? onRequestEffortPicker : undefined
+        composerActions?.effortSelection === "slash_command"
+          ? onRequestEffortPicker
+          : undefined
       }
       memoryEnabled={active?.memoryEnabled ?? null}
       profileEnabled={active?.profileEnabled ?? null}

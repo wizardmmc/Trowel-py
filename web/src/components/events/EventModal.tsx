@@ -1,3 +1,5 @@
+/** 展示随机事件内容，并承载奖励领取操作。 */
+
 import { motion, AnimatePresence } from "framer-motion";
 import type { EventLog } from "../../api/client";
 import { EVENT_ICONS, ITEM_CATALOG } from "../pet/itemCatalog";

@@ -1,3 +1,5 @@
+/** 原子执行会话发送准入，并在通过时写入乐观 turn。 */
+
 import type { Turn } from "../../domain/reducer";
 import type { PerSessionState } from "./sessionState";
 

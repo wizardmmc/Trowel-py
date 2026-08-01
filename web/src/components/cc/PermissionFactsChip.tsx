@@ -1,3 +1,5 @@
+/** 展示 Codex 请求权限与实际 sandbox、审批和网络能力。 */
+
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 

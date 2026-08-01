@@ -1,3 +1,5 @@
+/** 管理知识花园的植物、统计、搜索和排序状态。 */
+
 import { create } from "zustand";
 import {
   getGardenPlants,

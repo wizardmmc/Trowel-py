@@ -1,3 +1,5 @@
+/** 展示当前连接的用户会话，并提供切换、重命名和关闭操作。 */
+
 import { useState, type FormEvent } from "react";
 
 import { useAgentStore } from "../../agent/application";
@@ -7,6 +9,7 @@ import {
   MAX_CONNECTIONS,
   type PerSessionState,
 } from "../../agent/application";
+import { getRuntimePresentation } from "../../agent/runtimes";
 
 interface MultiSessionBarProps {
   readonly onNewSameWorkdir: () => void;
@@ -142,6 +145,10 @@ export function MultiSessionBar({
               {entries.map(([sid, s]) => {
                 const isActive = sid === activeSid;
                 const title = sessionTitle(s);
+                const presentation = getRuntimePresentation(
+                  s.runtime,
+                  s.capabilities,
+                );
                 return (
                   <div
                     key={sid}
@@ -194,13 +201,9 @@ export function MultiSessionBar({
                             </span>
                             <span
                               className={`cc-runtime-badge cc-runtime-badge--${s.runtime}`}
-                              title={
-                                s.runtime === "codex"
-                                  ? "Codex runtime"
-                                  : "Claude Code runtime"
-                              }
+                              title={`${presentation.label} runtime`}
                             >
-                              {s.runtime === "codex" ? "Codex" : "CC"}
+                              {presentation.shortLabel}
                             </span>
                           </span>
                           <span className="cc-multibar__row2">{statusText(s)}</span>

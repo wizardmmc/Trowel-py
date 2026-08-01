@@ -1,3 +1,5 @@
+/** 逐张审核提取结果，并支持重新解释和保存。 */
+
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CardDetail } from "./CardDetail";

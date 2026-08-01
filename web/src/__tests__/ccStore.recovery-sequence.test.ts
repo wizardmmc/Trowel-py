@@ -6,11 +6,11 @@ import {
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
-describe("createCcStore — approval recovery", () => {
+describe("createAgentStore — approval recovery", () => {
   it("folds the answer response into the pending card when SSE is unavailable", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", {
       runtime: "codex",
       model: "gpt-5.6-sol",
@@ -70,9 +70,9 @@ describe("createCcStore — approval recovery", () => {
   });
 });
 
-describe("createCcStore — per-session event sequence", () => {
+describe("createAgentStore — per-session event sequence", () => {
   it("drops a duplicate seq (re-delivered event does not double-append)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("hi");
@@ -87,7 +87,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("flags needsReplay when a seq gap is observed", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("hi");
@@ -100,7 +100,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("seq is per-session (two streams do not share the counter)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -121,7 +121,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("applies the current request error when a restarted backend resets seq", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
 
@@ -158,7 +158,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("still flags a seq gap when the current request error moves forward", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
 
@@ -185,7 +185,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("drops a repeated low-seq request error after accepting the reset", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
 
@@ -214,7 +214,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("turns a clean empty stream into a visible protocol error", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", { runtime: "codex", capabilities: ["tools"] });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
 
@@ -232,7 +232,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("still completes a local slash command without a finished event", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
 
@@ -247,7 +247,7 @@ describe("createCcStore — per-session event sequence", () => {
   });
 
   it("still completes a model restart status without a finished event", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
 

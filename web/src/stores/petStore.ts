@@ -1,3 +1,5 @@
+/** 管理宠物状态、互动、喂食和装备操作。 */
+
 import { create } from "zustand";
 import {
   fetchPet as fetchPetApi,

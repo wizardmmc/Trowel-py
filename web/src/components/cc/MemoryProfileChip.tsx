@@ -1,3 +1,5 @@
+/** 用紧凑标签展示当前会话是否启用 Memory 和 Profile。 */
+
 interface MemoryProfileChipProps {
   readonly memoryEnabled: boolean;
   readonly profileEnabled: boolean;

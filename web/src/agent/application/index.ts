@@ -1,5 +1,6 @@
 /** Agent store、命令、连接生命周期和 selector 的唯一前端入口。 */
 export * from "./frameSelector";
+export * from "./codexCommandRoster";
 export * from "./sessionLifecycle";
 export * from "./store";
 export * from "./store/approvalState";

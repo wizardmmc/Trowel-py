@@ -35,7 +35,7 @@ describe("SessionSwitcher history modal", () => {
     fireEvent.click(trigger);
 
     expect(screen.getByRole("dialog", { name: "历史会话" })).toBeInTheDocument();
-    expect(screen.getByText("Claude")).toHaveClass("history-row__badge");
+    expect(screen.getByText("CC")).toHaveClass("history-row__badge");
     expect(screen.getByText("Codex")).toHaveClass("history-row__badge");
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
     await waitFor(() => expect(trigger).toHaveFocus());

@@ -11,13 +11,14 @@ vi.mock("../agent/transport/api", () => ({
 }));
 
 import { MultiSessionBar } from "../components/cc/MultiSessionBar";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import {
-  useCcStore,
+  useAgentStore,
   INITIAL_REDUCER_STATE,
   type PerSessionState,
-} from "../stores/ccStore";
-import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../api/agent";
-import { renameAgentSessionTitle as apiRenameSessionTitle } from "../api/agent";
+} from "../agent";
+import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../agent/transport";
+import { renameAgentSessionTitle as apiRenameSessionTitle } from "../agent/transport";
 
 function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSessionState {
   return {
@@ -27,7 +28,7 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     name: "wd",
     displayTitle: over.displayTitle ?? over.name ?? "wd",
     titleSource: over.titleSource ?? "generated",
-    revertEnabled: false,
+    checkpointAvailable: false,
     transportError: null,
     abort: null,
     connected: true,
@@ -36,7 +37,8 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     runtime: "claude_code",
     nativeSessionId: null,
     permission: null,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     lastSeq: null,
     needsReplay: false,
     ...over,
@@ -48,7 +50,7 @@ function setSessions(
   sessions: Record<string, PerSessionState>,
   activeSid: string | null,
 ): void {
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions,
     activeSid,
     history: [],

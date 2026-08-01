@@ -1,4 +1,7 @@
+/** 为大回合浏览器性能页提供不连接真实后端的固定 API 响应。 */
+
 import type { AgentSession } from "../agent/transport";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 
 const LARGE_SESSION_ID = "fixture-large-turn";
 const LIGHT_SESSION_ID = "fixture-light-session";
@@ -19,7 +22,7 @@ function fixtureAgentSession(
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "interrupt"],
+    capabilities: getExpectedRuntimePresentation(runtime).expectedCapabilities,
     name: id,
     display_title:
       id === LARGE_SESSION_ID ? "Large turn replay" : "Light session",

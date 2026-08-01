@@ -1,3 +1,5 @@
+/** 展示知识花园尚无卡片时的空状态。 */
+
 export function EmptyGarden() {
   return (
     <div className="empty-garden" data-testid="empty-garden">

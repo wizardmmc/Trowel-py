@@ -1,12 +1,15 @@
 import { act, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { MessageList } from "../components/cc/MessageList";
+import { MessageList } from "../agent/ui";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import {
   LARGE_TURN_MANIFEST,
   buildLargeTurnReplay,
   replayLargeTurnEvents,
 } from "../perf/largeTurnReplay";
+
+const CODEX_PRESENTATION = getExpectedRuntimePresentation("codex");
 
 describe("large-turn replay fixture", () => {
   it("freezes the sanitized L01 load shape", () => {
@@ -51,6 +54,9 @@ describe("large-turn replay fixture", () => {
       toolResults.reduce((total, content) => total + content.length, 0),
     ).toBe(1_600_000);
     expect(LARGE_TURN_MANIFEST.expectedDom.diffLines).toBe(1_011);
+    expect(replay.initialSession.capabilities).toEqual(
+      CODEX_PRESENTATION.expectedCapabilities,
+    );
 
     const serialized = JSON.stringify(replay);
     expect(serialized).not.toMatch(/\/Users\/|hamxf|sk-[A-Za-z0-9_-]{20,}/);
@@ -97,7 +103,7 @@ describe("large-turn replay fixture", () => {
       <MessageList
         turns={state.turns}
         streaming={false}
-        runtime="codex"
+        presentation={CODEX_PRESENTATION}
         workdir="/fixture/repo"
       />,
     );

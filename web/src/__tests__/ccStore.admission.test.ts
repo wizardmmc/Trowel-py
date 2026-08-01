@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ev, mockCreate, releaseAllStreams, stream } from "./ccStoreTestHarness";
-import { createCcStore, MAX_CONNECTIONS, MAX_RUNNING } from "../stores/ccStore";
+import {
+  createAgentStore,
+  MAX_CONNECTIONS,
+  MAX_RUNNING,
+} from "../agent/application";
 
-describe("createCcStore — send admission", () => {
+describe("createAgentStore — send admission", () => {
   it(`refuses send at MAX_RUNNING (${MAX_RUNNING}) concurrent streams`, async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     for (let index = 0; index < MAX_RUNNING; index += 1) {
       mockCreate(`s${index}`);
       await store.getState().startSession({ workdir: `/wd${index}` });
@@ -19,7 +23,7 @@ describe("createCcStore — send admission", () => {
   });
 
   it("MAX_RUNNING cap is atomic under a send burst (no race over-admission)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     for (let index = 0; index <= MAX_RUNNING; index += 1) {
       mockCreate(`s${index}`);
       await store.getState().startSession({ workdir: `/wd${index}` });
@@ -46,7 +50,7 @@ describe("createCcStore — send admission", () => {
   });
 
   it(`refuses send at MAX_CONNECTIONS (${MAX_CONNECTIONS}) connected`, async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     for (let index = 0; index < MAX_CONNECTIONS; index += 1) {
       mockCreate(`s${index}`);
       await store.getState().startSession({ workdir: `/wd${index}` });
@@ -64,7 +68,7 @@ describe("createCcStore — send admission", () => {
   });
 
   it("delegate sessions do not consume the user running limit", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     for (let index = 0; index < MAX_RUNNING; index += 1) {
       mockCreate(`delegate-${index}`, { session_kind: "delegate" });
       await store.getState().startSession({ workdir: `/delegate-${index}` });

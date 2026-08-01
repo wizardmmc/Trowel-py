@@ -1,3 +1,5 @@
+/** 定义卡片、复习、花园、宠物、Profile 和事件等产品 HTTP 接口。 */
+
 const API_BASE = "/api/cards";
 const REVIEW_API_BASE = "/api/review";
 const GARDEN_API_BASE = "/api/garden";

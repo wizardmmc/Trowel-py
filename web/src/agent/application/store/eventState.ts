@@ -1,3 +1,5 @@
+/** 归约带序号的实时 Agent 事件，并标记重复、缺口和会话退出。 */
+
 import type { AgentEvent } from "../../transport/agentEvent";
 import { agentEventToTrowel } from "../../transport/agentEvent";
 import { reduceEvent } from "../../domain/reducer";

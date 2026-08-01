@@ -1,3 +1,4 @@
+/** 定义 Agent SSE 事件的 payload、联合类型和辅助数据结构。 */
 
 /**
  * 前端消费的统一事件类型，不直接暴露 Claude Code 或 Codex 的原始事件。

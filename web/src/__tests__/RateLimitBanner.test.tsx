@@ -7,7 +7,7 @@ import {
   formatResetCountdown,
   rateLimitLevel,
 } from "../components/cc/rateLimit";
-import type { RateLimitSnapshot } from "../api/ccTypes";
+import type { RateLimitSnapshot } from "../agent/transport";
 
 const FIXTURE_LOW: RateLimitSnapshot = {
   limit_id: "codex",

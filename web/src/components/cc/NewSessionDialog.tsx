@@ -1,10 +1,15 @@
+/** 收集新会话的目录、runtime、模型、权限和记忆选项。 */
+
 import { useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { AgentModel, AgentRuntimeInfo, Runtime } from "../../agent/transport";
+import {
+  getExpectedRuntimePresentation,
+  getRuntimePresentation,
+} from "../../agent/runtimes";
 import type { ModelOption } from "../../api/cc";
 import {
-  RUNTIME_LABEL,
   RUNTIME_OPTIONS,
   runtimeOptionIndex,
 } from "./newSessionOptions";
@@ -59,13 +64,13 @@ export function NewSessionDialog({
   codexCatalogError = null,
   onRetryCodexCatalog,
 }: NewSessionDialogProps) {
+  const initialRuntime = initialConfig?.runtime ?? "claude_code";
+  const initialPresentation = getExpectedRuntimePresentation(initialRuntime);
   const initialPermission =
-    initialConfig?.runtime === "codex"
-      ? (initialConfig.permission_preset ?? "follow")
+    initialPresentation.sessionSettings.permission === "codex_preset"
+      ? (initialConfig?.permission_preset ?? "follow")
       : (initialConfig?.permission_mode || "bypassPermissions");
-  const [runtime, setRuntime] = useState<Runtime>(
-    initialConfig?.runtime ?? "claude_code",
-  );
+  const [runtime, setRuntime] = useState<Runtime>(initialRuntime);
   const [model, setModel] = useState(initialConfig?.model ?? "");
   const [effort, setEffort] = useState(initialConfig?.effort ?? "");
   const [permission, setPermission] = useState(initialPermission);
@@ -91,6 +96,14 @@ export function NewSessionDialog({
 
   const readyRuntimes =
     runtimesState?.status === "ready" ? runtimesState.runtimes : null;
+  const selectedRuntimeInfo = readyRuntimes?.find(
+    (candidate) => candidate.runtime === runtime,
+  );
+  const presentation = selectedRuntimeInfo
+    ? getRuntimePresentation(runtime, selectedRuntimeInfo.capabilities)
+    : getExpectedRuntimePresentation(runtime);
+  const modelCatalog = presentation.sessionSettings.modelCatalog;
+  const permissionSettings = presentation.sessionSettings.permission;
   const isConnected = (rt: Runtime): boolean => {
     if (!readyRuntimes) return true;
     return readyRuntimes.some((r) => r.runtime === rt && r.connected);
@@ -100,8 +113,8 @@ export function NewSessionDialog({
   const catalogError =
     runtimesState?.status === "error" ? runtimesState.error : null;
   const selectedConnected = isConnected(runtime);
-  const codexCatalogBlocked =
-    runtime === "codex" &&
+  const runtimeCatalogBlocked =
+    modelCatalog === "codex" &&
     (codexCatalogError !== null ||
       selectedCodexModel === undefined ||
       !selectedCodexModel.supported_efforts.some(
@@ -112,7 +125,7 @@ export function NewSessionDialog({
     (option) => option.value === permission,
   )
     ? permission
-    : runtime === "claude_code"
+    : permissionSettings === "claude_mode"
       ? "bypassPermissions"
       : "follow";
   const selectedCcEffort = activeOption.efforts.some(
@@ -125,8 +138,8 @@ export function NewSessionDialog({
     catalogLoading ||
     catalogError !== null ||
     !selectedConnected ||
-    codexCatalogBlocked ||
-    (runtime === "codex" &&
+    runtimeCatalogBlocked ||
+    (permissionSettings === "codex_preset" &&
       selectedPermission === "danger-full-access" &&
       !fullAccessConfirmed);
 
@@ -134,30 +147,48 @@ export function NewSessionDialog({
   function selectRuntime(next: Runtime): void {
     if (next === runtime) return;
     setRuntime(next);
-    if (next === "codex") {
+    const nextInfo = readyRuntimes?.find(
+      (candidate) => candidate.runtime === next,
+    );
+    const nextPresentation = nextInfo
+      ? getRuntimePresentation(next, nextInfo.capabilities)
+      : getExpectedRuntimePresentation(next);
+    if (nextPresentation.sessionSettings.modelCatalog === "codex") {
       const defaultModel =
         codexModels.find((item) => item.is_default) ?? codexModels[0];
       setModel(defaultModel?.id ?? "");
       setEffort(defaultModel?.default_effort ?? "");
-      setPermission("follow");
+      setPermission(
+        nextPresentation.sessionSettings.permission === "codex_preset"
+          ? "follow"
+          : "",
+      );
     } else {
       setModel("");
       setEffort("");
-      setPermission("bypassPermissions");
+      setPermission(
+        nextPresentation.sessionSettings.permission === "claude_mode"
+          ? "bypassPermissions"
+          : "",
+      );
     }
     setConfirmFullAccess(false);
     setFullAccessConfirmed(false);
   }
 
   const visibleModels =
-    runtime === "codex"
+    modelCatalog === "codex"
       ? codexModels.map((item) => ({ value: item.id, label: item.id }))
-      : [
+      : modelCatalog === "claude_code"
+        ? [
           { value: "", label: "跟随 settings" },
           ...ccModels.map((item) => ({ value: item.value, label: item.label })),
-        ];
+        ]
+        : [];
   const visibleEfforts =
-    runtime === "codex"
+    !presentation.sessionSettings.effort
+      ? []
+      : modelCatalog === "codex"
       ? (selectedCodexModel?.supported_efforts ?? []).map((item) => ({
           value: item.value,
           label: item.value,
@@ -166,7 +197,7 @@ export function NewSessionDialog({
 
   function pickModel(nextModel: string): void {
     setModel(nextModel);
-    if (runtime !== "codex") return;
+    if (modelCatalog !== "codex") return;
     const next = codexModels.find((item) => item.id === nextModel);
     if (!next) return;
     if (!next.supported_efforts.some((item) => item.value === effort)) {
@@ -192,12 +223,21 @@ export function NewSessionDialog({
       memory_enabled: memory,
       profile_enabled: profile,
       model:
-        runtime === "codex" ? (selectedCodexModel?.id ?? "") : selectedCcModel,
-      effort: runtime === "codex" ? selectedCodexEffort : selectedCcEffort,
+        modelCatalog === "codex"
+          ? (selectedCodexModel?.id ?? "")
+          : modelCatalog === "claude_code"
+            ? selectedCcModel
+            : "",
+      effort:
+        !presentation.sessionSettings.effort
+          ? ""
+          : modelCatalog === "codex"
+            ? selectedCodexEffort
+            : selectedCcEffort,
       permission_mode:
-        runtime === "claude_code" ? selectedPermission : "",
+        permissionSettings === "claude_mode" ? selectedPermission : "",
       permission_preset:
-        runtime === "codex"
+        permissionSettings === "codex_preset"
           ? (selectedPermission as NonNullable<
               NewSessionConfig["permission_preset"]
             >)
@@ -236,22 +276,34 @@ export function NewSessionDialog({
           />
 
           <RuntimeSettings
-            runtime={runtime}
             creating={creating}
+            showModels={modelCatalog !== null}
+            showEffort={presentation.sessionSettings.effort}
+            showPermission={permissionSettings !== null}
             models={visibleModels}
             selectedModel={
-              runtime === "codex"
+              modelCatalog === "codex"
                 ? (selectedCodexModel?.id ?? "")
                 : selectedCcModel
             }
             efforts={visibleEfforts}
             selectedEffort={
-              runtime === "codex" ? selectedCodexEffort : selectedCcEffort
+              modelCatalog === "codex" ? selectedCodexEffort : selectedCcEffort
             }
-            permissions={activeOption.permissions}
+            permissions={
+              permissionSettings === null ? [] : activeOption.permissions
+            }
             selectedPermission={selectedPermission}
-            codexCatalogError={codexCatalogError}
-            confirmFullAccess={confirmFullAccess}
+            modelCatalogError={
+              modelCatalog === "codex" ? codexCatalogError : null
+            }
+            confirmFullAccess={
+              permissionSettings === "codex_preset" && confirmFullAccess
+            }
+            showWorkspaceApprovalNote={
+              permissionSettings === "codex_preset" &&
+              selectedPermission === "workspace-write"
+            }
             onSelectModel={pickModel}
             onSelectEffort={setEffort}
             onSelectPermission={pickPermission}
@@ -263,8 +315,16 @@ export function NewSessionDialog({
             onRetryCodexCatalog={onRetryCodexCatalog}
           />
 
+          {selectedRuntimeInfo && presentation.missingCapabilities.length > 0 && (
+            <div className="cc-dialog__diag" role="status">
+              能力信息不完整，部分设置和入口已隐藏：
+              {presentation.missingCapabilities.join("、")}
+            </div>
+          )}
+
           <SessionPreferences
-            runtime={runtime}
+            memoryDescription={presentation.sessionSettings.memoryDescription}
+            isolationNote={presentation.sessionSettings.isolationNote}
             memory={memory}
             profile={profile}
             creating={creating}
@@ -299,7 +359,7 @@ export function NewSessionDialog({
                   : undefined
             }
           >
-            {creating ? "创建中…" : `创建 ${RUNTIME_LABEL[runtime]} 会话`}
+            {creating ? "创建中…" : `创建 ${presentation.label} 会话`}
           </button>
         </div>
       </div>

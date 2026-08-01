@@ -1,3 +1,5 @@
+/** 提供费曼检验各阶段的纯展示组件。 */
+
 import type { KeyboardEvent, RefObject } from "react";
 import { motion } from "framer-motion";
 import type { FeynmanEvaluation, FeynmanQuestion } from "../../api/client";

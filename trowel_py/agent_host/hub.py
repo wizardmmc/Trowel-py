@@ -33,11 +33,10 @@ from trowel_py.agent_host.capacity import (
     CapacityLimits,
     SessionCapacityGate,
 )
-from trowel_py.agent_host.delegate_identity import (
-    DelegateIdentityStore,
-    delegate_identity_path,
+from trowel_py.agent_host.capabilities import (
+    CC_CAPABILITIES,
+    CODEX_CAPABILITIES,
 )
-from trowel_py.agent_host.lifecycle import SessionInFlightError, SessionLifecycle
 from trowel_py.agent_host.codex_launch import (
     _CODEX_PERMISSION_PRESETS,
     _injection_fingerprint,
@@ -48,6 +47,12 @@ from trowel_py.agent_host.codex_settings import (
     UnknownModelError,
     select_turn_settings,
 )
+from trowel_py.agent_host.delegate_identity import (
+    DelegateIdentityStore,
+    delegate_identity_path,
+)
+from trowel_py.agent_host.events import AgentEvent
+from trowel_py.agent_host.lifecycle import SessionInFlightError, SessionLifecycle
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.agent_host.session_titles import (
     SessionTitleGenerator,
@@ -61,31 +66,27 @@ from trowel_py.agent_host.runtimes import (
     CodexRuntimeAdapter,
     RuntimeSessionPort,
 )
-from trowel_py.codex_host.pending_requests import (
-    PendingRequestConflictError,
-    PendingRequestDecisionError,
-    PendingRequestNotFoundError,
-    PendingRequestOwnershipError,
-)
-from trowel_py.codex_host.commands import reserved_command_name
-from trowel_py.codex_host.session import TurnConflictError
-from trowel_py.cc_host.session_lifecycle import (
-    CcCapacityError,
-    CcWorkdirNotFoundError,
-)
 from trowel_py.agent_host.store import BindingStore, next_session_display_name
 from trowel_py.agent_host.title_store import (
     SessionTitleRecord,
     SessionTitleStore,
     resolve_title_store_path,
 )
-from trowel_py.agent_host.events import AgentEvent
+from trowel_py.cc_host import checkpoint
+from trowel_py.cc_host.session_lifecycle import (
+    CcCapacityError,
+    CcWorkdirNotFoundError,
+)
+from trowel_py.codex_host.commands import reserved_command_name
+from trowel_py.codex_host.pending_requests import (
+    PendingRequestConflictError,
+    PendingRequestDecisionError,
+    PendingRequestNotFoundError,
+    PendingRequestOwnershipError,
+)
+from trowel_py.codex_host.session import TurnConflictError
 
 _log = logging.getLogger(__name__)
-
-# capability 是界面的能力发现契约，界面不能从 runtime 推断功能。
-CC_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "checkpoint", "workflow")
-CODEX_CAPABILITIES: tuple[str, ...] = ("tools", "approval", "subagents")
 
 # 连接上限按仍有 binding 的已注册 session/thread 计数，共享 manager 不合并名额。
 MAX_CONNECTIONS = USER_CONNECTION_LIMIT
@@ -711,6 +712,10 @@ class SessionHub:
                 parent_session_id=req.parent_session_id,
                 delegation_depth=req.delegation_depth,
                 capabilities=CC_CAPABILITIES,
+                checkpoint_available=(
+                    checkpoint.is_enabled()
+                    and checkpoint.is_git_repo(req.workdir)
+                ),
                 name=opened.name,
                 display_title=display_title,
                 title_source=title_source,
@@ -758,6 +763,7 @@ class SessionHub:
                 parent_session_id=req.parent_session_id,
                 delegation_depth=req.delegation_depth,
                 capabilities=CODEX_CAPABILITIES,
+                checkpoint_available=False,
                 name=self._display_name(req.workdir),
                 permission_preset=prepared.permission_preset,
                 injection_hash=prepared.injection_hash,

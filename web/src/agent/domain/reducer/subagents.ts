@@ -1,3 +1,5 @@
+/** 将 subagent 进度合并到匹配的 Agent 工具及其子工具树。 */
+
 import type { SubagentProgressEvent } from "../../transport/events";
 import type {
   ReducerState,

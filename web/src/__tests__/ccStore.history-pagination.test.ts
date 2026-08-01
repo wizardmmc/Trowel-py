@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { listHistory } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
 const row = (runtime: "claude_code" | "codex", id: string, time: number) => ({
   runtime,
@@ -10,7 +10,7 @@ const row = (runtime: "claude_code" | "codex", id: string, time: number) => ({
   updated_at: time,
 });
 
-describe("createCcStore - history pagination", () => {
+describe("createAgentStore - history pagination", () => {
   it("loads the first page, appends the next page and removes overlap", async () => {
     listHistory
       .mockResolvedValueOnce({
@@ -21,7 +21,7 @@ describe("createCcStore - history pagination", () => {
         rows: [row("codex", "cx-1", 2), row("claude_code", "cc-2", 1)],
         nextCursor: null,
       });
-    const store = createCcStore();
+    const store = createAgentStore();
 
     await store.getState().refreshHistory("/wd");
     await store.getState().loadMoreHistory();
@@ -45,7 +45,7 @@ describe("createCcStore - history pagination", () => {
       .mockImplementationOnce(
         () => new Promise((resolve) => { resolvePage = resolve; }),
       );
-    const store = createCcStore();
+    const store = createAgentStore();
     await store.getState().refreshHistory("/wd");
 
     const first = store.getState().loadMoreHistory();
@@ -60,7 +60,7 @@ describe("createCcStore - history pagination", () => {
       rows: [row("claude_code", "cc-a", 1)],
       nextCursor: null,
     });
-    const store = createCcStore();
+    const store = createAgentStore();
     await store.getState().refreshHistory("/a");
     let resolveNext!: (value: { rows: []; nextCursor: null }) => void;
     listHistory.mockImplementationOnce(
