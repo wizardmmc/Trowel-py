@@ -86,6 +86,10 @@ const TurnCard = memo(function TurnCard({
       turn.status === "active" ? "live" : "history",
     ) ?? true);
   const cleanedUserText = scrubUserText(turn.userText ?? "");
+  const durationLabel =
+    turn.durationSeconds != null && turn.durationSeconds > 0
+      ? `Ran for ${formatRunDuration(turn.durationSeconds)}`
+      : null;
   return (
     <div
       className="cc-turn"
@@ -131,16 +135,11 @@ const TurnCard = memo(function TurnCard({
           </div>
         </div>
       )}
-      {turn.status === "done" &&
-        turn.durationSeconds != null &&
-        turn.durationSeconds > 0 && (
-          <div
-            className="cc-turn__duration"
-            aria-label={`本轮用时 ${turn.durationSeconds} 秒`}
-          >
-            Ran for {formatRunDuration(turn.durationSeconds)}
-          </div>
-        )}
+      {turn.status === "done" && durationLabel !== null && (
+        <div className="cc-turn__duration" aria-label={durationLabel}>
+          {durationLabel}
+        </div>
+      )}
     </div>
   );
 });
@@ -191,26 +190,15 @@ export function MessageList({
 
   useLayoutEffect(() => {
     const previousCount = previousTurnCountRef.current;
-    const previousLatestStart = Math.max(
-      0,
-      previousCount - INITIAL_VISIBLE_TURNS,
-    );
     const nextLatestStart = Math.max(0, turns.length - INITIAL_VISIBLE_TURNS);
     setVisibleStart((current) => {
       if (turns.length < previousCount) {
         return Math.min(current, nextLatestStart);
       }
-      if (
-        turns.length > previousCount &&
-        sticky &&
-        current === previousLatestStart
-      ) {
-        return nextLatestStart;
-      }
       return current;
     });
     previousTurnCountRef.current = turns.length;
-  }, [sticky, turns.length]);
+  }, [turns.length]);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;

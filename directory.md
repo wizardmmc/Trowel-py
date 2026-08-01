@@ -22,6 +22,7 @@
 |---|---|
 | `app.py` | 组装 FastAPI、生命周期与路由 |
 | `cli.py` | `trowel-py` 命令行入口 |
+| `desktop/` | Electron Host 使用的 sidecar 启动、实例认证、版本握手与 readiness |
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
@@ -121,6 +122,9 @@
 | 路径 | 职责 |
 |---|---|
 | `web/src/App.tsx` | 页面入口与顶层工具切换 |
+| `web/desktop/` | Electron main、preload、sidecar 监督、诊断页与桌面 smoke |
+| `web/shared/desktop-contracts.ts` | Electron main、preload 与 renderer 共用的桌面 IPC 类型契约 |
+| `web/src/platform/` | browser/desktop 平台接口与统一后端 transport |
 | `web/src/agent/domain/` | Agent session、turn、timeline item 与纯 reducer 的唯一 owner |
 | `web/src/agent/application/` | Agent Zustand store、会话命令、连接生命周期和 selector 的唯一 owner |
 | `web/src/agent/transport/` | Trowel Agent HTTP、SSE 与 wire DTO 的唯一 owner |

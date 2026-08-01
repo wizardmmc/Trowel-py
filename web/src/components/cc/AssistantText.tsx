@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { CodeBlockCopyButton } from "./CodeBlockCopyButton";
 import { remarkMathGithub } from "./markdown/remarkMathGithub";
+import { getPlatform } from "../../platform";
 
 interface AssistantTextProps {
   readonly text: string;
@@ -68,6 +69,23 @@ function localFileUrl(
   return `/api/agent/sessions/${encodeURIComponent(sessionId)}/files?path=${encodeURIComponent(relativePath)}`;
 }
 
+function localFilePath(
+  href: string,
+  workdir?: string,
+): string | null | undefined {
+  if (!href.startsWith("/") || href.startsWith("//")) return undefined;
+  if (!workdir) return null;
+  let decodedHref: string;
+  try {
+    decodedHref = decodeURI(href);
+  } catch {
+    return null;
+  }
+  const root = workdir.replace(/\/+$/, "") || "/";
+  const prefix = root === "/" ? "/" : `${root}/`;
+  return decodedHref.startsWith(prefix) ? decodedHref : null;
+}
+
 const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMathGithub];
 const REHYPE_PLUGINS: PluggableList = [
   [rehypeKatex, { throwOnError: false, strict: false, errorColor: "#cc0000" }],
@@ -83,6 +101,7 @@ function AssistantTextView({ text, sessionId, workdir }: AssistantTextProps) {
         return <span title="不支持的链接">{children}</span>;
       }
       const localHref = localFileUrl(href, sessionId, workdir);
+      const localPath = localFilePath(href, workdir);
       if (localHref === null) {
         return (
           <span
@@ -99,6 +118,19 @@ function AssistantTextView({ text, sessionId, workdir }: AssistantTextProps) {
           href={localHref ?? href}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(event) => {
+            const platform = getPlatform();
+            if (platform.environment !== "desktop") return;
+            if (localPath && workdir) {
+              event.preventDefault();
+              void platform.openPath(localPath, workdir);
+              return;
+            }
+            if (/^(https?:|mailto:)/i.test(href)) {
+              event.preventDefault();
+              void platform.openExternal(href);
+            }
+          }}
         >
           {children}
         </a>

@@ -103,13 +103,13 @@ describe("SpinnerLine", () => {
     setThinking({ startedAt: 10000, tokens: 5 });
     render(<SpinnerLine />);
     expect(screen.queryByText(/tokens/)).toBeNull();
-    expect(screen.queryByText(/^\d+s$/)).toBeNull();
+    expect(screen.queryByText(/^\d+ 秒$/)).toBeNull();
 
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/^6s$/)).toBeInTheDocument();
+    expect(screen.getByText(/^6 秒$/)).toBeInTheDocument();
     expect(screen.getByText(/↓ 5 tokens/)).toBeInTheDocument();
   });
 
@@ -123,24 +123,26 @@ describe("SpinnerLine", () => {
     expect(screen.queryByText(/tokens/)).toBeNull();
   });
 
-  it("shows 'thinking with <effort> effort' only when effort is set", () => {
+  it("uses a Chinese effort summary when effort is set", () => {
     setThinking({ startedAt: 10000, effort: "high" });
     render(<SpinnerLine />);
-    expect(screen.queryByText(/effort/)).toBeNull();
+    expect(screen.queryByText(/强度思考/)).toBeNull();
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/thinking with high effort/)).toBeInTheDocument();
+    expect(screen.getByText(/高强度思考/)).toBeInTheDocument();
   });
 
-  it("without effort, shows bare 'thinking' after 5s", () => {
+  it("uses a Chinese thinking summary without effort", () => {
     setThinking({ startedAt: 10000, effort: null });
     render(<SpinnerLine />);
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/thinking/).textContent).not.toMatch(/with/);
+    expect(document.querySelector(".cc-spinner__think")).toHaveTextContent(
+      "思考中",
+    );
   });
 });

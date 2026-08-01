@@ -1,9 +1,10 @@
 /** 在等待首个响应时显示轮换动作词和累计耗时。 */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useAgentStore } from "../../agent/application";
+import { reasoningEffortLabel } from "./statusPresentation";
 
 const SPINNER_VERBS = [
   "Pondering", "Synthesizing", "Analyzing", "Thinking", "Working",
@@ -45,14 +46,10 @@ export function SpinnerLine() {
     }),
   );
 
-  const [verb, setVerb] = useState<string | null>(null);
-  useEffect(() => {
-    if (phase === "thinking" && thinkingStartedAt !== null && verb === null) {
-      setVerb(pickVerb());
-    } else if (phase !== "thinking" && verb !== null) {
-      setVerb(null);
-    }
-  }, [phase, thinkingStartedAt, verb]);
+  const displayVerb = useMemo(
+    () => thinkingStartedAt === null ? FALLBACK_VERB : pickVerb(),
+    [thinkingStartedAt],
+  );
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -67,9 +64,7 @@ export function SpinnerLine() {
     thinkingStartedAt !== null ? Math.max(0, now - thinkingStartedAt) : 0;
   const showStats = elapsedMs >= SHOW_STATS_AFTER_MS;
   const seconds = Math.floor(elapsedMs / 1000);
-  const effortSuffix = effort ? `thinking with ${effort} effort` : "thinking";
-  const displayVerb = verb ?? FALLBACK_VERB;
-
+  const effortSuffix = reasoningEffortLabel(effort);
   const stallMinutes = stallWarning !== null ? Math.round(stallWarning.elapsed_s / 60) : 0;
   return (
     <>
@@ -83,7 +78,7 @@ export function SpinnerLine() {
         <span className="cc-spinner__verb">{displayVerb}…</span>
         {showStats && (
           <span className="cc-spinner__stats">
-            <span className="cc-spinner__time">{seconds}s</span>
+            <span className="cc-spinner__time">{seconds} 秒</span>
             {thinkingTokens !== null && thinkingTokens > 0 && (
               <span className="cc-spinner__tokens"> · ↓ {thinkingTokens} tokens</span>
             )}
@@ -102,11 +97,11 @@ export function SpinnerLine() {
           <span>
             {stallWarning.severity === "severe"
               ? `已 ${stallMinutes} 分钟无响应，可能真的卡死了`
-              : `已静默 ${stallMinutes} 分钟，可能在等 GLM 响应——耐心等待`}
+              : `已静默 ${stallMinutes} 分钟，可能在等 GLM 响应，请耐心等待`}
           </span>
           {stallWarning.severity === "severe" && (
             <span className="cc-stall-warning__hint">
-              {" "}— 30 分钟后会自动兜底结束本 turn
+              {" "}30 分钟后会自动兜底结束本轮
             </span>
           )}
         </div>

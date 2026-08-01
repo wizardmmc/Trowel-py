@@ -72,6 +72,7 @@ export function admitSessionSend(
         ...session,
         turns: [...session.turns, turn],
         phase: "awaiting_first",
+        meta: { ...session.meta, lastTurnTokens: null },
         transportError: null,
         abort,
         connected: true,

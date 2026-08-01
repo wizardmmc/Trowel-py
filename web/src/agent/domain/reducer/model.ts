@@ -187,6 +187,10 @@ export interface SessionMeta {
   readonly ccSessionId: string | null;
   readonly costUsd: number | null;
   readonly numTurns: number | null;
+  /** runtime 报告的最近一轮 token 总数；新一轮开始后清空。 */
+  readonly lastTurnTokens: number | null;
+  /** 当前会话历史中已经完成的上下文压缩次数。 */
+  readonly compactionCount: number;
   readonly hookFired: string | null;
   readonly thinkingStartedAt: number | null;
   readonly thinkingTokens: number | null;
@@ -261,6 +265,8 @@ export const INITIAL_REDUCER_STATE: ReducerState = {
     ccSessionId: null,
     costUsd: null,
     numTurns: null,
+    lastTurnTokens: null,
+    compactionCount: 0,
     hookFired: null,
     thinkingStartedAt: null,
     thinkingTokens: null,

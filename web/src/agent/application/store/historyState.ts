@@ -19,7 +19,11 @@ export function replayAgentHistory(
   let next: PerSessionState = {
     ...session,
     ...INITIAL_REDUCER_STATE,
-    meta: session.meta,
+    meta: {
+      ...session.meta,
+      lastTurnTokens: null,
+      compactionCount: 0,
+    },
     codexSubagents: {},
   };
   let replaySeq: number | null = null;

@@ -14,6 +14,7 @@ import { getRuntimePresentation } from "../../agent/runtimes";
 interface MultiSessionBarProps {
   readonly onNewSameWorkdir: () => void;
   readonly onChangeWorkdir: () => void;
+  readonly onActivateWorkdir?: (workdir: string) => void;
 }
 
 const selectSessions = (state: ReturnType<typeof useAgentStore.getState>) =>
@@ -36,7 +37,7 @@ function statusText(s: PerSessionState): string {
           : "生成中";
     return `${s.meta.model ?? "model"} · ${phase}`;
   }
-  return `${s.meta.model ?? "model"} · idle`;
+  return `${s.meta.model ?? "model"} · 空闲`;
 }
 
 function workdirName(workdir: string): string {
@@ -51,6 +52,7 @@ function sessionTitle(s: PerSessionState): string {
 export function MultiSessionBar({
   onNewSameWorkdir,
   onChangeWorkdir,
+  onActivateWorkdir,
 }: MultiSessionBarProps) {
   const sessions = useAgentStoreFrameSelector(selectSessions);
   const activeSid = useAgentStore((s) => s.activeSid);
@@ -185,7 +187,10 @@ export function MultiSessionBar({
                         <button
                           type="button"
                           className="cc-multibar__main"
-                          onClick={() => void activate(sid)}
+                          onClick={() => {
+                            onActivateWorkdir?.(s.workdir);
+                            void activate(sid);
+                          }}
                           title={title}
                         >
                           <span className="cc-multibar__row1">

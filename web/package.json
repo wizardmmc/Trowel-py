@@ -1,14 +1,21 @@
 {
-  "name": "web",
+  "name": "trowel-desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "main": "desktop-dist/desktop/main.js",
   "type": "module",
   "scripts": {
     "check:agent-boundaries": "bun scripts/check-agent-boundaries.mjs",
     "check:module-comments": "bun scripts/check-module-comments.mjs",
     "dev": "vite",
+    "desktop:build": "tsc -p desktop/tsconfig.json && bun build desktop/preload.ts --target=node --format=cjs --external electron --outfile=desktop-dist/desktop/preload.js && node desktop/copy-assets.mjs",
+    "desktop:dev": "bun run desktop:build && node desktop/dev.mjs",
+    "desktop:smoke": "bun run desktop:build && node desktop/dev.mjs --smoke",
+    "desktop:diagnostic-smoke": "bun run desktop:build && node desktop/dev.mjs --diagnostic-smoke",
+    "desktop:single-instance-smoke": "bun run desktop:build && node desktop/dev.mjs --single-instance-smoke",
+    "desktop:shared-service-smoke": "bun run desktop:build && node desktop/dev.mjs --shared-service-smoke",
     "perf:large-turn": "vite --host 127.0.0.1 --port 4174",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && bun run desktop:build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "bun run check:agent-boundaries && bun run check:module-comments && vitest run",
@@ -28,6 +35,11 @@
     "remark-math": "^6.0.0",
     "zustand": "^5.0.14"
   },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "postcss": "8.5.18",
+    "undici": "7.28.0"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -38,6 +50,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "electron": "43.2.0",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

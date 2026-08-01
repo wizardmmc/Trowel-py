@@ -154,6 +154,26 @@ describe("replayAgentHistory", () => {
     expect(replayed.needsReplay).toBe(false);
   });
 
+  it("每次历史回放都从零重建压缩次数", () => {
+    const session = {
+      ...createNewSessionState(SESSION, { workdir: "/repo" }),
+      meta: {
+        ...createNewSessionState(SESSION, { workdir: "/repo" }).meta,
+        compactionCount: 3,
+      },
+    };
+    const history = [
+      event(1, "user", { text: "问题" }),
+      event(2, "compact_boundary", {}),
+    ];
+
+    const first = replayAgentHistory(session, history);
+    const second = replayAgentHistory(first, history);
+
+    expect(first.meta.compactionCount).toBe(1);
+    expect(second.meta.compactionCount).toBe(1);
+  });
+
   it("保留当前 thread Goal，但不从历史恢复旧 Plan", () => {
     const session = {
       ...createNewSessionState(

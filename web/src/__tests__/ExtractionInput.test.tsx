@@ -163,7 +163,7 @@ describe("ExtractionInput", () => {
       makeFile("chat.jsonl", content, "application/json"),
     );
     await waitFor(() =>
-      expect(screen.getByText(/CC JSONL/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Claude JSONL/i)).toBeInTheDocument(),
     );
   });
 

@@ -185,6 +185,15 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText(/生成中/)).toBeInTheDocument();
   });
 
+  it("uses the full Claude name and Chinese idle state", () => {
+    setSessions({ s1: makeSession({ name: "claude" }) }, "s1");
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText(/空闲/)).toBeInTheDocument();
+    expect(screen.queryByText(/idle/)).toBeNull();
+  });
+
   it("shows background waiting instead of generating while a task is pending", () => {
     setSessions(
       {
@@ -201,16 +210,15 @@ describe("MultiSessionBar", () => {
     expect(screen.queryByText(/生成中/)).toBeNull();
   });
 
-  it("clicking a row calls activateSession(sid)", async () => {
+  it("clicking a row switches the renderer-local active session", async () => {
     setSessions(
       { s1: makeSession({ name: "a" }), s2: makeSession({ name: "b" }) },
       "s1",
     );
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     fireEvent.click(screen.getByText("b"));
-    await waitFor(() => {
-      expect(apiActivateSession).toHaveBeenCalledWith("s2");
-    });
+    await waitFor(() => expect(useAgentStore.getState().activeSid).toBe("s2"));
+    expect(apiActivateSession).not.toHaveBeenCalled();
   });
 
   it("× close button calls closeSession → DELETE", async () => {

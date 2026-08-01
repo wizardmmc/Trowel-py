@@ -20,7 +20,7 @@ export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
   {
     value: "claude_code",
     native: "原生 claude -p",
-    desc: "继续使用现有 CCHost 配置；保留 Workflow、hook 与 CC checkpoint。",
+    desc: "继续使用现有 Claude Host 配置；保留 Workflow、hook 与 Claude checkpoint。",
     efforts: [
       { value: "", label: "跟随" },
       { value: "low", label: "low" },
@@ -31,7 +31,7 @@ export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
       { value: "ultracode", label: "ultracode" },
     ],
     permissions: [
-      { value: "bypassPermissions", label: "跟随 CC（bypass）" },
+      { value: "bypassPermissions", label: "跟随 Claude（bypass）" },
       { value: "default", label: "default" },
       { value: "acceptEdits", label: "acceptEdits" },
     ],

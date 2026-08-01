@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  apiActivateAgentSession,
   apiCreateSession,
   apiUpdateSessionSettings,
   ev,
@@ -8,7 +9,7 @@ import {
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createAgentStore } from "../agent";
+import { createAgentStore, type AgentSession } from "../agent";
 import { getExpectedRuntimePresentation } from "../agent/runtimes";
 
 const CC_CAPABILITIES = getExpectedRuntimePresentation("claude_code")
@@ -16,8 +17,36 @@ const CC_CAPABILITIES = getExpectedRuntimePresentation("claude_code")
 const CODEX_CAPABILITIES = getExpectedRuntimePresentation("codex")
   .expectedCapabilities;
 
+/** 创建后端会话目录返回的已连接 CC 记录。 */
+function liveSession(sessionId: string, workdir = "/wd"): AgentSession {
+  return {
+    session_id: sessionId,
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir,
+    model: "glm-5.2",
+    effort: null,
+    permission: null,
+    memory_enabled: true,
+    profile_enabled: true,
+    capabilities: CC_CAPABILITIES,
+    name: sessionId,
+    connected: true,
+    running: false,
+  };
+}
+
+/** 创建由测试控制完成时机的 Promise。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("createAgentStore — backend session reconciliation", () => {
-  it("pulls backend live sessions into the dict as connected rows", async () => {
+  it("pulls backend live sessions without adopting another client's active id", async () => {
     const store = createAgentStore();
     listActiveSessions.mockResolvedValueOnce({
       sessions: [
@@ -60,7 +89,56 @@ describe("createAgentStore — backend session reconciliation", () => {
     expect(store.getState().sessions.s1.connected).toBe(true);
     expect(store.getState().sessions.s1.checkpointAvailable).toBe(false);
     expect(store.getState().sessions.s2.connected).toBe(true);
-    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().activeSid).toBeNull();
+  });
+
+  it("keeps session selection local to each renderer store", async () => {
+    const sessions = [
+      {
+        session_id: "s1",
+        runtime: "claude_code" as const,
+        native_session_id: null,
+        workdir: "/one",
+        model: "glm-5.2",
+        effort: null,
+        permission: null,
+        memory_enabled: true,
+        profile_enabled: true,
+        capabilities: CC_CAPABILITIES,
+        name: "one",
+        connected: true,
+        running: false,
+      },
+      {
+        session_id: "s2",
+        runtime: "claude_code" as const,
+        native_session_id: null,
+        workdir: "/two",
+        model: "glm-5.2",
+        effort: null,
+        permission: null,
+        memory_enabled: true,
+        profile_enabled: true,
+        capabilities: CC_CAPABILITIES,
+        name: "two",
+        connected: true,
+        running: false,
+      },
+    ];
+    listActiveSessions
+      .mockResolvedValueOnce({ sessions, activeId: "s1" })
+      .mockResolvedValueOnce({ sessions, activeId: "s1" });
+    const webStore = createAgentStore();
+    const desktopStore = createAgentStore();
+    await webStore.getState().refreshActiveSessions();
+    await desktopStore.getState().refreshActiveSessions();
+
+    await webStore.getState().activateSession("s1");
+    await desktopStore.getState().activateSession("s2");
+
+    expect(webStore.getState().activeSid).toBe("s1");
+    expect(desktopStore.getState().activeSid).toBe("s2");
+    expect(apiActivateAgentSession).not.toHaveBeenCalled();
   });
 
   it("does NOT overwrite sessions the frontend already tracks", async () => {
@@ -97,6 +175,44 @@ describe("createAgentStore — backend session reconciliation", () => {
     listActiveSessions.mockRejectedValueOnce(new Error("backend down"));
     await store.getState().refreshActiveSessions();
     expect(store.getState().sessions).toEqual({});
+  });
+
+  it("removes a user session closed by another renderer", async () => {
+    const store = createAgentStore();
+    listActiveSessions
+      .mockResolvedValueOnce({ sessions: [liveSession("s1")], activeId: null })
+      .mockResolvedValueOnce({ sessions: [], activeId: null });
+    await store.getState().refreshActiveSessions();
+    await store.getState().activateSession("s1");
+
+    await store.getState().refreshActiveSessions();
+
+    expect(store.getState().sessions.s1).toBeUndefined();
+    expect(store.getState().activeSid).toBeNull();
+  });
+
+  it("ignores an older session catalog response that arrives last", async () => {
+    const store = createAgentStore();
+    const older = deferred<{
+      readonly sessions: readonly AgentSession[];
+      readonly activeId: string | null;
+    }>();
+    listActiveSessions
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce({
+        sessions: [liveSession("newer", "/newer")],
+        activeId: null,
+      });
+
+    const firstRefresh = store.getState().refreshActiveSessions();
+    await store.getState().refreshActiveSessions();
+    older.resolve({
+      sessions: [liveSession("older", "/older")],
+      activeId: null,
+    });
+    await firstRefresh;
+
+    expect(Object.keys(store.getState().sessions)).toEqual(["newer"]);
   });
 
   it("ignores delegate rows if an old backend returns them", async () => {

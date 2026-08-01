@@ -21,6 +21,7 @@ describe("createAgentStore - Codex native commands", () => {
     expect(apiCompactCodexSession).toHaveBeenCalledWith("c1");
     expect(store.getState().sessions.c1.turns).toHaveLength(0);
     expect(store.getState().sessions.c1.commandPending).toBe("compact");
+    expect(store.getState().sessions.c1.phase).toBe("compacting");
     stream.apply!(
       ev(
         "turn_start",
@@ -29,6 +30,7 @@ describe("createAgentStore - Codex native commands", () => {
       ),
     );
     expect(store.getState().sessions.c1.commandPending).toBeNull();
+    expect(store.getState().sessions.c1.phase).toBe("compacting");
   });
 
   it("releases compact UI admission when the Codex host exits before turn start", async () => {
@@ -139,5 +141,6 @@ describe("createAgentStore - Codex native commands", () => {
 
     expect(store.getState().sessions.c1.transportError).toBe("compact failed");
     expect(store.getState().sessions.c1.commandPending).toBeNull();
+    expect(store.getState().sessions.c1.phase).toBe("idle");
   });
 });

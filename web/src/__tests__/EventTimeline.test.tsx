@@ -14,7 +14,7 @@ describe("EventTimeline", () => {
   it("thinking row shows a summary and expands to the raw text", () => {
     const items: TurnItem[] = [{ kind: "thinking", text: "reasoning here" }];
     render(<EventTimeline items={items} />);
-    expect(screen.getByText("思考")).toBeTruthy();
+    expect(screen.getByText("Thinking")).toBeTruthy();
     fireEvent.click(screen.getByRole("button"));
     expect(screen.getByText("reasoning here")).toBeTruthy();
   });
@@ -25,13 +25,30 @@ describe("EventTimeline", () => {
       { kind: "text", text: "answer" },
     ];
     render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} isReplay={false} />);
-    expect(screen.getByText("Reasoned")).toBeInTheDocument();
-    expect(screen.queryByText("Reasoning")).toBeNull();
+    expect(screen.getByText("Thought")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).toBeNull();
   });
 
   it("keeps the trailing Codex reasoning item active", () => {
     render(<EventTimeline items={[{ kind: "thinking", text: "reasoning" }]} presentation={CODEX_PRESENTATION} isReplay={false} />);
-    expect(screen.getByText("Reasoning")).toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+  });
+
+  it("shows a recorded thinking duration in English", () => {
+    render(
+      <EventTimeline
+        items={[
+          {
+            kind: "thinking",
+            text: "reasoning",
+            thinkingDurationSeconds: 12,
+          },
+        ]}
+        presentation={CC_PRESENTATION}
+        isReplay
+      />,
+    );
+    expect(screen.getByText("Thought for 12s")).toBeInTheDocument();
   });
 
   it("shows an explicit state when a recorded item lacks its capability", () => {

@@ -2248,6 +2248,66 @@
           }
         }
       },
+      "/api/agent/workspaces/recent": {
+        "get": {
+          "summary": "List Recent Workspaces",
+          "description": "按最近打开顺序返回工作区及其当前可用性。",
+          "operationId": "list_recent_workspaces_api_agent_workspaces_recent_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Recent Workspaces Api Agent Workspaces Recent Get"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Remember Workspace",
+          "description": "校验并记录用户确认打开的工作区。",
+          "operationId": "remember_workspace_api_agent_workspaces_recent_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberWorkspaceRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Remember Workspace Api Agent Workspaces Recent Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions/active": {
         "get": {
           "summary": "List Active",
@@ -3972,6 +4032,22 @@
           ],
           "title": "ReExplainRequest",
           "description": "携带重新生成草稿解释所需的当前内容和用户偏好。\n\n草稿尚未保存，因此请求直接携带内容而不是卡片 ID。\n\nAttributes:\n    explanation: 当前解释，模型会根据它生成新的候选版本；至少包含 10 个字符。\n    title: 草稿标题，不能为空。\n    category: 草稿分类，不能为空。\n    user_hint: 用户希望采用的解释方向；为 ``None`` 或空字符串时不限定方向。"
+        },
+        "RememberWorkspaceRequest": {
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Path"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "title": "RememberWorkspaceRequest",
+          "description": "携带一次用户确认打开的 Agent 工作区。\n\nAttributes:\n    path: 用户选择的本地目录路径；仓储负责展开、规范化和可用性校验。"
         },
         "RenameAgentSessionRequest": {
           "properties": {

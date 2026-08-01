@@ -45,7 +45,7 @@ describe("runtime presentation", () => {
     const codex = getRuntimePresentation("codex", CODEX_CAPABILITIES);
 
     expect(cc.label).toBe("Claude Code");
-    expect(cc.shortLabel).toBe("CC");
+    expect(cc.shortLabel).toBe("Claude");
     expect(cc.sessionSettings).toEqual({
       modelCatalog: "claude_code",
       effort: true,
@@ -53,7 +53,7 @@ describe("runtime presentation", () => {
       memoryDescription:
         "给模型读你存的记忆：铁律、dictionary 笔记、近期日记，并挂 memory MCP。关掉做无记忆基线。",
       isolationNote:
-        "选择 Claude Code 继续使用 CCHost；它与已运行的 Codex session 互不切换、互不 resume。",
+        "选择 Claude Code 继续使用现有 Claude Host；它与已运行的 Codex 会话互不切换、互不恢复。",
     });
     expect(cc.composerActions).toEqual({
       slashSource: "claude_code",
@@ -68,6 +68,12 @@ describe("runtime presentation", () => {
       goal: false,
       plan: false,
     });
+    expect(cc.timelinePresenters.thinkingLabel(undefined, false)).toBe(
+      "Thinking",
+    );
+    expect(cc.timelinePresenters.thinkingLabel(12, true)).toBe(
+      "Thought for 12s",
+    );
 
     expect(codex.label).toBe("Codex");
     expect(codex.shortLabel).toBe("Codex");
@@ -78,7 +84,7 @@ describe("runtime presentation", () => {
       memoryDescription:
         "注入 trowel 记忆并挂 memory MCP；Codex native memories 保持关闭。",
       isolationNote:
-        "选择 Codex 只决定这个 session 的 runtime，不会改变已运行的 GLM 会话，也不会修改 cc-switch 配置。",
+        "选择 Codex 只决定当前会话的运行工具，不会改变已运行的 Claude 会话，也不会修改 Claude 切换配置。",
     });
     expect(codex.composerActions).toEqual({
       slashSource: "codex",
@@ -93,6 +99,12 @@ describe("runtime presentation", () => {
       goal: true,
       plan: true,
     });
+    expect(codex.timelinePresenters.thinkingLabel(undefined, true)).toBe(
+      "Thought",
+    );
+    expect(codex.timelinePresenters.thinkingLabel(12, true)).toBe(
+      "Thought for 12s",
+    );
   });
 
   it("intersects declared capabilities with live and history support", () => {

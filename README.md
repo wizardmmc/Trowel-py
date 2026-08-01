@@ -36,6 +36,17 @@ bun run dev
 
 前端开发服务器会把 `/api` 转发到 `http://localhost:8000`。
 
+桌面开发模式会自动启动随机端口的 Vite、Electron 和 Python sidecar：
+
+```bash
+cd web
+bun install --frozen-lockfile
+bun run desktop:dev
+```
+
+该命令使用当前源码目录作为开发数据目录。可安装的 macOS 应用包、签名和公证由
+后续发布流程生成；普通浏览器开发入口继续保留。
+
 单进程运行需要先构建前端。以下命令在已激活的 Python 3.13 环境中执行
 editable install：
 

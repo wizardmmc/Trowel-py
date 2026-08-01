@@ -43,6 +43,24 @@ describe("NewSessionDialog lifecycle", () => {
     expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
   });
 
+  it("blocks creation when the workdir is empty", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir=""
+        onCreate={onCreate}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(createButton()).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "需要先选择工作目录",
+    );
+    fireEvent.click(createButton());
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it("error is rendered as an alert", () => {
     render(
       <NewSessionDialog

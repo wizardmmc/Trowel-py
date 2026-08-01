@@ -47,15 +47,13 @@ const CODEX_ADAPTER: RuntimeAdapterDefinition = {
   memoryDescription:
     "注入 trowel 记忆并挂 memory MCP；Codex native memories 保持关闭。",
   isolationNote:
-    "选择 Codex 只决定这个 session 的 runtime，不会改变已运行的 GLM 会话，也不会修改 cc-switch 配置。",
-  interruptedHostLabel: "Codex host",
-  degradedHostLabel: "Codex host 已断开",
+    "选择 Codex 只决定当前会话的运行工具，不会改变已运行的 Claude 会话，也不会修改 Claude 切换配置。",
+  interruptedHostLabel: "Codex 进程",
+  degradedHostLabel: "Codex 进程已断开",
   explorationCommands: true,
   thinkingLabel: (durationSeconds, completed) => {
-    const verb = completed ? "Reasoned" : "Reasoning";
-    return durationSeconds === undefined
-      ? verb
-      : `${verb} for ${durationSeconds}s`;
+    if (durationSeconds !== undefined) return `Thought for ${durationSeconds}s`;
+    return completed ? "Thought" : "Thinking";
   },
 };
 

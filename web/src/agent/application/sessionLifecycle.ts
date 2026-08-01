@@ -1,9 +1,10 @@
-/** 根据页面工作目录初始化会话，并协调活动会话与历史回放。 */
+/** 恢复 live session，并协调工作区历史与当前会话回放。 */
 
 import { useEffect } from "react";
 
-import { getAgentSessionDefaults } from "../transport/api";
 import { useAgentStore } from "./store";
+
+const LIVE_SESSION_REFRESH_INTERVAL_MS = 5_000;
 
 interface SessionLifecycleOptions {
   readonly workdir: string;
@@ -27,26 +28,29 @@ export function useSessionLifecycle({
   loadHistoryIntoView,
 }: SessionLifecycleOptions): void {
   useEffect(() => {
-    void (async () => {
-      const store = useAgentStore.getState();
-      await store.refreshActiveSessions();
-      const current = useAgentStore.getState();
-      const activeSession =
-        current.sessions[current.activeSid ?? ""];
-      if (
-        !activeSession ||
-        activeSession.sessionKind === "delegate" ||
-        activeSession.workdir !== workdir
-      ) {
-        const defaults = await getAgentSessionDefaults().catch(() => null);
-        await store.startSession({ workdir, ...defaults }).catch(() => {
-          // mount 新建失败时保留空态，用户仍可手动重试。
-        });
-      }
-      // 即使新建失败，也必须把历史下拉刷新到当前 workdir。
-      void store.refreshHistory(workdir);
-    })();
-  }, [workdir]);
+    const refresh = () => {
+      void useAgentStore.getState().refreshActiveSessions();
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    const interval = window.setInterval(
+      refreshWhenVisible,
+      LIVE_SESSION_REFRESH_INTERVAL_MS,
+    );
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (workdir.trim()) void refreshHistory(workdir);
+  }, [workdir, refreshHistory]);
 
   useEffect(() => {
     if (activeWorkdir) {

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trowel 启动诊断</title>
+    <link rel="stylesheet" href="./diagnostic.css" />
+    <script src="./diagnostic.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">TROWEL</p>
+      <h1>后台服务没有启动</h1>
+      <p id="message" class="message">正在读取诊断状态...</p>
+      <dl>
+        <div><dt>错误类别</dt><dd id="category">-</dd></div>
+        <div><dt>退出码</dt><dd id="exit-code">-</dd></div>
+      </dl>
+      <p id="action-error" class="action-error" role="alert"></p>
+      <div class="actions">
+        <button id="retry" class="primary" type="button">重试</button>
+        <button id="open-logs" type="button">打开日志目录</button>
+        <button id="quit" type="button">退出</button>
+      </div>
+    </main>
+  </body>
+</html>

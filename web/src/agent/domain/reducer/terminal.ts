@@ -3,7 +3,6 @@
 import type {
   ErrorEvent,
   FinishedEvent,
-  InterruptedEvent,
 } from "../../transport/events";
 import type {
   ReducerState,
@@ -11,12 +10,14 @@ import type {
   TurnItem,
   TurnStatus,
 } from "./model";
+import { claudeTurnTokens } from "./usage";
 
 /** finished 统一结束当前 turn，并保留 history 已有的时长。 */
 export function applyFinishedEvent(
   prev: ReducerState,
   event: FinishedEvent,
 ): ReducerState {
+  const normalizedTokens = claudeTurnTokens(event.usage);
   const state: ReducerState = {
     ...prev,
     phase: "done",
@@ -24,6 +25,8 @@ export function applyFinishedEvent(
       ...prev.meta,
       costUsd: event.total_cost_usd,
       numTurns: event.num_turns,
+      lastTurnTokens:
+        normalizedTokens ?? prev.meta.lastTurnTokens,
     },
   };
   const turns = prev.turns;
@@ -68,10 +71,7 @@ export function applyErrorEvent(
   );
 }
 
-export function applyInterruptedEvent(
-  prev: ReducerState,
-  _event: InterruptedEvent,
-): ReducerState {
+export function applyInterruptedEvent(prev: ReducerState): ReducerState {
   return appendTerminalItem(
     { ...prev, phase: "interrupted" },
     { kind: "interrupted" },

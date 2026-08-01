@@ -99,6 +99,18 @@ class RenameAgentSessionRequest(BaseModel):
     title: SessionTitleText
 
 
+class RememberWorkspaceRequest(BaseModel):
+    """携带一次用户确认打开的 Agent 工作区。
+
+    Attributes:
+        path: 用户选择的本地目录路径；仓储负责展开、规范化和可用性校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: NonEmptyText
+
+
 class GenerateAgentSessionTitleRequest(BaseModel):
     """携带用于生成语义标题的首条用户消息。
 

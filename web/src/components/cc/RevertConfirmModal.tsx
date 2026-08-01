@@ -46,7 +46,7 @@ export function RevertConfirmModal({
         </ul>
         <p className="cc-revert-modal__note">
           同时 <b>git restore</b> 这些轮对工作区文件的改动，回到这轮开始前的状态。
-          CC 会以 <code>--resume</code> 从更短的历史接着聊。
+          Claude 会以 <code>--resume</code> 从更短的历史接着聊。
         </p>
         <p className="cc-revert-modal__irreversible">此操作不可撤销。</p>
         <div className="cc-revert-modal__actions">

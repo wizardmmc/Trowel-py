@@ -47,10 +47,11 @@ export function ReviewSession() {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
       >
+        <div className="review-session__drag-region" aria-hidden="true" />
         <button
           className="review-session__close"
           onClick={resetSession}
-          aria-label="Close review session"
+          aria-label="关闭复习"
         >
           ✕
         </button>

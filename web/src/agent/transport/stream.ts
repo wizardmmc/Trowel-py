@@ -1,6 +1,7 @@
 /** 解析 Agent SSE 帧，并提供消息发送与持续订阅 transport。 */
 
 import type { AgentEvent } from "./agentEvent";
+import { transportFetch } from "../../platform/transport";
 
 const FRAME_DELIMITER = "\n\n";
 
@@ -40,7 +41,7 @@ export async function postMessageStream(
 ): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await transportFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -53,7 +54,7 @@ export async function postMessageStream(
     throw err;
   }
   if (!response.ok) {
-    throw new Error(`CC stream request failed: ${response.status}`);
+    throw new Error(`Agent 流式请求失败：${response.status}`);
   }
   options.onOpen?.();
   await readEventStream(response, onEvent, options.signal);
@@ -66,7 +67,10 @@ export async function getEventStream(
 ): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(url, { method: "GET", signal: options.signal });
+    response = await transportFetch(url, {
+      method: "GET",
+      signal: options.signal,
+    });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return;
     throw err;

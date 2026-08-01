@@ -232,7 +232,9 @@ function ThinkingRow({
       )
     : item.thinkingDurationSeconds !== undefined
       ? `Thought for ${item.thinkingDurationSeconds}s`
-      : "思考";
+      : completed
+        ? "Thought"
+        : "Thinking";
   return (
     <div className="cc-timeline__row cc-timeline__row--thinking">
       <button

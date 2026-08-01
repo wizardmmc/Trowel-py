@@ -63,6 +63,7 @@ vi.mock("../agent/transport/stream", () => ({
 }));
 
 import {
+  activateAgentSession,
   answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
@@ -83,6 +84,7 @@ import {
 import { getEventStream } from "../agent/transport";
 
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
+export const apiActivateAgentSession = vi.mocked(activateAgentSession);
 export const apiCreateSession = vi.mocked(createAgentSession);
 export const apiDeleteSession = vi.mocked(deleteAgentSession);
 export const apiGetAgentHistory = vi.mocked(getAgentHistory);

@@ -36,12 +36,20 @@ export function applyTurnStart(
     return {
       ...prev,
       turns: [...turns, turn],
-      phase: "awaiting_first",
+      phase: prev.phase === "compacting" ? "compacting" : "awaiting_first",
+      meta: { ...prev.meta, lastTurnTokens: null },
       plan: null,
       turnDiff: null,
     };
   }
-  if (turns.length === 0) return { ...prev, plan: null, turnDiff: null };
+  if (turns.length === 0) {
+    return {
+      ...prev,
+      meta: { ...prev.meta, lastTurnTokens: null },
+      plan: null,
+      turnDiff: null,
+    };
+  }
 
   const last = turns[turns.length - 1];
   const updated: Turn = {
@@ -53,6 +61,7 @@ export function applyTurnStart(
   return {
     ...prev,
     turns: [...turns.slice(0, -1), updated],
+    meta: { ...prev.meta, lastTurnTokens: null },
     plan: null,
     turnDiff: null,
   };
@@ -84,5 +93,10 @@ export function applyUserEvent(
     revertible: false,
     durationSeconds: event.duration_seconds,
   };
-  return { ...prev, turns: [...turns, turn], turnDiff: null };
+  return {
+    ...prev,
+    turns: [...turns, turn],
+    meta: { ...prev.meta, lastTurnTokens: null },
+    turnDiff: null,
+  };
 }

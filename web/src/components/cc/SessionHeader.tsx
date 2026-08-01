@@ -15,6 +15,8 @@ const EMPTY_META: SessionMeta = {
   ccSessionId: null,
   costUsd: null,
   numTurns: null,
+  lastTurnTokens: null,
+  compactionCount: 0,
   hookFired: null,
   thinkingStartedAt: null,
   thinkingTokens: null,
@@ -128,13 +130,17 @@ export function SessionHeader({
               type="button"
               className="cc-workdir-btn"
               onClick={onRequestChangeWorkdir}
-              title={`工作目录：${workdir}（点击切换）`}
+              title={
+                workdir
+                  ? `工作目录：${workdir}（点击切换）`
+                  : "选择工作目录"
+              }
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
               <span className="cc-workdir-btn__value">
-                {workdir.split("/").pop() || workdir}
+                {workdir.split("/").pop() || "选择工作目录"}
               </span>
             </button>
           )}
