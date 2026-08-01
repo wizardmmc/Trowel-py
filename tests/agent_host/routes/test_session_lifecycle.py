@@ -2,11 +2,13 @@ from dataclasses import replace
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from trowel_py.agent_host.hub import SessionHub
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.binding import Runtime, make_binding
+from trowel_py.agent_host.lifecycle import SessionCloseResult
 
 from tests.agent_host.routes.support import (
     cc_payload,
@@ -339,4 +341,41 @@ def test_delete_session(client: TestClient, workdir: Path) -> None:
     response = client.delete(f"/api/agent/sessions/{created['session_id']}")
     assert response.status_code == 200
     assert response.json()["data"]["closed"] is True
+    assert response.json()["data"]["status"] == "closed"
+    assert response.json()["data"]["remaining_resource_count"] == 0
     assert client.get(f"/api/agent/sessions/{created['session_id']}").status_code == 404
+
+
+def test_delete_session_returns_reconcile_as_data(
+    client: TestClient,
+    hub: SessionHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """资源未归零是可重试业务结果，不应破坏成功响应 envelope。"""
+
+    async def needs_reconcile(_session_id: str) -> SessionCloseResult:
+        """返回固定的未收敛结果。"""
+
+        return SessionCloseResult(
+            status="needs_reconcile",
+            remaining_resource_count=1,
+            remaining_resource_kinds=("codex_session_close",),
+            error="Codex close needs reconciliation",
+        )
+
+    monkeypatch.setattr(hub, "close_result", needs_reconcile)
+
+    response = client.delete("/api/agent/sessions/session-needs-reconcile")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "data": {
+            "closed": False,
+            "status": "needs_reconcile",
+            "remaining_resource_count": 1,
+            "remaining_resource_kinds": ["codex_session_close"],
+            "error": "Codex close needs reconciliation",
+        },
+        "error": None,
+    }

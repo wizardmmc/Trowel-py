@@ -13,9 +13,16 @@ const projectRoot = path.resolve(webRoot, "..");
 const rendererSmoke = process.argv.includes("--smoke");
 const diagnosticSmoke = process.argv.includes("--diagnostic-smoke");
 const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
+const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
+const rendererCrashSmoke = process.argv.includes("--renderer-crash-smoke");
 const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
 const smoke =
-  rendererSmoke || diagnosticSmoke || singleInstanceSmoke || sharedServiceSmoke;
+  rendererSmoke ||
+  diagnosticSmoke ||
+  singleInstanceSmoke ||
+  sidecarHangSmoke ||
+  rendererCrashSmoke ||
+  sharedServiceSmoke;
 const tempRoot = smoke
   ? await mkdtemp(path.join(os.tmpdir(), "trowel-desktop-smoke-"))
   : null;
@@ -50,6 +57,7 @@ const vite = spawn(
 );
 let desktop = null;
 let interrupted = false;
+let stoppedSidecarPid = null;
 
 /** 终端中断时先结束子进程，让 finally 有机会清理私有 descriptor。 */
 function handleTerminationSignal() {
@@ -75,8 +83,11 @@ try {
           TROWEL_PYTHON_EXECUTABLE: path.join(tempRoot, "missing-python"),
         }
       : {}),
-    ...(singleInstanceSmoke
+    ...(singleInstanceSmoke || sidecarHangSmoke
       ? { TROWEL_DESKTOP_SINGLE_INSTANCE_SMOKE: "1" }
+      : {}),
+    ...(rendererCrashSmoke
+      ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
       : {}),
     ...(tempRoot
       ? {
@@ -102,9 +113,25 @@ try {
     env: desktopEnvironment,
   });
   const primaryExit = childExit(desktop);
-  if (singleInstanceSmoke) {
+  if (singleInstanceSmoke || sidecarHangSmoke) {
     const lifecycleLog = path.join(tempRoot, "logs", "desktop-host.log");
     await waitForFileText(lifecycleLog, '"event":"sidecar_ready"');
+    if (sidecarHangSmoke) {
+      const snapshotPath = path.join(
+        tempRoot,
+        "data",
+        "resource-lifecycle.json",
+      );
+      const snapshot = await waitForJson(snapshotPath);
+      const sidecar = snapshot.resources.find(
+        (resource) => resource.resource_kind === "sidecar_process_group",
+      );
+      if (!Number.isInteger(sidecar?.pid)) {
+        throw new Error("Sidecar PID was not published in the resource snapshot.");
+      }
+      stoppedSidecarPid = sidecar.pid;
+      process.kill(stoppedSidecarPid, "SIGSTOP");
+    }
     const second = spawn(electron, [webRoot], {
       cwd: webRoot,
       stdio: "inherit",
@@ -123,12 +150,68 @@ try {
     desktop.kill("SIGTERM");
   }
   const exitCode = await primaryExit;
+  if (sidecarHangSmoke) {
+    if (exitCode !== 0) throw new Error("Primary Electron instance did not exit cleanly.");
+    if (stoppedSidecarPid !== null && processAlive(stoppedSidecarPid)) {
+      throw new Error("Stopped sidecar survived Host shutdown escalation.");
+    }
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(`Host did not verify a clean exit: ${JSON.stringify(marker)}`);
+    }
+    console.log("TROWEL_DESKTOP_SIDECAR_HANG_SMOKE_OK");
+  }
+  if (rendererCrashSmoke) {
+    if (exitCode !== 0) throw new Error("Electron exited after renderer crash with an error.");
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(
+        `Renderer crash did not end with a clean resource marker: ${JSON.stringify(marker)}`,
+      );
+    }
+    console.log("TROWEL_DESKTOP_RENDERER_CRASH_SMOKE_OK");
+  }
   process.exitCode = interrupted || expectedDesktopStop ? 0 : exitCode;
 } finally {
   process.removeListener("SIGINT", handleTerminationSignal);
   process.removeListener("SIGTERM", handleTerminationSignal);
   vite.kill("SIGTERM");
+  if (stoppedSidecarPid !== null && processAlive(stoppedSidecarPid)) {
+    try {
+      process.kill(stoppedSidecarPid, "SIGCONT");
+      process.kill(stoppedSidecarPid, "SIGKILL");
+    } catch {
+      // 退出核验和进程结束之间可能发生正常竞态。
+    }
+  }
   await rm(runtimeRoot, { recursive: true, force: true });
+}
+
+async function waitForJson(filePath, timeoutMs = 15_000) {
+  /** 等待 sidecar 或 Host 原子发布 JSON 文件，并容忍临时缺失。 */
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await readFile(filePath, "utf8"));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`Timed out waiting for JSON file: ${filePath}`);
+}
+
+function processAlive(pid) {
+  /** 用信号 0 检查 PID，权限不足仍视为存活。 */
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
 }
 
 /** 读取 JSON API，并在非成功响应时保留可诊断的状态码。 */

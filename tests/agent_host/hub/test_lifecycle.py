@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from trowel_py.agent_host.binding import Runtime
 from trowel_py.agent_host.hub import (
+    SessionConflictError,
     SessionHub,
     SessionNotFoundError,
     SessionOperationError,
 )
 from trowel_py.agent_host.store import BindingStore
+from trowel_py.resource_lifecycle import OwnerScope, ResourceRegistry
 from tests.agent_host.hub._support import (
     FakeCcHost,
     FakeCodexManager,
@@ -235,6 +238,101 @@ async def test_delete_codex_drops_binding(
 
 async def test_delete_unknown_returns_false(hub: SessionHub):
     assert await hub.delete("nope") is False
+
+
+async def test_close_result_reports_not_found_without_raising(hub: SessionHub) -> None:
+    """显式关闭结果应区分会话本来就不存在。"""
+
+    result = await hub.close_result("nope")
+
+    assert result.status == "not_found"
+    assert result.remaining_resource_count == 0
+
+
+@pytest.mark.parametrize("first_deletes_binding", [True, False])
+async def test_concurrent_close_reuses_one_task_and_keeps_closed_result(
+    hub: SessionHub,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    monkeypatch: pytest.MonkeyPatch,
+    first_deletes_binding: bool,
+) -> None:
+    """用户关闭与应用 drain 无论谁先到，都只清一次 runtime 并最终删除 binding。"""
+
+    binding = hub.create(cc_req(workdir))
+    host = cc_registry[binding.session_id]
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    close_calls = 0
+
+    async def slow_close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        close_started.set()
+        await allow_close.wait()
+        host.closed = True
+
+    monkeypatch.setattr(host, "close", slow_close)
+    first = asyncio.create_task(
+        hub.close_result(
+            binding.session_id,
+            delete_binding=first_deletes_binding,
+        )
+    )
+    await close_started.wait()
+    second = asyncio.create_task(
+        hub.close_result(
+            binding.session_id,
+            delete_binding=not first_deletes_binding,
+        )
+    )
+    await asyncio.sleep(0)
+
+    allow_close.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert hub.get(binding.session_id) is None
+    retry_result = await hub.close_result(binding.session_id)
+
+    assert first_result == second_result == retry_result
+    assert first_result.status == "closed"
+    assert close_calls == 1
+
+
+async def test_close_keeps_binding_when_registry_still_has_session_resource(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+) -> None:
+    """runtime 自报完成不能越过资源账本中的未关闭 handle。"""
+
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    store = BindingStore(tmp_path / "resource-bindings.json")
+    hub = SessionHub(
+        store,
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        resource_registry=registry,
+    )
+    binding = hub.create(codex_req(workdir))
+    registry.register_handle(
+        resource_id="unclosed-watcher",
+        owner_scope=OwnerScope.SESSION,
+        resource_kind="workflow_watcher",
+        agent_session_id=binding.session_id,
+    )
+
+    result = await hub.close_result(binding.session_id)
+
+    assert result.status == "needs_reconcile"
+    assert result.remaining_resource_count == 1
+    assert result.remaining_resource_kinds == ("workflow_watcher",)
+    assert store.get(binding.session_id) == binding
+    with pytest.raises(SessionConflictError, match="正在关闭"):
+        _ = [event async for event in hub.stream(binding.session_id, "too late")]
 
 
 @pytest.mark.parametrize("request_factory", [cc_req, codex_req])

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from trowel_py.agent_host.binding import SessionBinding
@@ -14,6 +14,7 @@ from trowel_py.memory.sessions_repo import (
 )
 
 NowFn = Callable[[], datetime]
+SESSION_REVIEW_DELAY = timedelta(minutes=5)
 
 
 def enqueue_session_review(
@@ -32,12 +33,15 @@ def enqueue_session_review(
     """
 
     now = (now_fn or datetime.now)()
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
     conn = open_sessions_db(memory_root)
     try:
         create_sessions_repository(conn).review_requests.enqueue(
             binding.session_id,
             runtime=binding.runtime.value,
             requested_at=now.isoformat(timespec="microseconds"),
+            not_before=(now + SESSION_REVIEW_DELAY).isoformat(timespec="microseconds"),
             expected_native_session_id=(
                 binding.native_session_id
                 if binding.runtime.value == "claude_code"
@@ -49,11 +53,22 @@ def enqueue_session_review(
         conn.close()
 
 
-def load_session_review_requests(memory_root: Path) -> list[ReviewRequest]:
-    """读取全部尚未完成的会话关闭 review 请求。"""
+def load_session_review_requests(
+    memory_root: Path,
+    *,
+    eligible_at: str | None = None,
+) -> list[ReviewRequest]:
+    """读取全部或已经到期的会话关闭 review 请求。
+
+    Args:
+        memory_root: 保存请求队列的 Memory 根目录。
+        eligible_at: 只读取不晚于该本地 ISO 时间的请求；None 表示读取全部。
+    """
 
     conn = open_sessions_db(memory_root)
     try:
-        return create_sessions_repository(conn).review_requests.list_pending()
+        return create_sessions_repository(conn).review_requests.list_pending(
+            eligible_at=eligible_at
+        )
     finally:
         conn.close()

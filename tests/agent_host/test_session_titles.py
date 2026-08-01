@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from trowel_py.codex_host.events import (
     TranslatedItem,
     immutable_payload,
 )
+from trowel_py.resource_lifecycle import ProcessIdentity, ResourceRegistry
 
 
 def test_prompt_title_collapses_whitespace_and_bounds_fallback():
@@ -140,12 +142,83 @@ async def test_cancelling_claude_title_kills_the_subprocess():
 
 
 @pytest.mark.asyncio
+async def test_claude_title_process_is_published_and_closed_in_resource_snapshot(
+    tmp_path: Path,
+) -> None:
+    """标题进程必须进入 app 资源账本，正常结束后再标成 closed。"""
+
+    class FakeProcess:
+        """返回固定标题结果的独立进程组替身。"""
+
+        pid = 811
+        returncode = None
+
+        async def communicate(self):
+            """返回结构化标题，并模拟根进程正常退出。"""
+
+            self.returncode = 0
+            return b'{"structured_output":{"title":"resource title"}}', b""
+
+    class Controller:
+        """为标题进程提供固定启动身份和退出状态。"""
+
+        def inspect(self, pid: int) -> ProcessIdentity | None:
+            """只识别测试标题进程。"""
+
+            return ProcessIdentity(pid, pid, "title-start") if pid == 811 else None
+
+        def group_alive(self, process_group: int) -> bool:
+            """根进程结束后视为整个测试进程组已经退出。"""
+
+            return process_group == 811 and process.returncode is None
+
+        def signal_group(self, _process_group: int, _signal_name: str) -> None:
+            """正常完成路径不应发送信号。"""
+
+            raise AssertionError("completed title process must not be signaled")
+
+    process = FakeProcess()
+
+    async def spawn(*_args, **_kwargs):
+        """返回固定标题进程。"""
+
+        return process
+
+    snapshot_path = tmp_path / "resource-lifecycle.json"
+    registry = ResourceRegistry(
+        app_instance_id="app-title",
+        snapshot_path=snapshot_path,
+        process_controller=Controller(),
+    )
+    generator = NativeSessionTitleGenerator(
+        codex_manager=None,
+        cc_proxy_base_url=None,
+        cc_settings_path=None,
+        subprocess_spawner=spawn,
+        resource_registry=registry,
+    )
+
+    title = await generator.generate(Runtime.CLAUDE_CODE, "生成标题", "/unused")
+
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    resources = [
+        item
+        for item in snapshot["resources"]
+        if item["resource_kind"] == "session_title_process_group"
+    ]
+    assert title == "resource title"
+    assert len(resources) == 1
+    assert resources[0]["state"] == "closed"
+
+
+@pytest.mark.asyncio
 async def test_codex_title_uses_ephemeral_luna_without_project_or_trowel_mcp(
     tmp_path,
 ):
     class FakeManager:
         def __init__(self) -> None:
             self.session = None
+            self.closed: list[tuple[str, bool]] = []
             self.unregistered: list[str] = []
 
         def register(self, session) -> None:
@@ -184,6 +257,11 @@ async def test_codex_title_uses_ephemeral_luna_without_project_or_trowel_mcp(
         async def interrupt(self, _session) -> None:
             raise AssertionError("completed title must not be interrupted")
 
+        async def close_session(self, session, *, preserve_history: bool) -> None:
+            """记录临时 thread 已按原生关闭流程收敛。"""
+
+            self.closed.append((session.session_id, preserve_history))
+
         def unregister(self, session_id: str) -> None:
             self.unregistered.append(session_id)
 
@@ -213,6 +291,7 @@ async def test_codex_title_uses_ephemeral_luna_without_project_or_trowel_mcp(
     assert config.trowel_agent_mcp is None
     assert config.workdir != str(project)
     assert not Path(config.workdir).exists()
+    assert manager.closed == [(manager.session.session_id, False)]
     assert manager.unregistered == [manager.session.session_id]
 
 
@@ -222,6 +301,7 @@ async def test_codex_timeout_interrupts_and_unregisters_ephemeral_session(tmp_pa
         def __init__(self) -> None:
             self.session = None
             self.interrupted = 0
+            self.closed: list[tuple[str, bool]] = []
             self.unregistered: list[str] = []
 
         def register(self, session) -> None:
@@ -244,6 +324,11 @@ async def test_codex_timeout_interrupts_and_unregisters_ephemeral_session(tmp_pa
         async def interrupt(self, _session) -> None:
             self.interrupted += 1
 
+        async def close_session(self, session, *, preserve_history: bool) -> None:
+            """记录超时 thread 已进入 archive 清理路径。"""
+
+            self.closed.append((session.session_id, preserve_history))
+
         def unregister(self, session_id: str) -> None:
             self.unregistered.append(session_id)
 
@@ -258,5 +343,5 @@ async def test_codex_timeout_interrupts_and_unregisters_ephemeral_session(tmp_pa
     with pytest.raises(TimeoutError, match="timed out"):
         await generator.generate(Runtime.CODEX, "生成标题", str(tmp_path))
 
-    assert manager.interrupted == 1
+    assert manager.closed == [(manager.session.session_id, False)]
     assert manager.unregistered == [manager.session.session_id]

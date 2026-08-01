@@ -22,6 +22,7 @@ class ReviewRequestsRepository:
         *,
         runtime: str,
         requested_at: str | None = None,
+        not_before: str | None = None,
         expected_native_session_id: str | None = None,
     ) -> None:
         """幂等登记用户关闭会话触发的即时 review 请求。
@@ -34,6 +35,7 @@ class ReviewRequestsRepository:
         if runtime not in {"claude_code", "codex"}:
             raise ValueError(f"unknown review request runtime: {runtime}")
         stamp = requested_at or datetime.now().isoformat(timespec="microseconds")
+        eligible_stamp = not_before or stamp
         native_session_id = ""
         source_start_offset: int | None = None
         source_end_offset: int | None = None
@@ -60,12 +62,14 @@ class ReviewRequestsRepository:
                 source_end_offset = row["last_completed_offset"]
         self._conn.execute(
             "INSERT OR IGNORE INTO session_review_requests"
-            " (trowel_session_id, runtime, requested_at, native_session_id,"
-            " source_start_offset, source_end_offset) VALUES (?, ?, ?, ?, ?, ?)",
+            " (trowel_session_id, runtime, requested_at, not_before,"
+            " native_session_id, source_start_offset, source_end_offset)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 trowel_session_id,
                 runtime,
                 stamp,
+                eligible_stamp,
                 native_session_id,
                 source_start_offset,
                 source_end_offset,
@@ -81,12 +85,26 @@ class ReviewRequestsRepository:
         ).fetchone()
         return row_to_review_request(row) if row is not None else None
 
-    def list_pending(self) -> list[ReviewRequest]:
-        """按首次入队时间返回全部尚未完成的即时 review 请求。"""
-        rows = self._conn.execute(
-            "SELECT * FROM session_review_requests"
-            " ORDER BY requested_at, trowel_session_id"
-        ).fetchall()
+    def list_pending(self, *, eligible_at: str | None = None) -> list[ReviewRequest]:
+        """按首次入队时间返回全部或已经到期的 review 请求。
+
+        Args:
+            eligible_at: 只返回 `not_before` 不晚于该本地 ISO 时间的请求；None
+                表示读取整个持久队列。
+        """
+
+        if eligible_at is None:
+            rows = self._conn.execute(
+                "SELECT * FROM session_review_requests"
+                " ORDER BY requested_at, trowel_session_id"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM session_review_requests"
+                " WHERE not_before = '' OR not_before <= ?"
+                " ORDER BY requested_at, trowel_session_id",
+                (eligible_at,),
+            ).fetchall()
         return [row_to_review_request(row) for row in rows]
 
     def complete(self, trowel_session_id: str) -> bool:

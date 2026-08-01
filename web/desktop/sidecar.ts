@@ -22,6 +22,7 @@ export interface SidecarExit {
 export interface SidecarProcess {
   readonly pid: number | undefined;
   readonly exited: Promise<SidecarExit>;
+  readonly signal: (signal: "SIGTERM" | "SIGKILL") => void;
   readonly stop: () => void;
 }
 
@@ -40,6 +41,10 @@ export interface SidecarStartDependencies {
     credential: string,
   ) => Promise<SidecarReadiness>;
   readonly delay: (milliseconds: number) => Promise<void>;
+  readonly cleanup: (
+    sidecar: StartedSidecar,
+    options: SidecarStartOptions,
+  ) => Promise<void>;
 }
 
 export interface SidecarStartOptions {
@@ -55,9 +60,12 @@ export interface SidecarStartOptions {
   readonly pollIntervalMs?: number;
 }
 
-export interface RunningSidecar {
+export interface StartedSidecar {
   readonly process: SidecarProcess;
   readonly transport: DesktopTransportConfig;
+}
+
+export interface RunningSidecar extends StartedSidecar {
   readonly readiness: SidecarReadiness;
 }
 
@@ -88,6 +96,7 @@ const DEFAULT_DEPENDENCIES: SidecarStartDependencies = {
   readReadiness,
   delay: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  cleanup: cleanupStartedSidecar,
 };
 
 export async function launchSidecar(
@@ -138,9 +147,28 @@ export async function launchSidecar(
       transport: { baseUrl, credential: options.credential },
     };
   } catch (error) {
-    process.stop();
+    try {
+      await dependencies.cleanup(
+        {
+          process,
+          transport: { baseUrl, credential: options.credential },
+        },
+        options,
+      );
+    } catch {
+      process.stop();
+    }
     throw error;
   }
+}
+
+async function cleanupStartedSidecar(
+  sidecar: StartedSidecar,
+  options: SidecarStartOptions,
+): Promise<void> {
+  /** readiness 失败后仍复用完整退出链，避免丢失已启动的独立进程组。 */
+  const { shutdownSidecar } = await import("./shutdown");
+  await shutdownSidecar(sidecar, options);
 }
 
 async function waitForReadiness(
@@ -253,6 +281,7 @@ function spawnSidecar(spec: SidecarSpawnSpec): SidecarProcess {
     cwd: spec.cwd,
     env: spec.environment,
     stdio: "ignore",
+    detached: globalThis.process.platform !== "win32",
   });
   const exited = new Promise<SidecarExit>((resolve) => {
     child.once("error", (error) => {
@@ -265,10 +294,34 @@ function spawnSidecar(spec: SidecarSpawnSpec): SidecarProcess {
   return {
     pid: child.pid,
     exited,
+    signal: (signal) => {
+      signalSidecarProcessGroup(child.pid, signal, () => child.kill(signal));
+    },
     stop: () => {
-      if (!child.killed) child.kill("SIGTERM");
+      if (!child.killed) {
+        signalSidecarProcessGroup(child.pid, "SIGTERM", () =>
+          child.kill("SIGTERM"),
+        );
+      }
     },
   };
+}
+
+function signalSidecarProcessGroup(
+  pid: number | undefined,
+  signal: "SIGTERM" | "SIGKILL",
+  fallback: () => void,
+): void {
+  /** detached 子进程在 POSIX 上以自身 PID 作为进程组 ID。 */
+  try {
+    if (globalThis.process.platform !== "win32" && pid) {
+      globalThis.process.kill(-pid, signal);
+      return;
+    }
+    fallback();
+  } catch (error) {
+    if (errorCode(error) !== "ESRCH") throw error;
+  }
 }
 
 async function readReadiness(

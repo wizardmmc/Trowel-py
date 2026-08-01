@@ -3,7 +3,13 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 vi.mock("../agent/transport/api", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
-  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  deleteAgentSession: vi.fn().mockResolvedValue({
+    closed: true,
+    status: "closed",
+    remaining_resource_count: 0,
+    remaining_resource_kinds: [],
+    error: null,
+  }),
   renameAgentSessionTitle: vi.fn().mockImplementation((_sid, title) =>
     Promise.resolve({ display_title: title, title_source: "manual" }),
   ),

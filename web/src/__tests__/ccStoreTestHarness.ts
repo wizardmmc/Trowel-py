@@ -6,7 +6,13 @@ import type { AgentEvent } from "../agent/transport";
 vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn(),
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
-  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  deleteAgentSession: vi.fn().mockResolvedValue({
+    closed: true,
+    status: "closed",
+    remaining_resource_count: 0,
+    remaining_resource_kinds: [],
+    error: null,
+  }),
   listActiveAgentSessions: vi.fn(),
   listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listAgentRequests: vi.fn().mockResolvedValue([]),

@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS session_review_requests (
     trowel_session_id  TEXT PRIMARY KEY,
     runtime            TEXT NOT NULL,
     requested_at       TEXT NOT NULL,
+    not_before         TEXT NOT NULL,
     native_session_id  TEXT NOT NULL DEFAULT '',
     source_start_offset INTEGER,
     source_end_offset   INTEGER
@@ -95,6 +96,10 @@ _BINDING_ADD_COLUMN_SQL = {
 }
 
 _REVIEW_REQUEST_ADD_COLUMN_SQL = {
+    "not_before": (
+        "ALTER TABLE session_review_requests"
+        " ADD COLUMN not_before TEXT NOT NULL DEFAULT ''"
+    ),
     "native_session_id": (
         "ALTER TABLE session_review_requests"
         " ADD COLUMN native_session_id TEXT NOT NULL DEFAULT ''"
@@ -261,6 +266,7 @@ def row_to_review_request(row: sqlite3.Row) -> ReviewRequest:
         trowel_session_id=row["trowel_session_id"],
         runtime=row["runtime"],
         requested_at=row["requested_at"],
+        not_before=row["not_before"] or row["requested_at"],
         native_session_id=row["native_session_id"] or "",
         source_start_offset=row["source_start_offset"],
         source_end_offset=row["source_end_offset"],

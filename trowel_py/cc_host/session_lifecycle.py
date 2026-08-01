@@ -13,6 +13,8 @@ from typing import Any, cast
 from trowel_py.agent_host.store import next_session_display_name
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.schemas import CreateSessionRequest
+from trowel_py.resource_lifecycle.processes import ProcessController
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 
 class CcWorkdirNotFoundError(Exception):
@@ -63,8 +65,25 @@ def open_session(
     max_delegate_connections: int,
     host_factory: Any,
     display_name: str | None = None,
+    process_controller: ProcessController | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> tuple[str, CCHost, str]:
-    """按会话类别检查连接池后，创建主机并写入调用方状态。"""
+    """按会话类别检查连接池后，创建主机并写入调用方状态。
+
+    Args:
+        req: 会话启动配置。
+        registry: 接收新 host 的实时会话表。
+        proxy_base_url: Claude Code 使用的本地代理地址。
+        settings_path: 读取模型服务商环境变量的配置路径。
+        workdir_index: 工作目录到会话 ID 的索引。
+        session_names: 会话 ID 到临时显示名称的索引。
+        max_connections: 用户会话连接上限。
+        max_delegate_connections: 委派会话连接上限。
+        host_factory: 构造单会话 host 的工厂。
+        display_name: 上层已经分配的显示名称。
+        process_controller: 核验并终止独立进程组的实现。
+        resource_registry: 登记会话临时资源的应用账本。
+    """
 
     if not Path(req.workdir).is_dir():
         raise CcWorkdirNotFoundError("workdir does not exist")
@@ -125,6 +144,8 @@ def open_session(
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            process_controller=process_controller,
+            resource_registry=resource_registry,
         )
     except BaseException:
         Path(mcp_config).unlink(missing_ok=True)

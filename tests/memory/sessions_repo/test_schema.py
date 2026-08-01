@@ -81,6 +81,7 @@ def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
         "trowel_session_id",
         "runtime",
         "requested_at",
+        "not_before",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",
@@ -110,6 +111,7 @@ def test_old_review_queue_migrates_frozen_source_columns(tmp_path) -> None:
     request = repo.review_requests.find("legacy-close")
 
     assert {
+        "not_before",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",

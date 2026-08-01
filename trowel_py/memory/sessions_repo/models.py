@@ -49,6 +49,7 @@ class ReviewRequest:
         trowel_session_id: 已关闭的 Trowel 用户会话 ID，同时作为幂等键。
         runtime: 会话使用的运行工具，值为 ``claude_code`` 或 ``codex``。
         requested_at: 关闭流程持久化该请求的本地 ISO 时间，用于稳定排序。
+        not_before: worker 最早可以领取请求的本地 ISO 时间。
         native_session_id: CC 请求关闭时绑定的原生会话 ID；Codex 为空。
         source_start_offset: CC 会话首次绑定时的完成水位；Codex 为空。
         source_end_offset: CC 会话关闭时的完成水位；Codex 为空。
@@ -57,6 +58,7 @@ class ReviewRequest:
     trowel_session_id: str
     runtime: str
     requested_at: str
+    not_before: str
     native_session_id: str = ""
     source_start_offset: int | None = None
     source_end_offset: int | None = None

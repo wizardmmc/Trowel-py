@@ -57,6 +57,25 @@ def test_to_thread_config_resume_stamps_real_thread_id() -> None:
     assert env["TROWEL_HOST_KIND"] == "codex"
 
 
+def test_to_thread_config_carries_private_process_registration_env() -> None:
+    """MCP 启动配置应携带 sidecar 签发的 owner 登记环境。"""
+
+    cfg = build_default_trowel_memory_mcp(
+        trowel_session_id="sid",
+        memory_root="/tmp/mem",
+        registration_env={
+            "TROWEL_RESOURCE_REGISTRATION_URL": "http://127.0.0.1/register",
+            "TROWEL_RESOURCE_REGISTRATION_CREDENTIAL": "private-credential",
+            "TROWEL_RESOURCE_REGISTRATION_TOKEN": "private-token",
+        },
+    )
+
+    env = cfg.to_thread_config()[TROWEL_NOTE_SEARCH_SERVER_NAME]["env"]
+
+    assert env["TROWEL_RESOURCE_REGISTRATION_TOKEN"] == "private-token"
+    assert env["TROWEL_SESSION_ID"] == "sid"
+
+
 def test_build_default_trowel_memory_mcp_uses_current_interpreter() -> None:
     cfg = build_default_trowel_memory_mcp(
         trowel_session_id="sid", memory_root="/tmp/mem"

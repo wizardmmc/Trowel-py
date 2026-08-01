@@ -512,21 +512,30 @@ async def delete_session(
 ) -> dict:
     """移除指定会话，使 Trowel 不再显示或管理它。
 
-    移除 Claude Code 会话时会关闭对应进程；移除 Codex 会话时只停止 Trowel 的
-    管理和事件接收，不会主动中断已经开始的 Codex 任务。两种工具各自保存的历史
-    会话都不会被删除。重复请求仍返回成功。
+    两种 runtime 都会先收敛活动 turn 和会话临时资源；原生历史不会删除。资源未能
+    核验归零时保留 binding，并返回 ``needs_reconcile`` 供调用方重试。
 
     Args:
         session_id: 要移除的会话 ID。
         hub: 负责清理会话状态的 Session Hub。
 
     Returns:
-        统一响应。会话存在并被移除时 data.closed 为 True；会话原本就不存在时
-        为 False。
+        统一响应。data.status 区分 closed、needs_reconcile 和 not_found，并携带
+        尚未关闭的资源数量、类型和去敏错误；closed 字段保留旧调用方兼容。
     """
 
-    closed = await hub.delete(session_id)
-    return {"success": True, "data": {"closed": closed}, "error": None}
+    result = await hub.close_result(session_id)
+    return {
+        "success": True,
+        "data": {
+            "closed": result.status == "closed",
+            "status": result.status,
+            "remaining_resource_count": result.remaining_resource_count,
+            "remaining_resource_kinds": list(result.remaining_resource_kinds),
+            "error": result.error,
+        },
+        "error": None,
+    }
 
 
 @router.post("/sessions/{session_id}/interrupt")

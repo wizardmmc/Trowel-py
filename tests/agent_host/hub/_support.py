@@ -58,6 +58,7 @@ class FakeCodexManager:
         self.sessions: dict[str, Any] = {}
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.close_calls: list[tuple[str, bool]] = []
         self.answered_requests: list[tuple[str, str, str]] = []
         self.threads: list[dict[str, Any]] = []
         self.thread_reads: dict[str, dict[str, Any]] = {}
@@ -151,6 +152,18 @@ class FakeCodexManager:
 
     async def interrupt(self, session: Any) -> None:
         self.interrupted.append(session.session_id)
+
+    async def close_session(
+        self,
+        session: Any,
+        *,
+        preserve_history: bool,
+        terminal_timeout_s: float = 2.0,
+    ) -> None:
+        """记录统一关闭是否为用户 thread 保留历史可见性。"""
+
+        del terminal_timeout_s
+        self.close_calls.append((session.session_id, preserve_history))
 
     async def list_models(self) -> list[dict[str, Any]]:
 
@@ -293,8 +306,10 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         proxy_base_url: str | None = None,
         settings_path: str | Path | None = None,
         display_name: str | None = None,
+        process_controller: Any | None = None,
+        resource_registry: Any | None = None,
     ) -> OpenedCcSession:
-        del proxy_base_url, settings_path
+        del proxy_base_url, settings_path, process_controller, resource_registry
         sid = "cc-" + uuid.uuid4().hex[:8]
         host = FakeCcHost(
             req.workdir,

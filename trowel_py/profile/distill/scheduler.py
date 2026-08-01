@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 
 from trowel_py.memory import paths
 from trowel_py.memory.scheduling import seconds_until
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ class ProfileDistillScheduler:
         dispatch_fn: DispatchFn | None = None,
         now_fn: NowFn | None = None,
         sleep_fn: SleepFn | None = None,
+        resource_registry: ResourceRegistry | None = None,
     ) -> None:
         """配置调度时间和运行时参数。
 
@@ -147,6 +149,7 @@ class ProfileDistillScheduler:
             now_fn: 返回调度所用本地时间；带时区值按显示的时钟字段使用，
                 不转换时区。
             sleep_fn: 每日循环使用的异步等待函数。
+            resource_registry: 内部提炼 LLM 进程使用的应用资源账本。
         """
 
         self._config = config
@@ -156,6 +159,7 @@ class ProfileDistillScheduler:
         self._dispatch: DispatchFn = dispatch_fn or _default_dispatch
         self._now: NowFn = now_fn or datetime.now
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
+        self._resource_registry = resource_registry
         self._tasks: list[asyncio.Task[None]] = []
         self._started = False
 
@@ -223,6 +227,8 @@ class ProfileDistillScheduler:
             "proxy_base_url": self._proxy_base_url,
             "settings_path": str(self._settings_path) if self._settings_path else None,
         }
+        if self._resource_registry is not None:
+            event["_resource_registry"] = self._resource_registry
         try:
             await asyncio.to_thread(self._dispatch, event)
         except Exception:

@@ -212,7 +212,7 @@
         "type": "table",
         "name": "session_review_requests",
         "table": "session_review_requests",
-        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER )"
+        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, not_before TEXT NOT NULL, native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER )"
       },
       {
         "type": "table",
@@ -2464,7 +2464,7 @@
         },
         "delete": {
           "summary": "Delete Session",
-          "description": "移除指定会话，使 Trowel 不再显示或管理它。\n\n移除 Claude Code 会话时会关闭对应进程；移除 Codex 会话时只停止 Trowel 的\n管理和事件接收，不会主动中断已经开始的 Codex 任务。两种工具各自保存的历史\n会话都不会被删除。重复请求仍返回成功。\n\nArgs:\n    session_id: 要移除的会话 ID。\n    hub: 负责清理会话状态的 Session Hub。\n\nReturns:\n    统一响应。会话存在并被移除时 data.closed 为 True；会话原本就不存在时\n    为 False。",
+          "description": "移除指定会话，使 Trowel 不再显示或管理它。\n\n两种 runtime 都会先收敛活动 turn 和会话临时资源；原生历史不会删除。资源未能\n核验归零时保留 binding，并返回 ``needs_reconcile`` 供调用方重试。\n\nArgs:\n    session_id: 要移除的会话 ID。\n    hub: 负责清理会话状态的 Session Hub。\n\nReturns:\n    统一响应。data.status 区分 closed、needs_reconcile 和 not_found，并携带\n    尚未关闭的资源数量、类型和去敏错误；closed 字段保留旧调用方兼容。",
           "operationId": "delete_session_api_agent_sessions__session_id__delete",
           "parameters": [
             {

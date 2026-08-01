@@ -30,6 +30,8 @@ from trowel_py.codex_host.recorder import RawRecorder
 from trowel_py.codex_host.secrets import redact_message, redact_stderr
 from trowel_py.codex_host.transport_state import _TransportState
 from trowel_py.codex_host.version import CodexVersion, check_version, read_codex_version
+from trowel_py.resource_lifecycle.models import ProcessIdentity
+from trowel_py.resource_lifecycle.processes import ProcessController
 
 _log = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ class SubprocessLike(Protocol):
     stderr: Any
 
     returncode: int | None
+    pid: int
 
     def terminate(self) -> None:
         """请求子进程终止。"""
@@ -99,6 +102,7 @@ class AppServerClient:
         close_grace_s: float = _CLOSE_GRACE_S,
         close_term_s: float = _CLOSE_TERM_S,
         version_reader: Callable[[], Awaitable[CodexVersion]] | None = None,
+        process_controller: ProcessController | None = None,
     ) -> None:
         """保存进程依赖与关闭策略，初始化一条尚未启动的连接。
 
@@ -114,6 +118,8 @@ class AppServerClient:
             close_grace_s: 关闭 stdin 后等待进程自行退出的秒数。
             close_term_s: 发送 TERM 后等待进程退出、再升级 KILL 的秒数。
             version_reader: 替代 ``codex --version`` 的无参数异步版本读取器。
+            process_controller: 核验并终止 app-server 独立进程组的实现；测试替身
+                或旧调用方可省略，此时只操作根进程。
         """
 
         self._codex_bin = codex_bin
@@ -123,6 +129,8 @@ class AppServerClient:
         self._spawner = spawner or self._default_spawner
         self._env = env
         self._version_reader = version_reader
+        self._process_controller = process_controller
+        self._process_identity: ProcessIdentity | None = None
         self._close_grace_s = close_grace_s
         self._close_term_s = close_term_s
         self._process: SubprocessLike | None = None
@@ -179,6 +187,14 @@ class AppServerClient:
         return self._last_exit_code
 
     @property
+    def pid(self) -> int | None:
+        """返回 app-server 根进程 PID；未启动或测试替身不提供时为空。"""
+
+        process = self._process
+        pid = getattr(process, "pid", None) if process is not None else None
+        return pid if isinstance(pid, int) and pid > 0 else None
+
+    @property
     def stderr_tail(self) -> str:
         """返回已在写入时脱敏的 stderr 尾部。"""
 
@@ -212,11 +228,22 @@ class AppServerClient:
             "stderr": asyncio.subprocess.PIPE,
             "limit": _STDOUT_LIMIT_BYTES,
         }
+        if os.name == "posix":
+            # app-server 及其 MCP 后代必须与 sidecar 分属不同进程组，才能按连接收敛。
+            kwargs["start_new_session"] = True
         if self._env is not None:
             # 保留父环境中未显式覆盖的键；同名键以调用方传入值为准。
             kwargs["env"] = {**os.environ, **self._env}
         args = [self._codex_bin, *APP_SERVER_ARGS]
         self._process = await self._spawner(args, kwargs)
+        if self._process_controller is not None and self.pid is not None:
+            identity = self._process_controller.inspect(self.pid)
+            if identity is None:
+                self._process.kill()
+                await self._process.wait()
+                self._process = None
+                raise RuntimeError("cannot identify Codex app-server process group")
+            self._process_identity = identity
         self._reader_task = asyncio.create_task(self._read_loop(), name="codex-reader")
         self._stderr_task = asyncio.create_task(
             self._drain_stderr(), name="codex-stderr"
@@ -261,33 +288,73 @@ class AppServerClient:
             except Exception:  # noqa: BLE001 — 关闭 stdin 仅作尽力清理
                 _log.debug("stdin close raised", exc_info=True)
         if proc is not None:
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=grace_s)
-            except asyncio.TimeoutError:
+            if not await self._wait_process_tree(proc, grace_s):
                 await self._escalate(proc)
         await self._join_tasks()
         if self._recorder is not None:
             self._recorder.close()
         self._process = None
+        self._process_identity = None
 
     async def _escalate(self, proc: SubprocessLike) -> None:
         """进程未自行退出时，依次尝试终止和强制结束。"""
 
         try:
-            proc.terminate()
+            self._signal_process_tree(proc, "SIGTERM")
         except (ProcessLookupError, OSError):
             return
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=self._close_term_s)
-        except asyncio.TimeoutError:
+        if not await self._wait_process_tree(proc, self._close_term_s):
             try:
-                proc.kill()
+                self._signal_process_tree(proc, "SIGKILL")
             except (ProcessLookupError, OSError):
                 return
+            if not await self._wait_process_tree(proc, self._close_term_s):
+                raise RuntimeError("Codex app-server process group survived SIGKILL")
+
+    def _signal_process_tree(self, proc: SubprocessLike, signal_name: str) -> None:
+        """优先向启动身份仍匹配的进程组发信号，否则只操作根进程。"""
+
+        controller = self._process_controller
+        identity = self._process_identity
+        if controller is not None and identity is not None:
+            current = controller.inspect(identity.pid)
+            if current is not None and current != identity:
+                raise RuntimeError("Codex app-server process identity changed")
+            if current is None and not controller.group_alive(identity.process_group):
+                return
+            controller.signal_group(identity.process_group, signal_name)
+            return
+        if signal_name == "SIGTERM":
+            proc.terminate()
+        else:
+            proc.kill()
+
+    async def _wait_process_tree(
+        self,
+        proc: SubprocessLike,
+        timeout_s: float,
+    ) -> bool:
+        """有界等待根进程和已登记进程组同时退出。"""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(timeout_s, 0.0)
+        if proc.returncode is None and timeout_s > 0:
             try:
-                await proc.wait()
-            except Exception:  # noqa: BLE001
-                pass
+                await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                return False
+        if proc.returncode is None:
+            return False
+        controller = self._process_controller
+        identity = self._process_identity
+        if controller is None or identity is None:
+            return True
+        while controller.group_alive(identity.process_group):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(0.05, remaining))
+        return True
 
     async def _join_tasks(self) -> None:
         """取消并等待 reader、stderr 与 server-request handler task。

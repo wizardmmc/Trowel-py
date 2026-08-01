@@ -12,11 +12,57 @@ from trowel_py.profile.distill.gate import (
     parse_and_gate_draft,
 )
 from trowel_py.profile.distill.models import EvidenceValidator
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 HostFactory = Callable[[str, Path], Any]
 
 _DISTILL_WORKDIR_NAME = "distill-work"
 _DRAFT_FILE = "suggestions-draft.json"
+
+
+def resource_aware_host_factory(
+    registry: ResourceRegistry,
+    *,
+    proxy_base_url: str,
+    settings_path: Path | str | None,
+) -> HostFactory:
+    """创建把 Profile 提炼 CCHost 登记到应用资源账本的工厂。
+
+    Args:
+        registry: 当前应用实例的资源账本和进程控制器。
+        proxy_base_url: 内部 CCHost 访问模型服务时使用的本地反代地址。
+        settings_path: 重新注入 provider 环境的 Claude Code settings 路径；不需要
+            覆盖时为 None。
+
+    Returns:
+        为每个 Profile 来源创建隔离 CCHost 的函数。
+    """
+
+    def create_host(source_id: str, workdir: Path) -> Any:
+        """为一个 Profile 来源创建带资源 owner 的内部 CCHost。
+
+        Args:
+            source_id: 当前提炼来源 ID；只用于满足统一 host factory 契约，不进入
+                子进程参数。
+            workdir: 本次 Profile 提炼隔离工作目录。
+        """
+
+        del source_id
+        from trowel_py.cc_host.service import CCHost
+        from trowel_py.memory.mcp_config import write_mcp_config
+
+        return CCHost(
+            session_id=uuid.uuid4().hex,
+            workdir=str(workdir),
+            session_kind="distill",
+            proxy_base_url=proxy_base_url,
+            settings_path=settings_path,
+            mcp_config=str(write_mcp_config()),
+            process_controller=registry.process_controller,
+            resource_registry=registry,
+        )
+
+    return create_host
 
 
 def _ensure_distill_workdir(date_str: str, memory_root: Path) -> Path:

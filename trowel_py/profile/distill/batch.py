@@ -34,6 +34,7 @@ from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,
 )
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,20 @@ async def run_daily_distill(
     settings_path: Path | str | None = None,
     host_factory: HostFactory | None = None,
     date_str: str | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> None:
     """串行提炼有新内容的 Claude 会话和 Codex turns。"""
     root = memory_root if memory_root is not None else resolve_memory_root()
     if date_str is None:
         date_str = datetime.now().date().isoformat()
+    if host_factory is None and resource_registry is not None:
+        from trowel_py.profile.distill.agent import resource_aware_host_factory
+
+        host_factory = resource_aware_host_factory(
+            resource_registry,
+            proxy_base_url=proxy_base_url,
+            settings_path=settings_path,
+        )
     try:
         with _distill_lock(root):
             await _run_daily_distill_locked(
@@ -189,11 +199,15 @@ def run_daily_distill_sync(event: Any = None) -> None:
     date_str = None
     proxy_base_url = ""
     settings_path = None
+    resource_registry = None
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
         proxy_base_url = event.get("proxy_base_url", "")
         settings_path = event.get("settings_path")
+        candidate_registry = event.get("_resource_registry")
+        if isinstance(candidate_registry, ResourceRegistry):
+            resource_registry = candidate_registry
     root_path = Path(root) if root else None
     asyncio.run(
         run_daily_distill(
@@ -201,5 +215,6 @@ def run_daily_distill_sync(event: Any = None) -> None:
             proxy_base_url,
             settings_path=settings_path,
             date_str=date_str,
+            resource_registry=resource_registry,
         )
     )

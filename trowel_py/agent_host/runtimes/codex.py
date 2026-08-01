@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping
 
-from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.codex_event_mapping import map_codex_event
 from trowel_py.agent_host.events import AgentEvent
-from trowel_py.agent_host.runtimes.base import RuntimeLiveState
+from trowel_py.agent_host.runtimes.base import RuntimeCloseResult, RuntimeLiveState
 from trowel_py.codex_host.events import CodexEvent
+from trowel_py.codex_host.errors import CodexHostError
 
 _CODEX_RUNTIME: Literal["codex"] = "codex"
 
@@ -47,11 +48,34 @@ class CodexRuntimeAdapter:
             has_in_flight_turn=bool(session.has_in_flight_turn),
         )
 
-    async def close(self, session_id: str) -> None:
-        """从 manager 注销会话，不删除原生 Codex thread。"""
+    async def close(self, binding: SessionBinding) -> RuntimeCloseResult:
+        """先收敛 Codex thread 资源，再从 manager 注销本地路由。
 
-        if self._manager is not None:
-            self._manager.unregister(session_id)
+        用户持久 thread 在 archive 后恢复历史可见性；委派和其他内部 thread 保持
+        archived。任一原生操作失败都会保留 manager 登记和持久 binding 供重试。
+
+        Args:
+            binding: 提供 session 类别和 Trowel 会话 ID 的持久记录。
+        """
+
+        if self._manager is None:
+            return RuntimeCloseResult.closed()
+        session = self._manager.get_session(binding.session_id)
+        if session is None:
+            return RuntimeCloseResult.closed()
+        try:
+            await self._manager.close_session(
+                session,
+                preserve_history=binding.session_kind == "user",
+            )
+        except (CodexHostError, RuntimeError) as exc:
+            return RuntimeCloseResult.needs_reconcile(
+                remaining_resource_count=1,
+                remaining_resource_kinds=("codex_session_close",),
+                error=f"Codex close needs reconciliation: {type(exc).__name__}",
+            )
+        self._manager.unregister(binding.session_id)
+        return RuntimeCloseResult.closed()
 
     def abort_create(self, session_id: str) -> None:
         """撤销尚未提交 binding 的 Codex manager 登记。"""

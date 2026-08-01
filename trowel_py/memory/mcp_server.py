@@ -408,6 +408,9 @@ async def main() -> None:
     选项和实验能力的初始化参数，然后运行到 stdio 会话结束。启动、传输和服务
     异常直接传播。
     """
+    from trowel_py.resource_lifecycle.reporting import report_current_process
+
+    await report_current_process()
     root_env = os.environ.get("MEMORY_ROOT", "").strip()
     if root_env:
         root = Path(root_env).expanduser()

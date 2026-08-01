@@ -174,8 +174,20 @@ class SessionCapacityGate:
             if self._close_reservations.get(session_id) is token:
                 self._close_reservations.pop(session_id, None)
 
-    def complete_close(self, session_id: str, token: object) -> None:
-        """在关闭标记仍属于调用方时删除 binding，并最终释放标记。"""
+    def complete_close(
+        self,
+        session_id: str,
+        token: object,
+        *,
+        delete_binding: bool = True,
+    ) -> None:
+        """核对关闭令牌，按需删除 binding，并最终释放标记。
+
+        Args:
+            session_id: 正在关闭的 Trowel 会话 ID。
+            token: `begin_close` 返回的本次关闭令牌。
+            delete_binding: 用户关闭时删除 binding；应用退出时保留以供恢复。
+        """
 
         with self._lock:
             if self._close_reservations.get(session_id) is not token:
@@ -183,7 +195,8 @@ class SessionCapacityGate:
                     f"session {session_id} close reservation is no longer valid"
                 )
             try:
-                self._store.delete(session_id)
+                if delete_binding:
+                    self._store.delete(session_id)
             finally:
                 self._close_reservations.pop(session_id, None)
 

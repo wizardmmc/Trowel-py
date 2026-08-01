@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.events import AgentEvent
-from trowel_py.agent_host.runtimes.base import RuntimeLiveState
+from trowel_py.agent_host.runtimes.base import RuntimeCloseResult, RuntimeLiveState
 
 CcCloser = Callable[[str, dict[str, Any]], Awaitable[None]]
 CcCreateAborter = Callable[[str, dict[str, Any]], None]
@@ -71,10 +71,22 @@ class ClaudeCodeRuntimeAdapter:
             has_in_flight_turn=bool(host.has_in_flight_turn),
         )
 
-    async def close(self, session_id: str) -> None:
-        """关闭 Claude Code 子进程并从共享 registry 移除会话。"""
+    async def close(self, binding: SessionBinding) -> RuntimeCloseResult:
+        """关闭 Claude Code 进程组，并在成功后移除实时会话登记。
 
-        await self._closer(session_id, self._registry)
+        Args:
+            binding: 提供 Trowel 会话 ID 和已冻结 runtime 语义的持久记录。
+        """
+
+        try:
+            await self._closer(binding.session_id, self._registry)
+        except RuntimeError as exc:
+            return RuntimeCloseResult.needs_reconcile(
+                remaining_resource_count=1,
+                remaining_resource_kinds=("claude_code_process_group",),
+                error=f"Claude Code close needs reconciliation: {type(exc).__name__}",
+            )
+        return RuntimeCloseResult.closed()
 
     def abort_create(self, session_id: str) -> None:
         """撤销尚未提交 binding、也尚未启动子进程的 Claude Code 会话。"""
