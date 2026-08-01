@@ -9,6 +9,10 @@ export function isDiffTool(name: string): boolean {
   return isEditTool(name) || name === "Write" || name === "apply_patch";
 }
 
+export function isCommandTool(name: string): boolean {
+  return name === "Bash" || name === "command";
+}
+
 const APPLY_PATCH_VERB: Readonly<Record<string, string>> = {
   add: "Create",
   modify: "Update",

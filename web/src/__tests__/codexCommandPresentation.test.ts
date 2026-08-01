@@ -105,4 +105,91 @@ describe("Codex command presentation — native commandActions only", () => {
       "SKILL.md · lines 321–700",
     );
   });
+
+  it("uses the native List command when Codex only supplies a basename", () => {
+    const item = command({
+      command: "/bin/zsh -lc 'rg --files docs/foundation'",
+      cwd: "/repo",
+      command_actions: [
+        {
+          type: "listFiles",
+          command: "rg --files docs/foundation",
+          path: "foundation",
+        },
+      ],
+    });
+
+    expect(getCodexCommandPresentation(item, "/repo").rows[0]).toEqual({
+      verb: "List",
+      detail: "rg --files docs/foundation",
+    });
+  });
+
+  it.each([
+    [
+      "read",
+      {
+        type: "read",
+        command: "cat docs/slices/activate/README.md",
+        path: "README.md",
+      },
+      "Read",
+      "cat docs/slices/activate/README.md",
+    ],
+    [
+      "search",
+      {
+        type: "search",
+        command: "rg Explore docs/slices/activate/README.md",
+        query: "Explore",
+        path: "README.md",
+      },
+      "Search",
+      "rg Explore docs/slices/activate/README.md",
+    ],
+  ])(
+    "uses the native %s command when Codex only supplies a basename",
+    (_type, action, verb, detail) => {
+      const item = command({
+        command: "inspect",
+        command_actions: [action],
+      });
+
+      expect(getCodexCommandPresentation(item, "/repo").rows[0]).toEqual({
+        verb,
+        detail,
+      });
+    },
+  );
+
+  it("normalizes List and Search paths against the active workdir", () => {
+    const item = command({
+      command: "inspect",
+      command_actions: [
+        {
+          type: "listFiles",
+          command: "find /repo/docs/foundation",
+          path: "/repo/docs/foundation",
+        },
+        {
+          type: "search",
+          command: "rg TODO /repo/web/src",
+          query: "TODO",
+          path: "/repo/web/src",
+        },
+        {
+          type: "search",
+          command: "rg TODO /opt/shared",
+          query: "TODO",
+          path: "/opt/shared",
+        },
+      ],
+    });
+
+    expect(getCodexCommandPresentation(item, "/repo").rows).toEqual([
+      { verb: "List", detail: "docs/foundation" },
+      { verb: "Search", detail: "TODO in web/src" },
+      { verb: "Search", detail: "TODO in /opt/shared" },
+    ]);
+  });
 });

@@ -336,15 +336,21 @@ describe("EventTimeline", () => {
       { kind: "tool", toolUseId: "3", toolName: "command", input: { command: "rg x", command_actions: [{ type: "search", command: "rg x", query: "x", path: "." }] }, status: "running", elapsedSeconds: null, result: null, childTools: [] },
     ];
     const { container } = render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
-    expect(container.querySelectorAll(".cc-exploration")).toHaveLength(1);
-    expect(screen.getByText("Exploring · 3 calls")).toBeInTheDocument();
+    const group = container.querySelector(".cc-exploration");
+    expect(group).toHaveClass("cc-subagent");
+    expect(group).toHaveAttribute("data-status", "running");
+    expect(screen.getByText("Explore")).toBeInTheDocument();
+    expect(screen.getByText("Read 1 · Search 1 · List 1")).toBeInTheDocument();
+    expect(screen.getByText("3 calls · 3 actions")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("进行中")).not.toHaveLength(0);
     expect(screen.getByText("List")).toBeInTheDocument();
     expect(screen.getByText("Read")).toBeInTheDocument();
     expect(screen.getByText("Search")).toBeInTheDocument();
-    expect(container.querySelectorAll(".cc-exploration .cc-tool__summary")).toHaveLength(3);
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(3);
+    expect(container.querySelector(".cc-tool--exploration")).toBeNull();
   });
 
-  it("renders one call status above three status-free Read actions", () => {
+  it("renders one call status above three completed Read actions", () => {
     const items: TurnItem[] = [
       {
         kind: "tool",
@@ -368,16 +374,81 @@ describe("EventTimeline", () => {
     const { container } = render(
       <EventTimeline items={items} runtime="codex" workdir="/repo" />,
     );
-    expect(screen.getByText("Explored · 1 call")).toBeInTheDocument();
-    expect(screen.getByText("3 actions")).toBeInTheDocument();
-    expect(screen.getByText("Read 3 files")).toBeInTheDocument();
-    expect(container.querySelectorAll(".cc-exploration__items .cc-tool__codex-dot")).toHaveLength(1);
-    expect(container.querySelectorAll(".cc-tool__action-row")).toHaveLength(3);
-    expect(container.querySelectorAll(".cc-tool__action-row .cc-tool__codex-dot")).toHaveLength(0);
+    expect(screen.getByText("Read 3")).toBeInTheDocument();
+    expect(screen.getByText("1 call · 3 actions")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(1);
+    expect(screen.queryByText("a.ts")).toBeNull();
+    expect(screen.queryByText("b.ts")).toBeNull();
+    expect(screen.getByText("c.ts")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "+2 more" }));
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(3);
     expect(container.querySelector(".cc-tool__bash-cmd")).toBeNull();
     expect(screen.getByText("a.ts")).toBeInTheDocument();
     expect(screen.getByText("b.ts")).toBeInTheDocument();
-    expect(screen.getByText("c.ts")).toBeInTheDocument();
+    expect(screen.queryByText("Read 3 files")).toBeNull();
+    expect(screen.getAllByLabelText("完成")).toHaveLength(3);
+  });
+
+  it("does not expose a collapse control when every completed action is visible", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "read-one",
+        toolName: "command",
+        input: {
+          command: "cat /repo/README.md",
+          command_actions: [
+            {
+              type: "read",
+              command: "cat /repo/README.md",
+              path: "/repo/README.md",
+            },
+          ],
+        },
+        status: "done",
+        elapsedSeconds: null,
+        result: null,
+        childTools: [],
+      },
+    ];
+
+    render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByLabelText("Explore · 1 call · 1 action · Done"))
+      .not.toHaveAttribute("aria-expanded");
+  });
+
+  it("expands a completed Explore group from its header with the keyboard", () => {
+    const items: TurnItem[] = Array.from({ length: 2 }, (_, index) => ({
+      kind: "tool",
+      toolUseId: `read-${index}`,
+      toolName: "command",
+      input: {
+        command: `cat /repo/file-${index}.ts`,
+        command_actions: [{
+          type: "read",
+          command: `cat /repo/file-${index}.ts`,
+          path: `/repo/file-${index}.ts`,
+        }],
+      },
+      status: "done",
+      elapsedSeconds: null,
+      result: null,
+      childTools: [],
+    } satisfies TurnItem));
+
+    const { container } = render(
+      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+    );
+    const header = screen.getByRole("button", { name: /Explore/ });
+    expect(header).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.keyDown(header, { key: "Enter" });
+
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(2);
   });
 
   it("summarizes mixed exploration actions on the parent call", () => {
@@ -402,8 +473,38 @@ describe("EventTimeline", () => {
     ];
 
     render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
-    expect(screen.getByText("Explore 3 actions")).toBeInTheDocument();
-    expect(screen.getByText("2 Read · 1 Search")).toBeInTheDocument();
+    expect(screen.getByText("Read 2 · Search 1")).toBeInTheDocument();
+    expect(screen.queryByText("Explore 3 actions")).toBeNull();
+    expect(screen.queryByText("2 Read · 1 Search")).toBeNull();
+  });
+
+  it("shows the latest four actions while an Explore group is running", () => {
+    const items: TurnItem[] = Array.from({ length: 5 }, (_, index) => ({
+      kind: "tool",
+      toolUseId: String(index),
+      toolName: "command",
+      input: {
+        command: `cat /repo/file-${index}.ts`,
+        command_actions: [{
+          type: "read",
+          command: `cat /repo/file-${index}.ts`,
+          path: `/repo/file-${index}.ts`,
+        }],
+      },
+      status: index === 4 ? "running" : "done",
+      elapsedSeconds: null,
+      result: null,
+      childTools: [],
+    }));
+
+    const { container } = render(
+      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+    );
+
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(4);
+    expect(screen.queryByText("file-0.ts")).toBeNull();
+    expect(screen.getByText("file-4.ts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+1 more" })).toBeInTheDocument();
   });
 
   it("text, reasoning, and unknown commands each break Codex exploration clusters", () => {
@@ -420,8 +521,128 @@ describe("EventTimeline", () => {
       { kind: "tool", toolUseId: "1", toolName: "command", input: { command: "cat missing", command_actions: [{ type: "read", command: "cat missing", name: "missing", path: "/repo/missing" }] }, status: "failed", elapsedSeconds: null, result: "not found", exitCode: 1, childTools: [] },
     ];
     const { container } = render(<EventTimeline items={items} runtime="codex" />);
-    expect(screen.getByText("Explored · 1 call · 1 failed")).toBeInTheDocument();
+    expect(container.querySelector(".cc-exploration")).toHaveAttribute(
+      "data-status",
+      "failed",
+    );
+    expect(screen.getByText("1 call · 1 action · 1 failed")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("exit 1")).toBeInTheDocument();
+    expect(screen.getByText("not found")).toBeInTheDocument();
+    expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(1);
     expect(container.querySelector('[aria-label="失败"]')).not.toBeNull();
+  });
+
+  it("keeps a failed action visible while a later Explore call is running", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "failed-search",
+        toolName: "command",
+        input: {
+          command: "rg missing /repo/src",
+          command_actions: [{
+            type: "search",
+            command: "rg missing /repo/src",
+            query: "missing",
+            path: "/repo/src",
+          }],
+        },
+        status: "failed",
+        elapsedSeconds: null,
+        result: "no matches",
+        exitCode: 1,
+        childTools: [],
+      },
+      {
+        kind: "tool",
+        toolUseId: "running-read",
+        toolName: "command",
+        input: {
+          command: "cat /repo/README.md",
+          command_actions: [{
+            type: "read",
+            command: "cat /repo/README.md",
+            path: "/repo/README.md",
+          }],
+        },
+        status: "running",
+        elapsedSeconds: null,
+        result: null,
+        childTools: [],
+      },
+    ];
+
+    const { container } = render(
+      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+    );
+
+    expect(container.querySelector(".cc-exploration")).toHaveAttribute(
+      "data-status",
+      "running",
+    );
+    expect(screen.getByText("2 calls · 2 actions · 1 failed")).toBeInTheDocument();
+    expect(screen.getByText("exit 1")).toBeInTheDocument();
+    expect(screen.getByText("no matches")).toBeInTheDocument();
+    expect(
+      Array.from(container.querySelectorAll(".cc-exploration__action")).map(
+        (row) => row.getAttribute("data-status"),
+      ),
+    ).toEqual(["failed", "running"]);
+  });
+
+  it("attaches a failed command result to its final native action", () => {
+    const items: TurnItem[] = [
+      {
+        kind: "tool",
+        toolUseId: "failed-multi",
+        toolName: "command",
+        input: {
+          command: "inspect missing files",
+          command_actions: [
+            {
+              type: "read",
+              command: "cat /repo/a.ts",
+              path: "/repo/a.ts",
+            },
+            {
+              type: "search",
+              command: "rg missing /repo/src",
+              query: "missing",
+              path: "/repo/src",
+            },
+          ],
+        },
+        status: "failed",
+        elapsedSeconds: null,
+        result: "search failed",
+        exitCode: 2,
+        childTools: [],
+      },
+    ];
+
+    const { container } = render(
+      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+    );
+
+    const visibleAction = container.querySelector(".cc-exploration__action");
+    expect(visibleAction).toHaveTextContent("Search");
+    expect(visibleAction).toHaveTextContent("exit 2");
+    expect(visibleAction).toHaveTextContent("search failed");
+    expect(screen.queryByText("a.ts")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "+1 more" }));
+
+    const expandedActions = container.querySelectorAll(
+      ".cc-exploration__action",
+    );
+    expect(expandedActions).toHaveLength(2);
+    expect(expandedActions[0]).not.toHaveTextContent("exit 2");
+    expect(expandedActions[0]).not.toHaveTextContent("search failed");
+    expect(expandedActions[1]).toHaveTextContent("exit 2");
+    expect(expandedActions[1]).toHaveTextContent("search failed");
+    expect(container.querySelectorAll(".cc-exploration__failure"))
+      .toHaveLength(1);
   });
 
   it("does not group command tools for CC", () => {

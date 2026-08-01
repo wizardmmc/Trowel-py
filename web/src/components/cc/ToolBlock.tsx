@@ -22,7 +22,6 @@ interface ToolBlockProps {
   readonly item: ToolItem;
   readonly condensed?: boolean;
   readonly workdir?: string;
-  readonly codexExploration?: boolean;
   /** 超大 turn 只折叠旧详情；工具摘要始终保留。 */
   readonly suppressDiffAutoOpen?: boolean;
 }
@@ -80,20 +79,6 @@ function SummaryBrief({
   return null;
 }
 
-function CodexActionRows({ item, workdir }: { readonly item: ToolItem; readonly workdir?: string }) {
-  const rows = getCodexCommandPresentation(item, workdir).rows;
-  return (
-    <div className="cc-tool__action-rows">
-      {rows.map((row, index) => (
-        <div className="cc-tool__action-row" key={`${row.verb}-${index}`}>
-          <span className="cc-tool__name">{row.verb}</span>
-          <span className="cc-tool__brief" title={row.detail}>{row.detail}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function StatPill({
   stat,
 }: {
@@ -111,7 +96,6 @@ function ToolBlockView({
   item,
   condensed = false,
   workdir,
-  codexExploration = false,
   suppressDiffAutoOpen = false,
 }: ToolBlockProps) {
   const done = item.status === "done";
@@ -125,7 +109,7 @@ function ToolBlockView({
   const mcpPresentation = codexMcp ? getCodexMcpPresentation(item) : null;
   const autoOpen =
     (isDiffTool(item.toolName) && done && !suppressDiffAutoOpen) ||
-    (codexCommand && (failed || codexExploration)) ||
+    (codexCommand && failed) ||
     (codexMcp && failed);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const open = openOverride ?? autoOpen;
@@ -150,28 +134,12 @@ function ToolBlockView({
           <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" />
         </svg>
       )}
-      {codexCommand && codexExploration ? (
-        <>
-          <span className="cc-tool__name">
-            {commandPresentation?.callLabel}
-          </span>
-          <span
-            className="cc-tool__brief"
-            title={commandPresentation?.callBrief}
-          >
-            {commandPresentation?.callBrief}
-          </span>
-        </>
-      ) : (
-        <>
-          <span
-            className={`cc-tool__name${codexMcp ? " cc-tool__name--mono" : ""}`}
-          >
-            {verb}
-          </span>
-          <SummaryBrief item={item} workdir={workdir} />
-        </>
-      )}
+      <span
+        className={`cc-tool__name${codexMcp ? " cc-tool__name--mono" : ""}`}
+      >
+        {verb}
+      </span>
+      <SummaryBrief item={item} workdir={workdir} />
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
       {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
@@ -229,7 +197,7 @@ function ToolBlockView({
 
   return (
     <div
-      className={`cc-tool${codexExploration ? " cc-tool--exploration" : ""}`}
+      className="cc-tool"
       data-status={item.status}
       data-codex-command={codexCommand || undefined}
       data-codex-native={codexNative || undefined}
@@ -237,12 +205,7 @@ function ToolBlockView({
       {summary}
       {expanded && (
         <div className="cc-tool__detail">
-          {codexExploration && (
-            <CodexActionRows item={item} workdir={workdir} />
-          )}
-          {(!codexExploration || failed) && (
-            <ToolDetail item={item} workdir={workdir} />
-          )}
+          <ToolDetail item={item} workdir={workdir} />
         </div>
       )}
     </div>
