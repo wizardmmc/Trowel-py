@@ -1,3 +1,5 @@
+/** 展示目录选择器的面包屑、子目录列表和加载状态。 */
+
 import type { AgentDirectoryEntry } from "../../agent/application";
 
 interface WorkdirBrowserProps {

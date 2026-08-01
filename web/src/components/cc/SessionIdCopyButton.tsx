@@ -1,3 +1,5 @@
+/** 复制原生会话 ID，并显示短时成功反馈。 */
+
 import { useEffect, useRef, useState } from "react";
 
 import { copyText } from "./copyText";

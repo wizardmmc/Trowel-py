@@ -1,3 +1,5 @@
+/** 按画像维度展示 Profile 建议并批量采纳或丢弃。 */
+
 import { useEffect, useState } from "react";
 import { useSuggestionsStore } from "../../stores/suggestionsStore";
 import { useProfileStore } from "../../stores/profileStore";

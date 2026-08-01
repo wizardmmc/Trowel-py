@@ -1,3 +1,5 @@
+/** 加载新会话需要的 runtime、模型和斜杠命令清单。 */
+
 import { useCallback, useEffect, useState } from "react";
 
 import { listModels, listSlashItems } from "../../api/cc";

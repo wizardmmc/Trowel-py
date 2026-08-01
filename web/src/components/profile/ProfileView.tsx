@@ -1,3 +1,5 @@
+/** 展示并编辑用户画像，同时提供待处理建议入口。 */
+
 import { useEffect, useState } from "react";
 import { useProfileStore } from "../../stores/profileStore";
 import { useSuggestionsStore } from "../../stores/suggestionsStore";

@@ -1,3 +1,5 @@
+/** 管理用户画像的读取、编辑和保存状态。 */
+
 import { create } from "zustand";
 import {
   fetchProfile as fetchProfileApi,

@@ -19,7 +19,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/mon" } });
     expect(screen.getByRole("listbox")).toBeInTheDocument();
     expect(screen.getByText("/monthly-etf")).toBeInTheDocument();
@@ -35,7 +35,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    fireEvent.change(screen.getByLabelText("CC 消息输入"), { target: { value: "hello" } });
+    fireEvent.change(screen.getByLabelText("Agent 消息输入"), { target: { value: "hello" } });
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
@@ -50,7 +50,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    const ta = screen.getByLabelText("Agent 消息输入") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "/" } });
     fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "Enter" });
@@ -68,7 +68,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    const ta = screen.getByLabelText("Agent 消息输入") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "/mon" } });
     fireEvent.keyDown(ta, { key: "Escape" });
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
@@ -88,7 +88,7 @@ describe("Composer slash autocomplete", () => {
         onRequestModelPicker={onModel}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/model" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onModel).toHaveBeenCalledTimes(1);
@@ -107,7 +107,7 @@ describe("Composer slash autocomplete", () => {
         onRequestEffortPicker={onEffort}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/effort" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onEffort).toHaveBeenCalledTimes(1);
@@ -118,7 +118,7 @@ describe("Composer slash autocomplete", () => {
     render(
       <Composer streaming={false} disabled={false} onSend={onSend} onInterrupt={() => {}} />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/monthly-etf args" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("/monthly-etf args");
@@ -141,7 +141,7 @@ describe("Composer slash autocomplete", () => {
         onRequestModelPicker={onModel}
       />,
     );
-    fireEvent.change(screen.getByLabelText("CC 消息输入"), { target: { value: "/model" } });
+    fireEvent.change(screen.getByLabelText("Agent 消息输入"), { target: { value: "/model" } });
     fireEvent.click(screen.getByRole("option"));
     expect(onModel).toHaveBeenCalledTimes(1);
     expect(onSend).not.toHaveBeenCalled();
@@ -161,7 +161,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={builtin}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/cost" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("/cost");
@@ -182,7 +182,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={itemsWithEtf}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/monthly-etf 查看沪深300" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("/monthly-etf 查看沪深300");
@@ -209,7 +209,7 @@ describe("Composer slash autocomplete", () => {
         onLocalCommand={onLocalCommand}
       />,
     );
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/review" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -247,7 +247,7 @@ describe("Composer slash autocomplete", () => {
       />,
     );
 
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -273,7 +273,7 @@ describe("Composer slash autocomplete", () => {
         onLocalCommand={onLocalCommand}
       />,
     );
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/review focus on auth" } });
     fireEvent.keyDown(input, { key: "Enter" });
 

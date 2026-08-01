@@ -1,3 +1,5 @@
+/** 展示当前会话身份、历史切换入口和运行状态。 */
+
 import type { ModelOption } from "../../api/cc";
 import type { AgentHistoryRow } from "../../agent/transport";
 import type {
@@ -27,6 +29,7 @@ const EMPTY_META: SessionMeta = {
 interface SessionHeaderProps {
   readonly phase: Phase;
   readonly meta: SessionMeta | null;
+  readonly runtimeLabel: string;
   readonly streaming: boolean;
   readonly models: readonly ModelOption[];
   readonly history: readonly AgentHistoryRow[];
@@ -39,7 +42,7 @@ interface SessionHeaderProps {
   readonly workSummary?: string | null;
   readonly workRailLabel?: string;
   readonly onToggleWorkRail?: () => void;
-  readonly onInterrupt: () => void;
+  readonly onInterrupt?: () => void;
   readonly onPickHistory: (row: AgentHistoryRow) => void;
   readonly onLoadMoreHistory: () => void;
   readonly onRetryHistory: () => void;
@@ -50,6 +53,7 @@ interface SessionHeaderProps {
 export function SessionHeader({
   phase,
   meta,
+  runtimeLabel,
   streaming,
   models,
   history,
@@ -86,6 +90,7 @@ export function SessionHeader({
       <StatusBar
         phase={phase}
         meta={normalizedMeta}
+        runtimeLabel={runtimeLabel}
         streaming={streaming}
         onInterrupt={onInterrupt}
       />

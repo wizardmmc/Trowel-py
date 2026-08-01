@@ -1,3 +1,5 @@
+/** 展示单个 subagent 的状态、说明、用量和嵌套工具。 */
+
 import { useState } from "react";
 import type { PerSessionState } from "../../agent/application";
 import type {

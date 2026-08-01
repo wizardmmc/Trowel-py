@@ -9,24 +9,26 @@ import {
   WorkdirPicker,
 } from "../agent";
 import {
-  createCcStore,
-  useCcStore,
-} from "../stores/ccStore";
-import { useCcStoreFrameSelector } from "../stores/ccFrameSelector";
-import { MessageList as LegacyMessageList } from "../components/cc/MessageList";
-import { SessionView as LegacySessionView } from "../components/cc/SessionView";
-import { WorkdirPicker as LegacyWorkdirPicker } from "../components/cc/WorkdirPicker";
+  createAgentStore as ownerCreateAgentStore,
+  useAgentStore as ownerUseAgentStore,
+  useAgentStoreFrameSelector as ownerFrameSelector,
+} from "../agent/application";
+import {
+  MessageList as OwnerMessageList,
+  SessionView as OwnerSessionView,
+  WorkdirPicker as OwnerWorkdirPicker,
+} from "../agent/ui";
 
 describe("Agent public facade", () => {
-  it("keeps one store implementation behind the Agent and cc names", () => {
-    expect(useCcStore).toBe(useAgentStore);
-    expect(createCcStore).toBe(createAgentStore);
-    expect(useCcStoreFrameSelector).toBe(useAgentStoreFrameSelector);
+  it("points the public facade at the application owner", () => {
+    expect(useAgentStore).toBe(ownerUseAgentStore);
+    expect(createAgentStore).toBe(ownerCreateAgentStore);
+    expect(useAgentStoreFrameSelector).toBe(ownerFrameSelector);
   });
 
-  it("keeps legacy UI imports pointed at the Agent owner", () => {
-    expect(LegacySessionView).toBe(SessionView);
-    expect(LegacyMessageList).toBe(MessageList);
-    expect(LegacyWorkdirPicker).toBe(WorkdirPicker);
+  it("points the public facade at the UI owner", () => {
+    expect(OwnerSessionView).toBe(SessionView);
+    expect(OwnerMessageList).toBe(MessageList);
+    expect(OwnerWorkdirPicker).toBe(WorkdirPicker);
   });
 });

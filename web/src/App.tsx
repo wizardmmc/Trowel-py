@@ -1,3 +1,5 @@
+/** 组合卡片、复习、花园、Agent 和 Profile 五个顶层工具。 */
+
 import { useState, useEffect } from "react";
 import { AppLayout, type Tool } from "./components/layout/AppLayout";
 import { ExtractionInput } from "./components/cards/ExtractionInput";

@@ -1,3 +1,5 @@
+/** 在独立序号空间回放会话历史，并保留只属于实时连接的状态。 */
+
 import type { AgentEventLike } from "../../transport/api";
 import { agentEventToTrowel } from "../../transport/agentEvent";
 import {

@@ -1,3 +1,5 @@
+/** 将高频 Agent store 更新合并到浏览器帧后再发布给组件。 */
+
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { useAgentStore } from "./store";

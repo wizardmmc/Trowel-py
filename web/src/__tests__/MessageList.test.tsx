@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MessageList } from "../components/cc/MessageList";
-import type { Turn } from "../stores/ccStore";
+import { MessageList } from "../agent/ui";
+import {
+  getExpectedRuntimePresentation,
+  getRuntimePresentation,
+} from "../agent/runtimes";
+import type { Turn } from "../agent";
 
 function turn(over: Partial<Turn> = {}): Turn {
   return {
@@ -39,16 +43,15 @@ describe("MessageList", () => {
   });
 
   it.each([
-    ["codex", "Codex"],
-    ["claude_code", "CC"],
-    ["future-runtime", "Agent"],
+    [getExpectedRuntimePresentation("codex"), "Codex"],
+    [getExpectedRuntimePresentation("claude_code"), "CC"],
     [undefined, "Agent"],
-  ])("labels %s assistant turns as %s", (runtime, expected) => {
+  ])("labels assistant turns from its presentation as %s", (presentation, expected) => {
     render(
       <MessageList
         turns={[turn({ items: [{ kind: "text", text: "answer" }] })]}
         streaming={false}
-        runtime={runtime}
+        presentation={presentation}
       />,
     );
     expect(screen.getByText(expected, { selector: ".cc-msg__tag" })).toBeInTheDocument();
@@ -175,6 +178,21 @@ describe("MessageList — revert button", () => {
   it("hides the revert button for non-revertible turns (history)", () => {
     const t = turn({ id: "t1", turnId: null, revertible: false });
     const { container } = render(<MessageList turns={[t]} streaming={false} />);
+    expect(container.querySelector(".cc-turn__revert")).toBeNull();
+  });
+
+  it("hides the revert button when the session did not declare revert", () => {
+    const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true, status: "done" });
+    const presentation = getRuntimePresentation("claude_code", ["tools"]);
+    const { container } = render(
+      <MessageList
+        turns={[t]}
+        streaming={false}
+        presentation={presentation}
+        onRevert={vi.fn()}
+      />,
+    );
+
     expect(container.querySelector(".cc-turn__revert")).toBeNull();
   });
 

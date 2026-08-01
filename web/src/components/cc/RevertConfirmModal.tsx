@@ -1,3 +1,5 @@
+/** 在回滚 checkpoint 前列出会被移除的 turn 并请求确认。 */
+
 import { useEffect, useRef } from "react";
 
 import type { Turn } from "../../agent/domain";

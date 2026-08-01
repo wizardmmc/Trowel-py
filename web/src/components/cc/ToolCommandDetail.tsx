@@ -1,8 +1,12 @@
+/** 展示 shell 命令的分段内容、工作目录和执行输出。 */
+
 import type { ToolItem } from "../../agent/domain";
 import { splitBashCommand } from "./bashCommand";
-import { getDisplayPath } from "./pathDisplay";
+import {
+  getDisplayPath,
+  ToolCommandOutput,
+} from "../../agent/runtimes/shared";
 import { asString, isCommandTool } from "./toolPresentation";
-import { ToolCommandOutput } from "./ToolCommandOutput";
 
 function BashCommandView({ command }: { readonly command: string }) {
   const segments = splitBashCommand(command);

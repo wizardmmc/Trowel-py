@@ -1,3 +1,4 @@
+/** 为知识类别分配稳定的植物颜色。 */
 
 const CATEGORY_COLORS: Record<string, string> = {
   javascript: "#4A7C59",

@@ -1,5 +1,8 @@
+/** 展示新会话可选的 runtime，并支持键盘切换。 */
+
 import { useEffect, useRef } from "react";
 
+import { getExpectedRuntimePresentation } from "../../agent/runtimes";
 import type { Runtime } from "../../agent/transport";
 import {
   RUNTIME_OPTIONS,
@@ -73,6 +76,7 @@ export function RuntimeSelector({
         {RUNTIME_OPTIONS.map((option, index) => {
           const connected = isConnected(option.value);
           const selected = runtime === option.value;
+          const presentation = getExpectedRuntimePresentation(option.value);
           return (
             <button
               key={option.value}
@@ -95,7 +99,9 @@ export function RuntimeSelector({
               }}
               onKeyDown={(event) => onKeyDown(event, index)}
             >
-              <span className="cc-dialog__runtime-name">{option.label}</span>
+              <span className="cc-dialog__runtime-name">
+                {presentation.label}
+              </span>
               <span className="cc-dialog__runtime-native">
                 {option.native}
               </span>

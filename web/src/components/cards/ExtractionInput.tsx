@@ -1,3 +1,5 @@
+/** 接收粘贴文本或会话文件，并启动卡片提取。 */
+
 import { useState, useRef } from "react";
 
 interface ExtractionInputProps {

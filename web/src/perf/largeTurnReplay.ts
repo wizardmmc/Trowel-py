@@ -1,8 +1,11 @@
+/** 构造确定性大回合事件，并通过生产 reducer 完整回放。 */
+
 import type { PerSessionState } from "../agent/application";
 import {
   createNewSessionState,
   reduceAgentEvent,
 } from "../agent/application";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import type { AgentEvent, AgentSession, DiffHunk } from "../agent/transport";
 
 const SESSION_ID = "fixture-large-turn";
@@ -242,7 +245,7 @@ function buildInitialSession(): PerSessionState {
     permission: "Workspace write · on-request",
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "interrupt"],
+    capabilities: getExpectedRuntimePresentation("codex").expectedCapabilities,
     name: "fixture-repo",
     display_title: "Large turn replay",
     title_source: "manual",

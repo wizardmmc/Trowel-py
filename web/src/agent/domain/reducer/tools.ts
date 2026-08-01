@@ -1,3 +1,5 @@
+/** 将工具开始、进度和结果事件归约为时间线工具状态。 */
+
 import type {
   ToolCallEvent,
   ToolProgressEvent,

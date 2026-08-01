@@ -1,3 +1,5 @@
+/** 通过 Clipboard API 或旧浏览器降级路径复制文本。 */
+
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {

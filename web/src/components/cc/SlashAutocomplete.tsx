@@ -1,3 +1,5 @@
+/** 按来源分组展示斜杠命令补全，并支持键盘导航。 */
+
 import { useEffect, useRef } from "react";
 import type { SlashItem } from "../../api/cc";
 import {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ElicitationBlock } from "../components/cc/ElicitationBlock";
-import type { ElicitationItem } from "../stores/ccStore";
+import { ElicitationBlock } from "../agent/runtimes/claude-code";
+import type { ElicitationItem } from "../agent/domain";
 
 const singlePending: ElicitationItem = {
   kind: "elicit",

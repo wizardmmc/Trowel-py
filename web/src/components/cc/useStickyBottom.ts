@@ -1,3 +1,5 @@
+/** 管理消息列表自动跟随、用户离底和未读 turn 计数。 */
+
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const THRESHOLD_PX = 32;

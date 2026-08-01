@@ -1,6 +1,6 @@
 import { screen } from "@testing-library/react";
 
-import type { AgentModel } from "../api/agent";
+import type { AgentModel } from "../agent/transport";
 import type { RuntimesState } from "../components/cc/NewSessionDialog";
 
 export function createButton(): HTMLElement {
@@ -14,14 +14,22 @@ export const READY_BOTH: RuntimesState = {
       runtime: "claude_code",
       label: "Claude Code",
       native: "",
-      capabilities: [],
+      capabilities: [
+        "tools", "models", "effort", "permission", "question", "interrupt",
+        "slash_commands", "workflow", "tasks", "subagents", "checkpoint",
+        "revert", "mcp",
+      ],
       connected: true,
     },
     {
       runtime: "codex",
       label: "Codex",
       native: "",
-      capabilities: [],
+      capabilities: [
+        "tools", "models", "effort", "permission", "sandbox",
+        "network_access", "approval", "interrupt", "slash_commands", "goal",
+        "plan", "review", "subagents", "turn_diff", "mcp",
+      ],
       connected: true,
     },
   ],

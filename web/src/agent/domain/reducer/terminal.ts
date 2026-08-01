@@ -1,3 +1,5 @@
+/** 处理完成、失败和中断终态，并收口当前 turn 与会话阶段。 */
+
 import type {
   ErrorEvent,
   FinishedEvent,

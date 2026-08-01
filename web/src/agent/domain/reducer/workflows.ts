@@ -1,3 +1,5 @@
+/** 将 Claude Code workflow 快照写入对应 turn 的时间线。 */
+
 import type { WorkflowTreeEvent } from "../../transport/events";
 import type { ReducerState, Turn, WorkflowItem } from "./model";
 

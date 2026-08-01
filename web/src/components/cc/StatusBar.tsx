@@ -1,15 +1,18 @@
+/** 展示会话的 runtime、模型、阶段和中断入口。 */
+
 import type { Phase, SessionMeta } from "../../agent/domain";
 
 interface StatusBarProps {
   readonly phase: Phase;
   readonly meta: SessionMeta;
+  readonly runtimeLabel: string;
   readonly streaming: boolean;
-  readonly onInterrupt: () => void;
+  readonly onInterrupt?: () => void;
 }
 
 const PHASE_LABEL: Record<Phase, string> = {
   idle: "空闲",
-  awaiting_first: "等待 CC 接手…",
+  awaiting_first: "等待 Agent 接手…",
   thinking: "思考中",
   generating: "生成中",
   tool: "执行工具",
@@ -32,6 +35,7 @@ function phaseClass(phase: Phase): string {
 export function StatusBar({
   phase,
   meta,
+  runtimeLabel,
   streaming,
   onInterrupt,
 }: StatusBarProps) {
@@ -42,7 +46,9 @@ export function StatusBar({
     <div className="cc-status" role="status">
       <div className="cc-status__left">
         <span className={`cc-status__phase ${phaseClass(phase)}`}>
-          {PHASE_LABEL[phase]}
+          {phase === "awaiting_first"
+            ? `等待 ${runtimeLabel} 接手…`
+            : PHASE_LABEL[phase]}
         </span>
         {(cost || turns) && (
           <span className="cc-status__accounting">
@@ -62,7 +68,7 @@ export function StatusBar({
         )}
       </div>
       <div className="cc-status__right">
-        {streaming && (
+        {streaming && onInterrupt && (
           <button
             type="button"
             className="cc-status__interrupt"

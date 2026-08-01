@@ -1,3 +1,5 @@
+/** 连接卡片提取进度 SSE，并把阶段进度交给调用方。 */
+
 type ProgressHandler = (event: { stage: string; progress: number; message: string }) => void;
 
 export function connectSSE(

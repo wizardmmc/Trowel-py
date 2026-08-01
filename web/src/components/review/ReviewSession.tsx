@@ -1,3 +1,5 @@
+/** 驱动到期卡片的逐张复习和完成页切换。 */
+
 import { AnimatePresence, motion } from "framer-motion";
 import { useReviewStore } from "../../stores/reviewStore";
 import { ReviewCard } from "./ReviewCard";

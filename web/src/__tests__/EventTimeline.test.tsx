@@ -1,7 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EventTimeline } from "../components/cc/EventTimeline";
-import type { TurnItem } from "../stores/ccStore";
+import {
+  getExpectedRuntimePresentation,
+  getRuntimePresentation,
+} from "../agent/runtimes";
+import type { TurnItem } from "../agent";
+
+const CODEX_PRESENTATION = getExpectedRuntimePresentation("codex");
+const CC_PRESENTATION = getExpectedRuntimePresentation("claude_code");
 
 describe("EventTimeline", () => {
   it("thinking row shows a summary and expands to the raw text", () => {
@@ -17,15 +24,65 @@ describe("EventTimeline", () => {
       { kind: "thinking", text: "reasoning" },
       { kind: "text", text: "answer" },
     ];
-    render(<EventTimeline items={items} runtime="codex" isReplay={false} />);
+    render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} isReplay={false} />);
     expect(screen.getByText("Reasoned")).toBeInTheDocument();
     expect(screen.queryByText("Reasoning")).toBeNull();
   });
 
   it("keeps the trailing Codex reasoning item active", () => {
-    render(<EventTimeline items={[{ kind: "thinking", text: "reasoning" }]} runtime="codex" isReplay={false} />);
+    render(<EventTimeline items={[{ kind: "thinking", text: "reasoning" }]} presentation={CODEX_PRESENTATION} isReplay={false} />);
     expect(screen.getByText("Reasoning")).toBeInTheDocument();
   });
+
+  it("shows an explicit state when a recorded item lacks its capability", () => {
+    render(
+      <EventTimeline
+        items={[
+          {
+            kind: "subagent",
+            toolUseId: "subagent-1",
+            subagent: { status: "completed" },
+          },
+        ]}
+        presentation={getRuntimePresentation("codex", ["tools"])}
+      />,
+    );
+
+    expect(screen.getByText(/未声明 subagents 能力/)).toBeInTheDocument();
+    expect(document.querySelector(".cc-subagent")).toBeNull();
+  });
+
+  it.each([
+    ["Agent", "subagents"],
+    ["TaskCreate", "tasks"],
+    ["Workflow", "workflow"],
+  ])(
+    "does not bypass the %s tool capability gate",
+    (toolName, capability) => {
+      render(
+        <EventTimeline
+          items={[
+            {
+              kind: "tool",
+              toolUseId: `tool-${toolName}`,
+              toolName,
+              input: {},
+              status: "done",
+              elapsedSeconds: 1,
+              result: "ok",
+              childTools: [],
+            },
+          ]}
+          presentation={getRuntimePresentation("claude_code", ["tools"])}
+        />,
+      );
+
+      expect(
+        screen.getByText(new RegExp(`未声明 ${capability} 能力`)),
+      ).toBeInTheDocument();
+      expect(document.querySelector(".cc-subagent")).toBeNull();
+    },
+  );
 
   it("retrying row surfaces attempt + GLM status + delay", () => {
     const items: TurnItem[] = [
@@ -335,7 +392,7 @@ describe("EventTimeline", () => {
       { kind: "tool", toolUseId: "2", toolName: "command", input: { command: "cat a", command_actions: [{ type: "read", command: "cat a", name: "a", path: "/repo/a" }] }, status: "done", elapsedSeconds: null, result: "x", childTools: [] },
       { kind: "tool", toolUseId: "3", toolName: "command", input: { command: "rg x", command_actions: [{ type: "search", command: "rg x", query: "x", path: "." }] }, status: "running", elapsedSeconds: null, result: null, childTools: [] },
     ];
-    const { container } = render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
+    const { container } = render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />);
     const group = container.querySelector(".cc-exploration");
     expect(group).toHaveClass("cc-subagent");
     expect(group).toHaveAttribute("data-status", "running");
@@ -372,7 +429,7 @@ describe("EventTimeline", () => {
     ];
 
     const { container } = render(
-      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+      <EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />,
     );
     expect(screen.getByText("Read 3")).toBeInTheDocument();
     expect(screen.getByText("1 call · 3 actions")).toBeInTheDocument();
@@ -413,7 +470,7 @@ describe("EventTimeline", () => {
       },
     ];
 
-    render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
+    render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />);
 
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByLabelText("Explore · 1 call · 1 action · Done"))
@@ -440,7 +497,7 @@ describe("EventTimeline", () => {
     } satisfies TurnItem));
 
     const { container } = render(
-      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+      <EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />,
     );
     const header = screen.getByRole("button", { name: /Explore/ });
     expect(header).toHaveAttribute("aria-expanded", "false");
@@ -472,7 +529,7 @@ describe("EventTimeline", () => {
       },
     ];
 
-    render(<EventTimeline items={items} runtime="codex" workdir="/repo" />);
+    render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />);
     expect(screen.getByText("Read 2 · Search 1")).toBeInTheDocument();
     expect(screen.queryByText("Explore 3 actions")).toBeNull();
     expect(screen.queryByText("2 Read · 1 Search")).toBeNull();
@@ -498,7 +555,7 @@ describe("EventTimeline", () => {
     }));
 
     const { container } = render(
-      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+      <EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />,
     );
 
     expect(container.querySelectorAll(".cc-exploration__action")).toHaveLength(4);
@@ -511,7 +568,7 @@ describe("EventTimeline", () => {
     const explore = (id: string): TurnItem => ({ kind: "tool", toolUseId: id, toolName: "command", input: { command: "ls", command_actions: [{ type: "listFiles", command: "ls", path: null }] }, status: "done", elapsedSeconds: null, result: null, childTools: [] });
     const run: TurnItem = { kind: "tool", toolUseId: "run", toolName: "command", input: { command: "npm test", command_actions: [{ type: "unknown", command: "npm test" }] }, status: "done", elapsedSeconds: null, result: null, childTools: [] };
     const items: TurnItem[] = [explore("1"), { kind: "text", text: "middle" }, explore("2"), { kind: "thinking", text: "why" }, explore("3"), run, explore("4")];
-    const { container } = render(<EventTimeline items={items} runtime="codex" />);
+    const { container } = render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} />);
     expect(container.querySelectorAll(".cc-exploration")).toHaveLength(4);
     expect(screen.getByText("Ran")).toBeInTheDocument();
   });
@@ -520,7 +577,7 @@ describe("EventTimeline", () => {
     const items: TurnItem[] = [
       { kind: "tool", toolUseId: "1", toolName: "command", input: { command: "cat missing", command_actions: [{ type: "read", command: "cat missing", name: "missing", path: "/repo/missing" }] }, status: "failed", elapsedSeconds: null, result: "not found", exitCode: 1, childTools: [] },
     ];
-    const { container } = render(<EventTimeline items={items} runtime="codex" />);
+    const { container } = render(<EventTimeline items={items} presentation={CODEX_PRESENTATION} />);
     expect(container.querySelector(".cc-exploration")).toHaveAttribute(
       "data-status",
       "failed",
@@ -574,7 +631,7 @@ describe("EventTimeline", () => {
     ];
 
     const { container } = render(
-      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+      <EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />,
     );
 
     expect(container.querySelector(".cc-exploration")).toHaveAttribute(
@@ -622,7 +679,7 @@ describe("EventTimeline", () => {
     ];
 
     const { container } = render(
-      <EventTimeline items={items} runtime="codex" workdir="/repo" />,
+      <EventTimeline items={items} presentation={CODEX_PRESENTATION} workdir="/repo" />,
     );
 
     const visibleAction = container.querySelector(".cc-exploration__action");
@@ -649,7 +706,7 @@ describe("EventTimeline", () => {
     const items: TurnItem[] = [
       { kind: "tool", toolUseId: "1", toolName: "command", input: { command: "ls", command_actions: [{ type: "listFiles", command: "ls", path: null }] }, status: "done", elapsedSeconds: null, result: null, childTools: [] },
     ];
-    const { container } = render(<EventTimeline items={items} runtime="claude_code" />);
+    const { container } = render(<EventTimeline items={items} presentation={CC_PRESENTATION} />);
     expect(container.querySelector(".cc-exploration")).toBeNull();
   });
 });

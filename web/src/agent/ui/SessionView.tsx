@@ -1,3 +1,5 @@
+/** 组合通用会话外壳，并按 runtime 能力装配消息、输入区和侧栏。 */
+
 import {
   useCallback,
   useEffect,
@@ -9,6 +11,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import type { Turn } from "../domain";
+import {
+  CodexCommandDialogs,
+  getRuntimePresentation,
+  type CodexCommandDialogKind,
+} from "../runtimes";
 import type {
   AgentHistoryRow,
   CodexCommand,
@@ -16,6 +23,7 @@ import type {
 } from "../application";
 import {
   getAgentSessionDefaults,
+  useCodexCommandRoster,
   useAgentStore,
   useAgentStoreFrameSelector,
   useSessionLifecycle,
@@ -31,15 +39,10 @@ import { SessionBanners } from "../../components/cc/SessionBanners";
 import { SessionComposer } from "../../components/cc/SessionComposer";
 import { SessionHeader } from "../../components/cc/SessionHeader";
 import { SessionOverlays } from "../../components/cc/SessionOverlays";
-import {
-  CodexCommandDialogs,
-  type CodexCommandDialogKind,
-} from "../../components/cc/CodexCommandDialogs";
 import { TodoBar } from "../../components/cc/TodoBar";
 import { useElementHeight } from "../../components/cc/useElementHeight";
 import { useSessionCatalogs } from "../../components/cc/useSessionCatalogs";
 import { useStickyBottom } from "../../components/cc/useStickyBottom";
-import { useCodexCommandRoster } from "../../components/cc/useCodexCommandRoster";
 import "./agent.css";
 
 interface SessionViewProps {
@@ -94,6 +97,9 @@ function SessionTranscriptPane({
     [activeSid],
   );
   const active = useAgentStoreFrameSelector(selectActive);
+  const presentation = active
+    ? getRuntimePresentation(active.runtime, active.capabilities)
+    : null;
   const phase = active?.phase ?? "idle";
   const turns = active?.turns ?? EMPTY_TURNS;
   const openedSubagent = openedSubagentId
@@ -157,7 +163,7 @@ function SessionTranscriptPane({
               onApprovalDecision={onApprovalDecision}
               onRevert={openedSubagent ? undefined : onRevert}
               workdir={active.workdir ?? fallbackWorkdir}
-              runtime={active.runtime}
+              presentation={presentation ?? undefined}
               sessionId={activeSid ?? undefined}
               codexSubagents={active.codexSubagents}
               onOpenSubagent={onOpenSubagent}
@@ -270,9 +276,12 @@ export function SessionView({
     loadRuntimes,
     loadCodexModels,
   } = useSessionCatalogs(workdir);
+  const activePresentation = active
+    ? getRuntimePresentation(active.runtime, active.capabilities)
+    : null;
   const commandRoster = useCodexCommandRoster(
     activeSid,
-    active?.runtime ?? null,
+    activePresentation?.composerActions.slashSource === "codex",
   );
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -388,9 +397,18 @@ export function SessionView({
     const idx = turns.findIndex((t) => t.id === revertTarget.id);
     return idx === -1 ? [] : turns.slice(idx);
   })();
-  const workSummary =
-    active?.runtime === "codex"
-      ? `目标 ${active.plan?.steps.filter((step) => step.status === "completed").length ?? 0}/${active.plan?.steps.length ?? 0}`
+  const showGoalPanel = activePresentation?.sidePanelSections.goal ?? false;
+  const showPlanPanel = activePresentation?.sidePanelSections.plan ?? false;
+  const workRailLabel =
+    showGoalPanel && showPlanPanel
+      ? "目标与计划"
+      : showGoalPanel
+        ? "目标"
+        : "计划";
+  const workSummary = showPlanPanel
+    ? `计划 ${active?.plan?.steps.filter((step) => step.status === "completed").length ?? 0}/${active?.plan?.steps.length ?? 0}`
+    : showGoalPanel
+      ? "目标"
       : null;
 
   async function handleRevertConfirm() {
@@ -488,6 +506,7 @@ export function SessionView({
         <SessionHeader
           phase={phase}
           meta={meta}
+          runtimeLabel={activePresentation?.shortLabel ?? "Agent"}
           streaming={streaming}
           models={models}
           history={history}
@@ -498,9 +517,13 @@ export function SessionView({
           workdir={active?.workdir ?? workdir}
           nativeSessionId={active?.nativeSessionId ?? null}
           workSummary={workSummary}
-          workRailLabel="打开目标与计划"
+          workRailLabel={`打开${workRailLabel}`}
           onToggleWorkRail={() => setWorkRailOpen(true)}
-          onInterrupt={() => void interrupt()}
+          onInterrupt={
+            activePresentation?.composerActions.interrupt
+              ? () => void interrupt()
+              : undefined
+          }
           onPickHistory={(row) => void handlePick(row)}
           onLoadMoreHistory={() => void loadMoreHistory()}
           onRetryHistory={() => void refreshHistory(active?.workdir ?? workdir)}
@@ -645,17 +668,19 @@ export function SessionView({
               : null
           }
         />
-        <CodexCommandDialogs
-          kind={commandDialog}
-          active={active}
-          onClose={() => {
-            if (!reviewPending) setCommandDialog(null);
-          }}
-          onStartReview={(target) => void handleStartReview(target)}
-          reviewPending={reviewPending}
-          reviewError={reviewError}
-          onLocateSubagent={locateSubagent}
-        />
+        {activePresentation?.composerActions.slashSource === "codex" && (
+          <CodexCommandDialogs
+            kind={commandDialog}
+            active={active}
+            onClose={() => {
+              if (!reviewPending) setCommandDialog(null);
+            }}
+            onStartReview={(target) => void handleStartReview(target)}
+            reviewPending={reviewPending}
+            reviewError={reviewError}
+            onLocateSubagent={locateSubagent}
+          />
+        )}
       </div>
       <TodoBar
         drawerOpen={workRailOpen}
@@ -665,7 +690,7 @@ export function SessionView({
         <button
           type="button"
           className="cc-workrail-backdrop"
-          aria-label="关闭目标与计划"
+          aria-label={`关闭${workRailLabel}`}
           onClick={() => setWorkRailOpen(false)}
         />
       )}

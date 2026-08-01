@@ -5,7 +5,7 @@ vi.mock("../agent/transport/workdirs", () => ({
   listAgentDirectory: vi.fn(async () => []),
 }));
 import { listAgentDirectory as listDir } from "../agent/transport/workdirs";
-import { WorkdirPicker } from "../components/cc/WorkdirPicker";
+import { WorkdirPicker } from "../agent/ui";
 
 describe("WorkdirPicker", () => {
   it("renders recents as chips", () => {

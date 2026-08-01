@@ -1,3 +1,5 @@
+/** 在真实 SessionView 上回放大回合并记录 React 渲染性能。 */
+
 import {
   memo,
   Profiler,
@@ -13,6 +15,7 @@ import {
   type PerSessionState,
   useAgentStore,
 } from "../agent/application";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import { SessionView } from "../agent/ui";
 import {
   LARGE_TURN_MANIFEST,
@@ -218,6 +221,8 @@ function createLightSession(base: PerSessionState): PerSessionState {
     name: "light-session",
     displayTitle: "Light session",
     runtime: "claude_code",
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     nativeSessionId: "fixture-light-native",
     connected: true,
     abort: null,

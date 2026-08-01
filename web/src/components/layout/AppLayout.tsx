@@ -1,3 +1,5 @@
+/** 提供全局侧边栏、工具导航和主内容布局。 */
+
 import type { ReactNode } from "react";
 import "./AppLayout.css";
 

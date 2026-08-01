@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { SubagentBlock } from "../components/cc/SubagentBlock";
-import type { SubagentState, ToolItem } from "../stores/ccStore";
+import type { SubagentState, ToolItem } from "../agent/domain";
 
 describe("SubagentBlock", () => {
   it("opens a native Codex child thread from its inline block", () => {

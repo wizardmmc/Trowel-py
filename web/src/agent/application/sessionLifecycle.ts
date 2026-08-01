@@ -1,3 +1,5 @@
+/** 根据页面工作目录初始化会话，并协调活动会话与历史回放。 */
+
 import { useEffect } from "react";
 
 import { getAgentSessionDefaults } from "../transport/api";

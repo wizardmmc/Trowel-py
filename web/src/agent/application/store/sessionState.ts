@@ -1,3 +1,5 @@
+/** 定义 application store 持有的单会话状态及后端会话映射。 */
+
 import type {
   AgentSession,
   PermissionPreset,
@@ -27,7 +29,7 @@ export interface PerSessionState extends ReducerState {
   readonly name: string;
   readonly displayTitle: string;
   readonly titleSource: SessionTitleSource;
-  readonly revertEnabled: boolean;
+  readonly checkpointAvailable: boolean | null;
   readonly transportError: string | null;
   abort: AbortController | null;
   readonly connected: boolean;
@@ -115,7 +117,7 @@ function createSessionState(
     name: identity.name,
     displayTitle: session.display_title ?? "",
     titleSource: session.title_source ?? "new",
-    revertEnabled: session.capabilities.includes("checkpoint"),
+    checkpointAvailable: session.checkpoint_available ?? null,
     transportError: null,
     abort: null,
     connected: identity.connected,

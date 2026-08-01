@@ -1,3 +1,5 @@
+/** 在 localStorage 中校验并保存最近一次新会话配置。 */
+
 import type { NewSessionConfig } from "./NewSessionDialog";
 
 const STORAGE_KEY = "trowel.new-session-preferences";

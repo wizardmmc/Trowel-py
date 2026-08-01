@@ -30,7 +30,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    fireEvent.change(screen.getByLabelText("CC 消息输入"), { target: { value: "/" } });
+    fireEvent.change(screen.getByLabelText("Agent 消息输入"), { target: { value: "/" } });
     expect(screen.queryByText(/code-review/)).not.toBeInTheDocument();
     expect(screen.queryByText(/rescue/)).not.toBeInTheDocument();
     expect(screen.getByText(/model/)).toBeInTheDocument();
@@ -46,7 +46,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    fireEvent.change(screen.getByLabelText("CC 消息输入"), { target: { value: "/" } });
+    fireEvent.change(screen.getByLabelText("Agent 消息输入"), { target: { value: "/" } });
     fireEvent.click(screen.getByRole("button", { name: /plugin 组/ }));
     expect(screen.getByText(/code-review/)).toBeInTheDocument();
   });
@@ -62,7 +62,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    const ta = screen.getByLabelText("Agent 消息输入") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "/" } });
     fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "ArrowDown" });
@@ -83,7 +83,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入") as HTMLTextAreaElement;
+    const ta = screen.getByLabelText("Agent 消息输入") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "/review" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(ta.value).toBe("/everything-claude-code:code-review ");
@@ -100,7 +100,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={items}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/" } });
     fireEvent.click(screen.getByRole("button", { name: /plugin 组/ }));
     fireEvent.keyDown(ta, { key: "ArrowDown" });
@@ -127,7 +127,7 @@ describe("Composer slash autocomplete", () => {
         slashItems={multi}
       />,
     );
-    const ta = screen.getByLabelText("CC 消息输入");
+    const ta = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(ta, { target: { value: "/" } });
     fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "ArrowDown" });

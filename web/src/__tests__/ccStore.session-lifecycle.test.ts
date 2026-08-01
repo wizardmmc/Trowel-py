@@ -8,11 +8,11 @@ import {
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
-describe("createCcStore — multi-session lifecycle", () => {
+describe("createAgentStore — multi-session lifecycle", () => {
   it("startSession creates a session that is NOT yet connected (not in the bar)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const state = store.getState();
@@ -22,7 +22,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("send() flips the session to connected (enters the bar)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     expect(store.getState().sessions.s1.connected).toBe(false);
@@ -34,7 +34,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("shows the first prompt immediately, then applies the generated title", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     const created = mockCreate("s1", {
       name: "wd #2",
       display_title: "",
@@ -68,7 +68,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("does not let a stale generated response overwrite a manual title", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     const created = mockCreate("s1", {
       display_title: "",
       title_source: "new",
@@ -101,7 +101,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("two CONNECTED sessions coexist; switching preserves both", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -124,7 +124,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("switching away from a never-connected temp drops it (切走即丢)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -141,7 +141,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("startSession also drops a never-connected temp active", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     mockCreate("s2");
@@ -153,7 +153,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("concurrent starts keep the latest request active when responses reorder", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     let resolveA!: (session: ReturnType<typeof mockCreate>) => void;
     let resolveB!: (session: ReturnType<typeof mockCreate>) => void;
     const first = new Promise<ReturnType<typeof mockCreate>>((resolve) => {
@@ -207,7 +207,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("Q4: send routes events to the session that opened the stream, not the active one", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -237,7 +237,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("refuses a second concurrent send into the same session", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const first = store.getState().send("one");
@@ -249,7 +249,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("session_exited REMOVES the row (no grey/resumable) + clears activeSid", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("/exit");
@@ -262,7 +262,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("closeSession removes the row + drops activeSid for the active one", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     await store.getState().closeSession("s1");
@@ -272,7 +272,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("reset clears all sessions + activeSid", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     store.getState().reset();
@@ -281,7 +281,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("Codex host_status(host_exited) keeps the row", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex" });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
     const sending = store.getState().send("hi");
@@ -294,7 +294,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("tasks are per-session (switching does not leak task lists)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("do it");

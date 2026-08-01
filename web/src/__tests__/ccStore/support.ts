@@ -6,8 +6,8 @@ import {
   endActiveTurnOnStreamClose,
   finalizeHistoryForView,
   type ReducerState,
-} from "../../stores/ccStore";
-import type { TrowelEvent } from "../../api/ccTypes";
+} from "../../agent/domain";
+import type { TrowelEvent } from "../../agent/transport";
 
 export {
   reduceEvent,

@@ -1,3 +1,5 @@
+/** 展示一张到期卡片，并收集难度与回忆质量评分。 */
+
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import type { DueCard } from "../../api/client";

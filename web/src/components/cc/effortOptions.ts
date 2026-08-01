@@ -1,3 +1,5 @@
+/** 定义 Claude Code 会话可选的推理强度文案。 */
+
 export interface EffortOption {
   readonly value: string;
   readonly description: string;

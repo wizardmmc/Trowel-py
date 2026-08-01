@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentEvent } from "../api/agentTypes";
+import type { AgentEvent } from "../agent/transport";
 import {
   apiGetAgentHistory,
   apiGetCodexSubagentHistory,
   mockCreate,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
 function event(
   seq: number,
@@ -27,9 +27,9 @@ function event(
   };
 }
 
-describe("createCcStore - Codex child history reconciliation", () => {
+describe("createAgentStore - Codex child history reconciliation", () => {
   it("loads nested child histories discovered while replaying their parent", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", {
       runtime: "codex",
       native_session_id: "parent-thread",

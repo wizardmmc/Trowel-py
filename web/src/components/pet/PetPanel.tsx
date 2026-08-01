@@ -1,3 +1,5 @@
+/** 提供宠物详情面板，并处理焦点、关闭和入口定位。 */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { fetchEventHistory, type EventLog } from "../../api/client";

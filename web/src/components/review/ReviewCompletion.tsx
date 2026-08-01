@@ -1,3 +1,5 @@
+/** 展示本轮复习统计和返回花园入口。 */
+
 import { motion } from "framer-motion";
 import type { SessionStats } from "../../api/client";
 

@@ -1,3 +1,5 @@
+/** 处理会话开始、模型变化和连接状态对应的 reducer 生命周期。 */
+
 import type { Phase, ReducerState } from "./model";
 import { applyErrorEvent } from "./terminal";
 

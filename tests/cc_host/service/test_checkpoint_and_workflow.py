@@ -42,6 +42,28 @@ class TestCheckpointOnSend:
         assert events[0].revertible is False
         assert events[0].turn_id
 
+    async def test_disabled_checkpoint_marks_git_turn_non_revertible(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = _git_repo(tmp_path / "repo")
+        proj = tmp_path / "projects"
+        slug_dir = proj / workdir_to_slug(str(repo))
+        slug_dir.mkdir(parents=True)
+        (slug_dir / "new-sid.jsonl").write_text("")
+        monkeypatch.setattr("trowel_py.cc_host.service.cc_projects_root", lambda: proj)
+        monkeypatch.delenv("TROWEL_CHECKPOINT_ENABLE")
+
+        proc = FakeProc([line(init_event(sid="new-sid")), line(result_ok())])
+        host = CCHost("sid", str(repo), spawner=FakeSpawner([proc]))
+        events = await collect(host.send("first turn"))
+
+        turn_start = next(event for event in events if isinstance(event, TurnStartEvent))
+        assert turn_start.revertible is False
+        assert host._session_start_saved is False
+        assert checkpoint.list_checkpoints(str(repo)) == []
+
     async def test_fresh_turn_1_revertible_via_session_start_checkpoint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

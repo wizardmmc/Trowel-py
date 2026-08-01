@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { CodexCommandDialogs } from "../components/cc/CodexCommandDialogs";
-import { createNewSessionState } from "../stores/ccStore/sessionState";
+import { CodexCommandDialogs } from "../agent/runtimes/codex";
+import { createNewSessionState } from "../agent/application/store/sessionState";
 
 function active() {
   const session = createNewSessionState(
@@ -62,13 +62,8 @@ describe("CodexCommandDialogs", () => {
           codexSubagents: {
             "child-thread-1": {
               threadId: "child-thread-1",
-              parentThreadId: "thread-1",
               agentPath: "/root/probe",
               status: "progress",
-              state: root,
-              historyLoaded: false,
-              historyLoading: false,
-              historyError: null,
             },
           },
         }}

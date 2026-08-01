@@ -3,8 +3,8 @@ import {
   getEventStream,
   postMessageStream,
   parseSseFrames,
-} from "../api/ccStream";
-import type { AgentEvent } from "../api/agentTypes";
+} from "../agent/transport";
+import type { AgentEvent } from "../agent/transport";
 
 function env(partial: Partial<AgentEvent> & { type: string; seq: number }): string {
   return JSON.stringify({

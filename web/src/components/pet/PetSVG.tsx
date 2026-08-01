@@ -1,3 +1,5 @@
+/** 根据心情和已装备帽子绘制宠物形象。 */
+
 import type { PetMood } from "../../api/client";
 
 interface PetSVGProps {

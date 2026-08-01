@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentSession } from "../../api/agent";
-import type { AgentEvent } from "../../api/agentTypes";
-import { replayAgentHistory } from "../../stores/ccStore/historyState";
-import { createNewSessionState } from "../../stores/ccStore/sessionState";
+import type { AgentSession } from "../../agent/transport";
+import type { AgentEvent } from "../../agent/transport";
+import { replayAgentHistory } from "../../agent/application/store/historyState";
+import { createNewSessionState } from "../../agent/application/store/sessionState";
 
 const SESSION: AgentSession = {
   session_id: "s1",

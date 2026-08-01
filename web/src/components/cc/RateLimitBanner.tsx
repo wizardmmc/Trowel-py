@@ -1,3 +1,5 @@
+/** 展示当前额度窗口的预警或触顶状态，并共享分钟级倒计时。 */
+
 import { useSyncExternalStore } from "react";
 import type { RateLimitSnapshot, RateLimitWindow } from "../../agent/transport";
 import {

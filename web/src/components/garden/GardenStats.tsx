@@ -1,3 +1,5 @@
+/** 汇总花园植物数量、成长阶段和复习进度。 */
+
 import { useMemo } from "react";
 import type { GardenPlant, GardenStatsData } from "../../api/client";
 

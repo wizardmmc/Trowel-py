@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { WriteDiff } from "../api/ccTypes";
+import type { WriteDiff } from "../agent/transport";
 import { ToolBlock } from "../components/cc/ToolBlock";
 import { tool } from "./toolBlockFixtures";
 

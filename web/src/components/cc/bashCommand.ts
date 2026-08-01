@@ -1,3 +1,4 @@
+/** 将多段 shell 命令拆成适合逐段展示的结构。 */
 
 export interface BashSegment {
   readonly sep: "" | ";" | "&&" | "||" | "|";

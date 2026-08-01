@@ -1,3 +1,5 @@
+/** 加载知识花园并组合统计、搜索、网格和植物详情。 */
+
 import { useEffect, useState, useRef } from "react";
 import { useGardenStore } from "../../stores/gardenStore";
 import { GardenGrid } from "./GardenGrid";

@@ -33,6 +33,28 @@ def test_create_cc_session_creates_binding_and_registry_host(
     assert hub.get(binding.session_id) is not None
 
 
+def test_create_cc_session_separates_checkpoint_support_from_availability(
+    hub: SessionHub,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """runtime 支持 checkpoint 时，单个非 Git 工作目录仍必须标记为不可用。"""
+
+    monkeypatch.setattr(
+        "trowel_py.agent_host.hub.checkpoint.is_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "trowel_py.agent_host.hub.checkpoint.is_git_repo",
+        lambda _workdir: False,
+    )
+
+    binding = hub.create(cc_req(workdir))
+
+    assert "checkpoint" in binding.capabilities
+    assert binding.checkpoint_available is False
+
+
 def test_create_codex_session_creates_binding_and_registers_manager(
     hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
 ):

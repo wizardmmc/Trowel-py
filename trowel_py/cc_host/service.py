@@ -246,6 +246,8 @@ class CCHost:
         self._bg_tracker = BackgroundActivityTracker()
         # 成功 result 等后台结束；错误 result 立即结束，每轮只发布一个终态。
         self._pending_terminal: FinishedEvent | ErrorEvent | None = None
+        if resume_from:
+            self._register_session_blocking(str(self._jsonl_path(resume_from)))
         if checkpoint.is_git_repo(self.workdir) and resume_from:
             jsonl_path = self._jsonl_path(resume_from)
             offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
@@ -495,7 +497,7 @@ class CCHost:
     async def _prepare_checkpoint(self) -> tuple[str, bool]:
         """Git 工作区首轮复用启动 checkpoint，后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
-        if not checkpoint.is_git_repo(self.workdir):
+        if not checkpoint.is_enabled() or not checkpoint.is_git_repo(self.workdir):
             return uuid.uuid4().hex, False
         if self._turn_count == 1:
             return self._session_start_turn_id, True
@@ -517,7 +519,11 @@ class CCHost:
 
     async def _maybe_save_session_start_checkpoint(self, cc_sid: str) -> None:
         """原生会话 ID 就绪后，在线程池中幂等保存启动 checkpoint。"""
-        if self._session_start_saved or not checkpoint.is_git_repo(self.workdir):
+        if (
+            self._session_start_saved
+            or not checkpoint.is_enabled()
+            or not checkpoint.is_git_repo(self.workdir)
+        ):
             return
         jsonl_path = self._jsonl_path(cc_sid)
         offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
@@ -576,8 +582,10 @@ class CCHost:
             _wf_debug(f"memory completed-offset update failed (ignored): {exc}")
 
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
-        """同步保存会话首轮前的 checkpoint。"""
+        """启用 checkpoint 时同步保存会话首轮前的文件快照。"""
 
+        if not checkpoint.is_enabled():
+            return False
         try:
             checkpoint.save(
                 self.workdir,
@@ -593,8 +601,10 @@ class CCHost:
     def _save_checkpoint_blocking(
         self, turn_id: str, jsonl_path: str, offset: int
     ) -> bool:
-        """同步保存指定轮次前的 checkpoint。"""
+        """启用 checkpoint 时同步保存指定轮次前的文件快照。"""
 
+        if not checkpoint.is_enabled():
+            return False
         try:
             checkpoint.save(
                 self.workdir,

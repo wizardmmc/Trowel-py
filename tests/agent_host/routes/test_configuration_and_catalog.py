@@ -89,6 +89,54 @@ def test_get_runtimes(client: TestClient) -> None:
     assert codex["connected"] is True
 
 
+def test_get_runtimes_returns_the_evidence_backed_capability_matrix(
+    client: TestClient,
+) -> None:
+    """公开能力表必须覆盖当前真实 UI 链路，且不把两种 runtime 的能力混写。"""
+
+    response = client.get("/api/agent/runtimes")
+
+    assert response.status_code == 200
+    by_runtime = {
+        runtime["runtime"]: runtime["capabilities"]
+        for runtime in response.json()["data"]
+    }
+    assert by_runtime == {
+        "claude_code": [
+            "tools",
+            "models",
+            "effort",
+            "permission",
+            "question",
+            "interrupt",
+            "slash_commands",
+            "workflow",
+            "tasks",
+            "subagents",
+            "checkpoint",
+            "revert",
+            "mcp",
+        ],
+        "codex": [
+            "tools",
+            "models",
+            "effort",
+            "permission",
+            "sandbox",
+            "network_access",
+            "approval",
+            "interrupt",
+            "slash_commands",
+            "goal",
+            "plan",
+            "review",
+            "subagents",
+            "turn_diff",
+            "mcp",
+        ],
+    }
+
+
 def test_get_models_returns_the_manager_catalog(
     client: TestClient,
     hub: SessionHub,

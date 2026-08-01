@@ -25,6 +25,7 @@
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
+| `agent_host/capabilities.py` | 版本化保存两种 runtime 已实证可用的公开能力矩阵 |
 | `agent_host/runtimes/` | 两种 runtime 的共同实时状态、创建回滚、关闭操作和对称事件适配器 |
 | `agent_host/capacity.py` | 跨 runtime 的用户连接与委派连接/在跑容量裁决 |
 | `agent_host/lifecycle.py` | runtime 登记、binding、委派身份和关闭标记的一致提交与回滚 |
@@ -123,13 +124,16 @@
 | `web/src/agent/domain/` | Agent session、turn、timeline item 与纯 reducer 的唯一 owner |
 | `web/src/agent/application/` | Agent Zustand store、会话命令、连接生命周期和 selector 的唯一 owner |
 | `web/src/agent/transport/` | Trowel Agent HTTP、SSE 与 wire DTO 的唯一 owner |
+| `web/src/agent/runtimes/` | capability 协议、Claude Code/Codex 同级 presentation adapter 与各自专属 UI |
+| `web/src/agent/runtimes/shared/` | 两个 runtime 都按相同语义使用的 capability 组合、路径和工具输出展示；单一 runtime 的代码不得进入 |
 | `web/src/agent/ui/` | 双 runtime 共用的会话 shell、消息列表、工作目录选择器与样式入口 |
 | `web/src/agent/index.ts` | 前端 Agent 领域的稳定公开 facade |
-| `web/src/api/` | 其他产品 API；Agent 旧路径在迁移期只保留显式兼容 re-export，`api/cc.ts` 仍持有 Claude Code 专属 API |
-| `web/src/stores/` | 其他产品 Zustand store；`ccStore`、`ccReducer` 与 frame selector 旧路径只保留兼容 re-export |
-| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的组件；`cc` 下通用会话入口为迁移期 facade，runtime 展示待 L05 拆分 |
+| `web/src/api/` | 其他产品 API；`api/cc.ts` 只保留 Claude Code 专属 HTTP 操作 |
+| `web/src/stores/` | Agent 之外的产品 Zustand store；旧 `ccStore`、`ccReducer` 与 selector 路径已删除 |
+| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的页面组件；runtime 专属展示从 `agent/runtimes` facade 读取 |
 | `web/src/styles/` | 全局 token 与样式 |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |
+| `web/scripts/check-module-comments.mjs` | 检查生产 TypeScript 模块是否以中文职责说明开头 |
 
 ## 测试
 

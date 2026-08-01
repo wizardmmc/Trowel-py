@@ -1,3 +1,5 @@
+/** 管理多会话字典、Agent 命令、连接生命周期和 transport 调用。 */
+
 import { create } from "zustand";
 
 import {

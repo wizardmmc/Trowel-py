@@ -123,6 +123,38 @@ describe("NewSessionDialog lifecycle", () => {
     expect(onCreate.mock.calls[0][0].runtime).toBe("claude_code");
   });
 
+  it("shows missing capabilities and hides unsupported runtime settings", () => {
+    if (READY_BOTH.status !== "ready") {
+      throw new Error("READY_BOTH fixture must contain a ready runtime catalog");
+    }
+    const limited: RuntimesState = {
+      status: "ready",
+      runtimes: [
+        READY_BOTH.runtimes[0],
+        {
+          ...READY_BOTH.runtimes[1],
+          capabilities: ["tools"],
+        },
+      ],
+    };
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={() => {}}
+        onCancel={() => {}}
+        runtimesState={limited}
+        codexModels={CODEX_MODELS}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+
+    expect(screen.getByText(/能力信息不完整/)).toBeInTheDocument();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Effort")).toBeNull();
+    expect(screen.queryByText("Permission")).toBeNull();
+  });
+
   it("取消 fires onCancel and does NOT create", () => {
     const onCreate = vi.fn();
     const onCancel = vi.fn();

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   INITIAL_REDUCER_STATE,
   reduceEvent,
-} from "../../stores/ccStore";
+} from "../../agent";
 
 describe("Codex Goal and Plan reducer", () => {
   it("keeps the complete native Goal snapshot and clears it explicitly", () => {

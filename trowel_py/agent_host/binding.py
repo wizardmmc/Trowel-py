@@ -8,6 +8,11 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, cast
 
+from trowel_py.agent_host.capabilities import (
+    CURRENT_CAPABILITY_VERSION,
+    capabilities_for_runtime,
+)
+
 TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
 _TITLE_SOURCES: frozenset[str] = frozenset(
     {"new", "native", "prompt", "generated", "manual"}
@@ -32,6 +37,42 @@ class SessionBinding:
     不变；``injection_hash`` 只保存正文指纹，``declared_mcp_roster`` 只记录
     Trowel 声明的 MCP，不代表用户配置后的有效 roster。状态更新必须创建新实例，
     避免内存对象与落盘记录各自发生局部修改。
+
+    Attributes:
+        session_id: Trowel 分配并用于公开 API 的会话 ID。
+        runtime: 当前会话由 Claude Code 还是 Codex 运行。
+        native_session_id: Claude Code 会话 ID 或 Codex thread ID；原生 host 尚未
+            报告时为 None。
+        workdir: 会话冻结的完整工作目录。
+        model: 当前请求或原生 host 回报的模型；尚未取得时为 None。
+        effort: 当前思考强度；runtime 未提供时为 None。
+        permission: 面向界面展示的有效权限摘要；尚未取得时为 None。
+        memory_enabled: 是否向该会话注入 Trowel Memory。
+        profile_enabled: 是否向该会话注入用户画像。
+        capabilities: 当前 Trowel 已实证并允许界面使用的 runtime 能力 ID。
+        name: 多开栏使用的会话临时名称。
+        capability_version: ``capabilities`` 所属的 Trowel 能力矩阵版本。
+        checkpoint_available: 当前目录和本机配置是否允许实际创建 checkpoint；
+            runtime 不支持或尚未确认时分别为 False 或 None。
+        connected: Trowel 当前是否持有可继续使用的 runtime 连接。
+        running: 当前会话是否有尚未结束的 turn。
+        created_at: binding 首次创建的本地 ISO 时间。
+        updated_at: binding 最近一次持久更新的本地 ISO 时间。
+        permission_preset: 用户为 Codex 选择的权限预设；未选择时为 None。
+        effective_permission_profile: Codex 当前生效的权限档位；未回报时为 None。
+        effective_sandbox: Codex 当前生效的 sandbox；未回报时为 None。
+        effective_approval: Codex 当前生效的审批策略；未回报时为 None。
+        network_access: Codex 当前是否允许联网；未知或不适用时为 None。
+        injection_hash: 本次注入正文的指纹，用于追溯而不持久化正文。
+        declared_mcp_roster: Trowel 本次声明的 MCP 服务名，不包含用户配置扩展。
+        self_enabled: 是否为 Model OS 会话注入 Self；普通用户会话通常为 True。
+        session_kind: 区分用户会话、委派子会话和其他内部会话的持久标识。
+        memory_eligibility: 该会话是否允许进入 Memory 提炼来源。
+        agent_mcp_enabled: 是否向会话挂载跨 runtime 委派 MCP。
+        parent_session_id: 委派子会话对应的 Trowel 父会话 ID；没有父会话时为 None。
+        delegation_depth: 委派树中的层级，用户会话为 0。
+        display_title: 用户可见的持久标题；尚未生成时为空字符串。
+        title_source: 标题来自新建、原生记录、首条消息、模型生成还是手动修改。
     """
 
     session_id: str
@@ -45,6 +86,8 @@ class SessionBinding:
     profile_enabled: bool
     capabilities: tuple[str, ...]
     name: str
+    capability_version: int = CURRENT_CAPABILITY_VERSION
+    checkpoint_available: bool | None = None
     connected: bool = False
     running: bool = False
     created_at: str = ""
@@ -79,6 +122,8 @@ class SessionBinding:
             "memory_enabled": self.memory_enabled,
             "profile_enabled": self.profile_enabled,
             "capabilities": list(self.capabilities),
+            "capability_version": self.capability_version,
+            "checkpoint_available": self.checkpoint_available,
             "name": self.name,
             "connected": self.connected,
             "running": self.running,
@@ -115,6 +160,8 @@ def make_binding(
     profile_enabled: bool,
     capabilities: Iterable[str],
     name: str,
+    capability_version: int = CURRENT_CAPABILITY_VERSION,
+    checkpoint_available: bool | None = None,
     connected: bool = False,
     running: bool = False,
     permission_preset: str | None = None,
@@ -133,7 +180,43 @@ def make_binding(
     display_title: str = "",
     title_source: TitleSource = "new",
 ) -> SessionBinding:
-    """创建 binding，并在同一时刻设置创建与更新时间。"""
+    """创建 binding，并在同一时刻设置创建与更新时间。
+
+    Args:
+        session_id: Trowel 分配的公开会话 ID。
+        runtime: 会话冻结使用的原生 runtime。
+        native_session_id: 原生会话或 thread ID；尚未报告时为 None。
+        workdir: 会话冻结的完整工作目录。
+        model: 创建时请求的模型；沿用 runtime 默认值时为 None。
+        effort: 创建时请求的思考强度；沿用默认值时为 None。
+        permission: 面向界面的有效权限摘要；尚未取得时为 None。
+        memory_enabled: 是否注入 Trowel Memory。
+        profile_enabled: 是否注入用户画像。
+        capabilities: 已实证并允许界面使用的 runtime 能力 ID。
+        name: 多开栏使用的会话临时名称。
+        capability_version: capabilities 对应的能力矩阵版本。
+        checkpoint_available: 当前目录和本机配置是否允许实际创建 checkpoint。
+        connected: 创建 binding 时是否已经建立可用连接。
+        running: 创建 binding 时是否已经存在未结束 turn。
+        permission_preset: 用户选择的 Codex 权限预设。
+        effective_permission_profile: Codex 已确认生效的权限档位。
+        effective_sandbox: Codex 已确认生效的 sandbox。
+        effective_approval: Codex 已确认生效的审批策略。
+        network_access: Codex 已确认的联网权限。
+        injection_hash: 注入正文的指纹。
+        declared_mcp_roster: Trowel 声明的 MCP 服务名。
+        self_enabled: 是否注入 Model OS Self。
+        session_kind: 用户、委派或其他内部会话的类别。
+        memory_eligibility: 是否允许该会话进入 Memory 提炼。
+        agent_mcp_enabled: 是否挂载跨 runtime 委派 MCP。
+        parent_session_id: 委派子会话的 Trowel 父会话 ID。
+        delegation_depth: 委派树层级，用户会话为 0。
+        display_title: 当前用户可见标题。
+        title_source: 当前标题的来源。
+
+    Returns:
+        带统一创建时间和更新时间的不可变 binding。
+    """
 
     now = datetime.now().isoformat(timespec="microseconds")
     return SessionBinding(
@@ -148,6 +231,8 @@ def make_binding(
         profile_enabled=profile_enabled,
         capabilities=tuple(capabilities),
         name=name,
+        capability_version=capability_version,
+        checkpoint_available=checkpoint_available,
         connected=connected,
         running=running,
         permission_preset=permission_preset,
@@ -171,9 +256,31 @@ def make_binding(
 
 
 def binding_from_dict(data: dict[str, object]) -> SessionBinding:
-    """兼容旧记录缺失的可选字段；必填字段和未知 runtime 仍严格失败。"""
+    """把持久化字典恢复为 binding，并升级旧能力清单。
 
-    capabilities = data.get("capabilities", ())
+    Args:
+        data: BindingStore 读出的单个会话字典；旧记录可以缺少后来新增的可选字段。
+
+    Returns:
+        经过默认值兼容和能力矩阵升级的不可变 binding。
+
+    Raises:
+        KeyError: 记录缺少会话身份、runtime、目录或名称等必填字段。
+        ValueError: 记录包含当前不支持的 runtime。
+    """
+
+    runtime = Runtime(str(data["runtime"]))
+    raw_capability_version = data.get("capability_version")
+    if (
+        isinstance(raw_capability_version, int)
+        and not isinstance(raw_capability_version, bool)
+        and raw_capability_version >= CURRENT_CAPABILITY_VERSION
+    ):
+        capability_version = raw_capability_version
+        capabilities = data.get("capabilities", ())
+    else:
+        capability_version = CURRENT_CAPABILITY_VERSION
+        capabilities = capabilities_for_runtime(runtime.value)
     declared_mcp_roster = data.get("declared_mcp_roster", ())
     raw_delegation_depth = data.get("delegation_depth", 0)
     delegation_depth = (
@@ -188,9 +295,15 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(raw_title_source, str) and raw_title_source in _TITLE_SOURCES
         else "new"
     )
+    raw_checkpoint_available = data.get("checkpoint_available")
+    checkpoint_available = (
+        raw_checkpoint_available
+        if isinstance(raw_checkpoint_available, bool)
+        else None
+    )
     return SessionBinding(
         session_id=str(data["session_id"]),
-        runtime=Runtime(str(data["runtime"])),
+        runtime=runtime,
         native_session_id=(
             str(data["native_session_id"]) if data.get("native_session_id") else None
         ),
@@ -206,6 +319,8 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(capabilities, (list, tuple))
         else (),
         name=str(data["name"]),
+        capability_version=capability_version,
+        checkpoint_available=checkpoint_available,
         connected=bool(data.get("connected", False)),
         running=bool(data.get("running", False)),
         created_at=str(data.get("created_at", "")),

@@ -1,3 +1,5 @@
+/** 渲染 Agent Markdown、代码块、公式和可打开的本地文件链接。 */
+
 import React, { type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { PluggableList } from "unified";

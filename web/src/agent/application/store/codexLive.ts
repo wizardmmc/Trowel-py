@@ -1,3 +1,5 @@
+/** 管理各 Codex 会话的 SSE watcher、终态收口和 goal 刷新。 */
+
 import {
   agentEventsUrl,
   getCodexGoal,

@@ -1,3 +1,5 @@
+/** 在长消息流顶部显示当前 turn 的用户消息和跳转入口。 */
+
 interface CurrentTurnContextProps {
   readonly text: string;
   readonly visible: boolean;

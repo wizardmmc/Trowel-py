@@ -1,3 +1,5 @@
+/** 提供可补全和浏览的工作目录输入控件。 */
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   listWorkdirEntries,

@@ -9,6 +9,10 @@ from typing import Any
 import pytest
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding, make_binding
+from trowel_py.agent_host.capabilities import (
+    CURRENT_CAPABILITY_VERSION,
+    capabilities_for_runtime,
+)
 from trowel_py.agent_host.store import (
     BindingStore,
     next_session_display_name,
@@ -92,6 +96,51 @@ def test_old_binding_defaults_to_new_title_state(tmp_path):
     assert got is not None
     assert got.display_title == ""
     assert got.title_source == "new"
+
+
+@pytest.mark.parametrize("runtime", [Runtime.CLAUDE_CODE, Runtime.CODEX])
+@pytest.mark.parametrize("invalid_version", [None, 0, -1, True, "1"])
+def test_old_binding_upgrades_missing_or_invalid_capability_roster(
+    tmp_path: Path,
+    runtime: Runtime,
+    invalid_version: object,
+) -> None:
+    """旧 binding 没有合法版本号时按当前矩阵补齐，避免恢复后误隐藏功能。"""
+
+    path = tmp_path / "b.json"
+    binding = _binding(runtime=runtime, capabilities=("tools",)).to_dict()
+    if invalid_version is None:
+        del binding["capability_version"]
+    else:
+        binding["capability_version"] = invalid_version
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    got = BindingStore(path).get("s1")
+
+    assert got is not None
+    assert got.capability_version == CURRENT_CAPABILITY_VERSION
+    assert got.capabilities == capabilities_for_runtime(runtime.value)
+
+
+def test_future_capability_roster_is_preserved_for_older_reader(tmp_path: Path) -> None:
+    """较新程序写出的合法版本不能被旧程序按自己的矩阵静默降级。"""
+
+    path = tmp_path / "b.json"
+    binding = _binding(capabilities=("tools", "future-capability")).to_dict()
+    binding["capability_version"] = CURRENT_CAPABILITY_VERSION + 1
+    path.write_text(
+        json.dumps({"version": 1, "sessions": {"s1": binding}}),
+        encoding="utf-8",
+    )
+
+    got = BindingStore(path).get("s1")
+
+    assert got is not None
+    assert got.capability_version == CURRENT_CAPABILITY_VERSION + 1
+    assert got.capabilities == ("tools", "future-capability")
 
 
 def test_put_overwrite_updates_fields(tmp_path):

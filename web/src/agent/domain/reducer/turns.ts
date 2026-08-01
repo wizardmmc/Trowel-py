@@ -1,3 +1,5 @@
+/** 对齐乐观 turn、后端 turn_start 和用户消息回声。 */
+
 import type { TurnStartEvent, UserEvent } from "../../transport/events";
 import type { ReducerState, Turn } from "./model";
 

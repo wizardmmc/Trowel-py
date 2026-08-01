@@ -1,3 +1,4 @@
+/** 定义统一 Agent HTTP API 的请求、响应类型和调用函数。 */
 
 import type { AgentEvent, Runtime } from "./agentEvent";
 import type { GoalStatus } from "./events";
@@ -33,6 +34,8 @@ export interface AgentSession {
   readonly memory_enabled: boolean;
   readonly profile_enabled: boolean;
   readonly capabilities: readonly string[];
+  readonly capability_version?: number;
+  readonly checkpoint_available?: boolean | null;
   readonly name: string;
   readonly display_title?: string;
   readonly title_source?: SessionTitleSource;
