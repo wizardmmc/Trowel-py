@@ -1,6 +1,7 @@
 /** 调用仍由 CC Host 提供的原生会话、命令和 checkpoint 接口。 */
 
 import type { AnswerElicitBody, TrowelEvent } from "../agent/transport/events";
+import { transportFetch } from "../platform/transport";
 
 const CC_API_BASE = "/api/cc";
 
@@ -37,13 +38,13 @@ interface ApiEnvelope<T> {
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await transportFetch(url, options);
   if (!response.ok) {
-    throw new Error(`CC API error: ${response.status}`);
+    throw new Error(`Claude API 请求失败：${response.status}`);
   }
   const result: ApiEnvelope<T> = await response.json();
   if (!result.success || result.error) {
-    throw new Error(result.error ?? "CC API call failed");
+    throw new Error(result.error ?? "Claude API 请求失败");
   }
   return result.data as T;
 }
@@ -65,17 +66,17 @@ export interface CcSessionListResult {
 }
 
 export async function listSessions(workdir: string): Promise<CcSessionListResult> {
-  const response = await fetch(
+  const response = await transportFetch(
     `${CC_API_BASE}/sessions?workdir=${encodeURIComponent(workdir)}`,
   );
   if (!response.ok) {
-    throw new Error(`CC API error: ${response.status}`);
+    throw new Error(`Claude API 请求失败：${response.status}`);
   }
   const result: ApiEnvelope<CcSessionSummary[]> & {
     meta?: { total?: number; limit?: number };
   } = await response.json();
   if (!result.success || result.error) {
-    throw new Error(result.error ?? "CC API call failed");
+    throw new Error(result.error ?? "Claude API 请求失败");
   }
   const sessions = result.data ?? [];
   return { sessions, total: result.meta?.total ?? sessions.length };
@@ -145,7 +146,7 @@ export async function answerElicit(
   sessionId: string,
   body: AnswerElicitBody,
 ): Promise<{ ok: boolean }> {
-  const resp = await fetch(
+  const resp = await transportFetch(
     `${CC_API_BASE}/sessions/${sessionId}/answer`,
     {
       method: "POST",
@@ -154,7 +155,7 @@ export async function answerElicit(
     },
   );
   if (!resp.ok) {
-    throw new Error(`CC API error: ${resp.status}`);
+    throw new Error(`Claude API 请求失败：${resp.status}`);
   }
   const result: ApiEnvelope<{ answered: boolean }> = await resp.json();
   return { ok: Boolean(result.success) };

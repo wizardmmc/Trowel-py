@@ -62,6 +62,7 @@ describe("reduceEvent — retrying / stalled / compact_boundary / hook / status"
   it("compact_boundary adds a divider item", () => {
     const state = reduceEvent(withOpenTurn(), { type: "compact_boundary" });
     expect(state.turns[0].items[0]).toMatchObject({ kind: "compact_boundary" });
+    expect(state.meta.compactionCount).toBe(1);
   });
 
   it("hook records hook_name on meta for the StatusBar chip", () => {
@@ -83,6 +84,35 @@ describe("reduceEvent — terminal events", () => {
     expect(state.phase).toBe("done");
     expect(state.meta.costUsd).toBe(0.04);
     expect(state.meta.numTurns).toBe(2);
+  });
+
+  it("finished normalizes Claude usage into the last turn token total", () => {
+    const state = reduceEvent(withOpenTurn(), {
+      type: "finished",
+      usage: {
+        input_tokens: 10_000,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 1_200,
+        output_tokens: 205,
+      },
+      total_cost_usd: 0.04,
+      num_turns: 2,
+    });
+
+    expect(state.meta.lastTurnTokens).toBe(12_405);
+  });
+
+  it("a new user turn clears the previous turn token summary", () => {
+    const finished = reduceEvent(withOpenTurn(), {
+      type: "finished",
+      usage: { input_tokens: 100, output_tokens: 20 },
+      total_cost_usd: 0.01,
+      num_turns: 1,
+    });
+
+    const next = reduceEvent(finished, { type: "user", text: "下一轮" });
+
+    expect(next.meta.lastTurnTokens).toBeNull();
   });
 
   it("finished also flips the current turn status to done", () => {

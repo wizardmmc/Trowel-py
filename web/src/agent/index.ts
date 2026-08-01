@@ -22,4 +22,4 @@ export {
   type AgentSession,
   type Runtime,
 } from "./transport";
-export { MessageList, SessionView, WorkdirPicker } from "./ui";
+export { AgentWorkspace, MessageList, SessionView, WorkdirPicker } from "./ui";

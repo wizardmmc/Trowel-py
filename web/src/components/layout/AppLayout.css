@@ -1,7 +1,8 @@
 .app-layout {
   display: grid;
-  grid-template-columns: 60px 1fr;
+  grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr);
   height: 100%;
+  background: var(--bg-sidebar);
 }
 
 .app-sidebar {
@@ -12,6 +13,7 @@
   align-items: center;
   padding: var(--space-md) 0;
   gap: var(--space-xs);
+  -webkit-app-region: drag;
 }
 
 .sidebar-logo {
@@ -56,6 +58,7 @@
   font-family: var(--font-sans);
   gap: 3px;
   position: relative;
+  -webkit-app-region: no-drag;
 }
 
 .sidebar-nav__item:hover {
@@ -108,8 +111,56 @@
   overflow-y: auto;
   min-height: 0;
 }
+
+[data-platform="desktop"] .app-sidebar {
+  padding-top: 48px;
+}
+
+[data-platform="desktop"] .app-main {
+  border-radius: var(--app-main-shoulder) 0 0 0;
+}
+
+[data-platform="desktop"] .app-main:not(.app-main--flush) {
+  padding-top: 0;
+  -webkit-app-region: drag;
+}
+
+[data-platform="desktop"] .app-main:not(.app-main--flush) > *:not(.app-main__drag-region) {
+  -webkit-app-region: no-drag;
+}
+
+.app-main__drag-region {
+  display: none;
+}
+
+[data-platform="desktop"] .app-main__drag-region {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--app-top-drag-height);
+  margin-right: calc(-1 * var(--space-lg));
+  margin-left: calc(-1 * var(--space-lg));
+  background-color: var(--bg-garden);
+  -webkit-app-region: drag;
+}
+
+[data-platform="desktop"] button,
+[data-platform="desktop"] a,
+[data-platform="desktop"] input,
+[data-platform="desktop"] textarea,
+[data-platform="desktop"] select,
+[data-platform="desktop"] [contenteditable="true"] {
+  -webkit-app-region: no-drag;
+}
+
 .app-main--flush {
   padding: 0;
+}
+
+.agent-workspace-slot {
+  height: 100%;
+  min-height: 0;
 }
 
 .app-main__hamburger {
@@ -132,7 +183,7 @@
     left: 0;
     bottom: 0;
     z-index: 200;
-    width: 60px;
+    width: var(--app-sidebar-width);
   }
 
   .app-main__hamburger {
@@ -163,5 +214,21 @@
 
   .app-main__hamburger:hover {
     opacity: 1;
+  }
+}
+
+@media (max-width: 1023px) {
+  [data-platform="desktop"] .app-layout {
+    grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr);
+  }
+
+  [data-platform="desktop"] .app-sidebar {
+    position: static;
+    display: flex;
+    width: auto;
+  }
+
+  [data-platform="desktop"] .app-main__hamburger {
+    display: none;
   }
 }

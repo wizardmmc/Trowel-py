@@ -7,7 +7,6 @@ import {
   revertSession as apiRevertSession,
 } from "../../api/cc";
 import {
-  activateAgentSession as apiActivateSession,
   agentMessagesUrl as messagesUrl,
   answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
@@ -81,6 +80,7 @@ export interface AgentState {
 
   startSession: (params: StartSessionParams) => Promise<AgentSession>;
   activateSession: (sid: string) => Promise<void>;
+  showWorkspaceHome: () => void;
   closeSession: (sid: string) => Promise<void>;
   refreshActiveSessions: () => Promise<void>;
   refreshHistory: (workdir: string) => Promise<void>;
@@ -108,6 +108,7 @@ export function createAgentStore() {
     let historyGeneration = 0;
     let historyLoadMorePromise: Promise<void> | null = null;
     let historyLoadMoreToken: symbol | null = null;
+    let activeSessionRefreshGeneration = 0;
     let sessionStartGeneration = 0;
     function applyTo(
       sid: string,
@@ -273,17 +274,42 @@ export function createAgentStore() {
           return;
         }
         await dropTempActive();
-        try {
-          await apiActivateSession(sid);
-        } catch {
-          // 后端激活失败仍允许本地切换视图。
-        }
         set({ activeSid: sid });
         await recoverApprovalRequests(sid);
         if (get().sessions[sid]?.runtime === "codex") {
           codexLive.watchInBackground(sid);
           await codexLive.refreshGoal(sid);
         }
+      },
+
+      showWorkspaceHome: () => {
+        const state = get();
+        const sid = state.activeSid;
+        if (!sid) return;
+        const session = state.sessions[sid];
+        set({ activeSid: null });
+        if (!session || session.connected || session.meta.exited || session.abort) return;
+        void (async () => {
+          try {
+            await apiDeleteSession(sid);
+          } catch {
+            // 离开未连接会话时，本地仍应立即回到工作区首页。
+          }
+          set((current) => {
+            const stale = current.sessions[sid];
+            if (
+              current.activeSid === sid ||
+              !stale ||
+              stale.connected ||
+              stale.abort
+            ) {
+              return current;
+            }
+            const sessions = { ...current.sessions };
+            delete sessions[sid];
+            return { ...current, sessions };
+          });
+        })();
       },
 
       closeSession: async (sid) => {
@@ -305,26 +331,27 @@ export function createAgentStore() {
       },
 
       refreshActiveSessions: async () => {
-        let backend: readonly AgentSession[] = [];
-        let activeId: string | null = null;
+        const generation = ++activeSessionRefreshGeneration;
+        let backend: readonly AgentSession[];
         try {
           const result = await listActiveSessions();
           backend = result.sessions;
-          activeId = result.activeId;
         } catch {
           return;
         }
+        if (generation !== activeSessionRefreshGeneration) return;
         const userSessions = backend.filter(
           (session) => (session.session_kind ?? "user") === "user",
         );
+        const newConnectedCodexSessions: string[] = [];
         set((state) => {
           const merged = Object.fromEntries(
             Object.entries(state.sessions).filter(
-              ([, session]) => session.sessionKind !== "delegate",
+              ([, session]) => session.sessionKind === "delegate",
             ),
           );
           for (const b of userSessions) {
-            const existing = merged[b.session_id];
+            const existing = state.sessions[b.session_id];
             if (existing) {
               const displayTitle = b.display_title ?? existing.displayTitle;
               const titleSource = b.title_source ?? existing.titleSource;
@@ -337,24 +364,25 @@ export function createAgentStore() {
                   displayTitle,
                   titleSource,
                 };
+              } else {
+                merged[b.session_id] = existing;
               }
             } else {
               merged[b.session_id] = createReconciledSessionState(b);
+              if (b.runtime === "codex" && b.connected) {
+                newConnectedCodexSessions.push(b.session_id);
+              }
             }
           }
           const activeSid =
             state.activeSid && merged[state.activeSid]
               ? state.activeSid
-              : activeId && merged[activeId]
-                ? activeId
-                : null;
+              : null;
           return { ...state, sessions: merged, activeSid };
         });
-        for (const session of userSessions) {
-          if (session.runtime === "codex" && session.connected) {
-            codexLive.watchInBackground(session.session_id);
-            void codexLive.refreshGoal(session.session_id);
-          }
+        for (const sessionId of newConnectedCodexSessions) {
+          codexLive.watchInBackground(sessionId);
+          void codexLive.refreshGoal(sessionId);
         }
       },
 
@@ -955,6 +983,7 @@ export function createAgentStore() {
         const sid = get().activeSid;
         if (!sid) throw new Error("No active Codex session");
         let accepted = false;
+        let phaseBeforeCompact: PerSessionState["phase"] | null = null;
         set((state) => {
           const session = state.sessions[sid];
           if (
@@ -966,6 +995,7 @@ export function createAgentStore() {
             return state;
           }
           accepted = true;
+          phaseBeforeCompact = session.phase;
           return {
             ...state,
             sessions: {
@@ -973,6 +1003,7 @@ export function createAgentStore() {
               [sid]: {
                 ...session,
                 commandPending: "compact",
+                phase: "compacting",
                 transportError: null,
               },
             },
@@ -993,6 +1024,10 @@ export function createAgentStore() {
                 [sid]: {
                   ...session,
                   commandPending: null,
+                  phase:
+                    session.phase === "compacting"
+                      ? phaseBeforeCompact ?? "idle"
+                      : session.phase,
                   transportError: (error as Error).message,
                 },
               },

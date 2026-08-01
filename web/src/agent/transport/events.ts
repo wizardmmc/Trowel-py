@@ -128,6 +128,11 @@ export interface CompactBoundaryEvent {
   readonly type: "compact_boundary";
 }
 
+export interface CompactionEvent {
+  readonly type: "compaction";
+  readonly phase: string;
+}
+
 export interface LocalCommandEvent {
   readonly type: "local_command";
   readonly content: string;
@@ -135,9 +140,9 @@ export interface LocalCommandEvent {
 
 export interface FinishedEvent {
   readonly type: "finished";
-  readonly usage: Record<string, unknown>;
-  readonly total_cost_usd: number;
-  readonly num_turns: number;
+  readonly usage: Record<string, unknown> | null;
+  readonly total_cost_usd: number | null;
+  readonly num_turns: number | null;
 }
 
 export interface SessionExitedEvent {
@@ -348,6 +353,7 @@ export type TrowelEvent =
   | HookEvent
   | StatusEvent
   | CompactBoundaryEvent
+  | CompactionEvent
   | LocalCommandEvent
   | FinishedEvent
   | SessionExitedEvent

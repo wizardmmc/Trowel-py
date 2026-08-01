@@ -135,6 +135,7 @@ export function NewSessionDialog({
     : "";
   const createBlocked =
     creating ||
+    !workdir.trim() ||
     catalogLoading ||
     catalogError !== null ||
     !selectedConnected ||
@@ -334,6 +335,11 @@ export function NewSessionDialog({
           {error && (
             <p className="cc-dialog__error" role="alert">
               {error}
+            </p>
+          )}
+          {!workdir.trim() && (
+            <p className="cc-dialog__error" role="alert">
+              需要先选择工作目录
             </p>
           )}
         </div>

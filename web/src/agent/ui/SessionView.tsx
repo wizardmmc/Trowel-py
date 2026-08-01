@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -34,6 +35,7 @@ import {
   saveNewSessionPreferences,
 } from "../../components/cc/newSessionPreferences";
 import { MessageList } from "./MessageList";
+import { WorkspaceHome } from "./WorkspaceHome";
 import { MultiSessionBar } from "../../components/cc/MultiSessionBar";
 import { SessionBanners } from "../../components/cc/SessionBanners";
 import { SessionComposer } from "../../components/cc/SessionComposer";
@@ -45,9 +47,19 @@ import { useSessionCatalogs } from "../../components/cc/useSessionCatalogs";
 import { useStickyBottom } from "../../components/cc/useStickyBottom";
 import "./agent.css";
 
+export interface NewSessionWorkdirRequest {
+  readonly id: number;
+  readonly workdir: string;
+}
+
 interface SessionViewProps {
   readonly workdir: string;
   readonly onRequestChangeWorkdir?: () => void;
+  readonly onRequestNewWorkdir?: () => void;
+  readonly newSessionWorkdirRequest?: NewSessionWorkdirRequest | null;
+  readonly onNewSessionWorkdirRequestHandled?: (id: number) => void;
+  readonly onWorkdirActivated?: (workdir: string) => void;
+  readonly emptyWorkspaceContent?: ReactNode;
 }
 
 const ACTIVE_PHASES = new Set([
@@ -66,6 +78,8 @@ interface SessionTranscriptPaneProps {
   readonly openedSubagentId: string | null;
   readonly composerH: number;
   readonly fallbackWorkdir: string;
+  readonly emptyContent?: ReactNode;
+  readonly onRequestChangeWorkdir?: () => void;
   readonly jumpToBottomRef: MutableRefObject<(() => void) | null>;
   readonly onCloseSubagent: () => void;
   readonly onRetryLast: () => void;
@@ -82,6 +96,8 @@ function SessionTranscriptPane({
   openedSubagentId,
   composerH,
   fallbackWorkdir,
+  emptyContent,
+  onRequestChangeWorkdir,
   jumpToBottomRef,
   onCloseSubagent,
   onRetryLast,
@@ -129,7 +145,7 @@ function SessionTranscriptPane({
     <>
       <div
         ref={scrollRef}
-        className="cc-view__scroll"
+        className={`cc-view__scroll${!active && emptyContent ? " cc-view__scroll--workspace" : ""}`}
         style={{ "--composer-h": `${composerH}px` } as CSSProperties}
       >
         {active ? (
@@ -176,12 +192,30 @@ function SessionTranscriptPane({
               }
             />
           </>
-        ) : (
+        ) : emptyContent ? (
+          emptyContent
+        ) : fallbackWorkdir ? (
           <div className="cc-empty cc-empty--noactive">
             <div>未选择 session</div>
             <div className="cc-empty__hint">
               点左侧多开栏选一个，或 + 新开一个。
             </div>
+          </div>
+        ) : (
+          <div className="cc-empty cc-empty--noactive">
+            <div>未选择工作目录</div>
+            {onRequestChangeWorkdir && (
+              <button
+                type="button"
+                className="cc-empty__action"
+                onClick={onRequestChangeWorkdir}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                选择工作目录
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -212,6 +246,11 @@ function SessionTranscriptPane({
 export function SessionView({
   workdir,
   onRequestChangeWorkdir,
+  onRequestNewWorkdir,
+  newSessionWorkdirRequest = null,
+  onNewSessionWorkdirRequestHandled,
+  onWorkdirActivated,
+  emptyWorkspaceContent,
 }: SessionViewProps) {
   const activeSid = useAgentStore((s) => s.activeSid);
   const active = useAgentStore(
@@ -253,6 +292,9 @@ export function SessionView({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [newSessionWorkdir, setNewSessionWorkdir] = useState<string | null>(
+    null,
+  );
   const [workRailOpen, setWorkRailOpen] = useState(false);
   const [openedSubagentId, setOpenedSubagentId] = useState<string | null>(null);
   const [commandDialog, setCommandDialog] =
@@ -260,6 +302,7 @@ export function SessionView({
   const [reviewPending, setReviewPending] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const reviewRequestRef = useRef<symbol | null>(null);
+  const handledNewSessionRequestRef = useRef<number | null>(null);
   const [commandNotice, setCommandNotice] = useState<{
     readonly sessionId: string;
     readonly level: "loading" | "success" | "error";
@@ -267,6 +310,11 @@ export function SessionView({
   } | null>(null);
   const [newSessionInitialConfig, setNewSessionInitialConfig] =
     useState<NewSessionConfig | null>(null);
+  const catalogWorkdir =
+    active?.workdir ??
+    newSessionWorkdir ??
+    newSessionWorkdirRequest?.workdir ??
+    workdir;
   const {
     slashItems,
     models,
@@ -275,7 +323,7 @@ export function SessionView({
     runtimesState,
     loadRuntimes,
     loadCodexModels,
-  } = useSessionCatalogs(workdir);
+  } = useSessionCatalogs(catalogWorkdir);
   const activePresentation = active
     ? getRuntimePresentation(active.runtime, active.capabilities)
     : null;
@@ -342,11 +390,34 @@ export function SessionView({
     loadHistoryIntoView,
   });
 
+  /** 读取最近配置并打开指定目录的新会话对话框。 */
+  const prepareNewSession = useCallback(async (targetWorkdir: string) => {
+    setCreateError(null);
+    const latest = await getAgentSessionDefaults().catch(() => null);
+    setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
+    setNewSessionWorkdir(targetWorkdir);
+    setShowNewDialog(true);
+  }, []);
+
+  useEffect(() => {
+    const request = newSessionWorkdirRequest;
+    if (!request || handledNewSessionRequestRef.current === request.id) return;
+    handledNewSessionRequestRef.current = request.id;
+    onNewSessionWorkdirRequestHandled?.(request.id);
+    void prepareNewSession(request.workdir);
+  }, [
+    newSessionWorkdirRequest,
+    onNewSessionWorkdirRequestHandled,
+    prepareNewSession,
+  ]);
+
   async function handlePick(row: AgentHistoryRow) {
     if (!row.native_session_id) return;
+    const targetWorkdir = active?.workdir ?? workdir;
+    if (!targetWorkdir.trim()) return;
     try {
       await startSession({
-        workdir,
+        workdir: targetWorkdir,
         runtime: row.runtime,
         resume_from: row.native_session_id,
         resume_title: row.title,
@@ -358,20 +429,29 @@ export function SessionView({
   }
 
   async function handleNewSameWorkdir() {
-    setCreateError(null);
-    const latest = await getAgentSessionDefaults().catch(() => null);
-    setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
-    setShowNewDialog(true);
+    const targetWorkdir = active?.workdir ?? workdir;
+    if (!targetWorkdir.trim()) {
+      (onRequestNewWorkdir ?? onRequestChangeWorkdir)?.();
+      return;
+    }
+    await prepareNewSession(targetWorkdir);
   }
 
   async function handleCreate(config: NewSessionConfig) {
+    const targetWorkdir = newSessionWorkdir ?? active?.workdir ?? workdir;
+    if (!targetWorkdir.trim()) {
+      setCreateError("需要先选择工作目录");
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
-      await startSession({ workdir, ...config });
+      await startSession({ workdir: targetWorkdir, ...config });
       saveNewSessionPreferences(config);
       setNewSessionInitialConfig(config);
+      setNewSessionWorkdir(null);
       setShowNewDialog(false);
+      onWorkdirActivated?.(targetWorkdir);
     } catch (err) {
       setCreateError((err as Error).message);
     } finally {
@@ -410,6 +490,23 @@ export function SessionView({
     : showGoalPanel
       ? "目标"
       : null;
+  const emptyContent = workdir ? (
+    <WorkspaceHome
+      workdir={workdir}
+      history={history}
+      loadingHistory={loadingHistory}
+      loadingMoreHistory={loadingMoreHistory}
+      historyHasMore={historyHasMore}
+      historyError={historyError}
+      onNewSession={() => void handleNewSameWorkdir()}
+      onSwitchWorkspace={() => onRequestChangeWorkdir?.()}
+      onPickHistory={(row) => void handlePick(row)}
+      onLoadMoreHistory={() => void loadMoreHistory()}
+      onRetryHistory={() => void refreshHistory(workdir)}
+    />
+  ) : (
+    emptyWorkspaceContent
+  );
 
   async function handleRevertConfirm() {
     if (!revertTarget?.turnId) return;
@@ -500,7 +597,10 @@ export function SessionView({
     <div className="cc-3col">
       <MultiSessionBar
         onNewSameWorkdir={() => void handleNewSameWorkdir()}
-        onChangeWorkdir={() => onRequestChangeWorkdir?.()}
+        onChangeWorkdir={() =>
+          (onRequestNewWorkdir ?? onRequestChangeWorkdir)?.()
+        }
+        onActivateWorkdir={onWorkdirActivated}
       />
       <div className="cc-view">
         <SessionHeader
@@ -536,6 +636,8 @@ export function SessionView({
           openedSubagentId={openedSubagentId}
           composerH={composerH}
           fallbackWorkdir={workdir}
+          emptyContent={emptyContent}
+          onRequestChangeWorkdir={onRequestChangeWorkdir}
           jumpToBottomRef={jumpToBottomRef}
           onCloseSubagent={() => setOpenedSubagentId(null)}
           onRetryLast={handleRetryLast}
@@ -548,7 +650,7 @@ export function SessionView({
           onOpenSubagent={openSubagent}
         />
         <div ref={composerRef}>
-          {!openedSubagent && (
+          {!openedSubagent && active && (
             <>
           {commandNotice && commandNotice.sessionId === activeSid && (
             <div
@@ -616,7 +718,7 @@ export function SessionView({
           newSession={
             showNewDialog
               ? {
-                  workdir,
+                  workdir: newSessionWorkdir ?? active?.workdir ?? workdir,
                   initialConfig: newSessionInitialConfig,
                   runtimesState,
                   onRetryRuntimes: loadRuntimes,
@@ -629,6 +731,7 @@ export function SessionView({
                   onCreate: (config) => void handleCreate(config),
                   onCancel: () => {
                     setShowNewDialog(false);
+                    setNewSessionWorkdir(null);
                     setCreateError(null);
                   },
                 }

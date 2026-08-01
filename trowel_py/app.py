@@ -10,6 +10,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from trowel_py.agent_host.routes import router as agent_router
+from trowel_py.agent_host.workspaces import (
+    RecentWorkspaceStore,
+    resolve_recent_workspaces_path,
+)
 from trowel_py.quota.routes import router as quota_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
@@ -18,6 +22,11 @@ from trowel_py.cc_host.proxy import (
     router as proxy_router,
 )
 from trowel_py.cc_host.routes import router as cc_host_router
+from trowel_py.desktop.access import (
+    DesktopCredentialMiddleware,
+    validate_desktop_renderer_origin,
+)
+from trowel_py.desktop.routes import router as desktop_router
 from trowel_py.events.routes import router as events_router
 from trowel_py.feynman.routes import router as feynman_router
 from trowel_py.garden.routes import router as garden_router
@@ -40,6 +49,9 @@ async def lifespan(app: FastAPI):
     app.state.cc_real_base_url = real_base_url
     app.state.proxy_base_url = f"http://127.0.0.1:{port}"
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+    app.state.recent_workspace_store = RecentWorkspaceStore(
+        resolve_recent_workspaces_path()
+    )
     logger.info("[cc-proxy] TUI system fingerprint: %s", TUI_SYSTEM_IDENTITY[:40])
     logger.info(
         "[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url
@@ -264,15 +276,33 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用，并注册中间件、路由和静态前端。"""
 
     app = FastAPI(lifespan=lifespan)
+    desktop_credential = os.environ.pop("TROWEL_DESKTOP_CREDENTIAL", None)
+    desktop_renderer_origin = os.environ.pop(
+        "TROWEL_DESKTOP_RENDERER_ORIGIN", None
+    )
+    app.state.desktop_instance_id = os.environ.pop(
+        "TROWEL_APP_INSTANCE_ID", ""
+    )
+
+    app.add_middleware(
+        DesktopCredentialMiddleware,
+        credential=desktop_credential,
+    )
 
     from fastapi.middleware.cors import CORSMiddleware
 
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+    ]
+    if desktop_renderer_origin:
+        allowed_origins.append(
+            validate_desktop_renderer_origin(desktop_renderer_origin)
+        )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:5174",
-        ],
+        allow_origins=allowed_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -315,6 +345,7 @@ def create_app() -> FastAPI:
     app.include_router(cc_host_router, prefix="/api/cc")
     app.include_router(agent_router, prefix="/api/agent")
     app.include_router(quota_router)
+    app.include_router(desktop_router, prefix="/api/desktop")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

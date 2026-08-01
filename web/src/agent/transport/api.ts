@@ -2,6 +2,8 @@
 
 import type { AgentEvent, Runtime } from "./agentEvent";
 import type { GoalStatus } from "./events";
+import { transportFetch } from "../../platform/transport";
+import { readHttpError } from "./httpError";
 
 export type { Runtime } from "./agentEvent";
 
@@ -171,31 +173,15 @@ async function requestEnvelope<T, M = unknown>(
   url: string,
   options?: RequestInit,
 ): Promise<ApiEnvelope<T, M>> {
-  const response = await fetch(url, options);
+  const response = await transportFetch(url, options);
   if (!response.ok) {
-    throw new Error(await readApiError(response));
+    throw new Error(await readHttpError(response, "Agent API error"));
   }
   const result: ApiEnvelope<T, M> = await response.json();
   if (!result.success || result.error) {
     throw new Error(result.error ?? "Agent API call failed");
   }
   return result;
-}
-
-async function readApiError(response: Response): Promise<string> {
-  try {
-    const body: unknown = await response.json();
-    if (body && typeof body === "object") {
-      const payload = body as Record<string, unknown>;
-      for (const key of ["error", "detail"] as const) {
-        const value = payload[key];
-        if (typeof value === "string" && value.trim()) return value;
-      }
-    }
-  } catch {
-    // 非 JSON 错误页不应遮蔽 HTTP 状态。
-  }
-  return `Agent API error: ${response.status}`;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {

@@ -69,17 +69,25 @@ export function useSessionCatalogs(workdir: string) {
   }, []);
 
   useEffect(() => {
+    listModels()
+      .then(setModels)
+      .catch(() => setModels([]));
+  }, []);
+
+  useEffect(() => {
+    if (!workdir.trim()) {
+      setSlashItems([]);
+      return;
+    }
     let cancelled = false;
-    Promise.all([listSlashItems(workdir), listModels()])
-      .then(([items, ccModels]) => {
+    listSlashItems(workdir)
+      .then((items) => {
         if (cancelled) return;
         setSlashItems(items);
-        setModels(ccModels);
       })
       .catch(() => {
         if (cancelled) return;
         setSlashItems([]);
-        setModels([]);
       });
     return () => {
       cancelled = true;

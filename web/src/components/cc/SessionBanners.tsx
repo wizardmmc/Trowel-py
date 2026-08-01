@@ -21,8 +21,8 @@ export function SessionBanners({
         <div className="cc-degraded-banner" role="alert">
           <b>{presentation.headerStatus.degradedHostLabel}</b>
           <span>
-            运行中的 turn 已按出错收口；idle thread 可在重连后
-            resume，不会自动重放写操作。
+            运行中的轮次已按出错收口；空闲会话可在重连后恢复，
+            不会自动重放写操作。
           </span>
         </div>
       )}

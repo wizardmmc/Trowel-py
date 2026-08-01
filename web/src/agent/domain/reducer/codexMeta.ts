@@ -7,6 +7,7 @@ import type {
   UsageUpdatedEvent,
 } from "../../transport/events";
 import type { ReducerState, Turn } from "./model";
+import { codexTurnTokens } from "./usage";
 
 export function applyUsageUpdated(
   prev: ReducerState,
@@ -17,7 +18,16 @@ export function applyUsageUpdated(
     last: event.last ?? null,
     model_context_window: event.model_context_window ?? null,
   };
-  return { ...prev, meta: { ...prev.meta, usage } };
+  const normalizedTokens = codexTurnTokens(event.last);
+  return {
+    ...prev,
+    meta: {
+      ...prev.meta,
+      usage,
+      lastTurnTokens:
+        normalizedTokens ?? prev.meta.lastTurnTokens,
+    },
+  };
 }
 
 /** host_exited 同时结束当前 turn 并保留 degraded 状态供重连提示使用。 */

@@ -38,10 +38,15 @@ from trowel_py.agent_host.schemas import (
     CreateAgentSessionRequest,
     GenerateAgentSessionTitleRequest,
     PatchAgentSessionRequest,
+    RememberWorkspaceRequest,
     RenameAgentSessionRequest,
     SetCodexGoalRequest,
     SendMessageBody,
     StartCodexReviewRequest,
+)
+from trowel_py.agent_host.workspaces import (
+    RecentWorkspaceStore,
+    WorkspaceUnavailableError,
 )
 
 router = APIRouter()
@@ -162,6 +167,25 @@ def get_hub(request: Request) -> SessionHub:
     return hub
 
 
+def get_workspace_store(request: Request) -> RecentWorkspaceStore:
+    """取得当前应用已经初始化的 Recent 工作区仓储。
+
+    Args:
+        request: 当前 HTTP 请求，用于访问它所属的 FastAPI 应用。
+
+    Returns:
+        负责持久保存 Agent Recent 工作区的仓储。
+
+    Raises:
+        HTTPException: 仓储尚未初始化，此时返回 503。
+    """
+
+    store = getattr(request.app.state, "recent_workspace_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="workspace store not initialized")
+    return store
+
+
 def _sse(event: dict[str, Any]) -> bytes:
     """把一个会话事件编码成服务器推送事件（SSE）使用的数据帧。
 
@@ -222,6 +246,37 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
     return {
         "success": True,
         "data": hub.latest_session_defaults(),
+        "error": None,
+    }
+
+
+@router.get("/workspaces/recent")
+def list_recent_workspaces(
+    store: RecentWorkspaceStore = Depends(get_workspace_store),
+) -> dict:
+    """按最近打开顺序返回工作区及其当前可用性。"""
+
+    return {
+        "success": True,
+        "data": [workspace.to_dict() for workspace in store.list_recent()],
+        "error": None,
+    }
+
+
+@router.post("/workspaces/recent")
+def remember_workspace(
+    req: RememberWorkspaceRequest,
+    store: RecentWorkspaceStore = Depends(get_workspace_store),
+) -> dict:
+    """校验并记录用户确认打开的工作区。"""
+
+    try:
+        workspace = store.remember(req.path)
+    except WorkspaceUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "data": workspace.to_dict(),
         "error": None,
     }
 

@@ -145,7 +145,12 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       return prev;
 
     case "compact_boundary":
-      return appendToCurrentTurn(prev, { kind: "compact_boundary" });
+      return applyCompletedCompaction(prev);
+
+    case "compaction":
+      return event.phase === "completed"
+        ? applyCompletedCompaction(prev)
+        : prev;
 
     case "local_command":
       return appendToCurrentTurn(prev, {
@@ -161,7 +166,7 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
       return applyErrorEvent(prev, event);
 
     case "interrupted":
-      return applyInterruptedEvent(prev, event);
+      return applyInterruptedEvent(prev);
 
     case "stalled_warning":
       return {
@@ -238,6 +243,19 @@ export function reduceEvent(prev: ReducerState, event: TrowelEvent): ReducerStat
     default:
       return prev;
   }
+}
+
+function applyCompletedCompaction(prev: ReducerState): ReducerState {
+  return appendToCurrentTurn(
+    {
+      ...prev,
+      meta: {
+        ...prev.meta,
+        compactionCount: prev.meta.compactionCount + 1,
+      },
+    },
+    { kind: "compact_boundary" },
+  );
 }
 
 function retryingItemFrom(event: RetryingEvent): RetryingItem {
