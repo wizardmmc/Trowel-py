@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isAcceptedPackagedAppExit } from "./smoke-packaged-exit.mjs";
 import { resolvePackagedSmokeDataDirectory } from "./smoke-packaged-paths.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -98,7 +99,7 @@ try {
   const expectedMarker = residencySmoke
     ? "TROWEL_DESKTOP_RESIDENCY_SMOKE_OK"
     : "TROWEL_DESKTOP_SMOKE_OK";
-  if (result.code !== 0 || !result.stdout.includes(expectedMarker)) {
+  if (!isAcceptedPackagedAppExit(result) || !result.stdout.includes(expectedMarker)) {
     throw new Error(
       `packaged smoke failed code=${result.code} signal=${result.signal}\n${result.stdout}\n${result.stderr}`,
     );
