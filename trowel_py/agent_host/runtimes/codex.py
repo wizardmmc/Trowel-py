@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal, Mapping
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
@@ -12,6 +13,7 @@ from trowel_py.codex_host.events import CodexEvent
 from trowel_py.codex_host.errors import CodexHostError
 
 _CODEX_RUNTIME: Literal["codex"] = "codex"
+_log = logging.getLogger(__name__)
 
 
 class CodexRuntimeAdapter:
@@ -69,6 +71,10 @@ class CodexRuntimeAdapter:
                 preserve_history=binding.session_kind == "user",
             )
         except (CodexHostError, RuntimeError) as exc:
+            _log.warning(
+                "Codex session close needs reconciliation: %s",
+                type(exc).__name__,
+            )
             return RuntimeCloseResult.needs_reconcile(
                 remaining_resource_count=1,
                 remaining_resource_kinds=("codex_session_close",),

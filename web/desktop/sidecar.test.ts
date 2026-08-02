@@ -43,9 +43,13 @@ function dependencies(
 }
 
 const OPTIONS = {
-  executable: "/repo/.venv/bin/python",
+  command: {
+    executable: "/repo/.venv/bin/python",
+    args: ["-m", "trowel_py.desktop.sidecar"],
+  },
   cwd: "/repo",
   dataDirectory: "/data",
+  dataMode: "packaged",
   logDirectory: "/logs",
   instanceId: "instance-123",
   credential: "desktop-secret",
@@ -73,12 +77,36 @@ describe("launchSidecar", () => {
           TROWEL_DESKTOP_CREDENTIAL: "desktop-secret",
           TROWEL_APP_INSTANCE_ID: "instance-123",
           TROWEL_SERVER_PORT: "43123",
+          TROWEL_DESKTOP_DATA_MODE: "packaged",
           TROWEL_DESKTOP_RENDERER_ORIGIN: "http://127.0.0.1:43124",
         }),
       }),
     );
     expect(JSON.stringify(vi.mocked(deps.spawn).mock.calls[0]?.[0].args)).not.toContain(
       "desktop-secret",
+    );
+  });
+
+  it("starts a frozen packaged sidecar without Python module arguments", async () => {
+    const deps = dependencies();
+
+    await launchSidecar(
+      {
+        ...OPTIONS,
+        command: {
+          executable: "/Applications/Trowel.app/Contents/Resources/sidecar/trowel-sidecar",
+          args: [],
+        },
+      },
+      deps,
+    );
+
+    expect(deps.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executable:
+          "/Applications/Trowel.app/Contents/Resources/sidecar/trowel-sidecar",
+        args: [],
+      }),
     );
   });
 

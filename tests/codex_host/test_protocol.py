@@ -27,7 +27,7 @@ def test_client_info_round_trips_to_dict() -> None:
     assert info.as_dict() == {
         "name": "trowel_codex_host",
         "title": "Trowel Codex Host",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 

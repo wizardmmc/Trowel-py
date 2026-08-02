@@ -1,6 +1,8 @@
 import sqlite3
+import threading
 from datetime import datetime
 
+from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
 from trowel_py.player.repository import create_player_repository
 
@@ -58,6 +60,41 @@ def test_find_or_create_is_idempotent(db_connection: sqlite3.Connection):
     repo.find_or_create()
 
     count = db_connection.execute("select count(*) as c from players").fetchone()["c"]
+    assert count == 1
+
+
+def test_find_or_create_is_atomic_across_connections(tmp_path):
+    database_path = tmp_path / "concurrent-player.db"
+    setup = create_db(str(database_path))
+    run_migrations(setup)
+    setup.close()
+    start = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def create_default_player() -> None:
+        conn = create_db(str(database_path))
+        try:
+            start.wait()
+            create_player_repository(conn).find_or_create()
+            conn.commit()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=create_default_player) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    check = create_db(str(database_path))
+    try:
+        count = check.execute("select count(*) as c from players").fetchone()["c"]
+    finally:
+        check.close()
+
+    assert errors == []
     assert count == 1
 
 

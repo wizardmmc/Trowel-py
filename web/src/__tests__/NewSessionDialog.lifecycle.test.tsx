@@ -121,6 +121,7 @@ describe("NewSessionDialog lifecycle", () => {
           native: "",
           capabilities: [],
           connected: false,
+          install_hint: "安装 Codex CLI 后重启 Trowel",
         },
       ],
     };
@@ -134,7 +135,7 @@ describe("NewSessionDialog lifecycle", () => {
     );
     const radios = screen.getAllByRole("radio");
     expect(radios[1]).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText(/未连接/)).toBeInTheDocument();
+    expect(screen.getByText("安装 Codex CLI 后重启 Trowel")).toBeInTheDocument();
     fireEvent.click(radios[1]);
     expect(radios[1]).toHaveAttribute("aria-checked", "false");
     fireEvent.click(createButton());

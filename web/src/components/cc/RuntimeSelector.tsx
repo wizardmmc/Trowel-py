@@ -15,6 +15,7 @@ interface RuntimeSelectorProps {
   readonly catalogLoading: boolean;
   readonly catalogError: string | null;
   readonly isConnected: (runtime: Runtime) => boolean;
+  readonly installHint: (runtime: Runtime) => string | null;
   readonly onSelect: (runtime: Runtime) => void;
   readonly onRetry?: () => void;
 }
@@ -25,6 +26,7 @@ export function RuntimeSelector({
   catalogLoading,
   catalogError,
   isConnected,
+  installHint,
   onSelect,
   onRetry,
 }: RuntimeSelectorProps) {
@@ -107,7 +109,9 @@ export function RuntimeSelector({
               </span>
               <span className="cc-dialog__runtime-desc">{option.desc}</span>
               {!connected && (
-                <span className="cc-dialog__runtime-unavailable">未连接</span>
+                <span className="cc-dialog__runtime-unavailable">
+                  {installHint(option.value) ?? "未连接"}
+                </span>
               )}
             </button>
           );

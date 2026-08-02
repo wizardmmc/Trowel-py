@@ -12,4 +12,4 @@ def app_version() -> str:
         return version("trowel-py")
     except PackageNotFoundError:
         # 源码目录尚未安装时仍保持与 pyproject 的当前开发版本一致。
-        return "0.1.0"
+        return "0.2.0"

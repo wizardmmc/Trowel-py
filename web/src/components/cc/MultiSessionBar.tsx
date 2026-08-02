@@ -25,7 +25,8 @@ function dotClass(s: PerSessionState): string {
   return "cc-multibar__dot--idle";
 }
 
-function statusText(s: PerSessionState): string {
+function statusText(s: PerSessionState, closing: boolean): string {
+  if (closing) return `${s.meta.model ?? "model"} · 关闭中`;
   if (s.abort !== null) {
     const phase =
       s.phase === "thinking"
@@ -55,6 +56,7 @@ export function MultiSessionBar({
   onActivateWorkdir,
 }: MultiSessionBarProps) {
   const sessions = useAgentStoreFrameSelector(selectSessions);
+  const closingSessionIds = useAgentStore((s) => s.closingSessionIds);
   const activeSid = useAgentStore((s) => s.activeSid);
   const activate = useAgentStore((s) => s.activateSession);
   const close = useAgentStore((s) => s.closeSession);
@@ -64,7 +66,7 @@ export function MultiSessionBar({
 
   const connected = Object.entries(sessions).filter(
     ([, s]) =>
-      s.sessionKind !== "delegate" && s.connected && !s.meta.exited,
+      (s.sessionKind ?? "user") === "user" && s.connected && !s.meta.exited,
   );
   const running = connected.filter(([, s]) => s.abort !== null).length;
   const connections = connected.length;
@@ -146,6 +148,7 @@ export function MultiSessionBar({
               </div>
               {entries.map(([sid, s]) => {
                 const isActive = sid === activeSid;
+                const isClosing = closingSessionIds.has(sid);
                 const title = sessionTitle(s);
                 const presentation = getRuntimePresentation(
                   s.runtime,
@@ -187,6 +190,7 @@ export function MultiSessionBar({
                         <button
                           type="button"
                           className="cc-multibar__main"
+                          disabled={isClosing}
                           onClick={() => {
                             onActivateWorkdir?.(s.workdir);
                             void activate(sid);
@@ -211,7 +215,9 @@ export function MultiSessionBar({
                               {presentation.shortLabel}
                             </span>
                           </span>
-                          <span className="cc-multibar__row2">{statusText(s)}</span>
+                          <span className="cc-multibar__row2">
+                            {statusText(s, isClosing)}
+                          </span>
                           <span
                             className="cc-multibar__cond"
                             title="Memory · Profile · 权限"
@@ -250,6 +256,7 @@ export function MultiSessionBar({
                             type="button"
                             className="cc-multibar__action"
                             onClick={() => beginRename(sid, s)}
+                            disabled={isClosing}
                             title="重命名"
                             aria-label={`重命名 ${title}`}
                           >
@@ -259,8 +266,10 @@ export function MultiSessionBar({
                             type="button"
                             className="cc-multibar__action cc-multibar__action--close"
                             onClick={() => void close(sid)}
-                            title="关闭"
-                            aria-label={`关闭 ${title}`}
+                            disabled={isClosing}
+                            aria-busy={isClosing}
+                            title={isClosing ? "关闭中" : "关闭"}
+                            aria-label={isClosing ? `正在关闭 ${title}` : `关闭 ${title}`}
                           >
                             ×
                           </button>

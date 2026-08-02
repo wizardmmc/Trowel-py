@@ -18,9 +18,13 @@ function deferred<T>() {
 }
 
 const OPTIONS = {
-  executable: "/repo/.venv/bin/python",
+  command: {
+    executable: "/repo/.venv/bin/python",
+    args: ["-m", "trowel_py.desktop.sidecar"],
+  },
   cwd: "/repo",
   dataDirectory: "/data",
+  dataMode: "packaged",
   logDirectory: "/logs",
   instanceId: "instance-123",
   credential: "desktop-secret",

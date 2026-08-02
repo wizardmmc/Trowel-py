@@ -45,6 +45,7 @@ it("loads desktop context and verifies renderer-to-sidecar transport", async () 
     requestQuit: vi.fn(),
     getDiagnostics: vi.fn(),
     retrySidecar: vi.fn(),
+    openTrowel: vi.fn(),
     openLogs: vi.fn(),
   } satisfies DesktopBridge;
   (window as Window & { trowelDesktop?: DesktopBridge }).trowelDesktop = bridge;

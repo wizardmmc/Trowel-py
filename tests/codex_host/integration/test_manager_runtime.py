@@ -30,6 +30,7 @@ from trowel_py.codex_host import (
     CodexSession,
     CodexSessionConfig,
 )
+from trowel_py.resource_lifecycle import OwnerScope, ResourceRegistry
 
 _ENV_GATE = "CODEX_INTEGRATION"
 
@@ -91,7 +92,8 @@ async def test_real_manager_send_completes_one_turn() -> None:
             assert CodexEventType.TURN_STARTED in types
             assert CodexEventType.FINISHED in types
             assert session.binding is not None
-            assert session.binding.model_provider == "openai"
+            # app-server 返回当前用户配置的 provider；自定义 provider 同样有效。
+            assert session.binding.model_provider
         finally:
             await manager.close()
     finally:
@@ -190,4 +192,54 @@ async def test_real_resume_after_restart() -> None:
                     pass
             await mgr2.close()
     finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def test_real_close_preserves_unloaded_user_history() -> None:
+    """真实关闭用户会话后保留历史文件，并从 app-server 内存卸载 thread。"""
+
+    workdir = Path(tempfile.mkdtemp(prefix="trowel-codex-manager-close-"))
+    registry = ResourceRegistry(app_instance_id="codex-close-integration")
+    manager = CodexHostManager(resource_registry=registry)
+    session = CodexSession(CodexSessionConfig("close-s1", str(workdir)))
+    manager.register(session)
+    thread_id: str | None = None
+    try:
+        await manager.send(session, "Reply with exactly: close-ok")
+        events: list[CodexEvent] = []
+        await _drain_until(session, stop=_finished, events=events)
+        assert any(event.type is CodexEventType.FINISHED for event in events)
+        assert session.binding is not None
+        thread_id = session.binding.thread_id
+        before_close = await manager.read_thread(thread_id)
+        rollout_path = Path(str(before_close["path"]))
+        assert rollout_path.is_file()
+
+        await manager.close_session(session, preserve_history=True)
+
+        client = manager.client
+        assert client is not None
+        loaded = await client.request("thread/loaded/list", {})
+        assert thread_id not in loaded["data"]
+        history = await manager.list_threads(cwd=str(workdir), limit=20)
+        assert thread_id in {row["id"] for row in history}
+        after_close = await manager.read_thread(thread_id)
+        assert after_close["status"]["type"] == "notLoaded"
+        assert Path(str(after_close["path"])).is_file()
+        summary = registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id=session.session_id,
+        )
+        assert summary.status == "closed"
+        assert summary.live_resource_count == 0
+    finally:
+        client = manager.client
+        if thread_id is not None and client is not None and not client.closed:
+            try:
+                # Codex 0.144.0 的 delete 会删 rollout 却遗留 state DB 行；测试只归档，
+                # 避免制造默认历史可见但文件缺失的悬空记录。
+                await client.request("thread/archive", {"threadId": thread_id})
+            except Exception:  # noqa: BLE001 - manager 关闭仍必须继续。
+                pass
+        await manager.close()
         shutil.rmtree(workdir, ignore_errors=True)

@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from trowel_py.agent_host.binding import SessionKind
+
 RuntimeWire = Literal["claude_code", "codex"]
 PermissionPreset = Literal[
     "follow", "read-only", "workspace-write", "danger-full-access"
@@ -50,7 +52,7 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate"] = "user"
+    session_kind: SessionKind = "user"
     memory_eligibility: bool = Field(default=True, strict=True)
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     parent_session_id: str | None = None

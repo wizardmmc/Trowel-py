@@ -1,4 +1,4 @@
-/** 启动随机端口 Vite、Electron 和隔离的真实 Python sidecar 开发链。 */
+/** 启动随机端口 Vite、Electron 和可选隔离数据的 Python sidecar 开发链。 */
 
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -7,6 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import electron from "electron";
+import {
+  buildDevelopmentDesktopEnvironment,
+  resolveDevelopmentDataMode,
+} from "./devEnvironment.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const projectRoot = path.resolve(webRoot, "..");
@@ -16,6 +20,7 @@ const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
 const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
 const rendererCrashSmoke = process.argv.includes("--renderer-crash-smoke");
 const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
+const developmentDataMode = resolveDevelopmentDataMode(process.argv);
 const smoke =
   rendererSmoke ||
   diagnosticSmoke ||
@@ -71,11 +76,11 @@ process.once("SIGTERM", handleTerminationSignal);
 
 try {
   await waitForUrl(rendererUrl, vite);
-  const desktopEnvironment = {
-    ...process.env,
+  const desktopEnvironment = buildDevelopmentDesktopEnvironment(process.env, {
     TROWEL_PROJECT_ROOT: projectRoot,
     TROWEL_RENDERER_URL: rendererUrl,
     TROWEL_DESKTOP_SERVICE_FILE: serviceDescriptorPath,
+    TROWEL_DESKTOP_DATA_MODE: developmentDataMode,
     ...(rendererSmoke ? { TROWEL_DESKTOP_SMOKE: "1" } : {}),
     ...(diagnosticSmoke
       ? {
@@ -106,7 +111,7 @@ try {
           ),
         }
       : {}),
-  };
+  });
   desktop = spawn(electron, [webRoot], {
     cwd: webRoot,
     stdio: "inherit",

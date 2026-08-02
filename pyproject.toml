@@ -1,7 +1,7 @@
 [project]
 name = "trowel-py"
 # 用户可见行为变化升级到 0.2.0；公开 API 稳定后升级到 1.0.0。
-version = "0.1.0"
+version = "0.2.0"
 description = "Trowel-py — desktop toolkit (chat + cc host + review cards) with a FastAPI backend and React frontend."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -45,6 +45,8 @@ dev = [
     "mypy>=1.13",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
+    # macOS/Windows 安装包用 onedir 模式冻结 Python sidecar 与解释器。
+    "pyinstaller==6.21.0",
     "ruff>=0.8",
     # PyYAML 本身不附带 mypy stub。
     "types-PyYAML>=6.0",

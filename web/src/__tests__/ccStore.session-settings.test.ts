@@ -215,7 +215,7 @@ describe("createAgentStore — backend session reconciliation", () => {
     expect(Object.keys(store.getState().sessions)).toEqual(["newer"]);
   });
 
-  it("ignores delegate rows if an old backend returns them", async () => {
+  it("ignores non-user rows if a backend returns them", async () => {
     const store = createAgentStore();
     listActiveSessions.mockResolvedValueOnce({
       sessions: [
@@ -234,6 +234,22 @@ describe("createAgentStore — backend session reconciliation", () => {
           connected: true,
           running: true,
           session_kind: "delegate",
+        },
+        {
+          session_id: "probe",
+          runtime: "codex",
+          native_session_id: "thread-probe",
+          workdir: "/wd",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          permission: null,
+          memory_enabled: false,
+          profile_enabled: false,
+          capabilities: ["tools", "approval", "subagents"],
+          name: "probe",
+          connected: true,
+          running: true,
+          session_kind: "probe",
         },
       ],
       activeId: "delegate",

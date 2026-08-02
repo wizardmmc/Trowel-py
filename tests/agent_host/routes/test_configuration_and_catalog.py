@@ -89,6 +89,29 @@ def test_get_runtimes(client: TestClient) -> None:
     assert codex["connected"] is True
 
 
+def test_get_runtimes_reports_missing_cli_with_install_hint(
+    client: TestClient,
+    hub: SessionHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        hub,
+        "runtime_available",
+        lambda runtime: runtime == Runtime.CLAUDE_CODE,
+        raising=False,
+    )
+
+    response = client.get("/api/agent/runtimes")
+
+    codex = next(
+        runtime
+        for runtime in response.json()["data"]
+        if runtime["runtime"] == "codex"
+    )
+    assert codex["connected"] is False
+    assert codex["install_hint"] == "安装 Codex CLI 后重启 Trowel"
+
+
 def test_get_runtimes_returns_the_evidence_backed_capability_matrix(
     client: TestClient,
 ) -> None:
@@ -168,6 +191,52 @@ def test_get_models_returns_the_manager_catalog(
 
     assert response.status_code == 200
     assert response.json()["data"]["models"] == native
+
+
+def test_get_models_returns_empty_catalog_when_codex_cli_is_missing(
+    client: TestClient,
+    hub: SessionHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    async def list_models() -> list[dict[str, object]]:
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(hub._codex, "list_models", list_models)  # noqa: SLF001
+    monkeypatch.setattr(
+        hub,
+        "runtime_available",
+        lambda runtime: runtime != Runtime.CODEX,
+        raising=False,
+    )
+
+    response = client.get("/api/agent/models")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["models"] == []
+    assert called is False
+
+
+def test_create_rejects_runtime_whose_cli_is_missing(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        hub,
+        "runtime_available",
+        lambda runtime: runtime != Runtime.CLAUDE_CODE,
+        raising=False,
+    )
+
+    response = client.post("/api/agent/sessions", json=cc_payload(workdir))
+
+    assert response.status_code == 503
+    assert hub.store.list_all() == []
 
 
 def test_get_history_returns_native_codex_threads_for_workdir(

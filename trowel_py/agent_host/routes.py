@@ -893,8 +893,7 @@ def list_runtimes(
 ) -> dict:
     """列出 Claude Code 和 Codex 支持的功能及当前接入状态。
 
-    Codex 的 connected 只表示应用已经配置共享会话管理器，不代表账号已登录或
-    网络可用。Claude Code 的 connected 当前固定为 True，不会主动探测进程。
+    connected 表示对应 CLI 已安装且 Host 已配置，不代表账号已登录或网络可用。
 
     Args:
         hub: 用于判断 Codex 会话管理器是否已配置的 Session Hub。
@@ -910,14 +909,16 @@ def list_runtimes(
             "label": "Claude Code",
             "native": "claude -p (CCHost)",
             "capabilities": list(CC_CAPABILITIES),
-            "connected": True,
+            "connected": hub.runtime_available(Runtime.CLAUDE_CODE),
+            "install_hint": "安装 Claude Code CLI 后重启 Trowel",
         },
         {
             "runtime": "codex",
             "label": "Codex",
             "native": "app-server (CodexHostManager)",
             "capabilities": list(CODEX_CAPABILITIES),
-            "connected": hub.codex_available,
+            "connected": hub.runtime_available(Runtime.CODEX),
+            "install_hint": "安装 Codex CLI 后重启 Trowel",
         },
     ]
     return {"success": True, "data": runtimes, "error": None}
@@ -935,12 +936,12 @@ async def list_models(
         hub: 用于读取 Codex 模型目录的 Session Hub。
 
     Returns:
-        统一响应。data.models 为 Codex 当前提供的模型列表。
-
-    Raises:
-        HTTPException: Codex 会话管理器未配置时返回 503。
+        统一响应。data.models 为 Codex 当前提供的模型列表；Codex CLI 未安装时
+        返回空列表。
     """
 
+    if not hub.runtime_available(Runtime.CODEX):
+        return {"success": True, "data": {"models": []}, "error": None}
     models = await _await_hub(hub.list_codex_models)
     return {"success": True, "data": {"models": models}, "error": None}
 

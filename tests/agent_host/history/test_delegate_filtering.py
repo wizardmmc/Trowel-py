@@ -29,7 +29,7 @@ async def _consume(stream: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delegate_history_stays_hidden_after_cleanup_and_restart(
+async def test_non_user_history_stays_hidden_after_cleanup_and_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -64,8 +64,28 @@ async def test_delegate_history_stays_hidden_after_cleanup_and_restart(
         )
     )
 
+    probe_native_id = "thread-probe"
+    codex_probe = hub.create(
+        codex_req(
+            workdir,
+            session_kind="probe",
+            resume_from=probe_native_id,
+        )
+    )
+    await hub.start_codex_turn(codex_probe.session_id, "lifecycle probe")
+    probe_session = manager.get_session(codex_probe.session_id)
+    probe_session.emit_translated(
+        TranslatedItem(
+            type=CodexEventType.FINISHED,
+            thread_id=probe_native_id,
+            turn_id="probe-turn-id",
+            payload=immutable_payload(status="completed"),
+        )
+    )
+
     assert await hub.delete(cc_delegate.session_id) is True
     assert await hub.delete(codex_delegate.session_id) is True
+    assert await hub.delete(codex_probe.session_id) is True
     assert BindingStore(bindings_path).list_all() == []
 
     restarted_manager = FakeCodexManager()
@@ -74,6 +94,11 @@ async def test_delegate_history_stays_hidden_after_cleanup_and_restart(
             "id": codex_native_id,
             "name": "internal codex review",
             "updatedAt": 90,
+        },
+        {
+            "id": probe_native_id,
+            "name": "internal lifecycle probe",
+            "updatedAt": 85,
         },
         {
             "id": "external-codex",
@@ -148,7 +173,7 @@ async def test_delete_preserves_last_delegate_identity_when_index_write_fails(
     def fail_add(*_args: Any, **_kwargs: Any) -> None:
         raise OSError("index unavailable")
 
-    monkeypatch.setattr(hub._delegate_identities, "add", fail_add)  # noqa: SLF001
+    monkeypatch.setattr(hub._non_user_identities, "add", fail_add)  # noqa: SLF001
 
     with pytest.raises(OSError, match="index unavailable"):
         await hub.delete(delegate.session_id)

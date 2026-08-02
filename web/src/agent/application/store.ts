@@ -67,6 +67,7 @@ export { MAX_CONNECTIONS, MAX_RUNNING } from "./store/sendAdmission";
 /** 管理多会话字典与 transport；事件状态变化统一交给纯 reducer。 */
 export interface AgentState {
   readonly sessions: Readonly<Record<string, PerSessionState>>;
+  readonly closingSessionIds: ReadonlySet<string>;
   readonly activeSid: string | null;
   readonly history: readonly AgentHistoryRow[];
   /** 磁盘中的真实总数，用于显示“共 N · 最近 M”。 */
@@ -127,8 +128,10 @@ export function createAgentStore() {
         if (result.kind === "session_exited") {
           const sessions = { ...state.sessions };
           delete sessions[sid];
+          const closingSessionIds = new Set(state.closingSessionIds);
+          closingSessionIds.delete(sid);
           const activeSid = state.activeSid === sid ? null : state.activeSid;
-          return { ...state, sessions, activeSid };
+          return { ...state, sessions, closingSessionIds, activeSid };
         }
         return {
           ...state,
@@ -224,6 +227,7 @@ export function createAgentStore() {
 
     return {
       sessions: {},
+      closingSessionIds: new Set<string>(),
       activeSid: null,
       history: [],
       historyTotal: 0,
@@ -313,8 +317,14 @@ export function createAgentStore() {
       },
 
       closeSession: async (sid) => {
-        const cur = get().sessions[sid];
+        const current = get();
+        const cur = current.sessions[sid];
         if (!cur) return;
+        if (current.closingSessionIds.has(sid)) return;
+        set((state) => ({
+          ...state,
+          closingSessionIds: new Set(state.closingSessionIds).add(sid),
+        }));
         cur.abort?.abort();
         codexLive.stop(sid);
         try {
@@ -322,9 +332,12 @@ export function createAgentStore() {
           if (result.status === "needs_reconcile") {
             set((state) => {
               const session = state.sessions[sid];
-              if (!session) return state;
+              const closingSessionIds = new Set(state.closingSessionIds);
+              closingSessionIds.delete(sid);
+              if (!session) return { ...state, closingSessionIds };
               return {
                 ...state,
+                closingSessionIds,
                 sessions: {
                   ...state.sessions,
                   [sid]: {
@@ -340,9 +353,12 @@ export function createAgentStore() {
         } catch (error) {
           set((state) => {
             const session = state.sessions[sid];
-            if (!session) return state;
+            const closingSessionIds = new Set(state.closingSessionIds);
+            closingSessionIds.delete(sid);
+            if (!session) return { ...state, closingSessionIds };
             return {
               ...state,
+              closingSessionIds,
               sessions: {
                 ...state.sessions,
                 [sid]: {
@@ -357,8 +373,10 @@ export function createAgentStore() {
         set((state) => {
           const sessions = { ...state.sessions };
           delete sessions[sid];
+          const closingSessionIds = new Set(state.closingSessionIds);
+          closingSessionIds.delete(sid);
           const activeSid = state.activeSid === sid ? null : state.activeSid;
-          return { ...state, sessions, activeSid };
+          return { ...state, sessions, closingSessionIds, activeSid };
         });
       },
 
@@ -1190,6 +1208,7 @@ export function createAgentStore() {
         codexLive.stopAll();
         set({
           sessions: {},
+          closingSessionIds: new Set<string>(),
           activeSid: null,
           history: [],
           historyTotal: 0,

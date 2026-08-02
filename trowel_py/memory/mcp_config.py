@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from trowel_py.agent_mcp.launch import build_agent_mcp_launch_spec
+from trowel_py.application_paths import resolve_application_data_root
 
 
 def _config_path(trowel_session_id: str) -> Path:
@@ -41,7 +42,7 @@ def _config_path(trowel_session_id: str) -> Path:
     directory = Path(
         os.environ.get(
             "TROWEL_MCP_CONFIG_DIR",
-            str(Path.home() / ".trowel" / "mcp-configs"),
+            str(resolve_application_data_root() / "mcp-configs"),
         )
     )
     name = f"{trowel_session_id}.json" if trowel_session_id else "memory.json"

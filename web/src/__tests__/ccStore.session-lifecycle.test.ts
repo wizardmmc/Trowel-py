@@ -271,6 +271,36 @@ describe("createAgentStore — multi-session lifecycle", () => {
     expect(apiDeleteSession).toHaveBeenCalledWith("s1");
   });
 
+  it("marks a slow close as pending and ignores repeated clicks", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    let finishClose!: () => void;
+    apiDeleteSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishClose = () =>
+            resolve({
+              closed: true,
+              status: "closed",
+              remaining_resource_count: 0,
+              remaining_resource_kinds: [],
+              error: null,
+            });
+        }),
+    );
+
+    const first = store.getState().closeSession("s1");
+    expect(store.getState().closingSessionIds.has("s1")).toBe(true);
+    await store.getState().closeSession("s1");
+    expect(apiDeleteSession).toHaveBeenCalledTimes(1);
+
+    finishClose();
+    await first;
+    expect(store.getState().closingSessionIds.has("s1")).toBe(false);
+    expect(store.getState().sessions.s1).toBeUndefined();
+  });
+
   it("keeps the session when close needs reconciliation", async () => {
     const store = createAgentStore();
     mockCreate("s1");

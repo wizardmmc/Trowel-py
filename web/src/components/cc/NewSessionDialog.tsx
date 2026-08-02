@@ -108,6 +108,9 @@ export function NewSessionDialog({
     if (!readyRuntimes) return true;
     return readyRuntimes.some((r) => r.runtime === rt && r.connected);
   };
+  const installHint = (rt: Runtime): string | null =>
+    readyRuntimes?.find((candidate) => candidate.runtime === rt)
+      ?.install_hint ?? null;
 
   const catalogLoading = runtimesState?.status === "loading";
   const catalogError =
@@ -272,6 +275,7 @@ export function NewSessionDialog({
             catalogLoading={catalogLoading}
             catalogError={catalogError}
             isConnected={isConnected}
+            installHint={installHint}
             onSelect={selectRuntime}
             onRetry={onRetryRuntimes}
           />

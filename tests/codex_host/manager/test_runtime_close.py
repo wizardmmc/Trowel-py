@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from trowel_py.codex_host import CodexHostManager, CodexSession
+from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.resource_lifecycle import OwnerScope, ProcessIdentity, ResourceRegistry
 from tests.codex_host._fake import FakeAppServer, Step
 from tests.codex_host.manager.support import (
@@ -59,6 +60,188 @@ async def test_close_idle_user_thread_archives_then_restores_history() -> None:
     methods = [item["method"] for item in fake.received]
     assert methods.index("thread/archive") < methods.index("thread/unarchive")
     assert "thread/resume" not in methods
+    await manager.close()
+
+
+async def test_close_user_thread_already_archived_restores_history() -> None:
+    """重试遇到已归档用户 thread 时先恢复历史，不能硬删除 rollout。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-1")})
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
+        yield Step.send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t-1",
+                    "turn": {"id": "turn-1", "status": "completed"},
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/archive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id t-1",
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/unarchive"
+        yield Step.send({"id": msg["id"], "result": {}})
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.send(session, "done")
+    await asyncio.sleep(0.02)
+
+    await manager.close_session(
+        session,
+        preserve_history=True,
+        terminal_timeout_s=0.05,
+    )
+
+    methods = [item["method"] for item in fake.received]
+    assert methods.index("thread/archive") < methods.index("thread/unarchive")
+    assert "thread/delete" not in methods
+    await manager.close()
+
+
+async def test_close_missing_archived_rollout_keeps_user_binding_retryable() -> None:
+    """用户历史无法恢复时必须报错，不能把关闭伪装成成功。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-1")})
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
+        yield Step.send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t-1",
+                    "turn": {"id": "turn-1", "status": "interrupted"},
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/archive"
+        yield Step.send({"id": msg["id"], "result": {}})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/unarchive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no archived rollout found for thread id t-1",
+                },
+            }
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.send(session, "not persisted")
+    await asyncio.sleep(0.02)
+
+    with pytest.raises(ProtocolViolationError, match="no archived rollout found"):
+        await manager.close_session(
+            session,
+            preserve_history=True,
+            terminal_timeout_s=0.05,
+        )
+
+    methods = [item["method"] for item in fake.received]
+    assert methods.index("thread/archive") < methods.index("thread/unarchive")
+    assert "thread/delete" not in methods
+    await manager.close()
+
+
+async def test_close_retry_restores_history_before_resource_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """资源核验首次失败时也要先恢复历史，使下一次关闭可以安全重试。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-1")})
+        msg = yield Step.recv()
+        yield Step.send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
+        yield Step.send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t-1",
+                    "turn": {"id": "turn-1", "status": "completed"},
+                },
+            }
+        )
+        for _ in range(2):
+            msg = yield Step.recv()
+            assert msg["method"] == "thread/archive"
+            yield Step.send({"id": msg["id"], "result": {}})
+            msg = yield Step.recv()
+            assert msg["method"] == "thread/unarchive"
+            yield Step.send({"id": msg["id"], "result": {}})
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(
+        fake,
+        resource_registry=ResourceRegistry(app_instance_id="test-instance"),
+    )
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.send(session, "done")
+    await asyncio.sleep(0.02)
+    attempts = 0
+
+    async def reconcile(_session_id: str) -> None:
+        """第一次模拟真实进程组仍存活，第二次确认已经归零。"""
+
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("process group still alive")
+
+    monkeypatch.setattr(manager, "_reconcile_session_process_groups", reconcile)
+
+    with pytest.raises(RuntimeError, match="still alive"):
+        await manager.close_session(
+            session,
+            preserve_history=True,
+            terminal_timeout_s=0.05,
+        )
+    await manager.close_session(
+        session,
+        preserve_history=True,
+        terminal_timeout_s=0.05,
+    )
+
+    methods = [item["method"] for item in fake.received]
+    assert methods.count("thread/archive") == 2
+    assert methods.count("thread/unarchive") == 2
+    assert "thread/delete" not in methods
     await manager.close()
 
 
@@ -126,7 +309,7 @@ async def test_close_rechecks_resources_after_restoring_history(
         terminal_timeout_s=0.05,
     )
 
-    assert events == ["reconcile", "unarchive", "reconcile", "closed"]
+    assert events == ["unarchive", "reconcile", "closed"]
     await manager.close()
 
 

@@ -93,6 +93,48 @@ BeforeTurnStart = Callable[[CodexSession], None]
 DescendantInventory = Callable[[int], tuple[ProcessIdentity, ...]]
 
 
+def _is_missing_rollout_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 app-server 找不到未归档 rollout 时返回的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=f"no rollout found for thread id {thread_id}",
+    )
+
+
+def _matches_rpc_error(
+    error: ProtocolViolationError,
+    *,
+    code: int,
+    message: str,
+) -> bool:
+    """按错误码和完整消息匹配当前请求的 app-server 响应。
+
+    Args:
+        error: transport 保存了原始响应的协议错误。
+        code: 当前已实证的 JSON-RPC 错误码。
+        message: 必须完整一致且包含当前 thread 身份的错误消息。
+
+    Returns:
+        原始响应同时匹配错误码和完整消息时为 True。
+    """
+
+    payload = error.payload
+    if not isinstance(payload, Mapping):
+        return False
+    response_error = payload.get("error")
+    if not isinstance(response_error, Mapping):
+        return False
+    return (
+        response_error.get("code") == code
+        and response_error.get("message") == message
+    )
+
+
 class CodexHostManager:
     """持有共享 transport 与 thread→session 路由表。"""
 
@@ -738,8 +780,9 @@ class CodexHostManager:
         """中断活动 turn，archive 原生资源，并按需恢复历史列表可见性。
 
         archive 是 Codex 0.144.0 实测能收敛 thread MCP 和命令进程的原生操作。
-        用户持久 thread 在资源释放后立即 unarchive，但不 resume，因此历史重新
-        可见且不会拉起新的 MCP。委派和其他内部 thread 保持 archived。
+        用户持久 thread 在 archive 后立即 unarchive，但不 resume，因此历史重新
+        可见且不会拉起新的 MCP；随后再核验资源归零。委派和其他内部 thread 保持
+        archived。
 
         Args:
             session: 仍由当前 manager 登记的 Trowel Codex 会话。
@@ -771,22 +814,43 @@ class CodexHostManager:
             )
         self._require_registered(session)
         client = await self.ensure_ready()
-        await client.request(
-            "thread/archive",
-            {"threadId": binding.thread_id},
-            timeout=_REQUEST_TIMEOUT_S,
-        )
-        if self._resource_registry is not None:
-            await self._reconcile_session_process_groups(session.session_id)
+        try:
+            await client.request(
+                "thread/archive",
+                {"threadId": binding.thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as exc:
+            if session.config.ephemeral or not _is_missing_rollout_error(
+                exc,
+                binding.thread_id,
+            ):
+                raise
+            if preserve_history:
+                _log.warning(
+                    "Codex user thread is already archived or its rollout is missing; "
+                    "attempting to restore history"
+                )
+            else:
+                _log.warning(
+                    "Codex internal thread rollout disappeared before close; "
+                    "deleting the still-loaded runtime"
+                )
+                await client.request(
+                    "thread/delete",
+                    {"threadId": binding.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
         if preserve_history:
+            # unarchive 只恢复 notLoaded 历史文件，不会重启 thread 或 MCP。必须先做，
+            # 否则资源核验失败会把 rollout 留在归档区，使下一次关闭误判为文件丢失。
             await client.request(
                 "thread/unarchive",
                 {"threadId": binding.thread_id},
                 timeout=_REQUEST_TIMEOUT_S,
             )
-            if self._resource_registry is not None:
-                await self._reconcile_session_process_groups(session.session_id)
         if self._resource_registry is not None:
+            await self._reconcile_session_process_groups(session.session_id)
             self._resource_registry.mark_owner_closed(
                 OwnerScope.SESSION,
                 agent_session_id=session.session_id,

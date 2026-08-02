@@ -42,16 +42,6 @@ function IconReview() {
   );
 }
 
-function IconSprout() {
-  return (
-    <svg className="sidebar-logo__svg" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 21v-8" />
-      <path d="M12 13c0-4-3-6-7-6 0 4 3 6 7 6z" />
-      <path d="M12 11c0-3 2.5-5 6-5 0 3-2.5 5-6 5z" />
-    </svg>
-  );
-}
-
 function IconAgent() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -98,8 +88,12 @@ export function AppLayout({
       <aside
         className={`app-sidebar ${sidebarOpen ? "app-sidebar--open" : ""}`}
       >
-        <div className="sidebar-logo">
-          <IconSprout />
+        <div className="sidebar-logo" aria-hidden="true">
+          <img
+            className="sidebar-logo__svg"
+            src="./brand/trowel-mark.svg"
+            alt=""
+          />
         </div>
         <nav className="sidebar-nav">
           {TOOLS.map((tool) => (

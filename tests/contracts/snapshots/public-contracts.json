@@ -3204,7 +3204,7 @@
       "/api/agent/runtimes": {
         "get": {
           "summary": "List Runtimes",
-          "description": "列出 Claude Code 和 Codex 支持的功能及当前接入状态。\n\nCodex 的 connected 只表示应用已经配置共享会话管理器，不代表账号已登录或\n网络可用。Claude Code 的 connected 当前固定为 True，不会主动探测进程。\n\nArgs:\n    hub: 用于判断 Codex 会话管理器是否已配置的 Session Hub。\n\nReturns:\n    统一响应。data 为两个运行工具的标识、显示名称、底层程序、功能列表和\n    connected 状态。",
+          "description": "列出 Claude Code 和 Codex 支持的功能及当前接入状态。\n\nconnected 表示对应 CLI 已安装且 Host 已配置，不代表账号已登录或网络可用。\n\nArgs:\n    hub: 用于判断 Codex 会话管理器是否已配置的 Session Hub。\n\nReturns:\n    统一响应。data 为两个运行工具的标识、显示名称、底层程序、功能列表和\n    connected 状态。",
           "operationId": "list_runtimes_api_agent_runtimes_get",
           "responses": {
             "200": {
@@ -3225,7 +3225,7 @@
       "/api/agent/models": {
         "get": {
           "summary": "List Models",
-          "description": "返回当前 Codex 提供的模型目录。\n\nTrowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。\n\nArgs:\n    hub: 用于读取 Codex 模型目录的 Session Hub。\n\nReturns:\n    统一响应。data.models 为 Codex 当前提供的模型列表。\n\nRaises:\n    HTTPException: Codex 会话管理器未配置时返回 503。",
+          "description": "返回当前 Codex 提供的模型目录。\n\nTrowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。\n\nArgs:\n    hub: 用于读取 Codex 模型目录的 Session Hub。\n\nReturns:\n    统一响应。data.models 为 Codex 当前提供的模型列表；Codex CLI 未安装时\n    返回空列表。",
           "operationId": "list_models_api_agent_models_get",
           "responses": {
             "200": {
@@ -3635,7 +3635,8 @@
               "type": "string",
               "enum": [
                 "user",
-                "delegate"
+                "delegate",
+                "probe"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -3741,7 +3742,8 @@
               "type": "string",
               "enum": [
                 "user",
-                "delegate"
+                "delegate",
+                "probe"
               ],
               "title": "Session Kind",
               "default": "user"

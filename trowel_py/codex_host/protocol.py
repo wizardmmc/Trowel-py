@@ -24,7 +24,7 @@ TROWEL_NOTE_SEARCH_SERVER_NAME = "trowel_note_search"
 # app-server README 的 Initialization 契约。
 CLIENT_NAME = "trowel_codex_host"
 CLIENT_TITLE = "Trowel Codex Host"
-CLIENT_VERSION = "0.1.0"
+CLIENT_VERSION = "0.2.0"
 
 # 仅声明 Codex 0.144.0 schema 公布的 server request；列入集合不等于启用 handler。
 KNOWN_SERVER_REQUEST_METHODS: frozenset[str] = frozenset(

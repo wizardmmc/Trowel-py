@@ -32,6 +32,9 @@ export function createDesktopBridge(invoke: InvokeDesktopIpc): DesktopBridge {
     retrySidecar: async () => {
       await invoke(DESKTOP_IPC.retrySidecar);
     },
+    openTrowel: async () => {
+      await invoke(DESKTOP_IPC.openTrowel);
+    },
     openLogs: async () => {
       await invoke(DESKTOP_IPC.openLogs);
     },

@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+from trowel_py.db.migrate import run_migrations
+from trowel_py.pet.repository import create_pet_repository
+
+
+def test_repository_creates_default_player_before_pet(db_connection):
+    run_migrations(db_connection)
+
+    pet = create_pet_repository(db_connection).find_or_create()
+
+    player = db_connection.execute(
+        "select id from players where id = 'default'"
+    ).fetchone()
+    assert player["id"] == "default"
+    assert pet.player_id == "default"
+
 
 class TestFindOrCreate:
     def test_first_access_creates_with_table_defaults(self, pet_repo):

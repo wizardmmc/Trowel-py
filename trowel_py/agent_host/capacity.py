@@ -6,17 +6,12 @@ import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal
-
-from trowel_py.agent_host.binding import Runtime, SessionBinding
+from trowel_py.agent_host.binding import Runtime, SessionBinding, SessionKind
 from trowel_py.agent_host.runtimes.base import (
     RuntimeLiveState,
     RuntimeSessionPort,
 )
 from trowel_py.agent_host.store import BindingStore
-
-SessionKind = Literal["user", "delegate"]
-
 
 @dataclass(frozen=True)
 class CapacityLimits:
@@ -79,7 +74,7 @@ class SessionCapacityGate:
         """检查连接池并在创建完成前独占连接变更。
 
         Args:
-            session_kind: 新会话属于用户连接池还是委派连接池。
+            session_kind: 新会话属于用户连接池还是非用户内部连接池。
 
         Yields:
             连接创建可安全执行的临界区。
@@ -90,7 +85,7 @@ class SessionCapacityGate:
 
         with self._lock:
             count = self.connection_count(session_kind)
-            if session_kind == "delegate":
+            if session_kind != "user":
                 if count >= self._limits.delegate_connections:
                     raise CapacityLimitError(
                         "当前委派数量已满："
@@ -104,9 +99,9 @@ class SessionCapacityGate:
             yield
 
     def reserve_turn(self, binding: SessionBinding) -> object | None:
-        """为委派子会话原子预留一个同时在跑名额。
+        """为非用户内部会话原子预留一个同时在跑名额。
 
-        用户会话不占委派池，返回 None。预留覆盖 runtime 尚未公开在跑状态的启动
+        用户会话不占内部池，返回 None。预留覆盖 runtime 尚未公开在跑状态的启动
         窗口，调用方必须在启动失败或 runtime 已接管状态后释放。
 
         Args:
@@ -116,7 +111,7 @@ class SessionCapacityGate:
             释放预留时使用的内部令牌；用户会话返回 None。
 
         Raises:
-            CapacityLimitError: 委派同时在跑数量已经达到上限。
+            CapacityLimitError: 非用户内部会话同时在跑数量已经达到上限。
         """
 
         with self._lock:
@@ -124,7 +119,7 @@ class SessionCapacityGate:
                 raise CapacityConflictError(
                     f"session {binding.session_id} 正在关闭，不能启动新轮次"
                 )
-            if binding.session_kind != "delegate":
+            if binding.session_kind == "user":
                 return None
             if self._delegate_running_count_unlocked() >= self._limits.delegate_running:
                 raise CapacityLimitError(
@@ -144,7 +139,7 @@ class SessionCapacityGate:
             self._turn_reservations.pop(token, None)
 
     def delegate_running_count(self) -> int:
-        """返回已经预留或由 runtime 确认仍在处理的委派轮次数量。"""
+        """返回已经预留或由 runtime 确认仍在处理的非用户轮次数量。"""
 
         with self._lock:
             return self._delegate_running_count_unlocked()
@@ -209,7 +204,7 @@ class SessionCapacityGate:
         return runtime.live_state(binding.session_id)
 
     def connection_count(self, session_kind: SessionKind) -> int:
-        """统计对应类别中仍有 binding 的 runtime 登记会话。"""
+        """统计对应类别所属资源池中仍有 binding 的 runtime 登记会话。"""
 
         with self._lock:
             return sum(
@@ -220,14 +215,14 @@ class SessionCapacityGate:
             )
 
     def _delegate_running_count_unlocked(self) -> int:
-        """统计委派运行占用；调用方必须持有容量锁。"""
+        """统计非用户运行占用；调用方必须持有容量锁。"""
 
         reservation_ids = tuple(self._turn_reservations.values())
         reserved_sessions = set(reservation_ids)
         runtime_running = sum(
             1
             for binding in self._store.list_all()
-            if binding.session_kind == "delegate"
+            if binding.session_kind != "user"
             and binding.session_id not in reserved_sessions
             and self.live_state(binding).has_in_flight_turn
         )
@@ -238,7 +233,9 @@ class SessionCapacityGate:
         session_id: str,
         session_kind: SessionKind,
     ) -> bool:
-        """判断 runtime 登记项是否仍有对应类别的 binding。"""
+        """判断 runtime 登记项是否占用对应的用户或内部连接池。"""
 
         binding = self._store.get(session_id)
-        return binding is not None and binding.session_kind == session_kind
+        return binding is not None and (
+            (binding.session_kind == "user") == (session_kind == "user")
+        )

@@ -74,6 +74,14 @@ def _cfg(*, enabled: bool = True, t: time | None = None) -> ReviewScheduleConfig
     return ReviewScheduleConfig(review_time=t or time(2, 30), review_enabled=enabled)
 
 
+def _assume_runtime_clis_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 lifespan 集成场景不依赖测试机是否安装 runtime CLI。"""
+    monkeypatch.setattr(
+        "trowel_py.app.detect_runtime_availability",
+        lambda: {Runtime.CLAUDE_CODE: True, Runtime.CODEX: True},
+    )
+
+
 class _HangingSleep:
     async def __call__(self, seconds: float) -> None:  # noqa: ARG002
         await asyncio.Event().wait()
@@ -567,6 +575,7 @@ class TestLifespanIntegration:
         dispatched: list[dict] = []
         monkeypatch.setattr(mem_paths, "resolve_memory_root", lambda: memory_root)
         monkeypatch.setattr(rs_mod, "_default_dispatch", dispatched.append)
+        _assume_runtime_clis_available(monkeypatch)
         monkeypatch.setattr(
             rs_mod,
             "load_review_config",
@@ -621,6 +630,7 @@ class TestLifespanIntegration:
         workdir = tmp_path / "project"
         workdir.mkdir()
         monkeypatch.setattr(mem_paths, "resolve_memory_root", lambda: memory_root)
+        _assume_runtime_clis_available(monkeypatch)
 
         async def fail_start(_self) -> None:
             raise RuntimeError("scheduler unavailable")

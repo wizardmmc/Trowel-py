@@ -8,7 +8,7 @@ from typing import Literal
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.capacity import SessionCapacityGate
-from trowel_py.agent_host.delegate_identity import DelegateIdentityStore
+from trowel_py.agent_host.delegate_identity import NonUserIdentityStore
 from trowel_py.agent_host.runtimes.base import RuntimeCloseResult, RuntimeSessionPort
 from trowel_py.agent_host.store import BindingStore
 from trowel_py.resource_lifecycle.models import OwnerScope
@@ -64,7 +64,7 @@ class SessionLifecycle:
     def __init__(
         self,
         store: BindingStore,
-        delegate_identities: DelegateIdentityStore,
+        non_user_identities: NonUserIdentityStore,
         runtime_ports: Mapping[Runtime, RuntimeSessionPort],
         capacity: SessionCapacityGate,
         resource_registry: ResourceRegistry | None = None,
@@ -73,7 +73,7 @@ class SessionLifecycle:
 
         Args:
             store: 保存 Trowel 会话 binding 的持久仓储。
-            delegate_identities: 长期排除内部委派会话的原生身份索引。
+            non_user_identities: 长期排除所有非用户会话的原生身份索引。
             runtime_ports: 两种 runtime 到实时状态和关闭操作的映射。
             capacity: 原子提交会话连接、在跑和关闭状态的统一容量门。
             resource_registry: 当前应用实例的临时资源账本；None 时仅依赖 runtime
@@ -81,32 +81,32 @@ class SessionLifecycle:
         """
 
         self._store = store
-        self._delegate_identities = delegate_identities
+        self._non_user_identities = non_user_identities
         self._runtime_ports = dict(runtime_ports)
         self._capacity = capacity
         self._resource_registry = resource_registry
 
-    def migrate_delegate_identities(self) -> None:
-        """把升级前仍保留 binding 的委派原生 ID 写入长期索引。"""
+    def migrate_non_user_identities(self) -> None:
+        """把升级前仍保留 binding 的非用户原生 ID 写入长期索引。"""
 
         for binding in self._store.list_all():
-            self.remember_delegate_identity(binding)
+            self.remember_non_user_identity(binding)
 
-    def remember_delegate_identity(
+    def remember_non_user_identity(
         self,
         binding: SessionBinding,
         native_session_id: str | None = None,
     ) -> None:
-        """在 binding 已确认是委派会话且已有原生 ID 时持久登记。"""
+        """在 binding 已确认不是用户会话且已有原生 ID 时持久登记。"""
 
         effective_native_id = native_session_id or binding.native_session_id
         if (
-            binding.session_kind != "delegate"
+            binding.session_kind == "user"
             or not isinstance(effective_native_id, str)
             or not effective_native_id
         ):
             return
-        self._delegate_identities.add(binding.runtime, effective_native_id)
+        self._non_user_identities.add(binding.runtime, effective_native_id)
 
     def commit_created(self, binding: SessionBinding) -> None:
         """提交新 binding；任一步失败都撤销 binding 和 runtime 登记。"""
@@ -115,7 +115,7 @@ class SessionLifecycle:
         try:
             self._store.put(binding)
             stored = True
-            self.remember_delegate_identity(binding)
+            self.remember_non_user_identity(binding)
         except BaseException as exc:
             if stored:
                 try:
@@ -175,7 +175,7 @@ class SessionLifecycle:
             runtime 与资源账本共同确认的关闭结果。
         """
 
-        self.remember_delegate_identity(binding)
+        self.remember_non_user_identity(binding)
         token = self._capacity.begin_close(binding.session_id)
         try:
             if self._resource_registry is not None:

@@ -48,8 +48,8 @@ from trowel_py.agent_host.codex_settings import (
     select_turn_settings,
 )
 from trowel_py.agent_host.delegate_identity import (
-    DelegateIdentityStore,
-    delegate_identity_path,
+    NonUserIdentityStore,
+    non_user_identity_path,
 )
 from trowel_py.agent_host.events import AgentEvent
 from trowel_py.agent_host.lifecycle import (
@@ -201,7 +201,7 @@ class SessionHub:
         cc_settings_path: str | Path | None = None,
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
-        delegate_identity_store: DelegateIdentityStore | None = None,
+        non_user_identity_store: NonUserIdentityStore | None = None,
         runtime_ports: Mapping[Runtime, RuntimeSessionPort] | None = None,
         capacity_limits: CapacityLimits | None = None,
         session_review_requester: SessionReviewRequester | None = None,
@@ -209,6 +209,7 @@ class SessionHub:
         title_store: SessionTitleStore | None = None,
         codex_history_root: str | Path | None = None,
         resource_registry: ResourceRegistry | None = None,
+        runtime_availability: Mapping[Runtime, bool] | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -224,8 +225,8 @@ class SessionHub:
                 服务商所需的环境变量。
             codex_config_home: Codex 配置目录；创建会话前检查其中是否存在同名 MCP。
             event_observer: 接收每个通用事件的同步回调。
-            delegate_identity_store: 跨 binding 清理保留委派原生会话 ID 的本机索引；
-                未提供时在 binding 文件旁创建独立索引。
+            non_user_identity_store: 跨 binding 清理保留所有非用户原生会话 ID 的
+                本机索引；未提供时在 binding 文件旁创建独立索引。
             runtime_ports: 两种 runtime 的统一状态与关闭入口；未提供时根据 registry
                 和 Codex manager 构造默认适配器。
             capacity_limits: 用户连接和委派资源池上限；未提供时使用生产默认值。
@@ -239,6 +240,8 @@ class SessionHub:
                 未提供时只使用原生 ``thread/read`` 回放。
             resource_registry: 当前应用实例的临时资源账本；未提供时保持进程内兼容
                 行为，不执行跨 runtime 资源归零复核。
+            runtime_availability: 两种 runtime CLI 在当前系统中的安装状态；未提供时
+                保持测试与旧调用方的既有可用性判断。
         """
 
         self._store = store
@@ -247,10 +250,18 @@ class SessionHub:
         )
         self._title_generator = title_generator
         self._title_lock = threading.Lock()
-        self._delegate_identities = delegate_identity_store or DelegateIdentityStore(
-            delegate_identity_path(store.path)
+        self._non_user_identities = non_user_identity_store or NonUserIdentityStore(
+            non_user_identity_path(store.path)
         )
         self._codex = codex_manager
+        self._runtime_availability = (
+            dict(runtime_availability)
+            if runtime_availability is not None
+            else {
+                Runtime.CLAUDE_CODE: True,
+                Runtime.CODEX: codex_manager is not None,
+            }
+        )
         self._cc_registry = (
             cc_registry if cc_registry is not None else _default_cc_registry()
         )
@@ -298,12 +309,12 @@ class SessionHub:
         )
         self._lifecycle = SessionLifecycle(
             self._store,
-            self._delegate_identities,
+            self._non_user_identities,
             self._runtime_ports,
             self._capacity,
             self._resource_registry,
         )
-        self._lifecycle.migrate_delegate_identities()
+        self._lifecycle.migrate_non_user_identities()
 
     @property
     def store(self) -> BindingStore:
@@ -316,6 +327,12 @@ class SessionHub:
         """是否已经配置 Codex 进程和 thread 管理器。"""
 
         return self._codex is not None
+
+    def runtime_available(self, runtime: Runtime) -> bool:
+        """返回指定 runtime 的 CLI 是否已安装且对应 Host 已配置。"""
+        if runtime == Runtime.CODEX and self._codex is None:
+            return False
+        return self._runtime_availability.get(runtime, False)
 
     @property
     def draining(self) -> bool:
@@ -698,6 +715,9 @@ class SessionHub:
             SessionConflictError: Claude Code 会话数已达到上限。
         """
 
+        if not self.runtime_available(Runtime.CLAUDE_CODE):
+            raise RuntimeUnavailableError("Claude Code CLI 未安装")
+
         from trowel_py.cc_host.schemas import CreateSessionRequest
 
         cc_req = CreateSessionRequest(
@@ -772,8 +792,8 @@ class SessionHub:
     def _create_codex(self, req: CreateAgentSessionRequest) -> SessionBinding:
         """``resume_from`` 只登记原生 thread，首次 turn 才执行恢复。"""
 
-        if self._codex is None:
-            raise RuntimeUnavailableError("codex host unavailable")
+        if not self.runtime_available(Runtime.CODEX):
+            raise RuntimeUnavailableError("Codex CLI 未安装")
         self._refuse_on_trowel_mcp_collision(req.workdir)
         prepared = prepare_codex_session(
             req,
@@ -915,20 +935,20 @@ class SessionHub:
         except HistoryCursorError as exc:
             raise InvalidSessionRequestError(str(exc)) from exc
         required = offset + limit + 1
-        cc_delegate_ids = self._delegate_identities.ids(Runtime.CLAUDE_CODE)
-        codex_delegate_ids = self._delegate_identities.ids(Runtime.CODEX)
+        cc_non_user_ids = self._non_user_identities.ids(Runtime.CLAUDE_CODE)
+        codex_non_user_ids = self._non_user_identities.ids(Runtime.CODEX)
         cc_summaries = await asyncio.to_thread(
             scan_cc_history,
             workdir,
             limit=required,
-            excluded_ids=cc_delegate_ids,
+            excluded_ids=cc_non_user_ids,
         )
         codex_threads: list[dict[str, Any]] = []
         if self._codex is not None:
             codex_threads = await self._codex.list_threads(
                 cwd=workdir,
                 limit=required,
-                excluded_ids=codex_delegate_ids,
+                excluded_ids=codex_non_user_ids,
             )
         rows, next_cursor = merge_history_page(
             cc_summaries,
@@ -2217,7 +2237,7 @@ class SessionHub:
         if binding is None:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
             return
-        self._lifecycle.remember_delegate_identity(binding, cc_session_id)
+        self._lifecycle.remember_non_user_identity(binding, cc_session_id)
         try:
             updated = self._store.update_native(
                 session_id,
@@ -2248,7 +2268,7 @@ class SessionHub:
         if binding is None:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
             return
-        self._lifecycle.remember_delegate_identity(binding, thread_binding.thread_id)
+        self._lifecycle.remember_non_user_identity(binding, thread_binding.thread_id)
         try:
             sandbox = getattr(thread_binding, "effective_sandbox", None)
             approval = getattr(thread_binding, "effective_approval", None)

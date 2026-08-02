@@ -10,6 +10,7 @@ export const DESKTOP_IPC = {
   requestQuit: "desktop:request-quit",
   getDiagnostics: "desktop:get-diagnostics",
   retrySidecar: "desktop:retry-sidecar",
+  openTrowel: "desktop:open-trowel",
   openLogs: "desktop:open-logs",
 } as const;
 
@@ -48,5 +49,6 @@ export interface DesktopBridge {
   readonly requestQuit: () => Promise<void>;
   readonly getDiagnostics: () => Promise<DesktopDiagnosticState>;
   readonly retrySidecar: () => Promise<void>;
+  readonly openTrowel: () => Promise<void>;
   readonly openLogs: () => Promise<void>;
 }
