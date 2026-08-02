@@ -17,22 +17,17 @@ def validate_draft(
     *,
     note_kinds: Collection[str],
     verification_tiers: Collection[str],
-    legal_source_refs: set[str] | None,
 ) -> list[str]:
     """按遍历顺序收集新草稿的全部落盘门禁错误。
 
     检查范围包括 Note 标题非空和枚举、Diary 日期非空、非空旧
-    ``events``、仅在 ``items`` 为空时拒绝的旧结构化列表，以及 v2 各类
-    事件的必填字段、状态和来源引用。事件数量和文本长度不在此处设限。每个
-    事件的空引用列表、空引用和重复引用只报告首个命中的结构错误，非法引用
-    另行报告。
+    ``events``、仅在 ``items`` 为空时拒绝的旧结构化列表，以及各类结构化
+    事件的必填字段和状态。事件数量和文本长度不在此处设限。
 
     Args:
         draft: 已解析的完整草稿。
         note_kinds: 允许写入的 Note 种类。
         verification_tiers: 允许写入的验证等级。
-        legal_source_refs: 允许引用的来源行标识；为 ``None`` 时不检查引用
-            是否属于当前来源。
 
     Returns:
         先按顺序收集全部 Note 错误，再逐个 Diary 收集 Diary 自身及其事件
@@ -101,19 +96,6 @@ def validate_draft(
                 if item.status not in {"active", "closed"}:
                     errors.append(
                         f"{prefix}.status must be one of ['active', 'closed']"
-                    )
-            refs = item.source_refs
-            if not refs:
-                errors.append(f"{prefix}.source_refs must not be empty")
-            elif any(not ref for ref in refs):
-                errors.append(f"{prefix}.source_refs contains empty refs")
-            elif len(refs) != len(set(refs)):
-                errors.append(f"{prefix}.source_refs contains duplicates")
-            if legal_source_refs is not None:
-                illegal = [ref for ref in refs if ref not in legal_source_refs]
-                if illegal:
-                    errors.append(
-                        f"{prefix}.source_refs contains illegal refs: {illegal!r}"
                     )
     return errors
 

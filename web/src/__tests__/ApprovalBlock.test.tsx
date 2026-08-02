@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ApprovalBlock } from "../components/cc/ApprovalBlock";
-import type { ApprovalItem } from "../stores/ccStore";
+import { ApprovalBlock } from "../agent/runtimes/codex";
+import type { ApprovalItem } from "../agent/domain";
 
 const pending: ApprovalItem = {
   kind: "approval",

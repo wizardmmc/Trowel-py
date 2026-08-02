@@ -72,17 +72,16 @@ async def test_real_codex_turn_is_sealed_in_memory_journal() -> None:
 
         conn = open_sessions_db(memory_root)
         try:
-            [segment] = create_sessions_repository(conn).find_incremental_codex(
+            [segment] = create_sessions_repository(conn).codex.claim_pending_fragments(
                 completed_before="9999-12-31T00:00:00"
             )
         finally:
             conn.close()
-        assert segment.turn.turn_id == turn_id
+        [turn] = segment.turns
+        assert turn.turn_id == turn_id
         lines = [
             json.loads(line)
-            for line in Path(segment.turn.journal_path)
-            .read_text(encoding="utf-8")
-            .splitlines()
+            for line in Path(turn.journal_path).read_text(encoding="utf-8").splitlines()
         ]
         assert lines[0]["type"] == "user"
         assert lines[-1]["type"] == "finished"

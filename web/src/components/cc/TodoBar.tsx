@@ -1,11 +1,16 @@
+/** 根据 runtime 展示 Task 列表或 Codex goal、plan 侧栏。 */
+
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import {
-  useActiveSession,
-  useCcStore,
-  type Task,
-} from "../../stores/ccStore";
-import { CodexWorkRail } from "./CodexWorkRail";
+  useAgentStore,
+} from "../../agent/application";
+import type { Task } from "../../agent/domain";
+import {
+  CodexWorkRail,
+  getRuntimePresentation,
+} from "../../agent/runtimes";
 
 function statusIcon(status: Task["status"]): string {
   switch (status) {
@@ -24,24 +29,55 @@ interface TodoBarProps {
 }
 
 export function TodoBar({ drawerOpen = false, onCloseDrawer }: TodoBarProps) {
-  const active = useActiveSession();
-  const activeSid = useCcStore((state) => state.activeSid);
-  const setCodexGoal = useCcStore((state) => state.setCodexGoal);
-  const clearCodexGoal = useCcStore((state) => state.clearCodexGoal);
+  const active = useAgentStore(
+    useShallow((state) => {
+      const session = state.activeSid
+        ? state.sessions[state.activeSid] ?? null
+        : null;
+      return session
+        ? {
+            runtime: session.runtime,
+            capabilities: session.capabilities,
+            goal: session.goal,
+            plan: session.plan,
+            tasks: session.tasks,
+          }
+        : null;
+    }),
+  );
+  const activeSid = useAgentStore((state) => state.activeSid);
+  const setCodexGoal = useAgentStore((state) => state.setCodexGoal);
+  const clearCodexGoal = useAgentStore((state) => state.clearCodexGoal);
   const tasks = active?.tasks ?? [];
   const [showCompleted, setShowCompleted] = useState(false);
+  const presentation = active
+    ? getRuntimePresentation(active.runtime, active.capabilities)
+    : null;
 
-  if (active?.runtime === "codex") {
+  if (presentation?.sidePanel === "goal_plan" && active) {
     return (
       <CodexWorkRail
         key={activeSid}
         goal={active.goal}
         plan={active.plan}
+        showGoal={presentation.sidePanelSections.goal}
+        showPlan={presentation.sidePanelSections.plan}
         drawerOpen={drawerOpen}
         onCloseDrawer={onCloseDrawer}
         onSetGoal={(update) => void setCodexGoal(update)}
         onClearGoal={() => void clearCodexGoal()}
       />
+    );
+  }
+
+  if (active && presentation?.sidePanel === null) {
+    return (
+      <aside className="cc-todobar" aria-label="Runtime capability 状态">
+        <div className="cc-todobar__head">当前会话能力</div>
+        <div className="cc-todobar__empty">
+          当前 runtime 未声明 goal 或 plan 能力，也未声明任务面板能力。
+        </div>
+      </aside>
     );
   }
 

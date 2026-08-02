@@ -1,3 +1,5 @@
+/** 展示一张待审核卡片的正反面和来源信息。 */
+
 import type { CardDraft } from "../../api/client";
 
 interface CardDetailProps {

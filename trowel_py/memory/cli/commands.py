@@ -151,7 +151,7 @@ def _run_profile_recalibration(args: Namespace, root: Path) -> int:
     Returns:
         计划或重放报告输出后返回 0；范围无效或运行时缺少代理地址时返回 2。
     """
-    from trowel_py.memory.profile_recalibrate import (
+    from trowel_py.profile.recalibration import (
         RecalibrationRunResult,
         RecalibrationScopeError,
         plan_recalibration,

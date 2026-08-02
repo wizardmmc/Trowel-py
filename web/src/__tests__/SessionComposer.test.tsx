@@ -1,9 +1,9 @@
 import { act, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSession, CodexCommand } from "../api/agent";
+import type { AgentSession, CodexCommand } from "../agent/transport";
 import { SessionComposer } from "../components/cc/SessionComposer";
-import { createNewSessionState } from "../stores/ccStore/sessionState";
+import { createNewSessionState } from "../agent/application/store/sessionState";
 
 const probe = vi.hoisted(() => ({
   props: null as Record<string, unknown> | null,
@@ -16,7 +16,10 @@ vi.mock("../components/cc/Composer", () => ({
   },
 }));
 
-function session(runtime: "claude_code" | "codex"): AgentSession {
+function session(
+  runtime: "claude_code" | "codex",
+  capabilities: readonly string[],
+): AgentSession {
   return {
     session_id: "s1",
     runtime,
@@ -27,16 +30,51 @@ function session(runtime: "claude_code" | "codex"): AgentSession {
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools"],
+    capabilities,
     name: "repo",
     connected: true,
     running: false,
   };
 }
 
-function baseProps(runtime: "claude_code" | "codex") {
+function baseProps(
+  runtime: "claude_code" | "codex",
+  capabilities = runtime === "codex"
+    ? [
+        "tools",
+        "models",
+        "effort",
+        "permission",
+        "sandbox",
+        "network_access",
+        "approval",
+        "interrupt",
+        "slash_commands",
+        "goal",
+        "plan",
+        "review",
+        "subagents",
+        "turn_diff",
+        "mcp",
+      ]
+    : [
+        "tools",
+        "models",
+        "effort",
+        "permission",
+        "question",
+        "interrupt",
+        "slash_commands",
+        "workflow",
+        "tasks",
+        "subagents",
+        "checkpoint",
+        "revert",
+        "mcp",
+      ],
+) {
   return {
-    active: createNewSessionState(session(runtime), {
+    active: createNewSessionState(session(runtime, capabilities), {
       workdir: "/repo",
       runtime,
       effort: "high",
@@ -147,5 +185,63 @@ describe("SessionComposer", () => {
       props.codexCommands[0],
       "/status",
     );
+  });
+
+  it("does not expose controls whose capabilities are absent", () => {
+    const props = baseProps("codex", ["tools"]);
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.models).toEqual([]);
+    expect(probe.props?.efforts).toBeUndefined();
+    expect(probe.props?.slashItems).toEqual([]);
+    expect(probe.props?.onPickModel).toBeUndefined();
+    expect(probe.props?.onPickEffort).toBeUndefined();
+    expect(probe.props?.permissionFacts).toBeNull();
+    expect(probe.props?.onInterrupt).toBeUndefined();
+  });
+
+  it("keeps model selection when effort capability is absent", () => {
+    const props = baseProps("codex", ["tools", "models"]);
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.models).toHaveLength(1);
+    expect(probe.props?.onPickModel).toBeTypeOf("function");
+    expect(probe.props?.onPickEffort).toBeUndefined();
+    expect(probe.props?.currentEffort).toBeNull();
+  });
+
+  it("filters Codex commands through their dedicated capabilities", () => {
+    const props = baseProps("codex", ["tools", "slash_commands"]);
+    props.codexCommands = [
+      {
+        name: "status",
+        description: "状态",
+        source: "codex",
+        action: "status",
+        available_while_running: true,
+      },
+      {
+        name: "review",
+        description: "审查",
+        source: "codex",
+        action: "review",
+        available_while_running: false,
+      },
+      {
+        name: "diff",
+        description: "改动",
+        source: "codex",
+        action: "diff",
+        available_while_running: true,
+      },
+    ];
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.slashItems).toEqual([
+      expect.objectContaining({ name: "status", source: "codex" }),
+    ]);
   });
 });

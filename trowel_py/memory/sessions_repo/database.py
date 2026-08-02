@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .models import CodexTurnRecord, SessionBinding, SessionRecord
+from .models import CodexTurnRecord, ReviewRequest, SessionBinding, SessionRecord
 
 _META_DIR = "meta"
 _SESSIONS_DB = "sessions.db"
@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS session_bindings (
     cc_session_id     TEXT NOT NULL,
     session_kind      TEXT NOT NULL,
     workdir           TEXT NOT NULL,
-    bound_at          TEXT NOT NULL
+    bound_at          TEXT NOT NULL,
+    start_offset      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
 CREATE TABLE IF NOT EXISTS codex_turns (
@@ -49,10 +50,22 @@ CREATE TABLE IF NOT EXISTS codex_turns (
     memory_enabled      INTEGER NOT NULL DEFAULT 1,
     profile_enabled     INTEGER NOT NULL DEFAULT 1,
     session_kind        TEXT NOT NULL DEFAULT 'user',
+    review_fragment_id  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (thread_id, turn_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_turns_incremental
     ON codex_turns(completed_at, extracted_at);
+CREATE TABLE IF NOT EXISTS session_review_requests (
+    trowel_session_id  TEXT PRIMARY KEY,
+    runtime            TEXT NOT NULL,
+    requested_at       TEXT NOT NULL,
+    not_before         TEXT NOT NULL,
+    native_session_id  TEXT NOT NULL DEFAULT '',
+    source_start_offset INTEGER,
+    source_end_offset   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_session_review_requests_order
+    ON session_review_requests(requested_at, trowel_session_id);
 """
 
 _ADD_COLUMN_SQL = {
@@ -73,6 +86,30 @@ _CODEX_ADD_COLUMN_SQL = {
     "session_kind": (
         "ALTER TABLE codex_turns ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'user'"
     ),
+    "review_fragment_id": (
+        "ALTER TABLE codex_turns ADD COLUMN review_fragment_id TEXT NOT NULL DEFAULT ''"
+    ),
+}
+
+_BINDING_ADD_COLUMN_SQL = {
+    "start_offset": "ALTER TABLE session_bindings ADD COLUMN start_offset INTEGER",
+}
+
+_REVIEW_REQUEST_ADD_COLUMN_SQL = {
+    "not_before": (
+        "ALTER TABLE session_review_requests"
+        " ADD COLUMN not_before TEXT NOT NULL DEFAULT ''"
+    ),
+    "native_session_id": (
+        "ALTER TABLE session_review_requests"
+        " ADD COLUMN native_session_id TEXT NOT NULL DEFAULT ''"
+    ),
+    "source_start_offset": (
+        "ALTER TABLE session_review_requests ADD COLUMN source_start_offset INTEGER"
+    ),
+    "source_end_offset": (
+        "ALTER TABLE session_review_requests ADD COLUMN source_end_offset INTEGER"
+    ),
 }
 
 
@@ -88,7 +125,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_columns(conn: sqlite3.Connection) -> None:
-    """只补齐旧 sessions 表缺失的列和增量索引。"""
+    """补齐旧 sessions、binding、Codex turn 和 review queue 的兼容列。"""
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     for column, sql in _ADD_COLUMN_SQL.items():
         if column not in existing:
@@ -98,6 +135,19 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
     }
     for column, sql in _CODEX_ADD_COLUMN_SQL.items():
         if column not in codex_existing:
+            conn.execute(sql)
+    binding_existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(session_bindings)")
+    }
+    for column, sql in _BINDING_ADD_COLUMN_SQL.items():
+        if column not in binding_existing:
+            conn.execute(sql)
+    review_request_existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(session_review_requests)")
+    }
+    for column, sql in _REVIEW_REQUEST_ADD_COLUMN_SQL.items():
+        if column not in review_request_existing:
             conn.execute(sql)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_incremental"
@@ -178,6 +228,7 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
         session_kind=row["session_kind"],
         workdir=row["workdir"],
         bound_at=row["bound_at"],
+        start_offset=row["start_offset"],
     )
 
 
@@ -204,4 +255,19 @@ def row_to_codex_turn(row: sqlite3.Row) -> CodexTurnRecord:
         memory_enabled=bool(row["memory_enabled"]),
         profile_enabled=bool(row["profile_enabled"]),
         session_kind=row["session_kind"] or "user",
+        review_fragment_id=row["review_fragment_id"] or "",
+    )
+
+
+def row_to_review_request(row: sqlite3.Row) -> ReviewRequest:
+    """把即时 review 请求行转换为持久队列记录。"""
+
+    return ReviewRequest(
+        trowel_session_id=row["trowel_session_id"],
+        runtime=row["runtime"],
+        requested_at=row["requested_at"],
+        not_before=row["not_before"] or row["requested_at"],
+        native_session_id=row["native_session_id"] or "",
+        source_start_offset=row["source_start_offset"],
+        source_end_offset=row["source_end_offset"],
     )

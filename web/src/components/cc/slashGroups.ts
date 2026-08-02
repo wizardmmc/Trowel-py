@@ -1,3 +1,5 @@
+/** 按命令来源分组、展开和筛选斜杠命令。 */
+
 import type { SlashItem } from "../../api/cc";
 
 export type SlashSource = "codex" | "builtin" | "bundled" | "user" | "project" | "plugin";

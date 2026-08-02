@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
-import { WorkflowTree } from "../components/cc/WorkflowTree";
-import type { WorkflowItem } from "../stores/ccReducer";
+import { WorkflowTree } from "../agent/runtimes/claude-code";
+import type { WorkflowItem } from "../agent/domain";
 
 function completed(): WorkflowItem {
   return {

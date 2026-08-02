@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 
 from trowel_py.pet.models import Pet
+from trowel_py.player.repository import create_player_repository
 
 
 def create_pet_repository(conn: sqlite3.Connection):
@@ -24,15 +25,16 @@ class PetRepository:
         self.conn = conn
 
     def find_or_create(self) -> Pet:
-        """返回默认宠物，不存在时按数据库默认值创建。"""
+        """原子创建并返回默认宠物，同时保证外键引用的默认玩家存在。"""
+        create_player_repository(self.conn).find_or_create()
+        self.conn.execute(
+            "insert into pets (player_id) values (?) "
+            "on conflict(player_id) do nothing",
+            ("default",),
+        )
         row = self.conn.execute(
             "select * from pets where player_id = ?", ("default",)
         ).fetchone()
-        if row is None:
-            self.conn.execute("insert into pets (player_id) values (?)", ("default",))
-            row = self.conn.execute(
-                "select * from pets where player_id = ?", ("default",)
-            ).fetchone()
         return self._row_to_pet(row)
 
     def update_mood(self, mood: str) -> None:

@@ -1,3 +1,5 @@
+/** 管理卡片提取、审核和重新解释的前端状态。 */
+
 import { create } from "zustand";
 import type { CardDraft, Card } from "../api/client";
 import {

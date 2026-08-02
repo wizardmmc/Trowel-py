@@ -28,6 +28,46 @@ def _pending_migration_files(
     ]
 
 
+def pending_migration_names(
+    conn: sqlite3.Connection,
+    migrations_dir: str | Path | None = None,
+) -> tuple[str, ...]:
+    """只读返回当前数据库尚未应用的 SQL migration 文件名。
+
+    数据库还没有 ``_migrations`` 表时，全部 migration 都视为待执行。本函数不
+    创建表、不修改 journal mode，也不提交调用方事务。
+
+    Args:
+        conn: 要检查的 SQLite 连接。
+        migrations_dir: migration 目录；省略时使用项目内置目录。
+
+    Returns:
+        按文件名排序的待执行 migration 名称。
+    """
+
+    directory = (
+        Path(migrations_dir)
+        if migrations_dir is not None
+        else Path(__file__).parent / "migrations"
+    )
+    has_tracking_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_migrations'"
+    ).fetchone()
+    executed = (
+        {
+            row[0]
+            for row in conn.execute("SELECT name FROM _migrations").fetchall()
+        }
+        if has_tracking_table is not None
+        else set()
+    )
+    return tuple(
+        migration.name
+        for migration in sorted(directory.glob("*.sql"))
+        if migration.name not in executed
+    )
+
+
 def _sql_statements(script: str) -> list[str]:
     """将迁移脚本拆成 SQLite 认为完整的 SQL 语句。"""
     statements: list[str] = []

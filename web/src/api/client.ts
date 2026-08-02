@@ -1,3 +1,7 @@
+/** 定义卡片、复习、花园、宠物、Profile 和事件等产品 HTTP 接口。 */
+
+import { transportFetch } from "../platform/transport";
+
 const API_BASE = "/api/cards";
 const REVIEW_API_BASE = "/api/review";
 const GARDEN_API_BASE = "/api/garden";
@@ -36,7 +40,7 @@ interface ApiResponse<T> {
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await transportFetch(url, options);
   if (!response.ok) {
     throw new Error(`API error: ${response.status}`);
   }

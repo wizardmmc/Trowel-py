@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 import { RevertConfirmModal } from "../components/cc/RevertConfirmModal";
-import type { Turn } from "../stores/ccStore";
+import type { Turn } from "../agent";
 
 function turn(id: string, text: string): Turn {
   return {
@@ -27,6 +27,8 @@ describe("RevertConfirmModal", () => {
     expect(screen.getByText("改这里", { exact: false })).toBeTruthy();
     expect(screen.getByText("再改", { exact: false })).toBeTruthy();
     expect(screen.getByText(/永久丢弃/)).toBeTruthy();
+    expect(screen.getByText(/Claude 会以/)).toBeTruthy();
+    expect(screen.queryByText(/CC 会以/)).toBeNull();
   });
 
   it("truncates long turn text", () => {

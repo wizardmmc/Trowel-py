@@ -6,8 +6,6 @@ from pathlib import Path
 
 import yaml
 
-from trowel_py.memory.store import MemoryStore
-
 
 def item(item_id: str, imperative: str, status: str = "active") -> dict:
     return {
@@ -50,9 +48,10 @@ def write_diary(root: Path, date_value: str, layer: str, body: str) -> None:
 
 
 def write_profile(root: Path, **dimensions: str) -> None:
-    from trowel_py.memory.types import Profile
+    from trowel_py.profile.models import Profile
+    from trowel_py.profile.repository import ProfileRepository
 
-    MemoryStore(root).write_profile(
+    ProfileRepository(root).write_profile(
         Profile(updated="2026-07-14", **dimensions),
         source="user-edit",
     )

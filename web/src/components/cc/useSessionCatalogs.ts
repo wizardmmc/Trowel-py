@@ -1,3 +1,5 @@
+/** 加载新会话需要的 runtime、模型和斜杠命令清单。 */
+
 import { useCallback, useEffect, useState } from "react";
 
 import { listModels, listSlashItems } from "../../api/cc";
@@ -6,7 +8,7 @@ import {
   listAgentModels,
   listAgentRuntimes,
   type AgentModel,
-} from "../../api/agent";
+} from "../../agent/transport";
 import type { RuntimesState } from "./NewSessionDialog";
 
 export function useSessionCatalogs(workdir: string) {
@@ -67,17 +69,25 @@ export function useSessionCatalogs(workdir: string) {
   }, []);
 
   useEffect(() => {
+    listModels()
+      .then(setModels)
+      .catch(() => setModels([]));
+  }, []);
+
+  useEffect(() => {
+    if (!workdir.trim()) {
+      setSlashItems([]);
+      return;
+    }
     let cancelled = false;
-    Promise.all([listSlashItems(workdir), listModels()])
-      .then(([items, ccModels]) => {
+    listSlashItems(workdir)
+      .then((items) => {
         if (cancelled) return;
         setSlashItems(items);
-        setModels(ccModels);
       })
       .catch(() => {
         if (cancelled) return;
         setSlashItems([]);
-        setModels([]);
       });
     return () => {
       cancelled = true;

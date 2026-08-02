@@ -19,7 +19,7 @@ def test_find_incremental_returns_segment() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))
     repo.update_completed("a", 2048, when="t")
-    segments = repo.find_incremental()
+    segments = repo.list_pending_segments()
     assert len(segments) == 1
     assert segments[0].session.cc_session_id == "a"
     assert segments[0].start == 0
@@ -33,7 +33,9 @@ def test_find_incremental_only_returns_segments_completed_before_cutoff() -> Non
     repo.update_completed("yesterday", 100, when="2026-07-23T23:59:59")
     repo.update_completed("today", 100, when="2026-07-24T00:00:00")
 
-    segments = repo.find_incremental(completed_before="2026-07-24T00:00:00")
+    segments = repo.list_pending_segments(
+        completed_before="2026-07-24T00:00:00"
+    )
 
     assert [segment.session.cc_session_id for segment in segments] == ["yesterday"]
 
@@ -42,8 +44,8 @@ def test_find_incremental_excludes_equal_offsets() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))
     repo.update_completed("a", 2048, when="t")
-    repo.advance_extracted("a", 2048, when="t2")
-    assert repo.find_incremental() == []
+    repo.advance_segment("a", 2048, when="t2")
+    assert repo.list_pending_segments() == []
 
 
 def test_find_incremental_excludes_review() -> None:
@@ -55,7 +57,7 @@ def test_find_incremental_excludes_review() -> None:
         )
     )
     repo.update_completed("rev", 2048, when="t")
-    assert repo.find_incremental() == []
+    assert repo.list_pending_segments() == []
 
 
 def test_find_incremental_excludes_distill_and_eval_kinds() -> None:
@@ -71,20 +73,20 @@ def test_find_incremental_excludes_distill_and_eval_kinds() -> None:
     repo.update_completed("user", 2048, when="t")
     repo.update_completed("dist", 2048, when="t")
     repo.update_completed("ev", 2048, when="t")
-    segments = repo.find_incremental()
+    segments = repo.list_pending_segments()
     assert [segment.session.cc_session_id for segment in segments] == ["user"]
 
 
 def test_find_incremental_excludes_half_turn() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))
-    assert repo.find_incremental() == []
+    assert repo.list_pending_segments() == []
 
 
 def test_advance_extracted_stamps() -> None:
     repo = repository()
     repo.register(session_record(cc_session_id="a"))
-    repo.advance_extracted("a", 4096, when="2026-07-11T02:35:00")
+    repo.advance_segment("a", 4096, when="2026-07-11T02:35:00")
     row = repo._conn.execute(  # noqa: SLF001
         "SELECT last_extracted_offset, last_extracted_at"
         " FROM sessions WHERE cc_session_id='a'"

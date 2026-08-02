@@ -5,28 +5,28 @@ from __future__ import annotations
 from datetime import date
 
 from trowel_py.memory.paths import resolve_memory_root
-from trowel_py.memory.store import MemoryStore
-from trowel_py.memory.types import Profile
+from trowel_py.profile.models import Profile
+from trowel_py.profile.repository import ProfileRepository
 from trowel_py.profile.schemas import ProfileUpdate
 
 
-def get_profile_store() -> MemoryStore:
-    """解析配置或默认的 Memory 根目录，并创建画像仓储。
+def get_profile_store() -> ProfileRepository:
+    """解析配置或默认的 Memory 根目录，并创建 Profile 仓储。
 
     返回的仓储会直接读写该目录。路由和集成测试必须通过 FastAPI
     ``dependency_overrides`` 将它替换为临时仓储；配置和路径解析异常原样传播。
     """
-    return MemoryStore(resolve_memory_root())
+    return ProfileRepository(resolve_memory_root())
 
 
-def write_profile(store: MemoryStore, update: ProfileUpdate) -> Profile:
+def write_profile(store: ProfileRepository, update: ProfileUpdate) -> Profile:
     """用请求中的五个维度完整替换画像，并记录来源和服务器本地日期。
 
     如果 ``profile.md`` 已存在，仓储会先保存历史快照再覆盖文件。校验和文件
     I/O 异常原样传播。
 
     Args:
-        store: 目标 Memory 仓储；其根目录决定画像文件和历史快照的位置。
+        store: 目标 Profile 仓储；其根目录决定画像文件和历史快照的位置。
         update: 五个画像维度及本次写入来源；未提供的维度已填为空字符串。
 
     Returns:

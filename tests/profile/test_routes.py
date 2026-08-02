@@ -9,14 +9,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trowel_py.app import create_app
-from trowel_py.memory.store import MemoryStore
+from trowel_py.profile.repository import ProfileRepository
 from trowel_py.profile.service import get_profile_store
 
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     """把画像仓储替换到临时目录。"""
-    store = MemoryStore(tmp_path)
+    store = ProfileRepository(tmp_path)
     app = create_app()
     app.dependency_overrides[get_profile_store] = lambda: store
     yield TestClient(app)
@@ -74,7 +74,7 @@ def test_put_returns_dto_with_updated_and_source(client: TestClient) -> None:
 def test_put_writes_back_through_store(client: TestClient, tmp_path: Path) -> None:
     client.put("/api/profile", json={"ability": "persisted"})
     assert (tmp_path / "profile.md").exists()
-    fresh = MemoryStore(tmp_path).load_profile()
+    fresh = ProfileRepository(tmp_path).load_profile()
     assert fresh.ability == "persisted"
 
 
@@ -107,11 +107,11 @@ def _seed_suggestion(
     body: str = "会 FastAPI",
     status: str = "pending",
 ) -> None:
-    from trowel_py.memory.profile_suggestions import (
+    from trowel_py.profile.suggestions import (
         PROFILE_DISTILL_POLICY_VERSION,
         append_suggestions,
     )
-    from trowel_py.memory.types import Suggestion
+    from trowel_py.profile.models import Suggestion
 
     append_suggestions(
         tmp_path,

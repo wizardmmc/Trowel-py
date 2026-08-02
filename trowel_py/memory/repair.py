@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from trowel_py.memory.draft import parse_draft
+from trowel_py.memory.draft import Draft, parse_draft
 from trowel_py.memory.daily_review.workspace import review_workdir_root
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
@@ -20,6 +21,32 @@ from trowel_py.memory.sessions_repo import (
 )
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import PersistContext
+
+
+def _parse_historical_draft(text: str) -> Draft:
+    """读取旧 draft 时忽略已经停用的 ``source_refs`` 字段。
+
+    ``source_refs`` 原来保存 numbered 临时副本中的行号。当前提炼流程已经
+    不再生成 numbered 副本，但磁盘上幸存的旧 ``draft.json`` 仍可能带有这些
+    行号。repair 在回填这类旧草稿前丢弃该字段，保留其余经历内容。
+
+    当天 review 新生成的草稿不经过本函数，仍由严格解析器直接校验；除
+    ``source_refs`` 外的历史内容和未知字段也不会被放宽。
+    """
+    data = json.loads(text)
+    if isinstance(data, dict):
+        diary_entries = data.get("diary")
+        if isinstance(diary_entries, list):
+            for diary in diary_entries:
+                if not isinstance(diary, dict):
+                    continue
+                items = diary.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if isinstance(item, dict):
+                        item.pop("source_refs", None)
+    return parse_draft(json.dumps(data, ensure_ascii=False))
 
 
 @dataclass(frozen=True)
@@ -85,7 +112,10 @@ def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str]
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
-        sessions = {s.cc_session_id: s for s in repo.find_by_date(date_str)}
+        sessions = {
+            session.cc_session_id: session
+            for session in repo.claude.find_by_date(date_str)
+        }
     finally:
         conn.close()
 
@@ -96,7 +126,7 @@ def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str]
             sid = dp.parent.name
             draft_sids.add(sid)
             try:
-                draft = parse_draft(dp.read_text(encoding="utf-8"))
+                draft = _parse_historical_draft(dp.read_text(encoding="utf-8"))
                 diary_dates = tuple(d.date for d in draft.diary)
                 plans.append(
                     RepairPlan(
@@ -142,11 +172,12 @@ def repair_memory(
     dry-run 不写 episode、daily 或备份，但扫描可能创建或迁移 sessions 数据库。
     apply 的备份阶段仅在 ``memory_root.exists()`` 时复制；扫描通常已经创建或
     迁移 sessions 数据库，所以调用前不存在的根目录也可能在此时被备份。可解析
-    draft 按会话写入固定 ``sid:0:end`` segment，因而重复执行是 upsert。读取
-    或解析产生 ``ValueError``、``OSError``、``AttributeError`` 或
-    ``TypeError`` 的 draft 被跳过，其他异常传播；缺少登记的 draft 仍会以空
-    来源元数据写入。最后聚合全部 episode，仅在请求日期有内容时重写 daily，
-    无内容则保留现有 daily。整个流程失败时不会自动从备份回滚。
+    draft 按会话写入固定的 ``sid:0:end`` 来源片段标识；重复执行会更新同一
+    片段，而不是再追加一份。读取或解析产生 ``ValueError``、``OSError``、
+    ``AttributeError`` 或 ``TypeError`` 的 draft 被跳过，其他异常传播；缺少
+    登记的 draft 仍会以空来源元数据写入。最后聚合全部 episode，仅在请求日期
+    有内容时重写 daily，无内容则保留现有 daily。整个流程失败时不会自动从
+    备份回滚。
 
     Args:
         memory_root: 待修复的 memory 根目录。
@@ -191,7 +222,7 @@ def repair_memory(
         for dp in sorted(review_root.glob("*/draft.json")):
             sid = dp.parent.name
             try:
-                draft = parse_draft(dp.read_text(encoding="utf-8"))
+                draft = _parse_historical_draft(dp.read_text(encoding="utf-8"))
             except (ValueError, OSError, AttributeError, TypeError):
                 continue
             s = sessions.get(sid)

@@ -1,6 +1,8 @@
+/** 在回滚 checkpoint 前列出会被移除的 turn 并请求确认。 */
+
 import { useEffect, useRef } from "react";
 
-import type { Turn } from "../../stores/ccStore";
+import type { Turn } from "../../agent/domain";
 
 interface RevertConfirmModalProps {
   readonly lostTurns: readonly Turn[];
@@ -44,7 +46,7 @@ export function RevertConfirmModal({
         </ul>
         <p className="cc-revert-modal__note">
           同时 <b>git restore</b> 这些轮对工作区文件的改动，回到这轮开始前的状态。
-          CC 会以 <code>--resume</code> 从更短的历史接着聊。
+          Claude 会以 <code>--resume</code> 从更短的历史接着聊。
         </p>
         <p className="cc-revert-modal__irreversible">此操作不可撤销。</p>
         <div className="cc-revert-modal__actions">

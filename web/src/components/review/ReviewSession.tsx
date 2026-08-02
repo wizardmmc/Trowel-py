@@ -1,3 +1,5 @@
+/** 驱动到期卡片的逐张复习和完成页切换。 */
+
 import { AnimatePresence, motion } from "framer-motion";
 import { useReviewStore } from "../../stores/reviewStore";
 import { ReviewCard } from "./ReviewCard";
@@ -45,10 +47,11 @@ export function ReviewSession() {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
       >
+        <div className="review-session__drag-region" aria-hidden="true" />
         <button
           className="review-session__close"
           onClick={resetSession}
-          aria-label="Close review session"
+          aria-label="关闭复习"
         >
           ✕
         </button>

@@ -1,3 +1,5 @@
+/** 定义宠物动作和气泡使用的 framer-motion 动画状态。 */
+
 import type { Variants } from "framer-motion";
 
 export type PetBehavior = "idle" | "wander" | "nap" | "lookAtPlant";

@@ -15,6 +15,7 @@ def test_bind_and_find_cc_by_trowel() -> None:
     assert binding.cc_session_id == "cc-1"
     assert binding.session_kind == "user"
     assert binding.workdir == "/workspace/project"
+    assert binding.start_offset is None
 
 
 def test_bind_many_trowel_to_one_cc() -> None:
@@ -84,6 +85,7 @@ def test_bindings_table_created_on_old_db(tmp_path) -> None:
         "session_kind",
         "workdir",
         "bound_at",
+        "start_offset",
     } <= columns
     second.close()
 
@@ -101,6 +103,25 @@ def test_register_persists_trowel_binding() -> None:
     assert binding is not None
     assert binding.cc_session_id == "cc-x"
     assert binding.session_kind == "user"
+    assert binding.start_offset == 0
+
+
+def test_resume_binding_starts_at_current_completed_offset() -> None:
+    repo = repository()
+    repo.register(session_record(cc_session_id="cc-shared", trowel_session_id="t1"))
+    repo.update_completed("cc-shared", 2048)
+
+    repo.register(
+        session_record(
+            cc_session_id="cc-shared",
+            trowel_session_id="t2",
+            registered_at="2026-07-17T11:00:00",
+        )
+    )
+
+    binding = repo.find_cc_by_trowel("t2")
+    assert binding is not None
+    assert binding.start_offset == 2048
 
 
 def test_register_without_trowel_id_skips_bind() -> None:

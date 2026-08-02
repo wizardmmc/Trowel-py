@@ -19,7 +19,7 @@ describe("NewSessionDialog settings", () => {
     const switches = screen.getAllByRole("switch");
     expect(switches[0]).toHaveAttribute("aria-checked", "true");
     expect(switches[1]).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("button", { name: /跟随 CC/ })).toHaveClass(
+    expect(screen.getByRole("button", { name: /跟随 Claude/ })).toHaveClass(
       "cc-dialog__option--selected",
     );
   });

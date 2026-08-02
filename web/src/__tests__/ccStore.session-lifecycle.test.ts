@@ -2,16 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   apiCreateSession,
   apiDeleteSession,
+  apiGenerateSessionTitle,
   ev,
   mockCreate,
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
-describe("createCcStore — multi-session lifecycle", () => {
+describe("createAgentStore — multi-session lifecycle", () => {
   it("startSession creates a session that is NOT yet connected (not in the bar)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const state = store.getState();
@@ -21,7 +22,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("send() flips the session to connected (enters the bar)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     expect(store.getState().sessions.s1.connected).toBe(false);
@@ -32,8 +33,75 @@ describe("createCcStore — multi-session lifecycle", () => {
     await sending;
   });
 
+  it("shows the first prompt immediately, then applies the generated title", async () => {
+    const store = createAgentStore();
+    const created = mockCreate("s1", {
+      name: "wd #2",
+      display_title: "",
+      title_source: "new",
+    });
+    await store.getState().startSession({ workdir: "/wd" });
+    let resolveTitle!: (session: ReturnType<typeof mockCreate>) => void;
+    apiGenerateSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+
+    const sending = store.getState().send("  实现   同目录\n聚合展示  ");
+    expect(store.getState().sessions.s1.displayTitle).toBe("实现 同目录 聚合展示");
+    expect(store.getState().sessions.s1.titleSource).toBe("prompt");
+
+    resolveTitle({
+      ...created,
+      display_title: "实现会话目录分组",
+      title_source: "generated",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getState().sessions.s1.displayTitle).toBe("实现会话目录分组");
+
+    stream.apply!(ev("finished"));
+    await releaseAllStreams();
+    await sending;
+  });
+
+  it("does not let a stale generated response overwrite a manual title", async () => {
+    const store = createAgentStore();
+    const created = mockCreate("s1", {
+      display_title: "",
+      title_source: "new",
+    });
+    await store.getState().startSession({ workdir: "/wd" });
+    let resolveTitle!: (session: ReturnType<typeof mockCreate>) => void;
+    apiGenerateSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+
+    const sending = store.getState().send("第一条真实提示词");
+    await store.getState().renameSessionTitle("s1", "手动保留的标题");
+    resolveTitle({
+      ...created,
+      display_title: "迟到的自动标题",
+      title_source: "generated",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.getState().sessions.s1.displayTitle).toBe("手动保留的标题");
+    expect(store.getState().sessions.s1.titleSource).toBe("manual");
+
+    stream.apply!(ev("finished"));
+    await releaseAllStreams();
+    await sending;
+  });
+
   it("two CONNECTED sessions coexist; switching preserves both", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -56,7 +124,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("switching away from a never-connected temp drops it (切走即丢)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -73,7 +141,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("startSession also drops a never-connected temp active", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     mockCreate("s2");
@@ -85,7 +153,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("concurrent starts keep the latest request active when responses reorder", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     let resolveA!: (session: ReturnType<typeof mockCreate>) => void;
     let resolveB!: (session: ReturnType<typeof mockCreate>) => void;
     const first = new Promise<ReturnType<typeof mockCreate>>((resolve) => {
@@ -139,7 +207,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("Q4: send routes events to the session that opened the stream, not the active one", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/a" });
     const first = store.getState().send("one");
@@ -169,7 +237,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("refuses a second concurrent send into the same session", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const first = store.getState().send("one");
@@ -181,7 +249,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("session_exited REMOVES the row (no grey/resumable) + clears activeSid", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("/exit");
@@ -194,7 +262,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("closeSession removes the row + drops activeSid for the active one", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     await store.getState().closeSession("s1");
@@ -203,8 +271,70 @@ describe("createCcStore — multi-session lifecycle", () => {
     expect(apiDeleteSession).toHaveBeenCalledWith("s1");
   });
 
+  it("marks a slow close as pending and ignores repeated clicks", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    let finishClose!: () => void;
+    apiDeleteSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishClose = () =>
+            resolve({
+              closed: true,
+              status: "closed",
+              remaining_resource_count: 0,
+              remaining_resource_kinds: [],
+              error: null,
+            });
+        }),
+    );
+
+    const first = store.getState().closeSession("s1");
+    expect(store.getState().closingSessionIds.has("s1")).toBe(true);
+    await store.getState().closeSession("s1");
+    expect(apiDeleteSession).toHaveBeenCalledTimes(1);
+
+    finishClose();
+    await first;
+    expect(store.getState().closingSessionIds.has("s1")).toBe(false);
+    expect(store.getState().sessions.s1).toBeUndefined();
+  });
+
+  it("keeps the session when close needs reconciliation", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    apiDeleteSession.mockResolvedValueOnce({
+      closed: false,
+      status: "needs_reconcile",
+      remaining_resource_count: 1,
+      remaining_resource_kinds: ["codex_session_close"],
+      error: "Codex close needs reconciliation",
+    });
+
+    await store.getState().closeSession("s1");
+
+    expect(store.getState().sessions.s1).toBeDefined();
+    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().sessions.s1.transportError).toMatch(/reconciliation/);
+  });
+
+  it("keeps the session when the close request fails", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    apiDeleteSession.mockRejectedValueOnce(new Error("sidecar unavailable"));
+
+    await store.getState().closeSession("s1");
+
+    expect(store.getState().sessions.s1).toBeDefined();
+    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().sessions.s1.transportError).toBe("sidecar unavailable");
+  });
+
   it("reset clears all sessions + activeSid", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     store.getState().reset();
@@ -213,7 +343,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("Codex host_status(host_exited) keeps the row", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex" });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
     const sending = store.getState().send("hi");
@@ -226,7 +356,7 @@ describe("createCcStore — multi-session lifecycle", () => {
   });
 
   it("tasks are per-session (switching does not leak task lists)", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const sending = store.getState().send("do it");

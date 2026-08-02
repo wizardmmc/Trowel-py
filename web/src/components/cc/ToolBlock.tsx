@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+/** 按工具种类和 runtime 展示规则组织摘要、状态和详情。 */
 
-import type { ToolItem } from "../../stores/ccStore";
-import { getDisplayPath } from "./pathDisplay";
-import { getCodexCommandPresentation } from "./codexCommandPresentation";
+import { memo, useState } from "react";
+
+import type { ToolItem } from "../../agent/domain";
+import { getDisplayPath } from "../../agent/runtimes/shared";
 import {
+  getCodexCommandPresentation,
   getCodexMcpPresentation,
   isCodexMcp,
-} from "./codexMcpPresentation";
+} from "../../agent/runtimes";
 import { ToolDetail } from "./ToolDetail";
 import {
   asString,
@@ -22,15 +24,19 @@ interface ToolBlockProps {
   readonly item: ToolItem;
   readonly condensed?: boolean;
   readonly workdir?: string;
-  readonly codexExploration?: boolean;
+  /** 超大 turn 只折叠旧详情；工具摘要始终保留。 */
+  readonly suppressDiffAutoOpen?: boolean;
+  readonly showCodexMcpPresentation?: boolean;
 }
 
 function SummaryBrief({
   item,
   workdir,
+  showCodexMcpPresentation,
 }: {
   readonly item: ToolItem;
   readonly workdir?: string;
+  readonly showCodexMcpPresentation: boolean;
 }) {
   if (item.toolName === "Skill") {
     const skill = asString(item.input.skill);
@@ -69,27 +75,13 @@ function SummaryBrief({
       <code className="cc-tool__brief cc-tool__brief--mono">{brief(row.detail, 72)}</code>
     ) : null;
   }
-  if (isCodexMcp(item)) {
+  if (showCodexMcpPresentation && isCodexMcp(item)) {
     const title = getCodexMcpPresentation(item).title;
     return title !== null ? (
       <span className="cc-tool__brief">{title}</span>
     ) : null;
   }
   return null;
-}
-
-function CodexActionRows({ item, workdir }: { readonly item: ToolItem; readonly workdir?: string }) {
-  const rows = getCodexCommandPresentation(item, workdir).rows;
-  return (
-    <div className="cc-tool__action-rows">
-      {rows.map((row, index) => (
-        <div className="cc-tool__action-row" key={`${row.verb}-${index}`}>
-          <span className="cc-tool__name">{row.verb}</span>
-          <span className="cc-tool__brief" title={row.detail}>{row.detail}</span>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function StatPill({
@@ -105,48 +97,28 @@ function StatPill({
   );
 }
 
-export function ToolBlock({
+function ToolBlockView({
   item,
   condensed = false,
   workdir,
-  codexExploration = false,
+  suppressDiffAutoOpen = false,
+  showCodexMcpPresentation = true,
 }: ToolBlockProps) {
   const done = item.status === "done";
   const failed = item.status === "failed";
   const codexCommand = item.toolName === "command";
-  const codexMcp = isCodexMcp(item);
+  const codexMcp = showCodexMcpPresentation && isCodexMcp(item);
   const codexNative = codexCommand || codexMcp;
   const commandPresentation = codexCommand
     ? getCodexCommandPresentation(item, workdir)
     : null;
   const mcpPresentation = codexMcp ? getCodexMcpPresentation(item) : null;
   const autoOpen =
-    (isDiffTool(item.toolName) && done) ||
-    (codexCommand && (failed || codexExploration)) ||
+    (isDiffTool(item.toolName) && done && !suppressDiffAutoOpen) ||
+    (codexCommand && failed) ||
     (codexMcp && failed);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const open = openOverride ?? autoOpen;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const prevOpenRef = useRef(open);
-  const mountedRef = useRef(false);
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      prevOpenRef.current = open;
-      return;
-    }
-    if (!prevOpenRef.current && open) {
-      const el = rootRef.current;
-      if (el) {
-        requestAnimationFrame(() => {
-          if (typeof el.scrollIntoView === "function") {
-            el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-          }
-        });
-      }
-    }
-    prevOpenRef.current = open;
-  }, [open]);
   const seconds =
     item.elapsedSeconds !== null
       ? `${item.elapsedSeconds.toFixed(codexMcp ? 2 : 1)}s`
@@ -168,28 +140,16 @@ export function ToolBlock({
           <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" />
         </svg>
       )}
-      {codexCommand && codexExploration ? (
-        <>
-          <span className="cc-tool__name">
-            {commandPresentation?.callLabel}
-          </span>
-          <span
-            className="cc-tool__brief"
-            title={commandPresentation?.callBrief}
-          >
-            {commandPresentation?.callBrief}
-          </span>
-        </>
-      ) : (
-        <>
-          <span
-            className={`cc-tool__name${codexMcp ? " cc-tool__name--mono" : ""}`}
-          >
-            {verb}
-          </span>
-          <SummaryBrief item={item} workdir={workdir} />
-        </>
-      )}
+      <span
+        className={`cc-tool__name${codexMcp ? " cc-tool__name--mono" : ""}`}
+      >
+        {verb}
+      </span>
+      <SummaryBrief
+        item={item}
+        workdir={workdir}
+        showCodexMcpPresentation={showCodexMcpPresentation}
+      />
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
       {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
@@ -247,8 +207,7 @@ export function ToolBlock({
 
   return (
     <div
-      ref={rootRef}
-      className={`cc-tool${codexExploration ? " cc-tool--exploration" : ""}`}
+      className="cc-tool"
       data-status={item.status}
       data-codex-command={codexCommand || undefined}
       data-codex-native={codexNative || undefined}
@@ -256,14 +215,15 @@ export function ToolBlock({
       {summary}
       {expanded && (
         <div className="cc-tool__detail">
-          {codexExploration && (
-            <CodexActionRows item={item} workdir={workdir} />
-          )}
-          {(!codexExploration || failed) && (
-            <ToolDetail item={item} workdir={workdir} />
-          )}
+          <ToolDetail
+            item={item}
+            workdir={workdir}
+            showCodexMcpPresentation={showCodexMcpPresentation}
+          />
         </div>
       )}
     </div>
   );
 }
+
+export const ToolBlock = memo(ToolBlockView);

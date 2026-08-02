@@ -1,3 +1,5 @@
+/** 在独立弹层中选择当前会话的推理强度。 */
+
 import { useEffect, useRef, useState } from "react";
 import { EFFORT_OPTIONS } from "./effortOptions";
 

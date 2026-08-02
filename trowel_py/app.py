@@ -2,6 +2,8 @@
 
 import logging
 import os
+import uuid
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +12,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from trowel_py.agent_host.routes import router as agent_router
+from trowel_py.agent_host.runtime_availability import detect_runtime_availability
+from trowel_py.agent_host.workspaces import (
+    RecentWorkspaceStore,
+    resolve_recent_workspaces_path,
+)
 from trowel_py.quota.routes import router as quota_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
@@ -18,6 +25,11 @@ from trowel_py.cc_host.proxy import (
     router as proxy_router,
 )
 from trowel_py.cc_host.routes import router as cc_host_router
+from trowel_py.desktop.access import (
+    DesktopCredentialMiddleware,
+    validate_desktop_renderer_origin,
+)
+from trowel_py.desktop.routes import router as desktop_router
 from trowel_py.events.routes import router as events_router
 from trowel_py.feynman.routes import router as feynman_router
 from trowel_py.garden.routes import router as garden_router
@@ -32,6 +44,45 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """在应用生命周期内持有 CC 反向代理与可选后台组件。"""
+    from trowel_py.resource_lifecycle import (
+        DrainCoordinator,
+        OwnerScope,
+        ResourceRegistry,
+        reconcile_previous_snapshot,
+    )
+
+    desktop_instance_id = str(app.state.desktop_instance_id).strip()
+    app_instance_id = desktop_instance_id or f"browser-{uuid.uuid4().hex}"
+    desktop_data_dir = getattr(app.state, "desktop_data_dir", None)
+    snapshot_path = (
+        Path(desktop_data_dir) / "resource-lifecycle.json"
+        if desktop_instance_id and desktop_data_dir
+        else None
+    )
+    if snapshot_path is not None:
+        app.state.previous_reconcile_report = await asyncio.to_thread(
+            reconcile_previous_snapshot,
+            snapshot_path,
+            current_instance_id=app_instance_id,
+        )
+    resource_registry = ResourceRegistry(
+        app_instance_id=app_instance_id,
+        snapshot_path=snapshot_path,
+        registration_url=(
+            f"http://127.0.0.1:{os.environ.get('TROWEL_SERVER_PORT', '8000')}"
+            "/api/desktop/resources/register"
+        ),
+        registration_credential=getattr(app.state, "desktop_credential", None),
+    )
+    app.state.resource_registry = resource_registry
+    if snapshot_path is not None:
+        resource_registry.register_process_group(
+            resource_id=f"sidecar:{app_instance_id}",
+            owner_scope=OwnerScope.APP,
+            resource_kind="sidecar_process_group",
+            pid=os.getpid(),
+            runtime="app",
+        )
     settings_path = Path.home() / ".claude" / "settings.json"
     settings_env = load_settings_env(settings_path)
     real_base_url = settings_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -40,6 +91,9 @@ async def lifespan(app: FastAPI):
     app.state.cc_real_base_url = real_base_url
     app.state.proxy_base_url = f"http://127.0.0.1:{port}"
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+    app.state.recent_workspace_store = RecentWorkspaceStore(
+        resolve_recent_workspaces_path()
+    )
     logger.info("[cc-proxy] TUI system fingerprint: %s", TUI_SYSTEM_IDENTITY[:40])
     logger.info(
         "[cc-proxy] upstream=%s via=%s", real_base_url, app.state.proxy_base_url
@@ -55,7 +109,9 @@ async def lifespan(app: FastAPI):
         )
 
         scheduler = MemoryReviewScheduler(
-            load_review_config(), _mem_paths.resolve_memory_root()
+            load_review_config(),
+            _mem_paths.resolve_memory_root(),
+            resource_registry=resource_registry,
         )
         await scheduler.start()
         app.state.memory_scheduler = scheduler
@@ -65,7 +121,7 @@ async def lifespan(app: FastAPI):
     # 后台提炼启动失败不能阻断应用。
     try:
         from trowel_py.memory import paths as _distill_paths
-        from trowel_py.memory.profile_distill.scheduler import (
+        from trowel_py.profile.distill.scheduler import (
             ProfileDistillScheduler,
             load_distill_config,
         )
@@ -75,6 +131,7 @@ async def lifespan(app: FastAPI):
             _distill_paths.resolve_memory_root(),
             app.state.proxy_base_url,
             app.state.cc_settings_path,
+            resource_registry=resource_registry,
         )
         await distill_scheduler.start()
         app.state.distill_scheduler = distill_scheduler
@@ -86,20 +143,26 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.memory import paths as _tidy_paths
         from trowel_py.memory.tidy_scheduler import TidyScheduler
+        from trowel_py.config import load_llm_config
+        from trowel_py.llm.client import AnthropicProvider
 
-        def _tidy_provider_factory():
-            """创建 Memory 整理任务调用模型所用的客户端。"""
+        try:
+            tidy_llm_config = load_llm_config()
+        except FileNotFoundError:
+            logger.info("[memory] tidy scheduler off: no LLM config")
+            app.state.tidy_scheduler = None
+        else:
 
-            from trowel_py.config import load_llm_config
-            from trowel_py.llm.client import AnthropicProvider
+            def _tidy_provider_factory():
+                """创建 Memory 整理任务调用模型所用的客户端。"""
 
-            return AnthropicProvider(load_llm_config())
+                return AnthropicProvider(tidy_llm_config)
 
-        tidy_scheduler = TidyScheduler(
-            _tidy_paths.resolve_memory_root(), _tidy_provider_factory
-        )
-        await tidy_scheduler.start()
-        app.state.tidy_scheduler = tidy_scheduler
+            tidy_scheduler = TidyScheduler(
+                _tidy_paths.resolve_memory_root(), _tidy_provider_factory
+            )
+            await tidy_scheduler.start()
+            app.state.tidy_scheduler = tidy_scheduler
     except Exception:
         logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
         app.state.tidy_scheduler = None
@@ -107,7 +170,9 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.codex_host import CodexHostManager
 
-        app.state.codex_host_manager = CodexHostManager()
+        app.state.codex_host_manager = CodexHostManager(
+            resource_registry=resource_registry
+        )
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
         app.state.codex_host_manager = None
@@ -147,53 +212,91 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.agent_host import (
             BindingStore,
+            Runtime,
+            SessionBinding,
             SessionHub,
             resolve_bindings_path,
         )
+        from trowel_py.agent_host.runtimes import (
+            ClaudeCodeRuntimeAdapter,
+            CodexRuntimeAdapter,
+        )
+        from trowel_py.agent_host.session_titles import NativeSessionTitleGenerator
+        from trowel_py.cc_host.routes import get_registry
+        from trowel_py.memory.paths import resolve_memory_root
+
+        cc_registry = get_registry()
+        runtime_ports = {
+            Runtime.CLAUDE_CODE: ClaudeCodeRuntimeAdapter(cc_registry),
+            Runtime.CODEX: CodexRuntimeAdapter(app.state.codex_host_manager),
+        }
+
+        def request_session_review(binding: SessionBinding) -> None:
+            """持久登记关闭请求，并在可用时唤醒当前 Memory worker。"""
+
+            scheduler = app.state.memory_scheduler
+            if scheduler is not None:
+                scheduler.request_session_review(binding)
+                return
+            from trowel_py.memory import paths as memory_paths
+            from trowel_py.memory.daily_review.requests import enqueue_session_review
+
+            enqueue_session_review(memory_paths.resolve_memory_root(), binding)
+
+        try:
+            codex_history_root = resolve_memory_root()
+        except Exception:  # noqa: BLE001 - 配置异常不能让整个 Agent Hub 停用。
+            logger.warning(
+                "[agent] Codex normalized history disabled because Memory root "
+                "could not be resolved",
+                exc_info=True,
+            )
+            codex_history_root = None
 
         app.state.agent_hub = SessionHub(
             BindingStore(resolve_bindings_path()),
             codex_manager=app.state.codex_host_manager,
+            cc_registry=cc_registry,
             cc_proxy_base_url=app.state.proxy_base_url,
             cc_settings_path=app.state.cc_settings_path,
             event_observer=quota_observer,
+            runtime_ports=runtime_ports,
+            session_review_requester=request_session_review,
+            title_generator=NativeSessionTitleGenerator(
+                codex_manager=app.state.codex_host_manager,
+                cc_proxy_base_url=app.state.proxy_base_url,
+                cc_settings_path=app.state.cc_settings_path,
+                resource_registry=resource_registry,
+            ),
+            codex_history_root=codex_history_root,
+            resource_registry=resource_registry,
+            runtime_availability=detect_runtime_availability(),
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
-    yield
-    _scheduler = getattr(app.state, "memory_scheduler", None)
-    if _scheduler is not None:
-        try:
-            await _scheduler.stop()
-        except Exception:
-            logger.warning("[memory] review scheduler stop failed", exc_info=True)
-    _distill = getattr(app.state, "distill_scheduler", None)
-    if _distill is not None:
-        try:
-            await _distill.stop()
-        except Exception:
-            logger.warning(
-                "[memory] profile distill scheduler stop failed", exc_info=True
+    app.state.drain_coordinator = DrainCoordinator(
+        resource_registry=resource_registry,
+        agent_hub=app.state.agent_hub,
+        schedulers=tuple(
+            (name, component)
+            for name, component in (
+                ("memory_scheduler", app.state.memory_scheduler),
+                ("profile_distill_scheduler", app.state.distill_scheduler),
+                ("memory_tidy_scheduler", app.state.tidy_scheduler),
+                ("quota_scheduler", app.state.quota_scheduler),
             )
-    _tidy = getattr(app.state, "tidy_scheduler", None)
-    if _tidy is not None:
-        try:
-            await _tidy.stop()
-        except Exception:
-            logger.warning("[memory] tidy scheduler stop failed", exc_info=True)
-    _codex_mgr = getattr(app.state, "codex_host_manager", None)
-    if _codex_mgr is not None:
-        try:
-            await _codex_mgr.close()
-        except Exception:
-            logger.warning("[codex] host manager close failed", exc_info=True)
-    _quota_sched = getattr(app.state, "quota_scheduler", None)
-    if _quota_sched is not None:
-        try:
-            await _quota_sched.stop()
-        except Exception:
-            logger.warning("[quota] scheduler stop failed", exc_info=True)
+            if component is not None
+        ),
+        codex_manager=app.state.codex_host_manager,
+    )
+    yield
+    try:
+        report = await app.state.drain_coordinator.drain()
+        if report.status != "closed":
+            logger.warning("[app] shutdown needs resource reconciliation: %s", report)
+    except Exception:
+        logger.warning("[app] coordinated drain failed", exc_info=True)
     _quota_http = getattr(app.state, "quota_http_client", None)
     if _quota_http is not None:
         try:
@@ -218,15 +321,35 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用，并注册中间件、路由和静态前端。"""
 
     app = FastAPI(lifespan=lifespan)
+    desktop_credential = os.environ.pop("TROWEL_DESKTOP_CREDENTIAL", None)
+    desktop_renderer_origin = os.environ.pop(
+        "TROWEL_DESKTOP_RENDERER_ORIGIN", None
+    )
+    app.state.desktop_instance_id = os.environ.pop(
+        "TROWEL_APP_INSTANCE_ID", ""
+    )
+    app.state.desktop_data_dir = os.environ.get("TROWEL_DESKTOP_DATA_DIR", "").strip()
+    app.state.desktop_credential = desktop_credential
+
+    app.add_middleware(
+        DesktopCredentialMiddleware,
+        credential=desktop_credential,
+    )
 
     from fastapi.middleware.cors import CORSMiddleware
 
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+    ]
+    if desktop_renderer_origin:
+        allowed_origins.append(
+            validate_desktop_renderer_origin(desktop_renderer_origin)
+        )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:5174",
-        ],
+        allow_origins=allowed_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -269,6 +392,7 @@ def create_app() -> FastAPI:
     app.include_router(cc_host_router, prefix="/api/cc")
     app.include_router(agent_router, prefix="/api/agent")
     app.include_router(quota_router)
+    app.include_router(desktop_router, prefix="/api/desktop")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

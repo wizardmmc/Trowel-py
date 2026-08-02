@@ -1,0 +1,86 @@
+.large-turn-harness {
+  height: 100%;
+  min-width: 980px;
+  background: var(--bg-garden);
+}
+
+.large-turn-harness__controls {
+  position: fixed;
+  z-index: 1000;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 330px;
+  max-height: calc(100vh - 24px);
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--soil-brown);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-card) 94%, transparent);
+  box-shadow: var(--shadow-md);
+}
+
+.large-turn-harness__controls > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.large-turn-harness__controls span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.large-turn-harness__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.large-turn-harness__actions button {
+  padding: 6px 9px;
+  border: 1px solid var(--soil-brown);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.large-turn-harness__actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.large-turn-harness__controls pre {
+  overflow: visible;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  font: 10px/1.35 var(--font-mono);
+}
+
+.large-turn-harness__stage {
+  height: 100%;
+}
+
+.large-turn-harness__stage .cc-3col {
+  height: 100%;
+  padding-right: 354px;
+}
+
+.large-turn-harness__placeholder {
+  display: grid;
+  min-height: 100%;
+  place-content: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.large-turn-harness__placeholder h1 {
+  color: var(--text-primary);
+  font: 600 24px/1.2 var(--font-display);
+}
+
+.large-turn-harness__version {
+  display: none;
+}

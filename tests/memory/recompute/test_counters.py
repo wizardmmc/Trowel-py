@@ -45,7 +45,7 @@ def test_recompute_counters_uses_facade_compute_patch(
 def _seed_user(root: Path, cc: str = "c") -> None:
     conn = open_sessions_db(root)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id=cc,
                 workdir="/p",

@@ -91,6 +91,29 @@ describe("ToolBlock — command detail", () => {
     expect(screen.getByText("[]")).toBeInTheDocument();
   });
 
+  it("falls back to generic tool details when MCP presentation is unavailable", () => {
+    render(
+      <ToolBlock
+        showCodexMcpPresentation={false}
+        item={tool({
+          toolName: "docs.lookup",
+          input: {
+            server: "docs",
+            tool: "lookup",
+            arguments: { query: "answer" },
+          },
+          status: "done",
+          result: "plain result",
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.queryByText("Result")).toBeNull();
+    expect(screen.getByText("input")).toBeInTheDocument();
+    expect(screen.getByText("result")).toBeInTheDocument();
+  });
+
   it("keeps structured MCP result fields instead of flattening them to text", () => {
     const result = JSON.stringify({
       content: [{ type: "text", text: "summary" }],

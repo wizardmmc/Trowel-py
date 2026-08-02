@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from trowel_py.agent_host.binding import SessionKind
+
 # 请求模型
 
 
@@ -25,7 +27,7 @@ class CreateSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate"] = "user"
+    session_kind: SessionKind = "user"
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     delegation_depth: int = Field(default=0, ge=0, le=1)
 

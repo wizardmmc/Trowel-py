@@ -3,11 +3,10 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 
 import { TodoBar } from "../components/cc/TodoBar";
 import {
-  useCcStore,
-  INITIAL_REDUCER_STATE,
+  useAgentStore,
   type PerSessionState,
-  type Task,
-} from "../stores/ccStore";
+} from "../agent/application";
+import { INITIAL_REDUCER_STATE, type Task } from "../agent/domain";
 
 const SID = "s1";
 
@@ -20,7 +19,9 @@ function makeSession(
     workdir: "/wd",
     effort: null,
     name: "wd",
-    revertEnabled: false,
+    displayTitle: "wd",
+    titleSource: "native",
+    checkpointAvailable: false,
     transportError: null,
     abort: null,
     connected: true,
@@ -29,7 +30,21 @@ function makeSession(
     runtime: "claude_code",
     nativeSessionId: null,
     permission: null,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: [
+      "tools",
+      "models",
+      "effort",
+      "permission",
+      "question",
+      "interrupt",
+      "slash_commands",
+      "workflow",
+      "tasks",
+      "subagents",
+      "checkpoint",
+      "revert",
+      "mcp",
+    ],
     lastSeq: null,
     needsReplay: false,
     tasks,
@@ -40,14 +55,14 @@ function makeSession(
 
 function setActive(session: PerSessionState | null): void {
   if (session) {
-    useCcStore.setState({ sessions: { [SID]: session }, activeSid: SID });
+    useAgentStore.setState({ sessions: { [SID]: session }, activeSid: SID });
   } else {
-    useCcStore.setState({ sessions: {}, activeSid: null });
+    useAgentStore.setState({ sessions: {}, activeSid: null });
   }
 }
 
 beforeEach(() => {
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
@@ -122,6 +137,7 @@ describe("TodoBar", () => {
         [{ taskId: "cc", toolUseId: "cc", subject: "不应显示", status: "pending" }],
         {
           runtime: "codex",
+          capabilities: ["tools", "goal", "plan"],
           goal: {
             objective: "Ship Goal and Plan",
             status: "active",
@@ -181,6 +197,7 @@ describe("TodoBar", () => {
     setActive(
       makeSession([], {
         runtime: "codex",
+        capabilities: ["tools", "goal", "plan"],
         goal: {
           objective: "Finished Goal",
           status: "complete",
@@ -206,6 +223,7 @@ describe("TodoBar", () => {
     setActive(
       makeSession([], {
         runtime: "codex",
+        capabilities: ["tools", "goal", "plan"],
         goal: {
           objective: "Editable Goal",
           status: "paused",
@@ -230,10 +248,49 @@ describe("TodoBar", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("shows an explicit capability state instead of guessing Codex panels", () => {
+    setActive(makeSession([], { runtime: "codex", capabilities: ["tools"] }));
+
+    render(<TodoBar />);
+
+    expect(screen.getByText(/未声明 goal 或 plan 能力/)).toBeInTheDocument();
+    expect(screen.queryByText("目标与计划")).toBeNull();
+  });
+
+  it("shows only the Codex rail sections declared by capabilities", () => {
+    setActive(
+      makeSession([], {
+        runtime: "codex",
+        capabilities: ["tools", "plan"],
+        goal: {
+          objective: "不应显示的 Goal",
+          status: "active",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        plan: {
+          explanation: null,
+          steps: [{ step: "只显示 Plan", status: "pending" }],
+        },
+      }),
+    );
+
+    render(<TodoBar />);
+
+    expect(screen.getByText("计划")).toBeInTheDocument();
+    expect(screen.getByText("只显示 Plan")).toBeInTheDocument();
+    expect(screen.queryByText("不应显示的 Goal")).toBeNull();
+    expect(screen.queryByRole("button", { name: "设置 Goal" })).toBeNull();
+  });
+
   it("drops an open Goal draft when the active Codex session changes", () => {
     setActive(
       makeSession([], {
         runtime: "codex",
+        capabilities: ["tools", "goal", "plan"],
         goal: {
           objective: "First Goal",
           status: "paused",
@@ -252,10 +309,11 @@ describe("TodoBar", () => {
     });
 
     act(() => {
-      useCcStore.setState({
+      useAgentStore.setState({
         sessions: {
           s2: makeSession([], {
             runtime: "codex",
+            capabilities: ["tools", "goal", "plan"],
             goal: {
               objective: "Second Goal",
               status: "active",

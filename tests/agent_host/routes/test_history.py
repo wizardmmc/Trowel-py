@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -5,8 +6,11 @@ from fastapi.testclient import TestClient
 
 from tests.agent_host.routes.support import put_cc_binding
 from trowel_py.agent_host.binding import Runtime, make_binding
-from trowel_py.agent_host.cc_adapter import CcEventAdapter
 from trowel_py.agent_host.hub import SessionHub
+from trowel_py.agent_host.runtimes.claude_code import ClaudeCodeEventAdapter
+from trowel_py.codex_host.events import CodexEvent, CodexEventType, immutable_payload
+from trowel_py.codex_host.translator import CodexTranslator
+from trowel_py.memory.codex_journal import CodexTurnJournal
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 from trowel_py.schemas.cc_host import FinishedEvent, TextEvent, UserEvent
 
@@ -114,6 +118,135 @@ def test_get_history_codex_uses_thread_read_and_returns_replay(
     assert hub._codex.read_thread_calls == ["thread-1"]  # type: ignore[union-attr]  # noqa: SLF001
 
 
+def test_get_history_codex_restores_recorded_command_executions(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    thread_id = "thread-with-commands"
+    turn_id = "turn-with-commands"
+    memory_root = workdir.parent / "memory"
+    binding = make_binding(
+        session_id="history-codex-commands",
+        runtime=Runtime.CODEX,
+        native_session_id=thread_id,
+        workdir=str(workdir),
+        model="gpt-5.6-sol",
+        effort=None,
+        permission=None,
+        memory_enabled=True,
+        profile_enabled=True,
+        capabilities=("tools", "approval"),
+        name="project",
+    )
+    hub.store.put(binding)
+    # 真实 thread/read 不含 commandExecution，只能返回消息和轮次终态。
+    hub._codex.thread_reads[thread_id] = {  # type: ignore[union-attr]  # noqa: SLF001
+        "id": thread_id,
+        "turns": [
+            {
+                "id": turn_id,
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "user-1",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "inspect files"}],
+                    },
+                    {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": "inspection complete",
+                    },
+                ],
+            }
+        ],
+    }
+
+    journal = CodexTurnJournal(
+        memory_root,
+        trowel_session_id=binding.session_id,
+        workdir=str(workdir),
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    recorded: list[CodexEvent] = [
+        CodexEvent(
+            binding.session_id,
+            1,
+            CodexEventType.USER,
+            thread_id,
+            turn_id,
+            payload=immutable_payload(text="inspect files"),
+        ),
+        CodexEvent(
+            binding.session_id,
+            2,
+            CodexEventType.TURN_STARTED,
+            thread_id,
+            turn_id,
+            payload=immutable_payload(autonomous=False),
+        ),
+    ]
+    fixture = (
+        Path(__file__).parents[2] / "codex_host" / "fixtures" / "command-actions.jsonl"
+    )
+    translator = CodexTranslator()
+    for line in fixture.read_text(encoding="utf-8").splitlines():
+        message = json.loads(line)
+        message["params"]["threadId"] = thread_id
+        message["params"]["turnId"] = turn_id
+        for item in translator.translate(message["method"], message["params"]):
+            recorded.append(
+                CodexEvent(
+                    binding.session_id,
+                    len(recorded) + 1,
+                    item.type,
+                    item.thread_id,
+                    item.turn_id,
+                    item.item_id,
+                    item.payload,
+                )
+            )
+    recorded.extend(
+        [
+            CodexEvent(
+                binding.session_id,
+                len(recorded) + 1,
+                CodexEventType.ASSISTANT_DELTA,
+                thread_id,
+                turn_id,
+                "agent-1",
+                immutable_payload(delta="inspection complete"),
+            ),
+            CodexEvent(
+                binding.session_id,
+                len(recorded) + 2,
+                CodexEventType.FINISHED,
+                thread_id,
+                turn_id,
+                payload=immutable_payload(status="completed"),
+            ),
+        ]
+    )
+    for event in recorded:
+        journal.record(event, None)
+
+    response = client.get(f"/api/agent/sessions/{binding.session_id}/history")
+
+    assert response.status_code == 200
+    events = response.json()["data"]
+    assert [event["type"] for event in events].count("tool_call") == 3
+    assert [event["type"] for event in events].count("tool_result") == 3
+    assert [event["type"] for event in events].count("user") == 1
+    assert [event["type"] for event in events].count("text") == 1
+    assert [
+        event["payload"]["input"]["command_actions"][0]["type"]
+        for event in events
+        if event["type"] == "tool_call"
+    ] == ["listFiles", "read", "search"]
+
+
 def test_get_history_unknown_session_404(client: TestClient) -> None:
     response = client.get("/api/agent/sessions/unknown/history")
 
@@ -164,7 +297,7 @@ def test_get_codex_child_history_checks_parent_and_returns_child_events(
                         "text": "child result",
                     }
                 ],
-            }
+            },
         ],
     }
     hub._codex.thread_reads["parent-thread-1"] = {  # type: ignore[union-attr]  # noqa: SLF001
@@ -230,7 +363,7 @@ def test_error_envelope_uses_per_session_seq_not_fixed_one(
         workdir,
         native_session_id="cc-native-error",
     )
-    adapter = CcEventAdapter(session_id)
+    adapter = ClaudeCodeEventAdapter(session_id)
     for _ in range(3):
         adapter.wrap(TextEvent(text="x").model_dump())
     hub._cc_adapters[session_id] = adapter  # noqa: SLF001

@@ -13,6 +13,11 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from trowel_py.agent_capacity import (
+    DELEGATE_CONNECTION_LIMIT,
+    USER_CONNECTION_LIMIT,
+    USER_RUNNING_LIMIT,
+)
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host import session_lifecycle
 from trowel_py.cc_host.history import parse_history
@@ -20,6 +25,8 @@ from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
 from trowel_py.cc_host.slash_items import list_slash_items
+from trowel_py.resource_lifecycle.processes import ProcessController
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 from trowel_py.cc_host.schemas import (
     AnswerElicitRequest,
     CreateSessionRequest,
@@ -40,8 +47,9 @@ _WORKDIR_INDEX: dict[str, set[str]] = {}   # workdir → {sid}（命名序号 + 
 _SESSION_NAMES: dict[str, str] = {}         # sid → 显示名（basename + #N）
 _ACTIVE_SID: str | None = None              # 当前活跃 session（多开切换）
 # MAX_RUNNING 仅保留公开兼容；当前路由只执行连接数门禁。
-MAX_RUNNING = 5
-MAX_CONNECTIONS = 20                        # 已创建 session 总数上限
+MAX_RUNNING = USER_RUNNING_LIMIT
+MAX_CONNECTIONS = USER_CONNECTION_LIMIT
+MAX_DELEGATE_CONNECTIONS = DELEGATE_CONNECTION_LIMIT
 
 
 def get_registry() -> dict[str, CCHost]:
@@ -138,6 +146,9 @@ def open_cc_session_configured(
     *,
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
+    display_name: str | None = None,
+    process_controller: ProcessController | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -148,6 +159,10 @@ def open_cc_session_configured(
         registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
         proxy_base_url: CC 子进程使用的代理地址；为 `None` 时不配置代理。
         settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
+        display_name: Agent Hub 已按双 runtime 可见集合分配的临时名称；为 `None`
+            时只根据旧版 CC 路由当前已登记的用户会话分配。
+        process_controller: 核验并终止 CC 独立进程组的实现。
+        resource_registry: 登记 CC 会话临时资源的当前应用账本。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
@@ -162,9 +177,14 @@ def open_cc_session_configured(
         workdir_index=_WORKDIR_INDEX,
         session_names=_SESSION_NAMES,
         max_connections=MAX_CONNECTIONS,
+        max_delegate_connections=MAX_DELEGATE_CONNECTIONS,
         host_factory=CCHost,
+        display_name=display_name,
+        process_controller=process_controller,
+        resource_registry=resource_registry,
     )
-    set_active_session_id(sid)
+    if req.session_kind == "user":
+        set_active_session_id(sid)
     return OpenedCcSession(sid=sid, host=host, name=name)
 
 
@@ -415,6 +435,23 @@ async def close_cc_session(
     if closed and get_active_session_id() == session_id:
         set_active_session_id(None)
     return closed
+
+
+def discard_unstarted_cc_session(
+    session_id: str, registry: dict[str, CCHost] | None = None
+) -> bool:
+    """撤销 binding 提交失败的未启动 CC 会话。"""
+
+    target_registry = _REGISTRY if registry is None else registry
+    discarded = session_lifecycle.discard_unstarted_session(
+        session_id,
+        target_registry,
+        workdir_index=_WORKDIR_INDEX,
+        session_names=_SESSION_NAMES,
+    )
+    if discarded and get_active_session_id() == session_id:
+        set_active_session_id(None)
+    return discarded
 
 
 @router.delete("/sessions/{sid}")

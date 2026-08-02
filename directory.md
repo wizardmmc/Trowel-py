@@ -22,10 +22,21 @@
 |---|---|
 | `app.py` | 组装 FastAPI、生命周期与路由 |
 | `cli.py` | `trowel-py` 命令行入口 |
+| `application_paths.py` | 统一解析 Trowel 自有数据库、Memory、配置与本地索引的数据根目录 |
+| `desktop/` | Electron Host 使用的 sidecar 启动、实例认证、版本握手与 readiness |
+| `desktop/packaged_entrypoint.py` | 冻结可执行文件的白名单分发入口，只启动 sidecar、Agent MCP 或 Memory MCP |
+| `desktop/data_migration.py` | 离线盘点并原子迁移旧 Memory/Profile、当前候选 journal 与本地索引，不导入旧 Garden |
+| `desktop/data_root_lock.py` / `desktop/data_compatibility.py` | 独占长期数据根，并阻止 dev 抢先执行正式 App 尚未应用的 schema migration |
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
+| `agent_host/capabilities.py` | 版本化保存两种 runtime 已实证可用的公开能力矩阵 |
+| `agent_host/runtimes/` | 两种 runtime 的共同实时状态、创建回滚、关闭操作和对称事件适配器 |
+| `agent_host/capacity.py` | 跨 runtime 的用户连接与委派连接/在跑容量裁决 |
+| `agent_host/lifecycle.py` | runtime 登记、binding、非用户身份和关闭标记的一致提交与回滚 |
+| `agent_host/delegate_identity.py` | 兼容旧文件名并持久记录所有非用户原生会话 ID，供历史扫描在分页前排除内部会话 |
 | `agent_mcp/` | 跨 runtime MCP 工具、blocking delegation 与进程内 live guidance 生命周期 |
+| `agent_mcp/launch.py` | Agent MCP 的服务名、启动命令、工具列表和父会话环境规格 |
 | `agent_host/events.py` | 两种 runtime 共用的 AgentEvent wire contract |
 | `agent_host/codex_settings.py` | Codex model 与 reasoning effort 的无 I/O 选择规则 |
 | `agent_host/codex_launch.py` | Codex session 启动配置与注入装配，不注册 manager 或持久化 binding |
@@ -47,7 +58,8 @@
 | `model_os/context_codec.py` / `context_adapters.py` | Context journal codec 与 AgentEvent 标准化 |
 | `model_os/work_broker/` | 模型资源仲裁、公开值对象、lease codec 与 SQLite schema |
 | `model_os/work_broker/policy.py` / `usage_persistence.py` | WorkBroker 确定性策略与事务内 usage 持久化 |
-| `memory/` / `profile/` | 长期记忆、检索、提炼与用户画像 |
+| `memory/` | 长期记忆、检索、日记/笔记提炼与会话来源仓储 |
+| `profile/` | 用户画像、建议队列、画像提炼、重校准与 HTTP 接口 |
 | `quota/` | provider 额度读取与归一化 |
 | `quota/glm/` | GLM quota 的稳定 client、payload 解析与 httpx transport |
 | `todo_loop/` | todo 展开与持续推进辅助 |
@@ -64,10 +76,12 @@
 | 路径 | 职责 |
 |---|---|
 | `memory/review_job.py` | daily review 的稳定入口、日期解析与进程锁 |
-| `memory/daily_review/` | 提炼 agent、增量批处理、调度与持久化工作目录 |
+| `memory/daily_review/` | 提炼编排、runtime 适配、共享处理器、调度与持久化工作目录 |
+| `memory/daily_review/requests.py` | 持久登记用户会话关闭后的即时 review 请求 |
+| `memory/daily_review/adapters/` | 分别用 `claude.py` 和 `codex.py` 解释字节水位或 turn fragment，并适配为统一 ReviewUnit |
+| `memory/daily_review/processor.py` | 统一执行 refine、日期校验、持久化、水位推进和 judge |
+| `memory/daily_review/sources/` | 并列定义 Claude Code 字节区间与 Codex turn journal 的历史上下文、处理目标、可用性和统一渲染 |
 | `memory/scheduling.py` | memory 调度器共用的纯时间计算 |
-| `memory/profile_distill_job.py` | profile distill 的稳定兼容入口 |
-| `memory/profile_distill/` | gate、agent 驱动、批处理、prompt、独立水位、重校准与应用内调度 |
 | `memory/compress/` | daily、weekly、monthly 的生成、来源校验、预算与缓存生命周期 |
 | `memory/compress/weekly_generation.py` | Weekly v3 结构化输出、source day/section 覆盖与 800 字完整 item 预算 |
 | `memory/compress/rollup_sources.py` / `monthly_generation.py` | 周月上游来源/hash 与月记完整句分层生成 |
@@ -80,9 +94,8 @@
 | `memory/cli/` | memory 命令参数、分发与维护操作 |
 | `memory/north_star/` | note 健康与会话级使用质量指标 |
 | `memory/prompt/` | refine 提炼与 daily compression prompt 契约 |
-| `memory/profile_suggestions/` | 画像建议编解码、带锁文件队列与状态策略入口 |
-| `memory/sessions_repo/` | session 数据契约、SQLite schema/连接与 registry 查询 |
-| `memory/store/` | file-backed memory 的 notes、diary、episode、profile 与 Markdown codec |
+| `memory/sessions_repo/` | session 数据契约、SQLite schema/连接，以及 `claude`、`codex`、`review_requests` 三个作用域仓储 |
+| `memory/store/` | file-backed memory 的 notes、diary、episode 与 Markdown codec |
 | `memory/tidy/` | tidy 数据契约、计划校验、快照应用、LLM 计划与周期任务编排 |
 | `memory/tidy_scheduler/` | tidy 的时间计算、成功门禁、应用内生命周期与显式补跑 |
 | `memory/tidy_state/` | tidy 水位模型、原子持久化与已完成周期计算 |
@@ -90,19 +103,46 @@
 | `memory/dictionary_check/` | dictionary 纯一致性评估与只读文件快照 |
 | `memory/dictionary_index/` | LLM 聚类/渲染与原子文件发布 |
 | `memory/draft/` | 提炼 draft 的稳定模型、宽松解析、硬校验与 procedure 软告警 |
-| `memory/draft/episode.py` | Episode v2 的 kind-specific item、严格解析与 daily 文本投影 |
-| `memory/daily_review/source_refs.py` | CompletedSegment 精确字节范围到可校验 numbered line refs 的转换 |
+| `memory/draft/episode.py` | Episode kind-specific item、严格解析与 daily 文本投影 |
+| `memory/daily_review/agent.py` | 消费已划分 context/target 的统一 ReviewSource，按目标计算成本并驱动、校验提炼草稿 |
+
+### Profile 内部边界
+
+| 路径 | 职责 |
+|---|---|
+| `profile/models.py` / `document.py` | Profile 与建议值对象、`profile.md` 正文编解码和校验 |
+| `profile/repository.py` | Profile 文件读写与历史快照 |
+| `profile/suggestions/` | 建议编解码、带锁文件队列与状态策略 |
+| `profile/distill/` | prompt、agent 驱动、门禁、批处理、独立水位与应用内调度 |
+| `profile/distill/adapters/` | Claude Code 字节水位与 Codex turn 分别适配为统一候选，并各自推进 Profile 处理记录 |
+| `profile/distill/processor.py` | 统一加载去重上下文、构造 prompt、驱动 Agent 并执行证据门禁 |
+| `profile/distill/sources/` | 统一描述 context/target，并分别构造 Claude 与 Codex 来源和校验 Codex target 用户证据 |
+| `profile/distill/state.py` | 在同一兼容状态文件中保存 Claude 字节水位和 Codex turn 处理记录 |
+| `profile/recalibration/` | 历史计划、隔离重放、manifest 与报告产物 |
+| `profile/routes.py` / `schemas.py` / `service.py` | Profile HTTP 接口、DTO 与依赖装配 |
 
 ## 前端
 
 | 路径 | 职责 |
 |---|---|
 | `web/src/App.tsx` | 页面入口与顶层工具切换 |
-| `web/src/api/` | HTTP、SSE 与 wire types |
-| `web/src/stores/` | Zustand 状态与事件 reducer |
-| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的组件 |
+| `web/desktop/` | Electron main、preload、sidecar 监督、诊断页与桌面 smoke |
+| `web/desktop/desktopDataPaths.ts` | 解析正式、日常开发与隔离开发的数据、日志和 Electron userData 路径 |
+| `web/shared/desktop-contracts.ts` | Electron main、preload 与 renderer 共用的桌面 IPC 类型契约 |
+| `web/src/platform/` | browser/desktop 平台接口与统一后端 transport |
+| `web/src/agent/domain/` | Agent session、turn、timeline item 与纯 reducer 的唯一 owner |
+| `web/src/agent/application/` | Agent Zustand store、会话命令、连接生命周期和 selector 的唯一 owner |
+| `web/src/agent/transport/` | Trowel Agent HTTP、SSE 与 wire DTO 的唯一 owner |
+| `web/src/agent/runtimes/` | capability 协议、Claude Code/Codex 同级 presentation adapter 与各自专属 UI |
+| `web/src/agent/runtimes/shared/` | 两个 runtime 都按相同语义使用的 capability 组合、路径和工具输出展示；单一 runtime 的代码不得进入 |
+| `web/src/agent/ui/` | 双 runtime 共用的会话 shell、消息列表、工作目录选择器与样式入口 |
+| `web/src/agent/index.ts` | 前端 Agent 领域的稳定公开 facade |
+| `web/src/api/` | 其他产品 API；`api/cc.ts` 只保留 Claude Code 专属 HTTP 操作 |
+| `web/src/stores/` | Agent 之外的产品 Zustand store；旧 `ccStore`、`ccReducer` 与 selector 路径已删除 |
+| `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的页面组件；runtime 专属展示从 `agent/runtimes` facade 读取 |
 | `web/src/styles/` | 全局 token 与样式 |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |
+| `web/scripts/check-module-comments.mjs` | 检查生产 TypeScript 模块是否以中文职责说明开头 |
 
 ## 测试
 

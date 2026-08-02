@@ -368,8 +368,8 @@ class CodexTranslator:
 
         ``commandExecution``、``fileChange`` 和 ``mcpToolCall`` 生成
         ``TOOL_STARTED``；``subAgentActivity`` 与 ``collabAgentToolCall``
-        生成 ``SUBAGENT_ACTIVITY``。其余类型，包括 ``contextCompaction`` 和
-        未知值，返回空结果。
+        生成 ``SUBAGENT_ACTIVITY``；``contextCompaction`` 生成压缩中的状态。
+        其余未知类型返回空结果。
         """
 
         item = _require(params, "item", "item/started")
@@ -389,8 +389,7 @@ class CodexTranslator:
         if item_type == _ITEM_COLLAB_AGENT_TOOL:
             return [self._collab_agent_tool_item(params, item)]
         if item_type == _ITEM_COMPACT:
-            # started 不是上下文代际边界，只有 completed 才关闭一代。
-            return []
+            return [self._compaction_started_item(params, item)]
         return []
 
     def _on_item_completed(self, params: Mapping[str, Any]) -> list[TranslatedItem]:
@@ -800,6 +799,22 @@ class CodexTranslator:
                 reasoning_effort=item.get("reasoningEffort"),
                 agents_states=item.get("agentsStates"),
             ),
+        )
+
+    def _compaction_started_item(
+        self, params: Mapping[str, Any], item: Mapping[str, Any]
+    ) -> TranslatedItem:
+        """把 contextCompaction 开始通知翻译为非终态状态。
+
+        started 只供界面显示压缩进行中；只有 completed 才形成可计数的代际边界。
+        """
+
+        return TranslatedItem(
+            type=CodexEventType.STATUS,
+            thread_id=_as_str(_require(params, "threadId", "item/started")),
+            turn_id=_as_str(_require(params, "turnId", "item/started")),
+            item_id=_as_str(_require(item, "id", "contextCompaction item")),
+            payload=immutable_payload(status="compacting", active_flags=()),
         )
 
     def _compaction_item(

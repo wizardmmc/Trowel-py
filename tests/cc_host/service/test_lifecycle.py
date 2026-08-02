@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from pathlib import Path
 
 import pytest
 
 from trowel_py.cc_host.service import CCHost
+from trowel_py.resource_lifecycle import OwnerScope, ProcessIdentity, ResourceRegistry
 from trowel_py.schemas.cc_host import (
     ErrorEvent,
     LocalCommandEvent,
@@ -181,6 +184,186 @@ class TestInterrupt:
         assert len(spawner.spawned) == 2
         second_args = spawner.spawned[1][0]
         assert "--resume" in second_args and "s-1" in second_args
+
+    async def test_without_controller_interrupts_only_the_root_process(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """兼容路径不能把 SIGINT 发给 host 所在的操作系统进程组。"""
+
+        proc = FakeProc([], feed_eof=False, pid=701)
+        group_signals: list[tuple[int, signal.Signals]] = []
+        monkeypatch.setattr(os, "getpgid", lambda _pid: 701)
+        monkeypatch.setattr(
+            os,
+            "killpg",
+            lambda process_group, signum: group_signals.append(
+                (process_group, signum)
+            ),
+        )
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        await host._ensure_process()
+
+        host._interrupt_proc(proc)
+
+        assert proc.signals == [signal.SIGINT]
+        assert group_signals == []
+
+
+class FakeProcessController:
+    """让关闭测试观察进程组信号，并由 TERM 结束假进程。"""
+
+    def __init__(self, proc: FakeProc) -> None:
+        self.proc = proc
+        self.signals: list[tuple[int, str]] = []
+
+    def inspect(self, pid: int) -> ProcessIdentity | None:
+        """返回假进程的固定启动身份。"""
+
+        if pid != self.proc.pid or self.proc.returncode is not None:
+            return None
+        return ProcessIdentity(pid, pid, f"start-{pid}")
+
+    def group_alive(self, process_group: int) -> bool:
+        """以假进程返回码判断进程组是否仍活着。"""
+
+        return process_group == self.proc.pid and self.proc.returncode is None
+
+    def signal_group(self, process_group: int, signal_name: str) -> None:
+        """记录信号，并让 TERM 或 KILL 结束假进程。"""
+
+        self.signals.append((process_group, signal_name))
+        if signal_name == "SIGTERM":
+            self.proc.returncode = -15
+        elif signal_name == "SIGKILL":
+            self.proc.returncode = -9
+
+
+class TestCloseProcessGroup:
+    async def test_close_escalates_the_registered_process_group(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        proc = FakeProc([], feed_eof=False, pid=701)
+        controller = FakeProcessController(proc)
+        registry = ResourceRegistry(
+            app_instance_id="app-1",
+            snapshot_path=tmp_path / "resources.json",
+            process_controller=controller,
+        )
+        host = CCHost(
+            "sid",
+            tmp_path,
+            spawner=FakeSpawner([proc]),
+            process_controller=controller,
+            resource_registry=registry,
+            close_interrupt_s=0,
+            close_term_s=0,
+            close_kill_s=0,
+        )
+        await host._ensure_process()
+
+        await host.close()
+
+        assert proc.stdin.closed is True
+        assert controller.signals == [(701, "SIGTERM")]
+        assert registry.owner_summary(
+            owner_scope=OwnerScope.SESSION,
+            agent_session_id="sid",
+        ).live_resource_count == 0
+
+    async def test_active_close_interrupts_group_before_term(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        proc = FakeProc([], feed_eof=False, pid=702)
+        controller = FakeProcessController(proc)
+        host = CCHost(
+            "sid",
+            tmp_path,
+            spawner=FakeSpawner([proc]),
+            process_controller=controller,
+            close_interrupt_s=0,
+            close_term_s=0,
+            close_kill_s=0,
+        )
+        await host._ensure_process()
+        host.running = True
+
+        await host.close()
+
+        assert controller.signals == [(702, "SIGINT"), (702, "SIGTERM")]
+
+    async def test_close_tracks_group_after_root_process_has_exited(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """根 PID 退出后仍须按 spawn 时身份清理同组孙进程。"""
+
+        proc = FakeProc([], feed_eof=False, pid=703)
+        controller = FakeProcessController(proc)
+        descendants_alive = True
+
+        def group_alive(process_group: int) -> bool:
+            return process_group == 703 and descendants_alive
+
+        def signal_group(process_group: int, signal_name: str) -> None:
+            nonlocal descendants_alive
+            controller.signals.append((process_group, signal_name))
+            descendants_alive = False
+
+        controller.group_alive = group_alive  # type: ignore[method-assign]
+        controller.signal_group = signal_group  # type: ignore[method-assign]
+        host = CCHost(
+            "sid",
+            tmp_path,
+            spawner=FakeSpawner([proc]),
+            process_controller=controller,
+            close_term_s=0,
+            close_kill_s=0,
+        )
+        await host._ensure_process()
+        proc.returncode = 0
+
+        await host.close()
+
+        assert controller.signals == [(703, "SIGTERM")]
+
+    async def test_sync_kill_refuses_reused_process_identity(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """同步兜底发现 PID 已复用时必须保留诊断且不能向原进程组发信号。"""
+
+        proc = FakeProc([], feed_eof=False, pid=704)
+        controller = FakeProcessController(proc)
+        registry = ResourceRegistry(
+            app_instance_id="app-1",
+            process_controller=controller,
+        )
+        host = CCHost(
+            "sid",
+            tmp_path,
+            spawner=FakeSpawner([proc]),
+            process_controller=controller,
+            resource_registry=registry,
+        )
+        await host._ensure_process()
+        controller.inspect = lambda _pid: ProcessIdentity(  # type: ignore[method-assign]
+            704,
+            704,
+            "replacement-start",
+        )
+
+        host._sync_kill()
+
+        assert controller.signals == []
+        assert proc.returncode is None
+        assert registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id="sid",
+        ).status == "needs_reconcile"
 
 
 class TestStalled:

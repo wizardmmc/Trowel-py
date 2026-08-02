@@ -8,11 +8,11 @@ import {
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore } from "../agent";
 
-describe("createCcStore - Codex native commands", () => {
+describe("createAgentStore - Codex native commands", () => {
   it("runs compact without creating an optimistic user turn", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
 
@@ -21,6 +21,7 @@ describe("createCcStore - Codex native commands", () => {
     expect(apiCompactCodexSession).toHaveBeenCalledWith("c1");
     expect(store.getState().sessions.c1.turns).toHaveLength(0);
     expect(store.getState().sessions.c1.commandPending).toBe("compact");
+    expect(store.getState().sessions.c1.phase).toBe("compacting");
     stream.apply!(
       ev(
         "turn_start",
@@ -29,10 +30,11 @@ describe("createCcStore - Codex native commands", () => {
       ),
     );
     expect(store.getState().sessions.c1.commandPending).toBeNull();
+    expect(store.getState().sessions.c1.phase).toBe("compacting");
   });
 
   it("releases compact UI admission when the Codex host exits before turn start", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
     await store.getState().compactCodex();
@@ -46,7 +48,7 @@ describe("createCcStore - Codex native commands", () => {
   });
 
   it("releases compact UI admission when its event stream closes", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
     await store.getState().compactCodex();
@@ -59,7 +61,7 @@ describe("createCcStore - Codex native commands", () => {
   });
 
   it("starts review as an autonomous turn without a user message", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
 
@@ -82,7 +84,7 @@ describe("createCcStore - Codex native commands", () => {
   });
 
   it("does not revive a review that finished before the start response", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     let resolveReview!: (result: {
       reviewThreadId: string;
       turnId: string;
@@ -126,7 +128,7 @@ describe("createCcStore - Codex native commands", () => {
   });
 
   it("records command failure on the originating session", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("c1", {
       runtime: "codex",
       native_session_id: "thread-1",
@@ -139,5 +141,6 @@ describe("createCcStore - Codex native commands", () => {
 
     expect(store.getState().sessions.c1.transportError).toBe("compact failed");
     expect(store.getState().sessions.c1.commandPending).toBeNull();
+    expect(store.getState().sessions.c1.phase).toBe("idle");
   });
 });

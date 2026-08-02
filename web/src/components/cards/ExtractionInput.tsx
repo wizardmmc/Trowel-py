@@ -1,3 +1,5 @@
+/** 接收粘贴文本或会话文件，并启动卡片提取。 */
+
 import { useState, useRef } from "react";
 
 interface ExtractionInputProps {
@@ -168,7 +170,7 @@ function isJsonObject(line: string): boolean {
 }
 
 function detectFormatLabel(text: string, fileFormat: FileFormat): string {
-  if (fileFormat === "jsonl") return "CC JSONL（会话）";
+  if (fileFormat === "jsonl") return "Claude JSONL（会话）";
   if (fileFormat === "git-diff") return "Git Diff";
   if (!text.trim()) return "空";
   if (text.includes("diff --git")) return "Git Diff";

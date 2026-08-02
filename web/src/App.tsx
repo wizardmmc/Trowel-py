@@ -1,3 +1,5 @@
+/** 组合卡片、复习、花园、Agent 和 Profile 五个顶层工具。 */
+
 import { useState, useEffect } from "react";
 import { AppLayout, type Tool } from "./components/layout/AppLayout";
 import { ExtractionInput } from "./components/cards/ExtractionInput";
@@ -5,36 +7,11 @@ import { ReviewModal } from "./components/cards/ReviewModal";
 import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
-import { SessionView } from "./components/cc/SessionView";
+import { AgentWorkspace } from "./agent";
 import { ProfileView } from "./components/profile/ProfileView";
-import { WorkdirPicker } from "./components/cc/WorkdirPicker";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
-
-const WORKDIR_STORAGE_KEY = "trowel.cc.workdirs.recent";
-
-function loadRecentWorkdirs(): string[] {
-  try {
-    const raw = localStorage.getItem(WORKDIR_STORAGE_KEY);
-    const arr = raw ? (JSON.parse(raw) as unknown) : null;
-    if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) {
-      return arr as string[];
-    }
-  } catch {
-  }
-  return [];
-}
-
-function saveRecentWorkdir(p: string): string[] {
-  const cur = loadRecentWorkdirs().filter((x) => x !== p);
-  const next = [p, ...cur].slice(0, 10);
-  try {
-    localStorage.setItem(WORKDIR_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-  }
-  return next;
-}
 
 function App() {
   const {
@@ -60,13 +37,6 @@ function App() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<Tool>("garden");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [ccWorkdir, setCcWorkdir] = useState<string>(
-    () => loadRecentWorkdirs()[0] ?? "",
-  );
-  const [showWorkdirPicker, setShowWorkdirPicker] = useState(false);
-  const [recentWorkdirs, setRecentWorkdirs] = useState<string[]>(() =>
-    loadRecentWorkdirs(),
-  );
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
   const reviewActive = phase !== "idle";
@@ -141,24 +111,12 @@ function App() {
         />
       )}
       {!reviewActive && activeTool === "profile" && <ProfileView />}
-      {activeTool === "cc" && (
-        <SessionView
-          workdir={ccWorkdir}
-          onRequestChangeWorkdir={() => setShowWorkdirPicker(true)}
-        />
-      )}
-      {showWorkdirPicker && (
-        <WorkdirPicker
-          initialPath={ccWorkdir.endsWith("/") ? ccWorkdir : `${ccWorkdir}/`}
-          recents={recentWorkdirs}
-          onSelect={(p) => {
-            setCcWorkdir(p);
-            setRecentWorkdirs(saveRecentWorkdir(p));
-            setShowWorkdirPicker(false);
-          }}
-          onCancel={() => setShowWorkdirPicker(false)}
-        />
-      )}
+      <div
+        className="agent-workspace-slot"
+        hidden={activeTool !== "cc"}
+      >
+        <AgentWorkspace />
+      </div>
 
       <ReviewSession />
 

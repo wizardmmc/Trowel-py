@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from trowel_py.agent_host.binding import SessionKind
+
 RuntimeWire = Literal["claude_code", "codex"]
 PermissionPreset = Literal[
     "follow", "read-only", "workspace-write", "danger-full-access"
@@ -14,6 +16,19 @@ GoalStatus = Literal[
     "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"
 ]
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+SessionTitleText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[^\r\n]+$",
+    ),
+]
+ResumeTitleText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+]
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -27,6 +42,7 @@ class CreateAgentSessionRequest(BaseModel):
     runtime: RuntimeWire
     workdir: str = Field(min_length=1)
     resume_from: str | None = None
+    resume_title: ResumeTitleText | None = None
     model: str | None = None
     effort: str | None = None
     permission_mode: str | None = None
@@ -36,7 +52,7 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: Literal["user", "delegate"] = "user"
+    session_kind: SessionKind = "user"
     memory_eligibility: bool = Field(default=True, strict=True)
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     parent_session_id: str | None = None
@@ -73,6 +89,38 @@ class SendMessageBody(BaseModel):
     """
 
     text: str = Field(min_length=1)
+
+
+class RenameAgentSessionRequest(BaseModel):
+    """携带用户手动指定的会话标题。
+
+    Attributes:
+        title: 去除首尾空白后的非空标题，最多 80 个字符。
+    """
+
+    title: SessionTitleText
+
+
+class RememberWorkspaceRequest(BaseModel):
+    """携带一次用户确认打开的 Agent 工作区。
+
+    Attributes:
+        path: 用户选择的本地目录路径；仓储负责展开、规范化和可用性校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: NonEmptyText
+
+
+class GenerateAgentSessionTitleRequest(BaseModel):
+    """携带用于生成语义标题的首条用户消息。
+
+    Attributes:
+        text: 主会话收到的首条非空用户输入；标题任务只概括它，不执行它。
+    """
+
+    text: NonEmptyText
 
 
 class SetCodexGoalRequest(BaseModel):

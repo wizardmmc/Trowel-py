@@ -24,7 +24,7 @@ import {
   clearCodexGoal,
   startCodexTurn,
   updateAgentSessionSettings,
-} from "../api/agent";
+} from "../agent/transport";
 
 function mockEnvelope(data: unknown, ok = true, meta?: unknown): Response {
   return new Response(
@@ -121,9 +121,23 @@ describe("api/agent", () => {
   it("deleteAgentSession DELETEs", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockEnvelope({ closed: true }));
-    const { closed } = await deleteAgentSession("s1");
-    expect(closed).toBe(true);
+      .mockResolvedValue(
+        mockEnvelope({
+          closed: true,
+          status: "closed",
+          remaining_resource_count: 0,
+          remaining_resource_kinds: [],
+          error: null,
+        }),
+      );
+    const result = await deleteAgentSession("s1");
+    expect(result).toEqual({
+      closed: true,
+      status: "closed",
+      remaining_resource_count: 0,
+      remaining_resource_kinds: [],
+      error: null,
+    });
     const [url, init] = spy.mock.calls[0];
     expect(url).toBe("/api/agent/sessions/s1");
     expect((init as RequestInit).method).toBe("DELETE");

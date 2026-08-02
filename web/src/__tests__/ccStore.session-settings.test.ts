@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  apiActivateAgentSession,
   apiCreateSession,
   apiUpdateSessionSettings,
   ev,
@@ -8,11 +9,45 @@ import {
   releaseAllStreams,
   stream,
 } from "./ccStoreTestHarness";
-import { createCcStore } from "../stores/ccStore";
+import { createAgentStore, type AgentSession } from "../agent";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 
-describe("createCcStore — backend session reconciliation", () => {
-  it("pulls backend live sessions into the dict as connected rows", async () => {
-    const store = createCcStore();
+const CC_CAPABILITIES = getExpectedRuntimePresentation("claude_code")
+  .expectedCapabilities;
+const CODEX_CAPABILITIES = getExpectedRuntimePresentation("codex")
+  .expectedCapabilities;
+
+/** 创建后端会话目录返回的已连接 CC 记录。 */
+function liveSession(sessionId: string, workdir = "/wd"): AgentSession {
+  return {
+    session_id: sessionId,
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir,
+    model: "glm-5.2",
+    effort: null,
+    permission: null,
+    memory_enabled: true,
+    profile_enabled: true,
+    capabilities: CC_CAPABILITIES,
+    name: sessionId,
+    connected: true,
+    running: false,
+  };
+}
+
+/** 创建由测试控制完成时机的 Promise。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("createAgentStore — backend session reconciliation", () => {
+  it("pulls backend live sessions without adopting another client's active id", async () => {
+    const store = createAgentStore();
     listActiveSessions.mockResolvedValueOnce({
       sessions: [
         {
@@ -25,7 +60,8 @@ describe("createCcStore — backend session reconciliation", () => {
           permission: null,
           memory_enabled: true,
           profile_enabled: true,
-          capabilities: ["tools", "approval", "checkpoint", "workflow"],
+          capabilities: CC_CAPABILITIES,
+          checkpoint_available: false,
           name: "trowel-py",
           connected: true,
           running: false,
@@ -40,7 +76,7 @@ describe("createCcStore — backend session reconciliation", () => {
           permission: null,
           memory_enabled: true,
           profile_enabled: true,
-          capabilities: ["tools", "approval", "checkpoint", "workflow"],
+          capabilities: CC_CAPABILITIES,
           name: "wiki",
           connected: true,
           running: true,
@@ -51,12 +87,62 @@ describe("createCcStore — backend session reconciliation", () => {
     await store.getState().refreshActiveSessions();
     expect(store.getState().sessions.s1).toBeDefined();
     expect(store.getState().sessions.s1.connected).toBe(true);
+    expect(store.getState().sessions.s1.checkpointAvailable).toBe(false);
     expect(store.getState().sessions.s2.connected).toBe(true);
-    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().activeSid).toBeNull();
+  });
+
+  it("keeps session selection local to each renderer store", async () => {
+    const sessions = [
+      {
+        session_id: "s1",
+        runtime: "claude_code" as const,
+        native_session_id: null,
+        workdir: "/one",
+        model: "glm-5.2",
+        effort: null,
+        permission: null,
+        memory_enabled: true,
+        profile_enabled: true,
+        capabilities: CC_CAPABILITIES,
+        name: "one",
+        connected: true,
+        running: false,
+      },
+      {
+        session_id: "s2",
+        runtime: "claude_code" as const,
+        native_session_id: null,
+        workdir: "/two",
+        model: "glm-5.2",
+        effort: null,
+        permission: null,
+        memory_enabled: true,
+        profile_enabled: true,
+        capabilities: CC_CAPABILITIES,
+        name: "two",
+        connected: true,
+        running: false,
+      },
+    ];
+    listActiveSessions
+      .mockResolvedValueOnce({ sessions, activeId: "s1" })
+      .mockResolvedValueOnce({ sessions, activeId: "s1" });
+    const webStore = createAgentStore();
+    const desktopStore = createAgentStore();
+    await webStore.getState().refreshActiveSessions();
+    await desktopStore.getState().refreshActiveSessions();
+
+    await webStore.getState().activateSession("s1");
+    await desktopStore.getState().activateSession("s2");
+
+    expect(webStore.getState().activeSid).toBe("s1");
+    expect(desktopStore.getState().activeSid).toBe("s2");
+    expect(apiActivateAgentSession).not.toHaveBeenCalled();
   });
 
   it("does NOT overwrite sessions the frontend already tracks", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({ workdir: "/wd" });
     const before = store.getState().sessions.s1;
@@ -72,7 +158,7 @@ describe("createCcStore — backend session reconciliation", () => {
           permission: null,
           memory_enabled: true,
           profile_enabled: true,
-          capabilities: ["tools", "approval", "checkpoint", "workflow"],
+          capabilities: CC_CAPABILITIES,
           name: "renamed",
           connected: true,
           running: false,
@@ -85,16 +171,100 @@ describe("createCcStore — backend session reconciliation", () => {
   });
 
   it("silently no-ops when the backend is unreachable", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     listActiveSessions.mockRejectedValueOnce(new Error("backend down"));
     await store.getState().refreshActiveSessions();
     expect(store.getState().sessions).toEqual({});
   });
+
+  it("removes a user session closed by another renderer", async () => {
+    const store = createAgentStore();
+    listActiveSessions
+      .mockResolvedValueOnce({ sessions: [liveSession("s1")], activeId: null })
+      .mockResolvedValueOnce({ sessions: [], activeId: null });
+    await store.getState().refreshActiveSessions();
+    await store.getState().activateSession("s1");
+
+    await store.getState().refreshActiveSessions();
+
+    expect(store.getState().sessions.s1).toBeUndefined();
+    expect(store.getState().activeSid).toBeNull();
+  });
+
+  it("ignores an older session catalog response that arrives last", async () => {
+    const store = createAgentStore();
+    const older = deferred<{
+      readonly sessions: readonly AgentSession[];
+      readonly activeId: string | null;
+    }>();
+    listActiveSessions
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce({
+        sessions: [liveSession("newer", "/newer")],
+        activeId: null,
+      });
+
+    const firstRefresh = store.getState().refreshActiveSessions();
+    await store.getState().refreshActiveSessions();
+    older.resolve({
+      sessions: [liveSession("older", "/older")],
+      activeId: null,
+    });
+    await firstRefresh;
+
+    expect(Object.keys(store.getState().sessions)).toEqual(["newer"]);
+  });
+
+  it("ignores non-user rows if a backend returns them", async () => {
+    const store = createAgentStore();
+    listActiveSessions.mockResolvedValueOnce({
+      sessions: [
+        {
+          session_id: "delegate",
+          runtime: "codex",
+          native_session_id: "thread-delegate",
+          workdir: "/wd",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          permission: null,
+          memory_enabled: true,
+          profile_enabled: true,
+          capabilities: ["tools", "approval", "subagents"],
+          name: "internal",
+          connected: true,
+          running: true,
+          session_kind: "delegate",
+        },
+        {
+          session_id: "probe",
+          runtime: "codex",
+          native_session_id: "thread-probe",
+          workdir: "/wd",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          permission: null,
+          memory_enabled: false,
+          profile_enabled: false,
+          capabilities: ["tools", "approval", "subagents"],
+          name: "probe",
+          connected: true,
+          running: true,
+          session_kind: "probe",
+        },
+      ],
+      activeId: "delegate",
+    });
+
+    await store.getState().refreshActiveSessions();
+
+    expect(store.getState().sessions).toEqual({});
+    expect(store.getState().activeSid).toBeNull();
+  });
 });
 
-describe("createCcStore — memory/profile A/B switches", () => {
+describe("createAgentStore — memory/profile A/B switches", () => {
   it("startSession stores the condition from the backend response", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", { memory_enabled: false, profile_enabled: true });
     await store.getState().startSession({
       workdir: "/wd",
@@ -106,7 +276,7 @@ describe("createCcStore — memory/profile A/B switches", () => {
   });
 
   it("startSession forwards the switches to the API", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1");
     await store.getState().startSession({
       workdir: "/wd",
@@ -122,7 +292,7 @@ describe("createCcStore — memory/profile A/B switches", () => {
   });
 
   it("refreshActiveSessions reconciles the condition from the backend", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     listActiveSessions.mockResolvedValueOnce({
       sessions: [
         {
@@ -135,7 +305,7 @@ describe("createCcStore — memory/profile A/B switches", () => {
           permission: null,
           memory_enabled: false,
           profile_enabled: true,
-          capabilities: ["tools", "approval", "checkpoint", "workflow"],
+          capabilities: CC_CAPABILITIES,
           name: "wd",
           connected: true,
           running: false,
@@ -149,14 +319,14 @@ describe("createCcStore — memory/profile A/B switches", () => {
   });
 });
 
-describe("createCcStore — Codex next-turn settings", () => {
+describe("createAgentStore — Codex next-turn settings", () => {
   it("stores the backend-validated model/effort pair as pending", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", {
       runtime: "codex",
       model: "gpt-5.6-sol",
       effort: "low",
-      capabilities: ["tools", "approval"],
+      capabilities: CODEX_CAPABILITIES,
     });
     apiUpdateSessionSettings.mockResolvedValueOnce({
       model: "gpt-5.6-luna",
@@ -178,12 +348,12 @@ describe("createCcStore — Codex next-turn settings", () => {
   });
 
   it("commits and clears the pending pair only on model_changed", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", {
       runtime: "codex",
       model: "gpt-5.6-sol",
       effort: "low",
-      capabilities: ["tools", "approval"],
+      capabilities: CODEX_CAPABILITIES,
     });
     apiUpdateSessionSettings.mockResolvedValueOnce({
       model: "gpt-5.6-luna",
@@ -207,11 +377,11 @@ describe("createCcStore — Codex next-turn settings", () => {
   });
 
   it("applies native effective permission facts from lazy thread/start", async () => {
-    const store = createCcStore();
+    const store = createAgentStore();
     mockCreate("s1", {
       runtime: "codex",
       permission_preset: "follow",
-      capabilities: ["tools", "approval"],
+      capabilities: CODEX_CAPABILITIES,
     });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
     const sending = store.getState().send("hi");

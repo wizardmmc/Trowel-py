@@ -1,3 +1,5 @@
+/** 展示会话输入框下方的模型、权限和 runtime 操作入口。 */
+
 import type { ModelOption } from "../../api/cc";
 import { MemoryProfileChip } from "./MemoryProfileChip";
 import {
@@ -23,7 +25,7 @@ interface ComposerToolbarProps {
   readonly streaming: boolean;
   readonly sendDisabled: boolean;
   readonly onSend: () => void;
-  readonly onInterrupt: () => void;
+  readonly onInterrupt?: () => void;
   readonly models?: readonly ModelOption[];
   readonly efforts?: readonly EffortControlOption[];
   readonly currentModelAlias?: string | null;
@@ -60,9 +62,9 @@ export function ComposerToolbar({
 }: ComposerToolbarProps) {
   return (
     <div className="cc-composer__bar">
-      {models && onPickModel && onPickEffort && (
+      {((models && onPickModel) || onPickEffort) && (
         <ModelEffortChip
-          models={models}
+          models={models ?? []}
           efforts={efforts}
           currentModelAlias={currentModelAlias ?? null}
           currentEffort={currentEffort ?? null}
@@ -91,9 +93,21 @@ export function ComposerToolbar({
         type="button"
         className={`cc-composer__send${streaming ? " cc-composer__send--stop" : ""}`}
         onClick={streaming ? onInterrupt : onSend}
-        disabled={!streaming && sendDisabled}
-        aria-label={streaming ? "中断" : "发送"}
-        title={streaming ? "中断（Esc）" : "发送（Enter）"}
+        disabled={streaming ? onInterrupt === undefined : sendDisabled}
+        aria-label={
+          streaming
+            ? onInterrupt
+              ? "中断"
+              : "当前 turn 不能中断"
+            : "发送"
+        }
+        title={
+          streaming
+            ? onInterrupt
+              ? "中断（Esc）"
+              : "当前 runtime 未声明中断能力"
+            : "发送（Enter）"
+        }
       >
         {streaming ? (
           <svg viewBox="0 0 24 24" aria-hidden="true">

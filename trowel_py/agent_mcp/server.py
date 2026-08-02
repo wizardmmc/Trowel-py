@@ -19,9 +19,11 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 
 from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
+from trowel_py.agent_mcp.http_errors import agent_api_error_detail
 from trowel_py.agent_mcp.interactive import InteractiveBroker
+from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
 
-_SERVER_NAME = "trowel_agents"
+_SERVER_NAME = AGENT_MCP_SERVER_NAME
 _TOOL_DELEGATE = "delegate"
 _TOOL_DELEGATE_START = "delegate_start"
 _TOOL_DELEGATE_RESPOND = "delegate_respond"
@@ -482,7 +484,9 @@ async def delegate_agent(
                 effort=effort,
             ),
         )
-        create_response.raise_for_status()
+        create_error = agent_api_error_detail(create_response)
+        if create_error is not None:
+            raise DelegationError(create_error)
         create_payload = create_response.json()
         data = create_payload.get("data") if isinstance(create_payload, dict) else None
         if not isinstance(data, dict) or not isinstance(data.get("session_id"), str):
@@ -812,6 +816,9 @@ async def main() -> None:
     """运行 stdio MCP 服务，并在退出时尝试清理进程仍在管理的交互委派。"""
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from trowel_py.resource_lifecycle.reporting import report_current_process
+
+    await report_current_process()
     broker = InteractiveBroker(
         base_url=_server_base_url(), cleanup_timeout=_cleanup_timeout_seconds()
     )

@@ -1,7 +1,8 @@
-import type { Runtime } from "../../api/agent";
+/** 展示新会话的 Memory 与 Profile 开关及其隔离说明。 */
 
 interface SessionPreferencesProps {
-  readonly runtime: Runtime;
+  readonly memoryDescription: string;
+  readonly isolationNote: string;
   readonly memory: boolean;
   readonly profile: boolean;
   readonly creating: boolean;
@@ -10,7 +11,8 @@ interface SessionPreferencesProps {
 }
 
 export function SessionPreferences({
-  runtime,
+  memoryDescription,
+  isolationNote,
   memory,
   profile,
   creating,
@@ -21,11 +23,7 @@ export function SessionPreferences({
     <>
       <SwitchRow
         name="Memory"
-        desc={
-          runtime === "codex"
-            ? "注入 trowel 记忆并挂 memory MCP；Codex native memories 保持关闭。"
-            : "给模型读你存的记忆：铁律、dictionary 笔记、近期日记，并挂 memory MCP。关掉做无记忆基线。"
-        }
+        desc={memoryDescription}
         on={memory}
         onToggle={onToggleMemory}
         disabled={creating}
@@ -37,11 +35,7 @@ export function SessionPreferences({
         onToggle={onToggleProfile}
         disabled={creating}
       />
-      <p className="cc-dialog__note">
-        {runtime === "codex"
-          ? "选择 Codex 只决定这个 session 的 runtime，不会改变已运行的 GLM 会话，也不会修改 cc-switch 配置。"
-          : "选择 Claude Code 继续使用 CCHost；它与已运行的 Codex session 互不切换、互不 resume。"}
-      </p>
+      <p className="cc-dialog__note">{isolationNote}</p>
     </>
   );
 }

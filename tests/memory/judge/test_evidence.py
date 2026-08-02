@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.judge.support import FINISHED, _VALID_DRAFT, _access, _session
+from tests.memory.judge.support import (
+    FINISHED,
+    _VALID_DRAFT,
+    _access,
+    _review_source,
+    _session,
+)
 import trowel_py.memory.judge as judge_module
 from trowel_py.memory.access_log import AccessRecord, log_access
 from trowel_py.memory.judge import judge_session
@@ -57,7 +63,13 @@ async def test_judge_prompt_only_sees_judged_session_access_log(
         (workdir / "judgement-draft.json").write_text(_VALID_DRAFT, encoding="utf-8")
         return CaptureHost([FINISHED])
 
-    await judge_session(_session(), "2026-07-16", root, host_factory=factory)
+    await judge_session(
+        _session(),
+        "2026-07-16",
+        root,
+        review_source=_review_source(),
+        host_factory=factory,
+    )
     assert "缓存一致性" in captured["prompt"]
     assert "real-note" in captured["prompt"]
     assert "不该出现" not in captured["prompt"]
@@ -74,7 +86,7 @@ def test_summarize_pulls_pre_init_records_via_binding(tmp_path: Path) -> None:
     root = tmp_path / "memory"
     conn = open_sessions_db(root)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id="cc-x",
                 workdir="/p",

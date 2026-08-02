@@ -35,18 +35,15 @@ class PlayerRepository:
         self.conn = conn
 
     def find_or_create(self) -> Player:
-        """返回默认玩家，不存在时按数据库默认值创建。"""
+        """原子创建并返回默认玩家，允许多个请求同时访问全新数据库。"""
+        self.conn.execute(
+            "insert into players (id, last_active) values (?, ?) "
+            "on conflict(id) do nothing",
+            ("default", datetime.now().isoformat()),
+        )
         row = self.conn.execute(
             "select * from players where id = ?", ("default",)
         ).fetchone()
-        if row is None:
-            self.conn.execute(
-                "insert into players (last_active) values (?)",
-                (datetime.now().isoformat(),),
-            )
-            row = self.conn.execute(
-                "select * from players where id = ?", ("default",)
-            ).fetchone()
         return _player_from_row(row)
 
     def update_xp(self, delta: int) -> None:

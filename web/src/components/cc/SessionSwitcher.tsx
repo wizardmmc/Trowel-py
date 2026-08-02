@@ -1,3 +1,5 @@
+/** 按工作目录分组展示历史会话，并把选择结果交给恢复流程。 */
+
 import {
   useEffect,
   useRef,
@@ -6,7 +8,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import type { AgentHistoryRow } from "../../api/agent";
+import { getExpectedRuntimePresentation } from "../../agent/runtimes";
+import type { AgentHistoryRow } from "../../agent/transport";
 
 interface SessionSwitcherProps {
   readonly history: readonly AgentHistoryRow[];
@@ -42,11 +45,6 @@ function formatTime(value: number | string): string {
     hour12: false,
   });
 }
-
-const RUNTIME_LABEL: Record<string, string> = {
-  claude_code: "Claude",
-  codex: "Codex",
-};
 
 export function SessionSwitcher({
   history,
@@ -197,33 +195,38 @@ export function SessionSwitcher({
                 {!loading && !error && history.length === 0 && (
                   <div className="history-empty">暂无历史</div>
                 )}
-                {history.map((row, index) => (
-                  <button
-                    key={`${row.runtime}-${row.native_session_id ?? index}`}
-                    id={`history-row-${index}`}
-                    type="button"
-                    className="history-row"
-                    role="option"
-                    aria-selected={index === activeIndex}
-                    disabled={!row.native_session_id}
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => choose(row)}
-                  >
-                    <span
-                      className={`history-row__badge cc-runtime-badge cc-runtime-badge--${row.runtime}`}
+                {history.map((row, index) => {
+                  const presentation = getExpectedRuntimePresentation(
+                    row.runtime,
+                  );
+                  return (
+                    <button
+                      key={`${row.runtime}-${row.native_session_id ?? index}`}
+                      id={`history-row-${index}`}
+                      type="button"
+                      className="history-row"
+                      role="option"
+                      aria-selected={index === activeIndex}
+                      disabled={!row.native_session_id}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onClick={() => choose(row)}
                     >
-                      {RUNTIME_LABEL[row.runtime] ?? row.runtime}
-                    </span>
-                    <span className="history-row__body">
-                      <span className="history-row__title">
-                        {row.title || "(无标题)"}
+                      <span
+                        className={`history-row__badge cc-runtime-badge cc-runtime-badge--${row.runtime}`}
+                      >
+                        {presentation.shortLabel}
                       </span>
-                      <span className="history-row__time">
-                        {formatTime(row.updated_at)}
+                      <span className="history-row__body">
+                        <span className="history-row__title">
+                          {row.title || "(无标题)"}
+                        </span>
+                        <span className="history-row__time">
+                          {formatTime(row.updated_at)}
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
               <footer className="cc-modal__foot">
                 <div className="history-status" role="status" aria-live="polite">

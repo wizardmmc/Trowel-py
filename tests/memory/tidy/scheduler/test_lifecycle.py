@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, time
 from pathlib import Path
 
+from trowel_py.llm.client import LLMConfig
 from trowel_py.memory.tidy_scheduler import (
     DEFAULT_MONTHLY_TIME,
     DEFAULT_WEEKLY_TIME,
@@ -167,6 +168,25 @@ class TestStartStop:
 
 
 class TestLifespanIntegration:
+    def test_startup_skips_tidy_scheduler_without_llm_config(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        from fastapi.testclient import TestClient
+
+        from trowel_py.app import create_app
+
+        def missing_config():
+            raise FileNotFoundError("desktop config is not set")
+
+        monkeypatch.setenv("TROWEL_DATA_ROOT", str(tmp_path))
+        monkeypatch.setattr("trowel_py.config.load_llm_config", missing_config)
+
+        app = create_app()
+        with TestClient(app):
+            assert app.state.tidy_scheduler is None
+
     def test_startup_starts_tidy_scheduler(self, tmp_path: Path, monkeypatch):
         from fastapi.testclient import TestClient
 
@@ -174,11 +194,20 @@ class TestLifespanIntegration:
         from trowel_py.memory import paths as memory_paths
         from trowel_py.memory import tidy as tidy_module
         from trowel_py.memory.daily_review import scheduler as review_scheduler
-        from trowel_py.memory.profile_distill import scheduler as distill_scheduler
+        from trowel_py.profile.distill import scheduler as distill_scheduler
 
         monkeypatch.setattr(memory_paths, "resolve_memory_root", lambda: tmp_path)
         monkeypatch.setattr(review_scheduler, "_default_dispatch", lambda _event: None)
         monkeypatch.setattr(distill_scheduler, "_default_dispatch", lambda _event: None)
+        monkeypatch.setattr(
+            "trowel_py.config.load_llm_config",
+            lambda: LLMConfig(
+                provider="anthropic",
+                model="test-model",
+                api_key="test-key",
+                base_url="http://127.0.0.1:1",
+            ),
+        )
         monkeypatch.setattr(
             tidy_module,
             "run_weekly_tidy",

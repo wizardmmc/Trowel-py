@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import type { WriteDiff } from "../api/ccTypes";
+import type { WriteDiff } from "../agent/transport";
 import { ToolBlock } from "../components/cc/ToolBlock";
 import { tool } from "./toolBlockFixtures";
 
@@ -72,44 +72,7 @@ describe("ToolBlock — summary and fallback", () => {
 });
 
 describe("ToolBlock — automatic expansion", () => {
-  let scrollIntoView: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView =
-      scrollIntoView as typeof Element.prototype.scrollIntoView;
-    vi.stubGlobal(
-      "requestAnimationFrame",
-      vi.fn((callback: FrameRequestCallback) => {
-        callback(0);
-        return 0;
-      }),
-    );
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
-  });
-
-  it("does not scroll for an initially completed diff", () => {
-    render(
-      <ToolBlock
-        item={tool({
-          toolName: "Edit",
-          status: "done",
-          input: {
-            file_path: "/a",
-            old_string: "x",
-            new_string: "y",
-          },
-        })}
-      />,
-    );
-    expect(scrollIntoView).not.toHaveBeenCalled();
-  });
-
-  it("scrolls a running to done expansion into view", () => {
+  it("auto-expands when a running Edit completes", () => {
     const { rerender } = render(
       <ToolBlock
         item={tool({
@@ -123,6 +86,7 @@ describe("ToolBlock — automatic expansion", () => {
         })}
       />,
     );
+    expect(document.querySelector(".cc-tool__detail")).toBeNull();
     rerender(
       <ToolBlock
         item={tool({
@@ -136,10 +100,7 @@ describe("ToolBlock — automatic expansion", () => {
         })}
       />,
     );
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      block: "nearest",
-      behavior: "smooth",
-    });
+    expect(document.querySelector(".cc-tool__detail")).toBeTruthy();
   });
 
   it("auto-expands a completed Edit", () => {

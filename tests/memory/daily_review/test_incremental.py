@@ -10,6 +10,11 @@ from tests.memory.daily_review.support import (
     factory,
     session,
 )
+from trowel_py.memory.daily_review.sources import (
+    JournalSlice,
+    ReviewSource,
+    render_review_source,
+)
 from trowel_py.memory.compress import write_fallback_daily
 from trowel_py.memory.draft import DraftDiary
 from trowel_py.memory.prompt import build_refine_prompt
@@ -27,8 +32,8 @@ async def test_segment_manifest_id_carries_offsets(tmp_path: Path) -> None:
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 4096)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -45,8 +50,8 @@ async def test_resume_distills_only_new_incremental_range(tmp_path: Path) -> Non
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("s1", "/proj1"))
-    repo.update_completed("s1", 2048)
+    repo.claude.register(session("s1", "/proj1"))
+    repo.claude.update_completed("s1", 2048)
     conn.close()
 
     await run_daily_review(
@@ -59,7 +64,7 @@ async def test_resume_distills_only_new_incremental_range(tmp_path: Path) -> Non
 
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.update_completed("s1", 4096)
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -71,7 +76,7 @@ async def test_resume_distills_only_new_incremental_range(tmp_path: Path) -> Non
     assert (segment_dir / "s1:0:2048.json").exists()
     assert (segment_dir / "s1:2048:4096.json").exists()
     conn = open_sessions_db(memory_root)
-    assert create_sessions_repository(conn).find_incremental() == []
+    assert create_sessions_repository(conn).claude.list_pending_segments() == []
     conn.close()
 
 
@@ -80,12 +85,12 @@ async def test_half_turn_without_completed_watermark_is_not_distilled(
 ) -> None:
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
-    create_sessions_repository(conn).register(session("s1", "/proj1"))
+    create_sessions_repository(conn).claude.register(session("s1", "/proj1"))
     conn.close()
     calls: list[str] = []
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
-        calls.append(session_record.cc_session_id)
+        calls.append(session_record.native_session_id)
         return FakeHost([FINISHED])
 
     await run_daily_review(
@@ -100,29 +105,28 @@ async def test_review_cutoff_leaves_today_cc_segment_pending(tmp_path: Path) -> 
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(session("yesterday", "/yesterday"))
-    repo.register(session("today", "/today"))
-    repo.update_completed("yesterday", 4096, "2026-07-23T23:59:59")
-    repo.update_completed("today", 4096, "2026-07-24T00:00:00")
+    repo.claude.register(session("yesterday", "/yesterday"))
+    repo.claude.register(session("today", "/today"))
+    repo.claude.update_completed("yesterday", 4096, "2026-07-23T23:59:59")
+    repo.claude.update_completed("today", 4096, "2026-07-24T00:00:00")
     conn.close()
     calls: list[str] = []
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
-        calls.append(session_record.cc_session_id)
+        calls.append(session_record.native_session_id)
         (workdir / "draft.json").write_text(
             json.dumps(
                 {
-                        "diary": [
-                            {
-                                "date": "2026-07-09",
-                                "items": [
-                                    {
-                                        "kind": "outcome",
-                                        "summary": "完成昨日会话提炼",
-                                        "detail": "",
-                                        "source_refs": ["L000001"],
-                                    }
-                                ],
+                    "diary": [
+                        {
+                            "date": "2026-07-09",
+                            "items": [
+                                {
+                                    "kind": "outcome",
+                                    "summary": "完成昨日会话提炼",
+                                    "detail": "",
+                                }
+                            ],
                         }
                     ]
                 }
@@ -142,7 +146,7 @@ async def test_review_cutoff_leaves_today_cc_segment_pending(tmp_path: Path) -> 
     assert "today" not in calls
     conn = open_sessions_db(memory_root)
     try:
-        pending = create_sessions_repository(conn).find_incremental()
+        pending = create_sessions_repository(conn).claude.list_pending_segments()
     finally:
         conn.close()
     assert [item.session.cc_session_id for item in pending] == ["today"]
@@ -201,7 +205,7 @@ async def test_review_date_comes_from_run_not_session_start(tmp_path: Path) -> N
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.register(
+    repo.claude.register(
         SessionRecord(
             cc_session_id="s1",
             workdir="/project",
@@ -210,7 +214,7 @@ async def test_review_date_comes_from_run_not_session_start(tmp_path: Path) -> N
             registered_at="2026-07-08T10:00:00",
         )
     )
-    repo.update_completed("s1", 4096)
+    repo.claude.update_completed("s1", 4096)
     conn.close()
 
     await run_daily_review(
@@ -226,14 +230,27 @@ async def test_review_date_comes_from_run_not_session_start(tmp_path: Path) -> N
 
 
 async def test_refine_prompt_carries_only_incremental_range() -> None:
-    whole = build_refine_prompt("fixture.jsonl", "tokens=0")
-    assert "增量范围" not in whole
+    whole = build_refine_prompt(
+        render_review_source(
+            ReviewSource(
+                host_kind="claude_code",
+                context=(),
+                target=(JournalSlice("fixture.jsonl"),),
+            )
+        ),
+        "tokens=0",
+    )
+    assert "完整文件" in whole
 
     incremental = build_refine_prompt(
-        "fixture.jsonl",
+        render_review_source(
+            ReviewSource(
+                host_kind="claude_code",
+                context=(JournalSlice("fixture.jsonl", 0, 2048),),
+                target=(JournalSlice("fixture.jsonl", 2048, 4096),),
+            )
+        ),
         "tokens=0",
-        start_offset=2048,
-        end_offset=4096,
     )
-    assert "来源范围" in incremental
-    assert "[2048, 4096]" in incremental
+    assert "历史上下文" in incremental
+    assert "[2048, 4096)" in incremental

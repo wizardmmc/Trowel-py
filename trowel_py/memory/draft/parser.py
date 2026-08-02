@@ -91,7 +91,7 @@ def parse_diary(
 ) -> Any:
     """按 ``items`` 是否非 None 解析新旧两种经历草稿。
 
-    非 None 的 ``items`` 启用 v2 模式：值必须是列表，且映射只能含
+    非 None 的 ``items`` 启用结构化模式：值必须是列表，且映射只能含
     ``date`` 和 ``items``。缺失或显式为 ``None`` 时沿用旧模式：四类文本列表
     交给 ``str_list`` 清理，``events`` 的假值归一为空字符串，其余值转换
     为字符串。
@@ -100,22 +100,22 @@ def parse_diary(
         diary: 一天的 Diary 字段映射。
         diary_type: 接收新旧 Diary 字段的构造器。
         str_list: 旧列表字段的兼容转换函数。
-        parse_episode_item: 单条 v2 事件的严格解析函数。
+        parse_episode_item: 单条结构化事件的严格解析函数。
 
     Returns:
         ``diary_type`` 构造的候选经历对象。
 
     Raises:
-        TypeError: ``items`` 不是列表，或字段、v2 事件不支持对应的类型转换。
-        ValueError: v2 映射包含缺失或多余字段，或事件结构不合法。
-        AttributeError: Diary 或 v2 事件不是字段映射。
+        TypeError: ``items`` 不是列表，或字段、结构化事件不支持对应的类型转换。
+        ValueError: 结构化映射包含缺失或多余字段，或事件结构不合法。
+        AttributeError: Diary 或结构化事件不是字段映射。
     """
     raw_items = diary.get("items")
     if raw_items is not None and not isinstance(raw_items, list):
         raise TypeError("diary items must be a list")
     if raw_items is not None and set(diary) != {"date", "items"}:
         raise ValueError(
-            "episode v2 diary keys must be exactly ['date', 'items']"
+            "structured episode diary keys must be exactly ['date', 'items']"
         )
     return diary_type(
         date=str(diary.get("date", "")),

@@ -3,11 +3,12 @@ import { render, screen } from "@testing-library/react";
 import { act } from "react";
 
 import { SpinnerLine } from "../components/cc/SpinnerLine";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import {
-  useCcStore,
+  useAgentStore,
   INITIAL_REDUCER_STATE,
   type PerSessionState,
-} from "../stores/ccStore";
+} from "../agent";
 
 const SID = "s1";
 
@@ -17,7 +18,9 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     workdir: "/wd",
     effort: null,
     name: "wd",
-    revertEnabled: false,
+    displayTitle: "wd",
+    titleSource: "native",
+    checkpointAvailable: false,
     transportError: null,
     abort: null,
     connected: true,
@@ -26,7 +29,8 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     runtime: "claude_code",
     nativeSessionId: null,
     permission: null,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     lastSeq: null,
     needsReplay: false,
     ...over,
@@ -35,7 +39,7 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
 }
 
 function setActive(session: PerSessionState): void {
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: { [SID]: session },
     activeSid: SID,
   });
@@ -44,7 +48,7 @@ function setActive(session: PerSessionState): void {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(10000);
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
@@ -82,7 +86,7 @@ describe("SpinnerLine", () => {
   });
 
   it("renders nothing when there is no active session", () => {
-    useCcStore.setState({ activeSid: null, sessions: {} });
+    useAgentStore.setState({ activeSid: null, sessions: {} });
     render(<SpinnerLine />);
     expect(screen.queryByTestId("cc-spinner")).toBeNull();
   });
@@ -99,13 +103,13 @@ describe("SpinnerLine", () => {
     setThinking({ startedAt: 10000, tokens: 5 });
     render(<SpinnerLine />);
     expect(screen.queryByText(/tokens/)).toBeNull();
-    expect(screen.queryByText(/^\d+s$/)).toBeNull();
+    expect(screen.queryByText(/^\d+ 秒$/)).toBeNull();
 
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/^6s$/)).toBeInTheDocument();
+    expect(screen.getByText(/^6 秒$/)).toBeInTheDocument();
     expect(screen.getByText(/↓ 5 tokens/)).toBeInTheDocument();
   });
 
@@ -119,24 +123,26 @@ describe("SpinnerLine", () => {
     expect(screen.queryByText(/tokens/)).toBeNull();
   });
 
-  it("shows 'thinking with <effort> effort' only when effort is set", () => {
+  it("uses a Chinese effort summary when effort is set", () => {
     setThinking({ startedAt: 10000, effort: "high" });
     render(<SpinnerLine />);
-    expect(screen.queryByText(/effort/)).toBeNull();
+    expect(screen.queryByText(/强度思考/)).toBeNull();
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/thinking with high effort/)).toBeInTheDocument();
+    expect(screen.getByText(/高强度思考/)).toBeInTheDocument();
   });
 
-  it("without effort, shows bare 'thinking' after 5s", () => {
+  it("uses a Chinese thinking summary without effort", () => {
     setThinking({ startedAt: 10000, effort: null });
     render(<SpinnerLine />);
     act(() => {
       vi.setSystemTime(16000);
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByText(/thinking/).textContent).not.toMatch(/with/);
+    expect(document.querySelector(".cc-spinner__think")).toHaveTextContent(
+      "思考中",
+    );
   });
 });

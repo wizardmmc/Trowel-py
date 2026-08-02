@@ -8,9 +8,11 @@ from trowel_py.agent_host.binding import (
     binding_from_dict,
     make_binding,
 )
-from trowel_py.agent_host.hub import (
+from trowel_py.agent_host.capabilities import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
+)
+from trowel_py.agent_host.hub import (
     CrossRuntimeResumeError,
     MAX_CONNECTIONS,
     MAX_RUNNING,

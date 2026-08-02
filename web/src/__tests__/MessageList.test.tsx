@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MessageList } from "../components/cc/MessageList";
-import type { Turn } from "../stores/ccStore";
+import { MessageList } from "../agent/ui";
+import {
+  getExpectedRuntimePresentation,
+  getRuntimePresentation,
+} from "../agent/runtimes";
+import type { Turn } from "../agent";
 
 function turn(over: Partial<Turn> = {}): Turn {
   return {
@@ -39,16 +43,15 @@ describe("MessageList", () => {
   });
 
   it.each([
-    ["codex", "Codex"],
-    ["claude_code", "CC"],
-    ["future-runtime", "Agent"],
+    [getExpectedRuntimePresentation("codex"), "Codex"],
+    [getExpectedRuntimePresentation("claude_code"), "Claude"],
     [undefined, "Agent"],
-  ])("labels %s assistant turns as %s", (runtime, expected) => {
+  ])("labels assistant turns from its presentation as %s", (presentation, expected) => {
     render(
       <MessageList
         turns={[turn({ items: [{ kind: "text", text: "answer" }] })]}
         streaming={false}
-        runtime={runtime}
+        presentation={presentation}
       />,
     );
     expect(screen.getByText(expected, { selector: ".cc-msg__tag" })).toBeInTheDocument();
@@ -68,7 +71,7 @@ describe("MessageList", () => {
         streaming={true}
       />,
     );
-    expect(screen.getByText("思考")).toBeTruthy();
+    expect(screen.getByText("Thought")).toBeTruthy();
   });
 
   it("interleaves text / thinking / tool in item order (B1)", () => {
@@ -157,6 +160,52 @@ describe("MessageList", () => {
     expect(log.getAttribute("aria-live")).toBe("polite");
     expect(log.getAttribute("aria-busy")).toBe("true");
   });
+
+  it("shows completed turn duration in English", () => {
+    render(
+      <MessageList
+        turns={[
+          turn({
+            status: "done",
+            durationSeconds: 3_900,
+          }),
+        ]}
+        streaming={false}
+      />,
+    );
+
+    expect(screen.getByLabelText("Ran for 1h 5m")).toHaveTextContent(
+      "Ran for 1h 5m",
+    );
+  });
+
+  it("keeps the currently rendered history when a new turn is appended", () => {
+    const turns = [1, 2, 3, 4].map((index) =>
+      turn({ id: `t${index}`, userText: `问题 ${index}`, status: "done" }),
+    );
+    const { rerender } = render(
+      <MessageList turns={turns} streaming={false} sticky />,
+    );
+
+    expect(screen.queryByText("问题 2")).toBeNull();
+    expect(screen.getByText("问题 3")).toBeInTheDocument();
+    expect(screen.getByText("问题 4")).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        turns={[
+          ...turns,
+          turn({ id: "t5", userText: "问题 5", status: "active" }),
+        ]}
+        streaming
+        sticky
+      />,
+    );
+
+    expect(screen.getByText("问题 3")).toBeInTheDocument();
+    expect(screen.getByText("问题 4")).toBeInTheDocument();
+    expect(screen.getByText("问题 5")).toBeInTheDocument();
+  });
 });
 
 describe("MessageList — revert button", () => {
@@ -175,6 +224,21 @@ describe("MessageList — revert button", () => {
   it("hides the revert button for non-revertible turns (history)", () => {
     const t = turn({ id: "t1", turnId: null, revertible: false });
     const { container } = render(<MessageList turns={[t]} streaming={false} />);
+    expect(container.querySelector(".cc-turn__revert")).toBeNull();
+  });
+
+  it("hides the revert button when the session did not declare revert", () => {
+    const t = turn({ id: "t1", turnId: "ckpt-1", revertible: true, status: "done" });
+    const presentation = getRuntimePresentation("claude_code", ["tools"]);
+    const { container } = render(
+      <MessageList
+        turns={[t]}
+        streaming={false}
+        presentation={presentation}
+        onRevert={vi.fn()}
+      />,
+    );
+
     expect(container.querySelector(".cc-turn__revert")).toBeNull();
   });
 

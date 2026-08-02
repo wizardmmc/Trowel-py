@@ -1,19 +1,30 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-vi.mock("../api/agent", () => ({
+vi.mock("../agent/transport/api", () => ({
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
-  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  deleteAgentSession: vi.fn().mockResolvedValue({
+    closed: true,
+    status: "closed",
+    remaining_resource_count: 0,
+    remaining_resource_kinds: [],
+    error: null,
+  }),
+  renameAgentSessionTitle: vi.fn().mockImplementation((_sid, title) =>
+    Promise.resolve({ display_title: title, title_source: "manual" }),
+  ),
   listAgentRequests: vi.fn().mockResolvedValue([]),
 }));
 
 import { MultiSessionBar } from "../components/cc/MultiSessionBar";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import {
-  useCcStore,
+  useAgentStore,
   INITIAL_REDUCER_STATE,
   type PerSessionState,
-} from "../stores/ccStore";
-import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../api/agent";
+} from "../agent";
+import { activateAgentSession as apiActivateSession, deleteAgentSession as apiDeleteSession } from "../agent/transport";
+import { renameAgentSessionTitle as apiRenameSessionTitle } from "../agent/transport";
 
 function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSessionState {
   return {
@@ -21,7 +32,9 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     workdir: "/wd",
     effort: null,
     name: "wd",
-    revertEnabled: false,
+    displayTitle: over.displayTitle ?? over.name ?? "wd",
+    titleSource: over.titleSource ?? "generated",
+    checkpointAvailable: false,
     transportError: null,
     abort: null,
     connected: true,
@@ -30,7 +43,8 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     runtime: "claude_code",
     nativeSessionId: null,
     permission: null,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
     lastSeq: null,
     needsReplay: false,
     ...over,
@@ -42,8 +56,9 @@ function setSessions(
   sessions: Record<string, PerSessionState>,
   activeSid: string | null,
 ): void {
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions,
+    closingSessionIds: new Set<string>(),
     activeSid,
     history: [],
     historyTotal: 0,
@@ -75,6 +90,55 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText("wiki")).toBeInTheDocument();
     const activeItem = screen.getByText("trowel-py").closest(".cc-multibar__item");
     expect(activeItem?.className).toMatch(/--active/);
+  });
+
+  it("groups sessions by full workdir and keeps creation order when active changes", () => {
+    setSessions(
+      {
+        s1: makeSession({
+          workdir: "/workspace/alpha",
+          name: "alpha",
+          displayTitle: "第一个任务",
+        }),
+        s2: makeSession({
+          workdir: "/workspace/alpha",
+          name: "alpha #2",
+          displayTitle: "第二个任务",
+        }),
+        s3: makeSession({
+          workdir: "/other/alpha",
+          name: "alpha",
+          displayTitle: "第三个任务",
+        }),
+      },
+      "s2",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    const groups = screen.getAllByRole("group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toHaveAccessibleName("alpha");
+    expect(groups[1]).toHaveAccessibleName("alpha");
+    const titles = screen.getAllByTestId("session-title").map((node) => node.textContent);
+    expect(titles).toEqual(["第一个任务", "第二个任务", "第三个任务"]);
+  });
+
+  it("shows a semantic title instead of the temporary numbered name", () => {
+    setSessions(
+      {
+        s1: makeSession({
+          name: "trowel-py #2",
+          displayTitle: "按目录聚合会话",
+        }),
+      },
+      "s1",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("按目录聚合会话")).toBeInTheDocument();
+    expect(screen.queryByText("trowel-py #2")).toBeNull();
   });
 
   it("shows the M·P condition marker per session", () => {
@@ -128,6 +192,15 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText(/生成中/)).toBeInTheDocument();
   });
 
+  it("uses the full Claude name and Chinese idle state", () => {
+    setSessions({ s1: makeSession({ name: "claude" }) }, "s1");
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText(/空闲/)).toBeInTheDocument();
+    expect(screen.queryByText(/idle/)).toBeNull();
+  });
+
   it("shows background waiting instead of generating while a task is pending", () => {
     setSessions(
       {
@@ -144,16 +217,15 @@ describe("MultiSessionBar", () => {
     expect(screen.queryByText(/生成中/)).toBeNull();
   });
 
-  it("clicking a row calls activateSession(sid)", async () => {
+  it("clicking a row switches the renderer-local active session", async () => {
     setSessions(
       { s1: makeSession({ name: "a" }), s2: makeSession({ name: "b" }) },
       "s1",
     );
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     fireEvent.click(screen.getByText("b"));
-    await waitFor(() => {
-      expect(apiActivateSession).toHaveBeenCalledWith("s2");
-    });
+    await waitFor(() => expect(useAgentStore.getState().activeSid).toBe("s2"));
+    expect(apiActivateSession).not.toHaveBeenCalled();
   });
 
   it("× close button calls closeSession → DELETE", async () => {
@@ -165,6 +237,40 @@ describe("MultiSessionBar", () => {
     fireEvent.click(screen.getByLabelText("关闭 a"));
     await waitFor(() => {
       expect(apiDeleteSession).toHaveBeenCalledWith("s1");
+    });
+  });
+
+  it("shows a stable closing state and disables repeated actions", () => {
+    setSessions({ s1: makeSession({ name: "a", runtime: "codex" }) }, "s1");
+    useAgentStore.setState({ closingSessionIds: new Set(["s1"]) });
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText(/关闭中/)).toBeInTheDocument();
+    expect(screen.getByLabelText("正在关闭 a")).toBeDisabled();
+    expect(screen.getByLabelText("重命名 a")).toBeDisabled();
+  });
+
+  it("renames a session inline", async () => {
+    setSessions(
+      {
+        s1: makeSession({
+          displayTitle: "旧标题",
+          titleSource: "generated",
+        }),
+      },
+      "s1",
+    );
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    fireEvent.click(screen.getByLabelText("重命名 旧标题"));
+    const input = screen.getByRole("textbox", { name: "会话标题" });
+    fireEvent.change(input, { target: { value: "新标题" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => {
+      expect(apiRenameSessionTitle).toHaveBeenCalledWith("s1", "新标题");
+      expect(screen.getByText("新标题")).toBeInTheDocument();
     });
   });
 
@@ -210,5 +316,32 @@ describe("MultiSessionBar", () => {
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
     expect(screen.getByText(/1\/5 在跑/)).toBeInTheDocument();
     expect(screen.getByText(/2\/20 连接/)).toBeInTheDocument();
+  });
+
+  it("hides all non-user sessions from rows and user counts", () => {
+    setSessions(
+      {
+        user: makeSession({ name: "user" }),
+        delegate: makeSession({
+          name: "delegate",
+          sessionKind: "delegate",
+          abort: new AbortController(),
+        }),
+        probe: makeSession({
+          name: "probe",
+          sessionKind: "probe",
+          abort: new AbortController(),
+        }),
+      },
+      "user",
+    );
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText("user")).toBeInTheDocument();
+    expect(screen.queryByText("delegate")).toBeNull();
+    expect(screen.queryByText("probe")).toBeNull();
+    expect(screen.getByText(/0\/5 在跑/)).toBeInTheDocument();
+    expect(screen.getByText(/1\/20 连接/)).toBeInTheDocument();
   });
 });

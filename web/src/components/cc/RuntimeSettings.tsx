@@ -1,4 +1,4 @@
-import type { Runtime } from "../../api/agent";
+/** 根据 runtime capability 组合新会话可用的模型、强度和权限设置。 */
 
 interface SettingOption {
   readonly value: string;
@@ -6,16 +6,19 @@ interface SettingOption {
 }
 
 interface RuntimeSettingsProps {
-  readonly runtime: Runtime;
   readonly creating: boolean;
+  readonly showModels: boolean;
+  readonly showEffort: boolean;
+  readonly showPermission: boolean;
   readonly models: readonly SettingOption[];
   readonly selectedModel: string;
   readonly efforts: readonly SettingOption[];
   readonly selectedEffort: string;
   readonly permissions: readonly SettingOption[];
   readonly selectedPermission: string;
-  readonly codexCatalogError: string | null;
+  readonly modelCatalogError: string | null;
   readonly confirmFullAccess: boolean;
+  readonly showWorkspaceApprovalNote: boolean;
   readonly onSelectModel: (model: string) => void;
   readonly onSelectEffort: (effort: string) => void;
   readonly onSelectPermission: (permission: string) => void;
@@ -24,16 +27,19 @@ interface RuntimeSettingsProps {
 }
 
 export function RuntimeSettings({
-  runtime,
   creating,
+  showModels,
+  showEffort,
+  showPermission,
   models,
   selectedModel,
   efforts,
   selectedEffort,
   permissions,
   selectedPermission,
-  codexCatalogError,
+  modelCatalogError,
   confirmFullAccess,
+  showWorkspaceApprovalNote,
   onSelectModel,
   onSelectEffort,
   onSelectPermission,
@@ -42,48 +48,60 @@ export function RuntimeSettings({
 }: RuntimeSettingsProps) {
   return (
     <>
-      <div className="cc-dialog__section-label">Model</div>
-      {runtime === "codex" && codexCatalogError !== null && (
-        <div className="cc-dialog__diag" role="alert">
-          Codex model catalog 不可用：{codexCatalogError}
-          {onRetryCodexCatalog && (
-            <button
-              type="button"
-              className="cc-dialog__btn"
-              onClick={onRetryCodexCatalog}
-              disabled={creating}
-              style={{ marginLeft: 8 }}
-            >
-              重试
-            </button>
+      {showModels && (
+        <>
+          <div className="cc-dialog__section-label">Model</div>
+          {modelCatalogError !== null && (
+            <div className="cc-dialog__diag" role="alert">
+              Codex model catalog 不可用：{modelCatalogError}
+              {onRetryCodexCatalog && (
+                <button
+                  type="button"
+                  className="cc-dialog__btn"
+                  onClick={onRetryCodexCatalog}
+                  disabled={creating}
+                  style={{ marginLeft: 8 }}
+                >
+                  重试
+                </button>
+              )}
+            </div>
           )}
-        </div>
+          <OptionRow
+            options={models}
+            selected={selectedModel}
+            creating={creating}
+            onSelect={onSelectModel}
+          />
+        </>
       )}
-      <OptionRow
-        options={models}
-        selected={selectedModel}
-        creating={creating}
-        onSelect={onSelectModel}
-      />
 
-      <div className="cc-dialog__section-label">Effort</div>
-      <OptionRow
-        options={efforts}
-        selected={selectedEffort}
-        creating={creating}
-        onSelect={onSelectEffort}
-      />
+      {showEffort && (
+        <>
+          <div className="cc-dialog__section-label">Effort</div>
+          <OptionRow
+            options={efforts}
+            selected={selectedEffort}
+            creating={creating}
+            onSelect={onSelectEffort}
+          />
+        </>
+      )}
 
-      <div className="cc-dialog__section-label">Permission</div>
-      <OptionRow
-        options={permissions}
-        selected={selectedPermission}
-        creating={creating}
-        dangerValue="danger-full-access"
-        onSelect={onSelectPermission}
-      />
+      {showPermission && (
+        <>
+          <div className="cc-dialog__section-label">Permission</div>
+          <OptionRow
+            options={permissions}
+            selected={selectedPermission}
+            creating={creating}
+            dangerValue="danger-full-access"
+            onSelect={onSelectPermission}
+          />
+        </>
+      )}
 
-      {confirmFullAccess && runtime === "codex" && (
+      {confirmFullAccess && (
         <div className="cc-dialog__danger-confirm" role="alert">
           <span>
             Full access 会关闭 sandbox，并使用 never approval；Codex
@@ -98,7 +116,7 @@ export function RuntimeSettings({
           </button>
         </div>
       )}
-      {runtime === "codex" && selectedPermission === "workspace-write" && (
+      {showWorkspaceApprovalNote && (
         <div className="cc-dialog__diag" role="status">
           Workspace 使用 on-request；遇到原生审批请求时，本轮会暂停并等待确认。
           需要实际写入时可改用 Full access。

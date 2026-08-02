@@ -1,6 +1,9 @@
+/** 展示新会话可选的 runtime，并支持键盘切换。 */
+
 import { useEffect, useRef } from "react";
 
-import type { Runtime } from "../../api/agent";
+import { getExpectedRuntimePresentation } from "../../agent/runtimes";
+import type { Runtime } from "../../agent/transport";
 import {
   RUNTIME_OPTIONS,
   runtimeOptionIndex,
@@ -12,6 +15,7 @@ interface RuntimeSelectorProps {
   readonly catalogLoading: boolean;
   readonly catalogError: string | null;
   readonly isConnected: (runtime: Runtime) => boolean;
+  readonly installHint: (runtime: Runtime) => string | null;
   readonly onSelect: (runtime: Runtime) => void;
   readonly onRetry?: () => void;
 }
@@ -22,6 +26,7 @@ export function RuntimeSelector({
   catalogLoading,
   catalogError,
   isConnected,
+  installHint,
   onSelect,
   onRetry,
 }: RuntimeSelectorProps) {
@@ -73,6 +78,7 @@ export function RuntimeSelector({
         {RUNTIME_OPTIONS.map((option, index) => {
           const connected = isConnected(option.value);
           const selected = runtime === option.value;
+          const presentation = getExpectedRuntimePresentation(option.value);
           return (
             <button
               key={option.value}
@@ -95,13 +101,17 @@ export function RuntimeSelector({
               }}
               onKeyDown={(event) => onKeyDown(event, index)}
             >
-              <span className="cc-dialog__runtime-name">{option.label}</span>
+              <span className="cc-dialog__runtime-name">
+                {presentation.label}
+              </span>
               <span className="cc-dialog__runtime-native">
                 {option.native}
               </span>
               <span className="cc-dialog__runtime-desc">{option.desc}</span>
               {!connected && (
-                <span className="cc-dialog__runtime-unavailable">未连接</span>
+                <span className="cc-dialog__runtime-unavailable">
+                  {installHint(option.value) ?? "未连接"}
+                </span>
               )}
             </button>
           );

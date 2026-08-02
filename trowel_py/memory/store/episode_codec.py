@@ -1,4 +1,8 @@
-"""渲染并解析 Episode 的 segment、日期块和 v2 元数据。"""
+"""把每次提炼的 Diary 转成 Episode Markdown，并从中恢复指定日期的经历。
+
+一个 Episode 文件对应一条原生会话。同一会话可能分多次提炼，因此正文按
+每次提炼拆成带起止标记的独立来源片段。
+"""
 
 from __future__ import annotations
 
@@ -30,15 +34,16 @@ _SEG_END = re.compile(r"<!-- @endsegment (\S+) -->")
 def _render_segment(
     segment_id: str, diary_entries: tuple[DraftDiary, ...]
 ) -> tuple[str, str, list[str], str]:
-    """把一组 Diary 按日期排序后渲染为带边界标记的 Episode segment。
+    """把一次会话提炼得到的 Diary 写成带起止标记的来源片段。
 
-    空输入会写入固定的 ``empty_reason`` 占位。内容哈希只覆盖边界标记内的
-    Markdown，取 SHA-256 前 16 个十六进制字符；``segment_id`` 会直接写入
-    marker，调用方必须保证它不含空白字符。
+    同一会话可能被增量提炼多次，每次提炼结果在 Episode 正文中占一个来源
+    片段，并用 ``segment_id`` 区分。空输入会写入固定的 ``empty_reason``
+    占位。内容哈希只覆盖起止标记内的 Markdown，取 SHA-256 前 16 个十六进制
+    字符；``segment_id`` 会直接写入标记，调用方必须保证它不含空白字符。
 
     Returns:
-        segment Markdown、内容哈希、按渲染顺序收集的日期和空输入原因；非空
-        输入的原因是空字符串。
+        来源片段 Markdown、内容哈希、按渲染顺序收集的日期和空输入原因；
+        非空输入的原因是空字符串。
     """
 
     dates: list[str] = []
@@ -68,14 +73,14 @@ def _render_date_block(d: DraftDiary) -> str:
     """
 
     if d.items:
-        v2_sections: list[str] = []
+        structured_sections: list[str] = []
         for kind, heading in _HEADING_FOR_KIND.items():
             items = [item for item in d.items if item.kind == kind]
             if not items:
                 continue
-            bullets = "\n".join(_render_v2_item(item) for item in items)
-            v2_sections.append(f"#### {heading}\n{bullets}")
-        return f"## {d.date}\n\n" + "\n\n".join(v2_sections) + "\n"
+            bullets = "\n".join(_render_episode_item(item) for item in items)
+            structured_sections.append(f"#### {heading}\n{bullets}")
+        return f"## {d.date}\n\n" + "\n\n".join(structured_sections) + "\n"
     sections: list[str] = []
     for field_name in _DIARY_FIELDS:
         items = getattr(d, field_name)
@@ -95,28 +100,29 @@ def _single_line(text: str) -> str:
     return " ".join(text.split())
 
 
-def _render_v2_item(item: Any) -> str:
-    """把一条 v2 Episode 项渲染为单行列表项。
+def _render_episode_item(item: Any) -> str:
+    """把一条结构化 Episode 项渲染为单行列表项。
 
-    可读正文中的空白会折叠；非空 status 和全部 ``source_refs`` 会追加为字段
-    后缀。函数假定对象符合 v2 item 接口，不在此处校验。
+    可读正文中的空白会折叠，非空 status 会追加为字段后缀。函数假定对象符合
+    Episode item 接口，不在此处校验。
     """
     text = episode_item_text(item)
     status = getattr(item, "status", "")
     status_text = f"; status: {status}" if status else ""
-    refs = ", ".join(item.source_refs)
-    return f"- {_single_line(text)}{status_text}; source_refs: {refs}"
+    return f"- {_single_line(text)}{status_text}"
 
 
-def _entry_from_v2_meta(meta: dict[str, Any], date: str) -> DraftDiary | None:
-    """从 v2 segment 元数据恢复指定日期的结构化经历。
+def _entry_from_episode_meta(meta: dict[str, Any], date: str) -> DraftDiary | None:
+    """从一次提炼的元数据中恢复指定日期的结构化经历。
 
-    ``episode_schema_version`` 不等于 2 时返回 None。其他日期和非映射记录会
-    被忽略；目标日期的 item 结构错误或解析失败会放弃整次恢复，让调用方回退
-    到 Markdown。目标日期没有 item 时，仅当 ``activity_dates`` 包含该日期才
-    返回空 ``DraftDiary``。
+    当前写入的 item 不含 ``source_refs``，可以直接解析；早期记录仍带有这个
+    已停用的行号字段，读取时先忽略它，使已有 Episode 继续可读。无法识别的
+    结构格式返回 None。其他日期和非映射记录会被忽略；目标日期的 item 结构
+    错误或解析失败会放弃整次恢复，让调用方回退到 Markdown。目标日期没有
+    item 时，仅当 ``activity_dates`` 包含该日期才返回空 ``DraftDiary``。
     """
-    if meta.get("episode_schema_version") != 2:
+    version = meta.get("episode_schema_version")
+    if version not in {2, 3}:
         return None
     items = []
     for record in meta.get("episode_items") or []:
@@ -125,8 +131,11 @@ def _entry_from_v2_meta(meta: dict[str, Any], date: str) -> DraftDiary | None:
         raw_item = record.get("item")
         if not isinstance(raw_item, dict):
             return None
+        item_payload = dict(raw_item)
+        if version == 2:
+            item_payload.pop("source_refs", None)
         try:
-            items.append(parse_episode_item(raw_item))
+            items.append(parse_episode_item(item_payload))
         except (TypeError, ValueError):
             return None
     dates = {_coerce_meta_str(value) for value in meta.get("activity_dates") or []}
@@ -171,11 +180,11 @@ def _parse_structured_block(block_text: str, date: str) -> DraftDiary:
 
 
 def _parse_segment_blocks(body: str) -> "OrderedDict[str, str]":
-    """按 segment ID 首次出现顺序提取起止 ID 匹配的 Episode segment。
+    """按提炼片段 ID 首次出现的顺序拆出 Episode 中的各个来源片段。
 
-    搜索会跳过其他 ID 的结束 marker，直到找到当前 ID；始终找不到匹配结束
-    marker 的起点会被丢弃。返回的块包含两个 marker 并补一个换行，marker
-    之外的文本忽略。重复 ID 保留首次出现的位置，但内容由最后出现的块覆盖。
+    搜索会跳过其他 ID 的结束标记，直到找到当前 ID；始终找不到匹配结束标记
+    的起点会被丢弃。返回的块包含起止标记并补一个换行，标记之外的文本忽略。
+    重复 ID 保留首次出现的位置，但内容由最后出现的块覆盖。
     """
 
     blocks: "OrderedDict[str, str]" = OrderedDict()
@@ -218,7 +227,7 @@ def _episode_covers_date(fm: dict[str, Any], date: str) -> bool:
 def _segment_entry_for_date(
     block: str, date: str, seg_meta: dict[str, Any]
 ) -> str | None:
-    """按 segment 日期元数据放行目标日期，再提取对应标题正文。
+    """确认一次提炼覆盖目标日期后，提取该日期标题下的正文。
 
     非空 ``activity_dates`` 不包含目标日期时直接返回 None；字段缺失或为空时，
     目标日期必须出现在块的二级标题列表中。通过任一门禁后仍要求块中存在该日期
@@ -248,8 +257,8 @@ def _extract_h2_block(block: str, date: str) -> str | None:
     """提取首个目标日期标题后的非空正文。
 
     查找目标标题时忽略整行首尾空白，因此允许标题缩进；开始捕获后，只有位于
-    行首的下一个二级标题或 segment 结束 marker 才会终止。标题不存在或去除
-    首尾空白后正文为空时返回 None。
+    行首的下一个二级标题或当前来源片段的结束标记才会终止。标题不存在或
+    去除首尾空白后正文为空时返回 None。
     """
 
     target = f"## {date}"

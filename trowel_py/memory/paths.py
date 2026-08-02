@@ -5,12 +5,18 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-DEFAULT_MEMORY_ROOT = Path.home() / ".trowel" / "memory"
+from trowel_py.application_paths import (
+    has_application_data_root_override,
+    resolve_application_data_root,
+)
 
 
 def _candidate_config_paths() -> list[Path]:
     """按当前工作目录、用户配置目录的顺序返回 ``config.toml`` 候选路径。"""
-    return [Path.cwd() / "config.toml", Path.home() / ".trowel" / "config.toml"]
+    application_config = resolve_application_data_root() / "config.toml"
+    if has_application_data_root_override():
+        return [application_config]
+    return [Path.cwd() / "config.toml", application_config]
 
 
 def _find_config_path() -> Path:
@@ -52,12 +58,14 @@ def resolve_memory_root(config_path: Path | None = None) -> Path:
         TypeError: ``[memory] root`` 是非空的非字符串值，无法转换为路径。
         RuntimeError: ``[memory] root`` 中的用户主目录无法展开。
     """
+    if config_path is None and has_application_data_root_override():
+        return resolve_application_data_root() / "memory"
     path = config_path or _find_config_path()
     if not path.exists():
-        return Path.home() / ".trowel" / "memory"
+        return resolve_application_data_root() / "memory"
     with path.open("rb") as f:
         data = tomllib.load(f)
     override = data.get("memory", {}).get("root")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".trowel" / "memory"
+    return resolve_application_data_root() / "memory"

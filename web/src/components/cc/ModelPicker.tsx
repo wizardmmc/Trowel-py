@@ -1,3 +1,5 @@
+/** 在可搜索弹层中选择当前 Claude Code 模型。 */
+
 import { useEffect, useRef, useState } from "react";
 import type { ModelOption } from "../../api/cc";
 

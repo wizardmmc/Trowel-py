@@ -1,3 +1,5 @@
+/** 持续测量元素高度，并在布局变化时发布最新值。 */
+
 import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 

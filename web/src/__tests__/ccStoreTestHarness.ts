@@ -1,11 +1,18 @@
 import { beforeEach, vi } from "vitest";
-import type { AgentSession } from "../api/agent";
-import type { AgentEvent } from "../api/agentTypes";
+import { getExpectedRuntimePresentation } from "../agent/runtimes";
+import type { AgentSession } from "../agent/transport";
+import type { AgentEvent } from "../agent/transport";
 
-vi.mock("../api/agent", () => ({
+vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn(),
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
-  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  deleteAgentSession: vi.fn().mockResolvedValue({
+    closed: true,
+    status: "closed",
+    remaining_resource_count: 0,
+    remaining_resource_kinds: [],
+    error: null,
+  }),
   listActiveAgentSessions: vi.fn(),
   listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listAgentRequests: vi.fn().mockResolvedValue([]),
@@ -23,6 +30,8 @@ vi.mock("../api/agent", () => ({
   getAgentHistory: vi.fn().mockResolvedValue([]),
   getCodexSubagentHistory: vi.fn().mockResolvedValue([]),
   updateAgentSessionSettings: vi.fn(),
+  generateAgentSessionTitle: vi.fn(),
+  renameAgentSessionTitle: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
   agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
 }));
@@ -37,7 +46,7 @@ export const stream = {
   resolvers: [] as Array<() => void>,
 };
 
-vi.mock("../api/ccStream", () => ({
+vi.mock("../agent/transport/stream", () => ({
   postMessageStream: vi.fn(
     (_url: string, _body: unknown, apply: (event: AgentEvent) => void) =>
       new Promise<void>((resolve) => {
@@ -60,6 +69,7 @@ vi.mock("../api/ccStream", () => ({
 }));
 
 import {
+  activateAgentSession,
   answerAgentRequest,
   createAgentSession,
   deleteAgentSession,
@@ -74,10 +84,13 @@ import {
   compactCodexSession,
   startCodexReview,
   updateAgentSessionSettings,
-} from "../api/agent";
-import { getEventStream } from "../api/ccStream";
+  generateAgentSessionTitle,
+  renameAgentSessionTitle,
+} from "../agent/transport";
+import { getEventStream } from "../agent/transport";
 
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
+export const apiActivateAgentSession = vi.mocked(activateAgentSession);
 export const apiCreateSession = vi.mocked(createAgentSession);
 export const apiDeleteSession = vi.mocked(deleteAgentSession);
 export const apiGetAgentHistory = vi.mocked(getAgentHistory);
@@ -91,6 +104,8 @@ export const apiStartCodexTurn = vi.mocked(startCodexTurn);
 export const apiCompactCodexSession = vi.mocked(compactCodexSession);
 export const apiStartCodexReview = vi.mocked(startCodexReview);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
+export const apiGenerateSessionTitle = vi.mocked(generateAgentSessionTitle);
+export const apiRenameSessionTitle = vi.mocked(renameAgentSessionTitle);
 export const apiGetEventStream = vi.mocked(getEventStream);
 
 let seqCounter = 0;
@@ -115,10 +130,14 @@ export function ev(
   };
 }
 
-export function mockCreate(sid: string, over: Partial<AgentSession> = {}): AgentSession {
+export function mockCreate(
+  sid: string,
+  over: Partial<AgentSession> = {},
+): AgentSession {
+  const runtime = over.runtime ?? "claude_code";
   const session: AgentSession = {
     session_id: sid,
-    runtime: "claude_code",
+    runtime,
     native_session_id: null,
     workdir: "/wd",
     model: "glm-5.2",
@@ -126,7 +145,7 @@ export function mockCreate(sid: string, over: Partial<AgentSession> = {}): Agent
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: getExpectedRuntimePresentation(runtime).expectedCapabilities,
     name: sid,
     connected: false,
     running: false,
@@ -148,4 +167,33 @@ beforeEach(() => {
   stream.apply = null;
   stream.resolvers = [];
   seqCounter = 0;
+  apiGenerateSessionTitle.mockImplementation(async (_sid, text) => ({
+    ...mockAgentSessionForTitle(text),
+  }));
+  apiRenameSessionTitle.mockImplementation(async (_sid, title) => ({
+    ...mockAgentSessionForTitle(title),
+    display_title: title,
+    title_source: "manual",
+  }));
 });
+
+function mockAgentSessionForTitle(title: string): AgentSession {
+  return {
+    session_id: "s1",
+    runtime: "claude_code",
+    native_session_id: null,
+    workdir: "/wd",
+    model: "glm-5.2",
+    effort: null,
+    permission: null,
+    memory_enabled: true,
+    profile_enabled: true,
+    capabilities: getExpectedRuntimePresentation("claude_code")
+      .expectedCapabilities,
+    name: "wd",
+    connected: true,
+    running: true,
+    display_title: title,
+    title_source: "generated",
+  };
+}

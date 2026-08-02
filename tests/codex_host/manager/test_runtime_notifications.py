@@ -179,6 +179,32 @@ async def test_native_turn_started_registers_goal_continuation() -> None:
     await manager.close()
 
 
+async def test_stale_generation_notification_cannot_start_turn() -> None:
+    """上一代 app-server 的迟到通知不能修改当前连接中的会话状态。"""
+
+    fake = FakeAppServer(_behavior_server())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s1"))
+    manager.register(session)
+    await manager.attach(session)
+    assert session.binding is not None
+    session.drain()
+
+    manager._on_notification(  # noqa: SLF001 - 直接验证代际门禁。
+        "turn/started",
+        {
+            "threadId": session.binding.thread_id,
+            "turn": {"id": "stale-turn", "status": "inProgress"},
+        },
+        generation=manager.connection_generation - 1,
+    )
+
+    assert session.current_turn_id is None
+    assert session.state.value == "idle"
+    assert session.drain() == []
+    await manager.close()
+
+
 async def test_recorded_plan_notification_reaches_session_queue() -> None:
     fake = FakeAppServer(_behavior_server())
     manager = _manager(fake)

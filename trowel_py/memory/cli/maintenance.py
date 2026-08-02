@@ -153,10 +153,10 @@ def _apply_backfill(
         if size is None:
             skipped += 1
             continue
-        repo.update_completed(session_id, size)
+        repo.claude.update_completed(session_id, size)
         if extracted_at:
             # 旧任务已提炼完整会话，提炼水位也要追平，避免重复处理。
-            repo.advance_extracted(session_id, size, when=extracted_at)
+            repo.claude.advance_segment(session_id, size, when=extracted_at)
             already_extracted += 1
         backfilled += 1
     print(f"  backfilled: {backfilled}")
@@ -210,7 +210,7 @@ def run_backfill_completed(root: Path, date_str: str, *, apply: bool) -> int:
                 repo = create_sessions_repository(conn)
                 plan = [
                     (record.cc_session_id, record.jsonl_path, record.extracted_at)
-                    for record in repo.find_by_date(date_str)
+                    for record in repo.claude.find_by_date(date_str)
                     if record.last_completed_offset is None
                 ]
                 mode = "APPLY" if apply else "DRY-RUN"

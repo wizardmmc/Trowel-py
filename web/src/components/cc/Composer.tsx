@@ -1,3 +1,5 @@
+/** 提供会话输入框、斜杠菜单、附件入口和发送快捷键。 */
+
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ComposerToolbar, type PermissionFacts } from "./ComposerToolbar";
 import type { PermissionPreset } from "./PermissionFactsChip";
@@ -15,7 +17,7 @@ interface ComposerProps {
   readonly disabled: boolean;
   readonly awaitingInput?: boolean;
   readonly onSend: (text: string) => void;
-  readonly onInterrupt: () => void;
+  readonly onInterrupt?: () => void;
   // 省略 slashItems 时保持原始文本直发。
   readonly slashItems?: readonly SlashItem[];
   readonly onLocalCommand?: (item: SlashItem, rawText: string) => void;
@@ -239,7 +241,7 @@ export function Composer({
         setDismissed(false);
         return;
       }
-      if (streaming) {
+      if (streaming && onInterrupt) {
         e.preventDefault();
         onInterrupt();
       }
@@ -283,7 +285,9 @@ export function Composer({
           placeholder={
             awaitingInput
               ? "等你回答上方问题（Enter 发送）"
-              : "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
+              : onInterrupt
+                ? "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
+                : "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 清空，/ 触发命令补全）"
           }
           value={text}
           onChange={(e) => {
@@ -293,7 +297,7 @@ export function Composer({
           }}
           onKeyDown={handleKeyDown}
           disabled={disabled}
-          aria-label="CC 消息输入"
+          aria-label="Agent 消息输入"
           aria-autocomplete="list"
           aria-expanded={acOpen}
           aria-controls={acOpen ? autocompleteId : undefined}

@@ -1,3 +1,5 @@
+/** 按当前筛选和排序规则展示花园植物网格。 */
+
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { GardenPlant } from "../../api/client";

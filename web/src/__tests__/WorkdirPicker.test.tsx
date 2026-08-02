@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-vi.mock("../api/cc", () => ({
-  listDir: vi.fn(async () => []),
+vi.mock("../agent/transport/workdirs", () => ({
+  listAgentDirectory: vi.fn(async () => []),
 }));
-import { listDir } from "../api/cc";
-import { WorkdirPicker } from "../components/cc/WorkdirPicker";
+import { listAgentDirectory as listDir } from "../agent/transport/workdirs";
+import { WorkdirPicker } from "../agent/ui";
 
 describe("WorkdirPicker", () => {
   it("renders recents as chips", () => {

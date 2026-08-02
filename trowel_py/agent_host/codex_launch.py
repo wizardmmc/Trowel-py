@@ -14,6 +14,7 @@ from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 
 if TYPE_CHECKING:
     from trowel_py.codex_host import CodexSession
+    from trowel_py.resource_lifecycle import ResourceRegistry
 
 _log = logging.getLogger("trowel_py.agent_host.hub")
 
@@ -50,6 +51,7 @@ def prepare_codex_session(
     session_id_factory: Callable[[], str],
     permission_presets: Mapping[str, tuple[str | None, str | None]],
     fingerprint: Callable[[str], str],
+    resource_registry: ResourceRegistry | None = None,
 ) -> PreparedCodexSession:
     """根据创建请求准备尚未注册的 Codex 会话及其绑定信息。
 
@@ -60,6 +62,7 @@ def prepare_codex_session(
         session_id_factory: 生成 Trowel 会话 ID 的函数。
         permission_presets: 权限模式到操作确认策略和沙箱模式的对应关系。
         fingerprint: 计算注入正文内容指纹的函数。
+        resource_registry: 桌面实例资源账本；存在时为间接启动的 MCP 签发登记令牌。
 
     Returns:
         已配置完成、等待 Session Hub 注册的 Codex 会话。
@@ -120,11 +123,36 @@ def prepare_codex_session(
 
     # 先计算内容指纹；失败时不再构造 MCP，也不会返回可供注册和持久化的会话。
     injection_hash = fingerprint(injection_text)
+    from trowel_py.resource_lifecycle import OwnerScope
+
+    memory_registration_env = (
+        resource_registry.issue_process_registration(
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="codex_memory_mcp_process_group",
+            ancestor_resource_kind="codex_app_server_process_group",
+            runtime="codex",
+            agent_session_id=session_id,
+        )
+        if resource_registry is not None and req.memory_enabled
+        else {}
+    )
+    agent_registration_env = (
+        resource_registry.issue_process_registration(
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="codex_agent_mcp_process_group",
+            ancestor_resource_kind="codex_app_server_process_group",
+            runtime="codex",
+            agent_session_id=session_id,
+        )
+        if resource_registry is not None and req.agent_mcp_enabled
+        else {}
+    )
     # 关闭 Memory 时不挂载记忆检索 MCP，确保会话无法通过该工具读取 Memory。
     trowel_memory_mcp = (
         build_default_trowel_memory_mcp(
             trowel_session_id=session_id,
             memory_root=str(memory_root),
+            registration_env=memory_registration_env,
         )
         if req.memory_enabled
         else None
@@ -140,6 +168,7 @@ def prepare_codex_session(
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
             delegation_depth=req.delegation_depth,
+            registration_env=agent_registration_env,
         )
         if req.agent_mcp_enabled
         else None

@@ -67,15 +67,27 @@ describe("reduceEvent — Codex mapping (post-adapter)", () => {
     const state = run([
       {
         type: "usage_updated",
-        total: 25000,
+        total: { totalTokens: 25_000 },
+        last: { totalTokens: 12_405 },
         model_context_window: 200000,
       } as TrowelEvent,
     ]);
     expect(state.meta.usage).toEqual({
-      total: 25000,
-      last: null,
+      total: { totalTokens: 25_000 },
+      last: { totalTokens: 12_405 },
       model_context_window: 200000,
     });
+    expect(state.meta.lastTurnTokens).toBe(12_405);
+  });
+
+  it("completed Codex compaction increments the shared count and keeps a visible boundary", () => {
+    const state = run([
+      { type: "user", text: "压缩前内容" },
+      { type: "compaction", phase: "completed" } as TrowelEvent,
+    ]);
+
+    expect(state.meta.compactionCount).toBe(1);
+    expect(state.turns[0].items.at(-1)).toEqual({ kind: "compact_boundary" });
   });
 
   it("turn_diff_updated replaces the aggregate and a new turn clears it", () => {

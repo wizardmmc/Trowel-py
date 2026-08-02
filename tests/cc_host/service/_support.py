@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 
 
 class FakeWriter:
@@ -26,6 +27,7 @@ class FakeProc:
     def __init__(self, lines: list[str], feed_eof: bool = True, pid: int = 1) -> None:
         self.pid = pid
         self.returncode: int | None = None
+        self.signals: list[signal.Signals] = []
         self.stdin = FakeWriter()
         self.stdout = asyncio.StreamReader()
         for ln in lines:
@@ -37,6 +39,9 @@ class FakeProc:
 
     def terminate(self) -> None:
         self.returncode = 0
+
+    def send_signal(self, signum: signal.Signals) -> None:
+        self.signals.append(signum)
 
     def kill(self) -> None:
         self.returncode = -9

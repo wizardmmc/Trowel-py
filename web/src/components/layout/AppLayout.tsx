@@ -1,4 +1,7 @@
-import type { ReactNode } from "react";
+/** 提供全局侧边栏、工具导航和主内容布局。 */
+
+import type { CSSProperties, ReactNode } from "react";
+import { DESKTOP_LAYOUT_PX } from "../../../shared/desktop-layout";
 import "./AppLayout.css";
 
 export type Tool = "garden" | "extract" | "review" | "cc" | "profile";
@@ -39,17 +42,7 @@ function IconReview() {
   );
 }
 
-function IconSprout() {
-  return (
-    <svg className="sidebar-logo__svg" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 21v-8" />
-      <path d="M12 13c0-4-3-6-7-6 0 4 3 6 7 6z" />
-      <path d="M12 11c0-3 2.5-5 6-5 0 3-2.5 5-6 5z" />
-    </svg>
-  );
-}
-
-function IconCC() {
+function IconAgent() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -72,7 +65,7 @@ const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
-  { id: "cc", icon: <IconCC />, label: "Agent" },
+  { id: "cc", icon: <IconAgent />, label: "Agent" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
 
@@ -83,13 +76,24 @@ export function AppLayout({
   sidebarOpen,
   onToggleSidebar,
 }: AppLayoutProps) {
+  const layoutStyle = {
+    "--app-sidebar-width": `${DESKTOP_LAYOUT_PX.sidebarWidth}px`,
+    "--agent-multi-width": `${DESKTOP_LAYOUT_PX.multiSessionWidth}px`,
+    "--app-main-shoulder": `${DESKTOP_LAYOUT_PX.mainShoulderRadius}px`,
+    "--app-top-drag-height": `${DESKTOP_LAYOUT_PX.topDragHeight}px`,
+  } as CSSProperties;
+
   return (
-    <div className="app-layout">
+    <div className="app-layout" style={layoutStyle}>
       <aside
         className={`app-sidebar ${sidebarOpen ? "app-sidebar--open" : ""}`}
       >
-        <div className="sidebar-logo">
-          <IconSprout />
+        <div className="sidebar-logo" aria-hidden="true">
+          <img
+            className="sidebar-logo__svg"
+            src="./brand/trowel-mark.svg"
+            alt=""
+          />
         </div>
         <nav className="sidebar-nav">
           {TOOLS.map((tool) => (
@@ -107,6 +111,9 @@ export function AppLayout({
         </nav>
       </aside>
       <main className={`app-main${activeTool === "cc" ? " app-main--flush" : ""}`}>
+        {activeTool !== "cc" && (
+          <div className="app-main__drag-region" aria-hidden="true" />
+        )}
         <button
           className="app-main__hamburger"
           onClick={onToggleSidebar}

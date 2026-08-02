@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, Callable, Mapping
 
-from trowel_py.codex_host.events import CodexEvent, CodexEventType
+from trowel_py.codex_host.events import CodexEvent, CodexEventType, immutable_payload
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,
+    open_sessions_db_readonly,
 )
 
 NowFn = Callable[[], datetime]
-_TERMINAL_TYPES = frozenset(
-    {CodexEventType.FINISHED, CodexEventType.INTERRUPTED}
-)
+_log = logging.getLogger(__name__)
+_TERMINAL_TYPES = frozenset({CodexEventType.FINISHED, CodexEventType.INTERRUPTED})
 
 
 class CodexTurnJournal:
@@ -43,7 +44,8 @@ class CodexTurnJournal:
             trowel_session_id: 这些 Codex 轮次所属的 Trowel 会话 ID。
             workdir: 会话使用的工作目录，登记轮次时一并保存。
             memory_enabled: 创建会话时冻结的 memory 开关，登记轮次时一并保存。
-            profile_enabled: 创建会话时冻结的 profile 开关，登记轮次时一并保存。
+            profile_enabled: 创建会话时冻结的 profile 注入开关，登记轮次时一并
+                保存；不控制已完成用户 turn 的 Profile 建议提炼资格。
             session_kind: 会话类别；daily review 只读取 ``"user"`` 会话的轮次。
             now_fn: 生成日志记录时间的时钟；未提供时使用本地当前时间。
         """
@@ -124,7 +126,7 @@ class CodexTurnJournal:
             return
         conn = open_sessions_db(self._root)
         try:
-            create_sessions_repository(conn).complete_codex_turn(
+            create_sessions_repository(conn).codex.complete_turn(
                 event.thread_id,
                 event.turn_id,
                 status=terminal,
@@ -146,7 +148,7 @@ class CodexTurnJournal:
         """登记首次看到的原生轮次，并固化其会话归属和模型绑定。"""
         conn = open_sessions_db(self._root)
         try:
-            create_sessions_repository(conn).register_codex_turn(
+            create_sessions_repository(conn).codex.register_turn(
                 thread_id=event.thread_id or "",
                 turn_id=event.turn_id or "",
                 trowel_session_id=self._trowel_session_id,
@@ -200,6 +202,129 @@ class CodexTurnJournal:
                 handle.close()
 
 
+def read_thread_journal_events(
+    memory_root: Path,
+    thread_id: str,
+    *,
+    session_id: str,
+) -> dict[str, tuple[CodexEvent, ...]]:
+    """读取一个 Codex thread 中可安全回放的 normalized turn journals。
+
+    每个 turn 必须已经封口，且 journal 的每一行都符合 ``codex-event-v1``、原生
+    thread/turn ID 与数据库记录一致。单个 journal 缺失、损坏或协议不符时只跳过
+    该 turn，让调用方回退到 ``thread/read``；其他 turn 仍可使用完整日志。
+
+    Args:
+        memory_root: 包含 sessions registry 与 turn journals 的 Memory 根目录。
+        thread_id: 要恢复的 Codex 原生 thread ID。
+        session_id: 本次接收回放事件的 Trowel 会话 ID；原日志中的旧会话 ID 不再
+            使用。
+
+    Returns:
+        turn ID 到完整事件序列的映射；数据库不存在时返回空映射。
+    """
+
+    conn = open_sessions_db_readonly(memory_root)
+    if conn is None:
+        return {}
+    try:
+        turns = create_sessions_repository(
+            conn, migrate=False
+        ).codex.list_replayable_thread_turns(thread_id)
+    finally:
+        conn.close()
+
+    replay: dict[str, tuple[CodexEvent, ...]] = {}
+    for turn in turns:
+        events = _read_replayable_journal(
+            Path(turn.journal_path),
+            thread_id=turn.thread_id,
+            turn_id=turn.turn_id,
+            session_id=session_id,
+            expected_status=turn.status,
+        )
+        if events is not None:
+            replay[turn.turn_id] = events
+    return replay
+
+
+def _read_replayable_journal(
+    path: Path,
+    *,
+    thread_id: str,
+    turn_id: str,
+    session_id: str,
+    expected_status: str,
+) -> tuple[CodexEvent, ...] | None:
+    """校验并解码单个已封口 journal；无法完整信任时返回 None。"""
+
+    terminal = _read_terminal(path, thread_id, turn_id)
+    if terminal is None or terminal[0] != expected_status:
+        _log.warning("Codex replay skipped unsealed journal: %s", path)
+        return None
+    decoded: list[CodexEvent] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                raw = json.loads(line)
+                event = _decode_replay_event(
+                    raw,
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    seq=len(decoded) + 1,
+                )
+                if event is None:
+                    raise ValueError("invalid codex-event-v1 journal entry")
+                decoded.append(event)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        _log.warning("Codex replay skipped malformed journal: %s", path, exc_info=True)
+        return None
+    return tuple(decoded) if decoded else None
+
+
+def _decode_replay_event(
+    raw: object,
+    *,
+    session_id: str,
+    thread_id: str,
+    turn_id: str,
+    seq: int,
+) -> CodexEvent | None:
+    """把一条可信范围内的 JSON 对象恢复为重新编号的 CodexEvent。"""
+
+    if not isinstance(raw, Mapping):
+        return None
+    if (
+        raw.get("schema") != "codex-event-v1"
+        or raw.get("runtime") != "codex"
+        or raw.get("thread_id") != thread_id
+        or raw.get("turn_id") != turn_id
+    ):
+        return None
+    payload = raw.get("payload")
+    item_id = raw.get("item_id")
+    if not isinstance(payload, Mapping) or not (
+        item_id is None or isinstance(item_id, str)
+    ):
+        return None
+    try:
+        event_type = CodexEventType(raw.get("type"))
+    except (TypeError, ValueError):
+        return None
+    return CodexEvent(
+        session_id=session_id,
+        seq=seq,
+        type=event_type,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        item_id=item_id,
+        payload=immutable_payload(**dict(payload)),
+    )
+
+
 def _terminal_status(event: CodexEvent) -> str | None:
     """返回终态事件的状态，缺失时按事件类型生成默认值。
 
@@ -208,7 +333,10 @@ def _terminal_status(event: CodexEvent) -> str | None:
     """
     if event.type in _TERMINAL_TYPES:
         return str(event.payload.get("status") or event.type.value)
-    if event.type is CodexEventType.ERROR and event.payload.get("kind") != "native_error":
+    if (
+        event.type is CodexEventType.ERROR
+        and event.payload.get("kind") != "native_error"
+    ):
         return str(event.payload.get("status") or "failed")
     return None
 
@@ -251,12 +379,14 @@ def recover_sealed_codex_turns(memory_root: Path) -> int:
     recovered = 0
     try:
         repo = create_sessions_repository(conn)
-        for turn in repo.find_unsealed_codex_turns():
-            terminal = _read_terminal(Path(turn.journal_path), turn.thread_id, turn.turn_id)
+        for turn in repo.codex.list_unsealed_turns():
+            terminal = _read_terminal(
+                Path(turn.journal_path), turn.thread_id, turn.turn_id
+            )
             if terminal is None:
                 continue
             status, completed_at = terminal
-            repo.complete_codex_turn(
+            repo.codex.complete_turn(
                 turn.thread_id,
                 turn.turn_id,
                 status=status,

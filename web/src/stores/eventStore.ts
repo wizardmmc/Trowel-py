@@ -1,3 +1,5 @@
+/** 管理随机事件历史、当前事件和领取流程。 */
+
 import { create } from "zustand";
 import {
   triggerEvent as triggerEventApi,

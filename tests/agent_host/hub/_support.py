@@ -32,6 +32,12 @@ class FakeCcHost:
         self.interrupted = False
         self.cc_session_id: str | None = None
 
+    @property
+    def has_in_flight_turn(self) -> bool:
+        """返回测试 host 当前是否正在处理一轮输入。"""
+
+        return self.running
+
     async def send(self, text: str) -> AsyncIterator[dict[str, Any]]:
         self.running = True
         yield {"type": "text", "text": f"echo:{text}"}
@@ -43,12 +49,16 @@ class FakeCcHost:
     async def close(self) -> None:
         self.closed = True
 
+    def discard_unstarted(self) -> None:
+        self.closed = True
+
 
 class FakeCodexManager:
     def __init__(self) -> None:
         self.sessions: dict[str, Any] = {}
         self.sent: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.close_calls: list[tuple[str, bool]] = []
         self.answered_requests: list[tuple[str, str, str]] = []
         self.threads: list[dict[str, Any]] = []
         self.thread_reads: dict[str, dict[str, Any]] = {}
@@ -143,6 +153,18 @@ class FakeCodexManager:
     async def interrupt(self, session: Any) -> None:
         self.interrupted.append(session.session_id)
 
+    async def close_session(
+        self,
+        session: Any,
+        *,
+        preserve_history: bool,
+        terminal_timeout_s: float = 2.0,
+    ) -> None:
+        """记录统一关闭是否为用户 thread 保留历史可见性。"""
+
+        del terminal_timeout_s
+        self.close_calls.append((session.session_id, preserve_history))
+
     async def list_models(self) -> list[dict[str, Any]]:
 
         return self.models
@@ -150,9 +172,17 @@ class FakeCodexManager:
     async def list_commands(self) -> list[dict[str, Any]]:
         return command_roster("0.144.0")
 
-    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
         self.list_thread_calls.append((cwd, limit))
-        return self.threads[:limit]
+        return [
+            thread for thread in self.threads if thread.get("id") not in excluded_ids
+        ][:limit]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.read_thread_calls.append(thread_id)
@@ -256,6 +286,12 @@ class FakeCodexSession:
         self.binding = _FakeThreadBinding(thread_id, model)
         self.state = "idle"
 
+    @property
+    def has_in_flight_turn(self) -> bool:
+        """根据测试会话状态判断是否仍有未结束轮次。"""
+
+        return self.state == "running"
+
     async def events(self) -> AsyncIterator[Any]:
         for ev in self._events:
             yield ev
@@ -269,8 +305,11 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         *,
         proxy_base_url: str | None = None,
         settings_path: str | Path | None = None,
+        display_name: str | None = None,
+        process_controller: Any | None = None,
+        resource_registry: Any | None = None,
     ) -> OpenedCcSession:
-        del proxy_base_url, settings_path
+        del proxy_base_url, settings_path, process_controller, resource_registry
         sid = "cc-" + uuid.uuid4().hex[:8]
         host = FakeCcHost(
             req.workdir,
@@ -286,7 +325,7 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         basename = Path(req.workdir).name or str(req.workdir)
         n = name_counts.get(basename, 0)
         name_counts[basename] = n + 1
-        name = basename if n == 0 else f"{basename} #{n + 1}"
+        name = display_name or (basename if n == 0 else f"{basename} #{n + 1}")
         return OpenedCcSession(sid=sid, host=host, name=name)
 
     return opener

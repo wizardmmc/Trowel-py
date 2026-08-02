@@ -1,7 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-vi.mock("../api/agent", () => ({
+const { CC_CAPABILITIES, CODEX_CAPABILITIES } = vi.hoisted(() => ({
+  CC_CAPABILITIES: [
+    "tools", "models", "effort", "permission", "question", "interrupt",
+    "slash_commands", "workflow", "tasks", "subagents", "checkpoint",
+    "revert", "mcp",
+  ] as const,
+  CODEX_CAPABILITIES: [
+    "tools", "models", "effort", "permission", "sandbox", "network_access",
+    "approval", "interrupt", "slash_commands", "goal", "plan", "review",
+    "subagents", "turn_diff", "mcp",
+  ] as const,
+}));
+
+vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn().mockResolvedValue({
     session_id: "s1",
     runtime: "claude_code",
@@ -12,13 +25,19 @@ vi.mock("../api/agent", () => ({
     permission: null,
     memory_enabled: true,
     profile_enabled: true,
-    capabilities: ["tools", "approval", "checkpoint", "workflow"],
+    capabilities: CC_CAPABILITIES,
     name: "wd",
     connected: false,
     running: false,
   }),
   activateAgentSession: vi.fn().mockResolvedValue({ activeId: "s1" }),
-  deleteAgentSession: vi.fn().mockResolvedValue({ closed: true }),
+  deleteAgentSession: vi.fn().mockResolvedValue({
+    closed: true,
+    status: "closed",
+    remaining_resource_count: 0,
+    remaining_resource_kinds: [],
+    error: null,
+  }),
   listAgentHistory: vi.fn().mockResolvedValue({ rows: [], nextCursor: null }),
   listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
   getAgentSessionDefaults: vi.fn().mockResolvedValue(null),
@@ -43,7 +62,7 @@ vi.mock("../api/agent", () => ({
   agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
 }));
 
-vi.mock("../api/ccStream", () => ({
+vi.mock("../agent/transport/stream", () => ({
   postMessageStream: vi.fn(async () => {}),
   getEventStream: vi.fn(
     (
@@ -65,11 +84,11 @@ vi.mock("../api/cc", () => ({
   answerElicit: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
-import { SessionView } from "../components/cc/SessionView";
-import { useCcStore } from "../stores/ccStore";
-import { createNewSessionState } from "../stores/ccStore/sessionState";
-import { reduceAgentEvent } from "../stores/ccStore/eventState";
-import type { AgentEvent } from "../api/agentTypes";
+import { SessionView } from "../agent/ui";
+import { useAgentStore } from "../agent";
+import { createNewSessionState } from "../agent/application/store/sessionState";
+import { reduceAgentEvent } from "../agent/application/store/eventState";
+import type { AgentEvent } from "../agent/transport";
 import {
   createAgentSession as createSession,
   getAgentSessionDefaults,
@@ -79,17 +98,20 @@ import {
   listCodexCommands,
   compactCodexSession,
   getCodexSubagentHistory,
-} from "../api/agent";
+} from "../agent/transport";
 import {
   loadNewSessionPreferences,
   saveNewSessionPreferences,
 } from "../components/cc/newSessionPreferences";
+import { listSlashItems } from "../api/cc";
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAgentSessionDefaults).mockResolvedValue(null);
+  vi.mocked(listActiveSessions).mockResolvedValue({ sessions: [], activeId: null });
+  vi.mocked(listSessions).mockResolvedValue({ rows: [], nextCursor: null });
   localStorage.clear();
-  useCcStore.setState({
+  useAgentStore.setState({
     sessions: {},
     activeSid: null,
     history: [],
@@ -103,9 +125,15 @@ beforeEach(() => {
 });
 
 describe("SessionView", () => {
+  it("does not request workdir-bound slash items on the Start page", () => {
+    render(<SessionView workdir="" emptyWorkspaceContent={<div>Start</div>} />);
+
+    expect(vi.mocked(listSlashItems)).not.toHaveBeenCalled();
+  });
+
   it("opens a Codex child timeline without a composer and returns to the parent", async () => {
     installCodexSession();
-    let current = useCcStore.getState().sessions.s1;
+    let current = useAgentStore.getState().sessions.s1;
     const apply = (event: AgentEvent) => {
       const result = reduceAgentEvent(current, event);
       if (result.kind === "updated") current = result.session;
@@ -137,7 +165,7 @@ describe("SessionView", () => {
         agent_path: "/root/probe",
       },
     });
-    useCcStore.setState({ sessions: { s1: current }, activeSid: "s1" });
+    useAgentStore.setState({ sessions: { s1: current }, activeSid: "s1" });
     vi.mocked(getCodexSubagentHistory).mockResolvedValueOnce([
       {
         schema: "agent-event-v1",
@@ -174,29 +202,39 @@ describe("SessionView", () => {
   });
 
   function installCodexSession() {
-    useCcStore.setState({
+    const liveSession = codexLiveSession();
+    vi.mocked(listActiveSessions).mockResolvedValue({
+      sessions: [liveSession],
+      activeId: "s1",
+    });
+    useAgentStore.setState({
       sessions: {
         s1: createNewSessionState(
-          {
-            session_id: "s1",
-            runtime: "codex",
-            native_session_id: "thread-1",
-            workdir: "/wd",
-            model: "gpt-5.6-sol",
-            effort: "high",
-            permission: "Workspace write · on-request",
-            memory_enabled: true,
-            profile_enabled: true,
-            capabilities: ["tools", "approval"],
-            name: "wd",
-            connected: true,
-            running: false,
-          },
+          liveSession,
           { workdir: "/wd", runtime: "codex", effort: "high" },
         ),
       },
       activeSid: "s1",
     });
+  }
+
+  /** 返回与后端 live session 列表一致的 Codex 测试记录。 */
+  function codexLiveSession() {
+    return {
+      session_id: "s1",
+      runtime: "codex" as const,
+      native_session_id: "thread-1",
+      workdir: "/wd",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      permission: "Workspace write · on-request",
+      memory_enabled: true,
+      profile_enabled: true,
+      capabilities: CODEX_CAPABILITIES,
+      name: "wd",
+      connected: true,
+      running: false,
+    };
   }
 
   it("mounts the three-column shell — multi-bar, center, todo-bar all present", async () => {
@@ -227,12 +265,12 @@ describe("SessionView", () => {
     ]);
     render(<SessionView workdir="/wd" />);
 
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/status" } });
     fireEvent.click(await screen.findByRole("option", { name: /\/status/ }));
 
     expect(screen.getByRole("dialog", { name: "Codex 会话状态" })).toBeInTheDocument();
-    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+    expect(useAgentStore.getState().sessions.s1.turns).toHaveLength(0);
   });
 
   it("routes /compact to its command API and keeps it out of turns", async () => {
@@ -248,25 +286,65 @@ describe("SessionView", () => {
     ]);
     render(<SessionView workdir="/wd" />);
 
-    const input = screen.getByLabelText("CC 消息输入");
+    const input = screen.getByLabelText("Agent 消息输入");
     fireEvent.change(input, { target: { value: "/compact" } });
     fireEvent.click(await screen.findByRole("option", { name: /\/compact/ }));
 
     await waitFor(() => expect(vi.mocked(compactCodexSession)).toHaveBeenCalledWith("s1"));
     expect(await screen.findByText("上下文压缩已启动")).toBeInTheDocument();
-    expect(useCcStore.getState().sessions.s1.turns).toHaveLength(0);
+    expect(useAgentStore.getState().sessions.s1.turns).toHaveLength(0);
   });
 
-  it("shows the no-active-session prompt in the center when activeSid is null", () => {
-    const { container } = render(<SessionView workdir="/wd" />);
-    expect(container.querySelector(".cc-empty--noactive")).not.toBeNull();
-    expect(container.querySelector(".cc-empty--noactive")?.textContent)
-      .toMatch(/未选择 session/);
+  it("shows the selected workspace home when activeSid is null", () => {
+    render(<SessionView workdir="/wd" />);
+
+    expect(screen.getByRole("region", { name: "当前工作区" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "wd" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Agent 消息输入")).toBeNull();
+  });
+
+  it("asks for a workdir before opening a new-session dialog", () => {
+    const requestWorkdir = vi.fn();
+    render(
+      <SessionView
+        workdir=""
+        onRequestChangeWorkdir={requestWorkdir}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+
+    expect(requestWorkdir).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("dialog", { name: "新建 Agent 会话" }),
+    ).toBeNull();
+  });
+
+  it("shows a direct workdir action when Agent has no workdir", () => {
+    const requestWorkdir = vi.fn();
+    render(
+      <SessionView
+        workdir=""
+        onRequestChangeWorkdir={requestWorkdir}
+      />,
+    );
+
+    const actions = screen.getAllByRole("button", {
+      name: "选择工作目录",
+    });
+    const primaryAction = actions.find((button) =>
+      button.classList.contains("cc-empty__action"),
+    );
+    expect(primaryAction).toBeDefined();
+    fireEvent.click(primaryAction!);
+
+    expect(requestWorkdir).toHaveBeenCalledOnce();
   });
 
   it("shows the active native session id immediately left of the workdir button", () => {
     const nativeSessionId = "019c1f22-96f2-7341-b85a-2f7244e63526";
-    useCcStore.setState({
+    useAgentStore.setState({
       sessions: {
         s1: createNewSessionState(
           {
@@ -279,7 +357,7 @@ describe("SessionView", () => {
             permission: "Full access · never",
             memory_enabled: true,
             profile_enabled: true,
-            capabilities: ["tools", "approval"],
+            capabilities: CODEX_CAPABILITIES,
             name: "wd",
             connected: true,
             running: false,
@@ -301,49 +379,97 @@ describe("SessionView", () => {
     expect(copyButton.nextElementSibling).toBe(workdirButton);
   });
 
+  it("uses the active live session workdir when resuming its history", async () => {
+    installCodexSession();
+    vi.mocked(listActiveSessions).mockResolvedValueOnce({
+      sessions: [codexLiveSession()],
+      activeId: "s1",
+    });
+    vi.mocked(listSessions).mockResolvedValueOnce({
+      rows: [
+        {
+          runtime: "codex",
+          native_session_id: "older-thread",
+          title: "旧会话",
+          updated_at: "2026-08-01T10:00:00+00:00",
+        },
+      ],
+      nextCursor: null,
+    });
+    render(<SessionView workdir="" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "历史会话" }));
+    fireEvent.click(await screen.findByRole("option", { name: /旧会话/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(createSession)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workdir: "/wd",
+          resume_from: "older-thread",
+        }),
+      );
+    });
+  });
+
+  it("updates the renderer workspace when a live session is selected", async () => {
+    vi.mocked(listActiveSessions).mockResolvedValue({
+      sessions: [codexLiveSession()],
+      activeId: null,
+    });
+    const activateWorkdir = vi.fn();
+    render(
+      <SessionView workdir="" onWorkdirActivated={activateWorkdir} />,
+    );
+
+    fireEvent.click((await screen.findByTestId("session-title")).closest("button")!);
+
+    expect(activateWorkdir).toHaveBeenCalledWith("/wd");
+  });
+
+  it("discovers a live session created by another renderer after refocus", async () => {
+    vi.mocked(listActiveSessions)
+      .mockResolvedValueOnce({ sessions: [], activeId: null })
+      .mockResolvedValue({ sessions: [codexLiveSession()], activeId: null });
+    render(<SessionView workdir="" />);
+    await waitFor(() => expect(listActiveSessions).toHaveBeenCalledOnce());
+
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByTestId("session-title")).toBeInTheDocument();
+    expect(useAgentStore.getState().activeSid).toBeNull();
+  });
+
   it("reconcile 时按后端 connected 字段标记，temp(connected=false) 不进多开栏", async () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
-        { session_id: "temp1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: ["tools", "approval", "checkpoint", "workflow"], name: "wd", connected: false, running: false },
+        { session_id: "temp1", runtime: "claude_code", native_session_id: null, workdir: "/wd", model: "m", effort: null, permission: null, memory_enabled: true, profile_enabled: true, capabilities: CC_CAPABILITIES, name: "wd", connected: false, running: false },
       ],
       activeId: "temp1",
     });
     render(<SessionView workdir="/wd" />);
     await waitFor(() => {
-      expect(useCcStore.getState().sessions["temp1"]).toBeDefined();
+      expect(useAgentStore.getState().sessions["temp1"]).toBeDefined();
     });
-    expect(useCcStore.getState().sessions["temp1"]?.connected).toBe(false);
+    expect(useAgentStore.getState().sessions["temp1"]?.connected).toBe(false);
     expect(screen.getByText(/暂无连接/)).toBeInTheDocument();
   });
 
-  it("workdir 变化时立即用新 workdir 新建会话并刷新历史", async () => {
-    vi.mocked(createSession).mockImplementation(async (params) => ({
-      session_id: `sid-${params.workdir}`,
-      runtime: "claude_code",
-      native_session_id: null,
-      workdir: params.workdir,
-      model: "m",
-      effort: null,
-      permission: null,
-      memory_enabled: true,
-      profile_enabled: true,
-      capabilities: ["tools", "approval", "checkpoint", "workflow"],
-      name: params.workdir,
-      connected: false,
-      running: false,
-    }));
+  it("workdir 变化时只刷新新目录历史", async () => {
     const { rerender } = render(<SessionView workdir="/a" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/a"));
+    await waitFor(() =>
+      expect(vi.mocked(listSessions).mock.calls.map(([path]) => path)).toContain(
+        "/a",
+      ),
+    );
 
     rerender(<SessionView workdir="/b" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).toBe("sid-/b"));
-
-    expect(useCcStore.getState().sessions["sid-/b"]?.workdir).toBe("/b");
-    expect(useCcStore.getState().sessions["sid-/a"]).toBeUndefined();
-    expect(vi.mocked(listSessions).mock.calls.at(-1)?.[0]).toBe("/b");
+    await waitFor(() =>
+      expect(vi.mocked(listSessions).mock.calls.at(-1)?.[0]).toBe("/b"),
+    );
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled();
   });
 
-  it("首次进入 Agent 页时用最近实际配置自动创建可发送会话", async () => {
+  it("首次进入不创建会话，显式新建时才读取最近实际配置", async () => {
     vi.mocked(getAgentSessionDefaults).mockResolvedValueOnce({
       runtime: "codex",
       model: "gpt-5.6-sol",
@@ -356,21 +482,18 @@ describe("SessionView", () => {
 
     render(<SessionView workdir="/wd" />);
 
-    await waitFor(() =>
-      expect(vi.mocked(createSession)).toHaveBeenCalledWith({
-        workdir: "/wd",
-        runtime: "codex",
-        model: "gpt-5.6-sol",
-        effort: "high",
-        permission_mode: "",
-        permission_preset: "workspace-write",
-        memory_enabled: false,
-        profile_enabled: true,
-      }),
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+    expect(vi.mocked(getAgentSessionDefaults)).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "workspace-write" })).toHaveClass(
+      "cc-dialog__option--selected",
     );
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled();
   });
 
-  it("后端重启后不把 stale binding 当 active，而是按最近配置新建", async () => {
+  it("挂载时只恢复 live session 列表，不自动创建新 session", async () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
         {
@@ -402,21 +525,22 @@ describe("SessionView", () => {
 
     render(<SessionView workdir="/wd" />);
 
-    await waitFor(() => expect(vi.mocked(createSession)).toHaveBeenCalled());
-    expect(useCcStore.getState().activeSid).not.toBe("stale");
+    await waitFor(() => expect(vi.mocked(listActiveSessions)).toHaveBeenCalled());
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled();
+    expect(useAgentStore.getState().activeSid).toBeNull();
   });
 
-  it("startSession 失败时历史仍刷新到当前 workdir（兜底，不停留在旧路径）", async () => {
-    vi.mocked(createSession).mockRejectedValueOnce(new Error("backend down"));
+  it("选择工作区后刷新该目录历史，但仍不创建 session", async () => {
     render(<SessionView workdir="/fail" />);
     await waitFor(() => {
       const calls = vi.mocked(listSessions).mock.calls.map(([w]) => w);
       expect(calls).toContain("/fail");
     });
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled();
   });
 
   it("renders the Codex host degraded banner when hostDegraded is set", () => {
-    useCcStore.setState({
+    useAgentStore.setState({
       sessions: {
         "c1": {
           turns: [],
@@ -429,9 +553,11 @@ describe("SessionView", () => {
           meta: {
             model: "gpt-5.6-sol",
             ccSessionId: "thr-1",
-            costUsd: null,
-            numTurns: null,
-            hookFired: null,
+          costUsd: null,
+          numTurns: null,
+          lastTurnTokens: null,
+          compactionCount: 0,
+          hookFired: null,
             thinkingStartedAt: null,
             thinkingTokens: null,
             stallWarning: null,
@@ -444,7 +570,9 @@ describe("SessionView", () => {
           workdir: "/wd",
           effort: null,
           name: "wd",
-          revertEnabled: false,
+          displayTitle: "wd",
+          titleSource: "native",
+          checkpointAvailable: false,
           transportError: null,
           abort: null,
           connected: true,
@@ -453,7 +581,7 @@ describe("SessionView", () => {
           runtime: "codex",
           nativeSessionId: "thr-1",
           permission: "workspace-write",
-          capabilities: ["tools", "approval"],
+          capabilities: CODEX_CAPABILITIES,
           lastSeq: null,
           needsReplay: false,
         },
@@ -464,7 +592,7 @@ describe("SessionView", () => {
       loadingHistory: false,
     });
     render(<SessionView workdir="/wd" />);
-    expect(screen.getByText(/Codex host 已断开/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex 进程已断开/)).toBeInTheDocument();
     expect(screen.getByText(/不会自动重放写操作/)).toBeInTheDocument();
   });
 
@@ -474,12 +602,11 @@ describe("SessionView", () => {
         runtime: "claude_code",
         label: "Claude Code",
         native: "claude -p",
-        capabilities: [],
+        capabilities: CC_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
     const high = await screen.findByRole("button", { name: "high" });
@@ -501,9 +628,7 @@ describe("SessionView", () => {
   });
 
   it("新会话弹窗优先继承后端最近实际配置", async () => {
-    vi.mocked(getAgentSessionDefaults)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
+    vi.mocked(getAgentSessionDefaults).mockResolvedValueOnce({
         runtime: "codex",
         model: "gpt-5.6-sol",
         effort: "high",
@@ -517,12 +642,11 @@ describe("SessionView", () => {
         runtime: "codex",
         label: "Codex",
         native: "app-server",
-        capabilities: [],
+        capabilities: CODEX_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
 
@@ -557,12 +681,11 @@ describe("SessionView", () => {
         runtime: "claude_code",
         label: "Claude Code",
         native: "claude -p",
-        capabilities: [],
+        capabilities: CC_CAPABILITIES,
         connected: true,
       },
     ]);
     render(<SessionView workdir="/wd" />);
-    await waitFor(() => expect(useCcStore.getState().activeSid).not.toBeNull());
     vi.mocked(createSession).mockRejectedValueOnce(new Error("backend down"));
 
     fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));

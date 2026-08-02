@@ -1,4 +1,6 @@
-import type { ToolItem } from "../../stores/ccStore";
+/** 生成通用工具的动作名称、摘要、行数和状态文案。 */
+
+import type { ToolItem } from "../../agent/domain";
 import { computeEditDiff, summarizeStat } from "./editDiff";
 
 export function isEditTool(name: string): boolean {
@@ -7,6 +9,10 @@ export function isEditTool(name: string): boolean {
 
 export function isDiffTool(name: string): boolean {
   return isEditTool(name) || name === "Write" || name === "apply_patch";
+}
+
+export function isCommandTool(name: string): boolean {
+  return name === "Bash" || name === "command";
 }
 
 const APPLY_PATCH_VERB: Readonly<Record<string, string>> = {

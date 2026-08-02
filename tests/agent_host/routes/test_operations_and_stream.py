@@ -117,6 +117,30 @@ def test_post_messages_streams_sse(
     assert events[0]["payload"]["text"] == "echo:hi"
 
 
+def test_delegate_stays_hidden_while_messages_stream_by_id(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    delegate = create_session(
+        client,
+        cc_payload(workdir, session_kind="delegate"),
+    )
+
+    with client.stream(
+        "POST",
+        f"/api/agent/sessions/{delegate['session_id']}/messages",
+        json={"text": "background"},
+    ) as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes())
+
+    events = parse_sse(body)
+    assert [event["type"] for event in events] == ["text"]
+    assert events[0]["payload"]["text"] == "echo:background"
+    active = client.get("/api/agent/sessions/active").json()["data"]
+    assert active == {"sessions": [], "active_id": None}
+
+
 def test_post_messages_unknown_session_emits_error_frame(
     client: TestClient,
 ) -> None:

@@ -1,3 +1,5 @@
+/** 配置仅识别成对单美元符号的 GitHub 风格行内公式解析。 */
+
 import type { Processor } from "unified";
 import type { Extension } from "micromark-util-types";
 import { math } from "micromark-extension-math";

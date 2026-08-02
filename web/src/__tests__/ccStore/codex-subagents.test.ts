@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentEvent } from "../../api/agentTypes";
-import { reduceAgentEvent } from "../../stores/ccStore/eventState";
-import { replayCodexSubagentHistory } from "../../stores/ccStore/codexSubagents";
+import type { AgentEvent } from "../../agent/transport";
+import { reduceAgentEvent } from "../../agent/application/store/eventState";
+import { replayCodexSubagentHistory } from "../../agent/application/store/codexSubagents";
 import {
   createReconciledSessionState,
   type PerSessionState,
-} from "../../stores/ccStore/sessionState";
+} from "../../agent/application/store/sessionState";
 
 function session(): PerSessionState {
   return createReconciledSessionState({

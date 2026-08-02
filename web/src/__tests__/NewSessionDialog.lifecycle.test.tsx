@@ -43,6 +43,24 @@ describe("NewSessionDialog lifecycle", () => {
     expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
   });
 
+  it("blocks creation when the workdir is empty", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir=""
+        onCreate={onCreate}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(createButton()).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "需要先选择工作目录",
+    );
+    fireEvent.click(createButton());
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it("error is rendered as an alert", () => {
     render(
       <NewSessionDialog
@@ -103,6 +121,7 @@ describe("NewSessionDialog lifecycle", () => {
           native: "",
           capabilities: [],
           connected: false,
+          install_hint: "安装 Codex CLI 后重启 Trowel",
         },
       ],
     };
@@ -116,11 +135,43 @@ describe("NewSessionDialog lifecycle", () => {
     );
     const radios = screen.getAllByRole("radio");
     expect(radios[1]).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText(/未连接/)).toBeInTheDocument();
+    expect(screen.getByText("安装 Codex CLI 后重启 Trowel")).toBeInTheDocument();
     fireEvent.click(radios[1]);
     expect(radios[1]).toHaveAttribute("aria-checked", "false");
     fireEvent.click(createButton());
     expect(onCreate.mock.calls[0][0].runtime).toBe("claude_code");
+  });
+
+  it("shows missing capabilities and hides unsupported runtime settings", () => {
+    if (READY_BOTH.status !== "ready") {
+      throw new Error("READY_BOTH fixture must contain a ready runtime catalog");
+    }
+    const limited: RuntimesState = {
+      status: "ready",
+      runtimes: [
+        READY_BOTH.runtimes[0],
+        {
+          ...READY_BOTH.runtimes[1],
+          capabilities: ["tools"],
+        },
+      ],
+    };
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={() => {}}
+        onCancel={() => {}}
+        runtimesState={limited}
+        codexModels={CODEX_MODELS}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+
+    expect(screen.getByText(/能力信息不完整/)).toBeInTheDocument();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Effort")).toBeNull();
+    expect(screen.queryByText("Permission")).toBeNull();
   });
 
   it("取消 fires onCancel and does NOT create", () => {

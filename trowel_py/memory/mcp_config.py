@@ -7,6 +7,9 @@ import os
 import sys
 from pathlib import Path
 
+from trowel_py.agent_mcp.launch import build_agent_mcp_launch_spec
+from trowel_py.application_paths import resolve_application_data_root
+
 
 def _config_path(trowel_session_id: str) -> Path:
     """按环境变量优先级确定当前会话的 MCP 配置路径。
@@ -39,7 +42,7 @@ def _config_path(trowel_session_id: str) -> Path:
     directory = Path(
         os.environ.get(
             "TROWEL_MCP_CONFIG_DIR",
-            str(Path.home() / ".trowel" / "mcp-configs"),
+            str(resolve_application_data_root() / "mcp-configs"),
         )
     )
     name = f"{trowel_session_id}.json" if trowel_session_id else "memory.json"
@@ -72,23 +75,24 @@ def write_mcp_config(
             "args": ["-m", "trowel_py.memory.mcp_server"],
         }
     if agent_mcp_enabled:
-        servers["trowel_agents"] = {
+        launch = build_agent_mcp_launch_spec(
+            trowel_session_id=trowel_session_id,
+            runtime=runtime,
+            workdir=workdir,
+            permission=permission,
+            base_url=base_url,
+            memory_enabled=memory_enabled,
+            profile_enabled=profile_enabled,
+            self_enabled=self_enabled,
+            delegation_depth=delegation_depth,
+            extra_env={"MEMORY_ROOT": memory_root},
+        )
+        servers[launch.server_name] = {
             "type": "stdio",
-            "command": sys.executable,
-            "args": ["-m", "trowel_py.agent_mcp.server"],
+            "command": launch.command,
+            "args": list(launch.module_args),
             "alwaysLoad": True,
-            "env": {
-                "TROWEL_AGENT_BASE_URL": base_url,
-                "TROWEL_PARENT_SESSION_ID": trowel_session_id,
-                "TROWEL_PARENT_RUNTIME": runtime,
-                "TROWEL_PARENT_WORKDIR": workdir,
-                "TROWEL_PARENT_PERMISSION": permission,
-                "TROWEL_PARENT_MEMORY_ENABLED": str(memory_enabled).lower(),
-                "TROWEL_PARENT_PROFILE_ENABLED": str(profile_enabled).lower(),
-                "TROWEL_PARENT_SELF_ENABLED": str(self_enabled).lower(),
-                "TROWEL_DELEGATION_DEPTH": str(delegation_depth),
-                "MEMORY_ROOT": memory_root,
-            },
+            "env": dict(launch.env),
         }
     config = {"mcpServers": servers}
     path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")

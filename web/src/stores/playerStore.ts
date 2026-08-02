@@ -1,3 +1,5 @@
+/** 管理玩家资料、背包和商店购买状态。 */
+
 import { create } from "zustand";
 import {
   fetchPlayer as fetchPlayerApi,

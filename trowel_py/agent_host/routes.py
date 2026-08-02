@@ -11,9 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime
-from trowel_py.agent_host.hub import (
+from trowel_py.agent_host.capabilities import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
+)
+from trowel_py.agent_host.hub import (
     InvalidSessionRequestError,
     RuntimeTurnError,
     RuntimeUnavailableError,
@@ -34,10 +36,17 @@ from trowel_py.agent_host.local_files import (
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
     CreateAgentSessionRequest,
+    GenerateAgentSessionTitleRequest,
     PatchAgentSessionRequest,
+    RememberWorkspaceRequest,
+    RenameAgentSessionRequest,
     SetCodexGoalRequest,
     SendMessageBody,
     StartCodexReviewRequest,
+)
+from trowel_py.agent_host.workspaces import (
+    RecentWorkspaceStore,
+    WorkspaceUnavailableError,
 )
 
 router = APIRouter()
@@ -158,6 +167,25 @@ def get_hub(request: Request) -> SessionHub:
     return hub
 
 
+def get_workspace_store(request: Request) -> RecentWorkspaceStore:
+    """取得当前应用已经初始化的 Recent 工作区仓储。
+
+    Args:
+        request: 当前 HTTP 请求，用于访问它所属的 FastAPI 应用。
+
+    Returns:
+        负责持久保存 Agent Recent 工作区的仓储。
+
+    Raises:
+        HTTPException: 仓储尚未初始化，此时返回 503。
+    """
+
+    store = getattr(request.app.state, "recent_workspace_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="workspace store not initialized")
+    return store
+
+
 def _sse(event: dict[str, Any]) -> bytes:
     """把一个会话事件编码成服务器推送事件（SSE）使用的数据帧。
 
@@ -222,21 +250,52 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
     }
 
 
+@router.get("/workspaces/recent")
+def list_recent_workspaces(
+    store: RecentWorkspaceStore = Depends(get_workspace_store),
+) -> dict:
+    """按最近打开顺序返回工作区及其当前可用性。"""
+
+    return {
+        "success": True,
+        "data": [workspace.to_dict() for workspace in store.list_recent()],
+        "error": None,
+    }
+
+
+@router.post("/workspaces/recent")
+def remember_workspace(
+    req: RememberWorkspaceRequest,
+    store: RecentWorkspaceStore = Depends(get_workspace_store),
+) -> dict:
+    """校验并记录用户确认打开的工作区。"""
+
+    try:
+        workspace = store.remember(req.path)
+    except WorkspaceUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "data": workspace.to_dict(),
+        "error": None,
+    }
+
+
 @router.get("/sessions/active")
 def list_active(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """返回当前会话列表，以及各会话的连接、处理和选中状态。
+    """返回用户直接管理的会话，以及各会话的连接、处理和选中状态。
 
-    列表也包含尚未连接或已经断开的会话。active_id 只表示工作台当前选中的会话，
-    不表示该会话正在执行任务。
+    列表不包含 Agent MCP 创建的委派子会话，但仍包含尚未连接或已经断开的用户
+    会话。active_id 只表示工作台当前选中的用户会话，不表示该会话正在执行任务。
 
     Args:
         hub: 用于读取会话及实时状态的 Session Hub。
 
     Returns:
-        统一响应。data.sessions 为会话列表，data.active_id 为当前选中的会话 ID；
-        没有选中会话时为 None。
+        统一响应。data.sessions 为用户会话列表，data.active_id 为当前选中的用户
+        会话 ID；没有选中会话时为 None。
     """
 
     sessions, active_id = hub.list_active()
@@ -252,7 +311,7 @@ def activate_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """把指定会话设为工作台当前选中的会话。
+    """把指定用户会话设为工作台当前选中的会话。
 
     此操作只改变选中状态，不会启动、中断或关闭任何会话。
 
@@ -264,7 +323,8 @@ def activate_session(
         统一响应。data.active_id 为切换后的会话 ID。
 
     Raises:
-        HTTPException: 找不到指定会话，此时返回 404。
+        HTTPException: 找不到指定会话时返回 404；指定会话不是用户会话时返回
+            422。
     """
 
     active = _call_hub(hub.activate, session_id)
@@ -395,6 +455,56 @@ async def patch_session(
     return {"success": True, "data": data, "error": None}
 
 
+@router.put("/sessions/{session_id}/title")
+def rename_session_title(
+    session_id: str,
+    body: RenameAgentSessionRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """保存用户手动指定的会话标题。
+
+    Args:
+        session_id: 要改名的用户会话 ID。
+        body: 已去除首尾空白的非空标题。
+        hub: 负责保存 binding 和原生会话标题索引的 Session Hub。
+
+    Returns:
+        统一响应。data 为更新后的完整会话记录。
+
+    Raises:
+        HTTPException: 会话不存在时返回 404，委派会话不能改名时返回 422。
+    """
+
+    binding = _call_hub(hub.rename_title, session_id, body.title)
+    return {"success": True, "data": binding.to_dict(), "error": None}
+
+
+@router.post("/sessions/{session_id}/title/generate")
+async def generate_session_title(
+    session_id: str,
+    body: GenerateAgentSessionTitleRequest,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """保存首条提示词预览，并尝试异步生成语义标题。
+
+    标题模型失败不会使主会话请求失败，此时 data 中保留 prompt 来源的预览。
+
+    Args:
+        session_id: 收到首条用户输入的用户会话 ID。
+        body: 要概括而不执行的首条用户输入。
+        hub: 负责标题降级、生成和竞争处理的 Session Hub。
+
+    Returns:
+        统一响应。data 为当前最终生效的完整会话记录。
+
+    Raises:
+        HTTPException: 会话不存在时返回 404，委派会话不能生成标题时返回 422。
+    """
+
+    binding = await _await_hub(hub.generate_title, session_id, body.text)
+    return {"success": True, "data": binding.to_dict(), "error": None}
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,
@@ -402,21 +512,30 @@ async def delete_session(
 ) -> dict:
     """移除指定会话，使 Trowel 不再显示或管理它。
 
-    移除 Claude Code 会话时会关闭对应进程；移除 Codex 会话时只停止 Trowel 的
-    管理和事件接收，不会主动中断已经开始的 Codex 任务。两种工具各自保存的历史
-    会话都不会被删除。重复请求仍返回成功。
+    两种 runtime 都会先收敛活动 turn 和会话临时资源；原生历史不会删除。资源未能
+    核验归零时保留 binding，并返回 ``needs_reconcile`` 供调用方重试。
 
     Args:
         session_id: 要移除的会话 ID。
         hub: 负责清理会话状态的 Session Hub。
 
     Returns:
-        统一响应。会话存在并被移除时 data.closed 为 True；会话原本就不存在时
-        为 False。
+        统一响应。data.status 区分 closed、needs_reconcile 和 not_found，并携带
+        尚未关闭的资源数量、类型和去敏错误；closed 字段保留旧调用方兼容。
     """
 
-    closed = await hub.delete(session_id)
-    return {"success": True, "data": {"closed": closed}, "error": None}
+    result = await hub.close_result(session_id)
+    return {
+        "success": True,
+        "data": {
+            "closed": result.status == "closed",
+            "status": result.status,
+            "remaining_resource_count": result.remaining_resource_count,
+            "remaining_resource_kinds": list(result.remaining_resource_kinds),
+            "error": result.error,
+        },
+        "error": None,
+    }
 
 
 @router.post("/sessions/{session_id}/interrupt")
@@ -774,8 +893,7 @@ def list_runtimes(
 ) -> dict:
     """列出 Claude Code 和 Codex 支持的功能及当前接入状态。
 
-    Codex 的 connected 只表示应用已经配置共享会话管理器，不代表账号已登录或
-    网络可用。Claude Code 的 connected 当前固定为 True，不会主动探测进程。
+    connected 表示对应 CLI 已安装且 Host 已配置，不代表账号已登录或网络可用。
 
     Args:
         hub: 用于判断 Codex 会话管理器是否已配置的 Session Hub。
@@ -791,14 +909,16 @@ def list_runtimes(
             "label": "Claude Code",
             "native": "claude -p (CCHost)",
             "capabilities": list(CC_CAPABILITIES),
-            "connected": True,
+            "connected": hub.runtime_available(Runtime.CLAUDE_CODE),
+            "install_hint": "安装 Claude Code CLI 后重启 Trowel",
         },
         {
             "runtime": "codex",
             "label": "Codex",
             "native": "app-server (CodexHostManager)",
             "capabilities": list(CODEX_CAPABILITIES),
-            "connected": hub.codex_available,
+            "connected": hub.runtime_available(Runtime.CODEX),
+            "install_hint": "安装 Codex CLI 后重启 Trowel",
         },
     ]
     return {"success": True, "data": runtimes, "error": None}
@@ -816,12 +936,12 @@ async def list_models(
         hub: 用于读取 Codex 模型目录的 Session Hub。
 
     Returns:
-        统一响应。data.models 为 Codex 当前提供的模型列表。
-
-    Raises:
-        HTTPException: Codex 会话管理器未配置时返回 503。
+        统一响应。data.models 为 Codex 当前提供的模型列表；Codex CLI 未安装时
+        返回空列表。
     """
 
+    if not hub.runtime_available(Runtime.CODEX):
+        return {"success": True, "data": {"models": []}, "error": None}
     models = await _await_hub(hub.list_codex_models)
     return {"success": True, "data": {"models": models}, "error": None}
 

@@ -59,6 +59,9 @@ from trowel_py.cc_host.schemas import (
 )
 from trowel_py.memory.injection import build_memory_injection
 from trowel_py.model_os.self_assembler import build_session_injection
+from trowel_py.resource_lifecycle.models import OwnerScope, ProcessIdentity
+from trowel_py.resource_lifecycle.processes import ProcessController
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +159,11 @@ class CCHost:
         memory_enabled: bool = True,
         profile_enabled: bool = True,
         self_enabled: bool = True,
+        process_controller: ProcessController | None = None,
+        resource_registry: ResourceRegistry | None = None,
+        close_interrupt_s: float = 2.0,
+        close_term_s: float = 3.0,
+        close_kill_s: float = 5.0,
     ) -> None:
         """创建单会话 host 并保存进程、注入和运行时配置。
 
@@ -189,6 +197,12 @@ class CCHost:
             memory_enabled: 是否向会话提供 Memory 内容和读取入口。
             profile_enabled: 是否向会话提供用户画像。
             self_enabled: 是否向会话提供 Trowel 的持续身份信息。
+            process_controller: 核验并终止独立进程组的实现；None 保留只操作根进程
+                的兼容路径，生产应用会显式传入本机实现。
+            resource_registry: 记录 CC 进程组 owner 和关闭终态的应用资源账本。
+            close_interrupt_s: 活动 turn 收到 SIGINT 后的最长等待秒数。
+            close_term_s: stdin 关闭或 SIGTERM 后的最长等待秒数。
+            close_kill_s: SIGKILL 后确认进程组退出的最长等待秒数。
         """
 
         self.session_id = session_id
@@ -226,8 +240,16 @@ class CCHost:
             else None
         )
         self._owned_mcp_config = owned_mcp_config
+        self._process_controller = process_controller
+        self._resource_registry = resource_registry
+        self._close_interrupt_s = close_interrupt_s
+        self._close_term_s = close_term_s
+        self._close_kill_s = close_kill_s
 
         self._proc: Any = None
+        self._process_generation = 0
+        self._process_resource_id: str | None = None
+        self._process_identity: ProcessIdentity | None = None
         self._started = False
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
@@ -246,6 +268,8 @@ class CCHost:
         self._bg_tracker = BackgroundActivityTracker()
         # 成功 result 等后台结束；错误 result 立即结束，每轮只发布一个终态。
         self._pending_terminal: FinishedEvent | ErrorEvent | None = None
+        if resume_from:
+            self._register_session_blocking(str(self._jsonl_path(resume_from)))
         if checkpoint.is_git_repo(self.workdir) and resume_from:
             jsonl_path = self._jsonl_path(resume_from)
             offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
@@ -257,6 +281,20 @@ class CCHost:
         """返回 CC 原生会话 ID；首次初始化前可能为空。"""
 
         return self._cc_session_id
+
+    @property
+    def has_in_flight_turn(self) -> bool:
+        """判断实时发送或断线后的后台 drain 是否仍占用当前轮次。"""
+
+        return self.running or (
+            self._drain_task is not None and not self._drain_task.done()
+        )
+
+    @property
+    def session_kind(self) -> str:
+        """返回会话属于用户直接管理还是 Agent 委派。"""
+
+        return self._session_kind
 
     @property
     def model(self) -> str | None:
@@ -394,43 +432,248 @@ class CCHost:
     async def _ensure_process(self) -> None:
         """复用存活进程，或启动新 CC 进程并更新运行标识。"""
 
-        if self._proc is not None and self._proc.returncode is None:
-            return
+        if self._proc is not None:
+            if self._proc.returncode is None:
+                return
+            if not self._process_tree_has_exited(self._proc):
+                await self._kill()
+                if not self._process_tree_has_exited(self._proc):
+                    raise RuntimeError(
+                        "previous Claude Code process group still needs reconciliation"
+                    )
+        self._mark_process_resource_closed()
         resume: str | None = None
         if self._started and self._cc_session_id:
             resume = self._cc_session_id
         elif self._resume_from:
             resume = self._resume_from
-        self._proc = await self._spawn(resume_from=resume)
+        proc = await self._spawn(resume_from=resume)
+        identity = (
+            self._process_controller.inspect(proc.pid)
+            if self._process_controller is not None
+            else None
+        )
+        if self._process_controller is not None and identity is None:
+            await self._force_process_exit(proc)
+            raise RuntimeError(f"cannot identify spawned process {proc.pid}")
+        self._process_generation += 1
+        resource_id = f"cc-process:{self.session_id}:{self._process_generation}"
+        if self._resource_registry is not None:
+            try:
+                self._resource_registry.register_process_group(
+                    resource_id=resource_id,
+                    owner_scope=OwnerScope.SESSION,
+                    resource_kind="claude_code_process_group",
+                    pid=proc.pid,
+                    runtime="claude_code",
+                    runtime_generation=self._process_generation,
+                    agent_session_id=self.session_id,
+                )
+            except BaseException:
+                await self._force_process_exit(proc)
+                raise
+            self._process_resource_id = resource_id
+        self._process_identity = identity
+        self._proc = proc
         self._started = True
 
     async def _kill(self) -> None:
-        """尽力终止仍存活的子进程，最多等待五秒。"""
+        """强制终止仍存活的 CC 进程组，并确认资源账本终态。"""
         proc = self._proc
-        if proc is None or proc.returncode is not None:
+        if proc is None or self._process_tree_has_exited(proc):
+            self._mark_process_resource_closed()
             return
-        proc.kill()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            pass
+        await self._signal_process(proc, "SIGKILL")
+        exited = await self._wait_process_exit(proc, self._close_kill_s)
+        if not exited:
+            self._mark_process_resource_needs_reconcile(
+                "Claude Code process group survived SIGKILL"
+            )
+            return
+        self._mark_process_resource_closed()
 
-    def _interrupt_proc(self, proc: Any) -> None:
-        """向进程组发送 SIGINT，并容忍检查后退出的竞态。"""
+    async def _force_process_exit(self, proc: Any) -> None:
+        """在 spawn 后登记失败时强制结束尚未公开的进程。"""
+
+        await self._signal_process(proc, "SIGKILL")
+        await self._wait_process_exit(proc, self._close_kill_s)
+
+    async def _close_process(self, *, active: bool) -> None:
+        """关闭 stdin，并按 INT、TERM、KILL 顺序收敛独立进程组。
+
+        Args:
+            active: 关闭开始时是否仍有发送或后台 drain；为 True 时先发 SIGINT。
+
+        Raises:
+            RuntimeError: SIGKILL 后进程组仍未退出，无法提交 closed。
+        """
+
+        proc = self._proc
+        if proc is None or self._process_tree_has_exited(proc):
+            self._mark_process_resource_closed()
+            return
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ProcessLookupError, OSError):
+                pass
+        if active:
+            await self._signal_process(proc, "SIGINT")
+            if await self._wait_process_exit(proc, self._close_interrupt_s):
+                self._mark_process_resource_closed()
+                return
+        if await self._wait_process_exit(proc, self._close_term_s):
+            self._mark_process_resource_closed()
+            return
+        await self._signal_process(proc, "SIGTERM")
+        if await self._wait_process_exit(proc, self._close_term_s):
+            self._mark_process_resource_closed()
+            return
+        await self._signal_process(proc, "SIGKILL")
+        if await self._wait_process_exit(proc, self._close_kill_s):
+            self._mark_process_resource_closed()
+            return
+        self._mark_process_resource_needs_reconcile(
+            "Claude Code process group survived SIGKILL"
+        )
+        raise RuntimeError("Claude Code process group did not exit after SIGKILL")
+
+    async def _signal_process(self, proc: Any, signal_name: str) -> None:
+        """优先向已核验进程组发送信号，兼容替身时只操作根进程。
+
+        Args:
+            proc: 当前 CCHost 持有的子进程对象。
+            signal_name: `SIGINT`、`SIGTERM` 或 `SIGKILL`。
+        """
+
+        if self._process_tree_has_exited(proc):
+            return
+        controller = self._process_controller
+        identity = self._process_identity
+        if controller is not None and identity is not None:
+            self._signal_registered_process_group(signal_name)
+            return
+        self._signal_root_process(proc, signal_name)
+
+    def _signal_root_process(self, proc: Any, signal_name: str) -> None:
+        """无进程身份控制器时，只向当前根进程发送信号。
+
+        Args:
+            proc: 当前 CCHost 持有的子进程对象。
+            signal_name: `SIGINT`、`SIGTERM` 或 `SIGKILL`。
+        """
+
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            if signal_name == "SIGINT":
+                proc.send_signal(signal.SIGINT)
+            elif signal_name == "SIGTERM":
+                proc.terminate()
+            else:
+                proc.kill()
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    async def _wait_process_exit(self, proc: Any, timeout_s: float) -> bool:
+        """有界等待根进程退出，并在可用时同时核验整个进程组。
+
+        Args:
+            proc: 当前 CCHost 持有的子进程对象。
+            timeout_s: 最长等待秒数；0 表示只检查一次。
+        """
+
+        if proc.returncode is None and timeout_s > 0:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                pass
+        root_exited = proc.returncode is not None
+        controller = self._process_controller
+        identity = self._process_identity
+        if controller is None or identity is None:
+            return root_exited
+        return root_exited and not controller.group_alive(identity.process_group)
+
+    def _process_tree_has_exited(self, proc: Any) -> bool:
+        """判断根进程与 spawn 时登记的独立进程组是否已经同时退出。"""
+
+        if proc.returncode is None:
+            return False
+        controller = self._process_controller
+        identity = self._process_identity
+        return bool(
+            controller is None
+            or identity is None
+            or not controller.group_alive(identity.process_group)
+        )
+
+    def _mark_process_resource_closed(self) -> None:
+        """把当前 CC 进程资源提交为 closed，并清除本地资源 ID。"""
+
+        resource_id = self._process_resource_id
+        if resource_id is not None and self._resource_registry is not None:
+            self._resource_registry.mark_closed(resource_id)
+        self._process_resource_id = None
+        self._process_identity = None
+
+    def _mark_process_resource_needs_reconcile(self, error: str) -> None:
+        """把无法确认退出的 CC 进程组保留为 needs_reconcile。
+
+        Args:
+            error: 不含正文或凭据的关闭失败说明。
+        """
+
+        resource_id = self._process_resource_id
+        if resource_id is not None and self._resource_registry is not None:
+            self._resource_registry.mark_needs_reconcile(resource_id, error)
+
+    def _interrupt_proc(self, proc: Any) -> None:
+        """向进程组发送 SIGINT，并容忍检查后退出的竞态。"""
+        if self._process_controller is not None and self._process_identity is not None:
+            self._signal_registered_process_group("SIGINT")
+            return
+        self._signal_root_process(proc, "SIGINT")
+
     def _sync_kill(self) -> None:
-        """在 GeneratorExit 等无法 await 的清理路径中同步终止子进程。"""
+        """在 GeneratorExit 等无法 await 的路径中同步终止已核验进程组。"""
         proc = self._proc
-        if proc is None or getattr(proc, "returncode", None) is not None:
+        if proc is None or self._process_tree_has_exited(proc):
+            self._mark_process_resource_closed()
+            return
+        if self._process_controller is not None and self._process_identity is not None:
+            self._signal_registered_process_group("SIGKILL")
             return
         try:
             proc.kill()
         except Exception:  # noqa: BLE001 — 清理不能遮蔽原始退出原因
             pass
+
+    def _signal_registered_process_group(self, signal_name: str) -> None:
+        """重查根 PID 启动身份后，才向登记的 CC 进程组发送信号。
+
+        Args:
+            signal_name: `SIGINT`、`SIGTERM` 或 `SIGKILL`。
+        """
+
+        controller = self._process_controller
+        identity = self._process_identity
+        if controller is None or identity is None:
+            return
+        current = controller.inspect(identity.pid)
+        if current is not None and current != identity:
+            self._mark_process_resource_needs_reconcile(
+                "Claude Code process identity changed before signal"
+            )
+            return
+        if current is None and not controller.group_alive(identity.process_group):
+            return
+        try:
+            controller.signal_group(identity.process_group, signal_name)
+        except ProcessLookupError:
+            return
+        except (PermissionError, OSError, RuntimeError) as exc:
+            self._mark_process_resource_needs_reconcile(
+                f"Claude Code process-group signal failed: {type(exc).__name__}"
+            )
 
     async def interrupt(self) -> None:
         """中断当前 turn；已知原生会话 ID 时，后续发送会恢复上下文。"""
@@ -448,6 +691,7 @@ class CCHost:
 
         host 拥有的 MCP 配置文件也会被删除。
         """
+        active = self.has_in_flight_turn
         # drain 持有 stdout reader，终止进程前必须先取消它。
         if self._drain_task is not None and not self._drain_task.done():
             self._drain_task.cancel()
@@ -457,7 +701,20 @@ class CCHost:
                 pass
             self._drain_task = None
         self._workflow_watcher.close()
-        await self._kill()
+        await self._close_process(active=active)
+        if self._owned_mcp_config and self._mcp_config:
+            Path(self._mcp_config).unlink(missing_ok=True)
+
+    def discard_unstarted(self) -> None:
+        """清理尚未启动的 host 及其自有 MCP 配置。
+
+        Raises:
+            RuntimeError: 会话已经启动，必须改走异步 close 流程。
+        """
+
+        if self._started or self._proc is not None or self._drain_task is not None:
+            raise RuntimeError("started CC session cannot use create rollback")
+        self._workflow_watcher.close()
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
 
@@ -468,7 +725,7 @@ class CCHost:
     async def _prepare_checkpoint(self) -> tuple[str, bool]:
         """Git 工作区首轮复用启动 checkpoint，后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
-        if not checkpoint.is_git_repo(self.workdir):
+        if not checkpoint.is_enabled() or not checkpoint.is_git_repo(self.workdir):
             return uuid.uuid4().hex, False
         if self._turn_count == 1:
             return self._session_start_turn_id, True
@@ -490,7 +747,11 @@ class CCHost:
 
     async def _maybe_save_session_start_checkpoint(self, cc_sid: str) -> None:
         """原生会话 ID 就绪后，在线程池中幂等保存启动 checkpoint。"""
-        if self._session_start_saved or not checkpoint.is_git_repo(self.workdir):
+        if (
+            self._session_start_saved
+            or not checkpoint.is_enabled()
+            or not checkpoint.is_git_repo(self.workdir)
+        ):
             return
         jsonl_path = self._jsonl_path(cc_sid)
         offset = jsonl_path.stat().st_size if jsonl_path.is_file() else 0
@@ -549,8 +810,10 @@ class CCHost:
             _wf_debug(f"memory completed-offset update failed (ignored): {exc}")
 
     def _save_session_start_blocking(self, jsonl_path: str, offset: int) -> bool:
-        """同步保存会话首轮前的 checkpoint。"""
+        """启用 checkpoint 时同步保存会话首轮前的文件快照。"""
 
+        if not checkpoint.is_enabled():
+            return False
         try:
             checkpoint.save(
                 self.workdir,
@@ -566,8 +829,10 @@ class CCHost:
     def _save_checkpoint_blocking(
         self, turn_id: str, jsonl_path: str, offset: int
     ) -> bool:
-        """同步保存指定轮次前的 checkpoint。"""
+        """启用 checkpoint 时同步保存指定轮次前的文件快照。"""
 
+        if not checkpoint.is_enabled():
+            return False
         try:
             checkpoint.save(
                 self.workdir,

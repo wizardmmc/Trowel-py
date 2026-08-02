@@ -1,26 +1,15 @@
-import type { Phase, SessionMeta } from "../../stores/ccStore";
+/** 展示会话阶段、单轮用量、压缩摘要和中断入口。 */
+
+import type { Phase, SessionMeta } from "../../agent/domain";
+import { accountingLabel, phaseLabel } from "./statusPresentation";
 
 interface StatusBarProps {
   readonly phase: Phase;
   readonly meta: SessionMeta;
+  readonly runtimeLabel: string;
   readonly streaming: boolean;
-  readonly onInterrupt: () => void;
+  readonly onInterrupt?: () => void;
 }
-
-const PHASE_LABEL: Record<Phase, string> = {
-  idle: "空闲",
-  awaiting_first: "等待 CC 接手…",
-  thinking: "思考中",
-  generating: "生成中",
-  tool: "执行工具",
-  retrying: "重试中",
-  compacting: "压缩上下文中",
-  background_waiting: "等待后台任务",
-  awaiting_input: "等你回答",
-  done: "完成",
-  error: "出错",
-  interrupted: "已中断",
-};
 
 function phaseClass(phase: Phase): string {
   if (phase === "error") return "cc-status__phase--error";
@@ -32,24 +21,25 @@ function phaseClass(phase: Phase): string {
 export function StatusBar({
   phase,
   meta,
+  runtimeLabel,
   streaming,
   onInterrupt,
 }: StatusBarProps) {
-  const cost = meta.costUsd !== null ? `$${meta.costUsd.toFixed(4)}` : null;
-  const turns = meta.numTurns !== null ? `${meta.numTurns} 轮` : null;
+  const accounting = accountingLabel(meta);
 
   return (
     <div className="cc-status" role="status">
       <div className="cc-status__left">
         <span className={`cc-status__phase ${phaseClass(phase)}`}>
-          {PHASE_LABEL[phase]}
+          {phaseLabel(phase, runtimeLabel)}
         </span>
-        {(cost || turns) && (
-          <span className="cc-status__accounting">
-            {turns}
-            {turns && cost && " · "}
-            {cost}
-          </span>
+        {accounting && (
+          <>
+            <span className="cc-status__separator" aria-hidden="true">
+              ·
+            </span>
+            <span className="cc-status__accounting">{accounting}</span>
+          </>
         )}
         {meta.hookFired && (
           <span className="cc-status__hook" title={`hook: ${meta.hookFired}`}>
@@ -62,7 +52,7 @@ export function StatusBar({
         )}
       </div>
       <div className="cc-status__right">
-        {streaming && (
+        {streaming && onInterrupt && (
           <button
             type="button"
             className="cc-status__interrupt"

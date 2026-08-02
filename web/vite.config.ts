@@ -1,13 +1,25 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { createAgentServiceProxy } from './desktop/agentServiceProxy'
 
 export default defineConfig({
-  plugins: [react()],
-  server: {
-    // 开发环境由 Vite 把 /api 转发到 :8000；生产构建使用同源请求。
-    proxy: { "/api": "http://localhost:8000" },
-  },
+  base: './',
+  plugins: [
+    react(),
+    {
+      name: 'trowel-agent-service-proxy',
+      configureServer(server) {
+        server.middlewares.use(
+          createAgentServiceProxy({
+            descriptorPath: process.env.TROWEL_DESKTOP_SERVICE_FILE,
+            fallbackBaseUrl:
+              process.env.TROWEL_API_FALLBACK_URL ?? 'http://localhost:8000',
+          }),
+        )
+      },
+    },
+  ],
   test: {
     environment: 'jsdom',
     globals: true,

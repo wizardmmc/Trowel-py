@@ -107,7 +107,7 @@ TZ = timezone.utc
 def _seed_user(root: Path, cc: str) -> None:
     conn = open_sessions_db(root)
     try:
-        create_sessions_repository(conn).register(
+        create_sessions_repository(conn).claude.register(
             SessionRecord(
                 cc_session_id=cc,
                 workdir="/p",

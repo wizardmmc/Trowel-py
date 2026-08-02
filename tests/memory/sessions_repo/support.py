@@ -3,9 +3,9 @@ from __future__ import annotations
 import sqlite3
 
 from trowel_py.memory.sessions_repo import (
+    ClaudeSessionsRepository,
     SessionBinding,
     SessionRecord,
-    SessionsRepository,
     create_sessions_repository,
 )
 
@@ -22,12 +22,13 @@ def session_record(**overrides) -> SessionRecord:
     return SessionRecord(**values)
 
 
-def repository() -> SessionsRepository:
-    return create_sessions_repository(sqlite3.connect(":memory:"))
+def repository() -> ClaudeSessionsRepository:
+    """创建只暴露 Claude Code 数据职责的内存仓储。"""
+    return create_sessions_repository(sqlite3.connect(":memory:")).claude
 
 
 def complete(
-    repo: SessionsRepository,
+    repo: ClaudeSessionsRepository,
     *session_ids: str,
 ) -> None:
     for session_id in session_ids:

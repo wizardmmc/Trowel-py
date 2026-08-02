@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentPendingRequest,
   AgentSession,
-} from "../../api/agent";
-import { applyPendingApproval } from "../../stores/ccStore/approvalState";
-import { createNewSessionState } from "../../stores/ccStore/sessionState";
+} from "../../agent/transport";
+import { applyPendingApproval } from "../../agent/application/store/approvalState";
+import { createNewSessionState } from "../../agent/application/store/sessionState";
 
 const SESSION: AgentSession = {
   session_id: "s1",

@@ -1,8 +1,10 @@
+/** 集中挂载会话回滚、新建、模型和 effort 弹层。 */
+
 import type { ModelOption } from "../../api/cc";
 import type {
   AgentModel,
-} from "../../api/agent";
-import type { Turn } from "../../stores/ccStore";
+} from "../../agent/transport";
+import type { Turn } from "../../agent/domain";
 import { EffortPicker } from "./EffortPicker";
 import { ModelPicker } from "./ModelPicker";
 import {

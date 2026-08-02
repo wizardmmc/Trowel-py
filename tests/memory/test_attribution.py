@@ -16,7 +16,7 @@ def _repo() -> object:
 
 def test_resolve_via_trowel_binding_when_cc_id_empty() -> None:
     repo = _repo()
-    repo.bind_session(SessionBinding("t1", "cc-x", "user", "/w", "t"))
+    repo.claude.bind_session(SessionBinding("t1", "cc-x", "user", "/w", "t"))
     idx = AttributionIndex.from_repo(repo)
     a = idx.resolve("t1", "")
     assert a.cc_session_id == "cc-x"
@@ -27,7 +27,7 @@ def test_resolve_via_trowel_binding_when_cc_id_empty() -> None:
 
 def test_resolve_falls_back_to_cc_session_id() -> None:
     repo = _repo()
-    repo.register(
+    repo.claude.register(
         SessionRecord(
             cc_session_id="cc-y",
             workdir="/w",
@@ -60,7 +60,7 @@ def test_resolve_unattributed_when_both_empty() -> None:
 
 def test_trowel_binding_takes_precedence_over_cc_id() -> None:
     repo = _repo()
-    repo.bind_session(SessionBinding("t1", "cc-a", "user", "/w", "t"))
+    repo.claude.bind_session(SessionBinding("t1", "cc-a", "user", "/w", "t"))
     idx = AttributionIndex.from_repo(repo)
     a = idx.resolve("t1", "cc-b")
     assert a.cc_session_id == "cc-a"
@@ -69,8 +69,8 @@ def test_trowel_binding_takes_precedence_over_cc_id() -> None:
 
 def test_many_trowel_ids_one_cc_all_resolve_to_it() -> None:
     repo = _repo()
-    repo.bind_session(SessionBinding("t1", "cc-x", "user", "/w", "t1"))
-    repo.bind_session(SessionBinding("t2", "cc-x", "user", "/w", "t2"))
+    repo.claude.bind_session(SessionBinding("t1", "cc-x", "user", "/w", "t1"))
+    repo.claude.bind_session(SessionBinding("t2", "cc-x", "user", "/w", "t2"))
     idx = AttributionIndex.from_repo(repo)
     assert idx.resolve("t1", "").cc_session_id == "cc-x"
     assert idx.resolve("t2", "").cc_session_id == "cc-x"

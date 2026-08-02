@@ -1,3 +1,5 @@
+/** 将运行秒数格式化为紧凑的时长标签。 */
+
 export function formatRunDuration(seconds: number): string {
   if (seconds < 60) {
     return `${seconds}s`;

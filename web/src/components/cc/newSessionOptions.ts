@@ -1,8 +1,9 @@
-import type { Runtime } from "../../api/agent";
+/** 定义新会话对话框使用的 runtime 文案和 effort 选项。 */
+
+import type { Runtime } from "../../agent/transport";
 
 export interface RuntimeOption {
   readonly value: Runtime;
-  readonly label: string;
   readonly native: string;
   readonly desc: string;
   readonly efforts: ReadonlyArray<{
@@ -18,9 +19,8 @@ export interface RuntimeOption {
 export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
   {
     value: "claude_code",
-    label: "Claude Code",
     native: "原生 claude -p",
-    desc: "继续使用现有 CCHost 配置；保留 Workflow、hook 与 CC checkpoint。",
+    desc: "继续使用现有 Claude Host 配置；保留 Workflow、hook 与 Claude checkpoint。",
     efforts: [
       { value: "", label: "跟随" },
       { value: "low", label: "low" },
@@ -31,14 +31,13 @@ export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
       { value: "ultracode", label: "ultracode" },
     ],
     permissions: [
-      { value: "bypassPermissions", label: "跟随 CC（bypass）" },
+      { value: "bypassPermissions", label: "跟随 Claude（bypass）" },
       { value: "default", label: "default" },
       { value: "acceptEdits", label: "acceptEdits" },
     ],
   },
   {
     value: "codex",
-    label: "Codex",
     native: "原生 app-server",
     desc: "使用本机 Codex 订阅、sandbox、审批与 usage；不经过 Claude Code。",
     efforts: [],
@@ -50,11 +49,6 @@ export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
     ],
   },
 ];
-
-export const RUNTIME_LABEL: Record<Runtime, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex",
-};
 
 export function runtimeOptionIndex(value: Runtime): number {
   return RUNTIME_OPTIONS.findIndex((option) => option.value === value);

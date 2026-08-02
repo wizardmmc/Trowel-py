@@ -105,7 +105,7 @@ def test_profile_recalibrate_run_with_proxy_dispatches(
     monkeypatch,
     capsys,
 ) -> None:
-    import trowel_py.memory.profile_recalibrate as recalibration_module
+    import trowel_py.profile.recalibration as recalibration_module
 
     seen: dict[str, object] = {}
 

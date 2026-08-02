@@ -208,6 +208,7 @@ class TestBackgroundTaskLogicalTurn:
         await asyncio.sleep(0.05)
         assert host._drain_task is not None, "cancel 后应起后台 drain"
         assert host.running is True, "drain 期间 running=True (slice §6)"
+        assert host.has_in_flight_turn is True
         for ev in [
             {
                 "type": "system",
@@ -232,6 +233,7 @@ class TestBackgroundTaskLogicalTurn:
             await asyncio.wait_for(host._drain_task, timeout=2.0)
         assert host._drain_task is None, "drain 应在逻辑终态结束"
         assert host.running is False
+        assert host.has_in_flight_turn is False
         assert proc.returncode is None, "drain 绝不杀 cc (slice §6)"
 
     async def test_drain_period_rejects_new_sendtext(self, tmp_path: Path):

@@ -1,4 +1,5 @@
-"""在应用生命周期内调度 daily memory review。"""
+"""在应用生命周期内处理会话关闭请求，并调度每日 Memory review。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,13 +11,22 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from trowel_py.agent_host.binding import SessionBinding
 from trowel_py.memory import paths
+from trowel_py.memory.daily_review.requests import (
+    enqueue_session_review,
+    load_session_review_requests,
+)
+from trowel_py.memory.sessions_repo import ReviewRequest
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 from trowel_py.memory.scheduling import seconds_until
 
 logger = logging.getLogger("trowel_py.memory.review_scheduler")
 
 DEFAULT_REVIEW_TIME: time = time(2, 30)
 DEFAULT_REVIEW_ENABLED: bool = True
+IMMEDIATE_RETRY_MIN_SECONDS = 1.0
+IMMEDIATE_RETRY_MAX_SECONDS = 300.0
 DispatchFn = Callable[[dict[str, Any]], None]
 NowFn = Callable[[], datetime]
 SleepFn = Callable[[float], Awaitable[None]]
@@ -116,7 +126,7 @@ def _default_dispatch(event: dict[str, Any]) -> None:
 
 
 class MemoryReviewScheduler:
-    """在应用进程内维护启动补跑和每日定时任务。"""
+    """串行处理即时关闭请求、启动补跑和每日定时任务。"""
 
     def __init__(
         self,
@@ -126,6 +136,7 @@ class MemoryReviewScheduler:
         dispatch_fn: DispatchFn | None = None,
         now_fn: NowFn | None = None,
         sleep_fn: SleepFn | None = None,
+        resource_registry: ResourceRegistry | None = None,
     ) -> None:
         """配置调度时间和派发依赖。
 
@@ -137,6 +148,7 @@ class MemoryReviewScheduler:
             now_fn: 返回用于计算 review 日期的本地时间；带时区的值按其本地
                 时钟字段使用，不转换时区。
             sleep_fn: 每日循环使用的异步等待函数。
+            resource_registry: 内部 review LLM 进程使用的应用资源账本。
         """
 
         self._config = config
@@ -144,7 +156,12 @@ class MemoryReviewScheduler:
         self._dispatch: DispatchFn = dispatch_fn or _default_dispatch
         self._now: NowFn = now_fn or datetime.now
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
+        self._resource_registry = resource_registry
         self._tasks: list[asyncio.Task[None]] = []
+        self._immediate_wakeup = asyncio.Event()
+        self._dispatch_lock = asyncio.Lock()
+        self._active_dispatches: set[asyncio.Task[None]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
 
     @property
@@ -154,20 +171,33 @@ class MemoryReviewScheduler:
         return tuple(self._tasks)
 
     async def start(self) -> None:
-        """启动一次立即补跑和每日循环；禁用或已启动时不重复创建任务。"""
-        if self._started or not self._config.review_enabled:
+        """启动关闭请求 worker，并按配置启动 catch-up 和每日循环。"""
+        if self._started:
             return
         self._started = True
+        self._loop = asyncio.get_running_loop()
         logger.info(
             "[memory] review scheduler started (daily at %s, root=%s)",
             self._config.review_time,
             self._memory_root,
         )
-        self._tasks.append(asyncio.create_task(self._catchup(), name="memory-review-catchup"))
-        self._tasks.append(asyncio.create_task(self._daily_loop(), name="memory-review-daily"))
+        self._tasks.append(
+            asyncio.create_task(
+                self._immediate_loop(),
+                name="memory-review-immediate",
+            )
+        )
+        self._immediate_wakeup.set()
+        if self._config.review_enabled:
+            self._tasks.append(
+                asyncio.create_task(self._catchup(), name="memory-review-catchup")
+            )
+            self._tasks.append(
+                asyncio.create_task(self._daily_loop(), name="memory-review-daily")
+            )
 
     async def stop(self) -> None:
-        """取消调度 task；线程中已开始的 review 不会被强制终止。"""
+        """停止领取新任务，不等待已经进入线程的 LLM review。"""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -180,7 +210,101 @@ class MemoryReviewScheduler:
                     "[memory] scheduler task %s raised on shutdown", task.get_name()
                 )
         self._tasks.clear()
+        self._loop = None
         self._started = False
+
+    def request_session_review(self, binding: SessionBinding) -> None:
+        """先持久登记关闭请求，再唤醒不阻塞关闭操作的后台 worker。
+
+        Args:
+            binding: 已关闭 runtime、尚未删除持久 binding 的用户会话。
+        """
+
+        enqueue_session_review(self._memory_root, binding, now_fn=self._now)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._immediate_wakeup.set)
+
+    async def _immediate_loop(self) -> None:
+        """持续处理持久队列；仍有任务时按上限退避重试。"""
+
+        retry_delay = IMMEDIATE_RETRY_MIN_SECONDS
+        while True:
+            try:
+                await self._immediate_wakeup.wait()
+            except asyncio.CancelledError:
+                logger.info("[memory] immediate review loop cancelled")
+                return
+            while True:
+                self._immediate_wakeup.clear()
+                try:
+                    requests = await asyncio.to_thread(
+                        load_session_review_requests,
+                        self._memory_root,
+                        eligible_at=self._local_wall_clock_now().isoformat(
+                            timespec="microseconds"
+                        ),
+                    )
+                except Exception:
+                    logger.exception("[memory] failed to read immediate review queue")
+                    requests = None
+                if requests is not None:
+                    for request in requests:
+                        event = {
+                            "date": request.requested_at[:10],
+                            "root": str(self._memory_root),
+                            "review_session_id": request.trowel_session_id,
+                        }
+                        if self._resource_registry is not None:
+                            event["_resource_registry"] = self._resource_registry
+                        try:
+                            async with self._dispatch_lock:
+                                await self._dispatch_in_thread(event)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.exception(
+                                "[memory] immediate review dispatch failed for %s",
+                                request.trowel_session_id,
+                            )
+                try:
+                    remaining = await asyncio.to_thread(
+                        load_session_review_requests,
+                        self._memory_root,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[memory] failed to re-read immediate review queue"
+                    )
+                    remaining = None
+                if remaining == []:
+                    retry_delay = IMMEDIATE_RETRY_MIN_SECONDS
+                    break
+                wait_timeout = self._next_immediate_wait(remaining, retry_delay)
+                try:
+                    await asyncio.wait_for(
+                        self._immediate_wakeup.wait(),
+                        timeout=wait_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                retry_delay = min(
+                    retry_delay * 2,
+                    IMMEDIATE_RETRY_MAX_SECONDS,
+                )
+
+    def _next_immediate_wait(
+        self,
+        requests: list[ReviewRequest],
+        retry_delay: float,
+    ) -> float:
+        """已到期请求按退避重试，纯未来请求精确等到最近截止时间。"""
+
+        now = self._local_wall_clock_now()
+        deadlines = [datetime.fromisoformat(request.not_before) for request in requests]
+        if any(deadline <= now for deadline in deadlines):
+            return retry_delay
+        return max(min((deadline - now).total_seconds() for deadline in deadlines), 0.0)
 
     async def _catchup(self) -> None:
         """应用启动后立即派发一次昨天的 review。"""
@@ -191,7 +315,10 @@ class MemoryReviewScheduler:
         """每天等到配置时刻后派发 review，等待被取消时正常退出。"""
         while True:
             try:
-                wait = seconds_until(self._config.review_time, self._now())
+                wait = seconds_until(
+                    self._config.review_time,
+                    self._local_wall_clock_now(),
+                )
                 await self._sleep(wait)
             except asyncio.CancelledError:
                 logger.info("[memory] daily review loop cancelled")
@@ -200,16 +327,38 @@ class MemoryReviewScheduler:
 
     async def _run_once(self, *, label: str = "run") -> None:
         """在线程中派发一次 review；失败只记录日志，不能拖垮应用。"""
-        now = self._now()
-        if now.tzinfo is not None:
-            now = now.replace(tzinfo=None)
+        now = self._local_wall_clock_now()
         cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
         event = {
             "date": (cutoff.date() - timedelta(days=1)).isoformat(),
             "eligible_before": cutoff.isoformat(),
             "root": str(self._memory_root),
         }
+        if self._resource_registry is not None:
+            event["_resource_registry"] = self._resource_registry
         try:
-            await asyncio.to_thread(self._dispatch, event)
+            async with self._dispatch_lock:
+                await self._dispatch_in_thread(event)
         except Exception:
             logger.exception("[memory] review dispatch (%s) failed", label)
+
+    async def _dispatch_in_thread(self, event: dict[str, Any]) -> None:
+        """派发同步 review，并保留线程任务供关闭流程有界等待。"""
+
+        task = asyncio.create_task(asyncio.to_thread(self._dispatch, event))
+        self._active_dispatches.add(task)
+        task.add_done_callback(self._finish_dispatch)
+        await asyncio.shield(task)
+
+    def _finish_dispatch(self, task: asyncio.Task[None]) -> None:
+        """移除已结束线程任务，并领取异常避免孤儿 task 告警。"""
+
+        self._active_dispatches.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _local_wall_clock_now(self) -> datetime:
+        """返回与 SQLite 截止时间文本一致的本地无时区当前时间。"""
+
+        now = self._now()
+        return now.replace(tzinfo=None) if now.tzinfo is not None else now

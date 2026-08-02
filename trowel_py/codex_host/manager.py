@@ -35,6 +35,9 @@ from trowel_py.codex_host.pending_requests import (
 )
 from trowel_py.codex_host.translator import CodexTranslator
 from trowel_py.codex_host.transport import AppServerClient
+from trowel_py.resource_lifecycle.models import OwnerScope, ProcessIdentity
+from trowel_py.resource_lifecycle.processes import list_descendant_processes
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -87,6 +90,49 @@ class OrphanDiagnostic:
 
 ClientFactory = Callable[[], AppServerClient]
 BeforeTurnStart = Callable[[CodexSession], None]
+DescendantInventory = Callable[[int], tuple[ProcessIdentity, ...]]
+
+
+def _is_missing_rollout_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 app-server 找不到未归档 rollout 时返回的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=f"no rollout found for thread id {thread_id}",
+    )
+
+
+def _matches_rpc_error(
+    error: ProtocolViolationError,
+    *,
+    code: int,
+    message: str,
+) -> bool:
+    """按错误码和完整消息匹配当前请求的 app-server 响应。
+
+    Args:
+        error: transport 保存了原始响应的协议错误。
+        code: 当前已实证的 JSON-RPC 错误码。
+        message: 必须完整一致且包含当前 thread 身份的错误消息。
+
+    Returns:
+        原始响应同时匹配错误码和完整消息时为 True。
+    """
+
+    payload = error.payload
+    if not isinstance(payload, Mapping):
+        return False
+    response_error = payload.get("error")
+    if not isinstance(response_error, Mapping):
+        return False
+    return (
+        response_error.get("code") == code
+        and response_error.get("message") == message
+    )
 
 
 class CodexHostManager:
@@ -98,6 +144,9 @@ class CodexHostManager:
         client_factory: ClientFactory | None = None,
         translator: CodexTranslator | None = None,
         pending_request_timeout_s: float = _PENDING_REQUEST_TIMEOUT_S,
+        resource_registry: ResourceRegistry | None = None,
+        descendant_inventory: DescendantInventory = list_descendant_processes,
+        descendant_poll_interval_s: float = 0.25,
     ) -> None:
         """初始化共享连接、会话路由和待决请求登记表。
 
@@ -105,6 +154,9 @@ class CodexHostManager:
             client_factory: app-server client 工厂；省略时创建真实 ``AppServerClient``。
             translator: 原生通知翻译器；省略时创建无状态实例。
             pending_request_timeout_s: 命令审批等待答复的秒数。
+            resource_registry: 登记 app-server 连接、thread 和 turn handle 的应用账本。
+            descendant_inventory: 从进程表读取 app-server 后代身份的函数。
+            descendant_poll_interval_s: 两次后代进程盘点之间的秒数。
         """
 
         self._client_factory: ClientFactory = (
@@ -126,6 +178,14 @@ class CodexHostManager:
         self._pending_request_timeout_s = pending_request_timeout_s
         self._connection_generation = 0
         self._active_generation = 0
+        self._resource_registry = resource_registry
+        self._descendant_inventory = descendant_inventory
+        self._descendant_poll_interval_s = max(descendant_poll_interval_s, 0.01)
+        self._descendant_monitor_task: asyncio.Task[None] | None = None
+        self._descendant_resource_ids: dict[tuple[int, int, str], str] = {}
+        self._connection_resource_ids: dict[int, str] = {}
+        self._thread_resource_ids: dict[tuple[str, int], str] = {}
+        self._turn_resource_ids: dict[tuple[str, str], str] = {}
 
     @property
     def state(self) -> CodexHostManagerState:
@@ -232,12 +292,16 @@ class CodexHostManager:
             self._client = client
             try:
                 await client.start()
+                self._register_connection_resource(client, generation)
+                self._start_descendant_monitor(client, generation)
             except BaseException:
                 if self._client is client:
                     self._client = None
                     self._state = CodexHostManagerState.DEGRADED
                 raise
-            client.add_notification_listener(self._on_notification)
+            client.add_notification_listener(
+                partial(self._on_notification, generation=generation)
+            )
             self._state = CodexHostManagerState.READY
             self._broadcast_host_status(HostStatusKind.READY, reason="ready")
             self._eof_watcher = asyncio.create_task(
@@ -259,7 +323,47 @@ class CodexHostManager:
         watcher = self._eof_watcher
         self._eof_watcher = None
         if client is not None:
-            await client.close()
+            connection_id = self._connection_id(self._active_generation)
+            await self._inventory_connection_descendants(
+                client,
+                self._active_generation,
+            )
+            await self._stop_descendant_monitor()
+            if self._resource_registry is not None:
+                self._resource_registry.mark_owner_closing(
+                    OwnerScope.RUNTIME_CONNECTION,
+                    runtime_connection_id=connection_id,
+                )
+            try:
+                await client.close()
+            except BaseException as exc:
+                self._mark_connection_needs_reconcile(
+                    self._active_generation,
+                    f"Codex app-server close failed: {type(exc).__name__}",
+                )
+                raise
+            if self._resource_registry is not None:
+                process_report = await asyncio.to_thread(
+                    self._resource_registry.reconcile_process_groups,
+                    runtime_connection_id=connection_id,
+                )
+                if (
+                    process_report.remaining
+                    or process_report.errors
+                ):
+                    self._mark_connection_needs_reconcile(
+                        self._active_generation,
+                        "Codex descendant process groups need reconciliation",
+                    )
+                    raise RuntimeError(
+                        "Codex descendant process groups need reconciliation"
+                    )
+                self._resource_registry.mark_owner_closed(
+                    OwnerScope.RUNTIME_CONNECTION,
+                    runtime_connection_id=connection_id,
+                )
+        else:
+            await self._stop_descendant_monitor()
         if watcher is not None and not watcher.done():
             watcher.cancel()
             try:
@@ -297,8 +401,23 @@ class CodexHostManager:
         version = str(client.version) if client.version is not None else None
         return command_roster(version)
 
-    async def list_threads(self, *, cwd: str, limit: int) -> list[dict[str, Any]]:
-        """按更新时间列出指定 cwd 的默认交互 thread，不读取私有 rollout。"""
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """按更新时间列出指定 cwd 的默认交互 thread。
+
+        不读取私有 rollout。已确认属于 Trowel 委派子会话的 thread 在原生分页期间
+        排除，因此返回数量和后续合并分页不会被内部会话占用。
+
+        Args:
+            cwd: 只读取该工作目录下的 Codex thread。
+            limit: 最多返回的非排除 thread 数。
+            excluded_ids: 已确认属于 Trowel 委派子会话的 Codex thread ID。
+        """
 
         if limit <= 0:
             return []
@@ -323,7 +442,13 @@ class CodexHostManager:
                 isinstance(row, Mapping) for row in data
             ):
                 raise ProtocolViolationError("thread/list result.data is not an array")
-            rows.extend(dict(row) for row in data[: limit - len(rows)])
+            for row in data:
+                thread_id = row.get("id")
+                if isinstance(thread_id, str) and thread_id in excluded_ids:
+                    continue
+                rows.append(dict(row))
+                if len(rows) >= limit:
+                    break
 
             next_cursor = result.get("nextCursor")
             if next_cursor is not None and not isinstance(next_cursor, str):
@@ -547,6 +672,7 @@ class CodexHostManager:
             session.emit_session_started_if_first()
             self._attached_session_ids.add(session.session_id)
             self._thread_to_session[attached.thread_id] = session
+            self._register_thread_resource(session, attached.thread_id)
             return attached
         except BaseException:
             if (
@@ -617,6 +743,7 @@ class CodexHostManager:
                     )
                 raise
             session.commit_turn_settings(model=model, effort=effort)
+            self._register_turn_resource(session, turn_id)
             session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
@@ -642,6 +769,136 @@ class CodexHostManager:
             session.session_id, turn_id
         ):
             self._emit_request_event(session, request)
+
+    async def close_session(
+        self,
+        session: CodexSession,
+        *,
+        preserve_history: bool,
+        terminal_timeout_s: float = 2.0,
+    ) -> None:
+        """中断活动 turn，archive 原生资源，并按需恢复历史列表可见性。
+
+        archive 是 Codex 0.144.0 实测能收敛 thread MCP 和命令进程的原生操作。
+        用户持久 thread 在 archive 后立即 unarchive，但不 resume，因此历史重新
+        可见且不会拉起新的 MCP；随后再核验资源归零。委派和其他内部 thread 保持
+        archived。
+
+        Args:
+            session: 仍由当前 manager 登记的 Trowel Codex 会话。
+            preserve_history: 是否在 archive 后 unarchive，使默认历史列表继续可见。
+            terminal_timeout_s: interrupt 后等待原生 turn 终态的最长秒数；超时仍
+                继续 archive，不能把 terminal 当作资源归零证明。
+
+        Raises:
+            TurnConflictError: session 已在关闭期间被替换或注销。
+            CodexHostError: archive 或 unarchive 原生请求失败。
+        """
+
+        self._require_registered(session)
+        binding = session.binding
+        if binding is None:
+            return
+        if session.has_in_flight_turn:
+            try:
+                await self.interrupt(session)
+            except Exception:  # noqa: BLE001 - archive 仍是更强的资源收敛操作。
+                _log.warning(
+                    "failed to interrupt Codex session %s before archive",
+                    session.session_id,
+                    exc_info=True,
+                )
+            await self._wait_for_session_terminal(
+                session,
+                timeout_s=terminal_timeout_s,
+            )
+        self._require_registered(session)
+        client = await self.ensure_ready()
+        try:
+            await client.request(
+                "thread/archive",
+                {"threadId": binding.thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as exc:
+            if session.config.ephemeral or not _is_missing_rollout_error(
+                exc,
+                binding.thread_id,
+            ):
+                raise
+            if preserve_history:
+                _log.warning(
+                    "Codex user thread is already archived or its rollout is missing; "
+                    "attempting to restore history"
+                )
+            else:
+                _log.warning(
+                    "Codex internal thread rollout disappeared before close; "
+                    "deleting the still-loaded runtime"
+                )
+                await client.request(
+                    "thread/delete",
+                    {"threadId": binding.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+        if preserve_history:
+            # unarchive 只恢复 notLoaded 历史文件，不会重启 thread 或 MCP。必须先做，
+            # 否则资源核验失败会把 rollout 留在归档区，使下一次关闭误判为文件丢失。
+            await client.request(
+                "thread/unarchive",
+                {"threadId": binding.thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        if self._resource_registry is not None:
+            await self._reconcile_session_process_groups(session.session_id)
+            self._resource_registry.mark_owner_closed(
+                OwnerScope.SESSION,
+                agent_session_id=session.session_id,
+            )
+
+    async def _reconcile_session_process_groups(self, session_id: str) -> None:
+        """核验指定 Codex session 已登记的进程组全部退出。
+
+        Args:
+            session_id: 资源账本使用的 Trowel 会话 ID。
+
+        Raises:
+            RuntimeError: 仍有进程组存活或进程身份无法安全核验。
+        """
+
+        registry = self._resource_registry
+        if registry is None:
+            return
+        process_report = await asyncio.to_thread(
+            registry.reconcile_process_groups,
+            agent_session_id=session_id,
+        )
+        if process_report.remaining or process_report.errors:
+            raise RuntimeError("Codex session process groups need reconciliation")
+
+    async def _wait_for_session_terminal(
+        self,
+        session: CodexSession,
+        *,
+        timeout_s: float,
+    ) -> bool:
+        """有界等待 CodexSession 接收原生 terminal 并清除在途状态。
+
+        Args:
+            session: interrupt 后等待状态变化的会话。
+            timeout_s: 最长等待秒数；小于等于 0 时只检查一次。
+
+        Returns:
+            在截止时间前观察到无在途 turn 时为 True，超时时为 False。
+        """
+
+        deadline = asyncio.get_running_loop().time() + max(timeout_s, 0.0)
+        while session.has_in_flight_turn:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(0.02, remaining))
+        return True
 
     def answer_request(
         self, session_id: str, request_id: str, decision: str
@@ -780,9 +1037,17 @@ class CodexHostManager:
             if session is not None:
                 self._emit_request_event(session, request)
 
-    def _on_notification(self, method: str, params: Mapping[str, Any]) -> None:
-        """在 transport reader 上同步路由，不能阻塞；下游入队均为非阻塞操作。"""
+    def _on_notification(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """在当前连接代际内同步路由通知；下游入队均为非阻塞操作。"""
 
+        if generation is not None and generation != self._active_generation:
+            return
         if method in self._translator.ignored_methods:
             return  # 能力门控或回显，无需分发
         if method in self._translator.account_level_methods:
@@ -878,6 +1143,8 @@ class CodexHostManager:
                 session.emit_child_translated(item)
             else:
                 session.emit_translated(item)
+            if item.turn_id is not None and not session.has_in_flight_turn:
+                self._mark_turn_resource_closed(session.session_id, item.turn_id)
 
     def _dispatch_account_level(
         self, method: str, params: Mapping[str, Any]
@@ -939,9 +1206,14 @@ class CodexHostManager:
             # 旧 watcher 可能晚于新连接返回，不能让陈旧 EOF 降级当前连接。
             _log.debug("ignoring stale codex host exit")
             return
+        await self._stop_descendant_monitor()
         exit_code = client.last_exit_code
         stderr_tail = client.stderr_tail[:200] if client else ""
         self._state = CodexHostManagerState.DEGRADED
+        self._mark_connection_needs_reconcile(
+            self._active_generation,
+            "Codex app-server connection ended before process-tree verification",
+        )
         self._client = None
         self._attached_session_ids.clear()
         self._eof_watcher = None
@@ -960,6 +1232,115 @@ class CodexHostManager:
                 session.emit_host_status(HostStatusKind.DEGRADED, reason=reason)
         _log.warning("codex host degraded: %s (exit_code=%s)", reason, exit_code)
 
+    def _start_descendant_monitor(
+        self,
+        client: AppServerClient,
+        generation: int,
+    ) -> None:
+        """启动当前 app-server 代际的非阻塞后代进程盘点。"""
+
+        if self._resource_registry is None or client.pid is None:
+            return
+        previous = self._descendant_monitor_task
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._descendant_monitor_task = asyncio.create_task(
+            self._descendant_monitor_loop(client, generation),
+            name=f"codex-descendant-monitor:{generation}",
+        )
+
+    async def _stop_descendant_monitor(self) -> None:
+        """取消并等待当前后代盘点任务，避免 owner closing 后迟到登记。"""
+
+        task = self._descendant_monitor_task
+        self._descendant_monitor_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _descendant_monitor_loop(
+        self,
+        client: AppServerClient,
+        generation: int,
+    ) -> None:
+        """持续盘点共享连接后代，使 sidecar 硬崩前已有最新进程快照。"""
+
+        try:
+            while client is self._client and generation == self._active_generation:
+                await self._inventory_connection_descendants(client, generation)
+                await asyncio.sleep(self._descendant_poll_interval_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 盘点失败不能杀死 app-server reader。
+            _log.warning("Codex descendant process inventory failed", exc_info=True)
+
+    async def _inventory_connection_descendants(
+        self,
+        client: AppServerClient,
+        generation: int,
+    ) -> None:
+        """登记真实 PPID 链下的独立进程组，并关闭已经消失的盘点记录。"""
+
+        registry = self._resource_registry
+        if registry is None:
+            return
+        root_pid = getattr(client, "pid", None)
+        if not isinstance(root_pid, int) or root_pid <= 0:
+            return
+        descendants = await asyncio.to_thread(self._descendant_inventory, root_pid)
+        if client is not self._client or generation != self._active_generation:
+            return
+        root_identity = registry.process_controller.inspect(root_pid)
+        if root_identity is None:
+            return
+        seen: set[tuple[int, int, str]] = set()
+        for identity in descendants:
+            if identity.process_group == root_identity.process_group:
+                continue
+            key = (generation, identity.pid, identity.start_identity)
+            seen.add(key)
+            if key in self._descendant_resource_ids:
+                continue
+            resource_id = (
+                f"codex-descendant:{generation}:{identity.pid}:"
+                f"{identity.start_identity[:12]}"
+            )
+            try:
+                registry.register_process_group(
+                    resource_id=resource_id,
+                    owner_scope=OwnerScope.RUNTIME_CONNECTION,
+                    resource_kind="codex_descendant_process_group",
+                    pid=identity.pid,
+                    runtime="codex",
+                    runtime_generation=generation,
+                    runtime_connection_id=self._connection_id(generation),
+                    parent_resource_id=self._connection_resource_ids.get(generation),
+                )
+            except RuntimeError:
+                return
+            except ValueError:
+                continue
+            self._descendant_resource_ids[key] = resource_id
+
+        controller = registry.process_controller
+        for key, resource_id in tuple(self._descendant_resource_ids.items()):
+            if key[0] != generation or key in seen:
+                continue
+            record = registry.get(resource_id)
+            assert record.pid is not None
+            assert record.process_group is not None
+            current = controller.inspect(record.pid)
+            if current is not None and current.start_identity != key[2]:
+                registry.mark_closed(resource_id)
+                self._descendant_resource_ids.pop(key, None)
+            elif current is None and not controller.group_alive(record.process_group):
+                registry.mark_closed(resource_id)
+                self._descendant_resource_ids.pop(key, None)
+
     def _broadcast_host_status(
         self, status: HostStatusKind, *, reason: str | None
     ) -> None:
@@ -969,10 +1350,121 @@ class CodexHostManager:
             session.emit_host_status(status, reason=reason)
 
     @staticmethod
-    def _default_client_factory() -> AppServerClient:
+    def _connection_id(generation: int) -> str:
+        """返回一个 Codex 连接代际在资源账本中的 owner ID。"""
+
+        return f"codex-connection:{generation}"
+
+    def _register_connection_resource(
+        self,
+        client: AppServerClient,
+        generation: int,
+    ) -> None:
+        """登记当前 app-server 进程组；测试替身没有 PID 时登记连接 handle。"""
+
+        registry = self._resource_registry
+        if registry is None:
+            return
+        connection_id = self._connection_id(generation)
+        resource_id = f"codex-app-server:{generation}"
+        if client.pid is None:
+            registry.register_handle(
+                resource_id=resource_id,
+                owner_scope=OwnerScope.RUNTIME_CONNECTION,
+                resource_kind="codex_app_server_connection",
+                runtime="codex",
+                runtime_generation=generation,
+                runtime_connection_id=connection_id,
+                connection_id=connection_id,
+            )
+        else:
+            registry.register_process_group(
+                resource_id=resource_id,
+                owner_scope=OwnerScope.RUNTIME_CONNECTION,
+                resource_kind="codex_app_server_process_group",
+                pid=client.pid,
+                runtime="codex",
+                runtime_generation=generation,
+                runtime_connection_id=connection_id,
+            )
+        self._connection_resource_ids[generation] = resource_id
+
+    def _register_thread_resource(
+        self,
+        session: CodexSession,
+        thread_id: str,
+    ) -> None:
+        """把已加载 thread 代表的 MCP、命令和 pending 生命周期登记到 session。"""
+
+        registry = self._resource_registry
+        if registry is None:
+            return
+        generation = self._active_generation
+        key = (session.session_id, generation)
+        if key in self._thread_resource_ids:
+            return
+        resource_id = f"codex-thread:{session.session_id}:{generation}"
+        registry.register_handle(
+            resource_id=resource_id,
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="codex_thread_resources",
+            runtime="codex",
+            runtime_generation=generation,
+            runtime_connection_id=self._connection_id(generation),
+            agent_session_id=session.session_id,
+            connection_id=thread_id,
+        )
+        self._thread_resource_ids[key] = resource_id
+
+    def _register_turn_resource(self, session: CodexSession, turn_id: str) -> None:
+        """登记已经被 app-server 接受但尚未终结的 Codex turn。"""
+
+        registry = self._resource_registry
+        if registry is None:
+            return
+        resource_id = f"codex-turn:{session.session_id}:{turn_id}"
+        registry.register_handle(
+            resource_id=resource_id,
+            owner_scope=OwnerScope.TURN,
+            resource_kind="codex_turn",
+            runtime="codex",
+            runtime_generation=self._active_generation,
+            runtime_connection_id=self._connection_id(self._active_generation),
+            agent_session_id=session.session_id,
+            turn_id=turn_id,
+        )
+        self._turn_resource_ids[(session.session_id, turn_id)] = resource_id
+
+    def _mark_turn_resource_closed(self, session_id: str, turn_id: str) -> None:
+        """把收到原生 terminal 的 turn handle 提交为 closed。"""
+
+        registry = self._resource_registry
+        resource_id = self._turn_resource_ids.pop((session_id, turn_id), None)
+        if registry is not None and resource_id is not None:
+            registry.mark_closed(resource_id)
+
+    def _mark_connection_needs_reconcile(
+        self,
+        generation: int,
+        error: str,
+    ) -> None:
+        """保留未完成进程树核验的 app-server 记录供 Host 或下次启动处理。"""
+
+        registry = self._resource_registry
+        resource_id = self._connection_resource_ids.get(generation)
+        if registry is not None and resource_id is not None:
+            registry.mark_needs_reconcile(resource_id, error)
+
+    def _default_client_factory(self) -> AppServerClient:
         """返回未启动的默认 client；handler 注册与启动由 ``ensure_ready`` 完成。"""
 
-        return AppServerClient()
+        return AppServerClient(
+            process_controller=(
+                self._resource_registry.process_controller
+                if self._resource_registry is not None
+                else None
+            )
+        )
 
     def _thread_start_params(self, session: CodexSession) -> dict[str, Any]:
         """保留会话配置中的非空覆盖项，并合并启用的 Trowel MCP 服务。"""

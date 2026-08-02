@@ -41,6 +41,30 @@ async def test_cchost_uses_injected_registrar(tmp_path: Path) -> None:
     assert record.trowel_session_id == "trowel-session"
 
 
+def test_resumed_session_registers_before_first_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registrar = CapturingRegistrar()
+    jsonl = tmp_path / "resumed.jsonl"
+    monkeypatch.setattr(CCHost, "_jsonl_path", lambda self, session_id: jsonl)
+
+    CCHost(
+        "trowel-session",
+        tmp_path,
+        resume_from="cc-resumed",
+        spawner=FakeSpawner([]),
+        session_registrar=registrar,
+    )
+
+    assert len(registrar.registered) == 1
+    record = registrar.registered[0]
+    assert record.cc_session_id == "cc-resumed"
+    assert record.trowel_session_id == "trowel-session"
+    assert record.jsonl_path == str(jsonl)
+    assert registrar.completed == []
+
+
 async def test_normal_end_updates_completed(tmp_path: Path) -> None:
     registrar = CapturingRegistrar()
     jsonl = tmp_path / "session.jsonl"

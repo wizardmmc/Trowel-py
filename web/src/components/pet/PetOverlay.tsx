@@ -1,3 +1,5 @@
+/** 在页面上展示可互动宠物、移动行为和事件气泡。 */
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePetStore } from "../../stores/petStore";

@@ -63,7 +63,7 @@ class DraftNote:
 
 @dataclass(frozen=True)
 class DraftDiary:
-    """记录一天的 v2 Episode 事件及旧格式兼容字段。
+    """记录一天的结构化 Episode 事件及旧格式兼容字段。
 
     ``items`` 是新草稿的写入契约。四类文本列表和 ``events`` 用于兼容旧记录，
     Episode 写入器仍可持久化它们。新的 agent JSON 不得混用 ``items`` 与旧
@@ -89,7 +89,7 @@ class DraftDiary:
     items: tuple[DraftEpisodeItem, ...] = ()
 
     def __post_init__(self) -> None:
-        """用 v2 事件补齐尚为空的四类旧格式文本投影。
+        """用结构化事件补齐尚为空的四类旧格式文本投影。
 
         投影只包含 outcome、active decision、correction 和 active open loop；
         evidence、superseded decision 与 closed open loop 只保留在 ``items``。
@@ -109,10 +109,10 @@ class DraftDiary:
     def all_items(self) -> list[str]:
         """返回这一天用于展示或审计的经历文本。
 
-        ``items`` 非空时渲染其中全部 v2 事件，包括不进入旧投影的 evidence 和
-        非 active 项，并忽略旧列表；否则按 outcomes、decisions、corrections、
-        open_loops 的顺序拼接旧文本。两个分支都不返回 ``events``，需要它的
-        调用方会另行追加。
+        ``items`` 非空时渲染其中全部结构化事件，包括不进入旧投影的 evidence
+        和非 active 项，并忽略旧列表；否则按 outcomes、decisions、
+        corrections、open_loops 的顺序拼接旧文本。两个分支都不返回
+        ``events``，需要它的调用方会另行追加。
 
         Returns:
             保持原有事件或列表顺序的文本列表。
@@ -150,8 +150,9 @@ class Draft:
 def parse_draft(text: str) -> Draft:
     """按新旧兼容规则解析 agent 输出的 Draft JSON。
 
-    Note、旧 Diary 和顶层兼容字段沿用宽松类型转换；v2 ``items`` 按严格结构
-    解析。本函数不执行落盘前硬校验，调用方须另行调用 ``validate_draft``。
+    Note、旧 Diary 和顶层兼容字段沿用宽松类型转换；结构化 ``items`` 按严格
+    结构解析。本函数不执行落盘前硬校验，调用方须另行调用
+    ``validate_draft``。
 
     Args:
         text: agent 返回的完整 JSON 文本。
@@ -162,8 +163,9 @@ def parse_draft(text: str) -> Draft:
     Raises:
         json.JSONDecodeError: 文本不是合法 JSON。
         AttributeError: JSON 顶层或 Note、Diary、Episode 项不是对象。
-        TypeError: 顶层集合或 Note、v2 Diary、Episode 字段无法按兼容规则解析。
-        ValueError: ``pain`` 无法转换为整数，或 v2 Diary、Episode 项不符合
+        TypeError: 顶层集合或 Note、结构化 Diary、Episode 字段无法按兼容规则
+            解析。
+        ValueError: ``pain`` 无法转换为整数，或结构化 Diary、Episode 项不符合
             严格结构。
         OverflowError: ``pain`` 是无法转换为整数的无穷浮点值。
     """
@@ -176,21 +178,14 @@ def parse_draft(text: str) -> Draft:
     )
 
 
-def validate_draft(
-    draft: Draft,
-    *,
-    legal_source_refs: set[str] | None = None,
-) -> list[str]:
-    """收集会阻止整份 Draft 落盘的字段和来源错误。
+def validate_draft(draft: Draft) -> list[str]:
+    """收集会阻止整份 Draft 落盘的字段错误。
 
     错误按 Note、Diary 和 Episode 项的遍历顺序累积；调用方只应在返回空列表时
     持久化，不能跳过错误项后部分落盘。
 
     Args:
         draft: 要检查的完整提炼草稿。
-        legal_source_refs: 当前来源副本允许引用的行号；为 None 时只检查引用
-            非空且不重复，不限制具体行号。
-
     Returns:
         稳定顺序的错误文本；空列表表示通过硬校验。
     """
@@ -198,7 +193,6 @@ def validate_draft(
         draft,
         note_kinds=NOTE_KINDS,
         verification_tiers=VERIFICATION_TIERS,
-        legal_source_refs=legal_source_refs,
     )
 
 

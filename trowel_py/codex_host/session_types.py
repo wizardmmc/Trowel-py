@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from trowel_py.agent_mcp.launch import (
+    AGENT_MCP_SERVER_NAME,
+    build_agent_mcp_launch_spec,
+)
 from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
-from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
 
-TROWEL_AGENTS_SERVER_NAME = "trowel_agents"
+TROWEL_AGENTS_SERVER_NAME = AGENT_MCP_SERVER_NAME
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,8 @@ class TrowelMemoryMcpConfig:
         module_args: 传给 ``command`` 的固定启动参数。
         memory_root: MCP server 读取的本地 memory 根目录。
         trowel_session_id: 归属该 MCP server 的 Trowel 会话 ID。
+        registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
+            owner 令牌；browser 模式为空映射。
     """
 
     server_name: str
@@ -34,6 +39,9 @@ class TrowelMemoryMcpConfig:
     module_args: tuple[str, ...]
     memory_root: str
     trowel_session_id: str
+    registration_env: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
         """构造必需且预先授权本地 memory 工具的 MCP server 配置。
@@ -50,6 +58,7 @@ class TrowelMemoryMcpConfig:
                 "command": self.command,
                 "args": list(self.module_args),
                 "env": {
+                    **dict(self.registration_env),
                     "MEMORY_ROOT": self.memory_root,
                     "TROWEL_SESSION_ID": self.trowel_session_id,
                     "TROWEL_HOST_KIND": "codex",
@@ -76,6 +85,8 @@ class TrowelAgentMcpConfig:
         self_enabled: 子任务是否继承 self injection 开关。
         delegation_depth: 当前父会话的委派深度；默认 ``0`` 表示顶层会话。
         server_name: 写入 ``mcp_servers`` 的服务名称；默认为 ``trowel_agents``。
+        registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
+            owner 令牌；browser 模式为空映射。
     """
 
     trowel_session_id: str
@@ -87,6 +98,9 @@ class TrowelAgentMcpConfig:
     self_enabled: bool
     delegation_depth: int = 0
     server_name: str = TROWEL_AGENTS_SERVER_NAME
+    registration_env: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
         """构造必需且预先授权委派工具的 Agent MCP server 配置。
@@ -98,29 +112,27 @@ class TrowelAgentMcpConfig:
             可合并到 ``config.mcp_servers`` 的单服务映射。
         """
 
+        launch = build_agent_mcp_launch_spec(
+            trowel_session_id=self.trowel_session_id,
+            runtime="codex",
+            workdir=self.workdir,
+            permission=self.permission,
+            base_url=self.base_url,
+            memory_enabled=self.memory_enabled,
+            profile_enabled=self.profile_enabled,
+            self_enabled=self.self_enabled,
+            delegation_depth=self.delegation_depth,
+            native_session_id=native_session_id,
+            extra_env=self.registration_env,
+        )
         return {
             self.server_name: {
-                "command": sys.executable,
-                "args": ["-m", "trowel_py.agent_mcp.server"],
-                "env": {
-                    "TROWEL_AGENT_BASE_URL": self.base_url,
-                    "TROWEL_PARENT_SESSION_ID": self.trowel_session_id,
-                    "TROWEL_PARENT_RUNTIME": "codex",
-                    "TROWEL_PARENT_WORKDIR": self.workdir,
-                    "TROWEL_PARENT_PERMISSION": self.permission,
-                    "TROWEL_PARENT_MEMORY_ENABLED": str(
-                        self.memory_enabled
-                    ).lower(),
-                    "TROWEL_PARENT_PROFILE_ENABLED": str(
-                        self.profile_enabled
-                    ).lower(),
-                    "TROWEL_PARENT_SELF_ENABLED": str(self.self_enabled).lower(),
-                    "TROWEL_DELEGATION_DEPTH": str(self.delegation_depth),
-                    "TROWEL_NATIVE_SESSION_ID": native_session_id,
-                },
+                "command": launch.command,
+                "args": list(launch.module_args),
+                "env": dict(launch.env),
                 "required": True,
                 "startup_timeout_sec": 10.0,
-                "enabled_tools": list(AGENT_MCP_TOOL_NAMES),
+                "enabled_tools": list(launch.enabled_tools),
                 "default_tools_approval_mode": "approve",
             }
         }
@@ -136,6 +148,7 @@ def build_default_trowel_agent_mcp(
     profile_enabled: bool,
     self_enabled: bool,
     delegation_depth: int = 0,
+    registration_env: Mapping[str, str] | None = None,
 ) -> TrowelAgentMcpConfig:
     """用父会话上下文构造默认的 Agent 委派 MCP 配置。
 
@@ -148,6 +161,8 @@ def build_default_trowel_agent_mcp(
         profile_enabled: 子任务是否继承 profile 开关。
         self_enabled: 子任务是否继承 self injection 开关。
         delegation_depth: 父会话当前的委派深度；默认 ``0``。
+        registration_env: 桌面模式下供 Agent MCP 在服务前登记自身进程的环境；
+            browser 模式传 None 或空映射。
     """
 
     return TrowelAgentMcpConfig(
@@ -159,6 +174,7 @@ def build_default_trowel_agent_mcp(
         profile_enabled=profile_enabled,
         self_enabled=self_enabled,
         delegation_depth=delegation_depth,
+        registration_env=MappingProxyType(dict(registration_env or {})),
     )
 
 
@@ -167,6 +183,7 @@ def build_default_trowel_memory_mcp(
     trowel_session_id: str,
     memory_root: str,
     server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
+    registration_env: Mapping[str, str] | None = None,
 ) -> TrowelMemoryMcpConfig:
     """用当前解释器构造 Trowel memory MCP 配置。
 
@@ -175,6 +192,8 @@ def build_default_trowel_memory_mcp(
         memory_root: 本地 memory 根目录。
         server_name: 写入 ``mcp_servers`` 的服务名称；默认使用
             ``TROWEL_NOTE_SEARCH_SERVER_NAME``。
+        registration_env: 桌面模式下供 Memory MCP 在服务前登记自身进程的环境；
+            browser 模式传 None 或空映射。
     """
 
     return TrowelMemoryMcpConfig(
@@ -183,6 +202,7 @@ def build_default_trowel_memory_mcp(
         module_args=("-m", "trowel_py.memory.mcp_server"),
         memory_root=str(memory_root),
         trowel_session_id=trowel_session_id,
+        registration_env=MappingProxyType(dict(registration_env or {})),
     )
 
 
@@ -190,15 +210,34 @@ def build_default_trowel_memory_mcp(
 class CodexSessionConfig:
     """定义 Codex 会话的冻结输入。
 
-    developer_instructions 会覆盖用户 Codex 配置中的同名值，并非追加；
-    ephemeral=False 保留可供 app-server 重启后恢复的 native rollout；
-    memory MCP 为 None 时，本会话不附加 Trowel memory MCP。
+    ``base_instructions`` 和 ``developer_instructions`` 都在创建 thread 时生效；
+    具体的用户消息由 ``turn/start`` 另行发送。
+
+    Attributes:
+        trowel_session_id: Trowel 为会话分配的稳定 ID。
+        workdir: Codex thread 使用的工作目录。
+        model: 可选的模型 ID；为空时使用 Codex 配置的默认模型。
+        effort: 后续 ``turn/start`` 默认使用的推理强度。
+        base_instructions: Codex 基础指令的可选覆盖。为空时沿用 Codex 内置的
+            “编程 Agent”指令；传值时仅为当前 thread 替换这套默认指令，不修改
+            模型，也不包含具体的用户消息。
+        developer_instructions: 作为独立 developer 角色消息注入的附加规则。
+            传值会覆盖用户 Codex 配置中的同名值，而不是追加到该值之后；它不会
+            替换 ``base_instructions``。
+        approval_policy: thread 使用的审批策略；为空时使用 Codex 配置值。
+        sandbox: thread 使用的沙箱模式；为空时使用 Codex 配置值。
+        ephemeral: 是否只在内存中保存 thread；``False`` 会保留可供 app-server
+            重启后恢复的原生 rollout。
+        initial_thread_id: 要恢复的原生 Codex thread ID；为空时创建新 thread。
+        trowel_memory_mcp: 可选的 Trowel memory MCP 配置；为空时不附加。
+        trowel_agent_mcp: 可选的 Trowel agent MCP 配置；为空时不附加。
     """
 
     trowel_session_id: str
     workdir: str
     model: str | None = None
     effort: str | None = None
+    base_instructions: str | None = None
     developer_instructions: str | None = None
     approval_policy: str | None = None
     sandbox: str | None = None

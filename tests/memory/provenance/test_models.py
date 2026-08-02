@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from tests.memory.daily_review.support import FINISHED, VALID_DRAFT
+from trowel_py.memory.daily_review.sources import JournalSlice, ReviewSource
 from trowel_py.memory.provenance import (
     CcJsonlSource,
     CodexTurnsSource,
@@ -54,7 +55,9 @@ def test_real_codex_thread_turn_builds_host_neutral_segment() -> None:
         / "thread-read-0.144.0.json"
     )
     thread = json.loads(fixture.read_text(encoding="utf-8"))["thread"]
-    completed_turn = next(turn for turn in thread["turns"] if turn["status"] == "completed")
+    completed_turn = next(
+        turn for turn in thread["turns"] if turn["status"] == "completed"
+    )
     turn_id = completed_turn["id"]
 
     segment = CompletedSegment(
@@ -92,6 +95,7 @@ def test_generator_keeps_known_effort_when_model_is_unknown() -> None:
 async def test_review_draft_records_configured_generator(tmp_path: Path) -> None:
     source = tmp_path / "source.jsonl"
     source.write_text('{"type":"user"}\n', encoding="utf-8")
+
     class ProvenanceHost:
         session_id = "review-run-1"
         model = "glm-5.1"
@@ -119,6 +123,11 @@ async def test_review_draft_records_configured_generator(tmp_path: Path) -> None
         session,
         "2026-07-24",
         tmp_path / "memory",
+        review_source=ReviewSource(
+            host_kind="claude_code",
+            context=(),
+            target=(JournalSlice(str(source)),),
+        ),
         host_factory=lambda _session, workdir: ProvenanceHost(workdir),
         derivation_sink=captured.append,
     )

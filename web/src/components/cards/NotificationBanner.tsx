@@ -1,3 +1,5 @@
+/** 显示待审核卡片数量并提供进入审核的入口。 */
+
 interface NotificationBannerProps {
   count: number;
   onClick: () => void;

@@ -17,7 +17,6 @@ from .codec import (
     _matches as _matches,
     _note_from_fm as _note_from_fm,
     _ordered_note_frontmatter as _ordered_note_frontmatter,
-    _safe_snapshot_name as _safe_snapshot_name,
     _slugify as _slugify,
     _split_frontmatter as _split_frontmatter,
 )
@@ -39,7 +38,6 @@ from .episode_codec import (
 )
 from .episodes import _EPISODES_DIR as _EPISODES_DIR
 from .notes import _NOTES_DIR as _NOTES_DIR
-from .profile_io import _PROFILE_FILE as _PROFILE_FILE
 from .repository import MemoryStore
 
 logger = logging.getLogger(__name__)

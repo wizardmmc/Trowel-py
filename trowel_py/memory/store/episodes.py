@@ -18,7 +18,7 @@ from .codec import _coerce_meta_str, _dump_frontmatter, _split_frontmatter
 from .diary import _DiaryStore
 from .episode_codec import (
     _episode_covers_date,
-    _entry_from_v2_meta,
+    _entry_from_episode_meta,
     _extract_h2_block,
     _h2_headings,
     _parse_segment_blocks,
@@ -48,8 +48,8 @@ class _EpisodeStore(_DiaryStore):
         已有文件中边界完整的其他 segment 及其元数据会保留；同 ID 的块在原
         顺序位置替换。marker 外文本和无法配对的块不会写回。顶层活动日期合并
         旧值与本次 Diary 日期，其他顶层会话字段使用当前 context 重建；未提供
-        ``completed_segment`` 时保留已有 host 身份字段。v2 items、来源模型和
-        派生信息会写入片段元数据。
+        ``completed_segment`` 时保留已有 host 身份字段。结构化 items、来源
+        模型和派生信息会写入片段元数据。
 
         目标路径直接拼接 ``cc_session_id``，不清理绝对路径、父目录或路径
         分隔符。内容先写入目标文件同目录的固定 ``.tmp`` 路径，再原子替换
@@ -106,13 +106,12 @@ class _EpisodeStore(_DiaryStore):
             ]
         if context.derivation is not None:
             seg_meta["derivation"] = derivation_to_dict(context.derivation)
-        v2_entries = [entry for entry in diary_entries if entry.items]
-        if v2_entries:
-            seg_meta["episode_schema_version"] = 2
-            seg_meta["source_ref_scheme"] = "nonempty_jsonl_line_v1"
+        structured_entries = [entry for entry in diary_entries if entry.items]
+        if structured_entries:
+            seg_meta["episode_schema_version"] = 3
             seg_meta["episode_items"] = [
                 {"date": entry.date, "item": episode_item_to_dict(item)}
-                for entry in v2_entries
+                for entry in structured_entries
                 for item in entry.items
             ]
         new_segs: list[dict[str, Any]] = []
@@ -191,7 +190,7 @@ class _EpisodeStore(_DiaryStore):
         字段缺失或为空才回退 ``review_date``。一旦存在可配对 segment 或任意
         二级标题，不再走整文件回退。无论采用哪种 segment 路由，最终都必须
         找到目标日期的二级标题和非空正文；因此结构化投影也只会在对应 Markdown
-        日期块存在时尝试恢复 v2 元数据。
+        日期块存在时尝试恢复结构化元数据。
 
         缺失、空或无法解析为映射的 frontmatter 会被跳过；不校验顶层
         ``type``。结果为 ``(registered_at, 正文)``，按登记时间排序，同时间
@@ -235,7 +234,7 @@ class _EpisodeStore(_DiaryStore):
         """投影目标日期的结构化经历，并保留来源身份。
 
         日期路由和旧格式回退顺序与 ``project_daily_entries()`` 相同。segment
-        优先从 v2 元数据恢复，失败时解析 Markdown 的旧四类列表或自由文本；
+        优先从结构化元数据恢复，失败时解析 Markdown 的旧四类列表或自由文本；
         来源 ID 使用 ``segment_id``。无 segment 的旧文件改用顶层
         ``cc_session_id``。
 
@@ -266,7 +265,7 @@ class _EpisodeStore(_DiaryStore):
                         block, date, seg_metas.get(seg_id, {})
                     )
                     if entry_block:
-                        structured = _entry_from_v2_meta(
+                        structured = _entry_from_episode_meta(
                             seg_metas.get(seg_id, {}), date
                         )
                         out.append(
