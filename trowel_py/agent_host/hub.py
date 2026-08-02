@@ -52,7 +52,12 @@ from trowel_py.agent_host.delegate_identity import (
     delegate_identity_path,
 )
 from trowel_py.agent_host.events import AgentEvent
-from trowel_py.agent_host.lifecycle import SessionInFlightError, SessionLifecycle
+from trowel_py.agent_host.lifecycle import (
+    SessionCloseResult,
+    SessionInFlightError,
+    SessionLifecycle,
+    SessionReconcileRequiredError,
+)
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.agent_host.session_titles import (
     SessionTitleGenerator,
@@ -85,6 +90,7 @@ from trowel_py.codex_host.pending_requests import (
     PendingRequestOwnershipError,
 )
 from trowel_py.codex_host.session import TurnConflictError
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -202,6 +208,7 @@ class SessionHub:
         title_generator: SessionTitleGenerator | None = None,
         title_store: SessionTitleStore | None = None,
         codex_history_root: str | Path | None = None,
+        resource_registry: ResourceRegistry | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -230,6 +237,8 @@ class SessionHub:
                 文件旁创建。
             codex_history_root: Codex normalized turn journals 所在的 Memory 根目录；
                 未提供时只使用原生 ``thread/read`` 回放。
+            resource_registry: 当前应用实例的临时资源账本；未提供时保持进程内兼容
+                行为，不执行跨 runtime 资源归零复核。
         """
 
         self._store = store
@@ -252,11 +261,13 @@ class SessionHub:
             Path(codex_config_home) if codex_config_home is not None else None
         )
         self._event_observer = event_observer
+        self._resource_registry = resource_registry
         self._session_review_requester = session_review_requester
         self._codex_history_root = (
             Path(codex_history_root) if codex_history_root is not None else None
         )
         self._active_id: str | None = None
+        self._draining = False
         # adapter 跨 turn 复用；被 adapter 丢弃的原生事件不占统一序号。
         self._cc_adapters: dict[str, ClaudeCodeEventAdapter] = {}
         self._codex_adapters: dict[str, CodexEventAdapter] = {}
@@ -264,6 +275,9 @@ class SessionHub:
             str, set[asyncio.Queue[dict[str, Any] | None]]
         ] = {}
         self._codex_event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._session_close_tasks: dict[str, asyncio.Task[SessionCloseResult]] = {}
+        self._closed_session_results: dict[str, SessionCloseResult] = {}
+        self._closing_session_ids: set[str] = set()
         self._runtime_ports: dict[Runtime, RuntimeSessionPort] = (
             dict(runtime_ports)
             if runtime_ports is not None
@@ -287,6 +301,7 @@ class SessionHub:
             self._delegate_identities,
             self._runtime_ports,
             self._capacity,
+            self._resource_registry,
         )
         self._lifecycle.migrate_delegate_identities()
 
@@ -301,6 +316,23 @@ class SessionHub:
         """是否已经配置 Codex 进程和 thread 管理器。"""
 
         return self._codex is not None
+
+    @property
+    def draining(self) -> bool:
+        """返回 Agent Host 是否已经拒绝新的会话和轮次。"""
+
+        return self._draining
+
+    def begin_drain(self) -> None:
+        """幂等进入应用退出状态，使后续 create 和 send 立即失败。"""
+
+        self._draining = True
+
+    def _require_accepting_work(self) -> None:
+        """应用退出期间拒绝创建会话或启动新轮次。"""
+
+        if self._draining:
+            raise SessionConflictError("应用正在退出，不能创建会话或启动新轮次")
 
     def _initial_title(self, req: CreateAgentSessionRequest) -> tuple[str, TitleSource]:
         """恢复原生会话时取得 Trowel 标题或运行工具提供的标题。
@@ -455,6 +487,7 @@ class SessionHub:
             RuntimeUnavailableError: 请求使用 Codex，但未配置 Codex 会话管理器。
         """
 
+        self._require_accepting_work()
         req = self._inherit_resume_config(req)
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
@@ -682,6 +715,12 @@ class SessionHub:
         )
         display_name = self._display_name(req.workdir)
         display_title, title_source = self._initial_title(req)
+        resource_launch_config: dict[str, object] = {}
+        if self._resource_registry is not None:
+            resource_launch_config = {
+                "process_controller": self._resource_registry.process_controller,
+                "resource_registry": self._resource_registry,
+            }
         try:
             opened = self._cc_opener(
                 cc_req,
@@ -689,6 +728,7 @@ class SessionHub:
                 proxy_base_url=self._cc_proxy_base_url,
                 settings_path=self._cc_settings_path,
                 display_name=display_name,
+                **resource_launch_config,
             )
         except CcWorkdirNotFoundError as exc:
             raise InvalidSessionRequestError(str(exc)) from exc
@@ -740,6 +780,7 @@ class SessionHub:
             session_id_factory=lambda: uuid.uuid4().hex,
             permission_presets=_CODEX_PERMISSION_PRESETS,
             fingerprint=_injection_fingerprint,
+            resource_registry=self._resource_registry,
         )
         sid = prepared.session_id
         display_title, title_source = self._initial_title(req)
@@ -1097,6 +1138,10 @@ class SessionHub:
     def _reserve_delegate_turn(self, binding: SessionBinding) -> object | None:
         """预留委派在跑名额，并把容量拒绝转换为 Hub 冲突错误。"""
 
+        if binding.session_id in self._closing_session_ids:
+            raise SessionConflictError(
+                f"session {binding.session_id} 正在关闭，不能启动新轮次"
+            )
         try:
             return self._capacity.reserve_turn(binding)
         except (CapacityConflictError, CapacityLimitError) as exc:
@@ -1677,6 +1722,118 @@ class SessionHub:
             request.to_payload() for request in self._codex.list_requests(session_id)
         ]
 
+    async def close_result(
+        self,
+        session_id: str,
+        *,
+        delete_binding: bool = True,
+    ) -> SessionCloseResult:
+        """收敛一个会话并返回 closed、needs_reconcile 或 not_found。
+
+        Args:
+            session_id: 要关闭的 Trowel 会话 ID。
+            delete_binding: 用户关闭时删除 binding；应用退出时保留恢复入口。
+
+        Returns:
+            包含剩余资源数量和类型的显式关闭结果。
+        """
+
+        if delete_binding:
+            closed_result = self._closed_session_results.get(session_id)
+            if closed_result is not None:
+                return closed_result
+        task = self._session_close_tasks.get(session_id)
+        if task is None:
+            task = asyncio.create_task(
+                self._close_session_once(
+                    session_id,
+                    delete_binding=delete_binding,
+                ),
+                name=f"agent-session-close:{session_id}",
+            )
+            self._session_close_tasks[session_id] = task
+            task.add_done_callback(
+                lambda completed, key=session_id: self._discard_session_close_task(
+                    key,
+                    completed,
+                )
+            )
+        result = await asyncio.shield(task)
+        if (
+            delete_binding
+            and result.status == "closed"
+            and self._store.get(session_id) is not None
+        ):
+            # 应用 drain 可能先创建“保留 binding”的共享任务。用户删除随后加入时，
+            # 复用已完成的 runtime 清理，再单独提交持久删除和 Memory 请求。
+            self._discard_session_close_task(session_id, task)
+            return await self.close_result(session_id, delete_binding=True)
+        return result
+
+    def _discard_session_close_task(
+        self,
+        session_id: str,
+        completed: asyncio.Task[SessionCloseResult],
+    ) -> None:
+        """关闭任务结束后移除临时去重记录，同时取走无人等待的异常。"""
+
+        if self._session_close_tasks.get(session_id) is completed:
+            self._session_close_tasks.pop(session_id, None)
+        if not completed.cancelled():
+            completed.exception()
+
+    async def _close_session_once(
+        self,
+        session_id: str,
+        *,
+        delete_binding: bool,
+    ) -> SessionCloseResult:
+        """执行一次真实会话关闭；并发合并和成功终态缓存由外层负责。"""
+
+        binding = self._store.get(session_id)
+        if binding is None:
+            return SessionCloseResult.not_found()
+        if binding.runtime not in self._runtime_ports:
+            raise RuntimeUnavailableError(f"{binding.runtime.value} host unavailable")
+        self._closing_session_ids.add(session_id)
+        try:
+            review_requester = None
+            if (
+                delete_binding
+                and binding.session_kind == "user"
+                and binding.memory_enabled
+                and self._session_review_requester is not None
+            ):
+
+                def persist_review_request() -> None:
+                    """在 binding 删除前持久登记当前用户会话的 Memory review。"""
+
+                    if self._session_review_requester is not None:
+                        self._session_review_requester(binding)
+
+                review_requester = persist_review_request
+            runtime_result = await self._lifecycle.close(
+                binding,
+                require_idle=False,
+                busy_message="",
+                before_runtime_close=lambda: self._stop_codex_event_pump(session_id),
+                before_binding_delete=review_requester,
+                delete_binding=delete_binding,
+            )
+        except (CapacityConflictError, SessionInFlightError) as exc:
+            raise SessionConflictError(str(exc)) from exc
+        result = SessionCloseResult.from_runtime(runtime_result)
+        if result.status != "closed":
+            return result
+        # 删除 adapter，避免复用 id 继承旧序号。
+        self._cc_adapters.pop(session_id, None)
+        self._codex_adapters.pop(session_id, None)
+        if self._active_id == session_id:
+            self._active_id = None
+        if delete_binding:
+            self._closed_session_results[session_id] = result
+        return result
+
     async def delete(self, session_id: str) -> bool:
         """删除 Trowel 中的指定会话并清理相关运行状态。
 
@@ -1689,48 +1846,57 @@ class SessionHub:
             删除成功时返回 True；会话不存在时返回 False。
         """
 
-        binding = self._store.get(session_id)
-        if binding is None:
+        result = await self.close_result(session_id)
+        if result.status == "not_found":
             return False
-        if binding.runtime not in self._runtime_ports:
-            raise RuntimeUnavailableError(f"{binding.runtime.value} host unavailable")
-        try:
-            review_requester = None
-            if (
-                binding.session_kind == "user"
-                and binding.memory_enabled
-                and self._session_review_requester is not None
-            ):
-
-                def persist_review_request() -> None:
-                    """在 binding 删除前持久登记当前用户会话的 Memory review。"""
-
-                    if self._session_review_requester is not None:
-                        self._session_review_requester(binding)
-
-                review_requester = persist_review_request
-            await self._lifecycle.close(
-                binding,
-                require_idle=(
-                    binding.session_kind == "delegate"
-                    and binding.runtime is Runtime.CODEX
-                ),
-                busy_message="Codex 委派子会话仍在处理，尚不能确认清理完成",
-                before_runtime_close=lambda: self._stop_codex_event_pump(session_id),
-                before_binding_delete=review_requester,
+        if result.status == "needs_reconcile":
+            raise SessionReconcileRequiredError(
+                result.error or "session resources still need reconciliation"
             )
-        except (CapacityConflictError, SessionInFlightError) as exc:
-            raise SessionConflictError(str(exc)) from exc
-        # 删除 adapter，避免复用 id 继承旧序号。
-        self._cc_adapters.pop(session_id, None)
-        self._codex_adapters.pop(session_id, None)
-        if self._active_id == session_id:
-            self._active_id = None
         return True
+
+    async def close_all(self) -> dict[str, SessionCloseResult]:
+        """并发收敛当前实例实时登记的会话，并保留全部 binding。
+
+        Returns:
+            以 Trowel 会话 ID 为键的关闭结果；断开连接的历史 binding 不在结果中。
+        """
+
+        self.begin_drain()
+        live_session_ids = tuple(
+            dict.fromkeys(
+                session_id
+                for runtime in self._runtime_ports.values()
+                for session_id in runtime.session_ids()
+                if self._store.get(session_id) is not None
+            )
+        )
+        if not live_session_ids:
+            return {}
+        outcomes = await asyncio.gather(
+            *(
+                self.close_result(session_id, delete_binding=False)
+                for session_id in live_session_ids
+            ),
+            return_exceptions=True,
+        )
+        results: dict[str, SessionCloseResult] = {}
+        for session_id, outcome in zip(live_session_ids, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                results[session_id] = SessionCloseResult(
+                    status="needs_reconcile",
+                    remaining_resource_count=1,
+                    remaining_resource_kinds=("session_close",),
+                    error=f"session close failed: {type(outcome).__name__}",
+                )
+            else:
+                results[session_id] = outcome
+        return results
 
     async def stream(self, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
         """原子取得委派在跑名额后，按 binding 产出统一事件。"""
 
+        self._require_accepting_work()
         binding = self._require(session_id)
         reservation = self._reserve_delegate_turn(binding)
         try:
@@ -1836,6 +2002,7 @@ class SessionHub:
             RuntimeTurnError: Codex 未能接受输入或保存会话信息。
         """
 
+        self._require_accepting_work()
         binding = self._require(session_id)
         reservation = self._reserve_delegate_turn(binding)
         try:

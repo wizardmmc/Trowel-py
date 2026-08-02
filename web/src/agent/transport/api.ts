@@ -160,6 +160,14 @@ export interface AgentPendingRequest {
   readonly resolution_reason: string | null;
 }
 
+export interface AgentSessionCloseResult {
+  readonly closed: boolean;
+  readonly status: "closed" | "needs_reconcile" | "not_found";
+  readonly remaining_resource_count: number;
+  readonly remaining_resource_kinds: readonly string[];
+  readonly error: string | null;
+}
+
 const AGENT_API_BASE = "/api/agent";
 
 interface ApiEnvelope<T, M = unknown> {
@@ -259,10 +267,13 @@ export async function generateAgentSessionTitle(
 
 export async function deleteAgentSession(
   sessionId: string,
-): Promise<{ closed: boolean }> {
-  return request<{ closed: boolean }>(`${AGENT_API_BASE}/sessions/${sessionId}`, {
-    method: "DELETE",
-  });
+): Promise<AgentSessionCloseResult> {
+  return request<AgentSessionCloseResult>(
+    `${AGENT_API_BASE}/sessions/${sessionId}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function interruptAgentSession(

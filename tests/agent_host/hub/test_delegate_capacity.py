@@ -12,6 +12,7 @@ import pytest
 
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.hub import SessionConflictError, SessionHub
+from trowel_py.agent_host.lifecycle import SessionReconcileRequiredError
 from trowel_py.agent_host.store import BindingStore
 from trowel_py.codex_host.events import (
     CodexEventType,
@@ -133,7 +134,7 @@ async def test_delegate_connection_slot_releases_only_after_confirmed_delete(
     delegate = hub.create(cc_req(workdir, session_kind="delegate"))
     cc_registry[delegate.session_id] = _UncloseableCcHost(str(workdir))
 
-    with pytest.raises(RuntimeError, match="close failed"):
+    with pytest.raises(SessionReconcileRequiredError, match="needs reconciliation"):
         await hub.delete(delegate.session_id)
     with pytest.raises(SessionConflictError, match="当前委派数量已满"):
         hub.create(codex_req(workdir, session_kind="delegate"))
@@ -311,7 +312,7 @@ async def test_interrupt_ack_does_not_release_delegate_running_slot(
 
 
 @pytest.mark.anyio
-async def test_running_codex_delegate_cannot_be_deleted_before_terminal(
+async def test_running_codex_delegate_is_interrupted_and_archived_when_deleted(
     hub: SessionHub,
     workdir: Path,
     codex_mgr: FakeCodexManager,
@@ -319,22 +320,9 @@ async def test_running_codex_delegate_cannot_be_deleted_before_terminal(
     delegate = hub.create(codex_req(workdir, session_kind="delegate"))
     await hub.start_codex_turn(delegate.session_id, "work")
 
-    with pytest.raises(
-        SessionConflictError,
-        match="仍在处理，尚不能确认清理完成",
-    ):
-        await hub.delete(delegate.session_id)
-
-    session = codex_mgr.get_session(delegate.session_id)
-    session.emit_translated(
-        TranslatedItem(
-            type=CodexEventType.FINISHED,
-            thread_id=session.binding.thread_id,
-            turn_id="fake-turn-id",
-            payload=immutable_payload(status="completed"),
-        )
-    )
     assert await hub.delete(delegate.session_id) is True
+    assert codex_mgr.close_calls == [(delegate.session_id, False)]
+    assert codex_mgr.get_session(delegate.session_id) is None
 
 
 @pytest.mark.anyio
@@ -349,10 +337,10 @@ async def test_codex_delegate_cannot_start_turn_after_delete_begins(
     allow_close = asyncio.Event()
     original_close = runtime.close
 
-    async def blocking_close(session_id: str) -> None:
+    async def blocking_close(binding) -> Any:
         close_started.set()
         await allow_close.wait()
-        await original_close(session_id)
+        return await original_close(binding)
 
     monkeypatch.setattr(runtime, "close", blocking_close)
 

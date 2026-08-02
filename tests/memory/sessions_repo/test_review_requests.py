@@ -38,6 +38,7 @@ def test_review_request_is_idempotent_and_keeps_enqueue_order(tmp_path) -> None:
                 item.trowel_session_id,
                 item.runtime,
                 item.requested_at,
+                item.not_before,
                 item.native_session_id,
                 item.source_start_offset,
                 item.source_end_offset,
@@ -48,12 +49,47 @@ def test_review_request_is_idempotent_and_keeps_enqueue_order(tmp_path) -> None:
                 "session-a",
                 "claude_code",
                 "2026-07-31T10:00:00",
+                "2026-07-31T10:00:00",
                 "",
                 None,
                 None,
             ),
-            ("session-b", "codex", "2026-07-31T10:00:01", "", None, None),
+            (
+                "session-b",
+                "codex",
+                "2026-07-31T10:00:01",
+                "2026-07-31T10:00:01",
+                "",
+                None,
+                None,
+            ),
         ]
+    finally:
+        conn.close()
+
+
+def test_review_request_is_not_claimed_before_not_before(tmp_path) -> None:
+    """会后提炼请求在五分钟截止时间前保持持久排队。"""
+
+    conn = open_sessions_db(tmp_path / "memory")
+    try:
+        repo = create_sessions_repository(conn)
+        repo.review_requests.enqueue(
+            "session-delayed",
+            runtime="codex",
+            requested_at="2026-08-01T10:00:00",
+            not_before="2026-08-01T10:05:00",
+        )
+
+        assert repo.review_requests.list_pending(
+            eligible_at="2026-08-01T10:04:59"
+        ) == []
+        assert [
+            item.trowel_session_id
+            for item in repo.review_requests.list_pending(
+                eligible_at="2026-08-01T10:05:00"
+            )
+        ] == ["session-delayed"]
     finally:
         conn.close()
 

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
-from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.binding import Runtime, SessionBinding
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,63 @@ class RuntimeLiveState:
         return cls(connected=False, has_in_flight_turn=False)
 
 
+@dataclass(frozen=True)
+class RuntimeCloseResult:
+    """说明 runtime 是否已经核验指定 session 的临时资源归零。
+
+    Attributes:
+        status: `closed` 表示资源已经归零；`needs_reconcile` 表示 binding 必须保留
+            供本次重试或下次启动继续清理。
+        remaining_resource_count: 尚未确认关闭的资源数量。
+        remaining_resource_kinds: 尚未关闭的资源类型，按名称排序且去重。
+        error: 不含提示正文、路径或凭据的失败说明；成功时为 None。
+    """
+
+    status: Literal["closed", "needs_reconcile"]
+    remaining_resource_count: int
+    remaining_resource_kinds: tuple[str, ...]
+    error: str | None = None
+
+    @property
+    def is_closed(self) -> bool:
+        """返回本次关闭是否已经核验资源归零。"""
+
+        return self.status == "closed" and self.remaining_resource_count == 0
+
+    @classmethod
+    def closed(cls) -> RuntimeCloseResult:
+        """构造没有剩余资源的成功结果。"""
+
+        return cls(
+            status="closed",
+            remaining_resource_count=0,
+            remaining_resource_kinds=(),
+        )
+
+    @classmethod
+    def needs_reconcile(
+        cls,
+        *,
+        remaining_resource_count: int,
+        remaining_resource_kinds: tuple[str, ...],
+        error: str,
+    ) -> RuntimeCloseResult:
+        """构造需要保留 binding 继续收敛的结果。
+
+        Args:
+            remaining_resource_count: 尚未确认关闭的资源数量。
+            remaining_resource_kinds: 尚未关闭的资源类型。
+            error: 去敏后的失败说明。
+        """
+
+        return cls(
+            status="needs_reconcile",
+            remaining_resource_count=remaining_resource_count,
+            remaining_resource_kinds=remaining_resource_kinds,
+            error=error,
+        )
+
+
 class RuntimeSessionPort(Protocol):
     """规定容量管理和统一删除所需的最小运行时能力。"""
 
@@ -42,8 +99,8 @@ class RuntimeSessionPort(Protocol):
 
         ...
 
-    async def close(self, session_id: str) -> None:
-        """关闭或注销指定 Trowel 会话的进程内运行状态。"""
+    async def close(self, binding: SessionBinding) -> RuntimeCloseResult:
+        """收敛 binding 对应的原生资源，并返回资源核验结果。"""
 
         ...
 

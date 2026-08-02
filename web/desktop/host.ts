@@ -10,9 +10,17 @@ import {
   type RunningSidecar,
   type SidecarStartOptions,
 } from "./sidecar";
+import {
+  shutdownSidecar,
+  type SidecarShutdownResult,
+} from "./shutdown";
 
 export interface DesktopHostPorts {
   readonly launch?: (options: SidecarStartOptions) => Promise<RunningSidecar>;
+  readonly shutdown?: (
+    running: RunningSidecar,
+    options: SidecarStartOptions,
+  ) => Promise<SidecarShutdownResult>;
   readonly loadRenderer: () => Promise<void> | void;
   readonly loadDiagnostics: () => Promise<void> | void;
 }
@@ -23,6 +31,8 @@ export class DesktopHost {
   private running: RunningSidecar | null = null;
   private generation = 0;
   private startPromise: Promise<void> | null = null;
+  private stopPromise: Promise<SidecarShutdownResult> | null = null;
+  private lateShutdownResult: SidecarShutdownResult | null = null;
   private stopping = false;
   private diagnosticState: DesktopDiagnosticState;
 
@@ -30,6 +40,7 @@ export class DesktopHost {
     this.options = options;
     this.ports = {
       launch: ports.launch ?? launchSidecar,
+      shutdown: ports.shutdown ?? shutdownSidecar,
       loadRenderer: ports.loadRenderer,
       loadDiagnostics: ports.loadDiagnostics,
     };
@@ -52,16 +63,17 @@ export class DesktopHost {
   }
 
   async retry(): Promise<void> {
-    this.running?.process.stop();
-    this.running = null;
+    if (this.running) await this.stop();
+    this.stopPromise = null;
     await this.start();
   }
 
-  stop(): void {
+  stop(): Promise<SidecarShutdownResult> {
+    if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
     this.generation += 1;
-    this.running?.process.stop();
-    this.running = null;
+    this.stopPromise = this.stopAttempt();
+    return this.stopPromise;
   }
 
   context(): DesktopContext {
@@ -80,6 +92,7 @@ export class DesktopHost {
 
   private async startAttempt(): Promise<void> {
     this.stopping = false;
+    this.lateShutdownResult = null;
     const generation = ++this.generation;
     this.diagnosticState = {
       ...this.diagnosticState,
@@ -92,7 +105,7 @@ export class DesktopHost {
     try {
       launched = await this.ports.launch(this.options);
       if (generation !== this.generation || this.stopping) {
-        launched.process.stop();
+        this.lateShutdownResult = await this.shutdownLaunched(launched);
         return;
       }
       this.running = launched;
@@ -105,13 +118,47 @@ export class DesktopHost {
       this.watchCurrentProcess(launched, generation);
     } catch (error) {
       if (generation !== this.generation || this.stopping) return;
-      launched?.process.stop();
+      if (launched) await this.shutdownLaunched(launched);
       this.running = null;
       this.diagnosticState = diagnosticFromError(
         error,
         this.options.logDirectory,
       );
       await this.ports.loadDiagnostics();
+    }
+  }
+
+  private async stopAttempt(): Promise<SidecarShutdownResult> {
+    /** 启动与退出交错时，先等启动路径把迟到 sidecar 完整收敛。 */
+    const pendingStart = this.startPromise;
+    if (pendingStart) await pendingStart;
+    if (this.lateShutdownResult) return this.lateShutdownResult;
+    const running = this.running;
+    if (!running) {
+      return {
+        status: "closed",
+        remainingResourceCount: 0,
+        forced: false,
+      };
+    }
+    const result = await this.shutdownLaunched(running);
+    if (this.running === running) this.running = null;
+    return result;
+  }
+
+  private async shutdownLaunched(
+    running: RunningSidecar,
+  ): Promise<SidecarShutdownResult> {
+    /** 统一处理正常退出、启动取消和 renderer 加载失败后的 sidecar。 */
+    try {
+      return await this.ports.shutdown(running, this.options);
+    } catch {
+      running.process.stop();
+      return {
+        status: "needs_reconcile",
+        remainingResourceCount: 1,
+        forced: true,
+      };
     }
   }
 

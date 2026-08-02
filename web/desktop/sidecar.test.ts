@@ -26,7 +26,7 @@ function pendingExit(): Promise<{ code: number | null; signal: string | null }> 
 function processHandle(
   exited: Promise<{ code: number | null; signal: string | null }> = pendingExit(),
 ): SidecarProcess {
-  return { pid: 321, exited, stop: vi.fn() };
+  return { pid: 321, exited, signal: vi.fn(), stop: vi.fn() };
 }
 
 function dependencies(
@@ -37,6 +37,7 @@ function dependencies(
     spawn: vi.fn().mockReturnValue(processHandle()),
     readReadiness: vi.fn().mockResolvedValue(READY),
     delay: vi.fn().mockResolvedValue(undefined),
+    cleanup: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -94,7 +95,17 @@ describe("launchSidecar", () => {
     await expect(launchSidecar(OPTIONS, deps)).rejects.toMatchObject({
       category: "version_mismatch",
     });
-    expect(proc.stop).toHaveBeenCalledOnce();
+    expect(deps.cleanup).toHaveBeenCalledWith(
+      {
+        process: proc,
+        transport: {
+          baseUrl: "http://127.0.0.1:43123",
+          credential: "desktop-secret",
+        },
+      },
+      OPTIONS,
+    );
+    expect(proc.stop).not.toHaveBeenCalled();
   });
 
   it("classifies an early process exit", async () => {

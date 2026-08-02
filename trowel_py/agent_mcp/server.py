@@ -816,6 +816,9 @@ async def main() -> None:
     """运行 stdio MCP 服务，并在退出时尝试清理进程仍在管理的交互委派。"""
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from trowel_py.resource_lifecycle.reporting import report_current_process
+
+    await report_current_process()
     broker = InteractiveBroker(
         base_url=_server_base_url(), cleanup_timeout=_cleanup_timeout_seconds()
     )

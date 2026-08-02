@@ -200,10 +200,12 @@ class TestSchedulerStartStop:
         self, tmp_path
     ):
         calls: list[dict] = []
+        now = [datetime(2026, 8, 1, 10, 0)]
         sched = MemoryReviewScheduler(
             _cfg(enabled=False),
             tmp_path,
             dispatch_fn=calls.append,
+            now_fn=lambda: now[0],
             sleep_fn=_HangingSleep(),
         )
         await sched.start()
@@ -237,11 +239,44 @@ class TestSchedulerStartStop:
             )
         finally:
             conn.close()
+        await asyncio.sleep(0.02)
+        assert not any(call.get("review_session_id") == "agent-1" for call in calls)
+        now[0] = datetime(2026, 8, 1, 10, 5)
+        sched._immediate_wakeup.set()
         fired = await _wait_until(
             lambda: any(call.get("review_session_id") == "agent-1" for call in calls)
         )
         await sched.stop()
         assert fired
+
+    async def test_immediate_query_uses_naive_local_wall_clock(
+        self, tmp_path, monkeypatch
+    ):
+        """即时队列查询应与持久化截止时间使用相同的无时区本地文本。"""
+
+        from trowel_py.memory.daily_review import scheduler as rs_mod
+
+        eligible_values: list[str | None] = []
+
+        def load_requests(_root, *, eligible_at=None):
+            eligible_values.append(eligible_at)
+            return []
+
+        monkeypatch.setattr(rs_mod, "load_session_review_requests", load_requests)
+        cst = timezone(timedelta(hours=8))
+        sched = MemoryReviewScheduler(
+            _cfg(enabled=False),
+            tmp_path,
+            now_fn=lambda: datetime(2026, 8, 1, 10, 5, tzinfo=cst),
+        )
+        sched._immediate_wakeup.set()
+
+        task = asyncio.create_task(sched._immediate_loop())
+        assert await _wait_until(lambda: bool(eligible_values))
+        task.cancel()
+        await task
+
+        assert eligible_values[0] == "2026-08-01T10:05:00.000000"
 
     async def test_start_resumes_persisted_close_request(self, tmp_path):
         from trowel_py.memory.sessions_repo import (
@@ -407,7 +442,7 @@ class TestSchedulerStartStop:
             os.close(lock_fd)
             await sched.stop()
 
-    async def test_stop_waits_for_active_thread_dispatch(self, tmp_path):
+    async def test_stop_does_not_wait_for_active_thread_dispatch(self, tmp_path):
         from trowel_py.memory.sessions_repo import (
             create_sessions_repository,
             open_sessions_db,
@@ -438,10 +473,8 @@ class TestSchedulerStartStop:
         assert await _wait_until(started.is_set)
 
         stopping = asyncio.create_task(sched.stop())
-        await asyncio.sleep(0)
-        assert not stopping.done()
+        await asyncio.wait_for(stopping, timeout=0.1)
         release.set()
-        await stopping
 
 
 class TestSchedulerDailyLoop:
@@ -515,7 +548,7 @@ class TestLifespanIntegration:
             assert len(sched.tasks) == 1
 
     @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
-    def test_delete_route_persists_and_dispatches_runtime_request(
+    def test_delete_route_persists_without_dispatch_before_deadline(
         self, tmp_path, monkeypatch, runtime
     ):
         from fastapi.testclient import TestClient
@@ -554,21 +587,20 @@ class TestLifespanIntegration:
             closed = client.delete(f"/api/agent/sessions/{session_id}")
 
             assert closed.status_code == 200
-            fired = asyncio.run(
-                _wait_until(
-                    lambda: any(
-                        event.get("review_session_id") == session_id
-                        for event in dispatched
-                    )
-                )
+            asyncio.run(asyncio.sleep(0.05))
+            assert not any(
+                event.get("review_session_id") == session_id
+                for event in dispatched
             )
-            assert fired
 
         conn = open_sessions_db(memory_root)
         try:
             request = create_sessions_repository(conn).review_requests.find(session_id)
             assert request is not None
             assert request.runtime == runtime
+            assert datetime.fromisoformat(request.not_before) - datetime.fromisoformat(
+                request.requested_at
+            ) == timedelta(minutes=5)
         finally:
             conn.close()
 

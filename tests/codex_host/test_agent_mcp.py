@@ -62,3 +62,23 @@ def test_codex_agent_mcp_reattaches_on_resume() -> None:
     params = CodexHostManager()._thread_resume_params(session)  # noqa: SLF001
     env = params["config"]["mcp_servers"]["trowel_agents"]["env"]
     assert env["TROWEL_NATIVE_SESSION_ID"] == "thread-existing"
+
+
+def test_codex_agent_mcp_carries_process_registration_env() -> None:
+    """Agent MCP 与 Memory MCP 使用各自的 owner 登记令牌。"""
+
+    cfg = build_default_trowel_agent_mcp(
+        trowel_session_id="parent-codex",
+        workdir="/tmp/project",
+        permission="danger-full-access",
+        base_url="http://127.0.0.1:8123",
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=True,
+        registration_env={"TROWEL_RESOURCE_REGISTRATION_TOKEN": "private-token"},
+    )
+
+    env = cfg.to_thread_config()["trowel_agents"]["env"]
+
+    assert env["TROWEL_RESOURCE_REGISTRATION_TOKEN"] == "private-token"
+    assert env["TROWEL_PARENT_SESSION_ID"] == "parent-codex"

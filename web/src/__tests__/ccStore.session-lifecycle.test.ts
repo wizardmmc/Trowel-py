@@ -271,6 +271,38 @@ describe("createAgentStore — multi-session lifecycle", () => {
     expect(apiDeleteSession).toHaveBeenCalledWith("s1");
   });
 
+  it("keeps the session when close needs reconciliation", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    apiDeleteSession.mockResolvedValueOnce({
+      closed: false,
+      status: "needs_reconcile",
+      remaining_resource_count: 1,
+      remaining_resource_kinds: ["codex_session_close"],
+      error: "Codex close needs reconciliation",
+    });
+
+    await store.getState().closeSession("s1");
+
+    expect(store.getState().sessions.s1).toBeDefined();
+    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().sessions.s1.transportError).toMatch(/reconciliation/);
+  });
+
+  it("keeps the session when the close request fails", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    apiDeleteSession.mockRejectedValueOnce(new Error("sidecar unavailable"));
+
+    await store.getState().closeSession("s1");
+
+    expect(store.getState().sessions.s1).toBeDefined();
+    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().sessions.s1.transportError).toBe("sidecar unavailable");
+  });
+
   it("reset clears all sessions + activeSid", async () => {
     const store = createAgentStore();
     mockCreate("s1");

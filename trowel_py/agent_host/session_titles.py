@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from trowel_py.agent_host.binding import Runtime
 from trowel_py.cc_host.launcher import CLAUDE_BIN
 from trowel_py.cc_host.proxy import build_proxy_env, load_settings_env
+from trowel_py.resource_lifecycle import OwnerScope, ResourceRegistry
 
 CLAUDE_TITLE_MODEL = "haiku"
 CODEX_TITLE_MODEL = "gpt-5.6-luna"
@@ -210,6 +211,7 @@ class NativeSessionTitleGenerator:
         cc_settings_path: str | Path | None,
         timeout_s: float = TITLE_TIMEOUT_S,
         subprocess_spawner: SubprocessSpawner | None = None,
+        resource_registry: ResourceRegistry | None = None,
     ) -> None:
         """保存两种 runtime 的连接依赖和单次调用超时。
 
@@ -220,6 +222,7 @@ class NativeSessionTitleGenerator:
             cc_settings_path: 提供 Claude provider 环境变量的 settings 文件。
             timeout_s: 单次标题调用允许等待的最大秒数。
             subprocess_spawner: 测试可替换的异步子进程创建函数。
+            resource_registry: 桌面实例资源账本；存在时登记 Claude 标题进程组。
         """
 
         self._codex = codex_manager
@@ -227,6 +230,7 @@ class NativeSessionTitleGenerator:
         self._cc_settings_path = cc_settings_path
         self._timeout_s = timeout_s
         self._spawner = subprocess_spawner or asyncio.create_subprocess_exec
+        self._resource_registry = resource_registry
 
     async def generate(self, runtime: Runtime, text: str, workdir: str) -> str:
         """通过 runtime 对应的临时低成本模型生成并校验标题。
@@ -283,6 +287,21 @@ class NativeSessionTitleGenerator:
             if env is not None:
                 kwargs["env"] = env
             process = await self._spawner(*build_claude_title_args(text), **kwargs)
+            resource_id: str | None = None
+            registry = self._resource_registry
+            if registry is not None:
+                resource_id = f"session-title:{uuid.uuid4().hex}"
+                try:
+                    registry.register_process_group(
+                        resource_id=resource_id,
+                        owner_scope=OwnerScope.APP,
+                        resource_kind="session_title_process_group",
+                        pid=process.pid,
+                        runtime="claude_code",
+                    )
+                except BaseException:
+                    await _kill_claude_process(process)
+                    raise
             try:
                 stdout, _stderr = await asyncio.wait_for(
                     process.communicate(), timeout=self._timeout_s
@@ -293,6 +312,8 @@ class NativeSessionTitleGenerator:
             except BaseException:
                 await _kill_claude_process(process)
                 raise
+            finally:
+                self._mark_title_resource_closed_if_exited(resource_id)
         if process.returncode != 0:
             raise RuntimeError(
                 f"Claude title generation exited with {process.returncode}"
@@ -313,6 +334,23 @@ class NativeSessionTitleGenerator:
             if isinstance(nested, dict) and isinstance(nested.get("title"), str):
                 return nested["title"]
         raise RuntimeError("Claude title response omitted title")
+
+    def _mark_title_resource_closed_if_exited(self, resource_id: str | None) -> None:
+        """仅在整个标题进程组都退出后提交资源 closed。
+
+        Args:
+            resource_id: 本次标题进程的账本 ID；browser 模式为 None。
+        """
+
+        registry = self._resource_registry
+        if registry is None or resource_id is None:
+            return
+        record = registry.get(resource_id)
+        process_group = record.process_group
+        if process_group is not None and not registry.process_controller.group_alive(
+            process_group
+        ):
+            registry.mark_closed(resource_id)
 
     async def _generate_codex(self, text: str) -> str:
         """复用 app-server 运行一个 ephemeral Luna thread 并读取最终文本。"""
@@ -387,17 +425,19 @@ class NativeSessionTitleGenerator:
                 return task.result()
             except BaseException:
                 if not task.done():
-                    try:
-                        await asyncio.wait_for(
-                            manager.interrupt(session), timeout=2
-                        )
-                    except Exception:
-                        _log.debug(
-                            "failed to interrupt cancelled Codex title",
-                            exc_info=True,
-                        )
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
                 raise
             finally:
-                manager.unregister(session.session_id)
+                try:
+                    await manager.close_session(
+                        session,
+                        preserve_history=False,
+                    )
+                except Exception:  # noqa: BLE001 - 保留 manager 登记供应用退出继续收敛。
+                    _log.warning(
+                        "failed to close ephemeral Codex title session",
+                        exc_info=True,
+                    )
+                else:
+                    manager.unregister(session.session_id)

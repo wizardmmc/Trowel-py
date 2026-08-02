@@ -98,6 +98,8 @@ def test_open_facade_reads_current_route_state(
         "max_delegate_connections": routes.MAX_DELEGATE_CONNECTIONS,
         "host_factory": host_factory,
         "display_name": None,
+        "process_controller": None,
+        "resource_registry": None,
     }
     assert routes.get_active_session_id() == "new-session"
 

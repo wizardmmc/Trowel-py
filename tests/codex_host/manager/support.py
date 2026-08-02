@@ -12,6 +12,7 @@ from trowel_py.codex_host import (
 )
 from trowel_py.codex_host.version import CodexVersion
 from tests.codex_host._fake import FakeAppServer, Step
+from trowel_py.resource_lifecycle import ResourceRegistry
 
 
 async def _version_0144() -> CodexVersion:
@@ -52,7 +53,10 @@ def _cfg(sid: str) -> CodexSessionConfig:
 
 
 def _manager(
-    fake: FakeAppServer, *, pending_request_timeout_s: float = 600.0
+    fake: FakeAppServer,
+    *,
+    pending_request_timeout_s: float = 600.0,
+    resource_registry: ResourceRegistry | None = None,
 ) -> CodexHostManager:
     """构造复用同一 fake client 的 manager；重启场景使用 `_restart_manager`。"""
 
@@ -73,6 +77,7 @@ def _manager(
     return CodexHostManager(
         client_factory=factory,
         pending_request_timeout_s=pending_request_timeout_s,
+        resource_registry=resource_registry,
     )
 
 

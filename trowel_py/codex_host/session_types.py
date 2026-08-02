@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -30,6 +30,8 @@ class TrowelMemoryMcpConfig:
         module_args: 传给 ``command`` 的固定启动参数。
         memory_root: MCP server 读取的本地 memory 根目录。
         trowel_session_id: 归属该 MCP server 的 Trowel 会话 ID。
+        registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
+            owner 令牌；browser 模式为空映射。
     """
 
     server_name: str
@@ -37,6 +39,9 @@ class TrowelMemoryMcpConfig:
     module_args: tuple[str, ...]
     memory_root: str
     trowel_session_id: str
+    registration_env: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
         """构造必需且预先授权本地 memory 工具的 MCP server 配置。
@@ -53,6 +58,7 @@ class TrowelMemoryMcpConfig:
                 "command": self.command,
                 "args": list(self.module_args),
                 "env": {
+                    **dict(self.registration_env),
                     "MEMORY_ROOT": self.memory_root,
                     "TROWEL_SESSION_ID": self.trowel_session_id,
                     "TROWEL_HOST_KIND": "codex",
@@ -79,6 +85,8 @@ class TrowelAgentMcpConfig:
         self_enabled: 子任务是否继承 self injection 开关。
         delegation_depth: 当前父会话的委派深度；默认 ``0`` 表示顶层会话。
         server_name: 写入 ``mcp_servers`` 的服务名称；默认为 ``trowel_agents``。
+        registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
+            owner 令牌；browser 模式为空映射。
     """
 
     trowel_session_id: str
@@ -90,6 +98,9 @@ class TrowelAgentMcpConfig:
     self_enabled: bool
     delegation_depth: int = 0
     server_name: str = TROWEL_AGENTS_SERVER_NAME
+    registration_env: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
         """构造必需且预先授权委派工具的 Agent MCP server 配置。
@@ -112,6 +123,7 @@ class TrowelAgentMcpConfig:
             self_enabled=self.self_enabled,
             delegation_depth=self.delegation_depth,
             native_session_id=native_session_id,
+            extra_env=self.registration_env,
         )
         return {
             self.server_name: {
@@ -136,6 +148,7 @@ def build_default_trowel_agent_mcp(
     profile_enabled: bool,
     self_enabled: bool,
     delegation_depth: int = 0,
+    registration_env: Mapping[str, str] | None = None,
 ) -> TrowelAgentMcpConfig:
     """用父会话上下文构造默认的 Agent 委派 MCP 配置。
 
@@ -148,6 +161,8 @@ def build_default_trowel_agent_mcp(
         profile_enabled: 子任务是否继承 profile 开关。
         self_enabled: 子任务是否继承 self injection 开关。
         delegation_depth: 父会话当前的委派深度；默认 ``0``。
+        registration_env: 桌面模式下供 Agent MCP 在服务前登记自身进程的环境；
+            browser 模式传 None 或空映射。
     """
 
     return TrowelAgentMcpConfig(
@@ -159,6 +174,7 @@ def build_default_trowel_agent_mcp(
         profile_enabled=profile_enabled,
         self_enabled=self_enabled,
         delegation_depth=delegation_depth,
+        registration_env=MappingProxyType(dict(registration_env or {})),
     )
 
 
@@ -167,6 +183,7 @@ def build_default_trowel_memory_mcp(
     trowel_session_id: str,
     memory_root: str,
     server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
+    registration_env: Mapping[str, str] | None = None,
 ) -> TrowelMemoryMcpConfig:
     """用当前解释器构造 Trowel memory MCP 配置。
 
@@ -175,6 +192,8 @@ def build_default_trowel_memory_mcp(
         memory_root: 本地 memory 根目录。
         server_name: 写入 ``mcp_servers`` 的服务名称；默认使用
             ``TROWEL_NOTE_SEARCH_SERVER_NAME``。
+        registration_env: 桌面模式下供 Memory MCP 在服务前登记自身进程的环境；
+            browser 模式传 None 或空映射。
     """
 
     return TrowelMemoryMcpConfig(
@@ -183,6 +202,7 @@ def build_default_trowel_memory_mcp(
         module_args=("-m", "trowel_py.memory.mcp_server"),
         memory_root=str(memory_root),
         trowel_session_id=trowel_session_id,
+        registration_env=MappingProxyType(dict(registration_env or {})),
     )
 
 

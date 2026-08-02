@@ -25,6 +25,8 @@ from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import count_sessions, list_sessions
 from trowel_py.cc_host.slash_items import list_slash_items
+from trowel_py.resource_lifecycle.processes import ProcessController
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 from trowel_py.cc_host.schemas import (
     AnswerElicitRequest,
     CreateSessionRequest,
@@ -145,6 +147,8 @@ def open_cc_session_configured(
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
     display_name: str | None = None,
+    process_controller: ProcessController | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -157,6 +161,8 @@ def open_cc_session_configured(
         settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
         display_name: Agent Hub 已按双 runtime 可见集合分配的临时名称；为 `None`
             时只根据旧版 CC 路由当前已登记的用户会话分配。
+        process_controller: 核验并终止 CC 独立进程组的实现。
+        resource_registry: 登记 CC 会话临时资源的当前应用账本。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
@@ -174,6 +180,8 @@ def open_cc_session_configured(
         max_delegate_connections=MAX_DELEGATE_CONNECTIONS,
         host_factory=CCHost,
         display_name=display_name,
+        process_controller=process_controller,
+        resource_registry=resource_registry,
     )
     if req.session_kind == "user":
         set_active_session_id(sid)

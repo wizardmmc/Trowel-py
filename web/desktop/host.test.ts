@@ -16,7 +16,7 @@ function deferred<T>() {
 
 function runningSidecar(exit = deferred<{ code: number | null; signal: string | null }>()) {
   const running: RunningSidecar = {
-    process: { pid: 42, exited: exit.promise, stop: vi.fn() },
+    process: { pid: 42, exited: exit.promise, signal: vi.fn(), stop: vi.fn() },
     transport: {
       baseUrl: "http://127.0.0.1:43123",
       credential: "desktop-secret",
@@ -140,17 +140,75 @@ it("keeps diagnostics in front when the sidecar exits during renderer loading", 
 
 it("stops the sidecar if loading the renderer fails", async () => {
   const { running } = runningSidecar();
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: false,
+  });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),
+    shutdown,
     loadRenderer: vi.fn().mockRejectedValue(new Error("renderer failed")),
     loadDiagnostics: vi.fn(),
   });
 
   await host.start();
 
-  expect(running.process.stop).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS);
   expect(host.diagnostics()).toMatchObject({
     status: "failed",
     category: "early_exit",
   });
+});
+
+it("waits for an in-progress launch and shuts down the late sidecar", async () => {
+  const { running } = runningSidecar();
+  const launch = deferred<RunningSidecar>();
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: false,
+  });
+  const host = new DesktopHost(OPTIONS, {
+    launch: vi.fn(() => launch.promise),
+    shutdown,
+    loadRenderer: vi.fn(),
+    loadDiagnostics: vi.fn(),
+  });
+
+  const starting = host.start();
+  const stopping = host.stop();
+  let stopped = false;
+  void stopping.then(() => {
+    stopped = true;
+  });
+  await Promise.resolve();
+  expect(stopped).toBe(false);
+
+  launch.resolve(running);
+  await Promise.all([starting, stopping]);
+
+  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS);
+  expect(running.process.stop).not.toHaveBeenCalled();
+});
+
+it("reuses one asynchronous shutdown for repeated stop calls", async () => {
+  const { running } = runningSidecar();
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: false,
+  });
+  const host = new DesktopHost(OPTIONS, {
+    launch: vi.fn().mockResolvedValue(running),
+    shutdown,
+    loadRenderer: vi.fn(),
+    loadDiagnostics: vi.fn(),
+  });
+  await host.start();
+
+  const [first, second] = await Promise.all([host.stop(), host.stop()]);
+
+  expect(first).toBe(second);
+  expect(shutdown).toHaveBeenCalledOnce();
 });

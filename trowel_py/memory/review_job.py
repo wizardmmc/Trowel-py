@@ -23,6 +23,7 @@ from trowel_py.memory.daily_review.batch import (
     run_daily_review_locked as _run_daily_review_locked,
 )
 from trowel_py.memory.paths import resolve_memory_root
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ async def run_daily_review(
     provider: Any = None,
     eligible_before: str | None = None,
     review_session_id: str | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> None:
     """提炼所有已完成但尚未推进 extracted 水位的增量 segment。
 
@@ -94,6 +96,14 @@ async def run_daily_review(
         raw_session_id = event.get("review_session_id")
         if raw_session_id:
             review_session_id = str(raw_session_id)
+    if resource_registry is None and event and isinstance(event, dict):
+        candidate_registry = event.get("_resource_registry")
+        if isinstance(candidate_registry, ResourceRegistry):
+            resource_registry = candidate_registry
+    if host_factory is None and resource_registry is not None:
+        from trowel_py.memory.daily_review.agent import resource_aware_host_factory
+
+        host_factory = resource_aware_host_factory(resource_registry)
     try:
         with _review_lock(root):
             await _run_daily_review_locked(
@@ -116,11 +126,15 @@ def run_daily_review_sync(event: Any = None) -> None:
     date_str = None
     eligible_before = None
     review_session_id = None
+    resource_registry = None
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
         eligible_before = event.get("eligible_before")
         review_session_id = event.get("review_session_id")
+        candidate_registry = event.get("_resource_registry")
+        if isinstance(candidate_registry, ResourceRegistry):
+            resource_registry = candidate_registry
     root_path = Path(root) if root else None
     asyncio.run(
         run_daily_review(
@@ -129,5 +143,6 @@ def run_daily_review_sync(event: Any = None) -> None:
             date_str=date_str,
             eligible_before=eligible_before,
             review_session_id=review_session_id,
+            resource_registry=resource_registry,
         )
     )

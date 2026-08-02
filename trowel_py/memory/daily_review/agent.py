@@ -23,12 +23,48 @@ from trowel_py.memory.daily_review.workspace import ensure_review_workdir
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
 from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 HostFactory = Callable[[ReviewSessionLike, Path], Any]
 DerivationSink = Callable[[DerivationProvenance], None]
 _REFINE_PIPELINE_VERSION = 3
 _DISTILL_MODEL = "glm-5.1"
 logger = logging.getLogger("trowel_py.memory.review_agent")
+
+
+def resource_aware_host_factory(
+    registry: ResourceRegistry,
+) -> HostFactory:
+    """创建把内部 review CCHost 登记到当前应用账本的工厂。
+
+    Args:
+        registry: 当前应用实例的资源账本和进程控制器。
+    """
+
+    def create_host(session: ReviewSessionLike, workdir: Path) -> Any:
+        """为一段待提炼来源创建带 app owner 账本的隔离 CCHost。
+
+        Args:
+            session: 当前来源的 review 会话事实；只用于满足统一 host factory
+                契约，不进入内部 CCHost 参数。
+            workdir: 本次 Memory 提炼隔离工作目录。
+        """
+
+        del session
+        from trowel_py.cc_host.service import CCHost
+        from trowel_py.memory.mcp_config import write_mcp_config
+
+        return CCHost(
+            session_id=uuid.uuid4().hex,
+            workdir=str(workdir),
+            model=_DISTILL_MODEL,
+            session_kind="review",
+            mcp_config=str(write_mcp_config()),
+            process_controller=registry.process_controller,
+            resource_registry=registry,
+        )
+
+    return create_host
 
 
 class DistillError(Exception):

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import uuid
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,6 +43,45 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """在应用生命周期内持有 CC 反向代理与可选后台组件。"""
+    from trowel_py.resource_lifecycle import (
+        DrainCoordinator,
+        OwnerScope,
+        ResourceRegistry,
+        reconcile_previous_snapshot,
+    )
+
+    desktop_instance_id = str(app.state.desktop_instance_id).strip()
+    app_instance_id = desktop_instance_id or f"browser-{uuid.uuid4().hex}"
+    desktop_data_dir = getattr(app.state, "desktop_data_dir", None)
+    snapshot_path = (
+        Path(desktop_data_dir) / "resource-lifecycle.json"
+        if desktop_instance_id and desktop_data_dir
+        else None
+    )
+    if snapshot_path is not None:
+        app.state.previous_reconcile_report = await asyncio.to_thread(
+            reconcile_previous_snapshot,
+            snapshot_path,
+            current_instance_id=app_instance_id,
+        )
+    resource_registry = ResourceRegistry(
+        app_instance_id=app_instance_id,
+        snapshot_path=snapshot_path,
+        registration_url=(
+            f"http://127.0.0.1:{os.environ.get('TROWEL_SERVER_PORT', '8000')}"
+            "/api/desktop/resources/register"
+        ),
+        registration_credential=getattr(app.state, "desktop_credential", None),
+    )
+    app.state.resource_registry = resource_registry
+    if snapshot_path is not None:
+        resource_registry.register_process_group(
+            resource_id=f"sidecar:{app_instance_id}",
+            owner_scope=OwnerScope.APP,
+            resource_kind="sidecar_process_group",
+            pid=os.getpid(),
+            runtime="app",
+        )
     settings_path = Path.home() / ".claude" / "settings.json"
     settings_env = load_settings_env(settings_path)
     real_base_url = settings_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -67,7 +108,9 @@ async def lifespan(app: FastAPI):
         )
 
         scheduler = MemoryReviewScheduler(
-            load_review_config(), _mem_paths.resolve_memory_root()
+            load_review_config(),
+            _mem_paths.resolve_memory_root(),
+            resource_registry=resource_registry,
         )
         await scheduler.start()
         app.state.memory_scheduler = scheduler
@@ -87,6 +130,7 @@ async def lifespan(app: FastAPI):
             _distill_paths.resolve_memory_root(),
             app.state.proxy_base_url,
             app.state.cc_settings_path,
+            resource_registry=resource_registry,
         )
         await distill_scheduler.start()
         app.state.distill_scheduler = distill_scheduler
@@ -119,7 +163,9 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.codex_host import CodexHostManager
 
-        app.state.codex_host_manager = CodexHostManager()
+        app.state.codex_host_manager = CodexHostManager(
+            resource_registry=resource_registry
+        )
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
         app.state.codex_host_manager = None
@@ -213,45 +259,36 @@ async def lifespan(app: FastAPI):
                 codex_manager=app.state.codex_host_manager,
                 cc_proxy_base_url=app.state.proxy_base_url,
                 cc_settings_path=app.state.cc_settings_path,
+                resource_registry=resource_registry,
             ),
             codex_history_root=codex_history_root,
+            resource_registry=resource_registry,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
-    yield
-    _scheduler = getattr(app.state, "memory_scheduler", None)
-    if _scheduler is not None:
-        try:
-            await _scheduler.stop()
-        except Exception:
-            logger.warning("[memory] review scheduler stop failed", exc_info=True)
-    _distill = getattr(app.state, "distill_scheduler", None)
-    if _distill is not None:
-        try:
-            await _distill.stop()
-        except Exception:
-            logger.warning(
-                "[memory] profile distill scheduler stop failed", exc_info=True
+    app.state.drain_coordinator = DrainCoordinator(
+        resource_registry=resource_registry,
+        agent_hub=app.state.agent_hub,
+        schedulers=tuple(
+            (name, component)
+            for name, component in (
+                ("memory_scheduler", app.state.memory_scheduler),
+                ("profile_distill_scheduler", app.state.distill_scheduler),
+                ("memory_tidy_scheduler", app.state.tidy_scheduler),
+                ("quota_scheduler", app.state.quota_scheduler),
             )
-    _tidy = getattr(app.state, "tidy_scheduler", None)
-    if _tidy is not None:
-        try:
-            await _tidy.stop()
-        except Exception:
-            logger.warning("[memory] tidy scheduler stop failed", exc_info=True)
-    _codex_mgr = getattr(app.state, "codex_host_manager", None)
-    if _codex_mgr is not None:
-        try:
-            await _codex_mgr.close()
-        except Exception:
-            logger.warning("[codex] host manager close failed", exc_info=True)
-    _quota_sched = getattr(app.state, "quota_scheduler", None)
-    if _quota_sched is not None:
-        try:
-            await _quota_sched.stop()
-        except Exception:
-            logger.warning("[quota] scheduler stop failed", exc_info=True)
+            if component is not None
+        ),
+        codex_manager=app.state.codex_host_manager,
+    )
+    yield
+    try:
+        report = await app.state.drain_coordinator.drain()
+        if report.status != "closed":
+            logger.warning("[app] shutdown needs resource reconciliation: %s", report)
+    except Exception:
+        logger.warning("[app] coordinated drain failed", exc_info=True)
     _quota_http = getattr(app.state, "quota_http_client", None)
     if _quota_http is not None:
         try:
@@ -283,6 +320,8 @@ def create_app() -> FastAPI:
     app.state.desktop_instance_id = os.environ.pop(
         "TROWEL_APP_INSTANCE_ID", ""
     )
+    app.state.desktop_data_dir = os.environ.get("TROWEL_DESKTOP_DATA_DIR", "").strip()
+    app.state.desktop_credential = desktop_credential
 
     app.add_middleware(
         DesktopCredentialMiddleware,

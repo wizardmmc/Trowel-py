@@ -26,6 +26,8 @@ const rendererSmoke = process.env.TROWEL_DESKTOP_SMOKE === "1";
 const diagnosticSmoke = process.env.TROWEL_DESKTOP_DIAGNOSTIC_SMOKE === "1";
 const singleInstanceSmoke =
   process.env.TROWEL_DESKTOP_SINGLE_INSTANCE_SMOKE === "1";
+const rendererCrashSmoke =
+  process.env.TROWEL_DESKTOP_RENDERER_CRASH_SMOKE === "1";
 const serviceDescriptorPath = process.env.TROWEL_DESKTOP_SERVICE_FILE;
 
 if (process.env.TROWEL_ELECTRON_USER_DATA_DIR) {
@@ -94,7 +96,7 @@ async function startDesktopApplication(): Promise<void> {
       await window.loadFile(rendererEntry);
     }
     logLifecycle("renderer_loaded");
-    if (rendererSmoke || singleInstanceSmoke) {
+    if (rendererSmoke || singleInstanceSmoke || rendererCrashSmoke) {
       try {
         await waitForRendererReady(window);
       } catch (error) {
@@ -103,6 +105,17 @@ async function startDesktopApplication(): Promise<void> {
       }
       if (rendererSmoke) {
         console.log("TROWEL_DESKTOP_SMOKE_OK");
+        app.quit();
+      }
+      if (rendererCrashSmoke) {
+        try {
+          if (!host) throw new Error("desktop host is not initialized");
+          await crashRendererAndVerifySidecar(window, host);
+          console.log("TROWEL_DESKTOP_RENDERER_CRASHED_SIDECAR_ALIVE");
+        } catch (error) {
+          process.exitCode = 1;
+          console.error("TROWEL_DESKTOP_RENDERER_CRASH_SMOKE_FAILED", error);
+        }
         app.quit();
       }
     }
@@ -175,12 +188,36 @@ async function startDesktopApplication(): Promise<void> {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  app.once("before-quit", () => {
+  let finalQuit = false;
+  let quitPromise: Promise<void> | null = null;
+  app.on("before-quit", (event) => {
+    if (finalQuit) return;
+    event.preventDefault();
+    if (quitPromise) return;
     logLifecycle("host_quit");
-    host?.stop();
-    void removeAgentService();
-    removeIpcHandlers?.();
-    removeIpcHandlers = null;
+    quitPromise = (async () => {
+      try {
+        const result = await host?.stop();
+        logLifecycle("host_drain_finished", result?.status ?? "closed");
+      } catch (error) {
+        logLifecycle(
+          "host_drain_failed",
+          error instanceof Error ? error.name : "unknown",
+        );
+      }
+      try {
+        await removeAgentService();
+      } catch (error) {
+        logLifecycle(
+          "service_descriptor_remove_failed",
+          error instanceof Error ? error.name : "unknown",
+        );
+      }
+      removeIpcHandlers?.();
+      removeIpcHandlers = null;
+      finalQuit = true;
+      app.quit();
+    })();
   });
 
   logLifecycle("sidecar_starting");
@@ -236,4 +273,39 @@ async function waitForRendererReady(window: BrowserWindow): Promise<void> {
   throw new Error(
     `renderer did not complete its sidecar API request: ${JSON.stringify(lastState)}`,
   );
+}
+
+async function crashRendererAndVerifySidecar(
+  window: BrowserWindow,
+  host: DesktopHost,
+): Promise<void> {
+  /** 强制结束真实 renderer，并从仍存活的 main 进程访问 sidecar 私有接口。 */
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("renderer crash event timed out")),
+      5_000,
+    );
+    window.webContents.once("render-process-gone", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    window.webContents.forcefullyCrashRenderer();
+  });
+  const context = host.context();
+  const response = await fetch(`${context.transport.baseUrl}/api/desktop/resources`, {
+    headers: {
+      Authorization: `Bearer ${context.transport.credential}`,
+    },
+    signal: AbortSignal.timeout(2_000),
+  });
+  if (!response.ok) {
+    throw new Error(`sidecar resource probe returned ${response.status}`);
+  }
+  const envelope = (await response.json()) as {
+    readonly success?: boolean;
+    readonly data?: { readonly draining?: boolean };
+  };
+  if (!envelope.success || envelope.data?.draining !== false) {
+    throw new Error("sidecar stopped serving before Host shutdown began");
+  }
 }

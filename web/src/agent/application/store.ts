@@ -318,9 +318,41 @@ export function createAgentStore() {
         cur.abort?.abort();
         codexLive.stop(sid);
         try {
-          await apiDeleteSession(sid);
-        } catch {
-          // 关闭操作以本地状态为准，后端删除是 best-effort。
+          const result = await apiDeleteSession(sid);
+          if (result.status === "needs_reconcile") {
+            set((state) => {
+              const session = state.sessions[sid];
+              if (!session) return state;
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...session,
+                    transportError:
+                      result.error ?? "会话资源尚未完全关闭，请重试。",
+                  },
+                },
+              };
+            });
+            return;
+          }
+        } catch (error) {
+          set((state) => {
+            const session = state.sessions[sid];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...session,
+                  transportError: (error as Error).message,
+                },
+              },
+            };
+          });
+          return;
         }
         set((state) => {
           const sessions = { ...state.sessions };
