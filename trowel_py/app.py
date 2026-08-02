@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from trowel_py.agent_host.routes import router as agent_router
+from trowel_py.agent_host.runtime_availability import detect_runtime_availability
 from trowel_py.agent_host.workspaces import (
     RecentWorkspaceStore,
     resolve_recent_workspaces_path,
@@ -142,20 +143,26 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.memory import paths as _tidy_paths
         from trowel_py.memory.tidy_scheduler import TidyScheduler
+        from trowel_py.config import load_llm_config
+        from trowel_py.llm.client import AnthropicProvider
 
-        def _tidy_provider_factory():
-            """创建 Memory 整理任务调用模型所用的客户端。"""
+        try:
+            tidy_llm_config = load_llm_config()
+        except FileNotFoundError:
+            logger.info("[memory] tidy scheduler off: no LLM config")
+            app.state.tidy_scheduler = None
+        else:
 
-            from trowel_py.config import load_llm_config
-            from trowel_py.llm.client import AnthropicProvider
+            def _tidy_provider_factory():
+                """创建 Memory 整理任务调用模型所用的客户端。"""
 
-            return AnthropicProvider(load_llm_config())
+                return AnthropicProvider(tidy_llm_config)
 
-        tidy_scheduler = TidyScheduler(
-            _tidy_paths.resolve_memory_root(), _tidy_provider_factory
-        )
-        await tidy_scheduler.start()
-        app.state.tidy_scheduler = tidy_scheduler
+            tidy_scheduler = TidyScheduler(
+                _tidy_paths.resolve_memory_root(), _tidy_provider_factory
+            )
+            await tidy_scheduler.start()
+            app.state.tidy_scheduler = tidy_scheduler
     except Exception:
         logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
         app.state.tidy_scheduler = None
@@ -263,6 +270,7 @@ async def lifespan(app: FastAPI):
             ),
             codex_history_root=codex_history_root,
             resource_registry=resource_registry,
+            runtime_availability=detect_runtime_availability(),
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

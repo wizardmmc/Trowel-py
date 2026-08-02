@@ -3,6 +3,11 @@
 from __future__ import annotations
 import tomllib
 from pathlib import Path
+
+from trowel_py.application_paths import (
+    has_application_data_root_override,
+    resolve_application_data_root,
+)
 from trowel_py.llm.client import LLMConfig
 
 
@@ -13,25 +18,23 @@ def _find_config_path() -> Path:
         第一个已存在的 ``config.toml``；都不存在时返回源码根目录下的候选路径。
     """
     here = Path(__file__).resolve().parent.parent
-    candidates = [
-        Path.cwd() / "config.toml",
-        Path.home() / ".trowel" / "config.toml",
-        here / "config.toml",
-    ]
+    application_config = resolve_application_data_root() / "config.toml"
+    candidates = (
+        [application_config]
+        if has_application_data_root_override()
+        else [Path.cwd() / "config.toml", application_config, here / "config.toml"]
+    )
     for c in candidates:
         if c.exists():
             return c
     return candidates[-1]
 
 
-_CONFIG_PATH = _find_config_path()
-
-
-def load_llm_config(path: Path = _CONFIG_PATH) -> LLMConfig:
+def load_llm_config(path: Path | None = None) -> LLMConfig:
     """读取 ``[llm].active`` 指定的模型连接配置。
 
     Args:
-        path: 要读取的 ``config.toml``；默认使用本模块导入时选定的路径。
+        path: 要读取的 ``config.toml``；省略时按当前应用数据环境动态查找。
 
     Returns:
         当前启用模型的供应商、模型名称和连接设置。
@@ -43,9 +46,10 @@ def load_llm_config(path: Path = _CONFIG_PATH) -> LLMConfig:
         pydantic.ValidationError: 当前模型配置缺少必填字段，或字段值不符合
             ``LLMConfig`` 的约束。
     """
-    if not path.exists():
-        raise FileNotFoundError(f"config.toml not found at {path}.")
-    with path.open("rb") as f:
+    resolved_path = _find_config_path() if path is None else path
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"config.toml not found at {resolved_path}.")
+    with resolved_path.open("rb") as f:
         data = tomllib.load(f)
     llm = data["llm"]
     active = llm["active"]

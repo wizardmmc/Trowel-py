@@ -49,7 +49,7 @@ def test_readiness_returns_the_started_instance_contract(monkeypatch) -> None:
         "success": True,
         "data": {
             "status": "ready",
-            "app_version": "0.1.0",
+            "app_version": "0.2.0",
             "protocol_version": 1,
             "instance_id": "instance-123",
             "capabilities": ["agent", "memory", "review"],

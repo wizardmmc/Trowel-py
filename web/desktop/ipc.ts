@@ -15,6 +15,7 @@ import {
 export interface DesktopIpcOptions {
   readonly host: DesktopHost;
   readonly getWindow: () => BrowserWindow | null;
+  readonly openTrowel: () => Promise<void>;
   readonly rendererUrl: string;
   readonly diagnosticUrl: string;
 }
@@ -77,6 +78,10 @@ export function registerDesktopIpc(options: DesktopIpcOptions): () => void {
   ipcMain.handle(DESKTOP_IPC.retrySidecar, async (event) => {
     trusted(event);
     await options.host.retry();
+  });
+  ipcMain.handle(DESKTOP_IPC.openTrowel, async (event) => {
+    trusted(event);
+    await options.openTrowel();
   });
   ipcMain.handle(DESKTOP_IPC.openLogs, async (event) => {
     trusted(event);

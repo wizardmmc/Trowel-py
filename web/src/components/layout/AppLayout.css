@@ -17,22 +17,23 @@
 }
 
 .sidebar-logo {
-  color: var(--sunshine);
   margin-bottom: var(--space-lg);
   user-select: none;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border: 1px solid rgba(232, 184, 75, 0.34);
+  border-radius: 8px;
+  background: #394a38;
 }
 
 .sidebar-logo__svg {
   width: 26px;
   height: 26px;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  display: block;
 }
 
 .sidebar-nav {

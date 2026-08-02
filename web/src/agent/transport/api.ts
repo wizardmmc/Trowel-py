@@ -20,6 +20,8 @@ export type SessionTitleSource =
   | "generated"
   | "manual";
 
+export type SessionKind = "user" | "delegate" | "probe";
+
 export interface AgentSession {
   readonly session_id: string;
   readonly runtime: Runtime;
@@ -43,7 +45,7 @@ export interface AgentSession {
   readonly title_source?: SessionTitleSource;
   readonly connected: boolean;
   readonly running: boolean;
-  readonly session_kind?: "user" | "delegate";
+  readonly session_kind?: SessionKind;
 }
 
 export interface CreateAgentSessionParams {
@@ -90,6 +92,7 @@ export interface AgentRuntimeInfo {
   readonly native: string;
   readonly capabilities: readonly string[];
   readonly connected: boolean;
+  readonly install_hint?: string | null;
 }
 
 export interface AgentEffort {

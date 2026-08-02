@@ -6,12 +6,17 @@ const category = document.querySelector("#category");
 const exitCode = document.querySelector("#exit-code");
 const actionError = document.querySelector("#action-error");
 const retry = document.querySelector("#retry");
+let sidecarReady = false;
 
 async function refreshDiagnostic() {
   const state = await bridge.getDiagnostics();
-  message.textContent = state.message ?? "后台服务暂时不可用。";
+  sidecarReady = state.status === "ready";
+  message.textContent = sidecarReady
+    ? "后台服务仍在运行。界面异常退出时，可以直接重新打开 Trowel。"
+    : (state.message ?? "后台服务暂时不可用。");
   category.textContent = state.category ?? "-";
   exitCode.textContent = state.exitCode === null ? "-" : String(state.exitCode);
+  retry.textContent = sidecarReady ? "重新打开 Trowel" : "重试";
 }
 
 async function runAction(action) {
@@ -25,7 +30,8 @@ async function runAction(action) {
 
 retry.addEventListener("click", () => {
   retry.disabled = true;
-  void runAction(() => bridge.retrySidecar()).finally(() => {
+  const action = sidecarReady ? bridge.openTrowel : bridge.retrySidecar;
+  void runAction(() => action()).finally(() => {
     retry.disabled = false;
   });
 });

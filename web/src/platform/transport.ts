@@ -13,6 +13,29 @@ const BROWSER_TRANSPORT: ActiveTransportConfig = {
 };
 
 let activeTransport: ActiveTransportConfig = BROWSER_TRANSPORT;
+let pendingRequests = 0;
+
+/** 执行请求并向 Desktop smoke 暴露尚未结束的统一 transport 数量。 */
+function trackedFetch(url: string, options?: RequestInit): Promise<Response> {
+  pendingRequests += 1;
+  publishPendingRequests();
+  try {
+    return fetch(url, options).finally(() => {
+      pendingRequests -= 1;
+      publishPendingRequests();
+    });
+  } catch (error) {
+    pendingRequests -= 1;
+    publishPendingRequests();
+    throw error;
+  }
+}
+
+function publishPendingRequests(): void {
+  if (typeof window !== "undefined") {
+    window.__TROWEL_PENDING_TRANSPORT_REQUESTS__ = pendingRequests;
+  }
+}
 
 export function configureTransport(config: DesktopTransportConfig): void {
   const endpoint = new URL(config.baseUrl);
@@ -42,16 +65,24 @@ export function transportFetch(
 ): Promise<Response> {
   const resolvedUrl = resolveTransportUrl(url);
   if (!activeTransport.credential) {
-    return fetch(resolvedUrl, options);
+    return trackedFetch(resolvedUrl, options);
   }
   if (new URL(resolvedUrl).origin !== activeTransport.baseUrl) {
-    return fetch(resolvedUrl, options);
+    return trackedFetch(resolvedUrl, options);
   }
   const headers = new Headers(options?.headers);
   headers.set("Authorization", `Bearer ${activeTransport.credential}`);
-  return fetch(resolvedUrl, { ...options, headers });
+  return trackedFetch(resolvedUrl, { ...options, headers });
 }
 
 export function resetTransportForTests(): void {
   activeTransport = BROWSER_TRANSPORT;
+  pendingRequests = 0;
+  publishPendingRequests();
+}
+
+declare global {
+  interface Window {
+    __TROWEL_PENDING_TRANSPORT_REQUESTS__?: number;
+  }
 }

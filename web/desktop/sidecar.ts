@@ -4,6 +4,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { createServer } from "node:net";
 import type { DesktopTransportConfig } from "../shared/desktop-contracts";
 import { DESKTOP_PROTOCOL_VERSION } from "../shared/desktop-contracts";
+import type { DesktopDataMode } from "./desktopDataPaths";
 
 export interface SidecarReadiness {
   readonly status: "ready";
@@ -33,6 +34,11 @@ export interface SidecarSpawnSpec {
   readonly environment: Readonly<Record<string, string | undefined>>;
 }
 
+export interface SidecarLaunchCommand {
+  readonly executable: string;
+  readonly args: readonly string[];
+}
+
 export interface SidecarStartDependencies {
   readonly reservePort: () => Promise<number>;
   readonly spawn: (spec: SidecarSpawnSpec) => SidecarProcess;
@@ -48,9 +54,10 @@ export interface SidecarStartDependencies {
 }
 
 export interface SidecarStartOptions {
-  readonly executable: string;
+  readonly command: SidecarLaunchCommand;
   readonly cwd: string;
   readonly dataDirectory: string;
+  readonly dataMode: DesktopDataMode;
   readonly logDirectory: string;
   readonly instanceId: string;
   readonly credential: string;
@@ -116,8 +123,8 @@ export async function launchSidecar(
   let process: SidecarProcess;
   try {
     process = dependencies.spawn({
-      executable: options.executable,
-      args: ["-m", "trowel_py.desktop.sidecar"],
+      executable: options.command.executable,
+      args: options.command.args,
       cwd: options.cwd,
       environment: {
         ...globalThis.process.env,
@@ -125,6 +132,7 @@ export async function launchSidecar(
         TROWEL_DESKTOP_CREDENTIAL: options.credential,
         TROWEL_SERVER_PORT: String(port),
         TROWEL_DESKTOP_DATA_DIR: options.dataDirectory,
+        TROWEL_DESKTOP_DATA_MODE: options.dataMode,
         TROWEL_DESKTOP_LOG_DIR: options.logDirectory,
         TROWEL_DESKTOP_RENDERER_ORIGIN: options.rendererOrigin,
       },

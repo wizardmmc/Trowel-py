@@ -87,18 +87,15 @@ def open_session(
 
     if not Path(req.workdir).is_dir():
         raise CcWorkdirNotFoundError("workdir does not exist")
-    limit = (
-        max_delegate_connections
-        if req.session_kind == "delegate"
-        else max_connections
-    )
+    internal_session = req.session_kind != "user"
+    limit = max_delegate_connections if internal_session else max_connections
     same_kind_connections = sum(
         1
         for host in registry.values()
-        if host.session_kind == req.session_kind
+        if (host.session_kind != "user") == internal_session
     )
     if same_kind_connections >= limit:
-        if req.session_kind == "delegate":
+        if internal_session:
             raise CcCapacityError(
                 f"当前委派数量已满：连接上限为 {limit}"
             )
@@ -188,6 +185,7 @@ def list_live_sessions(
             "profile_enabled": getattr(host, "profile_enabled", True),
         }
         for sid, host in registry.items()
+        if getattr(host, "session_kind", "user") == "user"
     ]
 
 

@@ -87,6 +87,13 @@ def test_capacity_gate_counts_connections_across_runtime_ports(tmp_path: Path) -
         with gate.admit_connection("delegate"):
             raise AssertionError("capacity rejection must happen before creation")
 
+    with pytest.raises(
+        CapacityLimitError,
+        match="当前委派数量已满：连接上限为 1",
+    ):
+        with gate.admit_connection("probe"):
+            raise AssertionError("all non-user kinds must share the internal pool")
+
     with gate.admit_connection("user"):
         pass
 
@@ -169,5 +176,31 @@ def test_capacity_gate_does_not_double_count_reserved_running_session(
     reservation = gate.reserve_turn(first)
     cc.states["first"] = RuntimeLiveState(True, True)
 
+    assert gate.delegate_running_count() == 1
+    gate.release_turn(reservation)
+
+
+def test_capacity_gate_counts_probe_turn_in_internal_running_pool(
+    tmp_path: Path,
+) -> None:
+    store = BindingStore(tmp_path / "bindings.json")
+    cc = _RuntimePort(
+        Runtime.CLAUDE_CODE,
+        {"probe": RuntimeLiveState(True, False)},
+    )
+    probe = _binding("probe", Runtime.CLAUDE_CODE, kind="probe")
+    store.put(probe)
+    gate = SessionCapacityGate(
+        store,
+        {Runtime.CLAUDE_CODE: cc},
+        CapacityLimits(
+            user_connections=20,
+            delegate_connections=5,
+            delegate_running=1,
+        ),
+    )
+
+    reservation = gate.reserve_turn(probe)
+    assert reservation is not None
     assert gate.delegate_running_count() == 1
     gate.release_turn(reservation)

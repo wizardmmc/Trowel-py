@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-_DEFAULT_PATH = Path.home() / ".trowel" / "workspaces.db"
+from trowel_py.application_paths import resolve_application_data_root
 
 
 class WorkspaceUnavailableError(ValueError):
@@ -51,7 +51,11 @@ def resolve_recent_workspaces_path() -> Path:
     """
 
     override = os.environ.get("TROWEL_WORKSPACES_PATH", "").strip()
-    return Path(override).expanduser() if override else _DEFAULT_PATH
+    return (
+        Path(override).expanduser()
+        if override
+        else resolve_application_data_root() / "workspaces.db"
+    )
 
 
 class RecentWorkspaceStore:

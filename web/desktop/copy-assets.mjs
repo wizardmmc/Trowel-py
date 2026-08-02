@@ -15,4 +15,7 @@ for (const name of [
 ]) {
   await cp(path.join(source, name), path.join(target, name));
 }
+await cp(path.join(source, "assets"), path.join(target, "assets"), {
+  recursive: true,
+});
 await cp(path.join(source, "package.json"), path.join(outputRoot, "package.json"));

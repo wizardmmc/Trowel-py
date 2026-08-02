@@ -211,6 +211,21 @@ def test_low_level_cc_capacity_counts_user_and_delegate_separately(
             max_delegate_connections=1,
             host_factory=host_factory,
         )
+    with pytest.raises(
+        session_lifecycle.CcCapacityError,
+        match="当前委派数量已满：连接上限为 1",
+    ):
+        session_lifecycle.open_session(
+            CreateSessionRequest(workdir=str(tmp_path), session_kind="probe"),
+            registry,
+            proxy_base_url=None,
+            settings_path=None,
+            workdir_index={},
+            session_names={},
+            max_connections=1,
+            max_delegate_connections=1,
+            host_factory=host_factory,
+        )
 
 
 def test_low_level_cc_capacity_reads_real_host_session_kind(
@@ -262,6 +277,29 @@ def test_low_level_cc_name_ignores_delegate_but_keeps_registered_users() -> None
     )
 
     assert name == "project #3"
+
+
+def test_low_level_cc_active_projection_only_contains_users() -> None:
+    registry = {
+        "user": SimpleNamespace(
+            session_kind="user",
+            workdir="/tmp/user",
+            model="model",
+            running=False,
+            is_dead=False,
+            memory_enabled=True,
+            profile_enabled=True,
+        ),
+        "delegate": SimpleNamespace(session_kind="delegate"),
+        "probe": SimpleNamespace(session_kind="probe"),
+    }
+
+    sessions = session_lifecycle.list_live_sessions(
+        cast(dict[str, Any], registry),
+        {"user": "user"},
+    )
+
+    assert [session["id"] for session in sessions] == ["user"]
 
 
 async def test_close_facade_reads_current_route_state(

@@ -1,4 +1,4 @@
-"""持久保存由 Trowel 委派创建的原生会话身份。"""
+"""持久保存需要从用户历史中排除的原生会话身份。"""
 
 from __future__ import annotations
 
@@ -17,53 +17,55 @@ _SCHEMA_VERSION = 1
 _IDS_FIELD = "native_session_ids"
 
 
-class DelegateIdentityIndexError(RuntimeError):
-    """表示委派身份索引损坏或版本不受支持。"""
+class NonUserIdentityIndexError(RuntimeError):
+    """表示非用户会话身份索引损坏或版本不受支持。"""
 
 
-def delegate_identity_path(bindings_path: Path) -> Path:
-    """返回与会话 binding 文件隔离的委派身份索引路径。
+def non_user_identity_path(bindings_path: Path) -> Path:
+    """返回与会话 binding 文件隔离的非用户身份索引路径。
 
     Args:
         bindings_path: Agent Host 会话 binding 文件路径。
 
     Returns:
         与 binding 文件位于同一目录、但不会随 binding 删除而改写的索引路径。
+        文件名保留 ``delegates`` 是为了直接读取旧版本已经持久化的身份。
     """
 
     return bindings_path.with_name(f"{bindings_path.stem}.delegates.json")
 
 
-class DelegateIdentityStore:
-    """在本机 JSON 索引中永久记录委派会话的原生 ID。
+class NonUserIdentityStore:
+    """在本机 JSON 索引中永久记录所有非用户会话的原生 ID。
 
     索引只保存运行工具和原生会话 ID，不保存标题、工作目录、任务文本或其他会话
-    内容。没有删除接口；清理 Trowel binding 时，历史过滤身份仍会保留。
+    内容。没有删除接口；清理 Trowel binding 时，历史过滤身份仍会保留。旧版本
+    写入的 delegate ID 与 probe 等新类别共用同一集合。
 
     Attributes:
-        path: 委派身份索引文件路径。
+        path: 非用户身份索引文件路径。
     """
 
     def __init__(self, path: Path) -> None:
-        """创建使用指定文件的委派身份索引。
+        """创建使用指定文件的非用户身份索引。
 
         Args:
-            path: 保存委派原生会话 ID 的 JSON 文件路径。
+            path: 保存非用户原生会话 ID 的 JSON 文件路径。
         """
 
         self._path = path
 
     @property
     def path(self) -> Path:
-        """返回委派身份索引文件路径。"""
+        """返回非用户身份索引文件路径。"""
 
         return self._path
 
     def ids(self, runtime: Runtime) -> frozenset[str]:
-        """返回指定运行工具中全部已知的委派原生会话 ID。
+        """返回指定运行工具中全部已知的非用户原生会话 ID。
 
         Args:
-            runtime: 要读取 Claude Code 还是 Codex 的委派身份。
+            runtime: 要读取 Claude Code 还是 Codex 的非用户身份。
 
         Returns:
             不可变的原生会话 ID 集合。
@@ -73,7 +75,7 @@ class DelegateIdentityStore:
             return frozenset(self._load()[runtime])
 
     def add(self, runtime: Runtime, native_session_id: str) -> None:
-        """幂等记录一个已经确认属于委派会话的原生 ID。
+        """幂等记录一个已经确认不属于用户会话的原生 ID。
 
         Args:
             runtime: 该原生会话由 Claude Code 还是 Codex 保存。
@@ -81,11 +83,11 @@ class DelegateIdentityStore:
 
         Raises:
             ValueError: 原生会话 ID 为空。
-            DelegateIdentityIndexError: 现有索引损坏或版本不受支持。
+            NonUserIdentityIndexError: 现有索引损坏或版本不受支持。
         """
 
         if not native_session_id:
-            raise ValueError("delegate native session id cannot be empty")
+            raise ValueError("non-user native session id cannot be empty")
         with self._lock(exclusive=True):
             identities = self._load()
             if native_session_id in identities[runtime]:
@@ -120,16 +122,16 @@ class DelegateIdentityStore:
         try:
             payload = json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            raise DelegateIdentityIndexError(
-                "delegate identity index is unreadable"
+            raise NonUserIdentityIndexError(
+                "non-user identity index is unreadable"
             ) from exc
         if (
             not isinstance(payload, dict)
             or payload.get("version") != _SCHEMA_VERSION
             or not isinstance(payload.get(_IDS_FIELD), dict)
         ):
-            raise DelegateIdentityIndexError(
-                "delegate identity index has invalid schema"
+            raise NonUserIdentityIndexError(
+                "non-user identity index has invalid schema"
             )
         raw_ids: dict[str, Any] = payload[_IDS_FIELD]
         identities: dict[Runtime, set[str]] = {}
@@ -138,8 +140,8 @@ class DelegateIdentityStore:
             if not isinstance(values, list) or not all(
                 isinstance(value, str) and value for value in values
             ):
-                raise DelegateIdentityIndexError(
-                    f"delegate identity index has invalid {runtime.value} ids"
+                raise NonUserIdentityIndexError(
+                    f"non-user identity index has invalid {runtime.value} ids"
                 )
             identities[runtime] = set(values)
         return identities
@@ -169,3 +171,9 @@ class DelegateIdentityStore:
             except OSError:
                 pass
             raise
+
+
+# 旧 import 名和磁盘文件名继续可用，使升级不需要转换已有索引。
+DelegateIdentityIndexError = NonUserIdentityIndexError
+DelegateIdentityStore = NonUserIdentityStore
+delegate_identity_path = non_user_identity_path

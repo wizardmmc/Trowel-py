@@ -110,7 +110,7 @@ def test_create_rolls_back_binding_and_runtime_when_delegate_index_write_fails(
     def fail_add(_runtime, _native_session_id) -> None:
         raise OSError("delegate index unavailable")
 
-    monkeypatch.setattr(hub._delegate_identities, "add", fail_add)
+    monkeypatch.setattr(hub._non_user_identities, "add", fail_add)
     request = (
         cc_req(workdir, session_kind="delegate", resume_from="native-session")
         if runtime is Runtime.CLAUDE_CODE

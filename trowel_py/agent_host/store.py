@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.agent_host.binding import SessionBinding, binding_from_dict
+from trowel_py.application_paths import resolve_application_data_root
 
 _SCHEMA_VERSION = 1
-_DEFAULT_PATH = Path.home() / ".trowel" / "agent_sessions.json"
 
 
 def next_session_display_name(workdir: str, occupied_names: Iterable[str]) -> str:
@@ -63,7 +63,7 @@ def resolve_bindings_path() -> Path:
     override = os.environ.get("TROWEL_AGENT_SESSIONS_PATH")
     if override:
         return Path(override).expanduser()
-    return _DEFAULT_PATH
+    return resolve_application_data_root() / "agent_sessions.json"
 
 
 class BindingStore:

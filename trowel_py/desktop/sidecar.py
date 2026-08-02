@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
+
+from trowel_py.desktop.data_compatibility import DesktopDataMode
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,7 @@ class DesktopSidecarSettings:
         credential: renderer 访问本实例 API 时使用的随机凭据。
         port: sidecar 只在 ``127.0.0.1`` 监听的私有端口。
         data_dir: 数据库和其他相对持久化路径使用的根目录。
+        data_mode: 当前进程使用正式、日常开发还是隔离开发数据。
         log_dir: sidecar 生命周期日志写入的目录。
         renderer_origin: 本实例 renderer 发起跨来源 API 请求时使用的来源。
     """
@@ -27,6 +31,7 @@ class DesktopSidecarSettings:
     credential: str
     port: int
     data_dir: Path
+    data_mode: DesktopDataMode
     log_dir: Path
     renderer_origin: str
 
@@ -55,6 +60,9 @@ def load_sidecar_settings(environment: Mapping[str, str]) -> DesktopSidecarSetti
     renderer_origin = _required_environment(
         environment, "TROWEL_DESKTOP_RENDERER_ORIGIN"
     )
+    raw_data_mode = environment.get("TROWEL_DESKTOP_DATA_MODE", "packaged").strip()
+    if raw_data_mode not in {"packaged", "canonical-dev", "isolated-dev"}:
+        raise ValueError("TROWEL_DESKTOP_DATA_MODE is invalid")
 
     try:
         port = int(raw_port)
@@ -76,6 +84,7 @@ def load_sidecar_settings(environment: Mapping[str, str]) -> DesktopSidecarSetti
         credential=credential,
         port=port,
         data_dir=data_dir,
+        data_mode=cast(DesktopDataMode, raw_data_mode),
         log_dir=log_dir,
         renderer_origin=renderer_origin,
     )
@@ -100,41 +109,101 @@ def _required_environment(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
+def configure_desktop_data_environment(
+    data_dir: Path,
+    environment: MutableMapping[str, str],
+) -> None:
+    """让当前 sidecar 及其子进程使用 Host 指定的 Trowel 数据根目录。
+
+    Args:
+        data_dir: Desktop Host 为当前安装选择的应用数据根目录。
+        environment: sidecar 与后续子进程共同继承的可变环境映射。
+
+    Notes:
+        本函数不会改写 ``HOME``、``CODEX_HOME`` 或 Claude Code 路径；这些目录
+        属于 runtime，而不是 Trowel 应用数据。
+    """
+    environment["TROWEL_DATA_ROOT"] = str(data_dir)
+
+
+def configure_desktop_runtime_path(
+    home: Path,
+    environment: MutableMapping[str, str],
+    *,
+    system_directories: tuple[Path, ...] = (
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ),
+) -> None:
+    """补齐从 Finder 启动时可能缺失的 runtime CLI 搜索目录。
+
+    Args:
+        home: 当前 macOS 用户的主目录，只用于定位用户级 CLI 安装目录。
+        environment: sidecar 与 runtime 子进程共同继承的可变环境映射。
+        system_directories: 需要检查并放到现有 ``PATH`` 前面的系统级 CLI 目录。
+    """
+    if environment.get("TROWEL_RUNTIME_DISCOVERY_DISABLED") == "1":
+        return
+
+    candidates = (
+        home / ".local" / "bin",
+        home / ".bun" / "bin",
+        home / ".npm-global" / "bin",
+        *system_directories,
+    )
+    existing_entries = [
+        entry for entry in environment.get("PATH", "").split(os.pathsep) if entry
+    ]
+    search_entries: list[str] = []
+    for directory in (*candidates, *(Path(entry) for entry in existing_entries)):
+        rendered = str(directory)
+        if directory.is_dir() and rendered not in search_entries:
+            search_entries.append(rendered)
+    environment["PATH"] = os.pathsep.join(search_entries)
+
+
 def run_sidecar(settings: DesktopSidecarSettings) -> None:
     """准备隔离目录、迁移数据库并阻塞运行本地 sidecar。
 
     Args:
         settings: Host 已完整指定并通过校验的本实例启动设置。
     """
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    settings.log_dir.mkdir(parents=True, exist_ok=True)
-    os.chdir(settings.data_dir)
-    _configure_logging(settings.log_dir)
+    from trowel_py.desktop.data_compatibility import ensure_data_mode_compatible
+    from trowel_py.desktop.data_root_lock import hold_data_root_lock
 
-    # 在切换数据目录后再导入应用，确保配置和相对持久化路径指向本实例目录。
-    import uvicorn
+    ensure_data_mode_compatible(settings.data_dir, mode=settings.data_mode)
+    with hold_data_root_lock(settings.data_dir, owner=settings.data_mode):
+        ensure_data_mode_compatible(settings.data_dir, mode=settings.data_mode)
+        settings.log_dir.mkdir(parents=True, exist_ok=True)
+        configure_desktop_data_environment(settings.data_dir, os.environ)
+        configure_desktop_runtime_path(Path.home(), os.environ)
+        _configure_logging(settings.log_dir)
 
-    from trowel_py.db.connection import create_db
-    from trowel_py.db.migrate import run_migrations
+        # 在发布数据根后再导入应用，确保模块按当前桌面实例解析持久化路径。
+        import uvicorn
 
-    connection = create_db()
-    try:
-        run_migrations(connection)
-    finally:
-        connection.close()
+        from trowel_py.db.connection import create_db
+        from trowel_py.db.migrate import run_migrations
 
-    logging.getLogger(__name__).info(
-        "Starting desktop sidecar instance=%s port=%s",
-        settings.instance_id,
-        settings.port,
-    )
-    uvicorn.run(
-        "trowel_py.app:create_app",
-        factory=True,
-        host="127.0.0.1",
-        port=settings.port,
-        log_level="info",
-    )
+        connection = create_db()
+        try:
+            run_migrations(connection)
+        finally:
+            connection.close()
+
+        logging.getLogger(__name__).info(
+            "Starting desktop sidecar instance=%s port=%s mode=%s",
+            settings.instance_id,
+            settings.port,
+            settings.data_mode,
+        )
+        uvicorn.run(
+            "trowel_py.app:create_app",
+            factory=True,
+            host="127.0.0.1",
+            port=settings.port,
+            log_level="info",
+        )
 
 
 def _configure_logging(log_dir: Path) -> None:

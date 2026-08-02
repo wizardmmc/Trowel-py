@@ -22,15 +22,19 @@
 |---|---|
 | `app.py` | 组装 FastAPI、生命周期与路由 |
 | `cli.py` | `trowel-py` 命令行入口 |
+| `application_paths.py` | 统一解析 Trowel 自有数据库、Memory、配置与本地索引的数据根目录 |
 | `desktop/` | Electron Host 使用的 sidecar 启动、实例认证、版本握手与 readiness |
+| `desktop/packaged_entrypoint.py` | 冻结可执行文件的白名单分发入口，只启动 sidecar、Agent MCP 或 Memory MCP |
+| `desktop/data_migration.py` | 离线盘点并原子迁移旧 Memory/Profile、当前候选 journal 与本地索引，不导入旧 Garden |
+| `desktop/data_root_lock.py` / `desktop/data_compatibility.py` | 独占长期数据根，并阻止 dev 抢先执行正式 App 尚未应用的 schema migration |
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
 | `agent_host/capabilities.py` | 版本化保存两种 runtime 已实证可用的公开能力矩阵 |
 | `agent_host/runtimes/` | 两种 runtime 的共同实时状态、创建回滚、关闭操作和对称事件适配器 |
 | `agent_host/capacity.py` | 跨 runtime 的用户连接与委派连接/在跑容量裁决 |
-| `agent_host/lifecycle.py` | runtime 登记、binding、委派身份和关闭标记的一致提交与回滚 |
-| `agent_host/delegate_identity.py` | 持久记录委派原生会话 ID，供历史扫描在分页前排除内部会话 |
+| `agent_host/lifecycle.py` | runtime 登记、binding、非用户身份和关闭标记的一致提交与回滚 |
+| `agent_host/delegate_identity.py` | 兼容旧文件名并持久记录所有非用户原生会话 ID，供历史扫描在分页前排除内部会话 |
 | `agent_mcp/` | 跨 runtime MCP 工具、blocking delegation 与进程内 live guidance 生命周期 |
 | `agent_mcp/launch.py` | Agent MCP 的服务名、启动命令、工具列表和父会话环境规格 |
 | `agent_host/events.py` | 两种 runtime 共用的 AgentEvent wire contract |
@@ -123,6 +127,7 @@
 |---|---|
 | `web/src/App.tsx` | 页面入口与顶层工具切换 |
 | `web/desktop/` | Electron main、preload、sidecar 监督、诊断页与桌面 smoke |
+| `web/desktop/desktopDataPaths.ts` | 解析正式、日常开发与隔离开发的数据、日志和 Electron userData 路径 |
 | `web/shared/desktop-contracts.ts` | Electron main、preload 与 renderer 共用的桌面 IPC 类型契约 |
 | `web/src/platform/` | browser/desktop 平台接口与统一后端 transport |
 | `web/src/agent/domain/` | Agent session、turn、timeline item 与纯 reducer 的唯一 owner |

@@ -57,3 +57,19 @@ it("never sends the sidecar credential to an external origin", async () => {
   const [, options] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
   expect(new Headers(options?.headers).has("Authorization")).toBe(false);
 });
+
+it("publishes pending request count for deterministic desktop smoke", async () => {
+  let finishRequest!: (response: Response) => void;
+  const pendingResponse = new Promise<Response>((resolve) => {
+    finishRequest = resolve;
+  });
+  vi.stubGlobal("fetch", vi.fn(() => pendingResponse));
+
+  const request = transportFetch("/api/health");
+  expect(window.__TROWEL_PENDING_TRANSPORT_REQUESTS__).toBe(1);
+
+  finishRequest(new Response());
+  await request;
+
+  expect(window.__TROWEL_PENDING_TRANSPORT_REQUESTS__).toBe(0);
+});

@@ -58,6 +58,7 @@ function setSessions(
 ): void {
   useAgentStore.setState({
     sessions,
+    closingSessionIds: new Set<string>(),
     activeSid,
     history: [],
     historyTotal: 0,
@@ -239,6 +240,17 @@ describe("MultiSessionBar", () => {
     });
   });
 
+  it("shows a stable closing state and disables repeated actions", () => {
+    setSessions({ s1: makeSession({ name: "a", runtime: "codex" }) }, "s1");
+    useAgentStore.setState({ closingSessionIds: new Set(["s1"]) });
+
+    render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
+
+    expect(screen.getByText(/关闭中/)).toBeInTheDocument();
+    expect(screen.getByLabelText("正在关闭 a")).toBeDisabled();
+    expect(screen.getByLabelText("重命名 a")).toBeDisabled();
+  });
+
   it("renames a session inline", async () => {
     setSessions(
       {
@@ -306,13 +318,18 @@ describe("MultiSessionBar", () => {
     expect(screen.getByText(/2\/20 连接/)).toBeInTheDocument();
   });
 
-  it("hides delegate sessions from rows and user counts", () => {
+  it("hides all non-user sessions from rows and user counts", () => {
     setSessions(
       {
         user: makeSession({ name: "user" }),
         delegate: makeSession({
           name: "delegate",
           sessionKind: "delegate",
+          abort: new AbortController(),
+        }),
+        probe: makeSession({
+          name: "probe",
+          sessionKind: "probe",
           abort: new AbortController(),
         }),
       },
@@ -323,6 +340,7 @@ describe("MultiSessionBar", () => {
 
     expect(screen.getByText("user")).toBeInTheDocument();
     expect(screen.queryByText("delegate")).toBeNull();
+    expect(screen.queryByText("probe")).toBeNull();
     expect(screen.getByText(/0\/5 在跑/)).toBeInTheDocument();
     expect(screen.getByText(/1\/20 连接/)).toBeInTheDocument();
   });

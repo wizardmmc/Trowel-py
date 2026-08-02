@@ -127,7 +127,7 @@ def test_invalid_index_does_not_silently_expose_delegate_history(
         DelegateIdentityStore(path).ids(Runtime.CLAUDE_CODE)
 
 
-def test_hub_migrates_only_known_delegate_bindings(tmp_path: Path) -> None:
+def test_hub_migrates_all_known_non_user_bindings(tmp_path: Path) -> None:
     bindings_path = tmp_path / "agent_sessions.json"
     store = BindingStore(bindings_path)
     common = {
@@ -156,8 +156,18 @@ def test_hub_migrates_only_known_delegate_bindings(tmp_path: Path) -> None:
             **common,
         )
     )
+    store.put(
+        make_binding(
+            session_id="probe-binding",
+            native_session_id="probe-native",
+            session_kind="probe",
+            **common,
+        )
+    )
 
     SessionHub(store, cc_registry={}, cc_opener=lambda *_args, **_kwargs: None)
 
     identities = DelegateIdentityStore(delegate_identity_path(bindings_path))
-    assert identities.ids(Runtime.CLAUDE_CODE) == frozenset({"delegate-native"})
+    assert identities.ids(Runtime.CLAUDE_CODE) == frozenset(
+        {"delegate-native", "probe-native"}
+    )

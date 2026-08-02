@@ -41,6 +41,8 @@ spikes/
 # ── Frontend / tooling ──────────────────────────────────────────────────────
 trowel_py/static/
 web/desktop-dist/
+web/.release/
+web/out/
 .vite/
 .playwright-mcp/
 .playwright-cli/
@@ -54,3 +56,4 @@ web/desktop-dist/
 docs/
 progress.txt
 tmp/
+*.log

@@ -4,6 +4,7 @@ import type {
   AgentSession,
   PermissionPreset,
   Runtime,
+  SessionKind,
   SessionTitleSource,
 } from "../../transport/api";
 import {
@@ -33,7 +34,7 @@ export interface PerSessionState extends ReducerState {
   readonly transportError: string | null;
   abort: AbortController | null;
   readonly connected: boolean;
-  readonly sessionKind?: "user" | "delegate";
+  readonly sessionKind?: SessionKind;
   readonly memoryEnabled: boolean;
   readonly profileEnabled: boolean;
   readonly runtime: Runtime;

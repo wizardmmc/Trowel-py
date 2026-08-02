@@ -3030,6 +3030,9 @@
 .cc-multibar__main:hover {
   background: var(--garden-soft);
 }
+.cc-multibar__main:disabled {
+  cursor: default;
+}
 .cc-multibar__actions {
   display: flex;
   flex-direction: column;
@@ -3064,6 +3067,10 @@
   opacity: 1;
   color: var(--color-error);
   background: var(--error-soft);
+}
+.cc-multibar__action:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .cc-multibar__editor {
   display: grid;

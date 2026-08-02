@@ -14,6 +14,7 @@ from trowel_py.agent_host.capabilities import (
 )
 
 TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
+SessionKind = Literal["user", "delegate", "probe"]
 _TITLE_SOURCES: frozenset[str] = frozenset(
     {"new", "native", "prompt", "generated", "manual"}
 )
@@ -100,7 +101,7 @@ class SessionBinding:
     injection_hash: str = ""
     declared_mcp_roster: tuple[str, ...] = ()
     self_enabled: bool = True
-    session_kind: str = "user"
+    session_kind: SessionKind = "user"
     memory_eligibility: bool = True
     agent_mcp_enabled: bool = True
     parent_session_id: str | None = None
@@ -172,7 +173,7 @@ def make_binding(
     injection_hash: str = "",
     declared_mcp_roster: Iterable[str] = (),
     self_enabled: bool = True,
-    session_kind: str = "user",
+    session_kind: SessionKind = "user",
     memory_eligibility: bool = True,
     agent_mcp_enabled: bool = True,
     parent_session_id: str | None = None,
@@ -355,7 +356,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(declared_mcp_roster, (list, tuple))
         else (),
         self_enabled=bool(data.get("self_enabled", True)),
-        session_kind=str(data.get("session_kind", "user")),
+        session_kind=cast(SessionKind, str(data.get("session_kind", "user"))),
         memory_eligibility=bool(data.get("memory_eligibility", True)),
         agent_mcp_enabled=bool(data.get("agent_mcp_enabled", True)),
         parent_session_id=(
