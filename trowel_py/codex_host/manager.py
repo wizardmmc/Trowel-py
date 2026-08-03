@@ -106,6 +106,51 @@ def _is_missing_rollout_error(
     )
 
 
+def _is_missing_archived_rollout_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 app-server 找不到已归档 rollout 时返回的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=f"no archived rollout found for thread id {thread_id}",
+    )
+
+
+def _is_unmaterialized_thread_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别首条用户消息前 thread 尚未生成 rollout 的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=(
+            f"thread {thread_id} is not materialized yet; includeTurns is "
+            "unavailable before first user message"
+        ),
+    )
+
+
+def _is_agent_jobs_schema_delete_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 Codex 0.144 删除空 thread 时命中的缺表错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32603,
+        message=(
+            f"failed to delete app-server state for {thread_id}: error returned "
+            "from database: (code: 1) no such table: agent_jobs"
+        ),
+    )
+
+
 def _matches_rpc_error(
     error: ProtocolViolationError,
     *,
@@ -815,6 +860,7 @@ class CodexHostManager:
             )
         self._require_registered(session)
         client = await self.ensure_ready()
+        archive_rollout_missing = False
         try:
             await client.request(
                 "thread/archive",
@@ -827,6 +873,7 @@ class CodexHostManager:
                 binding.thread_id,
             ):
                 raise
+            archive_rollout_missing = True
             if preserve_history:
                 _log.warning(
                     "Codex user thread is already archived or its rollout is missing; "
@@ -845,11 +892,26 @@ class CodexHostManager:
         if preserve_history:
             # unarchive 只恢复 notLoaded 历史文件，不会重启 thread 或 MCP。必须先做，
             # 否则资源核验失败会把 rollout 留在归档区，使下一次关闭误判为文件丢失。
-            await client.request(
-                "thread/unarchive",
-                {"threadId": binding.thread_id},
-                timeout=_REQUEST_TIMEOUT_S,
-            )
+            try:
+                await client.request(
+                    "thread/unarchive",
+                    {"threadId": binding.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+            except ProtocolViolationError as restore_error:
+                if (
+                    not archive_rollout_missing
+                    or not _is_missing_archived_rollout_error(
+                        restore_error,
+                        binding.thread_id,
+                    )
+                ):
+                    raise
+                await self._delete_unmaterialized_user_thread(
+                    client,
+                    binding.thread_id,
+                    restore_error=restore_error,
+                )
         if self._resource_registry is not None:
             for owner_session_id, turn_id in tuple(self._turn_resource_ids):
                 if owner_session_id == session.session_id:
@@ -858,6 +920,74 @@ class CodexHostManager:
             self._resource_registry.mark_owner_closed(
                 OwnerScope.SESSION,
                 agent_session_id=session.session_id,
+            )
+
+    async def _delete_unmaterialized_user_thread(
+        self,
+        client: AppServerClient,
+        thread_id: str,
+        *,
+        restore_error: ProtocolViolationError,
+    ) -> None:
+        """只删除已证实没有首条用户消息和 rollout 的空 thread。
+
+        ``thread/delete`` 会永久删除原生状态，因此不能根据当前进程里的
+        ``has_started_turn`` 推断：重启后，已有历史的会话也没有进程内 turn。
+        只有 archive、unarchive 都确认 rollout 缺失，且 includeTurns 返回“首条
+        用户消息前尚未物化”时，才允许删除。
+
+        Args:
+            client: 当前共享 Codex app-server 连接。
+            thread_id: 待核验并关闭的原生 Codex thread ID。
+            restore_error: unarchive 找不到归档 rollout 的原始错误；核验不能证明
+                thread 为空时重新抛出，确保 binding 保持可重试。
+
+        Raises:
+            ProtocolViolationError: thread 不是已实证的未物化空状态。
+        """
+
+        try:
+            await client.request(
+                "thread/read",
+                {"threadId": thread_id, "includeTurns": True},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as read_error:
+            if not _is_unmaterialized_thread_error(read_error, thread_id):
+                raise restore_error from read_error
+        else:
+            raise restore_error
+        _log.warning(
+            "Codex user thread has no first user message or rollout; "
+            "deleting the empty native state"
+        )
+        try:
+            await client.request(
+                "thread/delete",
+                {"threadId": thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as delete_error:
+            if not _is_agent_jobs_schema_delete_error(delete_error, thread_id):
+                raise
+            loaded = await client.request(
+                "thread/loaded/list",
+                {},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            loaded_thread_ids = (
+                loaded.get("data") if isinstance(loaded, Mapping) else None
+            )
+            if (
+                not isinstance(loaded_thread_ids, list)
+                or not all(isinstance(item, str) for item in loaded_thread_ids)
+                or thread_id in loaded_thread_ids
+            ):
+                raise delete_error
+            _log.warning(
+                "Codex 0.144 could not remove empty thread metadata because its "
+                "state database lacks agent_jobs; the native thread is confirmed "
+                "unloaded"
             )
 
     async def _reconcile_session_process_groups(self, session_id: str) -> None:

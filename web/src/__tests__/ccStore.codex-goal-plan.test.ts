@@ -24,6 +24,17 @@ const GOAL = {
 };
 
 describe("createAgentStore - Codex Goal and Plan", () => {
+  it("does not start a fresh Codex thread before the first user message", async () => {
+    const store = createAgentStore();
+    mockCreate("draft", { runtime: "codex", native_session_id: null });
+
+    await store.getState().startSession({ workdir: "/draft", runtime: "codex" });
+    await store.getState().activateSession("draft");
+
+    expect(apiGetEventStream).not.toHaveBeenCalled();
+    expect(apiGetCodexGoal).not.toHaveBeenCalled();
+  });
+
   it("loads Goal on session start and keeps it isolated per session", async () => {
     const store = createAgentStore();
     apiGetCodexGoal.mockResolvedValueOnce(GOAL).mockResolvedValueOnce(null);
@@ -64,8 +75,14 @@ describe("createAgentStore - Codex Goal and Plan", () => {
       name: "live",
       connected: true,
     };
+    const unmaterialized = {
+      ...connected,
+      session_id: "draft",
+      native_session_id: null,
+      name: "draft",
+    };
     listActiveSessions.mockResolvedValueOnce({
-      sessions: [disconnected, connected],
+      sessions: [disconnected, connected, unmaterialized],
       activeId: "live",
     });
 

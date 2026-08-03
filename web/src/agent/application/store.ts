@@ -205,16 +205,60 @@ export function createAgentStore() {
       });
     }
 
+    /** 请求关闭尚未发送消息的后端会话，并保留可重试的失败原因。 */
+    async function closeTemporaryBackendSession(
+      sid: string,
+    ): Promise<string | null> {
+      try {
+        const result = await apiDeleteSession(sid);
+        if (result.status === "needs_reconcile") {
+          return result.error ?? "会话资源尚未完全关闭，请重试。";
+        }
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    /** 把关闭失败的临时会话留在多开栏，避免后端连接变成不可见占位。 */
+    function keepTemporaryCloseFailure(sid: string, error: string): void {
+      set((state) => {
+        const session = state.sessions[sid];
+        if (!session) return state;
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: {
+              ...session,
+              connected: true,
+              transportError: error,
+            },
+          },
+        };
+      });
+    }
+
+    /** 只为已经存在原生 thread 的 Codex 会话恢复事件流和 Goal。 */
+    async function restoreMaterializedCodexLive(sid: string): Promise<void> {
+      const session = get().sessions[sid];
+      if (session?.runtime !== "codex" || session.nativeSessionId === null) {
+        return;
+      }
+      codexLive.watchInBackground(sid);
+      await codexLive.refreshGoal(sid);
+    }
+
     async function dropTempActive(): Promise<void> {
       const state = get();
       const sid = state.activeSid;
       if (!sid) return;
       const s = state.sessions[sid];
       if (!s || s.connected || s.meta.exited || s.abort) return;
-      try {
-        await apiDeleteSession(sid);
-      } catch {
-        // 后端删除失败也要丢弃本地临时行。
+      const closeError = await closeTemporaryBackendSession(sid);
+      if (closeError) {
+        keepTemporaryCloseFailure(sid, closeError);
+        return;
       }
       set((st) => {
         // await 期间活动会话可能已切换，不能删除新会话。
@@ -246,10 +290,20 @@ export function createAgentStore() {
         const session = await apiCreateSession({ ...params, runtime });
         const sid = session.session_id;
         if (generation !== sessionStartGeneration) {
-          try {
-            await apiDeleteSession(sid);
-          } catch {
-            // 迟到请求不能重新占据界面；后端清理保持 best-effort。
+          const closeError = await closeTemporaryBackendSession(sid);
+          if (closeError) {
+            const failedSession = {
+              ...createNewSessionState(session, params),
+              connected: true,
+              transportError: closeError,
+            };
+            set((state) => ({
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: state.sessions[sid] ?? failedSession,
+              },
+            }));
           }
           return session;
         }
@@ -259,10 +313,7 @@ export function createAgentStore() {
           sessions: { ...state.sessions, [sid]: perSession },
           activeSid: sid,
         }));
-        if (runtime === "codex") {
-          codexLive.watchInBackground(sid);
-          await codexLive.refreshGoal(sid);
-        }
+        await restoreMaterializedCodexLive(sid);
         return session;
       },
 
@@ -271,19 +322,13 @@ export function createAgentStore() {
         if (!state.sessions[sid]) return;
         if (state.activeSid === sid) {
           await recoverApprovalRequests(sid);
-          if (state.sessions[sid].runtime === "codex") {
-            codexLive.watchInBackground(sid);
-            await codexLive.refreshGoal(sid);
-          }
+          await restoreMaterializedCodexLive(sid);
           return;
         }
         await dropTempActive();
         set({ activeSid: sid });
         await recoverApprovalRequests(sid);
-        if (get().sessions[sid]?.runtime === "codex") {
-          codexLive.watchInBackground(sid);
-          await codexLive.refreshGoal(sid);
-        }
+        await restoreMaterializedCodexLive(sid);
       },
 
       showWorkspaceHome: () => {
@@ -294,10 +339,10 @@ export function createAgentStore() {
         set({ activeSid: null });
         if (!session || session.connected || session.meta.exited || session.abort) return;
         void (async () => {
-          try {
-            await apiDeleteSession(sid);
-          } catch {
-            // 离开未连接会话时，本地仍应立即回到工作区首页。
+          const closeError = await closeTemporaryBackendSession(sid);
+          if (closeError) {
+            keepTemporaryCloseFailure(sid, closeError);
+            return;
           }
           set((current) => {
             const stale = current.sessions[sid];
@@ -431,8 +476,7 @@ export function createAgentStore() {
           return { ...state, sessions: merged, activeSid };
         });
         for (const sessionId of newConnectedCodexSessions) {
-          codexLive.watchInBackground(sessionId);
-          void codexLive.refreshGoal(sessionId);
+          void restoreMaterializedCodexLive(sessionId);
         }
       },
 
