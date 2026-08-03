@@ -13,6 +13,7 @@
     "dev:agent-statistics": "vite --open /agent-statistics-preview.html",
     "dev:memory-statistics": "vite --open /memory-statistics-preview.html",
     "dev:runtime-statistics": "vite --open /runtime-statistics-preview.html",
+    "dev:call-statistics": "vite --open /call-statistics-preview.html",
     "desktop:build": "node scripts/clean-desktop-output.mjs && bun run brand:build && tsc -p desktop/tsconfig.json && bun build desktop/preload.ts --target=node --format=cjs --external electron --outfile=desktop-dist/desktop/preload.js && node desktop/copy-assets.mjs",
     "desktop:dev": "bun run desktop:build && node desktop/dev.mjs",
     "desktop:dev:isolated": "bun run desktop:build && node desktop/dev.mjs --isolated",

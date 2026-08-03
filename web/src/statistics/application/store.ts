@@ -5,6 +5,10 @@ import type {
   StatisticsDateRange,
   AgentRuntimeFilter,
   AgentStatistics,
+  CallDetail,
+  CallFilters,
+  CallList,
+  CallListItem,
   MemoryStatistics,
   RuntimeStatistics,
   StatisticsResolution,
@@ -13,15 +17,15 @@ import type {
 } from "../domain/types";
 import {
   fetchAgentStatistics,
+  fetchCallDetail,
+  fetchCallStatistics,
   fetchMemoryStatistics,
   fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../transport/api";
 
 export interface StatisticsApi {
-  readonly fetchAgent: (
-    range: StatisticsDateRange,
-  ) => Promise<AgentStatistics>;
+  readonly fetchAgent: (range: StatisticsDateRange) => Promise<AgentStatistics>;
   readonly fetchMemory: (
     range: StatisticsDateRange,
   ) => Promise<MemoryStatistics>;
@@ -32,6 +36,12 @@ export interface StatisticsApi {
   readonly fetchRuntime: (
     range: StatisticsDateRange,
   ) => Promise<RuntimeStatistics>;
+  readonly fetchCalls: (
+    range: StatisticsDateRange,
+    filters: CallFilters,
+    cursor?: string,
+  ) => Promise<CallList>;
+  readonly fetchCallDetail: (traceId: string) => Promise<CallDetail>;
 }
 
 export interface StatisticsState {
@@ -42,6 +52,8 @@ export interface StatisticsState {
   readonly agent: AgentStatistics | null;
   readonly memory: MemoryStatistics | null;
   readonly runtime: RuntimeStatistics | null;
+  readonly calls: CallList | null;
+  readonly callDetail: CallDetail | null;
   readonly loading: boolean;
   readonly error: string | null;
   readonly agentLoading: boolean;
@@ -50,6 +62,14 @@ export interface StatisticsState {
   readonly memoryError: string | null;
   readonly runtimeLoading: boolean;
   readonly runtimeError: string | null;
+  readonly callsLoading: boolean;
+  readonly callsLoadingMore: boolean;
+  readonly callsError: string | null;
+  readonly callDetailLoading: boolean;
+  readonly callDetailError: string | null;
+  readonly callFilters: CallFilters;
+  readonly selectedCallSpanId: string | null;
+  readonly selectedCallTraceId: string | null;
   readonly runtimeFilter: AgentRuntimeFilter;
   readonly modelFilter: string;
   readonly setActiveTab: (tab: StatisticsTab) => void;
@@ -61,21 +81,40 @@ export interface StatisticsState {
   readonly refreshAgent: () => Promise<void>;
   readonly refreshMemory: () => Promise<void>;
   readonly refreshRuntime: () => Promise<void>;
+  readonly setCallFilters: (filters: CallFilters) => void;
+  readonly refreshCalls: () => Promise<void>;
+  readonly loadMoreCalls: () => Promise<void>;
+  readonly selectCall: (call: CallListItem) => Promise<void>;
 }
+
+export const DEFAULT_CALL_FILTERS: CallFilters = {
+  component: "all",
+  operation: "all",
+  runtime: "all",
+  status: "all",
+  minimumDurationMs: 0,
+};
 
 const defaultApi: StatisticsApi = {
   fetchAgent: fetchAgentStatistics,
   fetchMemory: fetchMemoryStatistics,
   fetchTelemetry: fetchTelemetryStatistics,
   fetchRuntime: fetchRuntimeStatistics,
+  fetchCalls: fetchCallStatistics,
+  fetchCallDetail,
 };
 
-export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {}) {
+/** 创建隔离的统计状态容器，并允许测试替换各数据读取函数。 */
+export function createStatisticsStore(
+  apiOverrides: Partial<StatisticsApi> = {},
+) {
   const api = { ...defaultApi, ...apiOverrides };
   let latestTelemetryRequest = 0;
   let latestAgentRequest = 0;
   let latestMemoryRequest = 0;
   let latestRuntimeRequest = 0;
+  let latestCallsRequest = 0;
+  let latestCallDetailRequest = 0;
   return createStore<StatisticsState>((set, get) => ({
     activeTab: "overview",
     dateRange: initialDateRange(),
@@ -84,6 +123,8 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
     agent: null,
     memory: null,
     runtime: null,
+    calls: null,
+    callDetail: null,
     loading: false,
     error: null,
     agentLoading: false,
@@ -92,6 +133,14 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
     memoryError: null,
     runtimeLoading: false,
     runtimeError: null,
+    callsLoading: false,
+    callsLoadingMore: false,
+    callsError: null,
+    callDetailLoading: false,
+    callDetailError: null,
+    callFilters: DEFAULT_CALL_FILTERS,
+    selectedCallSpanId: null,
+    selectedCallTraceId: null,
     runtimeFilter: "all",
     modelFilter: "all",
     setActiveTab: (activeTab) => set({ activeTab }),
@@ -100,12 +149,16 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
       latestAgentRequest += 1;
       latestMemoryRequest += 1;
       latestRuntimeRequest += 1;
+      latestCallsRequest += 1;
+      latestCallDetailRequest += 1;
       set({
         dateRange,
         telemetry: null,
         agent: null,
         memory: null,
         runtime: null,
+        calls: null,
+        callDetail: null,
         loading: false,
         error: null,
         agentLoading: false,
@@ -114,6 +167,13 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
         memoryError: null,
         runtimeLoading: false,
         runtimeError: null,
+        callsLoading: false,
+        callsLoadingMore: false,
+        callsError: null,
+        callDetailLoading: false,
+        callDetailError: null,
+        selectedCallSpanId: null,
+        selectedCallTraceId: null,
         modelFilter: "all",
       });
     },
@@ -191,11 +251,154 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
         });
       }
     },
+    setCallFilters: (callFilters) => {
+      latestCallsRequest += 1;
+      latestCallDetailRequest += 1;
+      set({
+        callFilters,
+        calls: null,
+        callDetail: null,
+        callsLoading: false,
+        callsLoadingMore: false,
+        callsError: null,
+        callDetailLoading: false,
+        callDetailError: null,
+        selectedCallSpanId: null,
+        selectedCallTraceId: null,
+      });
+    },
+    refreshCalls: async () => {
+      const request = ++latestCallsRequest;
+      const { dateRange, callFilters } = get();
+      set({ callsLoading: true, callsError: null });
+      try {
+        const calls = await api.fetchCalls(dateRange, callFilters);
+        if (request !== latestCallsRequest) return;
+        const first = calls.items[0] ?? null;
+        set({
+          calls,
+          callsLoading: false,
+          selectedCallSpanId: first?.span_id ?? null,
+          selectedCallTraceId: first?.trace_id ?? null,
+          callDetail: null,
+          callDetailError: null,
+        });
+        if (first) await get().selectCall(first);
+      } catch (error) {
+        if (request !== latestCallsRequest) return;
+        set({
+          callsLoading: false,
+          callsError:
+            error instanceof Error ? error.message : "调用列表读取失败",
+        });
+      }
+    },
+    loadMoreCalls: async () => {
+      const current = get().calls;
+      if (!current?.next_cursor || get().callsLoadingMore) return;
+      const request = ++latestCallsRequest;
+      const { dateRange, callFilters } = get();
+      set({ callsLoadingMore: true, callsError: null });
+      try {
+        const nextPage = await api.fetchCalls(
+          dateRange,
+          callFilters,
+          current.next_cursor,
+        );
+        if (request !== latestCallsRequest) return;
+        const knownSpanIds = new Set(current.items.map((item) => item.span_id));
+        const appended = nextPage.items.filter(
+          (item) => !knownSpanIds.has(item.span_id),
+        );
+        const items = [...current.items, ...appended];
+        set({
+          calls: {
+            ...nextPage,
+            sample_size: items.length,
+            quality: combineCallQuality(items),
+            freshness: mergeFreshness(current.freshness, nextPage.freshness),
+            items,
+          },
+          callsLoadingMore: false,
+        });
+      } catch (error) {
+        if (request !== latestCallsRequest) return;
+        set({
+          callsLoadingMore: false,
+          callsError:
+            error instanceof Error ? error.message : "更多调用读取失败",
+        });
+      }
+    },
+    selectCall: async (call) => {
+      const existing = get().callDetail;
+      set({
+        selectedCallSpanId: call.span_id,
+        selectedCallTraceId: call.trace_id,
+        callDetailError: null,
+      });
+      if (existing?.trace_id === call.trace_id) return;
+      const request = ++latestCallDetailRequest;
+      set({ callDetail: null, callDetailLoading: true });
+      try {
+        const callDetail = await api.fetchCallDetail(call.trace_id);
+        if (request !== latestCallDetailRequest) return;
+        set({ callDetail, callDetailLoading: false });
+      } catch (error) {
+        if (request !== latestCallDetailRequest) return;
+        set({
+          callDetailLoading: false,
+          callDetailError:
+            error instanceof Error ? error.message : "调用详情读取失败",
+        });
+      }
+    },
   }));
+}
+
+const CALL_QUALITY_ORDER = {
+  unavailable: 0,
+  partial: 1,
+  reliable: 2,
+} as const;
+
+/** 合并全部已加载调用的实际质量，空列表才是 unavailable。 */
+function combineCallQuality(
+  items: readonly CallListItem[],
+): CallList["quality"] {
+  if (items.length === 0) return "unavailable" as const;
+  return items.reduce(
+    (quality, item) =>
+      CALL_QUALITY_ORDER[item.quality] < CALL_QUALITY_ORDER[quality]
+        ? item.quality
+        : quality,
+    "reliable" as CallList["quality"],
+  );
+}
+
+/** 分页读取更早数据时保留每个来源较新的新鲜度水位。 */
+function mergeFreshness(
+  current: CallList["freshness"],
+  incoming: CallList["freshness"],
+): CallList["freshness"] {
+  const result = { ...current };
+  for (const [source, candidate] of Object.entries(incoming)) {
+    const existing = result[source];
+    if (
+      existing === undefined ||
+      existing.updated_at === null ||
+      (candidate.updated_at !== null &&
+        candidate.updated_at > existing.updated_at)
+    ) {
+      result[source] = candidate;
+    }
+  }
+  return result;
 }
 
 export const statisticsStore = createStatisticsStore();
 
+/** 生成以本地今天为起止日的初始查询范围。 */
 function initialDateRange(now: Date = new Date()): StatisticsDateRange {
   const date = localIsoDate(now);
   return {
@@ -205,6 +408,7 @@ function initialDateRange(now: Date = new Date()): StatisticsDateRange {
   };
 }
 
+/** 把 Date 格式化为不受 UTC 偏移影响的本地 YYYY-MM-DD。 */
 function localIsoDate(value: Date): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");

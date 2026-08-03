@@ -3,6 +3,10 @@
 import { expect, it, vi } from "vitest";
 import { createStatisticsStore } from "../../statistics/application/store";
 import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
+import {
+  callDetailFixture,
+  callListFixture,
+} from "./callStatisticsFixture";
 
 it("updates shared tab and date state without fetching", () => {
   const fetchTelemetry = vi.fn();
@@ -127,4 +131,82 @@ it("loads Runtime statistics without sharing other page request state", async ()
   expect(store.getState().runtimeLoading).toBe(false);
   expect(store.getState().runtimeError).toBeNull();
   expect(store.getState().telemetry).toBeNull();
+});
+
+it("ignores stale call detail after filters start a newer request", async () => {
+  let resolveOldDetail!: (value: typeof callDetailFixture) => void;
+  const oldDetail = new Promise<typeof callDetailFixture>((resolve) => {
+    resolveOldDetail = resolve;
+  });
+  const newerDetail = {
+    ...callDetailFixture,
+    root_operation: "runtime.call" as const,
+  };
+  const fetchCalls = vi.fn().mockResolvedValue(callListFixture);
+  const fetchCallDetail = vi
+    .fn()
+    .mockReturnValueOnce(oldDetail)
+    .mockResolvedValueOnce(newerDetail);
+  const store = createStatisticsStore({ fetchCalls, fetchCallDetail });
+
+  const oldRefresh = store.getState().refreshCalls();
+  await vi.waitFor(() => expect(fetchCallDetail).toHaveBeenCalledTimes(1));
+  store.getState().setCallFilters({
+    ...store.getState().callFilters,
+    component: "mcp",
+  });
+  await store.getState().refreshCalls();
+  resolveOldDetail(callDetailFixture);
+  await oldRefresh;
+
+  expect(store.getState().callDetail?.root_operation).toBe(
+    "runtime.call",
+  );
+  expect(store.getState().selectedCallSpanId).toBe(
+    callListFixture.items[0].span_id,
+  );
+});
+
+it("appends a cursor page without duplicating spans or changing selection", async () => {
+  const older = {
+    ...callListFixture.items[1],
+    trace_id: "00000000000000000000000000000003",
+    span_id: "0000000000000004",
+  };
+  const nextPage = {
+    ...callListFixture,
+    items: [callListFixture.items[1], older],
+    next_cursor: null,
+    quality: "reliable" as const,
+    freshness: {
+      telemetry: { updated_at: "2026-08-03T11:59:00Z", status: "fresh" as const },
+    },
+  };
+  const fetchCalls = vi
+    .fn()
+    .mockResolvedValueOnce(callListFixture)
+    .mockResolvedValueOnce(nextPage);
+  const store = createStatisticsStore({
+    fetchCalls,
+    fetchCallDetail: vi.fn().mockResolvedValue(callDetailFixture),
+  });
+
+  await store.getState().refreshCalls();
+  await store.getState().loadMoreCalls();
+
+  expect(store.getState().calls?.items.map((item) => item.span_id)).toEqual([
+    "0000000000000002",
+    "0000000000000001",
+    "0000000000000004",
+  ]);
+  expect(fetchCalls).toHaveBeenLastCalledWith(
+    store.getState().dateRange,
+    store.getState().callFilters,
+    "next-page",
+  );
+  expect(store.getState().selectedCallSpanId).toBe("0000000000000002");
+  expect(store.getState().calls?.quality).toBe("partial");
+  expect(store.getState().calls?.freshness.telemetry.updated_at).toBe(
+    "2026-08-03T12:00:01Z",
+  );
 });

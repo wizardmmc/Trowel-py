@@ -7,12 +7,14 @@ import 'katex/dist/katex.min.css'
 import './styles/index.css'
 import App from './App.tsx'
 import { initializePlatform } from './platform'
+import { configureTransportTelemetry } from './platform/transport'
 import { createRendererTelemetryPort } from './statistics/telemetryPort'
 import { recordRendererReady } from './statistics/rendererTelemetry'
 
 async function bootstrapRenderer() {
   await initializePlatform()
   const telemetry = createRendererTelemetryPort()
+  configureTransportTelemetry(telemetry)
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />
@@ -24,6 +26,7 @@ async function bootstrapRenderer() {
     void telemetry.flush()
   })
   window.addEventListener('pagehide', () => {
+    configureTransportTelemetry(null)
     void telemetry.drain(100)
   }, { once: true })
 }

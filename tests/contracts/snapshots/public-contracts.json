@@ -333,6 +333,12 @@
         "sql": "CREATE INDEX raw_spans_trace_idx ON raw_spans(trace_id, started_at_ns)"
       },
       {
+        "type": "index",
+        "name": "span_links_target_trace_idx",
+        "table": "span_links",
+        "sql": "CREATE INDEX span_links_target_trace_idx ON span_links(linked_trace_id, linked_span_id)"
+      },
+      {
         "type": "table",
         "name": "_migrations",
         "table": "_migrations",
@@ -3503,6 +3509,210 @@
           }
         }
       },
+      "/api/statistics/calls": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Call List",
+          "description": "筛选原始受控 span，并按稳定游标返回最近调用。\n\nArgs:\n    request: 用于读取应用持有的调用详情 reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n    component: 可选受控组件筛选。\n    operation: 可选受控操作名筛选。\n    runtime: 可选 Claude Code 或 Codex 筛选。\n    status: 可选 ok、error 或 unset 筛选。\n    minimum_duration_value: 字符串形式的非负毫秒耗时下限。\n    limit_value: 字符串形式的 1 至 200 页面大小。\n    cursor: 上一页返回的稳定游标。\n\nReturns:\n    成功调用页；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_call_list_api_statistics_calls_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "component",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Component"
+              }
+            },
+            {
+              "name": "operation",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Operation"
+              }
+            },
+            {
+              "name": "runtime",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Runtime"
+              }
+            },
+            {
+              "name": "status",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Status"
+              }
+            },
+            {
+              "name": "minimum_duration_ms",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "0",
+                "title": "Minimum Duration Ms"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "50",
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_CallListData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/calls/{trace_id}": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Call Detail",
+          "description": "按去身份化 trace ID 返回有限跨层图和明确缺口。\n\nArgs:\n    trace_id: 调用列表返回的 16 字节十六进制随机身份。\n    request: 用于读取应用持有的调用详情 reader。\n\nReturns:\n    成功详情；参数无效、找不到或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_call_detail_api_statistics_calls__trace_id__get",
+          "parameters": [
+            {
+              "name": "trace_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Trace Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_CallDetailData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/statistics/agent": {
         "get": {
           "tags": [
@@ -4334,6 +4544,78 @@
           ],
           "title": "ApiEnvelope[AgentStatisticsData]"
         },
+        "ApiEnvelope_CallDetailData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallDetailData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[CallDetailData]"
+        },
+        "ApiEnvelope_CallListData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallListData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[CallListData]"
+        },
         "ApiEnvelope_MemoryStatisticsData_": {
           "properties": {
             "success": {
@@ -4514,6 +4796,373 @@
           ],
           "title": "BuyItemRequest",
           "description": "指定要购买的商品目录 ID。"
+        },
+        "CallDetailData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "ended_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Ended At"
+            },
+            "root_operation": {
+              "type": "string",
+              "title": "Root Operation"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "spans": {
+              "items": {
+                "$ref": "#/components/schemas/CallSpanData"
+              },
+              "type": "array",
+              "title": "Spans"
+            },
+            "unavailable": {
+              "items": {
+                "$ref": "#/components/schemas/UnavailableIntervalData"
+              },
+              "type": "array",
+              "title": "Unavailable"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "trace_id",
+            "started_at",
+            "ended_at",
+            "root_operation",
+            "status",
+            "quality",
+            "sample_size",
+            "freshness",
+            "spans",
+            "unavailable"
+          ],
+          "title": "CallDetailData",
+          "description": "公开一次调用及 link 可达 span 的有限详情。\n\nAttributes:\n    generated_at: 本次详情生成时间。\n    trace_id: 用户选择的随机 trace 身份。\n    started_at: 选中 trace 的最早开始时刻。\n    ended_at: 选中 trace 的最晚结束时刻。\n    root_operation: 选中 trace 最早根 span 的受控操作名。\n    status: 根 span 终态；子 span 和关联 trace 保留各自终态。\n    quality: 图完整时 reliable；黑盒、坏图或截断时 partial。\n    sample_size: 本次有限图中的 span 数。\n    freshness: telemetry 原始 span 的新鲜度。\n    spans: 已按开始时间排序并消除父环的 span。\n    unavailable: 黑盒、断父、坏 link 或截断缺口。"
+        },
+        "CallListData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/CallListItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next Cursor"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "items",
+            "next_cursor"
+          ],
+          "title": "CallListData",
+          "description": "返回一页调用及其共同时间窗和新鲜度。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前页实际返回的调用数。\n    quality: 当前页调用的合并质量。\n    freshness: telemetry 原始 span 的当前新鲜度。\n    items: 按开始时间与稳定 ID 倒序排列的调用。\n    next_cursor: 下一页游标；到末尾时为 None。"
+        },
+        "CallListItemData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "type": "string",
+              "title": "Span Id"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "duration_ms": {
+              "type": "number",
+              "title": "Duration Ms"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "started_at",
+            "duration_ms",
+            "status",
+            "component",
+            "operation",
+            "runtime",
+            "quality"
+          ],
+          "title": "CallListItemData",
+          "description": "表示最近调用表的一行。\n\nAttributes:\n    trace_id: 用于下钻的随机 trace 身份。\n    span_id: 当前列表行对应的随机 span 身份。\n    started_at: 当前操作的 UTC 开始时刻。\n    duration_ms: 当前操作耗时。\n    status: ok、error 或 unset。\n    component: 实际记录该操作的受控组件。\n    operation: 不含动态值的受控操作名。\n    runtime: 可选 Claude Code 或 Codex 分类。\n    quality: 当前行是否包含黑盒或损坏缺口。"
+        },
+        "CallSpanData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "type": "string",
+              "title": "Span Id"
+            },
+            "parent_span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent Span Id"
+            },
+            "links": {
+              "items": {
+                "$ref": "#/components/schemas/CallTraceLinkData"
+              },
+              "type": "array",
+              "title": "Links"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "ended_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Ended At"
+            },
+            "duration_ms": {
+              "type": "number",
+              "title": "Duration Ms"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "attributes": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "type": "object",
+              "title": "Attributes"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "parent_span_id",
+            "links",
+            "component",
+            "operation",
+            "started_at",
+            "ended_at",
+            "duration_ms",
+            "status",
+            "runtime",
+            "attributes"
+          ],
+          "title": "CallSpanData",
+          "description": "公开 trace 树中一个不含正文和本机身份的 span。\n\nAttributes:\n    trace_id: 当前 span 所在 trace 的随机身份。\n    span_id: 当前 span 的随机身份。\n    parent_span_id: 已校验且不会形成环的真实父 span；根节点为 None。\n    links: 已去重的非父子关联。\n    component: 实际执行操作的受控组件。\n    operation: 不含动态值的受控操作名。\n    started_at: 当前操作的 UTC 开始时刻。\n    ended_at: 当前操作的 UTC 结束时刻。\n    duration_ms: 当前操作耗时。\n    status: ok、error 或 unset。\n    runtime: 可选 Claude Code 或 Codex 分类。\n    attributes: allowlist 中的有限数值字段；布尔和文本不公开。"
+        },
+        "CallTraceLinkData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Span Id"
+            },
+            "available": {
+              "type": "boolean",
+              "title": "Available"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "available"
+          ],
+          "title": "CallTraceLinkData",
+          "description": "公开一条父子关系之外的 span link。\n\nAttributes:\n    trace_id: 关联目标的随机 trace 身份。\n    span_id: 已知时使用的目标 span 身份。\n    available: 当前有界详情是否读到了关联目标。"
         },
         "CollectorStatistics": {
           "properties": {
@@ -6712,6 +7361,63 @@
           ],
           "title": "TelemetrySubmitData",
           "description": "公开一次遥测提交的接受、拒绝和丢弃结果。\n\nAttributes:\n    accepted: 已进入后端有界队列的记录数。\n    rejected: 未通过 schema、版本或隐私校验的记录数。\n    dropped: 因容量或生命周期没有进入队列的记录数。\n    duplicate: 当前批次是否是已知幂等重试。\n    error_categories: 各拒绝或丢弃类别对应的记录数。"
+        },
+        "UnavailableIntervalData": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "reason": {
+              "type": "string",
+              "title": "Reason"
+            },
+            "source_span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Span Id"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started At"
+            },
+            "ended_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ended At"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "reason",
+            "source_span_id",
+            "started_at",
+            "ended_at"
+          ],
+          "title": "UnavailableIntervalData",
+          "description": "说明 trace 中无法可靠还原的一段关系或时间。\n\nAttributes:\n    code: 供前端稳定分组的缺口类别。\n    reason: 不含异常正文或动态身份的用户可读原因。\n    source_span_id: 能定位到已知 span 时使用的随机身份。\n    started_at: 缺口边界可核查时的开始时刻。\n    ended_at: 缺口边界可核查时的结束时刻。"
         },
         "UncommittedChangesReviewTarget": {
           "properties": {

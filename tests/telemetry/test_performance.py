@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.telemetry.support import BASE_TIME, COMPONENT_OPERATIONS, batch_request, span_payload
+from tests.telemetry.support import (
+    BASE_TIME,
+    COMPONENT_OPERATIONS,
+    batch_request,
+    span_payload,
+)
+from trowel_py.statistics.calls.repository import CallStatisticsReader
+from trowel_py.statistics.calls.service import build_call_detail, build_call_list
+from trowel_py.statistics.window import StatisticsWindow
 from trowel_py.telemetry.contracts import prepare_batch
 from trowel_py.telemetry.storage import TelemetryDatabase
 
@@ -33,19 +41,31 @@ def test_production_shape_100k_write_aggregate_cleanup_and_query_budget(
         for batch_index, start in enumerate(range(0, row_count, batch_size)):
             spans = []
             for index in range(start, start + batch_size):
-                component, operation = COMPONENT_OPERATIONS[index % len(COMPONENT_OPERATIONS)]
-                timestamp = BASE_TIME - timedelta(days=source_window_days) + timedelta(
-                    seconds=index * (source_window_days * 86_400 / row_count)
-                )
-                spans.append(
-                    span_payload(
-                        index + 1,
-                        component=component,
-                        operation=operation,
-                        started_at=timestamp,
-                        duration_ms=1.0 + ((index * 37) % 20_000) / 10.0,
+                component, operation = COMPONENT_OPERATIONS[
+                    index % len(COMPONENT_OPERATIONS)
+                ]
+                timestamp = (
+                    BASE_TIME
+                    - timedelta(days=source_window_days)
+                    + timedelta(
+                        seconds=index * (source_window_days * 86_400 / row_count)
                     )
                 )
+                span = span_payload(
+                    index + 1,
+                    component=component,
+                    operation=operation,
+                    started_at=timestamp,
+                    duration_ms=1.0 + ((index * 37) % 20_000) / 10.0,
+                )
+                if index > 0 and index % 20 == 0:
+                    span["links"] = [
+                        {
+                            "trace_id": f"{index:032x}",
+                            "span_id": f"{index:016x}",
+                        }
+                    ]
+                spans.append(span)
             prepared = prepare_batch(
                 batch_request(
                     f"perf-{batch_index:08d}",
@@ -73,6 +93,34 @@ def test_production_shape_100k_write_aggregate_cleanup_and_query_budget(
         )
         query_ms.append((time.perf_counter() - started) * 1000)
 
+    call_reader = CallStatisticsReader(database)
+    call_window = StatisticsWindow(
+        start=BASE_TIME - timedelta(days=90),
+        end=BASE_TIME + timedelta(days=1),
+        timezone="UTC",
+    )
+    call_list_ms: list[float] = []
+    call_page = None
+    for _ in range(20):
+        started = time.perf_counter()
+        call_page = build_call_list(
+            call_reader,
+            call_window,
+            component="sqlite",
+            minimum_duration_ms=500,
+            limit=50,
+        )
+        call_list_ms.append((time.perf_counter() - started) * 1000)
+    assert call_page is not None and call_page.items
+
+    call_detail_ms: list[float] = []
+    call_detail = None
+    linked_span_index = row_count - ((row_count - 1) % 20)
+    for _ in range(20):
+        started = time.perf_counter()
+        call_detail = build_call_detail(call_reader, f"{linked_span_index:032x}")
+        call_detail_ms.append((time.perf_counter() - started) * 1000)
+
     with database.open_writer() as writer:
         started = time.perf_counter()
         cleanup = writer.cleanup(BASE_TIME + timedelta(days=1))
@@ -86,13 +134,18 @@ def test_production_shape_100k_write_aggregate_cleanup_and_query_budget(
         "aggregate_p95_ms": _percentile(aggregate_ms, 0.95),
         "aggregate_runs_ms": aggregate_ms,
         "query_p95_ms": _percentile(query_ms, 0.95),
+        "call_list_p95_ms": _percentile(call_list_ms, 0.95),
+        "call_detail_p95_ms": _percentile(call_detail_ms, 0.95),
         "cleanup_ms": cleanup_ms,
     }
     print(measurements)
     assert rows
+    assert call_detail is not None
     assert measurements["write_p95_ms"] < 10, measurements
     assert measurements["aggregate_p95_ms"] < 100, measurements
     assert measurements["query_p95_ms"] < 300, measurements
+    assert measurements["call_list_p95_ms"] < 300, measurements
+    assert measurements["call_detail_p95_ms"] < 300, measurements
     assert measurements["cleanup_ms"] < 250, measurements
     assert cleanup.raw_spans_deleted > 0
 

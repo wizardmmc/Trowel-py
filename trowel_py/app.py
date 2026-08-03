@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,6 +90,11 @@ async def lifespan(app: FastAPI):
     from trowel_py.telemetry.sse import SseConnectionTracker
 
     configure_sqlite_telemetry(app.state.telemetry_port)
+    from trowel_py.telemetry.agent_events import AgentTelemetryObserver
+
+    app.state.agent_telemetry_observer = AgentTelemetryObserver(
+        app.state.telemetry_port
+    )
     app.state.sse_tracker = SseConnectionTracker(app.state.telemetry_port)
     app.state.sidecar_sampler = None
     try:
@@ -115,7 +121,9 @@ async def lifespan(app: FastAPI):
             ended_at=reconcile_ended_at,
             status="error" if reconcile_failed else "ok",
             attributes={
-                "quality": "partial" if reconcile_report.identity_mismatch else "reliable"
+                "quality": "partial"
+                if reconcile_report.identity_mismatch
+                else "reliable"
             },
         )
         emit_metric(
@@ -137,13 +145,16 @@ async def lifespan(app: FastAPI):
     )
     app.state.resource_registry = resource_registry
     app.state.runtime_statistics_reader = None
+    app.state.call_statistics_reader = None
     try:
         from trowel_py.memory.paths import resolve_memory_root as _runtime_memory_root
+        from trowel_py.statistics.calls.repository import CallStatisticsReader
         from trowel_py.statistics.runtime.repository import RuntimeStatisticsReader
 
         telemetry_database = app.state.telemetry_database
         telemetry_reader = app.state.telemetry_reader
         if telemetry_database is not None and telemetry_reader is not None:
+            app.state.call_statistics_reader = CallStatisticsReader(telemetry_database)
             app.state.runtime_statistics_reader = RuntimeStatisticsReader(
                 telemetry_reader,
                 {
@@ -190,7 +201,9 @@ async def lifespan(app: FastAPI):
         logger.info("[memory] seeded layer-one core.md (试用期)")
     app.state.memory_statistics_reader = None
     try:
-        from trowel_py.memory.paths import resolve_memory_root as _statistics_memory_root
+        from trowel_py.memory.paths import (
+            resolve_memory_root as _statistics_memory_root,
+        )
         from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
 
         app.state.memory_statistics_reader = FileMemoryStatisticsReader(
@@ -360,13 +373,26 @@ async def lifespan(app: FastAPI):
             if codex_history_root is not None
             else None
         )
+
+        def observe_agent_event(payload: Mapping[str, object]) -> None:
+            """先记录去正文调用事实，再更新可选额度 read model。
+
+            Args:
+                payload: SessionHub 已转换的统一 AgentEvent。
+            """
+
+            app.state.agent_telemetry_observer(payload)
+            if quota_observer is not None:
+                quota_observer(payload)
+
         app.state.agent_hub = SessionHub(
             binding_store,
             codex_manager=app.state.codex_host_manager,
             cc_registry=cc_registry,
             cc_proxy_base_url=app.state.proxy_base_url,
             cc_settings_path=app.state.cc_settings_path,
-            event_observer=quota_observer,
+            event_observer=observe_agent_event,
+            turn_observer=app.state.agent_telemetry_observer,
             runtime_ports=runtime_ports,
             session_review_requester=request_session_review,
             title_generator=NativeSessionTitleGenerator(
@@ -437,12 +463,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     desktop_credential = os.environ.pop("TROWEL_DESKTOP_CREDENTIAL", None)
-    desktop_renderer_origin = os.environ.pop(
-        "TROWEL_DESKTOP_RENDERER_ORIGIN", None
-    )
-    app.state.desktop_instance_id = os.environ.pop(
-        "TROWEL_APP_INSTANCE_ID", ""
-    )
+    desktop_renderer_origin = os.environ.pop("TROWEL_DESKTOP_RENDERER_ORIGIN", None)
+    app.state.desktop_instance_id = os.environ.pop("TROWEL_APP_INSTANCE_ID", "")
     app.state.desktop_data_dir = os.environ.get("TROWEL_DESKTOP_DATA_DIR", "").strip()
     app.state.desktop_credential = desktop_credential
 

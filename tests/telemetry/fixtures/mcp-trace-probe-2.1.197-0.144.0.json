@@ -1,0 +1,29 @@
+{
+  "schema": "slice-442-mcp-trace-probe-v1",
+  "generated_at": "2026-08-03T00:46:43+08:00",
+  "stimulus": {
+    "valid_parent_trace_in_runtime_environment": true,
+    "otel_propagator_requested": "tracecontext",
+    "request_body_recorded": false
+  },
+  "claude_code": {
+    "version": "2.1.197",
+    "returncode": 0,
+    "tool_call_count": 1,
+    "tool_call_meta_keys": [
+      ["claudecode/toolUseId", "progressToken"]
+    ],
+    "tool_call_traceparent_present": false,
+    "tool_call_tracestate_present": false
+  },
+  "codex": {
+    "version": "0.144.0",
+    "returncode": 0,
+    "tool_call_count": 1,
+    "tool_call_meta_keys": [
+      ["progressToken", "threadId", "x-codex-turn-metadata"]
+    ],
+    "tool_call_traceparent_present": false,
+    "tool_call_tracestate_present": false
+  }
+}

@@ -4,6 +4,9 @@ import { transportFetch } from "../../platform/transport";
 import type {
   ApiEnvelope,
   AgentStatistics,
+  CallDetail,
+  CallFilters,
+  CallList,
   MemoryStatistics,
   RuntimeStatistics,
   StatisticsDateRange,
@@ -49,6 +52,32 @@ export async function fetchRuntimeStatistics(
   );
 }
 
+/** 按日期、受控筛选和可选游标读取一页调用。 */
+export async function fetchCallStatistics(
+  range: StatisticsDateRange,
+  filters: CallFilters,
+  cursor?: string,
+): Promise<CallList> {
+  const query = dateRangeQuery(range);
+  setOptionalFilter(query, "component", filters.component);
+  setOptionalFilter(query, "operation", filters.operation);
+  setOptionalFilter(query, "runtime", filters.runtime);
+  setOptionalFilter(query, "status", filters.status);
+  if (filters.minimumDurationMs > 0) {
+    query.set("minimum_duration_ms", String(filters.minimumDurationMs));
+  }
+  if (cursor) query.set("cursor", cursor);
+  return fetchStatistics<CallList>(`/api/statistics/calls?${query.toString()}`);
+}
+
+/** 按随机 trace 身份读取跨 link 可达的有限调用详情。 */
+export async function fetchCallDetail(traceId: string): Promise<CallDetail> {
+  return fetchStatistics<CallDetail>(
+    `/api/statistics/calls/${encodeURIComponent(traceId)}`,
+  );
+}
+
+/** 把本地日期范围转换为所有 Statistics API 共用的查询参数。 */
 function dateRangeQuery(range: StatisticsDateRange): URLSearchParams {
   return new URLSearchParams({
     start_date: range.startDate,
@@ -57,11 +86,23 @@ function dateRangeQuery(range: StatisticsDateRange): URLSearchParams {
   });
 }
 
+/** 仅在筛选值不是“全部”时写入服务端查询参数。 */
+function setOptionalFilter(
+  query: URLSearchParams,
+  name: string,
+  value: string,
+): void {
+  if (value !== "all") query.set(name, value);
+}
+
+/** 请求 Statistics envelope，并把公开错误转换为前端异常。 */
 async function fetchStatistics<T>(path: string): Promise<T> {
   const response = await transportFetch(path);
   const envelope = (await response.json()) as ApiEnvelope<T>;
   if (!response.ok || !envelope.success || envelope.data === null) {
-    throw new Error(envelope.error ?? `Statistics request failed: ${response.status}`);
+    throw new Error(
+      envelope.error ?? `Statistics request failed: ${response.status}`,
+    );
   }
   return envelope.data;
 }

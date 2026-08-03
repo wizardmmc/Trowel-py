@@ -1,5 +1,10 @@
 /** 定义统计页签、时间窗、质量和 telemetry read model。 */
 
+import type {
+  TelemetryComponent,
+  TelemetryOperation,
+} from "../../../shared/telemetry-contracts";
+
 export type StatisticsTab =
   | "overview"
   | "agent"
@@ -326,6 +331,84 @@ export interface RuntimeStatistics {
   readonly resources: readonly RuntimeDistribution[];
   readonly resource_remaining_count: number;
   readonly gaps: readonly RuntimeGap[];
+}
+
+export type CallComponent = TelemetryComponent;
+export type CallStatus = "ok" | "error" | "unset";
+
+export interface CallFilters {
+  readonly component: "all" | CallComponent;
+  readonly operation: "all" | TelemetryOperation;
+  readonly runtime: AgentRuntimeFilter;
+  readonly status: "all" | CallStatus;
+  readonly minimumDurationMs: number;
+}
+
+export interface CallListItem {
+  readonly trace_id: string;
+  readonly span_id: string;
+  readonly started_at: string;
+  readonly duration_ms: number;
+  readonly status: CallStatus;
+  readonly component: CallComponent;
+  readonly operation: TelemetryOperation;
+  readonly runtime: AgentRuntime | null;
+  readonly quality: StatisticsQuality;
+}
+
+export interface CallList {
+  readonly generated_at: string;
+  readonly window_start: string;
+  readonly window_end: string;
+  readonly timezone: string;
+  readonly sample_size: number;
+  readonly quality: StatisticsQuality;
+  readonly freshness: Readonly<Record<string, SourceFreshness>>;
+  readonly items: readonly CallListItem[];
+  readonly next_cursor: string | null;
+}
+
+export interface CallTraceLink {
+  readonly trace_id: string;
+  readonly span_id: string | null;
+  readonly available: boolean;
+}
+
+export interface CallSpan {
+  readonly trace_id: string;
+  readonly span_id: string;
+  readonly parent_span_id: string | null;
+  readonly links: readonly CallTraceLink[];
+  readonly component: CallComponent;
+  readonly operation: TelemetryOperation;
+  readonly started_at: string;
+  readonly ended_at: string;
+  readonly duration_ms: number;
+  readonly status: CallStatus;
+  readonly runtime: AgentRuntime | null;
+  readonly attributes: Readonly<Record<string, number>>;
+}
+
+export interface UnavailableInterval {
+  readonly code: string;
+  readonly reason: string;
+  readonly source_span_id: string | null;
+  readonly started_at: string | null;
+  readonly ended_at: string | null;
+}
+
+export interface CallDetail {
+  readonly generated_at: string;
+  readonly trace_id: string;
+  readonly started_at: string;
+  readonly ended_at: string;
+  readonly root_operation: TelemetryOperation;
+  readonly status: CallStatus;
+  readonly quality: StatisticsQuality;
+  readonly sample_size: number;
+  readonly freshness: Readonly<Record<string, SourceFreshness>>;
+  readonly spans: readonly CallSpan[];
+  readonly unavailable: readonly UnavailableInterval[];
 }
 
 export interface ApiEnvelope<T> {

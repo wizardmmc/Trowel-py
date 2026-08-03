@@ -195,6 +195,25 @@ describe("api/agent", () => {
     );
   });
 
+  it("listAgentModels releases desktop startup when the optional catalog hangs", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      }),
+    );
+
+    try {
+      const request = listAgentModels();
+      const rejection = expect(request).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejection;
+      expect((vi.mocked(globalThis.fetch).mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("updateAgentSessionSettings PATCHes model and effort together", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockEnvelope({ model: "gpt-5.6-luna", effort: "medium", adjusted: true }),

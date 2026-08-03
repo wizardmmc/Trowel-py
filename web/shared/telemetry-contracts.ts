@@ -1,53 +1,59 @@
 /** 定义 Electron、renderer 与 Python sidecar 之间的遥测批次契约。 */
 
-export type TelemetryComponent =
-  | "electron"
-  | "renderer"
-  | "sidecar"
-  | "fastapi"
-  | "agent_host"
-  | "runtime"
-  | "mcp"
-  | "sqlite"
-  | "telemetry";
+export const TELEMETRY_COMPONENTS = [
+  "electron",
+  "renderer",
+  "sidecar",
+  "fastapi",
+  "agent_host",
+  "runtime",
+  "mcp",
+  "sqlite",
+  "telemetry",
+] as const;
 
-export type TelemetryOperation =
-  | "desktop.start"
-  | "desktop.start.sidecar_ready"
-  | "desktop.start.first_screen"
-  | "desktop.window.close"
-  | "desktop.renderer.crash"
-  | "desktop.exit"
-  | "desktop.reconcile"
-  | "sidecar.sample"
-  | "sidecar.exit"
-  | "renderer.measure"
-  | "http.agent.messages"
-  | "http.statistics.query"
-  | "sse.connect"
-  | "sse.first_event"
-  | "sse.disconnect"
-  | "sse.reconnect"
-  | "sse.close"
-  | "agent.turn"
-  | "agent.interrupt"
-  | "runtime.call"
-  | "runtime.tool"
-  | "mcp.tools.call"
-  | "sqlite.query"
-  | "sqlite.transaction"
-  | "sqlite.sessions.read"
-  | "sqlite.sessions.write"
-  | "sqlite.workspaces.read"
-  | "sqlite.workspaces.write"
-  | "resource.app.close"
-  | "resource.runtime_connection.close"
-  | "resource.session.close"
-  | "resource.turn.close"
-  | "telemetry.collect"
-  | "telemetry.flush"
-  | "telemetry.aggregate"
-  | "telemetry.cleanup";
+export type TelemetryComponent = (typeof TELEMETRY_COMPONENTS)[number];
+
+export const TELEMETRY_OPERATIONS = [
+  "desktop.start",
+  "desktop.start.sidecar_ready",
+  "desktop.start.first_screen",
+  "desktop.window.close",
+  "desktop.renderer.crash",
+  "desktop.exit",
+  "desktop.reconcile",
+  "sidecar.sample",
+  "sidecar.exit",
+  "renderer.measure",
+  "http.agent.messages",
+  "http.statistics.query",
+  "sse.connect",
+  "sse.first_event",
+  "sse.disconnect",
+  "sse.reconnect",
+  "sse.close",
+  "agent.turn",
+  "agent.interrupt",
+  "runtime.call",
+  "runtime.tool",
+  "mcp.tools.call",
+  "sqlite.query",
+  "sqlite.transaction",
+  "sqlite.sessions.read",
+  "sqlite.sessions.write",
+  "sqlite.workspaces.read",
+  "sqlite.workspaces.write",
+  "resource.app.close",
+  "resource.runtime_connection.close",
+  "resource.session.close",
+  "resource.turn.close",
+  "telemetry.collect",
+  "telemetry.flush",
+  "telemetry.aggregate",
+  "telemetry.cleanup",
+] as const;
+
+export type TelemetryOperation = (typeof TELEMETRY_OPERATIONS)[number];
 
 /** runtime 实际回报的模型名；具体型号不属于前后端静态契约。 */
 export type TelemetryModel = string;

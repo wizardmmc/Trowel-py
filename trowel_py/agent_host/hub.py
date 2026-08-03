@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal, Protocol
 
 from trowel_py.agent_capacity import (
     DELEGATE_CONNECTION_LIMIT,
@@ -103,6 +103,20 @@ MAX_DELEGATE_CONNECTIONS = DELEGATE_CONNECTION_LIMIT
 MAX_DELEGATE_RUNNING = DELEGATE_RUNNING_LIMIT
 
 _TURN_TERMINAL_TYPES = frozenset({"finished", "interrupted", "error"})
+
+
+class AgentTurnObserver(Protocol):
+    """声明 SessionHub 启动或异常结束 turn 时使用的窄观察端口。"""
+
+    def prepare_turn(
+        self,
+        session_id: str,
+        runtime: Literal["claude_code", "codex"],
+    ) -> str:
+        """在进入原生 runtime 前保存当前请求关联并返回观察代次。"""
+
+    def abort_turn(self, session_id: str, observation_id: str) -> None:
+        """只收口指定代次中没有正常 terminal 的观察状态。"""
 
 
 class SessionHubError(Exception):
@@ -201,6 +215,7 @@ class SessionHub:
         cc_settings_path: str | Path | None = None,
         codex_config_home: str | Path | None = None,
         event_observer: Callable[[Mapping[str, Any]], None] | None = None,
+        turn_observer: AgentTurnObserver | None = None,
         non_user_identity_store: NonUserIdentityStore | None = None,
         runtime_ports: Mapping[Runtime, RuntimeSessionPort] | None = None,
         capacity_limits: CapacityLimits | None = None,
@@ -225,6 +240,7 @@ class SessionHub:
                 服务商所需的环境变量。
             codex_config_home: Codex 配置目录；创建会话前检查其中是否存在同名 MCP。
             event_observer: 接收每个通用事件的同步回调。
+            turn_observer: 在 runtime 请求边界保存调用关联并收口异常 turn 的观察端口。
             non_user_identity_store: 跨 binding 清理保留所有非用户原生会话 ID 的
                 本机索引；未提供时在 binding 文件旁创建独立索引。
             runtime_ports: 两种 runtime 的统一状态与关闭入口；未提供时根据 registry
@@ -272,6 +288,7 @@ class SessionHub:
             Path(codex_config_home) if codex_config_home is not None else None
         )
         self._event_observer = event_observer
+        self._turn_observer = turn_observer
         self._resource_registry = resource_registry
         self._session_review_requester = session_review_requester
         self._codex_history_root = (
@@ -773,8 +790,7 @@ class SessionHub:
                 delegation_depth=req.delegation_depth,
                 capabilities=CC_CAPABILITIES,
                 checkpoint_available=(
-                    checkpoint.is_enabled()
-                    and checkpoint.is_git_repo(req.workdir)
+                    checkpoint.is_enabled() and checkpoint.is_git_repo(req.workdir)
                 ),
                 name=opened.name,
                 display_title=display_title,
@@ -1949,17 +1965,21 @@ class SessionHub:
             if cc_adapter is None:
                 cc_adapter = ClaudeCodeEventAdapter(session_id)
                 self._cc_adapters[session_id] = cc_adapter
-            async for event in host.send(text):
-                raw = dict(event) if isinstance(event, dict) else event.model_dump()
-                envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
-                self._observe(envelope)
-                if raw.get("type") == "session_started" or raw.get("type") in (
-                    _TURN_TERMINAL_TYPES | {"session_exited"}
-                ):
-                    # Client 可能在终态后立即关闭 SSE；原生身份必须先于 yield 落盘。
-                    self._writeback_cc_native(session_id, host)
-                yield envelope
-            self._writeback_cc_native(session_id, host)
+            observation_id = self._prepare_turn_observation(binding)
+            try:
+                async for event in host.send(text):
+                    raw = dict(event) if isinstance(event, dict) else event.model_dump()
+                    envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
+                    self._observe(envelope)
+                    if raw.get("type") == "session_started" or raw.get("type") in (
+                        _TURN_TERMINAL_TYPES | {"session_exited"}
+                    ):
+                        # Client 可能在终态后立即关闭 SSE；原生身份必须先于 yield 落盘。
+                        self._writeback_cc_native(session_id, host)
+                    yield envelope
+                self._writeback_cc_native(session_id, host)
+            finally:
+                self._abort_turn_observation(session_id, observation_id)
             return
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
@@ -1967,6 +1987,7 @@ class SessionHub:
         if session is None:
             raise SessionNotFoundError(f"codex session {session_id} not live")
         _reject_reserved_codex_command(text)
+        observation_id = self._prepare_turn_observation(binding)
         queue = self._add_codex_event_subscriber(session_id, session)
         turn_id: str | None = None
         try:
@@ -1981,14 +2002,21 @@ class SessionHub:
             self._writeback_codex_native(session_id, session)
         except TurnConflictError as exc:
             self._remove_codex_event_subscriber(session_id, queue)
+            self._abort_turn_observation(session_id, observation_id)
             raise SessionConflictError(str(exc)) from exc
         except SessionHubError:
             self._remove_codex_event_subscriber(session_id, queue)
+            self._abort_turn_observation(session_id, observation_id)
             raise
         except Exception as exc:  # noqa: BLE001 - 统一映射为 502，不能落入 500。
             self._remove_codex_event_subscriber(session_id, queue)
+            self._abort_turn_observation(session_id, observation_id)
             _log.warning("codex turn start failed for %s: %s", session_id, exc)
             raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
+        except BaseException:
+            self._remove_codex_event_subscriber(session_id, queue)
+            self._abort_turn_observation(session_id, observation_id)
+            raise
         try:
             while True:
                 payload = await queue.get()
@@ -1999,6 +2027,7 @@ class SessionHub:
                     break
         finally:
             self._remove_codex_event_subscriber(session_id, queue)
+            self._abort_turn_observation(session_id, observation_id)
 
     async def start_codex_turn(self, session_id: str, text: str) -> str:
         """向指定 Codex 会话发送一条输入并启动新一轮处理。
@@ -2029,6 +2058,8 @@ class SessionHub:
             session = self._require_codex_session(session_id)
             codex = self._require_codex_runtime()
             _reject_reserved_codex_command(text)
+            observation_id = self._prepare_turn_observation(binding)
+            self._ensure_codex_event_pump(session_id, session)
             try:
                 turn_id = await codex.send(
                     session,
@@ -2040,12 +2071,18 @@ class SessionHub:
                 self._writeback_codex_native(session_id, session)
                 return turn_id
             except TurnConflictError as exc:
+                self._abort_turn_observation(session_id, observation_id)
                 raise SessionConflictError(str(exc)) from exc
             except SessionHubError:
+                self._abort_turn_observation(session_id, observation_id)
                 raise
             except Exception as exc:  # noqa: BLE001
+                self._abort_turn_observation(session_id, observation_id)
                 _log.warning("codex turn start failed for %s: %s", session_id, exc)
                 raise RuntimeTurnError(f"codex turn failed: {exc}") from exc
+            except BaseException:
+                self._abort_turn_observation(session_id, observation_id)
+                raise
         finally:
             self._capacity.release_turn(reservation)
 
@@ -2098,13 +2135,23 @@ class SessionHub:
 
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._codex_event_subscribers.setdefault(session_id, set()).add(queue)
+        self._ensure_codex_event_pump(session_id, session)
+        return queue
+
+    def _ensure_codex_event_pump(self, session_id: str, session: Any) -> None:
+        """保证 Codex 原生事件始终进入内部观察器，不依赖前端订阅。
+
+        Args:
+            session_id: 事件所属的 Trowel 会话 ID。
+            session: 提供唯一原生事件 reader 的 Codex 会话。
+        """
+
         task = self._codex_event_tasks.get(session_id)
         if task is None or task.done():
             self._codex_event_tasks[session_id] = asyncio.create_task(
                 self._pump_codex_events(session_id, session),
                 name=f"codex-events-{session_id}",
             )
-        return queue
 
     def _remove_codex_event_subscriber(
         self, session_id: str, queue: asyncio.Queue[dict[str, Any] | None]
@@ -2183,6 +2230,43 @@ class SessionHub:
             self._event_observer(payload)
         except Exception:
             _log.warning("[hub] event observer raised; ignored", exc_info=True)
+
+    def _prepare_turn_observation(self, binding: SessionBinding) -> str | None:
+        """在 runtime 请求前保存当前 HTTP 关联，观察失败不影响会话。
+
+        Args:
+            binding: 提供 Trowel 会话 ID 和已冻结 runtime 的会话记录。
+        """
+
+        if self._turn_observer is None:
+            return None
+        runtime: Literal["claude_code", "codex"] = (
+            "claude_code" if binding.runtime is Runtime.CLAUDE_CODE else "codex"
+        )
+        try:
+            return self._turn_observer.prepare_turn(binding.session_id, runtime)
+        except Exception:
+            _log.warning("[hub] turn observer prepare raised; ignored", exc_info=True)
+            return None
+
+    def _abort_turn_observation(
+        self,
+        session_id: str,
+        observation_id: str | None,
+    ) -> None:
+        """收口没有正常 terminal 的观察状态，失败不影响 runtime。
+
+        Args:
+            session_id: 当前 runtime 请求所属的 Trowel 会话 ID。
+            observation_id: prepare 返回的观察代次；观察未启动时为 None。
+        """
+
+        if self._turn_observer is None or observation_id is None:
+            return
+        try:
+            self._turn_observer.abort_turn(session_id, observation_id)
+        except Exception:
+            _log.warning("[hub] turn observer abort raised; ignored", exc_info=True)
 
     def error_envelope(self, session_id: str, detail: Any) -> dict[str, Any]:
         """把错误信息转换成可通过事件流发送的结束事件。

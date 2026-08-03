@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from trowel_py.statistics.agent.schemas import AgentStatisticsData
 from trowel_py.statistics.agent.service import build_agent_statistics
+from trowel_py.statistics.calls.schemas import CallDetailData, CallListData
+from trowel_py.statistics.calls.service import build_call_detail, build_call_list
 from trowel_py.statistics.memory.schemas import MemoryStatisticsData
 from trowel_py.statistics.memory.service import build_memory_statistics
 from trowel_py.statistics.runtime.schemas import RuntimeStatisticsData
@@ -19,6 +21,95 @@ from trowel_py.statistics.service import build_telemetry_statistics
 from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
 
 router = APIRouter(tags=["statistics"])
+
+
+@router.get(
+    "/calls",
+    response_model=ApiEnvelope[CallListData],
+)
+def get_call_list(
+    request: Request,
+    start_date: str = Query(),
+    end_date: str = Query(),
+    timezone_name: str = Query(alias="timezone"),
+    component: str | None = Query(default=None),
+    operation: str | None = Query(default=None),
+    runtime: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    minimum_duration_value: str = Query(default="0", alias="minimum_duration_ms"),
+    limit_value: str = Query(default="50", alias="limit"),
+    cursor: str | None = Query(default=None),
+) -> ApiEnvelope[CallListData] | JSONResponse:
+    """筛选原始受控 span，并按稳定游标返回最近调用。
+
+    Args:
+        request: 用于读取应用持有的调用详情 reader。
+        start_date: 首尾均包含的第一个 ISO 日期。
+        end_date: 首尾均包含的最后一个 ISO 日期。
+        timezone_name: 解释日期边界的 IANA 时区名称。
+        component: 可选受控组件筛选。
+        operation: 可选受控操作名筛选。
+        runtime: 可选 Claude Code 或 Codex 筛选。
+        status: 可选 ok、error 或 unset 筛选。
+        minimum_duration_value: 字符串形式的非负毫秒耗时下限。
+        limit_value: 字符串形式的 1 至 200 页面大小。
+        cursor: 上一页返回的稳定游标。
+
+    Returns:
+        成功调用页；参数或来源不可用时返回统一错误 envelope。
+    """
+
+    reader = getattr(request.app.state, "call_statistics_reader", None)
+    if reader is None:
+        return _error_response(503, "statistics calls source unavailable")
+    try:
+        window = _parse_window(start_date, end_date, timezone_name)
+        minimum_duration_ms = float(minimum_duration_value)
+        limit = int(limit_value)
+        data = build_call_list(
+            reader,
+            window,
+            component=component,
+            operation=operation,
+            runtime=runtime,
+            status=status,
+            minimum_duration_ms=minimum_duration_ms,
+            limit=limit,
+            cursor=cursor,
+        )
+    except (ValueError, OverflowError) as exc:
+        return _error_response(422, str(exc))
+    return ApiEnvelope[CallListData](success=True, data=data, error=None)
+
+
+@router.get(
+    "/calls/{trace_id}",
+    response_model=ApiEnvelope[CallDetailData],
+)
+def get_call_detail(
+    trace_id: str,
+    request: Request,
+) -> ApiEnvelope[CallDetailData] | JSONResponse:
+    """按去身份化 trace ID 返回有限跨层图和明确缺口。
+
+    Args:
+        trace_id: 调用列表返回的 16 字节十六进制随机身份。
+        request: 用于读取应用持有的调用详情 reader。
+
+    Returns:
+        成功详情；参数无效、找不到或来源不可用时返回统一错误 envelope。
+    """
+
+    reader = getattr(request.app.state, "call_statistics_reader", None)
+    if reader is None:
+        return _error_response(503, "statistics calls source unavailable")
+    try:
+        data = build_call_detail(reader, trace_id)
+    except ValueError as exc:
+        return _error_response(422, str(exc))
+    if data is None:
+        return _error_response(404, "call trace not found")
+    return ApiEnvelope[CallDetailData](success=True, data=data, error=None)
 
 
 @router.get(
