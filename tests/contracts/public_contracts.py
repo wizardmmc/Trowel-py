@@ -16,6 +16,7 @@ from trowel_py.memory.sessions_repo import SessionsRepository
 from trowel_py.model_os.store import ModelOsStore
 from trowel_py.schemas.agent_host import AGENT_EVENT_TYPES
 from trowel_py.schemas.cc_host import EVENT_TYPES
+from trowel_py.telemetry.storage import TelemetryDatabase
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "public-contracts.json"
 
@@ -141,10 +142,18 @@ def _database_schemas() -> dict[str, list[dict[str, str]]]:
         model_os_schema = _schema_objects(model_os_conn)
         model_os_conn.close()
 
+        telemetry_path = root / "telemetry.db"
+        telemetry_database = TelemetryDatabase(telemetry_path)
+        telemetry_database.initialize()
+        telemetry_conn = telemetry_database.connect_reader()
+        telemetry_schema = _schema_objects(telemetry_conn)
+        telemetry_conn.close()
+
     return {
         "main": main_schema,
         "memory_sessions": sessions_schema,
         "model_os": model_os_schema,
+        "telemetry": telemetry_schema,
     }
 
 

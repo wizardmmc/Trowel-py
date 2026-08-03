@@ -37,6 +37,9 @@ from trowel_py.pet.routes import router as pet_router
 from trowel_py.player.routes import router as player_router
 from trowel_py.profile.routes import router as profile_router
 from trowel_py.review.routes import router as review_router
+from trowel_py.statistics.routes import router as statistics_router
+from trowel_py.telemetry.lifecycle import start_telemetry, stop_telemetry
+from trowel_py.telemetry.routes import router as telemetry_router
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,7 @@ async def lifespan(app: FastAPI):
         registration_credential=getattr(app.state, "desktop_credential", None),
     )
     app.state.resource_registry = resource_registry
+    start_telemetry(app)
     if snapshot_path is not None:
         resource_registry.register_process_group(
             resource_id=f"sidecar:{app_instance_id}",
@@ -297,6 +301,7 @@ async def lifespan(app: FastAPI):
             logger.warning("[app] shutdown needs resource reconciliation: %s", report)
     except Exception:
         logger.warning("[app] coordinated drain failed", exc_info=True)
+    await asyncio.to_thread(stop_telemetry, app, timeout_seconds=1.0)
     _quota_http = getattr(app.state, "quota_http_client", None)
     if _quota_http is not None:
         try:
@@ -393,6 +398,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix="/api/agent")
     app.include_router(quota_router)
     app.include_router(desktop_router, prefix="/api/desktop")
+    app.include_router(telemetry_router, prefix="/api/telemetry")
+    app.include_router(statistics_router, prefix="/api/statistics")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

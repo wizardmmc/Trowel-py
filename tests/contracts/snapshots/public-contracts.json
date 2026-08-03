@@ -288,6 +288,110 @@
         "table": "task_create_keys",
         "sql": "CREATE TABLE task_create_keys ( idempotency_key TEXT PRIMARY KEY NOT NULL CHECK (length(trim(idempotency_key)) > 0), task_id TEXT NOT NULL, created_at TEXT NOT NULL )"
       }
+    ],
+    "telemetry": [
+      {
+        "type": "index",
+        "name": "raw_metrics_name_idx",
+        "table": "raw_metrics",
+        "sql": "CREATE INDEX raw_metrics_name_idx ON raw_metrics(name, observed_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_metrics_observed_idx",
+        "table": "raw_metrics",
+        "sql": "CREATE INDEX raw_metrics_observed_idx ON raw_metrics(observed_at_ns DESC)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_aggregation_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_aggregation_idx ON raw_spans( hour_start_ns, component, operation, status, runtime, model, duration_bucket, duration_ms )"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_operation_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_operation_idx ON raw_spans(operation, status, started_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_session_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_session_idx ON raw_spans(session_ref, started_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_started_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_started_idx ON raw_spans(started_at_ns DESC)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_trace_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_trace_idx ON raw_spans(trace_id, started_at_ns)"
+      },
+      {
+        "type": "table",
+        "name": "_migrations",
+        "table": "_migrations",
+        "sql": "CREATE TABLE _migrations( name TEXT PRIMARY KEY )"
+      },
+      {
+        "type": "table",
+        "name": "daily_metric_stats",
+        "table": "daily_metric_stats",
+        "sql": "CREATE TABLE daily_metric_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, value_sum REAL NOT NULL, value_min REAL NOT NULL, value_max REAL NOT NULL, PRIMARY KEY( bucket_start_ns, component, name, kind, unit, operation, status, runtime, model ) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "daily_span_stats",
+        "table": "daily_span_stats",
+        "sql": "CREATE TABLE daily_span_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, duration_sum_ms REAL NOT NULL, duration_min_ms REAL NOT NULL, duration_max_ms REAL NOT NULL, duration_b00 INTEGER NOT NULL, duration_b01 INTEGER NOT NULL, duration_b02 INTEGER NOT NULL, duration_b03 INTEGER NOT NULL, duration_b04 INTEGER NOT NULL, duration_b05 INTEGER NOT NULL, duration_b06 INTEGER NOT NULL, duration_b07 INTEGER NOT NULL, duration_b08 INTEGER NOT NULL, duration_b09 INTEGER NOT NULL, duration_b10 INTEGER NOT NULL, duration_b11 INTEGER NOT NULL, duration_b12 INTEGER NOT NULL, duration_b13 INTEGER NOT NULL, duration_b14 INTEGER NOT NULL, PRIMARY KEY(bucket_start_ns, component, operation, status, runtime, model) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "hourly_metric_stats",
+        "table": "hourly_metric_stats",
+        "sql": "CREATE TABLE hourly_metric_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, value_sum REAL NOT NULL, value_min REAL NOT NULL, value_max REAL NOT NULL, PRIMARY KEY( bucket_start_ns, component, name, kind, unit, operation, status, runtime, model ) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "hourly_span_stats",
+        "table": "hourly_span_stats",
+        "sql": "CREATE TABLE hourly_span_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL CHECK(sample_count BETWEEN 0 AND 1048575), duration_sum_ms REAL NOT NULL, duration_min_ms REAL NOT NULL, duration_max_ms REAL NOT NULL, histogram_p0 INTEGER NOT NULL CHECK(histogram_p0 >= 0), histogram_p1 INTEGER NOT NULL CHECK(histogram_p1 >= 0), histogram_p2 INTEGER NOT NULL CHECK(histogram_p2 >= 0), histogram_p3 INTEGER NOT NULL CHECK(histogram_p3 >= 0), histogram_p4 INTEGER NOT NULL CHECK(histogram_p4 >= 0), PRIMARY KEY(bucket_start_ns, component, operation, status, runtime, model) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "raw_metrics",
+        "table": "raw_metrics",
+        "sql": "CREATE TABLE raw_metrics ( metric_key BLOB PRIMARY KEY NOT NULL CHECK(length(metric_key) = 16), observed_at_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, value REAL NOT NULL CHECK(value >= 0), status TEXT NOT NULL, runtime TEXT, model TEXT, operation TEXT, attributes_json TEXT NOT NULL ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "raw_spans",
+        "table": "raw_spans",
+        "sql": "CREATE TABLE raw_spans ( trace_id BLOB NOT NULL CHECK(length(trace_id) = 16), span_id BLOB NOT NULL CHECK(length(span_id) = 8), parent_span_id BLOB CHECK(parent_span_id IS NULL OR length(parent_span_id) = 8), started_at_ns INTEGER NOT NULL, hour_start_ns INTEGER NOT NULL, ended_at_ns INTEGER NOT NULL, duration_ms REAL NOT NULL CHECK(duration_ms >= 0), duration_bucket INTEGER NOT NULL CHECK(duration_bucket BETWEEN 0 AND 14), component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, session_ref BLOB CHECK(session_ref IS NULL OR length(session_ref) = 16), call_ref BLOB CHECK(call_ref IS NULL OR length(call_ref) = 16), attributes_json TEXT NOT NULL, PRIMARY KEY(span_id) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "span_links",
+        "table": "span_links",
+        "sql": "CREATE TABLE span_links ( span_id BLOB NOT NULL, link_index INTEGER NOT NULL CHECK(link_index >= 0), linked_trace_id BLOB NOT NULL CHECK(length(linked_trace_id) = 16), linked_span_id BLOB CHECK(linked_span_id IS NULL OR length(linked_span_id) = 8), PRIMARY KEY(span_id, link_index) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "telemetry_batches",
+        "table": "telemetry_batches",
+        "sql": "CREATE TABLE telemetry_batches ( batch_id TEXT PRIMARY KEY NOT NULL, fingerprint BLOB NOT NULL CHECK(length(fingerprint) = 32), schema_version INTEGER NOT NULL, source_component TEXT NOT NULL, collected_at_ns INTEGER NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('normal', 'backfill')), accepted_count INTEGER NOT NULL CHECK(accepted_count >= 0), rejected_count INTEGER NOT NULL CHECK(rejected_count >= 0), created_at_ns INTEGER NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "telemetry_watermarks",
+        "table": "telemetry_watermarks",
+        "sql": "CREATE TABLE telemetry_watermarks ( stage TEXT PRIMARY KEY NOT NULL CHECK(stage IN ('raw', 'hour', 'day')), through_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL ) WITHOUT ROWID"
+      }
     ]
   },
   "event_types": {
@@ -3357,6 +3461,119 @@
           }
         }
       },
+      "/api/telemetry/batches": {
+        "post": {
+          "tags": [
+            "telemetry"
+          ],
+          "summary": "Submit Telemetry Batch",
+          "description": "校验并把遥测批次放入不等待 SQLite 的有界队列。\n\nArgs:\n    body: 来源组件提交的版本化 span/metric 批次。\n    request: 用于读取当前应用持有的 collector。\n\nReturns:\n    202 接受结果；collector 不可用时返回统一 503 envelope。",
+          "operationId": "submit_telemetry_batch_api_telemetry_batches_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryBatchRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "202": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_TelemetrySubmitData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/telemetry": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Telemetry Statistics",
+          "description": "读取聚合遥测，并统一返回时间窗、样本质量和来源新鲜度。\n\nArgs:\n    request: 用于读取应用持有的 telemetry reader 和 collector。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n    resolution_value: hour 或 day。\n\nReturns:\n    成功 read model；查询参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_telemetry_statistics_api_statistics_telemetry_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "resolution",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "hour",
+                "title": "Resolution"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_TelemetryStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/{full_path}": {
         "get": {
           "summary": " Spa Fallback",
@@ -3434,6 +3651,78 @@
           "title": "AnswerElicitRequest",
           "description": "提交对待处理 `AskUserQuestion` 的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入\n        `control_response.updatedInput.answers`。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
         },
+        "ApiEnvelope_TelemetryStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TelemetryStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[TelemetryStatisticsData]"
+        },
+        "ApiEnvelope_TelemetrySubmitData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TelemetrySubmitData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[TelemetrySubmitData]"
+        },
         "BaseBranchReviewTarget": {
           "properties": {
             "type": {
@@ -3470,6 +3759,57 @@
           ],
           "title": "BuyItemRequest",
           "description": "指定要购买的商品目录 ID。"
+        },
+        "CollectorStatistics": {
+          "properties": {
+            "accepted": {
+              "type": "integer",
+              "title": "Accepted"
+            },
+            "rejected": {
+              "type": "integer",
+              "title": "Rejected"
+            },
+            "dropped": {
+              "type": "integer",
+              "title": "Dropped"
+            },
+            "queued_records": {
+              "type": "integer",
+              "title": "Queued Records"
+            },
+            "inflight_records": {
+              "type": "integer",
+              "title": "Inflight Records"
+            },
+            "running": {
+              "type": "boolean",
+              "title": "Running"
+            },
+            "last_error_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Error Category"
+            }
+          },
+          "type": "object",
+          "required": [
+            "accepted",
+            "rejected",
+            "dropped",
+            "queued_records",
+            "inflight_records",
+            "running",
+            "last_error_category"
+          ],
+          "title": "CollectorStatistics",
+          "description": "公开 collector 当前进程的有界状态和累计计数。\n\nAttributes:\n    accepted: 已进入队列的记录总数。\n    rejected: 白名单或批次冲突拒绝总数。\n    dropped: 容量、数据库或关闭失败丢弃总数。\n    queued_records: 仍在内存队列中的记录数。\n    inflight_records: writer 正在处理的记录数。\n    running: writer 线程是否存活。\n    last_error_category: 最近后台失败分类；没有失败时为 None。"
         },
         "CommitReviewTarget": {
           "properties": {
@@ -3899,6 +4239,102 @@
           "type": "object",
           "title": "HTTPValidationError"
         },
+        "MetricAggregateData": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "name": {
+              "type": "string",
+              "title": "Name"
+            },
+            "kind": {
+              "type": "string",
+              "title": "Kind"
+            },
+            "unit": {
+              "type": "string",
+              "title": "Unit"
+            },
+            "operation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation"
+            },
+            "status": {
+              "type": "string",
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "sample_count": {
+              "type": "integer",
+              "title": "Sample Count"
+            },
+            "value_sum": {
+              "type": "number",
+              "title": "Value Sum"
+            },
+            "value_min": {
+              "type": "number",
+              "title": "Value Min"
+            },
+            "value_max": {
+              "type": "number",
+              "title": "Value Max"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "component",
+            "name",
+            "kind",
+            "unit",
+            "operation",
+            "status",
+            "runtime",
+            "model",
+            "sample_count",
+            "value_sum",
+            "value_min",
+            "value_max"
+          ],
+          "title": "MetricAggregateData",
+          "description": "公开一个小时或日的受控 metric 数值聚合。\n\nAttributes:\n    bucket_start: 当前小时或日期桶的 UTC 起点。\n    component: 受控组件。\n    name: schema v1 指标名。\n    kind: counter、gauge 或 histogram。\n    unit: 次数、字节或毫秒。\n    operation: 可选受控操作名。\n    status: 受控终态。\n    runtime: 可选 runtime 维度。\n    model: 可选模型维度。\n    sample_count: 当前分组样本数。\n    value_sum: 样本值之和。\n    value_min: 最小样本值。\n    value_max: 最大样本值。"
+        },
         "PatchAgentSessionRequest": {
           "properties": {
             "runtime": {
@@ -4194,6 +4630,120 @@
           "title": "SetCodexGoalRequest",
           "description": "指定要创建或更新的 Codex Goal 字段。\n\nAttributes:\n    objective: Goal 要完成的任务；None 表示不修改。\n    status: Goal 当前的执行状态；None 表示不修改。\n    token_budget: Goal 最多可以使用的 token 数量。省略该字段时保留原限制；\n        明确传入 None 时取消限制。"
         },
+        "SourceFreshness": {
+          "properties": {
+            "updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated At"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "fresh",
+                "stale",
+                "unavailable"
+              ],
+              "title": "Status"
+            }
+          },
+          "type": "object",
+          "required": [
+            "updated_at",
+            "status"
+          ],
+          "title": "SourceFreshness",
+          "description": "描述一个 Statistics 事实源最后处理到哪里。\n\nAttributes:\n    updated_at: 来源最后处理到的事实时刻；从未产出时为 None。\n    status: fresh 表示聚合追上 raw，stale 表示仍有未聚合事实。"
+        },
+        "SpanAggregateData": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "status": {
+              "type": "string",
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "sample_count": {
+              "type": "integer",
+              "title": "Sample Count"
+            },
+            "duration_sum_ms": {
+              "type": "number",
+              "title": "Duration Sum Ms"
+            },
+            "duration_min_ms": {
+              "type": "number",
+              "title": "Duration Min Ms"
+            },
+            "duration_max_ms": {
+              "type": "number",
+              "title": "Duration Max Ms"
+            },
+            "histogram_counts": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array",
+              "title": "Histogram Counts"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "component",
+            "operation",
+            "status",
+            "runtime",
+            "model",
+            "sample_count",
+            "duration_sum_ms",
+            "duration_min_ms",
+            "duration_max_ms",
+            "histogram_counts"
+          ],
+          "title": "SpanAggregateData",
+          "description": "公开一个小时或日的受控 span 耗时分布。\n\nAttributes:\n    bucket_start: 当前小时或日期桶的 UTC 起点。\n    component: 受控组件。\n    operation: 受控操作名。\n    status: 受控终态。\n    runtime: 可选 runtime 维度。\n    model: 可选模型维度。\n    sample_count: 当前分组样本数。\n    duration_sum_ms: 样本总耗时。\n    duration_min_ms: 最短耗时。\n    duration_max_ms: 最长耗时。\n    histogram_counts: 固定非累计耗时 bucket 的样本数。"
+        },
         "StartCodexReviewRequest": {
           "properties": {
             "target": {
@@ -4270,6 +4820,208 @@
           ],
           "title": "SuggestionStatusUpdate",
           "description": "接收用户对一条画像建议的处理结果。\n\n该请求只修改建议队列中的状态，不会把建议正文写入用户画像。\n\nAttributes:\n    status: ``accepted`` 将建议标记为已接受，``discarded`` 将建议标记为\n        已丢弃。"
+        },
+        "TelemetryBatchRequest": {
+          "properties": {
+            "batch_id": {
+              "type": "string",
+              "title": "Batch Id"
+            },
+            "schema_version": {
+              "type": "integer",
+              "title": "Schema Version"
+            },
+            "source_component": {
+              "type": "string",
+              "title": "Source Component"
+            },
+            "collected_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Collected At"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "normal",
+                "backfill"
+              ],
+              "title": "Mode",
+              "default": "normal"
+            },
+            "spans": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array",
+              "maxItems": 1000,
+              "title": "Spans"
+            },
+            "metrics": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array",
+              "maxItems": 1000,
+              "title": "Metrics"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "batch_id",
+            "schema_version",
+            "source_component",
+            "collected_at"
+          ],
+          "title": "TelemetryBatchRequest",
+          "description": "承载一个来源组件提交的版本化 span/metric 批次。\n\nAttributes:\n    batch_id: 客户端为幂等重试生成的受控身份。\n    schema_version: Trowel 遥测公开 schema 版本，当前只接受 1。\n    source_component: 发送本批次的组件，不代替每条事实的 component。\n    collected_at: 上报方组装批次的带时区时间。\n    mode: normal 最多 250 条；backfill 最多 1000 条。\n    spans: 等待逐条白名单校验的 span 原始对象。\n    metrics: 等待逐条白名单校验的 metric 原始对象。"
+        },
+        "TelemetryStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Resolution"
+            },
+            "collector": {
+              "$ref": "#/components/schemas/CollectorStatistics"
+            },
+            "database_bytes": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object",
+              "title": "Database Bytes"
+            },
+            "histogram_upper_bounds_ms": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array",
+              "title": "Histogram Upper Bounds Ms"
+            },
+            "spans": {
+              "items": {
+                "$ref": "#/components/schemas/SpanAggregateData"
+              },
+              "type": "array",
+              "title": "Spans"
+            },
+            "metrics": {
+              "items": {
+                "$ref": "#/components/schemas/MetricAggregateData"
+              },
+              "type": "array",
+              "title": "Metrics"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "resolution",
+            "collector",
+            "database_bytes",
+            "histogram_upper_bounds_ms",
+            "spans",
+            "metrics"
+          ],
+          "title": "TelemetryStatisticsData",
+          "description": "汇总 Statistics API 公共元数据和遥测聚合结果。\n\nAttributes:\n    generated_at: 本次响应生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前响应全部 span 与 metric 样本数。\n    quality: reliable、partial 或 unavailable。\n    freshness: 各事实源最后更新时间和状态。\n    resolution: 当前返回小时还是日聚合。\n    collector: collector 当前进程状态。\n    database_bytes: 主库、WAL、SHM 和总占用字节数。\n    histogram_upper_bounds_ms: span 非累计直方图 bucket 的毫秒上界。\n    spans: 当前时间窗 span 聚合。\n    metrics: 当前时间窗 metric 聚合。"
+        },
+        "TelemetrySubmitData": {
+          "properties": {
+            "accepted": {
+              "type": "integer",
+              "title": "Accepted"
+            },
+            "rejected": {
+              "type": "integer",
+              "title": "Rejected"
+            },
+            "dropped": {
+              "type": "integer",
+              "title": "Dropped"
+            },
+            "duplicate": {
+              "type": "boolean",
+              "title": "Duplicate"
+            },
+            "error_categories": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object",
+              "title": "Error Categories"
+            }
+          },
+          "type": "object",
+          "required": [
+            "accepted",
+            "rejected",
+            "dropped",
+            "duplicate",
+            "error_categories"
+          ],
+          "title": "TelemetrySubmitData",
+          "description": "公开一次遥测提交的接受、拒绝和丢弃结果。\n\nAttributes:\n    accepted: 已进入后端有界队列的记录数。\n    rejected: 未通过 schema、版本或隐私校验的记录数。\n    dropped: 因容量或生命周期没有进入队列的记录数。\n    duplicate: 当前批次是否是已知幂等重试。\n    error_categories: 各拒绝或丢弃类别对应的记录数。"
         },
         "UncommittedChangesReviewTarget": {
           "properties": {

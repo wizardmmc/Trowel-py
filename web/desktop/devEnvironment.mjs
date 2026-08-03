@@ -27,7 +27,12 @@ export function buildDevelopmentDesktopEnvironment(parent, overrides) {
   return { ...environment, ...overrides };
 }
 
-/** 日常开发默认使用长期数据，只有显式参数才切换到隔离沙箱。 */
-export function resolveDevelopmentDataMode(argv) {
-  return argv.includes("--isolated") ? "isolated-dev" : "canonical-dev";
+/** 日常开发默认使用长期数据，临时数据根和显式参数使用隔离沙箱。 */
+export function resolveDevelopmentDataMode(
+  argv,
+  { usesTemporaryDataRoot = false } = {},
+) {
+  return usesTemporaryDataRoot || argv.includes("--isolated")
+    ? "isolated-dev"
+    : "canonical-dev";
 }

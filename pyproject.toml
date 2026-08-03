@@ -37,6 +37,7 @@ trowel_py = [
   "static/**/*",
   "llm/prompts/*.txt",
   "db/migrations/*.sql",
+  "telemetry/migrations/*.sql",
 ]
 
 [dependency-groups]
