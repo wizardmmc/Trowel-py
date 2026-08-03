@@ -64,17 +64,21 @@ def register_session(
 def update_completed(
     *,
     cc_session_id: str,
+    trowel_session_id: str,
     jsonl_path: str,
+    status: str,
     registrar: SessionRegistrar | None,
 ) -> None:
-    """将 transcript 当前字节数保存为该 CC 会话的 completed 水位。
+    """保存 transcript 完成水位和当前 Trowel binding 的终态。
 
     transcript 不存在或无法读取大小时保存 0。未注入 registrar 时使用默认
     Memory 数据库，并在更新后始终关闭连接。
 
     Args:
         cc_session_id: 要更新的原生 CC 会话 ID。
+        trowel_session_id: 要更新终态的 Trowel 会话 ID。
         jsonl_path: 已完整处理到轮次边界的 transcript 文件路径。
+        status: completed、interrupted 或 failed。
         registrar: 接收水位更新的注册器；`None` 表示使用默认 Memory 数据库。
     """
 
@@ -85,6 +89,13 @@ def update_completed(
 
     if registrar is not None:
         registrar.update_completed(cc_session_id, completed_bytes)
+        status_updater = getattr(registrar, "update_binding_status", None)
+        if callable(status_updater):
+            status_updater(
+                trowel_session_id,
+                status=status,
+                completed_at=datetime.now().astimezone().isoformat(),
+            )
         return
 
     from trowel_py.memory.paths import resolve_memory_root
@@ -95,9 +106,15 @@ def update_completed(
 
     connection = open_sessions_db(resolve_memory_root())
     try:
-        create_sessions_repository(connection).claude.update_completed(
+        repository = create_sessions_repository(connection).claude
+        repository.update_completed(
             cc_session_id,
             completed_bytes,
+        )
+        repository.update_binding_status(
+            trowel_session_id,
+            status=status,
+            completed_at=datetime.now().astimezone().isoformat(),
         )
     finally:
         connection.close()

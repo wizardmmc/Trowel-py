@@ -31,7 +31,20 @@ class ClaudeSessionRecord:
 
 @dataclass(frozen=True)
 class ClaudeSessionBinding:
-    """持久化的 trowel session 到 Claude Code session 映射。"""
+    """持久化的 Trowel session 到 Claude Code session 映射。
+
+    Attributes:
+        trowel_session_id: Trowel 分配的用户可见会话 ID。
+        cc_session_id: Claude Code 原生会话 ID。
+        session_kind: 用户会话或内部会话的来源分类。
+        workdir: 绑定建立时使用的工作目录，只供本机事实读取。
+        bound_at: 当前 Trowel 会话绑定到原生会话的本地时间。
+        start_offset: 绑定开始前原生 transcript 的完整 turn 字节水位；旧记录缺失时
+            为 None。
+        status: 当前绑定最后一个 turn 的终态；运行中为 running，旧记录没有事实时
+            为 unknown。
+        completed_at: 最后一个可靠终态写入的时间；运行中或旧记录为 None。
+    """
 
     trowel_session_id: str
     cc_session_id: str
@@ -39,6 +52,8 @@ class ClaudeSessionBinding:
     workdir: str
     bound_at: str
     start_offset: int | None = None
+    status: str = "running"
+    completed_at: str | None = None
 
 
 @dataclass(frozen=True)

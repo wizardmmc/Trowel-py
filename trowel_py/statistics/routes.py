@@ -8,11 +8,49 @@ from typing import Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from trowel_py.statistics.agent.schemas import AgentStatisticsData
+from trowel_py.statistics.agent.service import build_agent_statistics
 from trowel_py.statistics.schemas import ApiEnvelope, TelemetryStatisticsData
 from trowel_py.statistics.service import build_telemetry_statistics
-from trowel_py.statistics.window import parse_statistics_window
+from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
 
 router = APIRouter(tags=["statistics"])
+
+
+@router.get(
+    "/agent",
+    response_model=ApiEnvelope[AgentStatisticsData],
+)
+def get_agent_statistics(
+    request: Request,
+    start_date: str = Query(),
+    end_date: str = Query(),
+    timezone_name: str = Query(alias="timezone"),
+) -> ApiEnvelope[AgentStatisticsData] | JSONResponse:
+    """读取双 runtime 用户 session，并返回 Agent 页 read model。
+
+    Args:
+        request: 用于读取应用持有的 Agent statistics reader。
+        start_date: 首尾均包含的第一个 ISO 日期。
+        end_date: 首尾均包含的最后一个 ISO 日期。
+        timezone_name: 解释日期边界的 IANA 时区名称。
+
+    Returns:
+        成功 read model；参数或来源不可用时返回统一错误 envelope。
+    """
+
+    reader = getattr(request.app.state, "agent_statistics_reader", None)
+    if reader is None:
+        return _error_response(503, "statistics agent source unavailable")
+    try:
+        window = _parse_window(start_date, end_date, timezone_name)
+    except ValueError as exc:
+        return _error_response(422, str(exc))
+    return ApiEnvelope[AgentStatisticsData](
+        success=True,
+        data=build_agent_statistics(reader, window),
+        error=None,
+    )
 
 
 @router.get(
@@ -44,9 +82,7 @@ def get_telemetry_statistics(
     if reader is None or collector is None:
         return _error_response(503, "statistics telemetry source unavailable")
     try:
-        start = date.fromisoformat(start_date)
-        end = date.fromisoformat(end_date)
-        window = parse_statistics_window(start, end, timezone_name)
+        window = _parse_window(start_date, end_date, timezone_name)
         if resolution_value not in {"hour", "day"}:
             raise ValueError("resolution must be hour or day")
         resolution: Literal["hour", "day"] = (
@@ -64,6 +100,29 @@ def get_telemetry_statistics(
         success=True,
         data=data,
         error=None,
+    )
+
+
+def _parse_window(
+    start_date: str,
+    end_date: str,
+    timezone_name: str,
+) -> StatisticsWindow:
+    """解析 Statistics 路由共用的日期和时区参数。
+
+    Args:
+        start_date: 首尾均包含的第一个 ISO 日期。
+        end_date: 首尾均包含的最后一个 ISO 日期。
+        timezone_name: 解释日期边界的 IANA 时区名称。
+
+    Returns:
+        已按当地零点解析的半开时间窗。
+    """
+
+    return parse_statistics_window(
+        date.fromisoformat(start_date),
+        date.fromisoformat(end_date),
+        timezone_name,
     )
 
 

@@ -67,6 +67,33 @@ def test_ensure_columns_idempotent(tmp_path) -> None:
     second.close()
 
 
+def test_old_binding_schema_migrates_terminal_columns(tmp_path) -> None:
+    database = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(database))
+    conn.executescript(
+        "CREATE TABLE session_bindings ("
+        "trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL,"
+        "session_kind TEXT NOT NULL, workdir TEXT NOT NULL,"
+        "bound_at TEXT NOT NULL, start_offset INTEGER);"
+        "INSERT INTO session_bindings VALUES ("
+        "'legacy-trowel', 'legacy-cc', 'user', '/workspace', 't', 0);"
+    )
+    conn.close()
+
+    migrated = sqlite3.connect(str(database))
+    repo = create_sessions_repository(migrated)
+    columns = {
+        row["name"] for row in migrated.execute("PRAGMA table_info(session_bindings)")
+    }
+    binding = repo.claude.find_cc_by_trowel("legacy-trowel")
+
+    assert {"status", "completed_at"} <= columns
+    assert binding is not None
+    assert binding.status == "unknown"
+    assert binding.completed_at is None
+    migrated.close()
+
+
 def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
     database = tmp_path / "sessions.db"
     conn = sqlite3.connect(str(database))

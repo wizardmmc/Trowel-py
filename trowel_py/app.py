@@ -213,6 +213,7 @@ async def lifespan(app: FastAPI):
             logger.info("[quota] GLM poller off (set TROWEL_QUOTA_POLL=1 to enable)")
     except Exception:
         logger.warning("[quota] read model failed to start", exc_info=True)
+    app.state.agent_statistics_reader = None
     try:
         from trowel_py.agent_host import (
             BindingStore,
@@ -228,8 +229,10 @@ async def lifespan(app: FastAPI):
         from trowel_py.agent_host.session_titles import NativeSessionTitleGenerator
         from trowel_py.cc_host.routes import get_registry
         from trowel_py.memory.paths import resolve_memory_root
+        from trowel_py.statistics.agent.repository import FileAgentObservationReader
 
         cc_registry = get_registry()
+        binding_store = BindingStore(resolve_bindings_path())
         runtime_ports = {
             Runtime.CLAUDE_CODE: ClaudeCodeRuntimeAdapter(cc_registry),
             Runtime.CODEX: CodexRuntimeAdapter(app.state.codex_host_manager),
@@ -257,8 +260,13 @@ async def lifespan(app: FastAPI):
             )
             codex_history_root = None
 
+        app.state.agent_statistics_reader = (
+            FileAgentObservationReader(codex_history_root, binding_store)
+            if codex_history_root is not None
+            else None
+        )
         app.state.agent_hub = SessionHub(
-            BindingStore(resolve_bindings_path()),
+            binding_store,
             codex_manager=app.state.codex_host_manager,
             cc_registry=cc_registry,
             cc_proxy_base_url=app.state.proxy_base_url,
