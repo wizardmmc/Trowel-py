@@ -61,9 +61,10 @@
 | `memory/` | 长期记忆、检索、日记/笔记提炼与会话来源仓储 |
 | `profile/` | 用户画像、建议队列、画像提炼、重校准与 HTTP 接口 |
 | `quota/` | provider 额度读取与归一化 |
-| `telemetry/` | 本地 span/metric 白名单、异步采集、独立 SQLite、聚合、清理、运行埋点和退出标记导入 |
+| `telemetry/` | 本地 span/metric 白名单、W3C 上下文、Agent/runtime/MCP 关联、异步采集、独立 SQLite、聚合、清理、运行埋点和退出标记导入 |
 | `statistics/` | 统计时间窗、统一质量响应和只读 API |
 | `statistics/runtime/` | 桌面启动退出、sidecar、FastAPI、SSE、SQLite 和资源 owner 的运行统计 read model |
+| `statistics/calls/` | 稳定游标调用列表、有限跨 trace 图、坏关系降级和去正文详情 read model |
 | `quota/glm/` | GLM quota 的稳定 client、payload 解析与 httpx transport |
 | `todo_loop/` | todo 展开与持续推进辅助 |
 | `cards/` / `review/` / `feynman/` | 卡片提取、复习和费曼学习 |
@@ -144,7 +145,7 @@
 | `web/src/stores/` | Agent 之外的产品 Zustand store；旧 `ccStore`、`ccReducer` 与 selector 路径已删除 |
 | `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的页面组件；runtime 专属展示从 `agent/runtimes` facade 读取 |
 | `web/src/styles/` | 全局 token 与样式 |
-| `web/src/statistics/` | 五个统计页签共用的 DTO、transport、store、日期状态，以及 Agent、Memory、运行统计的生产容器和纯展示组件 |
+| `web/src/statistics/` | 五个统计页签共用的 DTO、transport、store、日期状态，以及 Agent、Memory、运行、调用详情的生产容器和纯展示组件 |
 | `web/src/development/*-statistics/` | 复用生产组件和脱敏样例的独立统计页预览入口 |
 | `web/shared/telemetry-*` | Electron 与 renderer 共用的版本化批次和有界 batcher |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |

@@ -7,11 +7,17 @@ import {
 } from "../../platform/transport";
 import {
   fetchAgentStatistics,
+  fetchCallDetail,
+  fetchCallStatistics,
   fetchMemoryStatistics,
   fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../../statistics/transport/api";
 import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
+import {
+  callDetailFixture,
+  callListFixture,
+} from "./callStatisticsFixture";
 
 afterEach(() => {
   resetTransportForTests();
@@ -180,5 +186,47 @@ it("requests Runtime statistics with the shared date range", async () => {
   expect(result.sidecar.rss.value).toBe(1_084_227_584);
   expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "/api/statistics/runtime?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
+  );
+});
+
+it("adds only active call filters and a stable paging cursor", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({ success: true, data: callListFixture, error: null }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  await fetchCallStatistics(
+    { startDate: "2026-08-03", endDate: "2026-08-03", timezone: "UTC" },
+    {
+      component: "mcp",
+      operation: "all",
+      runtime: "codex",
+      status: "ok",
+      minimumDurationMs: 1000,
+    },
+    "next-page",
+  );
+
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/calls?start_date=2026-08-03&end_date=2026-08-03&timezone=UTC&component=mcp&runtime=codex&status=ok&minimum_duration_ms=1000&cursor=next-page",
+  );
+});
+
+it("encodes the trace identity when requesting call detail", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({ success: true, data: callDetailFixture, error: null }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  await fetchCallDetail("trace/id");
+
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/calls/trace%2Fid",
   );
 });

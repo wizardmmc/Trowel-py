@@ -15,6 +15,7 @@ from tests.telemetry.support import (
     span_payload,
 )
 from trowel_py.statistics.routes import router
+from trowel_py.statistics.calls.repository import CallStatisticsReader
 from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
 from trowel_py.statistics.runtime.repository import RuntimeStatisticsReader
 from trowel_py.telemetry.collector import TelemetryCollector
@@ -65,6 +66,7 @@ def _statistics_app(tmp_path: Path, *, include_runtime_metric: bool = False):
     app = FastAPI()
     app.state.telemetry_reader = database.reader()
     app.state.telemetry_collector = collector
+    app.state.call_statistics_reader = CallStatisticsReader(database)
     app.state.runtime_statistics_reader = RuntimeStatisticsReader(
         database.reader(),
         {
@@ -152,6 +154,69 @@ def test_runtime_statistics_uses_isolated_telemetry_and_hides_paths(
     ]
     assert body["data"]["resource_remaining_count"] == 2
     assert str(tmp_path) not in response.text
+
+
+def test_calls_list_filters_and_returns_common_envelope(tmp_path: Path) -> None:
+    """调用列表只返回白名单字段和稳定下一页游标。"""
+
+    app, collector = _statistics_app(tmp_path)
+
+    response = TestClient(app).get(
+        "/api/statistics/calls",
+        params={
+            "start_date": "2026-08-03",
+            "end_date": "2026-08-03",
+            "timezone": "UTC",
+            "component": "fastapi",
+            "operation": "http.statistics.query",
+            "status": "ok",
+            "minimum_duration_ms": "10",
+            "limit": "1",
+        },
+    )
+    collector.close(timeout_seconds=1.0)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["sample_size"] == 1
+    assert body["data"]["items"][0]["component"] == "fastapi"
+    assert body["data"]["items"][0]["trace_id"] == f"{1:032x}"
+    assert "session_ref" not in response.text
+    assert "call_ref" not in response.text
+    assert "attributes_json" not in response.text
+
+
+def test_calls_detail_and_bad_queries_use_error_envelope(tmp_path: Path) -> None:
+    """详情、无结果和无效筛选都使用 Statistics 错误 envelope。"""
+
+    app, collector = _statistics_app(tmp_path)
+    client = TestClient(app)
+
+    detail = client.get(f"/api/statistics/calls/{1:032x}")
+    missing = client.get(f"/api/statistics/calls/{99:032x}")
+    invalid_trace = client.get("/api/statistics/calls/not-hex")
+    invalid_filter = client.get(
+        "/api/statistics/calls",
+        params={
+            "start_date": "2026-08-03",
+            "end_date": "2026-08-03",
+            "timezone": "UTC",
+            "component": "dynamic-private-value",
+        },
+    )
+    collector.close(timeout_seconds=1.0)
+
+    assert detail.status_code == 200
+    assert detail.json()["data"]["root_operation"] == "http.statistics.query"
+    for response, status_code in (
+        (missing, 404),
+        (invalid_trace, 422),
+        (invalid_filter, 422),
+    ):
+        assert response.status_code == status_code
+        assert response.json()["success"] is False
+        assert response.json()["data"] is None
 
 
 def test_statistics_query_reports_unavailable_dependencies() -> None:

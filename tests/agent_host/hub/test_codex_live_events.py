@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from tests.agent_host.hub._support import FakeCodexManager
+from tests.agent_host.hub._support import FakeCodexManager, FakeCodexSession
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.hub import SessionHub
 from trowel_py.codex_host.events import (
@@ -105,3 +105,52 @@ async def test_delete_stops_codex_native_reader(
 
     assert pending.done()
     await stream.aclose()
+
+
+async def test_start_turn_observes_codex_events_without_a_client_subscriber(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+) -> None:
+    """后台观察器不能依赖 renderer 已经连上事件流。"""
+
+    session = FakeCodexSession(
+        "codex-live",
+        [
+            CodexEvent(
+                session_id="codex-live",
+                seq=1,
+                type=CodexEventType.PLAN_UPDATED,
+                thread_id="thread-1",
+                turn_id="turn-1",
+                payload=immutable_payload(
+                    explanation=None,
+                    steps=({"step": "Inspect", "status": "inProgress"},),
+                ),
+            )
+        ],
+        thread_id="thread-1",
+    )
+    codex_mgr.sessions[session.session_id] = session
+    hub.store.put(
+        make_binding(
+            session_id=session.session_id,
+            runtime=Runtime.CODEX,
+            native_session_id="thread-1",
+            workdir=str(workdir),
+            model="gpt-5.6-sol",
+            effort="high",
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            capabilities=("tools", "approval"),
+            name="project",
+        )
+    )
+    observed: list[dict[str, object]] = []
+    hub._event_observer = observed.append  # noqa: SLF001
+
+    await hub.start_codex_turn(session.session_id, "hello")
+    await asyncio.sleep(0)
+
+    assert [event["type"] for event in observed] == ["plan_updated"]

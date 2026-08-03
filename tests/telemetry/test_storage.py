@@ -6,7 +6,12 @@ import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
-from tests.telemetry.support import BASE_TIME, batch_request, metric_payload, span_payload
+from tests.telemetry.support import (
+    BASE_TIME,
+    batch_request,
+    metric_payload,
+    span_payload,
+)
 from trowel_py.telemetry.contracts import prepare_batch
 from trowel_py.telemetry.storage import TelemetryDatabase
 
@@ -30,6 +35,12 @@ def test_initialize_creates_wal_database_and_versioned_schema(tmp_path: Path) ->
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
         synchronous = connection.execute("PRAGMA synchronous").fetchone()[0]
         checkpoint = connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type='index'"
+            )
+        }
 
     assert {
         "telemetry_batches",
@@ -43,6 +54,7 @@ def test_initialize_creates_wal_database_and_versioned_schema(tmp_path: Path) ->
     assert journal_mode == "wal"
     assert synchronous == 1
     assert checkpoint == 1000
+    assert "span_links_target_trace_idx" in indexes
 
 
 def test_write_is_idempotent_and_rejects_batch_id_conflicts(tmp_path: Path) -> None:
