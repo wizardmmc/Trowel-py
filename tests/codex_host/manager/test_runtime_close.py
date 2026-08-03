@@ -291,7 +291,7 @@ async def test_close_rechecks_resources_after_restoring_history(
     def record_mark_closed(*args, **kwargs) -> None:
         """记录 owner 最终提交发生的顺序。"""
 
-        events.append("closed")
+        events.append(f"closed:{args[0].value}")
         original_mark_closed(*args, **kwargs)
 
     monkeypatch.setattr(registry, "reconcile_process_groups", record_reconcile)
@@ -309,7 +309,12 @@ async def test_close_rechecks_resources_after_restoring_history(
         terminal_timeout_s=0.05,
     )
 
-    assert events == ["unarchive", "reconcile", "closed"]
+    assert events == [
+        "unarchive",
+        "closed:turn",
+        "reconcile",
+        "closed:session",
+    ]
     await manager.close()
 
 
@@ -410,7 +415,11 @@ async def test_archive_closes_registered_thread_and_turn_resources() -> None:
         yield Step.send({"id": msg["id"], "result": {}})
         yield Step.recv()
 
-    registry = ResourceRegistry(app_instance_id="test-instance")
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="test-instance",
+        owner_close_observer=observations.append,
+    )
     fake = FakeAppServer(behavior())
     manager = _manager(fake, resource_registry=registry)
     session = CodexSession(_cfg("s1"))
@@ -438,6 +447,8 @@ async def test_archive_closes_registered_thread_and_turn_resources() -> None:
         agent_session_id="s1",
     )
     assert after.live_resource_count == 0
+    assert OwnerScope.TURN in {item.owner_scope for item in observations}
+    assert all(item.status == "closed" for item in observations)
     await manager.close()
 
 

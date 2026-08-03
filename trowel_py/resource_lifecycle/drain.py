@@ -115,13 +115,21 @@ class DrainCoordinator:
         errors.extend(process_report.errors)
 
         summary = self._resource_registry.private_summary()
+        raw_kinds = summary.get("kinds")
+        kind_items = raw_kinds.items() if isinstance(raw_kinds, dict) else ()
         kinds = {
             str(kind): int(count)
-            for kind, count in dict(summary.get("kinds", {})).items()
+            for kind, count in kind_items
+            if isinstance(count, int) and not isinstance(count, bool)
         }
-        internal_live = int(summary["live_resource_count"]) - kinds.get(
-            "sidecar_process_group", 0
+        raw_live_resource_count = summary.get("live_resource_count")
+        live_resource_count = (
+            raw_live_resource_count
+            if isinstance(raw_live_resource_count, int)
+            and not isinstance(raw_live_resource_count, bool)
+            else 0
         )
+        internal_live = live_resource_count - kinds.get("sidecar_process_group", 0)
         needs_reconcile = sum(
             result.status != "closed" for result in session_results.values()
         )
@@ -136,7 +144,7 @@ class DrainCoordinator:
                 result.status == "closed" for result in session_results.values()
             ),
             session_needs_reconcile=needs_reconcile,
-            live_resource_count=int(summary["live_resource_count"]),
+            live_resource_count=live_resource_count,
             remaining_resource_kinds=tuple(sorted(kinds)),
             errors=tuple(errors),
         )
@@ -156,8 +164,11 @@ class DrainCoordinator:
     async def _close_codex_manager(self) -> str | None:
         """关闭共享 Codex manager，并返回可安全公开的错误类型。"""
 
+        manager = self._codex_manager
+        if manager is None:
+            return None
         try:
-            await self._codex_manager.close()
+            await manager.close()
         except BaseException as exc:  # noqa: BLE001 - 报告交给 Host 升级处理。
             return f"codex_manager:{type(exc).__name__}"
         return None

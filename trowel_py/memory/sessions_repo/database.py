@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from trowel_py.telemetry.sqlite import open_observed_sqlite
+
 from .models import CodexTurnRecord, ReviewRequest, SessionBinding, SessionRecord
 
 _META_DIR = "meta"
@@ -174,7 +176,7 @@ def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
     """
     meta = memory_root / _META_DIR
     meta.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(meta / _SESSIONS_DB))
+    conn = open_observed_sqlite(meta / _SESSIONS_DB, domain="sessions")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -197,7 +199,11 @@ def open_sessions_db_readonly(
     database = memory_root / _META_DIR / _SESSIONS_DB
     if not database.exists():
         return None
-    conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    conn = open_observed_sqlite(
+        f"file:{database}?mode=ro",
+        domain="sessions",
+        uri=True,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 

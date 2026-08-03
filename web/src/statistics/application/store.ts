@@ -6,6 +6,7 @@ import type {
   AgentRuntimeFilter,
   AgentStatistics,
   MemoryStatistics,
+  RuntimeStatistics,
   StatisticsResolution,
   StatisticsTab,
   TelemetryStatistics,
@@ -13,6 +14,7 @@ import type {
 import {
   fetchAgentStatistics,
   fetchMemoryStatistics,
+  fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../transport/api";
 
@@ -27,6 +29,9 @@ export interface StatisticsApi {
     range: StatisticsDateRange,
     resolution: StatisticsResolution,
   ) => Promise<TelemetryStatistics>;
+  readonly fetchRuntime: (
+    range: StatisticsDateRange,
+  ) => Promise<RuntimeStatistics>;
 }
 
 export interface StatisticsState {
@@ -36,12 +41,15 @@ export interface StatisticsState {
   readonly telemetry: TelemetryStatistics | null;
   readonly agent: AgentStatistics | null;
   readonly memory: MemoryStatistics | null;
+  readonly runtime: RuntimeStatistics | null;
   readonly loading: boolean;
   readonly error: string | null;
   readonly agentLoading: boolean;
   readonly agentError: string | null;
   readonly memoryLoading: boolean;
   readonly memoryError: string | null;
+  readonly runtimeLoading: boolean;
+  readonly runtimeError: string | null;
   readonly runtimeFilter: AgentRuntimeFilter;
   readonly modelFilter: string;
   readonly setActiveTab: (tab: StatisticsTab) => void;
@@ -52,12 +60,14 @@ export interface StatisticsState {
   readonly refreshTelemetry: () => Promise<void>;
   readonly refreshAgent: () => Promise<void>;
   readonly refreshMemory: () => Promise<void>;
+  readonly refreshRuntime: () => Promise<void>;
 }
 
 const defaultApi: StatisticsApi = {
   fetchAgent: fetchAgentStatistics,
   fetchMemory: fetchMemoryStatistics,
   fetchTelemetry: fetchTelemetryStatistics,
+  fetchRuntime: fetchRuntimeStatistics,
 };
 
 export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {}) {
@@ -65,6 +75,7 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
   let latestTelemetryRequest = 0;
   let latestAgentRequest = 0;
   let latestMemoryRequest = 0;
+  let latestRuntimeRequest = 0;
   return createStore<StatisticsState>((set, get) => ({
     activeTab: "overview",
     dateRange: initialDateRange(),
@@ -72,12 +83,15 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
     telemetry: null,
     agent: null,
     memory: null,
+    runtime: null,
     loading: false,
     error: null,
     agentLoading: false,
     agentError: null,
     memoryLoading: false,
     memoryError: null,
+    runtimeLoading: false,
+    runtimeError: null,
     runtimeFilter: "all",
     modelFilter: "all",
     setActiveTab: (activeTab) => set({ activeTab }),
@@ -85,17 +99,21 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
       latestTelemetryRequest += 1;
       latestAgentRequest += 1;
       latestMemoryRequest += 1;
+      latestRuntimeRequest += 1;
       set({
         dateRange,
         telemetry: null,
         agent: null,
         memory: null,
+        runtime: null,
         loading: false,
         error: null,
         agentLoading: false,
         agentError: null,
         memoryLoading: false,
         memoryError: null,
+        runtimeLoading: false,
+        runtimeError: null,
         modelFilter: "all",
       });
     },
@@ -153,6 +171,23 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
           memoryLoading: false,
           memoryError:
             error instanceof Error ? error.message : "Memory 统计数据读取失败",
+        });
+      }
+    },
+    refreshRuntime: async () => {
+      const request = ++latestRuntimeRequest;
+      const { dateRange } = get();
+      set({ runtimeLoading: true, runtimeError: null });
+      try {
+        const runtime = await api.fetchRuntime(dateRange);
+        if (request !== latestRuntimeRequest) return;
+        set({ runtime, runtimeLoading: false });
+      } catch (error) {
+        if (request !== latestRuntimeRequest) return;
+        set({
+          runtimeLoading: false,
+          runtimeError:
+            error instanceof Error ? error.message : "运行统计数据读取失败",
         });
       }
     },

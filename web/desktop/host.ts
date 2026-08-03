@@ -23,6 +23,11 @@ export interface DesktopHostPorts {
   ) => Promise<SidecarShutdownResult>;
   readonly loadRenderer: () => Promise<void> | void;
   readonly loadDiagnostics: () => Promise<void> | void;
+  readonly onSidecarReady?: (running: RunningSidecar) => void;
+  readonly onUnexpectedExit?: (exit: {
+    readonly code: number | null;
+    readonly signal: string | null;
+  }) => void;
 }
 
 export class DesktopHost {
@@ -43,6 +48,8 @@ export class DesktopHost {
       shutdown: ports.shutdown ?? shutdownSidecar,
       loadRenderer: ports.loadRenderer,
       loadDiagnostics: ports.loadDiagnostics,
+      onSidecarReady: ports.onSidecarReady ?? (() => undefined),
+      onUnexpectedExit: ports.onUnexpectedExit ?? (() => undefined),
     };
     this.diagnosticState = {
       status: "starting",
@@ -113,6 +120,7 @@ export class DesktopHost {
         ...this.diagnosticState,
         status: "ready",
       };
+      this.ports.onSidecarReady(launched);
       await this.ports.loadRenderer();
       // 先完成 renderer 加载再订阅已可兑现的退出 Promise，确保诊断页最后落在前台。
       this.watchCurrentProcess(launched, generation);
@@ -139,6 +147,7 @@ export class DesktopHost {
         status: "closed",
         remainingResourceCount: 0,
         forced: false,
+        exitMarkerRecorded: false,
       };
     }
     const result = await this.shutdownLaunched(running);
@@ -158,6 +167,7 @@ export class DesktopHost {
         status: "needs_reconcile",
         remainingResourceCount: 1,
         forced: true,
+        exitMarkerRecorded: false,
       };
     }
   }
@@ -182,6 +192,7 @@ export class DesktopHost {
         exitCode: exit.code,
         logDirectory: this.options.logDirectory,
       };
+      this.ports.onUnexpectedExit(exit);
       await this.ports.loadDiagnostics();
     });
   }

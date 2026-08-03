@@ -9,3 +9,5 @@ export * from "./ui/AgentStatisticsPanel";
 export * from "./ui/AgentStatisticsView";
 export * from "./ui/MemoryStatisticsPanel";
 export * from "./ui/MemoryStatisticsView";
+export * from "./ui/RuntimeStatisticsPanel";
+export * from "./ui/RuntimeStatisticsView";

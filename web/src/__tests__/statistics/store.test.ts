@@ -2,6 +2,7 @@
 
 import { expect, it, vi } from "vitest";
 import { createStatisticsStore } from "../../statistics/application/store";
+import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
 
 it("updates shared tab and date state without fetching", () => {
   const fetchTelemetry = vi.fn();
@@ -114,4 +115,16 @@ it("loads Memory statistics without sharing Agent request state", async () => {
   expect(store.getState().memoryLoading).toBe(false);
   expect(store.getState().memoryError).toBeNull();
   expect(store.getState().agent).toBeNull();
+});
+
+it("loads Runtime statistics without sharing other page request state", async () => {
+  const fetchRuntime = vi.fn().mockResolvedValue(runtimeStatisticsFixture);
+  const store = createStatisticsStore({ fetchRuntime });
+
+  await store.getState().refreshRuntime();
+
+  expect(store.getState().runtime).toBe(runtimeStatisticsFixture);
+  expect(store.getState().runtimeLoading).toBe(false);
+  expect(store.getState().runtimeError).toBeNull();
+  expect(store.getState().telemetry).toBeNull();
 });

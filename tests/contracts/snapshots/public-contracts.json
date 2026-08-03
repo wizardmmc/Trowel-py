@@ -3170,7 +3170,7 @@
       "/api/agent/sessions/{session_id}/events": {
         "get": {
           "summary": "Stream Codex Events",
-          "description": "持续向客户端发送指定 Codex 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、\n工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的\n事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前\n正在执行的任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Codex 会话 ID。\n    hub: 负责订阅 Codex 事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时\n        返回 422；Codex 当前不可用时返回 503。",
+          "description": "持续向客户端发送指定 Codex 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、\n工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的\n事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前\n正在执行的任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Codex 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    hub: 负责订阅 Codex 事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时\n        返回 422；Codex 当前不可用时返回 503。",
           "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
           "parameters": [
             {
@@ -3260,7 +3260,7 @@
       "/api/agent/sessions/{session_id}/messages": {
         "post": {
           "summary": "Send Message",
-          "description": "发送一条消息并以 SSE 返回共享事件。\n\n未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有\n明确结束信号。",
+          "description": "发送一条消息并以 SSE 返回共享事件。\n\n未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有\n明确结束信号。\n\nArgs:\n    session_id: 要发送消息的 Trowel 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    body: 用户发送的非空消息正文。\n    hub: 负责启动轮次并产出共享事件的 Session Hub。\n\nReturns:\n    持续发送当前轮次事件并带明确终态的 SSE 响应。",
           "operationId": "send_message_api_agent_sessions__session_id__messages_post",
           "parameters": [
             {
@@ -3608,6 +3608,67 @@
                 "application/json": {
                   "schema": {
                     "$ref": "#/components/schemas/ApiEnvelope_MemoryStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/runtime": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Runtime Statistics",
+          "description": "读取桌面生命周期、连接、SQLite 和资源 owner 统计。\n\nArgs:\n    request: 用于读取应用持有的 runtime reader 和 collector。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_runtime_statistics_api_statistics_runtime_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_RuntimeStatisticsData_"
                   }
                 }
               }
@@ -4309,6 +4370,42 @@
           ],
           "title": "ApiEnvelope[MemoryStatisticsData]"
         },
+        "ApiEnvelope_RuntimeStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RuntimeStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[RuntimeStatisticsData]"
+        },
         "ApiEnvelope_TelemetryStatisticsData_": {
           "properties": {
             "success": {
@@ -4787,6 +4884,60 @@
           ],
           "title": "CustomReviewTarget",
           "description": "要求 Codex 按给定范围和关注点进行审查。\n\nAttributes:\n    type: 固定为 custom，用于选择这种审查目标。\n    instructions: 描述审查范围和要求的非空文字。"
+        },
+        "DatabaseFileStatistics": {
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "sessions.db",
+                "workspaces.db",
+                "telemetry.db"
+              ],
+              "title": "Name"
+            },
+            "owner": {
+              "type": "string",
+              "title": "Owner"
+            },
+            "database_bytes": {
+              "type": "integer",
+              "title": "Database Bytes"
+            },
+            "wal_bytes": {
+              "type": "integer",
+              "title": "Wal Bytes"
+            },
+            "shm_bytes": {
+              "type": "integer",
+              "title": "Shm Bytes"
+            },
+            "total_bytes": {
+              "type": "integer",
+              "title": "Total Bytes"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "name",
+            "owner",
+            "database_bytes",
+            "wal_bytes",
+            "shm_bytes",
+            "total_bytes",
+            "quality"
+          ],
+          "title": "DatabaseFileStatistics",
+          "description": "描述一份业务数据库及 WAL/SHM 的当前体积。\n\nAttributes:\n    name: 只含文件名的受控数据库名称。\n    owner: 负责写入该库的领域模块。\n    database_bytes: 主数据库文件大小。\n    wal_bytes: WAL 文件大小。\n    shm_bytes: SHM 文件大小。\n    total_bytes: 三者当前总大小。\n    quality: 文件路径可解析时为 reliable，否则 unavailable。"
         },
         "EquipRequest": {
           "properties": {
@@ -5653,6 +5804,407 @@
           "title": "ReviewRequest",
           "description": "描述如何处理一张卡片草稿。\n\nAttributes:\n    action: 审核动作；``\"accept\"`` 原样保存，``\"edit\"`` 应用 ``edits`` 后\n        保存，``\"reject\"`` 不保存卡片。\n    edits: ``action`` 为 ``\"edit\"`` 时覆盖草稿字段的键值；没有修改时为\n        ``None``。模型不限制 ``action`` 与 ``edits`` 的组合：``\"accept\"``\n        或 ``\"reject\"`` 携带的修改会被忽略，``\"edit\"`` 没有修改时会原样保存。"
         },
+        "RuntimeConnectionStatistics": {
+          "properties": {
+            "connect_count": {
+              "type": "integer",
+              "title": "Connect Count"
+            },
+            "disconnect_count": {
+              "type": "integer",
+              "title": "Disconnect Count"
+            },
+            "reconnect_count": {
+              "type": "integer",
+              "title": "Reconnect Count"
+            },
+            "operations": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Operations"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "connect_count",
+            "disconnect_count",
+            "reconnect_count",
+            "operations",
+            "quality"
+          ],
+          "title": "RuntimeConnectionStatistics",
+          "description": "汇总 SSE 的建连、断线、重连和首事件事实。\n\nAttributes:\n    connect_count: 时间窗内建连次数。\n    disconnect_count: 客户端断开或传输异常次数。\n    reconnect_count: 同一前端生命周期再次建连次数。\n    operations: SSE 各受控阶段的耗时分布。\n    quality: 当前 SSE 事实整体可用程度。"
+        },
+        "RuntimeDistribution": {
+          "properties": {
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "label": {
+              "type": "string",
+              "title": "Label"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "error_count": {
+              "type": "integer",
+              "title": "Error Count"
+            },
+            "p50_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P50 Ms"
+            },
+            "p95_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P95 Ms"
+            },
+            "p99_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P99 Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "operation",
+            "label",
+            "sample_size",
+            "error_count",
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "quality"
+          ],
+          "title": "RuntimeDistribution",
+          "description": "描述一个受控运行操作的耗时与错误分布。\n\nAttributes:\n    operation: 不含动态路径或身份的稳定操作名。\n    label: 前端直接展示的大白话名称。\n    sample_size: 时间窗内全部终态样本数。\n    error_count: status 为 error 的样本数。\n    p50_ms: 样本至少 5 个时的中位耗时，否则为 None。\n    p95_ms: 样本至少 20 个时的尾部耗时，否则为 None。\n    p99_ms: 样本至少 100 个时的尾部耗时，否则为 None。\n    quality: 当前操作的数据可用程度。"
+        },
+        "RuntimeGap": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "message": {
+              "type": "string",
+              "title": "Message"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "RuntimeGap",
+          "description": "解释运行页没有显示某个数字的稳定原因。\n\nAttributes:\n    code: 前端可稳定识别的缺口代码。\n    message: 不含异常正文或路径的大白话说明。"
+        },
+        "RuntimeGauge": {
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "ms",
+                "By",
+                "1"
+              ],
+              "title": "Unit"
+            },
+            "observed_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Observed At"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "value",
+            "unit",
+            "observed_at",
+            "sample_size",
+            "quality"
+          ],
+          "title": "RuntimeGauge",
+          "description": "描述一个最新值及其采样基础。\n\nAttributes:\n    value: 最新样本值；没有事实时为 None。\n    unit: 指标使用的稳定单位。\n    observed_at: 最新样本时刻；没有事实时为 None。\n    sample_size: 时间窗内同指标样本数。\n    quality: 单样本只标 partial，不推断趋势或异常。"
+        },
+        "RuntimeGaugePoint": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "minimum": {
+              "type": "number",
+              "title": "Minimum"
+            },
+            "maximum": {
+              "type": "number",
+              "title": "Maximum"
+            },
+            "average": {
+              "type": "number",
+              "title": "Average"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "minimum",
+            "maximum",
+            "average",
+            "sample_size"
+          ],
+          "title": "RuntimeGaugePoint",
+          "description": "描述一个聚合时间桶中的 gauge 变化范围。\n\nAttributes:\n    bucket_start: 当前 UTC 小时或日期桶起点。\n    minimum: 桶内最小样本值。\n    maximum: 桶内最大样本值。\n    average: 桶内样本平均值。\n    sample_size: 桶内采样次数。"
+        },
+        "RuntimeStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Resolution"
+            },
+            "sidecar": {
+              "$ref": "#/components/schemas/SidecarStatistics"
+            },
+            "last_clean_exit_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Clean Exit At"
+            },
+            "lifecycle": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Lifecycle"
+            },
+            "fastapi": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Fastapi"
+            },
+            "sse": {
+              "$ref": "#/components/schemas/RuntimeConnectionStatistics"
+            },
+            "sqlite": {
+              "$ref": "#/components/schemas/SQLiteStatistics"
+            },
+            "resources": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Resources"
+            },
+            "resource_remaining_count": {
+              "type": "integer",
+              "title": "Resource Remaining Count"
+            },
+            "gaps": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeGap"
+              },
+              "type": "array",
+              "title": "Gaps"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "resolution",
+            "sidecar",
+            "last_clean_exit_at",
+            "lifecycle",
+            "fastapi",
+            "sse",
+            "sqlite",
+            "resources",
+            "resource_remaining_count",
+            "gaps"
+          ],
+          "title": "RuntimeStatisticsData",
+          "description": "汇总桌面生命周期、服务、连接、数据库和资源 owner 统计。\n\nAttributes:\n    generated_at: 本次 read model 生成时刻。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 参与本页的 span 与 metric 聚合样本数。\n    quality: 整页来源质量。\n    freshness: 遥测聚合事实源的新鲜度。\n    resolution: 当前读取小时还是日聚合。\n    sidecar: sidecar 存活和内存摘要。\n    last_clean_exit_at: 当前时间窗最后一次进程树归零时刻。\n    lifecycle: 启动、关闭、退出和恢复操作分布。\n    fastapi: 受控 FastAPI 路由组分布。\n    sse: SSE 连接阶段统计。\n    sqlite: SQLite 逻辑操作与文件统计。\n    resources: 四层资源 owner 的关闭分布。\n    resource_remaining_count: 当前时间窗最后一次 owner 或恢复核验的残留数量。\n    gaps: 页面明确展示的数据缺口。"
+        },
+        "SQLiteStatistics": {
+          "properties": {
+            "busy_count": {
+              "type": "integer",
+              "title": "Busy Count"
+            },
+            "locked_count": {
+              "type": "integer",
+              "title": "Locked Count"
+            },
+            "operations": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Operations"
+            },
+            "files": {
+              "items": {
+                "$ref": "#/components/schemas/DatabaseFileStatistics"
+              },
+              "type": "array",
+              "title": "Files"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "busy_count",
+            "locked_count",
+            "operations",
+            "files",
+            "quality"
+          ],
+          "title": "SQLiteStatistics",
+          "description": "汇总受控 SQLite 逻辑操作、锁错误和文件体积。\n\nAttributes:\n    busy_count: SQLITE_BUSY 分类数量。\n    locked_count: SQLITE_LOCKED 分类数量。\n    operations: 只按稳定逻辑操作名分组的耗时分布。\n    files: 不暴露绝对路径的数据库文件快照。\n    quality: 当前 SQLite 事实整体可用程度。"
+        },
         "SendMessageBody": {
           "properties": {
             "text": {
@@ -5732,6 +6284,41 @@
           "type": "object",
           "title": "SetCodexGoalRequest",
           "description": "指定要创建或更新的 Codex Goal 字段。\n\nAttributes:\n    objective: Goal 要完成的任务；None 表示不修改。\n    status: Goal 当前的执行状态；None 表示不修改。\n    token_budget: Goal 最多可以使用的 token 数量。省略该字段时保留原限制；\n        明确传入 None 时取消限制。"
+        },
+        "SidecarStatistics": {
+          "properties": {
+            "uptime": {
+              "$ref": "#/components/schemas/RuntimeGauge"
+            },
+            "rss": {
+              "$ref": "#/components/schemas/RuntimeGauge"
+            },
+            "restart_count": {
+              "type": "integer",
+              "title": "Restart Count"
+            },
+            "abnormal_exit_count": {
+              "type": "integer",
+              "title": "Abnormal Exit Count"
+            },
+            "rss_series": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeGaugePoint"
+              },
+              "type": "array",
+              "title": "Rss Series"
+            }
+          },
+          "type": "object",
+          "required": [
+            "uptime",
+            "rss",
+            "restart_count",
+            "abnormal_exit_count",
+            "rss_series"
+          ],
+          "title": "SidecarStatistics",
+          "description": "汇总 Python sidecar 的存活、内存和异常事实。\n\nAttributes:\n    uptime: 最新存活时长。\n    rss: 最新常驻内存采样。\n    restart_count: 时间窗内启动后的重启次数。\n    abnormal_exit_count: 时间窗内非预期退出次数。\n    rss_series: 按小时或日聚合的 RSS 最小、最大和平均值。"
         },
         "SourceFreshness": {
           "properties": {

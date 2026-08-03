@@ -281,6 +281,36 @@ def test_plan_requires_a_clean_exit_from_the_current_app_instance(
     assert any("matching clean exit" in blocker for blocker in report.blockers)
 
 
+def test_plan_accepts_matching_v2_clean_exit_marker(tmp_path: Path) -> None:
+    """新版 Host 标记明确进程树归零时仍允许数据迁移。"""
+
+    legacy, previous_app, target, config = _fixture_roots(tmp_path)
+    (previous_app / "resource-exit.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "app_instance_id": "candidate-instance",
+                "requested_at": "2026-08-03T01:02:03Z",
+                "completed_at": "2026-08-03T01:02:04Z",
+                "exit_reason": "app_exit",
+                "exit_mode": "cooperative",
+                "process_tree_result": "closed",
+                "remaining_resource_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = plan_desktop_data_migration(
+        target_root=target,
+        legacy_root=legacy,
+        previous_app_root=previous_app,
+        config_source=config,
+    )
+
+    assert report.ready
+
+
 def test_apply_merges_memory_titles_and_workspaces_without_old_garden(
     tmp_path: Path,
 ) -> None:

@@ -8,9 +8,15 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.telemetry.support import BASE_TIME, batch_request, span_payload
+from tests.telemetry.support import (
+    BASE_TIME,
+    batch_request,
+    metric_payload,
+    span_payload,
+)
 from trowel_py.statistics.routes import router
 from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
+from trowel_py.statistics.runtime.repository import RuntimeStatisticsReader
 from trowel_py.telemetry.collector import TelemetryCollector
 from trowel_py.telemetry.contracts import prepare_batch
 from trowel_py.telemetry.storage import TelemetryDatabase
@@ -25,10 +31,32 @@ class EmptyAgentReader:
         return []
 
 
-def _statistics_app(tmp_path: Path):
+def _statistics_app(tmp_path: Path, *, include_runtime_metric: bool = False):
+    """创建只使用临时 telemetry.db 的 Statistics 测试应用。
+
+    Args:
+        tmp_path: pytest 为当前用例分配的隔离目录。
+        include_runtime_metric: 是否加入用于验证最新残留值的 runtime gauge。
+    """
+
     database = TelemetryDatabase(tmp_path / "telemetry.db")
     database.initialize()
-    prepared = prepare_batch(batch_request(spans=[span_payload()]))
+    remaining_metric = metric_payload()
+    remaining_metric.update(
+        {
+            "component": "runtime",
+            "name": "resource.remaining",
+            "kind": "gauge",
+            "value": 2,
+            "operation": "resource.session.close",
+        }
+    )
+    prepared = prepare_batch(
+        batch_request(
+            spans=[span_payload()],
+            metrics=[remaining_metric] if include_runtime_metric else [],
+        )
+    )
     with database.open_writer() as writer:
         writer.write_batches([prepared])
         writer.aggregate(BASE_TIME + timedelta(days=1))
@@ -37,6 +65,12 @@ def _statistics_app(tmp_path: Path):
     app = FastAPI()
     app.state.telemetry_reader = database.reader()
     app.state.telemetry_collector = collector
+    app.state.runtime_statistics_reader = RuntimeStatisticsReader(
+        database.reader(),
+        {
+            "telemetry.db": (database.path, "telemetry"),
+        },
+    )
     app.include_router(router, prefix="/api/statistics")
     return app, collector
 
@@ -88,6 +122,36 @@ def test_statistics_query_rejects_bad_range_with_error_envelope(tmp_path: Path) 
     assert response.status_code == 422
     assert response.json()["success"] is False
     assert response.json()["data"] is None
+
+
+def test_runtime_statistics_uses_isolated_telemetry_and_hides_paths(
+    tmp_path: Path,
+) -> None:
+    """运行端点只返回受控文件名，不泄露临时数据库绝对路径。"""
+
+    app, collector = _statistics_app(tmp_path, include_runtime_metric=True)
+
+    response = TestClient(app).get(
+        "/api/statistics/runtime",
+        params={
+            "start_date": "2026-08-03",
+            "end_date": "2026-08-03",
+            "timezone": "UTC",
+        },
+    )
+    collector.close(timeout_seconds=1.0)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["fastapi"][1]["sample_size"] == 1
+    assert [item["name"] for item in body["data"]["sqlite"]["files"]] == [
+        "sessions.db",
+        "workspaces.db",
+        "telemetry.db",
+    ]
+    assert body["data"]["resource_remaining_count"] == 2
+    assert str(tmp_path) not in response.text
 
 
 def test_statistics_query_reports_unavailable_dependencies() -> None:

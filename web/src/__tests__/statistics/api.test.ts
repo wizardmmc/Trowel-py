@@ -8,8 +8,10 @@ import {
 import {
   fetchAgentStatistics,
   fetchMemoryStatistics,
+  fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../../statistics/transport/api";
+import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
 
 afterEach(() => {
   resetTransportForTests();
@@ -153,5 +155,30 @@ it("requests Memory statistics with the shared date range", async () => {
   expect(result.sample_size).toBe(12);
   expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "/api/statistics/memory?start_date=2026-08-02&end_date=2026-08-03&timezone=Asia%2FShanghai",
+  );
+});
+
+it("requests Runtime statistics with the shared date range", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: runtimeStatisticsFixture,
+        error: null,
+      }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const result = await fetchRuntimeStatistics({
+    startDate: "2026-08-03",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+
+  expect(result.sidecar.rss.value).toBe(1_084_227_584);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/runtime?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
   );
 });

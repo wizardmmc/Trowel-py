@@ -5,6 +5,7 @@ import type {
   ApiEnvelope,
   AgentStatistics,
   MemoryStatistics,
+  RuntimeStatistics,
   StatisticsDateRange,
   StatisticsResolution,
   TelemetryStatistics,
@@ -36,6 +37,15 @@ export async function fetchTelemetryStatistics(
   query.set("resolution", resolution);
   return fetchStatistics<TelemetryStatistics>(
     `/api/statistics/telemetry?${query.toString()}`,
+  );
+}
+
+export async function fetchRuntimeStatistics(
+  range: StatisticsDateRange,
+): Promise<RuntimeStatistics> {
+  const query = dateRangeQuery(range);
+  return fetchStatistics<RuntimeStatistics>(
+    `/api/statistics/runtime?${query.toString()}`,
   );
 }
 

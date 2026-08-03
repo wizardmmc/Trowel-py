@@ -142,6 +142,42 @@ class MetricAggregate:
     value_max: float
 
 
+@dataclass(frozen=True)
+class LatestSpan:
+    """表示 read model 可读取的最新受控 span 终态。
+
+    Attributes:
+        operation: 受控操作名。
+        status: ok、error 或 unset。
+        ended_at_ns: 操作结束的 UTC Unix epoch 纳秒。
+        duration_ms: 该次操作的实际耗时。
+    """
+
+    operation: str
+    status: str
+    ended_at_ns: int
+    duration_ms: float
+
+
+@dataclass(frozen=True)
+class LatestMetric:
+    """表示 read model 可读取的最新受控指标样本。
+
+    Attributes:
+        name: 受控指标名。
+        operation: 可选受控操作名；空字符串表示不适用。
+        status: ok、error 或 unset。
+        observed_at_ns: 采样时刻的 UTC Unix epoch 纳秒。
+        value: 指标样本值。
+    """
+
+    name: str
+    operation: str
+    status: str
+    observed_at_ns: int
+    value: float
+
+
 def resolve_telemetry_database_path(
     data_root: Path | None = None,
 ) -> Path:
@@ -219,7 +255,7 @@ class TelemetryDatabase:
         connection = self._connect(wal_autocheckpoint_pages=0)
         try:
             row = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-            return tuple(int(value) for value in row)
+            return (int(row[0]), int(row[1]), int(row[2]))
         finally:
             connection.close()
 
@@ -822,6 +858,109 @@ class TelemetryReader:
                 value_sum=float(row["value_sum"]),
                 value_min=float(row["value_min"]),
                 value_max=float(row["value_max"]),
+            )
+            for row in rows
+        ]
+
+    def latest_spans(
+        self,
+        operations: tuple[str, ...],
+        start: datetime,
+        end: datetime,
+    ) -> list[LatestSpan]:
+        """读取每个受控 operation 在时间窗内最后结束的一条 span。
+
+        Args:
+            operations: 调用方代码中固定声明的 operation 集合。
+            start: 包含边界的查询开始时刻。
+            end: 不包含边界的查询结束时刻。
+
+        Returns:
+            每个有样本 operation 的最后一条终态，不返回 attributes 或引用。
+        """
+
+        if not operations:
+            return []
+        placeholders = ",".join("?" for _ in operations)
+        connection = self._database.connect_reader()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT operation, status, ended_at_ns, duration_ms
+                FROM (
+                    SELECT operation, status, ended_at_ns, duration_ms,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY operation, status ORDER BY ended_at_ns DESC
+                           ) AS rank
+                    FROM raw_spans
+                    WHERE operation IN ({placeholders})
+                      AND started_at_ns >= ? AND started_at_ns < ?
+                )
+                WHERE rank = 1
+                ORDER BY operation
+                """,
+                (*operations, datetime_to_epoch_ns(start), datetime_to_epoch_ns(end)),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            LatestSpan(
+                operation=str(row["operation"]),
+                status=str(row["status"]),
+                ended_at_ns=int(row["ended_at_ns"]),
+                duration_ms=float(row["duration_ms"]),
+            )
+            for row in rows
+        ]
+
+    def latest_metrics(
+        self,
+        names: tuple[str, ...],
+        start: datetime,
+        end: datetime,
+    ) -> list[LatestMetric]:
+        """读取每个受控指标在时间窗内最后采到的一条原始样本。
+
+        Args:
+            names: 调用方代码中固定声明的指标名集合。
+            start: 包含边界的查询开始时刻。
+            end: 不包含边界的查询结束时刻。
+
+        Returns:
+            每个有样本指标的最后一条数值，不返回 attributes。
+        """
+
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        connection = self._database.connect_reader()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT name, operation, status, observed_at_ns, value
+                FROM (
+                    SELECT name, operation, status, observed_at_ns, value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY name ORDER BY observed_at_ns DESC
+                           ) AS rank
+                    FROM raw_metrics
+                    WHERE name IN ({placeholders})
+                      AND observed_at_ns >= ? AND observed_at_ns < ?
+                )
+                WHERE rank = 1
+                ORDER BY name
+                """,
+                (*names, datetime_to_epoch_ns(start), datetime_to_epoch_ns(end)),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            LatestMetric(
+                name=str(row["name"]),
+                operation=str(row["operation"]),
+                status=str(row["status"]),
+                observed_at_ns=int(row["observed_at_ns"]),
+                value=float(row["value"]),
             )
             for row in rows
         ]

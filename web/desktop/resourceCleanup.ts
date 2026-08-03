@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { open, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { SidecarStartOptions } from "./sidecar";
@@ -27,6 +27,21 @@ interface ProcessIdentity {
   readonly pid: number;
   readonly processGroup: number;
   readonly startIdentity: string;
+}
+
+export interface ExitMarkerInput {
+  /** 应用主动退出，或 sidecar 在应用仍运行时异常结束。 */
+  readonly exitReason: "app_exit" | "sidecar_abnormal";
+  /** Host 收到应用退出请求的墙钟时刻。 */
+  readonly requestedAt: string;
+  /** Host 完成最终进程树核验的墙钟时刻。 */
+  readonly completedAt: string;
+  /** 是否在预算内完成 cooperative drain。 */
+  readonly exitMode: "cooperative" | "forced";
+  /** 最终进程树已归零，或需要下次启动继续核验。 */
+  readonly processTreeResult: "closed" | "needs_reconcile";
+  /** 最终仍存活或无法核验的资源数量。 */
+  readonly remainingResourceCount: number;
 }
 
 export interface ResourceCountDependencies {
@@ -102,23 +117,35 @@ export async function countLiveSnapshotResources(
 
 export async function writeExitMarker(
   options: SidecarStartOptions,
-  status: "closed" | "needs_reconcile",
-  remainingResourceCount: number,
+  marker: ExitMarkerInput,
 ): Promise<void> {
   /** 原子记录 Host 最终核验结果，供下次启动和诊断页区分干净退出。 */
-  const finalPath = path.join(options.dataDirectory, "resource-exit.json");
+  const markerName =
+    marker.exitReason === "app_exit" ? "resource-exit.json" : "sidecar-exit.json";
+  const finalPath = path.join(options.dataDirectory, markerName);
   const temporaryPath = `${finalPath}.tmp`;
-  await writeFile(
-    temporaryPath,
-    `${JSON.stringify({
-      version: 1,
-      app_instance_id: redactIdentity(options.instanceId),
-      status,
-      remaining_resource_count: remainingResourceCount,
-      updated_at: new Date().toISOString(),
-    })}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
+  const handle = await open(temporaryPath, "w", 0o600);
+  try {
+    await handle.writeFile(
+      `${JSON.stringify({
+        version: 2,
+        app_instance_id: redactIdentity(options.instanceId),
+        requested_at: marker.requestedAt,
+        completed_at: marker.completedAt,
+        exit_reason: marker.exitReason,
+        exit_mode: marker.exitMode,
+        process_tree_result: marker.processTreeResult,
+        remaining_resource_count: marker.remainingResourceCount,
+        // 兼容尚未升级的打包 smoke 与数据迁移读取器。
+        status: marker.processTreeResult,
+        updated_at: marker.completedAt,
+      })}\n`,
+      { encoding: "utf8" },
+    );
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(temporaryPath, finalPath);
 }
 

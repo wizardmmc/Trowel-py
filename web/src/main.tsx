@@ -7,9 +7,12 @@ import 'katex/dist/katex.min.css'
 import './styles/index.css'
 import App from './App.tsx'
 import { initializePlatform } from './platform'
+import { createRendererTelemetryPort } from './statistics/telemetryPort'
+import { recordRendererReady } from './statistics/rendererTelemetry'
 
 async function bootstrapRenderer() {
   await initializePlatform()
+  const telemetry = createRendererTelemetryPort()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />
@@ -17,7 +20,12 @@ async function bootstrapRenderer() {
   )
   requestAnimationFrame(() => {
     window.__TROWEL_RENDERER_READY__ = true
+    recordRendererReady(telemetry, performance.timeOrigin, new Date())
+    void telemetry.flush()
   })
+  window.addEventListener('pagehide', () => {
+    void telemetry.drain(100)
+  }, { once: true })
 }
 
 void bootstrapRenderer().catch(() => {

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 
 class OwnerScope(str, Enum):
@@ -100,6 +102,27 @@ class OwnerSummary:
     status: str
     live_resource_count: int
     remaining_resource_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OwnerCloseObservation:
+    """描述一个资源 owner 已提交关闭的低基数事实。
+
+    Attributes:
+        owner_scope: app、runtime connection、session 或 turn。
+        status: closed 表示已经归零；needs_reconcile 表示仍需继续清理。
+        started_at: owner 首次进入 closing 的墙钟时刻。
+        completed_at: 本次关闭核验得出终态的墙钟时刻。
+        closed_resource_count: 本次从活资源表移出的资源数。
+        remaining_resource_count: 当前终态仍残留的资源数。
+    """
+
+    owner_scope: OwnerScope
+    status: Literal["closed", "needs_reconcile"]
+    started_at: datetime
+    completed_at: datetime
+    closed_resource_count: int
+    remaining_resource_count: int
 
 
 @dataclass(frozen=True)
