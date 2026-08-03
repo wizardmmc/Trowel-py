@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from trowel_py.application_paths import resolve_application_data_root
+from trowel_py.telemetry.sqlite import open_observed_sqlite
 
 
 class WorkspaceUnavailableError(ValueError):
@@ -169,7 +170,11 @@ class RecentWorkspaceStore:
         """打开数据库并确保 Recent 表可用。"""
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self._path, timeout=10)
+        connection = open_observed_sqlite(
+            self._path,
+            domain="workspaces",
+            timeout=10,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(

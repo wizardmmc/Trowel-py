@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import cast
 
 from trowel_py.resource_lifecycle.models import ReconcileReport
 from trowel_py.resource_lifecycle.processes import (
@@ -47,7 +48,8 @@ def reconcile_previous_snapshot(
     identity_mismatch = 0
     errors: list[str] = []
     matched_groups: set[int] = set()
-    for item in payload.get("resources", []):
+    resources = cast(list[object], payload.get("resources", []))
+    for item in resources:
         if not isinstance(item, dict) or item.get("state") == "closed":
             continue
         pid = item.get("pid")

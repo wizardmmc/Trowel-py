@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 from collections.abc import Awaitable, Callable
@@ -48,6 +49,8 @@ from trowel_py.agent_host.workspaces import (
     RecentWorkspaceStore,
     WorkspaceUnavailableError,
 )
+from trowel_py.telemetry.port import NoopTelemetryPort
+from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 
 router = APIRouter()
 
@@ -165,6 +168,29 @@ def get_hub(request: Request) -> SessionHub:
     if hub is None:
         raise HTTPException(status_code=503, detail="agent hub not initialized")
     return hub
+
+
+def _observe_sse(
+    request: Request,
+    session_id: str,
+    *,
+    reconnect_eligible: bool,
+) -> SseObservation:
+    """取得应用级 SSE tracker；测试未组装时使用一次性 no-op tracker。
+
+    Args:
+        request: 当前 HTTP 请求，用于读取应用状态。
+        session_id: 仅在 tracker 内做不可逆摘要的会话 ID。
+        reconnect_eligible: 持续 watcher 是否参与重连判断。
+
+    Returns:
+        不读取或缓存任何 SSE 事件的旁路观察器。
+    """
+
+    tracker = getattr(request.app.state, "sse_tracker", None)
+    if tracker is None:
+        tracker = SseConnectionTracker(NoopTelemetryPort(), capacity=1)
+    return tracker.begin(session_id, reconnect_eligible=reconnect_eligible)
 
 
 def get_workspace_store(request: Request) -> RecentWorkspaceStore:
@@ -785,6 +811,7 @@ async def start_codex_review(
 @router.get("/sessions/{session_id}/events")
 def stream_codex_events(
     session_id: str,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
     """持续向客户端发送指定 Codex 会话的实时事件。
@@ -799,6 +826,7 @@ def stream_codex_events(
 
     Args:
         session_id: 要接收实时事件的 Codex 会话 ID。
+        request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。
         hub: 负责订阅 Codex 事件的 Session Hub。
 
     Returns:
@@ -811,15 +839,26 @@ def stream_codex_events(
 
     # 在返回 200 前完成 runtime/归属检查。
     _call_hub(hub.require_codex_session, session_id)
+    observation = _observe_sse(request, session_id, reconnect_eligible=True)
 
     async def gen():
         """把订阅到的会话事件逐个编码为 SSE 数据帧，并在发生会话错误时用最后一帧报告错误。"""
 
+        stream_error = False
         try:
             async for event in hub.subscribe_codex_events(session_id):
+                observation.first_event()
                 yield _sse(event)
+        except asyncio.CancelledError:
+            stream_error = True
+            observation.disconnect()
+            raise
         except SessionHubError as exc:
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, exc))
+        finally:
+            observation.close(error=stream_error)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -864,6 +903,7 @@ async def start_codex_turn(
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: str,
+    request: Request,
     body: SendMessageBody,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
@@ -871,18 +911,41 @@ async def send_message(
 
     未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有
     明确结束信号。
+
+    Args:
+        session_id: 要发送消息的 Trowel 会话 ID。
+        request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。
+        body: 用户发送的非空消息正文。
+        hub: 负责启动轮次并产出共享事件的 Session Hub。
+
+    Returns:
+        持续发送当前轮次事件并带明确终态的 SSE 响应。
     """
+
+    observation = _observe_sse(request, session_id, reconnect_eligible=False)
 
     async def gen():
         """把共享事件和运行错误编码为同一个 SSE 响应流。"""
 
+        stream_error = False
         try:
             async for event in hub.stream(session_id, body.text):
+                observation.first_event()
                 yield _sse(event)
+        except asyncio.CancelledError:
+            stream_error = True
+            observation.disconnect()
+            raise
         except SessionHubError as exc:
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, str(exc)))
         except Exception as exc:  # noqa: BLE001 - 转为终止 error frame
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, str(exc)))
+        finally:
+            observation.close(error=stream_error)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

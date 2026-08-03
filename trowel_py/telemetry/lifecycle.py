@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from trowel_py.telemetry.checkpoint import TelemetryCheckpointer
 from trowel_py.telemetry.collector import CollectorCloseReport, TelemetryCollector
+from trowel_py.telemetry.exit_markers import import_exit_marker
 from trowel_py.telemetry.port import BufferedTelemetryPort, NoopTelemetryPort
 from trowel_py.telemetry.storage import (
     TelemetryDatabase,
@@ -32,10 +34,27 @@ def start_telemetry(app: Any) -> None:
     app.state.telemetry_port = NoopTelemetryPort()
     app.state.telemetry_close_report = None
     app.state.telemetry_checkpoint_close_report = None
+    app.state.telemetry_exit_marker_import = None
     try:
         database = TelemetryDatabase(resolve_telemetry_database_path())
         database.initialize()
         app.state.telemetry_database = database
+        desktop_data_dir = str(getattr(app.state, "desktop_data_dir", "")).strip()
+        if desktop_data_dir:
+            data_directory = Path(desktop_data_dir)
+            if data_directory.resolve() == database.path.parent.resolve():
+                app.state.telemetry_exit_marker_import = {
+                    marker_name: import_exit_marker(
+                        database,
+                        data_directory / marker_name,
+                    )
+                    for marker_name in ("resource-exit.json", "sidecar-exit.json")
+                }
+            else:
+                logger.warning(
+                    "[telemetry] exit marker import skipped: desktop and telemetry "
+                    "data roots differ"
+                )
         reader = database.reader()
         app.state.telemetry_reader = reader
         checkpointer = TelemetryCheckpointer(database.checkpoint)

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,7 @@ from typing import Callable
 
 from trowel_py.resource_lifecycle.models import (
     OwnerScope,
+    OwnerCloseObservation,
     OwnerSummary,
     ProcessIdentity,
     ResourceRecord,
@@ -29,7 +32,12 @@ from trowel_py.resource_lifecycle.processes import (
 )
 
 SNAPSHOT_VERSION = 1
+RECENT_CLOSED_LIMIT = 256
+RECENT_CLOSED_OWNER_LIMIT = 256
 NowFn = Callable[[], datetime]
+SnapshotWriter = Callable[[Path, dict[str, object]], None]
+OwnerCloseObserver = Callable[[OwnerCloseObservation], None]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,8 @@ class ResourceRegistry:
         descendant_inventory: DescendantInventory = list_descendant_processes,
         registration_url: str | None = None,
         registration_credential: str | None = None,
+        snapshot_writer: SnapshotWriter | None = None,
+        owner_close_observer: OwnerCloseObserver | None = None,
     ) -> None:
         """创建资源账本并发布初始空快照。
 
@@ -98,6 +108,8 @@ class ResourceRegistry:
             descendant_inventory: 按可信根 PID 读取实时 PPID 后代身份的函数。
             registration_url: Trowel 自有子进程回报 PID 的桌面私有端点。
             registration_credential: 调用私有端点所需的当前桌面实例凭据。
+            snapshot_writer: 原子快照写入函数；测试可注入只记录发布次数的替身。
+            owner_close_observer: owner 成功关闭后的非阻塞观测回调。
 
         Raises:
             ValueError: 应用实例 ID 为空。
@@ -109,13 +121,22 @@ class ResourceRegistry:
         self._app_instance_id = normalized_instance_id
         self._snapshot_path = snapshot_path
         self._process_controller = process_controller or LocalProcessController()
-        self._now = now or datetime.now
+        self._now = now or (lambda: datetime.now().astimezone())
         self._descendant_inventory = descendant_inventory
         self._registration_url = (registration_url or "").strip()
         self._registration_credential = (registration_credential or "").strip()
         self._registration_grants: dict[str, _ProcessRegistrationGrant] = {}
         self._records: dict[str, ResourceRecord] = {}
+        self._recent_closed: OrderedDict[str, ResourceRecord] = OrderedDict()
         self._closing_owners: set[tuple[OwnerScope, str | None, str | None]] = set()
+        self._recent_closed_owners: OrderedDict[
+            tuple[OwnerScope, str | None, str | None], None
+        ] = OrderedDict()
+        self._owner_closing_started_at: dict[
+            tuple[OwnerScope, str | None, str | None], datetime
+        ] = {}
+        self._snapshot_writer = snapshot_writer or _atomic_write_json
+        self._owner_close_observer = owner_close_observer
         self._lock = threading.RLock()
         self._publish_snapshot()
 
@@ -136,6 +157,21 @@ class ResourceRegistry:
         """返回账本用于核验进程身份和终止进程组的控制器。"""
 
         return self._process_controller
+
+    def set_owner_close_observer(
+        self,
+        observer: OwnerCloseObserver | None,
+    ) -> None:
+        """替换 owner 关闭观测回调，不改变任何资源状态。
+
+        资源账本可以先于遥测启动，避免遥测已启动但账本创建失败时留下后台线程。
+
+        Args:
+            observer: 新的非阻塞观测回调；None 表示停止上报。
+        """
+
+        with self._lock:
+            self._owner_close_observer = observer
 
     def issue_process_registration(
         self,
@@ -449,7 +485,10 @@ class ResourceRegistry:
         """
 
         with self._lock:
-            return self._records[resource_id]
+            record = self._records.get(resource_id)
+            if record is not None:
+                return record
+            return self._recent_closed[resource_id]
 
     def mark_owner_closing(
         self,
@@ -469,14 +508,14 @@ class ResourceRegistry:
         """
 
         with self._lock:
-            self._closing_owners.add(
-                self._owner_key(
-                    owner_scope,
-                    runtime_connection_id=runtime_connection_id,
-                    agent_session_id=agent_session_id,
-                    turn_id=turn_id,
-                )
+            owner_key = self._owner_key(
+                owner_scope,
+                runtime_connection_id=runtime_connection_id,
+                agent_session_id=agent_session_id,
+                turn_id=turn_id,
             )
+            self._closing_owners.add(owner_key)
+            self._owner_closing_started_at.setdefault(owner_key, self._now())
             self._revoke_owner_registration_grants(
                 owner_scope,
                 runtime_connection_id=runtime_connection_id,
@@ -484,8 +523,9 @@ class ResourceRegistry:
                 turn_id=turn_id,
             )
             stamp = self._stamp()
+            changed = False
             for resource_id, record in tuple(self._records.items()):
-                if record.state is ResourceState.CLOSED:
+                if record.state is ResourceState.CLOSING:
                     continue
                 if self._belongs_to_owner(
                     record,
@@ -499,7 +539,9 @@ class ResourceRegistry:
                         state=ResourceState.CLOSING,
                         updated_at=stamp,
                     )
-            self._publish_snapshot()
+                    changed = True
+            if changed:
+                self._publish_snapshot()
 
     def mark_owner_closed(
         self,
@@ -518,19 +560,22 @@ class ResourceRegistry:
             turn_id: turn owner 的原生轮次 ID。
         """
 
+        observation: OwnerCloseObservation | None = None
         with self._lock:
-            self._closing_owners.add(
-                self._owner_key(
-                    owner_scope,
-                    runtime_connection_id=runtime_connection_id,
-                    agent_session_id=agent_session_id,
-                    turn_id=turn_id,
-                )
+            owner_key = self._owner_key(
+                owner_scope,
+                runtime_connection_id=runtime_connection_id,
+                agent_session_id=agent_session_id,
+                turn_id=turn_id,
             )
-            stamp = self._stamp()
+            was_closing = owner_key in self._closing_owners
+            self._closing_owners.add(owner_key)
+            completed_at = self._now()
+            started_at = self._owner_closing_started_at.get(owner_key, completed_at)
+            stamp = completed_at.isoformat(timespec="microseconds")
+            changed = False
+            closed_resource_count = 0
             for resource_id, record in tuple(self._records.items()):
-                if record.state is ResourceState.CLOSED:
-                    continue
                 if self._belongs_to_owner(
                     record,
                     owner_scope,
@@ -538,13 +583,110 @@ class ResourceRegistry:
                     agent_session_id=agent_session_id,
                     turn_id=turn_id,
                 ):
-                    self._records[resource_id] = replace(
+                    closed = replace(
                         record,
                         state=ResourceState.CLOSED,
                         updated_at=stamp,
                         last_error=None,
                     )
-            self._publish_snapshot()
+                    self._records.pop(resource_id, None)
+                    self._remember_closed(closed)
+                    changed = True
+                    closed_resource_count += 1
+            self._release_owner_barriers(
+                owner_scope,
+                runtime_connection_id=runtime_connection_id,
+                agent_session_id=agent_session_id,
+                turn_id=turn_id,
+            )
+            if changed:
+                self._publish_snapshot()
+            if changed or was_closing:
+                observation = OwnerCloseObservation(
+                    owner_scope=owner_scope,
+                    status="closed",
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    closed_resource_count=closed_resource_count,
+                    remaining_resource_count=0,
+                )
+        if observation is not None:
+            self._observe_owner_close(observation)
+
+    def mark_owner_needs_reconcile(
+        self,
+        owner_scope: OwnerScope,
+        *,
+        runtime_connection_id: str | None = None,
+        agent_session_id: str | None = None,
+        turn_id: str | None = None,
+        remaining_resource_count: int | None = None,
+    ) -> None:
+        """提交 owner 未归零终态，并保留关闭屏障等待后续重试。
+
+        Args:
+            owner_scope: 本次关闭未能归零的 owner 层级。
+            runtime_connection_id: runtime connection owner 的内部 ID。
+            agent_session_id: session 或 turn owner 的 Trowel 会话 ID。
+            turn_id: turn owner 的原生轮次 ID。
+            remaining_resource_count: runtime 另行确认但未必已经登记的残留数量。
+
+        Raises:
+            ValueError: 外部残留数量为负数。
+        """
+
+        if remaining_resource_count is not None and remaining_resource_count < 0:
+            raise ValueError("remaining resource count must not be negative")
+        with self._lock:
+            owner_key = self._owner_key(
+                owner_scope,
+                runtime_connection_id=runtime_connection_id,
+                agent_session_id=agent_session_id,
+                turn_id=turn_id,
+            )
+            self._closing_owners.add(owner_key)
+            completed_at = self._now()
+            started_at = self._owner_closing_started_at.setdefault(
+                owner_key,
+                completed_at,
+            )
+            stamp = completed_at.isoformat(timespec="microseconds")
+            matched_count = 0
+            changed = False
+            for resource_id, record in tuple(self._records.items()):
+                if not self._belongs_to_owner(
+                    record,
+                    owner_scope,
+                    runtime_connection_id=runtime_connection_id,
+                    agent_session_id=agent_session_id,
+                    turn_id=turn_id,
+                ):
+                    continue
+                matched_count += 1
+                next_record = replace(
+                    record,
+                    state=ResourceState.NEEDS_RECONCILE,
+                    updated_at=stamp,
+                    last_error="owner close did not reach zero",
+                )
+                if next_record == record:
+                    continue
+                self._records[resource_id] = next_record
+                changed = True
+            if changed:
+                self._publish_snapshot()
+            observation = OwnerCloseObservation(
+                owner_scope=owner_scope,
+                status="needs_reconcile",
+                started_at=started_at,
+                completed_at=completed_at,
+                closed_resource_count=0,
+                remaining_resource_count=max(
+                    matched_count,
+                    remaining_resource_count or 0,
+                ),
+            )
+        self._observe_owner_close(observation)
 
     def mark_closed(self, resource_id: str) -> None:
         """把已核验退出的资源标为 closed；重复调用保持幂等。
@@ -553,17 +695,7 @@ class ResourceRegistry:
             resource_id: 要提交关闭终态的资源 ID。
         """
 
-        with self._lock:
-            record = self._records.get(resource_id)
-            if record is None or record.state is ResourceState.CLOSED:
-                return
-            self._records[resource_id] = replace(
-                record,
-                state=ResourceState.CLOSED,
-                updated_at=self._stamp(),
-                last_error=None,
-            )
-            self._publish_snapshot()
+        self._mark_records_closed((resource_id,))
 
     def mark_needs_reconcile(self, resource_id: str, error: str) -> None:
         """记录资源无法安全确认关闭，并保存有界错误说明。
@@ -573,17 +705,7 @@ class ResourceRegistry:
             error: 不含凭据或正文的错误说明。
         """
 
-        with self._lock:
-            record = self._records.get(resource_id)
-            if record is None:
-                return
-            self._records[resource_id] = replace(
-                record,
-                state=ResourceState.NEEDS_RECONCILE,
-                updated_at=self._stamp(),
-                last_error=error[:500],
-            )
-            self._publish_snapshot()
+        self._mark_records_needs_reconcile({resource_id: error})
 
     def owner_summary(
         self,
@@ -703,11 +825,12 @@ class ResourceRegistry:
         already_gone = 0
         identity_mismatch = 0
         unverified_groups: set[int] = set()
+        gone_resource_ids: list[str] = []
+        unverified_resources: dict[str, str] = {}
         for process_group, records in records_by_group.items():
             if not self._process_controller.group_alive(process_group):
                 already_gone += 1
-                for record in records:
-                    self.mark_closed(record.resource_id)
+                gone_resource_ids.extend(record.resource_id for record in records)
                 continue
 
             group_verified = False
@@ -735,8 +858,12 @@ class ResourceRegistry:
                 if saw_changed_identity
                 else "process root unavailable while group remains alive"
             )
-            for record in records:
-                self.mark_needs_reconcile(record.resource_id, error)
+            unverified_resources.update(
+                {record.resource_id: error for record in records}
+            )
+
+        self._mark_records_closed(gone_resource_ids)
+        self._mark_records_needs_reconcile(unverified_resources)
 
         errors: list[str] = []
         signaled = self._signal_groups(groups, "SIGTERM", errors)
@@ -759,12 +886,13 @@ class ResourceRegistry:
         )
         self._close_finished_groups(groups, killed - kill_remaining)
         remaining = (remaining - killed) | kill_remaining
-        for group in remaining:
-            for record in groups[group]:
-                self.mark_needs_reconcile(
-                    record.resource_id,
-                    "process group survived application drain",
-                )
+        self._mark_records_needs_reconcile(
+            {
+                record.resource_id: "process group survived application drain"
+                for group in remaining
+                for record in groups[group]
+            }
+        )
         return ReconcileReport(
             terminated=len(set(groups) - remaining),
             already_gone=already_gone,
@@ -782,6 +910,7 @@ class ResourceRegistry:
         """向进程组集合发送信号，并返回成功发出的组。"""
 
         signaled: set[int] = set()
+        failed_resources: dict[str, str] = {}
         for process_group in sorted(groups):
             try:
                 self._process_controller.signal_group(process_group, signal_name)
@@ -790,11 +919,15 @@ class ResourceRegistry:
                 errors.append(
                     f"{signal_name} process group: {type(exc).__name__}"
                 )
-                for record in groups[process_group]:
-                    self.mark_needs_reconcile(
-                        record.resource_id,
-                        f"process-group signal failed: {type(exc).__name__}",
-                    )
+                failed_resources.update(
+                    {
+                        record.resource_id: (
+                            f"process-group signal failed: {type(exc).__name__}"
+                        )
+                        for record in groups[process_group]
+                    }
+                )
+        self._mark_records_needs_reconcile(failed_resources)
         return signaled
 
     def _wait_groups(
@@ -829,9 +962,73 @@ class ResourceRegistry:
     ) -> None:
         """把已确认退出进程组对应的全部资源记录提交为 closed。"""
 
-        for process_group in finished:
-            for record in groups[process_group]:
-                self.mark_closed(record.resource_id)
+        self._mark_records_closed(
+            tuple(
+                record.resource_id
+                for process_group in finished
+                for record in groups[process_group]
+            )
+        )
+
+    def _mark_records_closed(self, resource_ids: tuple[str, ...] | list[str]) -> None:
+        """把一批已核验资源一次提交为 closed，并最多发布一次快照。
+
+        Args:
+            resource_ids: 已确认关闭的内部资源 ID。
+        """
+
+        if not resource_ids:
+            return
+        with self._lock:
+            stamp = self._stamp()
+            changed = False
+            for resource_id in resource_ids:
+                record = self._records.pop(resource_id, None)
+                if record is None:
+                    continue
+                self._remember_closed(
+                    replace(
+                        record,
+                        state=ResourceState.CLOSED,
+                        updated_at=stamp,
+                        last_error=None,
+                    )
+                )
+                changed = True
+            if changed:
+                self._publish_snapshot()
+
+    def _mark_records_needs_reconcile(
+        self,
+        errors_by_resource: dict[str, str],
+    ) -> None:
+        """把一批关闭失败一次提交为 needs_reconcile。
+
+        Args:
+            errors_by_resource: 内部资源 ID 到去敏错误分类的映射。
+        """
+
+        if not errors_by_resource:
+            return
+        with self._lock:
+            stamp = self._stamp()
+            changed = False
+            for resource_id, error in errors_by_resource.items():
+                record = self._records.get(resource_id)
+                if record is None:
+                    continue
+                next_record = replace(
+                    record,
+                    state=ResourceState.NEEDS_RECONCILE,
+                    updated_at=stamp,
+                    last_error=error[:500],
+                )
+                if next_record == record:
+                    continue
+                self._records[resource_id] = next_record
+                changed = True
+            if changed:
+                self._publish_snapshot()
 
     def _register(self, record: ResourceRecord) -> ResourceRecord:
         """校验 owner 字段后登记资源，并拒绝 ID 指向另一活资源。"""
@@ -843,10 +1040,11 @@ class ResourceRegistry:
                     f"resource owner is closing: {record.owner_scope.value}"
                 )
             existing = self._records.get(record.resource_id)
-            if existing is not None and existing.state is not ResourceState.CLOSED:
+            if existing is not None:
                 if existing == record:
                     return existing
                 raise ValueError(f"live resource id already registered: {record.resource_id}")
+            self._recent_closed.pop(record.resource_id, None)
             self._records[record.resource_id] = record
             self._publish_snapshot()
             return record
@@ -870,7 +1068,9 @@ class ResourceRegistry:
                 turn_id=record.turn_id,
             ),
         }
-        return not self._closing_owners.isdisjoint(candidates)
+        return not self._closing_owners.isdisjoint(candidates) or any(
+            candidate in self._recent_closed_owners for candidate in candidates
+        )
 
     def _revoke_owner_registration_grants(
         self,
@@ -901,6 +1101,116 @@ class ResourceRegistry:
                 and grant.turn_id == turn_id
             ):
                 self._registration_grants.pop(token, None)
+
+    def _remember_closed(self, record: ResourceRecord) -> None:
+        """把最近关闭记录放入有界诊断缓存，不再进入 crash 快照。
+
+        Args:
+            record: 已确认进入 closed 终态的内部资源记录。
+        """
+
+        self._recent_closed[record.resource_id] = record
+        self._recent_closed.move_to_end(record.resource_id)
+        while len(self._recent_closed) > RECENT_CLOSED_LIMIT:
+            self._recent_closed.popitem(last=False)
+
+    def _observe_owner_close(self, observation: OwnerCloseObservation) -> None:
+        """隔离 owner 观测回调失败，关闭事实不能反向阻塞资源终态。
+
+        Args:
+            observation: 已提交关闭且不含 owner 身份的事实。
+        """
+
+        observer = self._owner_close_observer
+        if observer is None:
+            return
+        try:
+            observer(observation)
+        except Exception:
+            logger.debug("resource owner telemetry failed", exc_info=True)
+
+    def _release_owner_barriers(
+        self,
+        owner_scope: OwnerScope,
+        *,
+        runtime_connection_id: str | None,
+        agent_session_id: str | None,
+        turn_id: str | None,
+    ) -> None:
+        """owner 关闭提交后释放临时登记屏障，避免键集合无限增长。
+
+        Args:
+            owner_scope: 已提交关闭的 owner 层级。
+            runtime_connection_id: runtime connection owner 的内部 ID。
+            agent_session_id: session 或 turn owner 的 Trowel 会话 ID。
+            turn_id: turn owner 的原生轮次 ID。
+        """
+
+        if owner_scope is OwnerScope.APP:
+            released = tuple(self._closing_owners)
+            self._closing_owners.clear()
+            self._owner_closing_started_at.clear()
+            for key in released:
+                self._remember_closed_owner(key)
+            self._remember_closed_owner(self._owner_key(OwnerScope.APP))
+            return
+        if owner_scope is OwnerScope.SESSION:
+            released = tuple(
+                key
+                for key in self._closing_owners
+                if key[1] == agent_session_id
+                and key[0] in {OwnerScope.SESSION, OwnerScope.TURN}
+            )
+            self._closing_owners = {
+                key
+                for key in self._closing_owners
+                if not (
+                    key[1] == agent_session_id
+                    and key[0] in {OwnerScope.SESSION, OwnerScope.TURN}
+                )
+            }
+            self._owner_closing_started_at = {
+                key: started_at
+                for key, started_at in self._owner_closing_started_at.items()
+                if not (
+                    key[1] == agent_session_id
+                    and key[0] in {OwnerScope.SESSION, OwnerScope.TURN}
+                )
+            }
+            for key in released:
+                if key[0] is OwnerScope.TURN:
+                    self._remember_closed_owner(key)
+            self._remember_closed_owner(
+                self._owner_key(
+                    OwnerScope.SESSION,
+                    agent_session_id=agent_session_id,
+                )
+            )
+            return
+        owner_key = self._owner_key(
+            owner_scope,
+            runtime_connection_id=runtime_connection_id,
+            agent_session_id=agent_session_id,
+            turn_id=turn_id,
+        )
+        self._closing_owners.discard(owner_key)
+        self._owner_closing_started_at.pop(owner_key, None)
+        self._remember_closed_owner(owner_key)
+
+    def _remember_closed_owner(
+        self,
+        owner_key: tuple[OwnerScope, str | None, str | None],
+    ) -> None:
+        """保留近期 owner 终态屏障，并淘汰更旧的唯一身份。
+
+        Args:
+            owner_key: 不写入磁盘的 owner 层级与内部身份组合。
+        """
+
+        self._recent_closed_owners[owner_key] = None
+        self._recent_closed_owners.move_to_end(owner_key)
+        while len(self._recent_closed_owners) > RECENT_CLOSED_OWNER_LIMIT:
+            self._recent_closed_owners.popitem(last=False)
 
     @staticmethod
     def _owner_key(
@@ -980,7 +1290,7 @@ class ResourceRegistry:
             "updated_at": self._stamp(),
             "resources": [self._snapshot_record(record) for record in self._records.values()],
         }
-        _atomic_write_json(path, payload)
+        self._snapshot_writer(path, payload)
 
     @staticmethod
     def _snapshot_record(record: ResourceRecord) -> dict[str, object]:

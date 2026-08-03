@@ -12,6 +12,8 @@ from trowel_py.statistics.agent.schemas import AgentStatisticsData
 from trowel_py.statistics.agent.service import build_agent_statistics
 from trowel_py.statistics.memory.schemas import MemoryStatisticsData
 from trowel_py.statistics.memory.service import build_memory_statistics
+from trowel_py.statistics.runtime.schemas import RuntimeStatisticsData
+from trowel_py.statistics.runtime.service import build_runtime_statistics
 from trowel_py.statistics.schemas import ApiEnvelope, TelemetryStatisticsData
 from trowel_py.statistics.service import build_telemetry_statistics
 from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
@@ -86,6 +88,43 @@ def get_memory_statistics(
     return ApiEnvelope[MemoryStatisticsData](
         success=True,
         data=build_memory_statistics(reader, window),
+        error=None,
+    )
+
+
+@router.get(
+    "/runtime",
+    response_model=ApiEnvelope[RuntimeStatisticsData],
+)
+def get_runtime_statistics(
+    request: Request,
+    start_date: str = Query(),
+    end_date: str = Query(),
+    timezone_name: str = Query(alias="timezone"),
+) -> ApiEnvelope[RuntimeStatisticsData] | JSONResponse:
+    """读取桌面生命周期、连接、SQLite 和资源 owner 统计。
+
+    Args:
+        request: 用于读取应用持有的 runtime reader 和 collector。
+        start_date: 首尾均包含的第一个 ISO 日期。
+        end_date: 首尾均包含的最后一个 ISO 日期。
+        timezone_name: 解释日期边界的 IANA 时区名称。
+
+    Returns:
+        成功 read model；参数或来源不可用时返回统一错误 envelope。
+    """
+
+    reader = getattr(request.app.state, "runtime_statistics_reader", None)
+    collector = getattr(request.app.state, "telemetry_collector", None)
+    if reader is None or collector is None:
+        return _error_response(503, "statistics runtime source unavailable")
+    try:
+        window = _parse_window(start_date, end_date, timezone_name)
+    except ValueError as exc:
+        return _error_response(422, str(exc))
+    return ApiEnvelope[RuntimeStatisticsData](
+        success=True,
+        data=build_runtime_statistics(reader, collector, window),
         error=None,
     )
 

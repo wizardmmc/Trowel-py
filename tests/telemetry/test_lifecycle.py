@@ -99,3 +99,26 @@ def test_stop_closes_checkpointer_even_when_collector_is_unavailable() -> None:
     assert report is None
     assert closed == [0.25]
     assert app.state.telemetry_checkpoint_close_report.closed is True
+
+
+def test_start_does_not_move_exit_marker_from_a_different_data_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """隔离运行不得消费终端环境中遗留的正式桌面退出标记。"""
+
+    isolated_root = tmp_path / "isolated"
+    desktop_root = tmp_path / "desktop"
+    desktop_root.mkdir()
+    marker = desktop_root / "resource-exit.json"
+    marker.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("TROWEL_DATA_ROOT", str(isolated_root))
+    app = SimpleNamespace(
+        state=SimpleNamespace(desktop_data_dir=str(desktop_root))
+    )
+
+    lifecycle.start_telemetry(app)
+    lifecycle.stop_telemetry(app, timeout_seconds=1.0)
+
+    assert marker.is_file()
+    assert app.state.telemetry_exit_marker_import is None

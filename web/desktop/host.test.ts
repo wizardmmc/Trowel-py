@@ -99,10 +99,12 @@ it("shows diagnostics for startup failure and can retry", async () => {
 it("moves a ready window to diagnostics if its current sidecar exits", async () => {
   const { running, exit } = runningSidecar();
   const loadDiagnostics = vi.fn();
+  const onUnexpectedExit = vi.fn();
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),
     loadRenderer: vi.fn(),
     loadDiagnostics,
+    onUnexpectedExit,
   });
   await host.start();
 
@@ -114,6 +116,7 @@ it("moves a ready window to diagnostics if its current sidecar exits", async () 
     category: "early_exit",
     exitCode: 9,
   });
+  expect(onUnexpectedExit).toHaveBeenCalledWith({ code: 9, signal: null });
 });
 
 it("keeps diagnostics in front when the sidecar exits during renderer loading", async () => {
@@ -148,6 +151,7 @@ it("stops the sidecar if loading the renderer fails", async () => {
     status: "closed",
     remainingResourceCount: 0,
     forced: false,
+    exitMarkerRecorded: true,
   });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),
@@ -172,6 +176,7 @@ it("waits for an in-progress launch and shuts down the late sidecar", async () =
     status: "closed",
     remainingResourceCount: 0,
     forced: false,
+    exitMarkerRecorded: true,
   });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn(() => launch.promise),
@@ -202,6 +207,7 @@ it("reuses one asynchronous shutdown for repeated stop calls", async () => {
     status: "closed",
     remainingResourceCount: 0,
     forced: false,
+    exitMarkerRecorded: true,
   });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),

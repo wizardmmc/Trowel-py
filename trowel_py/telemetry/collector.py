@@ -11,6 +11,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import TracebackType
 from typing import Any, Protocol
 
 from trowel_py.telemetry.contracts import (
@@ -31,8 +32,19 @@ class TelemetryWriterPort(Protocol):
 
         ...
 
-    def __exit__(self, *args: object) -> None:
-        """回滚未提交事务并关闭 writer。"""
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """回滚未提交事务并关闭 writer。
+
+        Args:
+            exc_type: with 块抛出的异常类型。
+            exc_value: with 块抛出的异常实例。
+            traceback: with 块异常的调用栈。
+        """
 
         ...
 

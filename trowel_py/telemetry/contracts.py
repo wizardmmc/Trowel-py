@@ -65,6 +65,8 @@ class TelemetryAttributes(BaseModel):
         transport: 调用经过的受控传输类型。
         error_category: 不包含异常正文的错误分类。
         black_box: 是否存在 native runtime 不可见区间。
+        exit_mode: Host 是否在 cooperative 阶段完成退出。
+        process_tree_result: Host 最终核验的进程树终态。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -77,6 +79,7 @@ class TelemetryAttributes(BaseModel):
     error_category: Literal[
         "timeout",
         "busy",
+        "locked",
         "validation",
         "unavailable",
         "cancelled",
@@ -84,6 +87,8 @@ class TelemetryAttributes(BaseModel):
         "unknown",
     ] | None = None
     black_box: bool | None = None
+    exit_mode: Literal["cooperative", "forced"] | None = None
+    process_tree_result: Literal["closed", "needs_reconcile"] | None = None
 
 
 class TraceLinkInput(BaseModel):

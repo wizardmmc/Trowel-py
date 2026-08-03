@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -144,8 +145,9 @@ async def test_cancelling_claude_title_kills_the_subprocess():
 @pytest.mark.asyncio
 async def test_claude_title_process_is_published_and_closed_in_resource_snapshot(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """标题进程必须进入 app 资源账本，正常结束后再标成 closed。"""
+    """标题进程必须进入 app 资源账本，正常结束后只保留有界诊断记录。"""
 
     class FakeProcess:
         """返回固定标题结果的独立进程组替身。"""
@@ -178,6 +180,10 @@ async def test_claude_title_process_is_published_and_closed_in_resource_snapshot
             raise AssertionError("completed title process must not be signaled")
 
     process = FakeProcess()
+    monkeypatch.setattr(
+        "trowel_py.agent_host.session_titles.uuid.uuid4",
+        lambda: SimpleNamespace(hex="title-test"),
+    )
 
     async def spawn(*_args, **_kwargs):
         """返回固定标题进程。"""
@@ -201,14 +207,14 @@ async def test_claude_title_process_is_published_and_closed_in_resource_snapshot
     title = await generator.generate(Runtime.CLAUDE_CODE, "生成标题", "/unused")
 
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    resources = [
+    live_title_resources = [
         item
         for item in snapshot["resources"]
         if item["resource_kind"] == "session_title_process_group"
     ]
     assert title == "resource title"
-    assert len(resources) == 1
-    assert resources[0]["state"] == "closed"
+    assert live_title_resources == []
+    assert registry.get("session-title:title-test").state.value == "closed"
 
 
 @pytest.mark.asyncio

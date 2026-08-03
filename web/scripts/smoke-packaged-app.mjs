@@ -21,8 +21,12 @@ const executable = process.env.TROWEL_PACKAGED_APP_EXECUTABLE
       "Trowel",
     );
 const residencySmoke = process.argv.includes("--residency");
+const rendererCrashSmoke = process.argv.includes("--renderer-crash");
 const defaultPathsSmoke = process.argv.includes("--default-paths");
 const preserveSmokeRoot = process.env.TROWEL_PACKAGED_SMOKE_PRESERVE === "1";
+if (residencySmoke && rendererCrashSmoke) {
+  throw new Error("packaged smoke accepts only one runtime scenario");
+}
 if (defaultPathsSmoke && process.env.CI !== "true") {
   throw new Error("default path smoke is restricted to an ephemeral CI user");
 }
@@ -59,7 +63,9 @@ function runPackagedApp() {
         TROWEL_RUNTIME_DISCOVERY_DISABLED: "1",
         ...(residencySmoke
           ? { TROWEL_DESKTOP_RESIDENCY_SMOKE: "1" }
-          : { TROWEL_DESKTOP_SMOKE: "1" }),
+          : rendererCrashSmoke
+            ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
+            : { TROWEL_DESKTOP_SMOKE: "1" }),
         ...(defaultPathsSmoke
           ? {}
           : {
@@ -98,7 +104,9 @@ try {
   const result = await runPackagedApp();
   const expectedMarker = residencySmoke
     ? "TROWEL_DESKTOP_RESIDENCY_SMOKE_OK"
-    : "TROWEL_DESKTOP_SMOKE_OK";
+    : rendererCrashSmoke
+      ? "TROWEL_DESKTOP_RENDERER_CRASHED_SIDECAR_ALIVE"
+      : "TROWEL_DESKTOP_SMOKE_OK";
   if (!isAcceptedPackagedAppExit(result) || !result.stdout.includes(expectedMarker)) {
     throw new Error(
       `packaged smoke failed code=${result.code} signal=${result.signal}\n${result.stdout}\n${result.stderr}`,
@@ -137,7 +145,9 @@ try {
   console.log(
     residencySmoke
       ? "TROWEL_PACKAGED_RESIDENCY_SMOKE_OK"
-      : "TROWEL_PACKAGED_APP_SMOKE_OK",
+      : rendererCrashSmoke
+        ? "TROWEL_PACKAGED_RENDERER_CRASH_SMOKE_OK"
+        : "TROWEL_PACKAGED_APP_SMOKE_OK",
   );
 } finally {
   if (passed && !preserveSmokeRoot) {

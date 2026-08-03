@@ -56,6 +56,10 @@ function fixture(killRequired: boolean) {
     countResources: vi.fn().mockResolvedValue(0),
     recordExit: vi.fn().mockResolvedValue(undefined),
     delay: vi.fn().mockResolvedValue(undefined),
+    now: vi
+      .fn()
+      .mockReturnValueOnce(new Date("2026-08-03T01:02:03.000Z"))
+      .mockReturnValueOnce(new Date("2026-08-03T01:02:04.250Z")),
   };
   return { running, dependencies, signal };
 }
@@ -65,10 +69,22 @@ it("uses cooperative drain and TERM for a responsive sidecar", async () => {
 
   const result = await shutdownSidecar(running, OPTIONS, dependencies);
 
-  expect(result).toEqual({ status: "closed", remainingResourceCount: 0, forced: false });
+  expect(result).toEqual({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: false,
+    exitMarkerRecorded: true,
+  });
   expect(signal).toHaveBeenCalledWith("SIGTERM");
   expect(signal).not.toHaveBeenCalledWith("SIGKILL");
-  expect(dependencies.recordExit).toHaveBeenCalledWith(OPTIONS, "closed", 0);
+  expect(dependencies.recordExit).toHaveBeenCalledWith(OPTIONS, {
+    exitReason: "app_exit",
+    requestedAt: "2026-08-03T01:02:03.000Z",
+    completedAt: "2026-08-03T01:02:04.250Z",
+    exitMode: "cooperative",
+    processTreeResult: "closed",
+    remainingResourceCount: 0,
+  });
 });
 
 it("escalates a hung sidecar and snapshot resources to KILL", async () => {
@@ -95,10 +111,17 @@ it("records needs_reconcile when the final snapshot cannot be verified", async (
     status: "needs_reconcile",
     remainingResourceCount: 1,
     forced: true,
+    exitMarkerRecorded: true,
   });
   expect(dependencies.recordExit).toHaveBeenCalledWith(
     OPTIONS,
-    "needs_reconcile",
-    1,
+    {
+      exitReason: "app_exit",
+      requestedAt: "2026-08-03T01:02:03.000Z",
+      completedAt: "2026-08-03T01:02:04.250Z",
+      exitMode: "forced",
+      processTreeResult: "needs_reconcile",
+      remainingResourceCount: 1,
+    },
   );
 });

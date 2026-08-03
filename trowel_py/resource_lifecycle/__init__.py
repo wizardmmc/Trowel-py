@@ -2,6 +2,7 @@
 
 from trowel_py.resource_lifecycle.models import (
     OwnerScope,
+    OwnerCloseObservation,
     OwnerSummary,
     ProcessIdentity,
     ReconcileReport,
@@ -20,6 +21,7 @@ from trowel_py.resource_lifecycle.drain import DrainCoordinator, DrainReport
 __all__ = [
     "LocalProcessController",
     "OwnerScope",
+    "OwnerCloseObservation",
     "OwnerSummary",
     "ProcessController",
     "ProcessIdentity",

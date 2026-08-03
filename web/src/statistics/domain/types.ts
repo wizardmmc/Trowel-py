@@ -242,6 +242,92 @@ export interface TelemetryStatistics {
   readonly metrics: readonly MetricAggregate[];
 }
 
+export interface RuntimeDistribution {
+  readonly operation: string;
+  readonly label: string;
+  readonly sample_size: number;
+  readonly error_count: number;
+  readonly p50_ms: number | null;
+  readonly p95_ms: number | null;
+  readonly p99_ms: number | null;
+  readonly quality: StatisticsQuality;
+}
+
+export interface RuntimeGauge {
+  readonly value: number | null;
+  readonly unit: "ms" | "By" | "1";
+  readonly observed_at: string | null;
+  readonly sample_size: number;
+  readonly quality: StatisticsQuality;
+}
+
+export interface SidecarStatistics {
+  readonly uptime: RuntimeGauge;
+  readonly rss: RuntimeGauge;
+  readonly restart_count: number;
+  readonly abnormal_exit_count: number;
+  readonly rss_series: readonly RuntimeGaugePoint[];
+}
+
+export interface RuntimeGaugePoint {
+  readonly bucket_start: string;
+  readonly minimum: number;
+  readonly maximum: number;
+  readonly average: number;
+  readonly sample_size: number;
+}
+
+export interface RuntimeConnectionStatistics {
+  readonly connect_count: number;
+  readonly disconnect_count: number;
+  readonly reconnect_count: number;
+  readonly operations: readonly RuntimeDistribution[];
+  readonly quality: StatisticsQuality;
+}
+
+export interface DatabaseFileStatistics {
+  readonly name: "sessions.db" | "workspaces.db" | "telemetry.db";
+  readonly owner: string;
+  readonly database_bytes: number;
+  readonly wal_bytes: number;
+  readonly shm_bytes: number;
+  readonly total_bytes: number;
+  readonly quality: StatisticsQuality;
+}
+
+export interface SQLiteStatistics {
+  readonly busy_count: number;
+  readonly locked_count: number;
+  readonly operations: readonly RuntimeDistribution[];
+  readonly files: readonly DatabaseFileStatistics[];
+  readonly quality: StatisticsQuality;
+}
+
+export interface RuntimeGap {
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface RuntimeStatistics {
+  readonly generated_at: string;
+  readonly window_start: string;
+  readonly window_end: string;
+  readonly timezone: string;
+  readonly sample_size: number;
+  readonly quality: StatisticsQuality;
+  readonly freshness: Readonly<Record<string, SourceFreshness>>;
+  readonly resolution: StatisticsResolution;
+  readonly sidecar: SidecarStatistics;
+  readonly last_clean_exit_at: string | null;
+  readonly lifecycle: readonly RuntimeDistribution[];
+  readonly fastapi: readonly RuntimeDistribution[];
+  readonly sse: RuntimeConnectionStatistics;
+  readonly sqlite: SQLiteStatistics;
+  readonly resources: readonly RuntimeDistribution[];
+  readonly resource_remaining_count: number;
+  readonly gaps: readonly RuntimeGap[];
+}
+
 export interface ApiEnvelope<T> {
   readonly success: boolean;
   readonly data: T | null;

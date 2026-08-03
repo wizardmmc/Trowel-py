@@ -3,6 +3,7 @@
 export type TelemetryComponent =
   | "electron"
   | "renderer"
+  | "sidecar"
   | "fastapi"
   | "agent_host"
   | "runtime"
@@ -12,10 +13,22 @@ export type TelemetryComponent =
 
 export type TelemetryOperation =
   | "desktop.start"
+  | "desktop.start.sidecar_ready"
+  | "desktop.start.first_screen"
+  | "desktop.window.close"
+  | "desktop.renderer.crash"
   | "desktop.exit"
+  | "desktop.reconcile"
+  | "sidecar.sample"
+  | "sidecar.exit"
   | "renderer.measure"
   | "http.agent.messages"
   | "http.statistics.query"
+  | "sse.connect"
+  | "sse.first_event"
+  | "sse.disconnect"
+  | "sse.reconnect"
+  | "sse.close"
   | "agent.turn"
   | "agent.interrupt"
   | "runtime.call"
@@ -23,6 +36,14 @@ export type TelemetryOperation =
   | "mcp.tools.call"
   | "sqlite.query"
   | "sqlite.transaction"
+  | "sqlite.sessions.read"
+  | "sqlite.sessions.write"
+  | "sqlite.workspaces.read"
+  | "sqlite.workspaces.write"
+  | "resource.app.close"
+  | "resource.runtime_connection.close"
+  | "resource.session.close"
+  | "resource.turn.close"
   | "telemetry.collect"
   | "telemetry.flush"
   | "telemetry.aggregate"
@@ -35,7 +56,18 @@ export type TelemetryMetricName =
   | "telemetry.accepted"
   | "telemetry.rejected"
   | "telemetry.dropped"
-  | "telemetry.database_bytes";
+  | "telemetry.database_bytes"
+  | "desktop.exit_terminal"
+  | "desktop.remaining_resources"
+  | "sidecar.uptime_ms"
+  | "sidecar.rss_bytes"
+  | "sidecar.restart"
+  | "sidecar.abnormal_exit"
+  | "sse.disconnect"
+  | "sse.reconnect"
+  | "sqlite.busy"
+  | "sqlite.locked"
+  | "resource.remaining";
 
 export interface TelemetryAttributes {
   readonly quality?: "reliable" | "partial" | "unavailable";
@@ -46,12 +78,15 @@ export interface TelemetryAttributes {
   readonly error_category?:
     | "timeout"
     | "busy"
+    | "locked"
     | "validation"
     | "unavailable"
     | "cancelled"
     | "crash"
     | "unknown";
   readonly black_box?: boolean;
+  readonly exit_mode?: "cooperative" | "forced";
+  readonly process_tree_result?: "closed" | "needs_reconcile";
 }
 
 export interface TelemetryTraceLink {

@@ -461,6 +461,7 @@ class CodexHostManager:
                 raise ProtocolViolationError("thread/list returned a repeated cursor")
             seen_cursors.add(next_cursor)
             cursor = next_cursor
+        return rows
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         """通过公共 ``thread/read`` 取得含 turns 的 transcript。"""
@@ -850,6 +851,9 @@ class CodexHostManager:
                 timeout=_REQUEST_TIMEOUT_S,
             )
         if self._resource_registry is not None:
+            for owner_session_id, turn_id in tuple(self._turn_resource_ids):
+                if owner_session_id == session.session_id:
+                    self._mark_turn_resource_closed(owner_session_id, turn_id)
             await self._reconcile_session_process_groups(session.session_id)
             self._resource_registry.mark_owner_closed(
                 OwnerScope.SESSION,
@@ -1208,7 +1212,7 @@ class CodexHostManager:
             return
         await self._stop_descendant_monitor()
         exit_code = client.last_exit_code
-        stderr_tail = client.stderr_tail[:200] if client else ""
+        stderr_tail = client.stderr_tail[:200]
         self._state = CodexHostManagerState.DEGRADED
         self._mark_connection_needs_reconcile(
             self._active_generation,
@@ -1436,12 +1440,38 @@ class CodexHostManager:
         self._turn_resource_ids[(session.session_id, turn_id)] = resource_id
 
     def _mark_turn_resource_closed(self, session_id: str, turn_id: str) -> None:
-        """把收到原生 terminal 的 turn handle 提交为 closed。"""
+        """把原生 terminal 或 thread archive 确认的 turn owner 提交为 closed。"""
 
         registry = self._resource_registry
-        resource_id = self._turn_resource_ids.pop((session_id, turn_id), None)
-        if registry is not None and resource_id is not None:
-            registry.mark_closed(resource_id)
+        resource_key = (session_id, turn_id)
+        resource_id = self._turn_resource_ids.get(resource_key)
+        if registry is None or resource_id is None:
+            return
+        registry.mark_owner_closing(
+            OwnerScope.TURN,
+            agent_session_id=session_id,
+            turn_id=turn_id,
+        )
+        registry.mark_closed(resource_id)
+        summary = registry.owner_summary(
+            OwnerScope.TURN,
+            agent_session_id=session_id,
+            turn_id=turn_id,
+        )
+        if summary.live_resource_count:
+            registry.mark_owner_needs_reconcile(
+                OwnerScope.TURN,
+                agent_session_id=session_id,
+                turn_id=turn_id,
+                remaining_resource_count=summary.live_resource_count,
+            )
+        else:
+            registry.mark_owner_closed(
+                OwnerScope.TURN,
+                agent_session_id=session_id,
+                turn_id=turn_id,
+            )
+        self._turn_resource_ids.pop(resource_key, None)
 
     def _mark_connection_needs_reconcile(
         self,
@@ -1454,6 +1484,10 @@ class CodexHostManager:
         resource_id = self._connection_resource_ids.get(generation)
         if registry is not None and resource_id is not None:
             registry.mark_needs_reconcile(resource_id, error)
+            registry.mark_owner_needs_reconcile(
+                OwnerScope.RUNTIME_CONNECTION,
+                runtime_connection_id=self._connection_id(generation),
+            )
 
     def _default_client_factory(self) -> AppServerClient:
         """返回未启动的默认 client；handler 注册与启动由 ``ensure_ready`` 完成。"""
