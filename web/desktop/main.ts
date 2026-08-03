@@ -38,6 +38,8 @@ import { createDesktopWindow, focusDesktopWindow } from "./window";
 import { handleDesktopWindowClose } from "./windowClosePolicy";
 import { configureSafeStorageForSmoke } from "./safeStoragePolicy";
 import type { SidecarLaunchCommand } from "./sidecar";
+import { createDesktopTelemetrySender } from "./telemetryPort";
+import { TelemetryBatcher } from "../shared/telemetry-batcher";
 
 const PRODUCT_NAME = "Trowel";
 
@@ -85,8 +87,11 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  void startDesktopApplication().catch(() => {
-    console.error("Trowel desktop host failed before diagnostics were available.");
+  void startDesktopApplication().catch((error) => {
+    console.error(
+      "Trowel desktop host failed before diagnostics were available.",
+      error,
+    );
     app.exit(1);
   });
 }
@@ -205,6 +210,8 @@ async function startDesktopApplication(): Promise<void> {
         throw error;
       }
       if (rendererSmoke) {
+        if (!host) throw new Error("desktop host is not initialized");
+        await verifyTelemetrySmoke(host);
         console.log("TROWEL_DESKTOP_SMOKE_OK");
         app.quit();
       }
@@ -480,6 +487,39 @@ async function waitForRendererReady(window: BrowserWindow): Promise<void> {
   throw new Error(
     `renderer did not settle its sidecar API requests: ${JSON.stringify(lastState)}`,
   );
+}
+
+async function verifyTelemetrySmoke(host: DesktopHost): Promise<void> {
+  /** 通过真实实例凭据验证批量接收和 Host 退出前 drain。 */
+  const context = host.context();
+  const batcher = new TelemetryBatcher({
+    sourceComponent: "electron",
+    send: createDesktopTelemetrySender(context.transport),
+    flushIntervalMs: 10,
+    idFactory: () => `batch-smoke-${randomUUID()}`,
+  });
+  const startedAt = new Date();
+  const endedAt = new Date(startedAt.getTime() + 1);
+  batcher.recordSpan({
+    trace_id: randomBytes(16).toString("hex"),
+    span_id: randomBytes(8).toString("hex"),
+    parent_span_id: null,
+    started_at: startedAt.toISOString(),
+    ended_at: endedAt.toISOString(),
+    component: "electron",
+    operation: "desktop.start",
+    status: "ok",
+    runtime: null,
+    model: null,
+    session_ref: null,
+    call_ref: null,
+    attributes: { quality: "reliable", sampled: true },
+    links: [],
+  });
+  const report = await batcher.drain(2_000);
+  if (!report.drained || report.dropped !== 0) {
+    throw new Error(`desktop telemetry drain failed: ${JSON.stringify(report)}`);
+  }
 }
 
 async function crashRendererAndVerifyRecovery(

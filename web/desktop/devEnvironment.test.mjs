@@ -13,6 +13,11 @@ it("uses long-term App data unless isolated mode is explicit", () => {
   expect(resolveDevelopmentDataMode(["node", "dev.mjs", "--isolated"])).toBe(
     "isolated-dev",
   );
+  expect(
+    resolveDevelopmentDataMode(["node", "dev.mjs", "--smoke"], {
+      usesTemporaryDataRoot: true,
+    }),
+  ).toBe("isolated-dev");
 });
 
 it("removes parent Desktop Host ownership while preserving runtime settings", () => {

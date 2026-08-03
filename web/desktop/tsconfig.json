@@ -15,5 +15,5 @@
     "outDir": "../desktop-dist"
   },
   "include": ["./*.ts", "../shared/**/*.ts"],
-  "exclude": ["./*.test.ts"]
+  "exclude": ["./*.test.ts", "../shared/**/*.test.ts"]
 }
