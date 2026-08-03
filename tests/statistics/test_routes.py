@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from tests.telemetry.support import BASE_TIME, batch_request, span_payload
 from trowel_py.statistics.routes import router
+from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
 from trowel_py.telemetry.collector import TelemetryCollector
 from trowel_py.telemetry.contracts import prepare_batch
 from trowel_py.telemetry.storage import TelemetryDatabase
@@ -154,3 +155,44 @@ def test_agent_statistics_reports_unavailable_reader() -> None:
 
     assert response.status_code == 503
     assert response.json()["error"] == "statistics agent source unavailable"
+
+
+def test_memory_statistics_uses_injected_isolated_root(tmp_path: Path) -> None:
+    app = FastAPI()
+    app.state.memory_statistics_reader = FileMemoryStatisticsReader(tmp_path)
+    app.include_router(router, prefix="/api/statistics")
+
+    response = TestClient(app).get(
+        "/api/statistics/memory",
+        params={
+            "start_date": "2026-08-03",
+            "end_date": "2026-08-03",
+            "timezone": "Asia/Shanghai",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["window_start"] == "2026-08-03T00:00:00+08:00"
+    assert body["data"]["sample_size"] == 0
+    assert body["data"]["quality"] == "unavailable"
+    assert body["data"]["assets"]["active_notes"] == 0
+
+
+def test_memory_statistics_reports_unavailable_reader() -> None:
+    app = FastAPI()
+    app.state.memory_statistics_reader = None
+    app.include_router(router, prefix="/api/statistics")
+
+    response = TestClient(app).get(
+        "/api/statistics/memory",
+        params={
+            "start_date": "2026-08-03",
+            "end_date": "2026-08-03",
+            "timezone": "UTC",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "statistics memory source unavailable"

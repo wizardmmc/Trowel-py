@@ -83,6 +83,7 @@ async def _judge_session_inner(
     host_factory: HostFactory | None,
     review_source: ReviewSource,
     segment_id: str = "",
+    activity_dates: tuple[str, ...] = (),
 ) -> JudgementReport:
     """运行一次会话判效并保存过滤后的报告。
 
@@ -104,6 +105,7 @@ async def _judge_session_inner(
             CCHost。
         review_source: 与 refine 相同的历史上下文和本次判效目标。
         segment_id: 写入报告的可选来源片段 ID。
+        activity_dates: 当前来源片段按真实事件或稳定回退时间确认的活动日期。
 
     Returns:
         已移除未知 Note ID 且完成持久化的判效报告。
@@ -178,6 +180,7 @@ async def _judge_session_inner(
         draft_path.read_text(encoding="utf-8"),
         cc_session_id=session.native_session_id,
         segment_id=segment_id,
+        activity_dates=activity_dates,
     )
     known_ids = frozenset(
         note.memory_id for _stem, note in store.load_notes_with_id() if note.memory_id
@@ -201,6 +204,7 @@ async def judge_session(
     review_source: ReviewSource,
     host_factory: HostFactory | None = None,
     segment_id: str = "",
+    activity_dates: tuple[str, ...] = (),
 ) -> JudgementReport | None:
     """判定单个会话，并把普通异常隔离为 ``None``。
 
@@ -214,6 +218,7 @@ async def judge_session(
         review_source: 与 refine 相同的历史上下文和本次判效目标。
         host_factory: 可选 host 构造器，接收会话和判效目录。
         segment_id: 写入报告的可选来源片段 ID。
+        activity_dates: 当前来源片段按真实事件或稳定回退时间确认的活动日期。
 
     Returns:
         成功时返回已保存且过滤未知 Note ID 的报告；任一 ``Exception`` 发生时
@@ -227,6 +232,7 @@ async def judge_session(
             host_factory,
             review_source,
             segment_id,
+            activity_dates,
         )
     except Exception as exc:  # noqa: BLE001 - 判效是旁路，普通失败不能中断 review。
         logger.warning(

@@ -74,6 +74,8 @@ class JudgementReport:
         segment_id: 来源片段 ID；空值写入 ``meta/judgements/<session>.json``，
             非空值写入 ``meta/judgements/<session>/<segment>.json``，其中冒号
             替换为下划线。同一会话存在分段报告时，批量加载会忽略平铺报告。
+        activity_dates: 被判效来源按本地时区确认的活动日期。旧报告缺少该字段时
+            为空，统计查询不得把它强行归入某个日期。
     """
 
     cc_session_id: str
@@ -81,6 +83,7 @@ class JudgementReport:
     recall_miss: tuple[MissJudgement, ...]
     summary: str
     segment_id: str = ""
+    activity_dates: tuple[str, ...] = ()
 
 
 # 以下子模块会反向导入本模块的数据契约，须在定义后延迟导入以免循环初始化失败。

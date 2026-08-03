@@ -104,6 +104,88 @@ export interface AgentStatistics {
   readonly sessions: readonly AgentSession[];
 }
 
+export interface MemoryRatio {
+  readonly numerator: number;
+  readonly denominator: number;
+  readonly ratio: number | null;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryAttribution {
+  readonly attributed: number;
+  readonly unattributed: number;
+  readonly coverage: MemoryRatio;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryRetrieval {
+  readonly search_calls: number;
+  readonly nonempty_search_calls: number;
+  readonly empty_search_calls: number;
+  readonly search_hits: number;
+  readonly reads: number;
+  readonly read_sessions: number;
+  readonly read_rate: MemoryRatio;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryEffect {
+  readonly helpful: number;
+  readonly harmful: number;
+  readonly unused: number;
+  readonly unknown: number;
+  readonly judged_user_sessions: number;
+  readonly eligible_user_sessions: number;
+  readonly judgement_coverage: MemoryRatio;
+  readonly helpful_rate: MemoryRatio;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryRecall {
+  readonly retrieval_miss: number;
+  readonly awareness_miss: number;
+  readonly judged_user_sessions: number;
+  readonly miss_rate: MemoryRatio;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryAssets {
+  readonly as_of: string;
+  readonly active_notes: number;
+  readonly raw_reads: number;
+  readonly raw_harmful_outcomes: number;
+  readonly contradicted_or_superseded: number;
+  readonly harmful_high_notes: number;
+  readonly dictionary_status: "consistent" | "stale" | "missing";
+  readonly dictionary_updated_at: string | null;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemorySource {
+  readonly updated_at: string | null;
+  readonly sample_start: string | null;
+  readonly sample_end: string | null;
+  readonly sample_size: number;
+  readonly unknown_time_records: number;
+  readonly quality: StatisticsQuality;
+}
+
+export interface MemoryStatistics {
+  readonly generated_at: string;
+  readonly window_start: string;
+  readonly window_end: string;
+  readonly timezone: string;
+  readonly sample_size: number;
+  readonly quality: StatisticsQuality;
+  readonly freshness: Readonly<Record<string, SourceFreshness>>;
+  readonly sources: Readonly<Record<string, MemorySource>>;
+  readonly attribution: MemoryAttribution;
+  readonly retrieval: MemoryRetrieval;
+  readonly effect: MemoryEffect;
+  readonly recall: MemoryRecall;
+  readonly assets: MemoryAssets;
+}
+
 export interface CollectorStatistics {
   readonly accepted: number;
   readonly rejected: number;

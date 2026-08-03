@@ -5,12 +5,14 @@ import type {
   StatisticsDateRange,
   AgentRuntimeFilter,
   AgentStatistics,
+  MemoryStatistics,
   StatisticsResolution,
   StatisticsTab,
   TelemetryStatistics,
 } from "../domain/types";
 import {
   fetchAgentStatistics,
+  fetchMemoryStatistics,
   fetchTelemetryStatistics,
 } from "../transport/api";
 
@@ -18,6 +20,9 @@ export interface StatisticsApi {
   readonly fetchAgent: (
     range: StatisticsDateRange,
   ) => Promise<AgentStatistics>;
+  readonly fetchMemory: (
+    range: StatisticsDateRange,
+  ) => Promise<MemoryStatistics>;
   readonly fetchTelemetry: (
     range: StatisticsDateRange,
     resolution: StatisticsResolution,
@@ -30,10 +35,13 @@ export interface StatisticsState {
   readonly resolution: StatisticsResolution;
   readonly telemetry: TelemetryStatistics | null;
   readonly agent: AgentStatistics | null;
+  readonly memory: MemoryStatistics | null;
   readonly loading: boolean;
   readonly error: string | null;
   readonly agentLoading: boolean;
   readonly agentError: string | null;
+  readonly memoryLoading: boolean;
+  readonly memoryError: string | null;
   readonly runtimeFilter: AgentRuntimeFilter;
   readonly modelFilter: string;
   readonly setActiveTab: (tab: StatisticsTab) => void;
@@ -43,10 +51,12 @@ export interface StatisticsState {
   readonly setModelFilter: (model: string) => void;
   readonly refreshTelemetry: () => Promise<void>;
   readonly refreshAgent: () => Promise<void>;
+  readonly refreshMemory: () => Promise<void>;
 }
 
 const defaultApi: StatisticsApi = {
   fetchAgent: fetchAgentStatistics,
+  fetchMemory: fetchMemoryStatistics,
   fetchTelemetry: fetchTelemetryStatistics,
 };
 
@@ -54,30 +64,38 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
   const api = { ...defaultApi, ...apiOverrides };
   let latestTelemetryRequest = 0;
   let latestAgentRequest = 0;
+  let latestMemoryRequest = 0;
   return createStore<StatisticsState>((set, get) => ({
     activeTab: "overview",
     dateRange: initialDateRange(),
     resolution: "hour",
     telemetry: null,
     agent: null,
+    memory: null,
     loading: false,
     error: null,
     agentLoading: false,
     agentError: null,
+    memoryLoading: false,
+    memoryError: null,
     runtimeFilter: "all",
     modelFilter: "all",
     setActiveTab: (activeTab) => set({ activeTab }),
     setDateRange: (dateRange) => {
       latestTelemetryRequest += 1;
       latestAgentRequest += 1;
+      latestMemoryRequest += 1;
       set({
         dateRange,
         telemetry: null,
         agent: null,
+        memory: null,
         loading: false,
         error: null,
         agentLoading: false,
         agentError: null,
+        memoryLoading: false,
+        memoryError: null,
         modelFilter: "all",
       });
     },
@@ -118,6 +136,23 @@ export function createStatisticsStore(apiOverrides: Partial<StatisticsApi> = {})
           agentLoading: false,
           agentError:
             error instanceof Error ? error.message : "Agent 统计数据读取失败",
+        });
+      }
+    },
+    refreshMemory: async () => {
+      const request = ++latestMemoryRequest;
+      const { dateRange } = get();
+      set({ memoryLoading: true, memoryError: null });
+      try {
+        const memory = await api.fetchMemory(dateRange);
+        if (request !== latestMemoryRequest) return;
+        set({ memory, memoryLoading: false });
+      } catch (error) {
+        if (request !== latestMemoryRequest) return;
+        set({
+          memoryLoading: false,
+          memoryError:
+            error instanceof Error ? error.message : "Memory 统计数据读取失败",
         });
       }
     },

@@ -88,6 +88,7 @@ def _report_to_dict(r: JudgementReport) -> dict[str, object]:
         "recall_miss": [_miss_to_dict(miss) for miss in r.recall_miss],
         "summary": r.summary,
         "segment_id": r.segment_id,
+        "activity_dates": list(r.activity_dates),
     }
 
 
@@ -107,6 +108,12 @@ def _report_from_dict(d: dict[str, object]) -> JudgementReport:
     raw_hits = raw_hits_value if isinstance(raw_hits_value, list) else []
     raw_miss_value = d.get("recall_miss", [])
     raw_miss = raw_miss_value if isinstance(raw_miss_value, list) else []
+    raw_activity_dates_value = d.get("activity_dates", [])
+    raw_activity_dates = (
+        raw_activity_dates_value
+        if isinstance(raw_activity_dates_value, list)
+        else []
+    )
     return JudgementReport(
         cc_session_id=str(d.get("cc_session_id") or ""),
         hits=tuple(_hit_from_dict(hit) for hit in raw_hits if isinstance(hit, dict)),
@@ -115,4 +122,7 @@ def _report_from_dict(d: dict[str, object]) -> JudgementReport:
         ),
         summary=str(d.get("summary") or ""),
         segment_id=str(d.get("segment_id") or ""),
+        activity_dates=tuple(
+            str(value) for value in raw_activity_dates if str(value).strip()
+        ),
     )

@@ -36,6 +36,33 @@ def _system_local_tz() -> tzinfo | None:
     return datetime.now().astimezone().tzinfo
 
 
+def _parse_iso_datetime(
+    raw: str,
+    naive_tz: tzinfo | None = None,
+) -> datetime | None:
+    """解析 ISO 时间，无偏移值按明确或系统本地时区解释。
+
+    Args:
+        raw: ISO 8601 时间文本。
+        naive_tz: 无偏移文本使用的时区；省略时使用系统本地时区。
+
+    Returns:
+        带时区的时间；空字符串或格式错误时为 None。
+    """
+    text = raw.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=naive_tz or _system_local_tz())
+    return value
+
+
 def _parse_iso_to_date(raw: str, tz: tzinfo | None) -> str | None:
     """把 ISO 时间转换为指定时区的日期。
 
@@ -48,20 +75,9 @@ def _parse_iso_to_date(raw: str, tz: tzinfo | None) -> str | None:
     Returns:
         ``YYYY-MM-DD`` 格式的日期；无法解析时为 None。
     """
-    if not raw:
+    dt = _parse_iso_datetime(raw)
+    if dt is None:
         return None
-    text = raw.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        # 完成和登记时间可能不带时区；会话事件时间通常带 Z 或显式偏移。
-        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return dt.astimezone(tz).date().isoformat()
 
 

@@ -3564,6 +3564,67 @@
           }
         }
       },
+      "/api/statistics/memory": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Memory Statistics",
+          "description": "读取 Memory 使用事实和资产，并返回不含正文的 read model。\n\nArgs:\n    request: 用于读取应用持有的 Memory statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_memory_statistics_api_statistics_memory_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_MemoryStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/statistics/telemetry": {
         "get": {
           "tags": [
@@ -4212,6 +4273,42 @@
           ],
           "title": "ApiEnvelope[AgentStatisticsData]"
         },
+        "ApiEnvelope_MemoryStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MemoryStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[MemoryStatisticsData]"
+        },
         "ApiEnvelope_TelemetryStatisticsData_": {
           "properties": {
             "success": {
@@ -4799,6 +4896,451 @@
           },
           "type": "object",
           "title": "HTTPValidationError"
+        },
+        "MemoryAssetsData": {
+          "properties": {
+            "as_of": {
+              "type": "string",
+              "title": "As Of"
+            },
+            "active_notes": {
+              "type": "integer",
+              "title": "Active Notes"
+            },
+            "raw_reads": {
+              "type": "integer",
+              "title": "Raw Reads"
+            },
+            "raw_harmful_outcomes": {
+              "type": "integer",
+              "title": "Raw Harmful Outcomes"
+            },
+            "contradicted_or_superseded": {
+              "type": "integer",
+              "title": "Contradicted Or Superseded"
+            },
+            "harmful_high_notes": {
+              "type": "integer",
+              "title": "Harmful High Notes"
+            },
+            "dictionary_status": {
+              "type": "string",
+              "enum": [
+                "consistent",
+                "stale",
+                "missing"
+              ],
+              "title": "Dictionary Status"
+            },
+            "dictionary_updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dictionary Updated At"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "as_of",
+            "active_notes",
+            "raw_reads",
+            "raw_harmful_outcomes",
+            "contradicted_or_superseded",
+            "harmful_high_notes",
+            "dictionary_status",
+            "dictionary_updated_at",
+            "quality"
+          ],
+          "title": "MemoryAssetsData",
+          "description": "公开当前 Memory 资产规模和 Dictionary 状态。\n\nAttributes:\n    as_of: 当前资产快照的本地日期。\n    active_notes: 当前可检索的 active Note 数。\n    raw_reads: 未按用户会话过滤的原始读取记录数。\n    raw_harmful_outcomes: 原始 harmful outcome 记录数。\n    contradicted_or_superseded: 当前矛盾或已被替代的未退休 Note 数。\n    harmful_high_notes: harmful 引用达到退休阈值的未退休 Note 数。\n    dictionary_status: consistent、stale 或 missing。\n    dictionary_updated_at: 最近成功发布或标记 stale 的时间；未知时为 None。\n    quality: Note 与 Dictionary 来源的整体完整度。"
+        },
+        "MemoryAttributionData": {
+          "properties": {
+            "attributed": {
+              "type": "integer",
+              "title": "Attributed"
+            },
+            "unattributed": {
+              "type": "integer",
+              "title": "Unattributed"
+            },
+            "coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "attributed",
+            "unattributed",
+            "coverage",
+            "quality"
+          ],
+          "title": "MemoryAttributionData",
+          "description": "公开访问事件的身份归因覆盖情况。\n\nAttributes:\n    attributed: 已归到用户或内部会话的访问记录数。\n    unattributed: 无法确认会话归属的访问记录数。\n    coverage: 以全部访问记录为分母的归因覆盖率。\n    quality: 访问记录身份与时间的证据完整度。"
+        },
+        "MemoryEffectData": {
+          "properties": {
+            "helpful": {
+              "type": "integer",
+              "title": "Helpful"
+            },
+            "harmful": {
+              "type": "integer",
+              "title": "Harmful"
+            },
+            "unused": {
+              "type": "integer",
+              "title": "Unused"
+            },
+            "unknown": {
+              "type": "integer",
+              "title": "Unknown"
+            },
+            "judged_user_sessions": {
+              "type": "integer",
+              "title": "Judged User Sessions"
+            },
+            "eligible_user_sessions": {
+              "type": "integer",
+              "title": "Eligible User Sessions"
+            },
+            "judgement_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "helpful_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "helpful",
+            "harmful",
+            "unused",
+            "unknown",
+            "judged_user_sessions",
+            "eligible_user_sessions",
+            "judgement_coverage",
+            "helpful_rate",
+            "quality"
+          ],
+          "title": "MemoryEffectData",
+          "description": "公开 Note 与用户会话对的唯一效果结论。\n\nAttributes:\n    helpful: 判定为产生帮助的 Note-session 对数。\n    harmful: 判定为造成误导的 Note-session 对数。\n    unused: 明确读到但未用于决策的 Note-session 对数。\n    unknown: 无法判断效果的 Note-session 对数，不进入效果分母。\n    judged_user_sessions: 当前时间窗内已有判效的用户会话数。\n    eligible_user_sessions: 有访问或判效证据的用户会话数。\n    judgement_coverage: 已判效用户会话占可判会话的比例。\n    helpful_rate: helpful 占 helpful、harmful、unused 总和的比例。\n    quality: 判效证据和来源活动日期的完整度。"
+        },
+        "MemoryRatioData": {
+          "properties": {
+            "numerator": {
+              "type": "integer",
+              "title": "Numerator"
+            },
+            "denominator": {
+              "type": "integer",
+              "title": "Denominator"
+            },
+            "ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ratio"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "numerator",
+            "denominator",
+            "ratio",
+            "quality"
+          ],
+          "title": "MemoryRatioData",
+          "description": "公开一个不能与其他指标混用分母的比例。\n\nAttributes:\n    numerator: 当前指标自己的分子。\n    denominator: 当前指标自己的分母；没有样本时为 0。\n    ratio: 分子除以分母；没有分母时为 None。\n    quality: 当前分子、分母和比例的证据完整度。"
+        },
+        "MemoryRecallData": {
+          "properties": {
+            "retrieval_miss": {
+              "type": "integer",
+              "title": "Retrieval Miss"
+            },
+            "awareness_miss": {
+              "type": "integer",
+              "title": "Awareness Miss"
+            },
+            "judged_user_sessions": {
+              "type": "integer",
+              "title": "Judged User Sessions"
+            },
+            "miss_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "retrieval_miss",
+            "awareness_miss",
+            "judged_user_sessions",
+            "miss_rate",
+            "quality"
+          ],
+          "title": "MemoryRecallData",
+          "description": "公开本应使用却未使用的 Memory 召回缺口。\n\nAttributes:\n    retrieval_miss: 检索和 Dictionary 都未召回的条目数。\n    awareness_miss: 已出现在线索中但 Agent 没意识到可用的条目数。\n    judged_user_sessions: recall miss 比例使用的已判效用户会话分母。\n    miss_rate: 两类 miss 合计除以已判效用户会话数的比例。\n    quality: 判效覆盖和来源活动日期的完整度。"
+        },
+        "MemoryRetrievalData": {
+          "properties": {
+            "search_calls": {
+              "type": "integer",
+              "title": "Search Calls"
+            },
+            "nonempty_search_calls": {
+              "type": "integer",
+              "title": "Nonempty Search Calls"
+            },
+            "empty_search_calls": {
+              "type": "integer",
+              "title": "Empty Search Calls"
+            },
+            "search_hits": {
+              "type": "integer",
+              "title": "Search Hits"
+            },
+            "reads": {
+              "type": "integer",
+              "title": "Reads"
+            },
+            "read_sessions": {
+              "type": "integer",
+              "title": "Read Sessions"
+            },
+            "read_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "search_calls",
+            "nonempty_search_calls",
+            "empty_search_calls",
+            "search_hits",
+            "reads",
+            "read_sessions",
+            "read_rate",
+            "quality"
+          ],
+          "title": "MemoryRetrievalData",
+          "description": "公开搜索调用、候选命中和实际读取。\n\nAttributes:\n    search_calls: 带查询文本的搜索调用记录数。\n    nonempty_search_calls: 至少产生一个候选命中的搜索调用数。\n    empty_search_calls: 没有候选命中的搜索调用数。\n    search_hits: 搜索返回的 Note 候选记录数，不是调用数。\n    reads: 实际打开 Note 正文的记录数。\n    read_sessions: 至少读取过一条 Note 的用户会话数。\n    read_rate: 以候选命中为分母的读取比例。\n    quality: 搜索与读取来源的证据完整度。"
+        },
+        "MemorySourceData": {
+          "properties": {
+            "updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated At"
+            },
+            "sample_start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sample Start"
+            },
+            "sample_end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sample End"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "unknown_time_records": {
+              "type": "integer",
+              "title": "Unknown Time Records"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "updated_at",
+            "sample_start",
+            "sample_end",
+            "sample_size",
+            "unknown_time_records",
+            "quality"
+          ],
+          "title": "MemorySourceData",
+          "description": "公开一个 Memory 事实源的范围和时间完整性。\n\nAttributes:\n    updated_at: 当前来源最后一个可解析事实时间；未知时为 None。\n    sample_start: 本次查询命中样本的最早时间；没有样本时为 None。\n    sample_end: 本次查询命中样本的最晚时间；没有样本时为 None。\n    sample_size: 本次查询读取的来源记录数。\n    unknown_time_records: 因旧格式或损坏而无法归入日期的记录数。\n    quality: 当前来源的时间和内容完整度。"
+        },
+        "MemoryStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "sources": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/MemorySourceData"
+              },
+              "type": "object",
+              "title": "Sources"
+            },
+            "attribution": {
+              "$ref": "#/components/schemas/MemoryAttributionData"
+            },
+            "retrieval": {
+              "$ref": "#/components/schemas/MemoryRetrievalData"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/MemoryEffectData"
+            },
+            "recall": {
+              "$ref": "#/components/schemas/MemoryRecallData"
+            },
+            "assets": {
+              "$ref": "#/components/schemas/MemoryAssetsData"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "sources",
+            "attribution",
+            "retrieval",
+            "effect",
+            "recall",
+            "assets"
+          ],
+          "title": "MemoryStatisticsData",
+          "description": "公开 Memory 页所需的时间窗、四类指标、资产和来源。\n\nAttributes:\n    generated_at: 本次只读快照生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内可解码访问记录数，不混入判效或资产数量。\n    quality: 全部 Memory 来源中的最低质量。\n    freshness: 与其他 Statistics API 共用的来源新鲜度摘要。\n    sources: 每个 Memory 来源的样本范围、数量和质量。\n    attribution: 访问事件归因覆盖。\n    retrieval: 搜索、候选命中和实际读取。\n    effect: Note-session 对的效果分类。\n    recall: retrieval miss 与 awareness miss。\n    assets: 当前 Note、日志和 Dictionary 资产快照。"
         },
         "MetricAggregateData": {
           "properties": {
