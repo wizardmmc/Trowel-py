@@ -12,16 +12,19 @@ from .models import (
     CodexTurnRecord,
     IncrementalSegment,
     ReviewRequest,
+    SessionProblemRecord,
     SessionBinding,
     SessionRecord,
     SessionRegistrar,
 )
 from .repository import SessionsRepository, create_sessions_repository
 from .review_requests import ReviewRequestsRepository
+from .session_problems import SessionProblemsRepository
 
 __all__ = [
     "IncrementalSegment",
     "ReviewRequest",
+    "SessionProblemRecord",
     "SessionBinding",
     "SessionRecord",
     "CodexTurnRecord",
@@ -33,6 +36,7 @@ __all__ = [
     "ClaudeSessionRegistrar",
     "ClaudeSessionsRepository",
     "ReviewRequestsRepository",
+    "SessionProblemsRepository",
     "SessionRegistrar",
     "SessionsRepository",
     "create_sessions_repository",

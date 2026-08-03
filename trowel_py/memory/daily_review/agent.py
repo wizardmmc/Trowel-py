@@ -6,7 +6,6 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,16 +18,22 @@ from trowel_py.memory.daily_review.sources import (
     resolve_available_review_source,
 )
 from trowel_py.memory.daily_review.models import ReviewSessionLike
+from trowel_py.memory.daily_review.host_runtime import (
+    DEFAULT_REVIEW_MODEL,
+    ReviewHostFactory,
+    create_review_host,
+    drive_review_host,
+    review_derivation,
+)
 from trowel_py.memory.daily_review.workspace import ensure_review_workdir
 from trowel_py.memory.draft import Draft, parse_draft, validate_draft
 from trowel_py.memory.prompt import build_refine_prompt
-from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
+from trowel_py.memory.provenance import DerivationProvenance
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
-HostFactory = Callable[[ReviewSessionLike, Path], Any]
+HostFactory = ReviewHostFactory
 DerivationSink = Callable[[DerivationProvenance], None]
 _REFINE_PIPELINE_VERSION = 3
-_DISTILL_MODEL = "glm-5.1"
 logger = logging.getLogger("trowel_py.memory.review_agent")
 
 
@@ -57,7 +62,7 @@ def resource_aware_host_factory(
         return CCHost(
             session_id=uuid.uuid4().hex,
             workdir=str(workdir),
-            model=_DISTILL_MODEL,
+            model=DEFAULT_REVIEW_MODEL,
             session_kind="review",
             mcp_config=str(write_mcp_config()),
             process_controller=registry.process_controller,
@@ -69,6 +74,16 @@ def resource_aware_host_factory(
 
 class DistillError(Exception):
     """表示当前来源片段未能产出通过门禁的草稿。"""
+
+
+def _derivation_for_host(host: Any) -> DerivationProvenance:
+    """保留 refine 层既有测试入口，并委托共享 provenance 构造器。"""
+
+    return review_derivation(
+        host,
+        pipeline="memory.refine",
+        pipeline_version=_REFINE_PIPELINE_VERSION,
+    )
 
 
 def _remove_legacy_numbered_sources(workdir: Path) -> None:
@@ -141,23 +156,6 @@ def _available_review_source(
     return available_source
 
 
-async def _drive_host(host: Any, prompt: str) -> bool:
-    """发送提示并耗尽 host 事件流，报告其中是否出现 ``finished`` 事件。
-
-    Args:
-        host: 提供异步 ``send()`` 方法的提炼 host。
-        prompt: 本轮发送给 host 的提示。
-
-    Returns:
-        事件流中是否至少出现一次 ``finished`` 事件。
-    """
-    finished = False
-    async for event in host.send(prompt):
-        if getattr(event, "type", None) == "finished":
-            finished = True
-    return finished
-
-
 def _read_draft(draft_path: Path) -> tuple[Draft | None, list[str]]:
     """解析草稿并检查其结构。
 
@@ -185,76 +183,6 @@ def _revision_prompt(errors: list[str]) -> str:
         "draft.json，按下面具体错误压缩、合并或补全；不要改 memory，不要写其他文件。\n\n"
         f"【门禁错误】\n{details}\n\n"
         "保持原有事实和 item kind，修好后回复“draft 已修正”。"
-    )
-
-
-def _create_host(
-    session: ReviewSessionLike,
-    workdir: Path,
-    host_factory: HostFactory | None,
-) -> Any:
-    """通过注入工厂创建 host，或启动隔离的 Claude Code 提炼会话。
-
-    Args:
-        session: 当前来源会话；仅传给注入的 host 工厂。
-        workdir: host 写入 ``draft.json`` 的隔离工作目录。
-        host_factory: 自定义 host 工厂；为 None 时使用固定提炼模型创建真实
-            Claude Code host。
-
-    Returns:
-        供后续发送提示的提炼 host；对象提供 ``close()`` 时，调用方会在结束时
-        关闭它。
-    """
-    if host_factory is not None:
-        return host_factory(session, workdir)
-
-    from trowel_py.cc_host.service import CCHost
-    from trowel_py.memory.mcp_config import write_mcp_config
-
-    # daily review 可脱离 FastAPI 生命周期运行，因此在这里直接创建 CCHost。
-    return CCHost(
-        session_id=uuid.uuid4().hex,
-        workdir=str(workdir),
-        model=_DISTILL_MODEL,
-        # review 类型阻止提炼会话重新进入待提炼的用户 session 队列。
-        session_kind="review",
-        # 提炼提示要求使用 memory.search，真实 host 因此必须挂载 memory MCP。
-        mcp_config=str(write_mcp_config()),
-    )
-
-
-def _derivation_for_host(host: Any) -> DerivationProvenance:
-    """根据提炼 host 的配置生成派生来源记录。
-
-    host 未提供模型和推理强度时不记录生成模型；未提供 session ID 时生成新的
-    run ID。
-
-    Args:
-        host: 本次生成草稿的提炼 host。
-
-    Returns:
-        记录提炼流水线、Claude Code runtime 和运行 ID；host 提供模型或推理
-        强度时也记录生成模型配置。
-    """
-    model = getattr(host, "model", None)
-    effort = getattr(host, "effort", None)
-    generator = (
-        ModelIdentity(
-            model=str(model or ""),
-            effort=str(effort or ""),
-            basis="host_config",
-        )
-        if any(isinstance(value, str) and value.strip() for value in (model, effort))
-        else None
-    )
-    run_id = getattr(host, "session_id", None)
-    return DerivationProvenance(
-        pipeline="memory.refine",
-        pipeline_version=_REFINE_PIPELINE_VERSION,
-        run_id=str(run_id or uuid.uuid4().hex),
-        generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        generator_runtime="claude_code",
-        generator=generator,
     )
 
 
@@ -304,10 +232,10 @@ async def run_one_session(
     )
     draft_path = workdir / "draft.json"
     draft_path.unlink(missing_ok=True)
-    host = _create_host(session, workdir, host_factory)
+    host = create_review_host(session, workdir, host_factory)
 
     try:
-        if not await _drive_host(host, prompt):
+        if not await drive_review_host(host, prompt):
             raise DistillError(
                 f"agent did not finish cleanly for {session.native_session_id}"
             )
@@ -318,7 +246,9 @@ async def run_one_session(
                 if derivation_sink is not None:
                     derivation_sink(_derivation_for_host(host))
                 return draft
-            if attempt == 0 and not await _drive_host(host, _revision_prompt(errors)):
+            if attempt == 0 and not await drive_review_host(
+                host, _revision_prompt(errors)
+            ):
                 raise DistillError(
                     "agent did not finish draft revision cleanly for "
                     f"{session.native_session_id}"

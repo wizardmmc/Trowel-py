@@ -180,6 +180,12 @@
       },
       {
         "type": "index",
+        "name": "idx_session_review_problems_closed",
+        "table": "session_review_problems",
+        "sql": "CREATE INDEX idx_session_review_problems_closed ON session_review_problems(closed_at_epoch_us DESC, trowel_session_id DESC)"
+      },
+      {
+        "type": "index",
         "name": "idx_session_review_requests_order",
         "table": "session_review_requests",
         "sql": "CREATE INDEX idx_session_review_requests_order ON session_review_requests(requested_at, trowel_session_id)"
@@ -210,9 +216,15 @@
       },
       {
         "type": "table",
+        "name": "session_review_problems",
+        "table": "session_review_problems",
+        "sql": "CREATE TABLE session_review_problems ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, closed_at TEXT NOT NULL, closed_at_epoch_us INTEGER NOT NULL, problem_text TEXT, reviewed_at TEXT NOT NULL, pipeline_version INTEGER NOT NULL, run_id TEXT NOT NULL, generator_runtime TEXT NOT NULL, generator_model TEXT NOT NULL, generator_effort TEXT NOT NULL, source_quality TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
         "name": "session_review_requests",
         "table": "session_review_requests",
-        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, not_before TEXT NOT NULL, native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER )"
+        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, not_before TEXT NOT NULL, closed_at TEXT NOT NULL DEFAULT '', native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER, problem_recorded_at TEXT )"
       },
       {
         "type": "table",
@@ -3509,6 +3521,93 @@
           }
         }
       },
+      "/api/statistics/session-problems": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Session Problem List",
+          "description": "按会话关闭时间倒序返回一页非空复盘问题。\n\n完整分析但没有问题的会话只进入时间窗计数，不进入列表。响应不会公开生成\nAgent 的模型、运行 ID、原生会话 ID 或本机路径。",
+          "operationId": "get_session_problem_list_api_statistics_session_problems_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "50",
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_SessionProblemListData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/statistics/calls": {
         "get": {
           "tags": [
@@ -4687,6 +4786,42 @@
             "error"
           ],
           "title": "ApiEnvelope[RuntimeStatisticsData]"
+        },
+        "ApiEnvelope_SessionProblemListData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SessionProblemListData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[SessionProblemListData]"
         },
         "ApiEnvelope_TelemetryStatisticsData_": {
           "properties": {
@@ -6883,6 +7018,125 @@
           ],
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。\n\nAttributes:\n    text: 作为本轮用户输入发送给 CC 的文字。"
+        },
+        "SessionProblemItemData": {
+          "properties": {
+            "trowel_session_id": {
+              "type": "string",
+              "title": "Trowel Session Id"
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "closed_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Closed At"
+            },
+            "problem_text": {
+              "type": "string",
+              "title": "Problem Text"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trowel_session_id",
+            "runtime",
+            "closed_at",
+            "problem_text"
+          ],
+          "title": "SessionProblemItemData",
+          "description": "公开一条可复制问题及其原会话身份。"
+        },
+        "SessionProblemListData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "reviewed_session_count": {
+              "type": "integer",
+              "title": "Reviewed Session Count"
+            },
+            "problem_count": {
+              "type": "integer",
+              "title": "Problem Count"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/SessionProblemItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next Cursor"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "reviewed_session_count",
+            "problem_count",
+            "items",
+            "next_cursor"
+          ],
+          "title": "SessionProblemListData",
+          "description": "返回一页问题、完整时间窗计数和来源状态。"
         },
         "SetCodexGoalRequest": {
           "properties": {

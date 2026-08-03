@@ -64,19 +64,59 @@ class ReviewRequest:
         trowel_session_id: 已关闭的 Trowel 用户会话 ID，同时作为幂等键。
         runtime: 会话使用的运行工具，值为 ``claude_code`` 或 ``codex``。
         requested_at: 关闭流程持久化该请求的本地 ISO 时间，用于稳定排序。
+        closed_at: 带当地 UTC 偏移的会话关闭时间，供跨时区统计查询。
         not_before: worker 最早可以领取请求的本地 ISO 时间。
         native_session_id: CC 请求关闭时绑定的原生会话 ID；Codex 为空。
         source_start_offset: CC 会话首次绑定时的完成水位；Codex 为空。
         source_end_offset: CC 会话关闭时的完成水位；Codex 为空。
+        problem_recorded_at: 会话问题或明确空结果已经保存的时间；尚未完成时为
+            None。
     """
 
     trowel_session_id: str
     runtime: str
     requested_at: str
     not_before: str
+    closed_at: str = ""
     native_session_id: str = ""
     source_start_offset: int | None = None
     source_end_offset: int | None = None
+    problem_recorded_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionProblemRecord:
+    """保存一个已关闭 Trowel 用户会话的复盘问题结果。
+
+    ``problem_text=None`` 表示已经完整分析但没有被证据支持的问题，不表示尚未
+    处理。``trowel_session_id`` 是唯一键；重复保存时保留首次完成结果。
+
+    Attributes:
+        trowel_session_id: Trowel 分配的用户会话 ID。
+        runtime: 原会话使用的运行工具，值为 ``claude_code`` 或 ``codex``。
+        closed_at: 带 UTC 偏移的会话关闭时间。
+        problem_text: 最值得回看的一个问题；没有明确问题时为 None。
+        reviewed_at: 问题分析完成并准备持久化的带偏移时间。
+        pipeline_version: 会话问题 prompt 和解析契约的版本。
+        run_id: 本次问题分析 Agent 的运行 ID；确定性空结果可以为空字符串。
+        generator_runtime: 执行分析的 runtime；未调用模型时为空字符串。
+        generator_model: 执行分析的模型；无法确认或未调用时为空字符串。
+        generator_effort: 执行分析的推理强度；无法确认时为空字符串。
+        source_quality: reliable 表示完整会话边界可读，unavailable 表示旧请求
+            缺少可靠边界而只能记录空结果。
+    """
+
+    trowel_session_id: str
+    runtime: str
+    closed_at: str
+    problem_text: str | None
+    reviewed_at: str
+    pipeline_version: int
+    run_id: str
+    generator_runtime: str
+    generator_model: str
+    generator_effort: str
+    source_quality: str
 
 
 @runtime_checkable

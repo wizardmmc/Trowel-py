@@ -109,9 +109,11 @@ def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
         "runtime",
         "requested_at",
         "not_before",
+        "closed_at",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",
+        "problem_recorded_at",
     }
     conn.close()
 
@@ -139,14 +141,18 @@ def test_old_review_queue_migrates_frozen_source_columns(tmp_path) -> None:
 
     assert {
         "not_before",
+        "closed_at",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",
+        "problem_recorded_at",
     } <= columns
     assert request is not None
     assert request.native_session_id == ""
+    assert request.closed_at == "2026-07-31T10:00:00"
     assert request.source_start_offset is None
     assert request.source_end_offset is None
+    assert request.problem_recorded_at is None
     migrated.close()
 
 

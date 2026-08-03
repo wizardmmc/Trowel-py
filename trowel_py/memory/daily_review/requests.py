@@ -33,19 +33,25 @@ def enqueue_session_review(
     """
 
     now = (now_fn or datetime.now)()
-    if now.tzinfo is not None:
-        now = now.replace(tzinfo=None)
+    closed_at = (
+        now.isoformat(timespec="microseconds")
+        if now.tzinfo is not None and now.utcoffset() is not None
+        else now.astimezone().isoformat(timespec="microseconds")
+    )
+    wall_clock_now = now.replace(tzinfo=None) if now.tzinfo is not None else now
     conn = open_sessions_db(memory_root)
     try:
         create_sessions_repository(conn).review_requests.enqueue(
             binding.session_id,
             runtime=binding.runtime.value,
-            requested_at=now.isoformat(timespec="microseconds"),
-            not_before=(now + SESSION_REVIEW_DELAY).isoformat(timespec="microseconds"),
+            requested_at=wall_clock_now.isoformat(timespec="microseconds"),
+            not_before=(wall_clock_now + SESSION_REVIEW_DELAY).isoformat(
+                timespec="microseconds"
+            ),
+            closed_at=closed_at,
             expected_native_session_id=(
                 binding.native_session_id
-                if binding.runtime.value == "claude_code"
-                and binding.native_session_id
+                if binding.runtime.value == "claude_code" and binding.native_session_id
                 else None
             ),
         )

@@ -92,6 +92,15 @@ class ClaudeSessionsRepository:
         ).fetchall()
         return [row_to_record(row) for row in rows]
 
+    def find(self, cc_session_id: str) -> ClaudeSessionRecord | None:
+        """按 Claude Code 原生会话 ID 读取当前来源记录。"""
+
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE cc_session_id = ?",
+            (cc_session_id,),
+        ).fetchone()
+        return row_to_record(row) if row is not None else None
+
     def mark_extracted(self, cc_session_id: str, when: str) -> None:
         """写入旧式整会话提炼完成时间。"""
         self._conn.execute(
