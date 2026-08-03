@@ -1,13 +1,14 @@
 /** 验证 statistics store 统一持有页签、日期和查询状态。 */
 
 import { expect, it, vi } from "vitest";
-import { createStatisticsStore } from "../statistics/application/store";
+import { createStatisticsStore } from "../../statistics/application/store";
 
 it("updates shared tab and date state without fetching", () => {
   const fetchTelemetry = vi.fn();
   const store = createStatisticsStore({ fetchTelemetry });
 
   store.getState().setActiveTab("memory");
+  store.getState().setModelFilter("old-model");
   store.getState().setDateRange({
     startDate: "2026-08-01",
     endDate: "2026-08-03",
@@ -16,6 +17,7 @@ it("updates shared tab and date state without fetching", () => {
 
   expect(store.getState().activeTab).toBe("memory");
   expect(store.getState().dateRange.timezone).toBe("Asia/Shanghai");
+  expect(store.getState().modelFilter).toBe("all");
   expect(fetchTelemetry).not.toHaveBeenCalled();
 });
 
@@ -73,4 +75,30 @@ it("ignores an older response after the date range changes", async () => {
 
   expect(store.getState().telemetry?.sample_size).toBe(9);
   expect(store.getState().loading).toBe(false);
+});
+
+it("loads Agent statistics and keeps runtime/model filters local", async () => {
+  const payload = { quality: "partial" as const, sample_size: 2 };
+  const fetchAgent = vi.fn().mockResolvedValue(payload);
+  const store = createStatisticsStore({ fetchAgent });
+
+  store.getState().setRuntimeFilter("codex");
+  store.getState().setModelFilter("gpt-5.6-sol");
+  await store.getState().refreshAgent();
+
+  expect(store.getState().agent).toBe(payload);
+  expect(store.getState().runtimeFilter).toBe("codex");
+  expect(store.getState().modelFilter).toBe("gpt-5.6-sol");
+  expect(store.getState().agentLoading).toBe(false);
+  expect(store.getState().agentError).toBeNull();
+});
+
+it("clears an incompatible model filter when runtime changes", () => {
+  const store = createStatisticsStore();
+  store.getState().setModelFilter("gpt-5.6-sol");
+
+  store.getState().setRuntimeFilter("claude_code");
+
+  expect(store.getState().runtimeFilter).toBe("claude_code");
+  expect(store.getState().modelFilter).toBe("all");
 });

@@ -16,6 +16,8 @@ def test_bind_and_find_cc_by_trowel() -> None:
     assert binding.session_kind == "user"
     assert binding.workdir == "/workspace/project"
     assert binding.start_offset is None
+    assert binding.status == "running"
+    assert binding.completed_at is None
 
 
 def test_bind_many_trowel_to_one_cc() -> None:
@@ -129,3 +131,19 @@ def test_register_without_trowel_id_skips_bind() -> None:
     repo.register(session_record(cc_session_id="cc-y"))
     assert repo.find_cc_by_trowel("anything") is None
     assert repo.find_trowels_by_cc("cc-y") == []
+
+
+def test_binding_terminal_status_is_persisted() -> None:
+    repo = repository()
+    repo.register(session_record(cc_session_id="cc-terminal", trowel_session_id="t1"))
+
+    repo.update_binding_status(
+        "t1",
+        status="interrupted",
+        completed_at="2026-08-03T10:00:00+08:00",
+    )
+
+    binding = repo.find_cc_by_trowel("t1")
+    assert binding is not None
+    assert binding.status == "interrupted"
+    assert binding.completed_at == "2026-08-03T10:00:00+08:00"

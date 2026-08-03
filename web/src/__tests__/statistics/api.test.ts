@@ -4,8 +4,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   configureTransport,
   resetTransportForTests,
-} from "../platform/transport";
-import { fetchTelemetryStatistics } from "../statistics/transport/api";
+} from "../../platform/transport";
+import {
+  fetchAgentStatistics,
+  fetchTelemetryStatistics,
+} from "../../statistics/transport/api";
 
 afterEach(() => {
   resetTransportForTests();
@@ -100,4 +103,29 @@ it("throws the envelope error instead of treating missing data as zero", async (
       "hour",
     ),
   ).rejects.toThrow("source unavailable");
+});
+
+it("requests Agent statistics with the shared date range", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: { quality: "unavailable", sample_size: 0 },
+        error: null,
+      }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const result = await fetchAgentStatistics({
+    startDate: "2026-08-03",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+
+  expect(result.sample_size).toBe(0);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/agent?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
+  );
 });

@@ -27,6 +27,7 @@ class CapturingRegistrar:
     def __init__(self) -> None:
         self.registered: list[SessionRecord] = []
         self.completed: list[tuple[str, int]] = []
+        self.binding_statuses: list[tuple[str, str, str | None]] = []
 
     def register(self, record: SessionRecord) -> None:
         self.registered.append(record)
@@ -38,6 +39,15 @@ class CapturingRegistrar:
         when: str | None = None,
     ) -> None:
         self.completed.append((cc_session_id, completed_bytes))
+
+    def update_binding_status(
+        self,
+        trowel_session_id: str,
+        *,
+        status: str,
+        completed_at: str | None,
+    ) -> None:
+        self.binding_statuses.append((trowel_session_id, status, completed_at))
 
 
 class FailingUpdateRegistrar(CapturingRegistrar):

@@ -21,6 +21,89 @@ export interface SourceFreshness {
   readonly status: "fresh" | "stale" | "unavailable";
 }
 
+export type AgentRuntime = "claude_code" | "codex";
+export type AgentRuntimeFilter = "all" | AgentRuntime;
+export type AgentSessionStatus =
+  | "completed"
+  | "running"
+  | "interrupted"
+  | "failed"
+  | "unknown";
+
+export interface AgentTokenUsage {
+  readonly input: number | null;
+  readonly output: number | null;
+  readonly cache_read: number | null;
+  readonly cache_creation: number | null;
+  readonly reasoning: number | null;
+  readonly unknown: number | null;
+  readonly total: number | null;
+  readonly total_includes_cache_input: boolean;
+  readonly quality: StatisticsQuality;
+}
+
+export interface AgentLatencyDistribution {
+  readonly sample_size: number;
+  readonly p50_ms: number | null;
+  readonly p95_ms: number | null;
+  readonly p99_ms: number | null;
+  readonly quality: StatisticsQuality;
+}
+
+export interface AgentStatusCounts {
+  readonly completed: number;
+  readonly running: number;
+  readonly interrupted: number;
+  readonly failed: number;
+  readonly unknown: number;
+}
+
+export interface AgentActivity {
+  readonly session_sum_ms: number;
+  readonly concurrent_union_ms: number;
+  readonly quality: StatisticsQuality;
+}
+
+export interface AgentModelSummary {
+  readonly runtime: AgentRuntime;
+  readonly model: string | null;
+  readonly session_count: number;
+  readonly statuses: AgentStatusCounts;
+  readonly tokens: AgentTokenUsage;
+  readonly first_visible_response: AgentLatencyDistribution;
+  readonly cache_input_ratio: number | null;
+  readonly activity_ms: number;
+  readonly quality: StatisticsQuality;
+}
+
+export interface AgentSession {
+  readonly session_id: string;
+  readonly runtime: AgentRuntime;
+  readonly models: readonly string[];
+  readonly started_at: string;
+  readonly activity_ms: number;
+  readonly first_visible_response: AgentLatencyDistribution;
+  readonly tokens: AgentTokenUsage;
+  readonly status: AgentSessionStatus;
+  readonly quality: StatisticsQuality;
+}
+
+export interface AgentStatistics {
+  readonly generated_at: string;
+  readonly window_start: string;
+  readonly window_end: string;
+  readonly timezone: string;
+  readonly sample_size: number;
+  readonly quality: StatisticsQuality;
+  readonly freshness: Readonly<Record<string, SourceFreshness>>;
+  readonly statuses: AgentStatusCounts;
+  readonly tokens: AgentTokenUsage;
+  readonly first_visible_response: AgentLatencyDistribution;
+  readonly activity: AgentActivity;
+  readonly model_summaries: readonly AgentModelSummary[];
+  readonly sessions: readonly AgentSession[];
+}
+
 export interface CollectorStatistics {
   readonly accepted: number;
   readonly rejected: number;

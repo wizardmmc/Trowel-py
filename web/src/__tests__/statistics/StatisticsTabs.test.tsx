@@ -2,7 +2,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { StatisticsTabs } from "../statistics/ui/StatisticsTabs";
+import { StatisticsTabs } from "../../statistics/ui/StatisticsTabs";
 
 it("renders five stable tabs and delegates all state changes", () => {
   const onTabChange = vi.fn();

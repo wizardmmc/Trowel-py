@@ -5,3 +5,5 @@ export * from "./domain/types";
 export * from "./transport/api";
 export * from "./telemetryPort";
 export * from "./ui/StatisticsTabs";
+export * from "./ui/AgentStatisticsPanel";
+export * from "./ui/AgentStatisticsView";

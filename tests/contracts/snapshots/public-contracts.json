@@ -206,7 +206,7 @@
         "type": "table",
         "name": "session_bindings",
         "table": "session_bindings",
-        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, start_offset INTEGER )"
+        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, start_offset INTEGER, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT )"
       },
       {
         "type": "table",
@@ -3503,6 +3503,67 @@
           }
         }
       },
+      "/api/statistics/agent": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Agent Statistics",
+          "description": "读取双 runtime 用户 session，并返回 Agent 页 read model。\n\nArgs:\n    request: 用于读取应用持有的 Agent statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_agent_statistics_api_statistics_agent_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_AgentStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/statistics/telemetry": {
         "get": {
           "tags": [
@@ -3617,6 +3678,470 @@
     },
     "components": {
       "schemas": {
+        "AgentActivityData": {
+          "properties": {
+            "session_sum_ms": {
+              "type": "integer",
+              "title": "Session Sum Ms"
+            },
+            "concurrent_union_ms": {
+              "type": "integer",
+              "title": "Concurrent Union Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "session_sum_ms",
+            "concurrent_union_ms",
+            "quality"
+          ],
+          "title": "AgentActivityData",
+          "description": "公开 session 活动时长之和与跨 session 并集。\n\nAttributes:\n    session_sum_ms: 各 session 内合并活动区间后的毫秒数之和。\n    concurrent_union_ms: 所有 session 区间合并后的毫秒数，不重复计算并发。\n    quality: 所有活动区间中最低的终点质量。"
+        },
+        "AgentLatencyDistributionData": {
+          "properties": {
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "p50_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P50 Ms"
+            },
+            "p95_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P95 Ms"
+            },
+            "p99_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P99 Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "sample_size",
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "quality"
+          ],
+          "title": "AgentLatencyDistributionData",
+          "description": "公开首次可见响应分布和样本门槛结果。\n\nAttributes:\n    sample_size: 用户提交到首段可见文字的有效样本数。\n    p50_ms: 至少 5 个样本时的中位数，否则为 None。\n    p95_ms: 至少 20 个样本时的 p95，否则为 None。\n    p99_ms: 至少 100 个样本时的 p99，否则为 None。\n    quality: 有 p50 时继承来源质量，否则为 unavailable。"
+        },
+        "AgentModelSummaryData": {
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "cache_input_ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Input Ratio"
+            },
+            "activity_ms": {
+              "type": "integer",
+              "title": "Activity Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "runtime",
+            "model",
+            "session_count",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "cache_input_ratio",
+            "activity_ms",
+            "quality"
+          ],
+          "title": "AgentModelSummaryData",
+          "description": "公开一个 runtime/model 分组的 session 使用情况。\n\nAttributes:\n    runtime: claude_code 或 codex。\n    model: runtime 实际回报的模型；未知时为 None。\n    session_count: 查询窗内使用过该模型的 Trowel session 数。\n    statuses: 这些 session 的状态分组。\n    tokens: 只归属于该模型的 token 增量。\n    first_visible_response: 首段文字由该模型产生的延迟分布。\n    cache_input_ratio: cache_read/input 的比例；字段缺失或 input 为 0 时为 None。\n    activity_ms: 使用过该模型的 session 活动时长之和。\n    quality: 分组来源的最低质量。"
+        },
+        "AgentSessionData": {
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "title": "Session Id"
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "models": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Models"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "activity_ms": {
+              "type": "integer",
+              "title": "Activity Ms"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "running",
+                "interrupted",
+                "failed",
+                "unknown"
+              ],
+              "title": "Status"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "session_id",
+            "runtime",
+            "models",
+            "started_at",
+            "activity_ms",
+            "first_visible_response",
+            "tokens",
+            "status",
+            "quality"
+          ],
+          "title": "AgentSessionData",
+          "description": "公开最近一个 Trowel session 的统计行。\n\nAttributes:\n    session_id: Trowel 分配的会话 ID，不是原生 runtime ID。\n    runtime: claude_code 或 codex。\n    models: 当前时间窗内 runtime 实际回报的模型集合。\n    started_at: 当前 session 首个可观察活动时间。\n    activity_ms: 当前 session 内合并活动区间后的毫秒数。\n    first_visible_response: 当前 session 内的首响分布。\n    tokens: 当前 session 在查询窗内的 token 增量。\n    status: 查询窗结束时可确认的状态。\n    quality: 当前 session 来源的最低质量。"
+        },
+        "AgentStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "activity": {
+              "$ref": "#/components/schemas/AgentActivityData"
+            },
+            "model_summaries": {
+              "items": {
+                "$ref": "#/components/schemas/AgentModelSummaryData"
+              },
+              "type": "array",
+              "title": "Model Summaries"
+            },
+            "sessions": {
+              "items": {
+                "$ref": "#/components/schemas/AgentSessionData"
+              },
+              "type": "array",
+              "title": "Sessions"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "activity",
+            "model_summaries",
+            "sessions"
+          ],
+          "title": "AgentStatisticsData",
+          "description": "公开 Agent 页所需的时间窗、总览、模型和 session 明细。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内 Trowel user session 数。\n    quality: 全部 session 来源的最低质量。\n    freshness: Agent 事实源最后更新时间。\n    statuses: session 状态分组。\n    tokens: 查询窗内全部 token 增量。\n    first_visible_response: 查询窗内全部首次可见响应分布。\n    activity: 活动时长之和与跨 session 并集。\n    model_summaries: 按 runtime 和真实模型分组的结果。\n    sessions: 按开始时间倒序排列的最近 session，最多 100 条。"
+        },
+        "AgentStatusCountsData": {
+          "properties": {
+            "completed": {
+              "type": "integer",
+              "title": "Completed"
+            },
+            "running": {
+              "type": "integer",
+              "title": "Running"
+            },
+            "interrupted": {
+              "type": "integer",
+              "title": "Interrupted"
+            },
+            "failed": {
+              "type": "integer",
+              "title": "Failed"
+            },
+            "unknown": {
+              "type": "integer",
+              "title": "Unknown"
+            }
+          },
+          "type": "object",
+          "required": [
+            "completed",
+            "running",
+            "interrupted",
+            "failed",
+            "unknown"
+          ],
+          "title": "AgentStatusCountsData",
+          "description": "公开 Trowel sessions 的确定性状态数量。\n\nAttributes:\n    completed: 最后终态为正常完成的 session 数。\n    running: 查询窗结束时仍在运行的 session 数。\n    interrupted: 最后终态为用户中断的 session 数。\n    failed: 最后终态为执行失败的 session 数。\n    unknown: 旧记录或来源不足而无法确认终态的 session 数。"
+        },
+        "AgentTokenUsageData": {
+          "properties": {
+            "input": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Input"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Output"
+            },
+            "cache_read": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Read"
+            },
+            "cache_creation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Creation"
+            },
+            "reasoning": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reasoning"
+            },
+            "unknown": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Unknown"
+            },
+            "total": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Total"
+            },
+            "total_includes_cache_input": {
+              "type": "boolean",
+              "title": "Total Includes Cache Input",
+              "default": true
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "cache_read",
+            "cache_creation",
+            "reasoning",
+            "unknown",
+            "total",
+            "quality"
+          ],
+          "title": "AgentTokenUsageData",
+          "description": "公开分类 token 增量及其质量。\n\nAttributes:\n    input: 输入 token；来源未提供时为 None。\n    output: 输出 token；来源未提供时为 None。\n    cache_read: 缓存输入 token；来源未提供时为 None。\n    cache_creation: 缓存创建 token；来源未提供时为 None。\n    reasoning: 推理输出 token；来源未提供时为 None。\n    unknown: 无法归类的原生 token；无法计算时为 None。\n    total: 当前时间窗总 token；无法可靠计算时为 None。\n    total_includes_cache_input: total 是否包含 cache_read。\n    quality: token 来源的最低质量。"
+        },
         "AnswerAgentRequest": {
           "properties": {
             "decision": {
@@ -3650,6 +4175,42 @@
           "type": "object",
           "title": "AnswerElicitRequest",
           "description": "提交对待处理 `AskUserQuestion` 的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入\n        `control_response.updatedInput.answers`。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
+        },
+        "ApiEnvelope_AgentStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[AgentStatisticsData]"
         },
         "ApiEnvelope_TelemetryStatisticsData_": {
           "properties": {

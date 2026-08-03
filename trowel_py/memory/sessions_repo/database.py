@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS session_bindings (
     session_kind      TEXT NOT NULL,
     workdir           TEXT NOT NULL,
     bound_at          TEXT NOT NULL,
-    start_offset      INTEGER
+    start_offset      INTEGER,
+    status            TEXT NOT NULL DEFAULT 'running',
+    completed_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
 CREATE TABLE IF NOT EXISTS codex_turns (
@@ -93,6 +95,11 @@ _CODEX_ADD_COLUMN_SQL = {
 
 _BINDING_ADD_COLUMN_SQL = {
     "start_offset": "ALTER TABLE session_bindings ADD COLUMN start_offset INTEGER",
+    "status": (
+        "ALTER TABLE session_bindings ADD COLUMN status"
+        " TEXT NOT NULL DEFAULT 'unknown'"
+    ),
+    "completed_at": "ALTER TABLE session_bindings ADD COLUMN completed_at TEXT",
 }
 
 _REVIEW_REQUEST_ADD_COLUMN_SQL = {
@@ -229,6 +236,8 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
         workdir=row["workdir"],
         bound_at=row["bound_at"],
         start_offset=row["start_offset"],
+        status=row["status"] or "unknown",
+        completed_at=row["completed_at"],
     )
 
 

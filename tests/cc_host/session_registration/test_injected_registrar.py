@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from tests.cc_host.session_registration.support import (
     result_event,
 )
 from trowel_py.cc_host.service import CCHost
-from trowel_py.schemas.cc_host import FinishedEvent
+from trowel_py.schemas.cc_host import FinishedEvent, InterruptedEvent
 
 
 async def test_cchost_uses_injected_registrar(tmp_path: Path) -> None:
@@ -82,6 +83,48 @@ async def test_normal_end_updates_completed(tmp_path: Path) -> None:
         pass
 
     assert registrar.completed == [("cc-watermark", 100)]
+    assert len(registrar.binding_statuses) == 1
+    assert registrar.binding_statuses[0][:2] == ("trowel-session", "completed")
+
+
+async def test_interrupted_end_updates_binding_status(tmp_path: Path) -> None:
+    registrar = CapturingRegistrar()
+    jsonl = tmp_path / "session.jsonl"
+    jsonl.write_bytes(b"x" * 100)
+    process = FakeProc([line(init_event("cc-interrupted"))], feed_eof=False)
+    host = CCHost(
+        "trowel-session",
+        tmp_path,
+        spawner=FakeSpawner([process]),
+        session_registrar=registrar,
+    )
+    host._jsonl_path = lambda session_id: jsonl  # type: ignore[assignment]
+    send_task = asyncio.create_task(_collect(host.send("long turn")))
+    for _ in range(100):
+        if process.stdin.written:
+            break
+        await asyncio.sleep(0)
+    await host.interrupt()
+    process.stdout.feed_data(
+        (
+            line(
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "errors": ["Interrupted by user"],
+                }
+            )
+            + "\n"
+        ).encode()
+    )
+    process.stdout.feed_eof()
+
+    events = await send_task
+
+    assert any(isinstance(event, InterruptedEvent) for event in events)
+    assert len(registrar.binding_statuses) == 1
+    assert registrar.binding_statuses[0][:2] == ("trowel-session", "interrupted")
 
 
 # memory/profile 开关只控制读取注入，注册和水位写入必须继续。
@@ -168,3 +211,9 @@ async def test_update_failure_does_not_break_result_turn(
 
     assert len(registrar.registered) == 1
     assert any(isinstance(event, FinishedEvent) for event in events)
+
+
+async def _collect(events):
+    """收集测试中的 CC 异步事件流。"""
+
+    return [event async for event in events]
