@@ -7,6 +7,7 @@ import {
 } from "../../platform/transport";
 import {
   fetchAgentStatistics,
+  fetchMemoryStatistics,
   fetchTelemetryStatistics,
 } from "../../statistics/transport/api";
 
@@ -127,5 +128,30 @@ it("requests Agent statistics with the shared date range", async () => {
   expect(result.sample_size).toBe(0);
   expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "/api/statistics/agent?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
+  );
+});
+
+it("requests Memory statistics with the shared date range", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: { quality: "partial", sample_size: 12 },
+        error: null,
+      }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const result = await fetchMemoryStatistics({
+    startDate: "2026-08-02",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+
+  expect(result.sample_size).toBe(12);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/memory?start_date=2026-08-02&end_date=2026-08-03&timezone=Asia%2FShanghai",
   );
 });

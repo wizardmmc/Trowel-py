@@ -137,6 +137,7 @@ async def process_review_units(
                 host_factory=host_factory,
                 segment_id=context.segment_id,
                 review_source=review_source,
+                activity_dates=activity.dates,
             )
         except Exception as exc:  # noqa: BLE001 - judge 是水位推进后的旁路步骤。
             logger.warning(

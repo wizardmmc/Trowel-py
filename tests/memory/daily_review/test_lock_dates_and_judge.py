@@ -76,6 +76,7 @@ async def test_each_distilled_session_is_judged(
         review_source,
         host_factory=None,
         segment_id="",
+        activity_dates=(),
     ) -> None:
         judged.append(session_record.native_session_id)
 

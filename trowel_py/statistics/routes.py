@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from trowel_py.statistics.agent.schemas import AgentStatisticsData
 from trowel_py.statistics.agent.service import build_agent_statistics
+from trowel_py.statistics.memory.schemas import MemoryStatisticsData
+from trowel_py.statistics.memory.service import build_memory_statistics
 from trowel_py.statistics.schemas import ApiEnvelope, TelemetryStatisticsData
 from trowel_py.statistics.service import build_telemetry_statistics
 from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
@@ -49,6 +51,41 @@ def get_agent_statistics(
     return ApiEnvelope[AgentStatisticsData](
         success=True,
         data=build_agent_statistics(reader, window),
+        error=None,
+    )
+
+
+@router.get(
+    "/memory",
+    response_model=ApiEnvelope[MemoryStatisticsData],
+)
+def get_memory_statistics(
+    request: Request,
+    start_date: str = Query(),
+    end_date: str = Query(),
+    timezone_name: str = Query(alias="timezone"),
+) -> ApiEnvelope[MemoryStatisticsData] | JSONResponse:
+    """读取 Memory 使用事实和资产，并返回不含正文的 read model。
+
+    Args:
+        request: 用于读取应用持有的 Memory statistics reader。
+        start_date: 首尾均包含的第一个 ISO 日期。
+        end_date: 首尾均包含的最后一个 ISO 日期。
+        timezone_name: 解释日期边界的 IANA 时区名称。
+
+    Returns:
+        成功 read model；参数或来源不可用时返回统一错误 envelope。
+    """
+    reader = getattr(request.app.state, "memory_statistics_reader", None)
+    if reader is None:
+        return _error_response(503, "statistics memory source unavailable")
+    try:
+        window = _parse_window(start_date, end_date, timezone_name)
+    except ValueError as exc:
+        return _error_response(422, str(exc))
+    return ApiEnvelope[MemoryStatisticsData](
+        success=True,
+        data=build_memory_statistics(reader, window),
         error=None,
     )
 

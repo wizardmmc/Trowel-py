@@ -50,6 +50,7 @@ def _report(
     recall_miss=(),
     summary: str = "用得还行",
     segment_id: str = "",
+    activity_dates: tuple[str, ...] = (),
 ) -> JudgementReport:
     return JudgementReport(
         cc_session_id=cc_session_id,
@@ -57,6 +58,7 @@ def _report(
         recall_miss=tuple(recall_miss),
         summary=summary,
         segment_id=segment_id,
+        activity_dates=activity_dates,
     )
 
 
@@ -77,6 +79,7 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
     report = _report(
         hits=(_hit(),),
         recall_miss=(_miss(),),
+        activity_dates=("2026-08-02",),
     )
     save_judgement_report(root, report)
     back = load_judgement_report(root, "sess-1")

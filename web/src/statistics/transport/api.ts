@@ -4,6 +4,7 @@ import { transportFetch } from "../../platform/transport";
 import type {
   ApiEnvelope,
   AgentStatistics,
+  MemoryStatistics,
   StatisticsDateRange,
   StatisticsResolution,
   TelemetryStatistics,
@@ -15,6 +16,15 @@ export async function fetchAgentStatistics(
   const query = dateRangeQuery(range);
   return fetchStatistics<AgentStatistics>(
     `/api/statistics/agent?${query.toString()}`,
+  );
+}
+
+export async function fetchMemoryStatistics(
+  range: StatisticsDateRange,
+): Promise<MemoryStatistics> {
+  const query = dateRangeQuery(range);
+  return fetchStatistics<MemoryStatistics>(
+    `/api/statistics/memory?${query.toString()}`,
   );
 }
 

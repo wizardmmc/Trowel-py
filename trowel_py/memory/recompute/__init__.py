@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import tzinfo
+from datetime import datetime, tzinfo
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trowel_py.memory.access_log import read_access_log, read_outcome_log
 from trowel_py.memory.activity_dates import _parse_iso_to_date, _system_local_tz
 from trowel_py.memory.attribution import AttributionIndex
 from trowel_py.memory.judgements import load_all_judgement_reports
 from trowel_py.memory.store import MemoryStore
+
+if TYPE_CHECKING:
+    from trowel_py.memory.types import Note
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class NoteEffect:
         helpful_sessions: 对 note 提供有帮助证据的用户会话标识集合。
         harmful_sessions: 对 note 提供有害证据的用户会话标识集合。
         unused_sessions: 明确表示未使用 note 的用户会话标识集合。
+        unknown_sessions: 已完成判效但无法判断效果的用户会话标识集合。
         read_dates: 有效读取事件按本地时区换算出的日期集合。
         helpful_read_dates: 提供有帮助证据的会话实际读取 note 的日期集合。
     """
@@ -40,6 +44,7 @@ class NoteEffect:
     unused_sessions: frozenset[str]
     read_dates: frozenset[str]
     helpful_read_dates: frozenset[str]
+    unknown_sessions: frozenset[str] = frozenset()
 
     @property
     def read_session_count(self) -> int:
@@ -60,6 +65,11 @@ class NoteEffect:
     def unused_refs(self) -> int:
         """返回被明确判为未使用的独立会话数。"""
         return len(self.unused_sessions)
+
+    @property
+    def unknown_refs(self) -> int:
+        """返回已判效但效果未知的独立会话数。"""
+        return len(self.unknown_sessions)
 
     @property
     def distinct_days(self) -> int:
@@ -85,6 +95,8 @@ def compute_note_effects(
     root: Path | str,
     *,
     local_tz: tzinfo | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> dict[str, NoteEffect]:
     """汇总每条笔记的用户会话级效果证据。
 
@@ -96,13 +108,65 @@ def compute_note_effects(
     Args:
         root: memory 根目录。
         local_tz: 读取时间采用的时区；省略时使用系统本地时区。
+        window_start: 可选半开时间窗起点；提供时只聚合窗内证据。
+        window_end: 可选半开时间窗终点，必须与起点同时提供。
 
     Returns:
         以 note stem 为键的效果；没有有效证据的 note 不出现在结果中。
     """
+    return _run_compute_note_effects(
+        root,
+        local_tz=local_tz,
+        window_start=window_start,
+        window_end=window_end,
+        notes_with_id=None,
+    )
+
+
+def compute_note_effects_from_notes(
+    root: Path | str,
+    notes_with_id: list[tuple[str, "Note"]],
+    *,
+    local_tz: tzinfo | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+) -> dict[str, NoteEffect]:
+    """使用同请求已加载的 Note 快照汇总用户会话级效果证据。
+
+    Args:
+        root: access、outcome、judgement 和会话归因所在的 Memory 根目录。
+        notes_with_id: 文件 stem 与 Note 组成的同请求只读快照。
+        local_tz: 读取时间采用的时区；省略时使用系统本地时区。
+        window_start: 可选半开时间窗起点；提供时只聚合窗内证据。
+        window_end: 可选半开时间窗终点，必须与起点同时提供。
+
+    Returns:
+        与 ``compute_note_effects`` 相同、但不再次扫描 Note 文件的聚合结果。
+    """
+    return _run_compute_note_effects(
+        root,
+        local_tz=local_tz,
+        window_start=window_start,
+        window_end=window_end,
+        notes_with_id=notes_with_id,
+    )
+
+
+def _run_compute_note_effects(
+    root: Path | str,
+    *,
+    local_tz: tzinfo | None,
+    window_start: datetime | None,
+    window_end: datetime | None,
+    notes_with_id: list[tuple[str, "Note"]] | None,
+) -> dict[str, NoteEffect]:
+    """把公开入口依赖统一注入底层效果聚合器。"""
     return _compute_note_effects(
         root,
         local_tz=local_tz,
+        window_start=window_start,
+        window_end=window_end,
+        notes_with_id=notes_with_id,
         store_cls=MemoryStore,
         attribution_index_cls=AttributionIndex,
         system_local_tz_fn=_system_local_tz,
@@ -150,6 +214,7 @@ __all__ = [
     "_parse_iso_to_date",
     "_system_local_tz",
     "compute_note_effects",
+    "compute_note_effects_from_notes",
     "dataclass",
     "defaultdict",
     "load_all_judgement_reports",

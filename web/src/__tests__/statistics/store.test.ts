@@ -102,3 +102,16 @@ it("clears an incompatible model filter when runtime changes", () => {
   expect(store.getState().runtimeFilter).toBe("claude_code");
   expect(store.getState().modelFilter).toBe("all");
 });
+
+it("loads Memory statistics without sharing Agent request state", async () => {
+  const payload = { quality: "partial" as const, sample_size: 47 };
+  const fetchMemory = vi.fn().mockResolvedValue(payload);
+  const store = createStatisticsStore({ fetchMemory });
+
+  await store.getState().refreshMemory();
+
+  expect(store.getState().memory).toBe(payload);
+  expect(store.getState().memoryLoading).toBe(false);
+  expect(store.getState().memoryError).toBeNull();
+  expect(store.getState().agent).toBeNull();
+});
