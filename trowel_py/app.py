@@ -200,14 +200,22 @@ async def lifespan(app: FastAPI):
     if bootstrap_layer_one():
         logger.info("[memory] seeded layer-one core.md (试用期)")
     app.state.memory_statistics_reader = None
+    app.state.session_problem_statistics_reader = None
     try:
         from trowel_py.memory.paths import (
             resolve_memory_root as _statistics_memory_root,
         )
         from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
+        from trowel_py.statistics.session_problems.repository import (
+            FileSessionProblemStatisticsReader,
+        )
 
+        statistics_memory_root = _statistics_memory_root()
         app.state.memory_statistics_reader = FileMemoryStatisticsReader(
-            _statistics_memory_root()
+            statistics_memory_root
+        )
+        app.state.session_problem_statistics_reader = (
+            FileSessionProblemStatisticsReader(statistics_memory_root)
         )
     except Exception:
         logger.warning("[memory] statistics reader failed to start", exc_info=True)

@@ -17,10 +17,56 @@ from trowel_py.statistics.memory.service import build_memory_statistics
 from trowel_py.statistics.runtime.schemas import RuntimeStatisticsData
 from trowel_py.statistics.runtime.service import build_runtime_statistics
 from trowel_py.statistics.schemas import ApiEnvelope, TelemetryStatisticsData
+from trowel_py.statistics.session_problems.schemas import SessionProblemListData
+from trowel_py.statistics.session_problems.service import (
+    build_session_problem_list,
+)
 from trowel_py.statistics.service import build_telemetry_statistics
 from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
 
 router = APIRouter(tags=["statistics"])
+
+
+@router.get(
+    "/session-problems",
+    response_model=ApiEnvelope[SessionProblemListData],
+)
+def get_session_problem_list(
+    request: Request,
+    start_date: str = Query(),
+    end_date: str = Query(),
+    timezone_name: str = Query(alias="timezone"),
+    limit_value: str = Query(default="50", alias="limit"),
+    cursor: str | None = Query(default=None),
+) -> ApiEnvelope[SessionProblemListData] | JSONResponse:
+    """按会话关闭时间倒序返回一页非空复盘问题。
+
+    完整分析但没有问题的会话只进入时间窗计数，不进入列表。响应不会公开生成
+    Agent 的模型、运行 ID、原生会话 ID 或本机路径。
+    """
+
+    reader = getattr(request.app.state, "session_problem_statistics_reader", None)
+    if reader is None:
+        return _error_response(
+            503,
+            "statistics session problems source unavailable",
+        )
+    try:
+        window = _parse_window(start_date, end_date, timezone_name)
+        limit = int(limit_value)
+        data = build_session_problem_list(
+            reader,
+            window,
+            limit=limit,
+            cursor=cursor,
+        )
+    except (ValueError, OverflowError) as exc:
+        return _error_response(422, str(exc))
+    return ApiEnvelope[SessionProblemListData](
+        success=True,
+        data=data,
+        error=None,
+    )
 
 
 @router.get(

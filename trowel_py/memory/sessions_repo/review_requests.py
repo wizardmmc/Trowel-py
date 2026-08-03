@@ -23,6 +23,7 @@ class ReviewRequestsRepository:
         runtime: str,
         requested_at: str | None = None,
         not_before: str | None = None,
+        closed_at: str | None = None,
         expected_native_session_id: str | None = None,
     ) -> None:
         """幂等登记用户关闭会话触发的即时 review 请求。
@@ -36,6 +37,9 @@ class ReviewRequestsRepository:
             raise ValueError(f"unknown review request runtime: {runtime}")
         stamp = requested_at or datetime.now().isoformat(timespec="microseconds")
         eligible_stamp = not_before or stamp
+        closed_stamp = closed_at or datetime.fromisoformat(
+            stamp
+        ).astimezone().isoformat(timespec="microseconds")
         native_session_id = ""
         source_start_offset: int | None = None
         source_end_offset: int | None = None
@@ -62,14 +66,15 @@ class ReviewRequestsRepository:
                 source_end_offset = row["last_completed_offset"]
         self._conn.execute(
             "INSERT OR IGNORE INTO session_review_requests"
-            " (trowel_session_id, runtime, requested_at, not_before,"
+            " (trowel_session_id, runtime, requested_at, not_before, closed_at,"
             " native_session_id, source_start_offset, source_end_offset)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 trowel_session_id,
                 runtime,
                 stamp,
                 eligible_stamp,
+                closed_stamp,
                 native_session_id,
                 source_start_offset,
                 source_end_offset,
@@ -165,7 +170,8 @@ class ReviewRequestsRepository:
         completed = tuple(
             request.trowel_session_id
             for request in requests
-            if not self.has_pending_source(request)
+            if request.problem_recorded_at is not None
+            and not self.has_pending_source(request)
         )
         if completed:
             placeholders = ",".join("?" for _ in completed)

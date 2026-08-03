@@ -106,7 +106,9 @@ async def test_immediate_review_only_processes_closed_cc_session(
     repo.claude.register(
         replace(session("closed", "/closed"), trowel_session_id="agent-closed")
     )
-    repo.claude.register(replace(session("open", "/open"), trowel_session_id="agent-open"))
+    repo.claude.register(
+        replace(session("open", "/open"), trowel_session_id="agent-open")
+    )
     repo.claude.update_completed("closed", 4096)
     repo.claude.update_completed("open", 4096)
     repo.review_requests.enqueue(
@@ -120,7 +122,17 @@ async def test_immediate_review_only_processes_closed_cc_session(
 
     def create_host(session_record: SessionRecord, workdir: Path) -> FakeHost:
         calls.append(session_record.native_session_id)
-        (workdir / "draft.json").write_text(VALID_DRAFT, encoding="utf-8")
+        output_path = (
+            workdir / "problem.json"
+            if "session-problems" in workdir.parts
+            else workdir / "draft.json"
+        )
+        output_path.write_text(
+            json.dumps({"problem": None})
+            if output_path.name == "problem.json"
+            else VALID_DRAFT,
+            encoding="utf-8",
+        )
         return FakeHost([FINISHED])
 
     monkeypatch.setattr(
@@ -139,14 +151,14 @@ async def test_immediate_review_only_processes_closed_cc_session(
         host_factory=create_host,
     )
 
-    assert calls == ["closed", "closed"]
+    assert calls == ["closed", "closed", "agent-closed"]
     assert rebuilt_dates == ["2026-07-09"]
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
-        assert [item.session.cc_session_id for item in repo.claude.list_pending_segments()] == [
-            "open"
-        ]
+        assert [
+            item.session.cc_session_id for item in repo.claude.list_pending_segments()
+        ] == ["open"]
         assert repo.review_requests.find("agent-closed") is None
     finally:
         conn.close()
@@ -291,11 +303,12 @@ async def test_cc_later_close_waits_for_unprocessed_earlier_range(
         host_factory=unexpected_factory,
     )
 
-    assert calls == []
+    assert calls == ["agent-b"]
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
         assert repo.review_requests.find("agent-b") is not None
+        assert repo.session_problems.find("agent-b") is not None
         [remaining] = repo.claude.list_pending_segments()
         assert (remaining.start, remaining.end) == (0, 4096)
     finally:
@@ -309,7 +322,9 @@ async def test_failed_immediate_review_stays_queued_for_daily_fallback(
     memory_root = tmp_path / "memory"
     conn = open_sessions_db(memory_root)
     repo = create_sessions_repository(conn)
-    repo.claude.register(replace(session("retry", "/retry"), trowel_session_id="agent-retry"))
+    repo.claude.register(
+        replace(session("retry", "/retry"), trowel_session_id="agent-retry")
+    )
     repo.claude.update_completed("retry", 4096)
     repo.review_requests.enqueue(
         "agent-retry",

@@ -103,6 +103,28 @@ class CodexTurnsRepository:
         ).fetchall()
         return [row_to_codex_turn(row) for row in rows]
 
+    def list_completed_for_trowel_session(
+        self,
+        trowel_session_id: str,
+    ) -> list[CodexTurnRecord]:
+        """返回一个 Trowel 用户会话中全部已封口 Codex turns。
+
+        Args:
+            trowel_session_id: Trowel 分配且在首次 turn 事件登记的会话 ID。
+
+        Returns:
+            按完成、登记时间和原生 turn ID 稳定排列的用户 turns。
+        """
+
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " WHERE trowel_session_id = ? AND completed_at IS NOT NULL"
+            " AND session_kind = 'user'"
+            " ORDER BY completed_at, registered_at, thread_id, turn_id",
+            (trowel_session_id,),
+        ).fetchall()
+        return [row_to_codex_turn(row) for row in rows]
+
     def list_replayable_thread_turns(self, thread_id: str) -> list[CodexTurnRecord]:
         """返回指定 thread 中已有完整终态日志的 turns。
 

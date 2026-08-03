@@ -44,7 +44,12 @@ class FakeHost:
 
 def factory(events: list, draft_text: str | None = None):
     def create_host(session: SessionRecord, workdir: Path) -> FakeHost:
-        if draft_text is not None:
+        if "session-problems" in workdir.parts:
+            (workdir / "problem.json").write_text(
+                json.dumps({"problem": None}),
+                encoding="utf-8",
+            )
+        elif draft_text is not None:
             (workdir / "draft.json").write_text(draft_text, encoding="utf-8")
         return FakeHost(events)
 

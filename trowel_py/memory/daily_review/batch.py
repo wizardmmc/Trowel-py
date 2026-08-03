@@ -9,6 +9,7 @@ from typing import Any
 from trowel_py.memory.daily_review.adapters.claude import review_claude_segments
 from trowel_py.memory.daily_review.adapters.codex import review_codex_segments
 from trowel_py.memory.daily_review.agent import HostFactory
+from trowel_py.memory.daily_review.problems import process_session_problem
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,
@@ -46,7 +47,8 @@ async def run_daily_review_locked(
     batch 只负责恢复日志、选择 runtime、汇总受影响日期和维护派生物。两个
     runtime 如何查找来源、构造 provenance 和推进水位分别位于
     ``adapters/claude.py`` 与 ``adapters/codex.py``；共有的 refine 到
-    judge 流程位于 ``processor.py``。
+    judge 流程位于 ``processor.py``。关闭会话问题使用独立完成收据，失败只
+    保留关闭请求重试，不回滚已经提交的 Memory 水位。
     """
     provider = _resolve_provider(provider)
     try:
@@ -83,8 +85,7 @@ async def run_daily_review_locked(
                 and review_request.runtime == "claude_code"
                 else None
             ),
-            enabled=review_request is None
-            or review_request.runtime == "claude_code",
+            enabled=review_request is None or review_request.runtime == "claude_code",
         )
         touched_dates.update(
             await review_codex_segments(
@@ -110,6 +111,19 @@ async def run_daily_review_locked(
         for review_date in sorted(touched_dates):
             _compress_or_aggregate(root, review_date, provider)
         _maintain_dictionary(root, provider)
+        problem_requests = (
+            [review_request]
+            if review_request is not None
+            else repo.review_requests.list_pending()
+        )
+        for pending_request in problem_requests:
+            await process_session_problem(
+                root,
+                date_str,
+                repo,
+                pending_request,
+                host_factory=host_factory,
+            )
         repo.review_requests.complete_satisfied(
             trowel_session_id=review_session_id,
         )
