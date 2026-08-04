@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from trowel_py.memory.access_log import read_access_log, read_outcome_log
 
 if TYPE_CHECKING:
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
     from trowel_py.memory.types import Note
 
 
@@ -23,6 +24,8 @@ def compute_north_star(
     store_cls: type,
     harmful_retire_threshold: int,
     notes_with_id: list[tuple[str, "Note"]] | None = None,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
 ) -> dict[str, Any]:
     """计算 Note 语料风险比例和原始使用事件计数。
 
@@ -50,6 +53,8 @@ def compute_north_star(
         harmful_retire_threshold: ``harmful_refs`` 达到或超过该值时判为高风险；
             函数不校验范围。
         notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
+        access_records: 可选的同请求访问日志快照；提供时不再次读取日志。
+        outcome_records: 可选的同请求反馈日志快照；提供时不再次读取日志。
 
     Returns:
         包含 ``as_of``、``harmful_memory_rate``、活动 Note 数、矛盾或已取代
@@ -76,9 +81,11 @@ def compute_north_star(
     } | {note.memory_id for note in harmful_high if note.memory_id}
     harmful_rate = len(harmful_ids) / max(len(non_retired), 1)
 
-    reads = sum(1 for record in read_access_log(root) if record.action == "read")
+    access = read_access_log(root) if access_records is None else access_records
+    outcomes = read_outcome_log(root) if outcome_records is None else outcome_records
+    reads = sum(1 for record in access if record.action == "read")
     harmful_outcomes = sum(
-        1 for record in read_outcome_log(root) if record.outcome == "harmful"
+        1 for record in outcomes if record.outcome == "harmful"
     )
 
     return {

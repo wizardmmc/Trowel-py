@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from trowel_py.memory.activity_dates import _parse_iso_datetime
 
 if TYPE_CHECKING:
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
+    from trowel_py.memory.judgements import JudgementReport
     from trowel_py.memory.promotion_policy import PromotionPolicy, QualityLabel
     from trowel_py.memory.types import Note
 
@@ -27,6 +29,9 @@ def memory_usage_metrics(
     window_end: datetime | None = None,
     notes_with_id: list[tuple[str, "Note"]] | None = None,
     strict_read_only: bool = False,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
+    judgement_reports: list["JudgementReport"] | None = None,
 ) -> dict[str, Any]:
     """从访问日志、会话归因、Note 效果和判断报告计算使用质量。
 
@@ -75,13 +80,16 @@ def memory_usage_metrics(
         window_end: 可选半开查询窗终点；不能单独提供。
         notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
         strict_read_only: 是否禁止 sessions.db schema 迁移并只读打开数据库。
+        access_records: 可选的同请求访问日志快照；提供时不再次读取文件。
+        outcome_records: 可选的同请求反馈日志快照；提供时不再次读取文件。
+        judgement_reports: 可选的同请求判效报告快照；提供时不再次读取文件。
 
     Returns:
         包含生效策略、identity、retrieval、effect、recall 四组指标，以及固定为
         ``None`` 的 ``known_issue_repeat_rate`` 占位值的字典。比例字段同时返回
         对应分子和分母。
     """
-    from trowel_py.memory.access_log import read_access_log
+    from trowel_py.memory.access_log import read_access_log, read_outcome_log
     from trowel_py.memory.attribution import AttributionIndex
     from trowel_py.memory.judgements import load_all_judgement_reports
     from trowel_py.memory.promotion_policy import default_policy
@@ -99,7 +107,17 @@ def memory_usage_metrics(
         if notes_with_id is not None
         else MemoryStore(root_path).load_notes_with_id()
     )
-    all_access_records = read_access_log(root_path)
+    all_access_records = (
+        read_access_log(root_path) if access_records is None else access_records
+    )
+    all_outcomes = (
+        read_outcome_log(root_path) if outcome_records is None else outcome_records
+    )
+    all_reports = (
+        load_all_judgement_reports(root_path)
+        if judgement_reports is None
+        else judgement_reports
+    )
     access_records, unknown_access_timestamps = _filter_timestamped_records(
         all_access_records,
         window_start,
@@ -112,6 +130,9 @@ def memory_usage_metrics(
         window_start=window_start,
         window_end=window_end,
         attribution_index=index,
+        access_records=all_access_records,
+        outcome_records=all_outcomes,
+        judgement_reports=all_reports,
     )
 
     resolved = [
@@ -182,16 +203,12 @@ def memory_usage_metrics(
     unused_sessions = sum(effect.unused_refs for effect in effects.values())
     unknown_sessions = sum(effect.unknown_refs for effect in effects.values())
 
-    all_reports = load_all_judgement_reports(root_path)
     reports, unknown_judgement_dates = _filter_reports(
         all_reports,
         window_start,
         window_end,
         effective_tz,
     )
-    from trowel_py.memory.access_log import read_outcome_log
-
-    all_outcomes = read_outcome_log(root_path)
     _outcomes, unknown_outcome_timestamps = _filter_timestamped_records(
         all_outcomes,
         window_start,

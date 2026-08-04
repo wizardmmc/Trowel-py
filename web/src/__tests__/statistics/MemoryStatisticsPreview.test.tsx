@@ -12,7 +12,7 @@ test("renders the Memory statistics page shell with representative data", async 
   expect(screen.getByText("脱敏样例")).toBeInTheDocument();
   expect(screen.getByText("Memory")).toHaveAttribute("aria-current", "page");
   expect(await screen.findByText("83.19%")).toBeInTheDocument();
-  expect(screen.getAllByText("5 / 47").length).toBeGreaterThan(0);
+  expect(screen.getByText("5 / 47 ≈ 10.6%")).toBeVisible();
   expect(screen.getByText("从找到到生效")).toBeInTheDocument();
   expect(fetchSpy).not.toHaveBeenCalled();
   fetchSpy.mockRestore();

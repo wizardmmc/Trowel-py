@@ -15,6 +15,8 @@ from trowel_py.memory.judgements import load_all_judgement_reports
 from trowel_py.memory.store import MemoryStore
 
 if TYPE_CHECKING:
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
+    from trowel_py.memory.judgements import JudgementReport
     from trowel_py.memory.types import Note
 
 
@@ -131,6 +133,9 @@ def compute_note_effects_from_notes(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     attribution_index: AttributionIndex | None = None,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
+    judgement_reports: list["JudgementReport"] | None = None,
 ) -> dict[str, NoteEffect]:
     """使用同请求已加载的 Note 快照汇总用户会话级效果证据。
 
@@ -141,6 +146,9 @@ def compute_note_effects_from_notes(
         window_start: 可选半开时间窗起点；提供时只聚合窗内证据。
         window_end: 可选半开时间窗终点，必须与起点同时提供。
         attribution_index: 可复用的会话归因快照；提供时不再次打开数据库。
+        access_records: 调用方已加载的访问日志快照；省略时读取文件。
+        outcome_records: 调用方已加载的反馈日志快照；省略时读取文件。
+        judgement_reports: 调用方已加载的判效报告快照；省略时读取文件。
 
     Returns:
         与 ``compute_note_effects`` 相同、但不再次扫描 Note 文件的聚合结果。
@@ -152,6 +160,9 @@ def compute_note_effects_from_notes(
         window_end=window_end,
         notes_with_id=notes_with_id,
         attribution_index=attribution_index,
+        access_records=access_records,
+        outcome_records=outcome_records,
+        judgement_reports=judgement_reports,
     )
 
 
@@ -163,8 +174,11 @@ def _run_compute_note_effects(
     window_end: datetime | None,
     notes_with_id: list[tuple[str, "Note"]] | None,
     attribution_index: AttributionIndex | None = None,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
+    judgement_reports: list["JudgementReport"] | None = None,
 ) -> dict[str, NoteEffect]:
-    """把公开入口依赖统一注入底层效果聚合器。"""
+    """把公开入口依赖和可选同请求证据快照统一注入底层聚合器。"""
     return _compute_note_effects(
         root,
         local_tz=local_tz,
@@ -176,9 +190,21 @@ def _run_compute_note_effects(
         attribution_index_cls=AttributionIndex,
         system_local_tz_fn=_system_local_tz,
         parse_iso_to_date_fn=_parse_iso_to_date,
-        read_access_log_fn=read_access_log,
-        read_outcome_log_fn=read_outcome_log,
-        load_reports_fn=load_all_judgement_reports,
+        read_access_log_fn=(
+            read_access_log
+            if access_records is None
+            else lambda _root: access_records
+        ),
+        read_outcome_log_fn=(
+            read_outcome_log
+            if outcome_records is None
+            else lambda _root: outcome_records
+        ),
+        load_reports_fn=(
+            load_all_judgement_reports
+            if judgement_reports is None
+            else lambda _root: judgement_reports
+        ),
         effect_cls=NoteEffect,
     )
 

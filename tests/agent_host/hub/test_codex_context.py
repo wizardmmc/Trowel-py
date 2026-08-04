@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -159,6 +160,9 @@ def test_create_codex_four_mp_combinations_wire_injection_and_mcp(
 
     if memory_enabled:
         assert session.config.trowel_memory_mcp is not None
+        assert session.config.trowel_memory_mcp.application_data_root == str(
+            Path(os.environ["TROWEL_DATA_ROOT"])
+        )
     else:
         assert session.config.trowel_memory_mcp is None
 

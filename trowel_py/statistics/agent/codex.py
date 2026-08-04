@@ -8,6 +8,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import BinaryIO
 
 from trowel_py.statistics.agent.codec import (
@@ -69,6 +71,23 @@ class _CodexStatisticsEvent:
     timestamp: datetime | None
 
 
+@dataclass(frozen=True)
+class _JournalVersion:
+    """标识一次 Codex journal 读取对应的文件版本。
+
+    Attributes:
+        device: 文件所在设备编号；文件缺失时为 None。
+        inode: 当前路径指向的文件编号；文件缺失时为 None。
+        size: journal 字节数；文件缺失时为 None。
+        modified_ns: journal 最近修改时间的纳秒值；文件缺失时为 None。
+    """
+
+    device: int | None
+    inode: int | None
+    size: int | None
+    modified_ns: int | None
+
+
 def analyze_codex_session(
     sources: list[CodexTurnSource],
     window: StatisticsWindow,
@@ -100,17 +119,16 @@ def analyze_codex_session_many(
         与输入时间窗顺序一致的 session 事实；没有交集的位置为 None。
     """
 
-    facts = [_parse_turn(source) for source in sources]
-    return tuple(
-        _combine_codex_turns(
-            [
-                observation
-                for fact in facts
-                if (observation := _project_turn(fact, window)) is not None
-            ]
-        )
-        for window in windows
-    )
+    observations: list[list[SessionObservation]] = [[] for _ in windows]
+    for fact in (_parse_turn(source) for source in sources):
+        bounds = _facts_time_bounds(fact)
+        for index, window in enumerate(windows):
+            if not _bounds_may_overlap(bounds, window):
+                continue
+            observation = _project_turn(fact, window)
+            if observation is not None:
+                observations[index].append(observation)
+    return tuple(_combine_codex_turns(turns) for turns in observations)
 
 
 def _combine_codex_turns(
@@ -143,7 +161,87 @@ def _combine_codex_turns(
 def _parse_turn(
     source: CodexTurnSource,
 ) -> _CodexTurnFacts:
-    """读取一次 normalized journal，并保留后续分窗需要的事实。"""
+    """按文件版本复用 normalized journal 的可分窗事实。"""
+
+    return _parse_turn_version(source, _journal_version(source.journal_path))
+
+
+def _journal_version(path: Path) -> _JournalVersion:
+    """返回 journal 当前版本；文件缺失时返回全空版本。"""
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return _JournalVersion(None, None, None, None)
+    return _JournalVersion(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _facts_time_bounds(
+    facts: _CodexTurnFacts,
+) -> tuple[datetime, datetime] | None:
+    """计算一轮事实全部可观测时间的最小包围区间。
+
+    Args:
+        facts: 已解析且可投影到多个时间窗的轮次事实。
+
+    Returns:
+        最早和最晚可观测时间；完全没有有效时间时为 None。
+    """
+
+    observed = [
+        value
+        for value in (
+            facts.registered_at,
+            facts.started_at,
+            facts.first_visible_at,
+            facts.terminal_at,
+            facts.last_observed,
+            *(timestamp for timestamp, _usage in facts.usage_samples),
+        )
+        if value is not None
+    ]
+    if not observed:
+        return None
+    return min(observed), max(observed)
+
+
+def _bounds_may_overlap(
+    bounds: tuple[datetime, datetime] | None,
+    window: StatisticsWindow,
+) -> bool:
+    """用预计算时间边界排除确定不相交的窗口。
+
+    Args:
+        bounds: 一轮事实的最早和最晚可观测时间；无有效时间时为 None。
+        window: 候选统计半开时间窗。
+
+    Returns:
+        至少一个活动、首响或 usage 时间可能落入窗口时为 ``True``。边界采用
+        保守包含，宁可多做一次完整投影，也不漏掉恰好位于边界的事件。
+    """
+
+    if bounds is None:
+        return False
+    earliest, latest = bounds
+    return earliest < window.end and latest >= window.start
+
+
+@lru_cache(maxsize=4_096)
+def _parse_turn_version(
+    source: CodexTurnSource,
+    version: _JournalVersion,
+) -> _CodexTurnFacts:
+    """解析指定文件版本，并缓存不含会话正文的统计事实。
+
+    Args:
+        source: sessions registry 提供的轮次来源和当前状态。
+        version: 调用前读取的 journal 文件版本，用作缓存失效键。
+
+    Returns:
+        后续可投影到任意时间窗的轮次统计事实。
+    """
+
+    del version
 
     registered_at = parse_timestamp(source.registered_at, local_naive=True)
     if not source.journal_path.is_file():

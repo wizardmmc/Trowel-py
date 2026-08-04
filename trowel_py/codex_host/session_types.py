@@ -29,6 +29,7 @@ class TrowelMemoryMcpConfig:
         command: 启动 memory MCP server 的解释器或可执行文件。
         module_args: 传给 ``command`` 的固定启动参数。
         memory_root: MCP server 读取的本地 memory 根目录。
+        application_data_root: MCP server 查找正式 ``config.toml`` 的应用数据根。
         trowel_session_id: 归属该 MCP server 的 Trowel 会话 ID。
         registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
             owner 令牌；browser 模式为空映射。
@@ -38,6 +39,7 @@ class TrowelMemoryMcpConfig:
     command: str
     module_args: tuple[str, ...]
     memory_root: str
+    application_data_root: str
     trowel_session_id: str
     registration_env: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
@@ -60,6 +62,7 @@ class TrowelMemoryMcpConfig:
                 "env": {
                     **dict(self.registration_env),
                     "MEMORY_ROOT": self.memory_root,
+                    "TROWEL_DATA_ROOT": self.application_data_root,
                     "TROWEL_SESSION_ID": self.trowel_session_id,
                     "TROWEL_HOST_KIND": "codex",
                     "TROWEL_NATIVE_SESSION_ID": native_session_id,
@@ -182,6 +185,7 @@ def build_default_trowel_memory_mcp(
     *,
     trowel_session_id: str,
     memory_root: str,
+    application_data_root: str,
     server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
     registration_env: Mapping[str, str] | None = None,
 ) -> TrowelMemoryMcpConfig:
@@ -190,6 +194,7 @@ def build_default_trowel_memory_mcp(
     Args:
         trowel_session_id: MCP 服务归属的 Trowel 会话 ID。
         memory_root: 本地 memory 根目录。
+        application_data_root: Trowel 正式应用数据根；子进程从这里读取配置。
         server_name: 写入 ``mcp_servers`` 的服务名称；默认使用
             ``TROWEL_NOTE_SEARCH_SERVER_NAME``。
         registration_env: 桌面模式下供 Memory MCP 在服务前登记自身进程的环境；
@@ -201,6 +206,7 @@ def build_default_trowel_memory_mcp(
         command=sys.executable,
         module_args=("-m", "trowel_py.memory.mcp_server"),
         memory_root=str(memory_root),
+        application_data_root=str(application_data_root),
         trowel_session_id=trowel_session_id,
         registration_env=MappingProxyType(dict(registration_env or {})),
     )
