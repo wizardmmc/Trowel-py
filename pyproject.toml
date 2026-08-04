@@ -12,6 +12,8 @@ dependencies = [
     "httpx>=0.27.0",
     "openai>=2.41.0",
     "pydantic>=2.13.4",
+    # 运行统计使用跨平台、单位固定为字节的当前进程 RSS。
+    "psutil>=7.2.2",
     "uvicorn>=0.48.0",
     # memory 需要可靠解析多行 YAML frontmatter 和 wiki/pages 语料。
     "pyyaml>=6.0.2",
@@ -37,6 +39,7 @@ trowel_py = [
   "static/**/*",
   "llm/prompts/*.txt",
   "db/migrations/*.sql",
+  "telemetry/migrations/*.sql",
 ]
 
 [dependency-groups]

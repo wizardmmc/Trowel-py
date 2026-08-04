@@ -106,6 +106,51 @@ def _is_missing_rollout_error(
     )
 
 
+def _is_missing_archived_rollout_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 app-server 找不到已归档 rollout 时返回的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=f"no archived rollout found for thread id {thread_id}",
+    )
+
+
+def _is_unmaterialized_thread_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别首条用户消息前 thread 尚未生成 rollout 的精确错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32600,
+        message=(
+            f"thread {thread_id} is not materialized yet; includeTurns is "
+            "unavailable before first user message"
+        ),
+    )
+
+
+def _is_agent_jobs_schema_delete_error(
+    error: ProtocolViolationError,
+    thread_id: str,
+) -> bool:
+    """识别 Codex 0.144 删除空 thread 时命中的缺表错误。"""
+
+    return _matches_rpc_error(
+        error,
+        code=-32603,
+        message=(
+            f"failed to delete app-server state for {thread_id}: error returned "
+            "from database: (code: 1) no such table: agent_jobs"
+        ),
+    )
+
+
 def _matches_rpc_error(
     error: ProtocolViolationError,
     *,
@@ -461,6 +506,7 @@ class CodexHostManager:
                 raise ProtocolViolationError("thread/list returned a repeated cursor")
             seen_cursors.add(next_cursor)
             cursor = next_cursor
+        return rows
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         """通过公共 ``thread/read`` 取得含 turns 的 transcript。"""
@@ -688,6 +734,8 @@ class CodexHostManager:
         text: str,
         *,
         before_turn_start: BeforeTurnStart | None = None,
+        autonomous: bool = False,
+        memory_eligible: bool = True,
     ) -> str:
         """执行一个 turn：确保连接、按需挂载 thread，再启动原生 turn。
 
@@ -695,10 +743,23 @@ class CodexHostManager:
         turn 复用已加载的 thread。
         ``before_turn_start`` 在挂载后、原生工作前同步执行，确保持久化
         失败时不会留下失去追踪的 turn。返回原生 ``turn_id``。
+
+        Args:
+            session: 接收本轮输入的 Codex 会话。
+            text: 发送给 Codex 的输入正文。
+            before_turn_start: 原生 thread 挂载后、turn/start 前执行的同步持久化门禁。
+            autonomous: 是否由 Trowel 内部事件启动；为 True 时不合成 USER 事件。
+            memory_eligible: 自主 turn 是否允许进入会后 Memory 流程。
+
+        Returns:
+            Codex 接受本轮后返回的原生 turn ID。
         """
 
         self._require_registered(session)
-        session.begin_send()
+        session.begin_send(
+            autonomous=autonomous,
+            memory_eligible=memory_eligible,
+        )
         try:
             await self.attach(session)
             client = await self.ensure_ready()
@@ -744,7 +805,10 @@ class CodexHostManager:
                 raise
             session.commit_turn_settings(model=model, effort=effort)
             self._register_turn_resource(session, turn_id)
-            session.record_turn_started(turn_id, text)
+            if autonomous:
+                session.record_autonomous_turn_started(turn_id)
+            else:
+                session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
             # 所有失败都需释放 _sending，成功路径由 record_turn_started 清除。
@@ -814,6 +878,7 @@ class CodexHostManager:
             )
         self._require_registered(session)
         client = await self.ensure_ready()
+        archive_rollout_missing = False
         try:
             await client.request(
                 "thread/archive",
@@ -826,6 +891,7 @@ class CodexHostManager:
                 binding.thread_id,
             ):
                 raise
+            archive_rollout_missing = True
             if preserve_history:
                 _log.warning(
                     "Codex user thread is already archived or its rollout is missing; "
@@ -844,16 +910,102 @@ class CodexHostManager:
         if preserve_history:
             # unarchive 只恢复 notLoaded 历史文件，不会重启 thread 或 MCP。必须先做，
             # 否则资源核验失败会把 rollout 留在归档区，使下一次关闭误判为文件丢失。
-            await client.request(
-                "thread/unarchive",
-                {"threadId": binding.thread_id},
-                timeout=_REQUEST_TIMEOUT_S,
-            )
+            try:
+                await client.request(
+                    "thread/unarchive",
+                    {"threadId": binding.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+            except ProtocolViolationError as restore_error:
+                if (
+                    not archive_rollout_missing
+                    or not _is_missing_archived_rollout_error(
+                        restore_error,
+                        binding.thread_id,
+                    )
+                ):
+                    raise
+                await self._delete_unmaterialized_user_thread(
+                    client,
+                    binding.thread_id,
+                    restore_error=restore_error,
+                )
         if self._resource_registry is not None:
+            for owner_session_id, turn_id in tuple(self._turn_resource_ids):
+                if owner_session_id == session.session_id:
+                    self._mark_turn_resource_closed(owner_session_id, turn_id)
             await self._reconcile_session_process_groups(session.session_id)
             self._resource_registry.mark_owner_closed(
                 OwnerScope.SESSION,
                 agent_session_id=session.session_id,
+            )
+
+    async def _delete_unmaterialized_user_thread(
+        self,
+        client: AppServerClient,
+        thread_id: str,
+        *,
+        restore_error: ProtocolViolationError,
+    ) -> None:
+        """只删除已证实没有首条用户消息和 rollout 的空 thread。
+
+        ``thread/delete`` 会永久删除原生状态，因此不能根据当前进程里的
+        ``has_started_turn`` 推断：重启后，已有历史的会话也没有进程内 turn。
+        只有 archive、unarchive 都确认 rollout 缺失，且 includeTurns 返回“首条
+        用户消息前尚未物化”时，才允许删除。
+
+        Args:
+            client: 当前共享 Codex app-server 连接。
+            thread_id: 待核验并关闭的原生 Codex thread ID。
+            restore_error: unarchive 找不到归档 rollout 的原始错误；核验不能证明
+                thread 为空时重新抛出，确保 binding 保持可重试。
+
+        Raises:
+            ProtocolViolationError: thread 不是已实证的未物化空状态。
+        """
+
+        try:
+            await client.request(
+                "thread/read",
+                {"threadId": thread_id, "includeTurns": True},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as read_error:
+            if not _is_unmaterialized_thread_error(read_error, thread_id):
+                raise restore_error from read_error
+        else:
+            raise restore_error
+        _log.warning(
+            "Codex user thread has no first user message or rollout; "
+            "deleting the empty native state"
+        )
+        try:
+            await client.request(
+                "thread/delete",
+                {"threadId": thread_id},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except ProtocolViolationError as delete_error:
+            if not _is_agent_jobs_schema_delete_error(delete_error, thread_id):
+                raise
+            loaded = await client.request(
+                "thread/loaded/list",
+                {},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            loaded_thread_ids = (
+                loaded.get("data") if isinstance(loaded, Mapping) else None
+            )
+            if (
+                not isinstance(loaded_thread_ids, list)
+                or not all(isinstance(item, str) for item in loaded_thread_ids)
+                or thread_id in loaded_thread_ids
+            ):
+                raise delete_error
+            _log.warning(
+                "Codex 0.144 could not remove empty thread metadata because its "
+                "state database lacks agent_jobs; the native thread is confirmed "
+                "unloaded"
             )
 
     async def _reconcile_session_process_groups(self, session_id: str) -> None:
@@ -1208,7 +1360,7 @@ class CodexHostManager:
             return
         await self._stop_descendant_monitor()
         exit_code = client.last_exit_code
-        stderr_tail = client.stderr_tail[:200] if client else ""
+        stderr_tail = client.stderr_tail[:200]
         self._state = CodexHostManagerState.DEGRADED
         self._mark_connection_needs_reconcile(
             self._active_generation,
@@ -1436,12 +1588,38 @@ class CodexHostManager:
         self._turn_resource_ids[(session.session_id, turn_id)] = resource_id
 
     def _mark_turn_resource_closed(self, session_id: str, turn_id: str) -> None:
-        """把收到原生 terminal 的 turn handle 提交为 closed。"""
+        """把原生 terminal 或 thread archive 确认的 turn owner 提交为 closed。"""
 
         registry = self._resource_registry
-        resource_id = self._turn_resource_ids.pop((session_id, turn_id), None)
-        if registry is not None and resource_id is not None:
-            registry.mark_closed(resource_id)
+        resource_key = (session_id, turn_id)
+        resource_id = self._turn_resource_ids.get(resource_key)
+        if registry is None or resource_id is None:
+            return
+        registry.mark_owner_closing(
+            OwnerScope.TURN,
+            agent_session_id=session_id,
+            turn_id=turn_id,
+        )
+        registry.mark_closed(resource_id)
+        summary = registry.owner_summary(
+            OwnerScope.TURN,
+            agent_session_id=session_id,
+            turn_id=turn_id,
+        )
+        if summary.live_resource_count:
+            registry.mark_owner_needs_reconcile(
+                OwnerScope.TURN,
+                agent_session_id=session_id,
+                turn_id=turn_id,
+                remaining_resource_count=summary.live_resource_count,
+            )
+        else:
+            registry.mark_owner_closed(
+                OwnerScope.TURN,
+                agent_session_id=session_id,
+                turn_id=turn_id,
+            )
+        self._turn_resource_ids.pop(resource_key, None)
 
     def _mark_connection_needs_reconcile(
         self,
@@ -1454,6 +1632,10 @@ class CodexHostManager:
         resource_id = self._connection_resource_ids.get(generation)
         if registry is not None and resource_id is not None:
             registry.mark_needs_reconcile(resource_id, error)
+            registry.mark_owner_needs_reconcile(
+                OwnerScope.RUNTIME_CONNECTION,
+                runtime_connection_id=self._connection_id(generation),
+            )
 
     def _default_client_factory(self) -> AppServerClient:
         """返回未启动的默认 client；handler 注册与启动由 ``ensure_ready`` 完成。"""

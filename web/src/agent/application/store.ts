@@ -55,7 +55,7 @@ import { applyPendingApproval } from "./store/approvalState";
 import { reduceAgentEvent } from "./store/eventState";
 import { replayAgentHistory } from "./store/historyState";
 import { admitSessionSend } from "./store/sendAdmission";
-import { createCodexLiveController } from "./store/codexLive";
+import { createAgentLiveController } from "./store/agentLive";
 import { replayCodexSubagentHistory } from "./store/codexSubagents";
 
 export type {
@@ -142,7 +142,7 @@ export function createAgentStore() {
       return applied;
     }
 
-    const codexLive = createCodexLiveController({
+    const agentLive = createAgentLiveController({
       getSession: (sid) => get().sessions[sid],
       applyEvent: (sid, event) => {
         applyTo(sid, event);
@@ -205,16 +205,90 @@ export function createAgentStore() {
       });
     }
 
+    /** 收口尚未被 runtime 接受的乐观 turn，并保留启动失败原因。 */
+    function failOptimisticTurn(sid: string, error: unknown): void {
+      set((state) => {
+        const session = state.sessions[sid];
+        if (!session) return state;
+        const turns = session.turns.map((item, index) =>
+          index === session.turns.length - 1
+            ? { ...item, status: "error" as const }
+            : item,
+        );
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: {
+              ...session,
+              turns,
+              phase: "error",
+              abort: null,
+              transportError:
+                error instanceof Error ? error.message : String(error),
+            },
+          },
+        };
+      });
+    }
+
+    /** 请求关闭尚未发送消息的后端会话，并保留可重试的失败原因。 */
+    async function closeTemporaryBackendSession(
+      sid: string,
+    ): Promise<string | null> {
+      try {
+        const result = await apiDeleteSession(sid);
+        if (result.status === "needs_reconcile") {
+          return result.error ?? "会话资源尚未完全关闭，请重试。";
+        }
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    /** 把关闭失败的临时会话留在多开栏，避免后端连接变成不可见占位。 */
+    function keepTemporaryCloseFailure(sid: string, error: string): void {
+      set((state) => {
+        const session = state.sessions[sid];
+        if (!session) return state;
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: {
+              ...session,
+              connected: true,
+              transportError: error,
+            },
+          },
+        };
+      });
+    }
+
+    /** 为已连接会话恢复常驻事件流，并按需读取 Codex Goal。 */
+    async function restoreMaterializedAgentLive(sid: string): Promise<void> {
+      const session = get().sessions[sid];
+      if (!session) return;
+      if (session.runtime === "codex") {
+        if (session.nativeSessionId === null) return;
+      } else if (!session.connected) {
+        return;
+      }
+      agentLive.watchInBackground(sid);
+      await agentLive.refreshCodexGoal(sid);
+    }
+
     async function dropTempActive(): Promise<void> {
       const state = get();
       const sid = state.activeSid;
       if (!sid) return;
       const s = state.sessions[sid];
       if (!s || s.connected || s.meta.exited || s.abort) return;
-      try {
-        await apiDeleteSession(sid);
-      } catch {
-        // 后端删除失败也要丢弃本地临时行。
+      const closeError = await closeTemporaryBackendSession(sid);
+      if (closeError) {
+        keepTemporaryCloseFailure(sid, closeError);
+        return;
       }
       set((st) => {
         // await 期间活动会话可能已切换，不能删除新会话。
@@ -246,10 +320,20 @@ export function createAgentStore() {
         const session = await apiCreateSession({ ...params, runtime });
         const sid = session.session_id;
         if (generation !== sessionStartGeneration) {
-          try {
-            await apiDeleteSession(sid);
-          } catch {
-            // 迟到请求不能重新占据界面；后端清理保持 best-effort。
+          const closeError = await closeTemporaryBackendSession(sid);
+          if (closeError) {
+            const failedSession = {
+              ...createNewSessionState(session, params),
+              connected: true,
+              transportError: closeError,
+            };
+            set((state) => ({
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: state.sessions[sid] ?? failedSession,
+              },
+            }));
           }
           return session;
         }
@@ -259,10 +343,7 @@ export function createAgentStore() {
           sessions: { ...state.sessions, [sid]: perSession },
           activeSid: sid,
         }));
-        if (runtime === "codex") {
-          codexLive.watchInBackground(sid);
-          await codexLive.refreshGoal(sid);
-        }
+        await restoreMaterializedAgentLive(sid);
         return session;
       },
 
@@ -271,19 +352,13 @@ export function createAgentStore() {
         if (!state.sessions[sid]) return;
         if (state.activeSid === sid) {
           await recoverApprovalRequests(sid);
-          if (state.sessions[sid].runtime === "codex") {
-            codexLive.watchInBackground(sid);
-            await codexLive.refreshGoal(sid);
-          }
+          await restoreMaterializedAgentLive(sid);
           return;
         }
         await dropTempActive();
         set({ activeSid: sid });
         await recoverApprovalRequests(sid);
-        if (get().sessions[sid]?.runtime === "codex") {
-          codexLive.watchInBackground(sid);
-          await codexLive.refreshGoal(sid);
-        }
+        await restoreMaterializedAgentLive(sid);
       },
 
       showWorkspaceHome: () => {
@@ -294,10 +369,10 @@ export function createAgentStore() {
         set({ activeSid: null });
         if (!session || session.connected || session.meta.exited || session.abort) return;
         void (async () => {
-          try {
-            await apiDeleteSession(sid);
-          } catch {
-            // 离开未连接会话时，本地仍应立即回到工作区首页。
+          const closeError = await closeTemporaryBackendSession(sid);
+          if (closeError) {
+            keepTemporaryCloseFailure(sid, closeError);
+            return;
           }
           set((current) => {
             const stale = current.sessions[sid];
@@ -326,7 +401,7 @@ export function createAgentStore() {
           closingSessionIds: new Set(state.closingSessionIds).add(sid),
         }));
         cur.abort?.abort();
-        codexLive.stop(sid);
+        agentLive.stop(sid);
         try {
           const result = await apiDeleteSession(sid);
           if (result.status === "needs_reconcile") {
@@ -393,7 +468,7 @@ export function createAgentStore() {
         const userSessions = backend.filter(
           (session) => (session.session_kind ?? "user") === "user",
         );
-        const newConnectedCodexSessions: string[] = [];
+        const newConnectedAgentSessions: string[] = [];
         set((state) => {
           const merged = Object.fromEntries(
             Object.entries(state.sessions).filter(
@@ -419,8 +494,8 @@ export function createAgentStore() {
               }
             } else {
               merged[b.session_id] = createReconciledSessionState(b);
-              if (b.runtime === "codex" && b.connected) {
-                newConnectedCodexSessions.push(b.session_id);
+              if (b.connected) {
+                newConnectedAgentSessions.push(b.session_id);
               }
             }
           }
@@ -430,9 +505,8 @@ export function createAgentStore() {
               : null;
           return { ...state, sessions: merged, activeSid };
         });
-        for (const sessionId of newConnectedCodexSessions) {
-          codexLive.watchInBackground(sessionId);
-          void codexLive.refreshGoal(sessionId);
+        for (const sessionId of newConnectedAgentSessions) {
+          void restoreMaterializedAgentLive(sessionId);
         }
       },
 
@@ -855,31 +929,21 @@ export function createAgentStore() {
 
         if (runtime === "codex") {
           try {
-            await codexLive.ensureWatcher(sid);
+            await agentLive.ensureWatcher(sid);
+          } catch (error) {
+            failOptimisticTurn(sid, error);
+            return;
+          }
+        } else {
+          // POST 流仍承载当前消息；常驻流同时接收之后由 Agent Host 启动的续轮。
+          agentLive.watchInBackground(sid);
+        }
+
+        if (runtime === "codex") {
+          try {
             await apiStartCodexTurn(sid, text);
           } catch (error) {
-            set((state) => {
-              const session = state.sessions[sid];
-              if (!session) return state;
-              const turns = session.turns.map((item, index) =>
-                index === session.turns.length - 1
-                  ? { ...item, status: "error" as const }
-                  : item,
-              );
-              return {
-                ...state,
-                sessions: {
-                  ...state.sessions,
-                  [sid]: {
-                    ...session,
-                    turns,
-                    phase: "error",
-                    abort: null,
-                    transportError: (error as Error).message,
-                  },
-                },
-              };
-            });
+            failOptimisticTurn(sid, error);
           }
           return;
         }
@@ -1061,7 +1125,7 @@ export function createAgentStore() {
         });
         if (!accepted) throw new Error("/compact is unavailable for this session");
         try {
-          await codexLive.ensureWatcher(sid);
+          await agentLive.ensureWatcher(sid);
           await apiCompactCodexSession(sid);
         } catch (error) {
           set((state) => {
@@ -1116,7 +1180,7 @@ export function createAgentStore() {
         });
         if (!accepted) throw new Error("/review is unavailable for this session");
         try {
-          await codexLive.ensureWatcher(sid);
+          await agentLive.ensureWatcher(sid);
           const result = await apiStartCodexReview(sid, target);
           set((state) => {
             const session = state.sessions[sid];
@@ -1205,7 +1269,7 @@ export function createAgentStore() {
         for (const s of Object.values(get().sessions)) {
           s.abort?.abort();
         }
-        codexLive.stopAll();
+        agentLive.stopAll();
         set({
           sessions: {},
           closingSessionIds: new Set<string>(),

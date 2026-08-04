@@ -1,8 +1,12 @@
-/** 验证顶层工具切换不会卸载 renderer 本地 Agent 工作区。 */
+/** 验证需要保留本地状态的顶层工作区不会在工具切换时卸载。 */
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+
+afterEach(() => {
+  window.history.replaceState({}, "", "/");
+});
 
 vi.mock("../components/layout/AppLayout", () => ({
   AppLayout: ({
@@ -13,8 +17,15 @@ vi.mock("../components/layout/AppLayout", () => ({
     readonly onToolChange: (tool: string) => void;
   }) => (
     <div>
-      <button type="button" onClick={() => onToolChange("garden")}>花园</button>
-      <button type="button" onClick={() => onToolChange("cc")}>Agent</button>
+      <button type="button" onClick={() => onToolChange("garden")}>
+        花园
+      </button>
+      <button type="button" onClick={() => onToolChange("cc")}>
+        Agent
+      </button>
+      <button type="button" onClick={() => onToolChange("statistics")}>
+        统计
+      </button>
       {children}
     </div>
   ),
@@ -28,6 +39,19 @@ vi.mock("../agent", () => ({
         aria-label="测试工作区"
         value={workdir}
         onChange={(event) => setWorkdir(event.target.value)}
+      />
+    );
+  },
+}));
+
+vi.mock("../statistics/ui/StatisticsWorkspace", () => ({
+  StatisticsWorkspace: () => {
+    const [marker, setMarker] = useState("");
+    return (
+      <input
+        aria-label="测试统计位置"
+        value={marker}
+        onChange={(event) => setMarker(event.target.value)}
       />
     );
   },
@@ -73,7 +97,9 @@ vi.mock("../components/review/ReviewSession", () => ({
   ReviewSession: () => null,
 }));
 vi.mock("../components/garden/GardenView", () => ({ GardenView: () => null }));
-vi.mock("../components/profile/ProfileView", () => ({ ProfileView: () => null }));
+vi.mock("../components/profile/ProfileView", () => ({
+  ProfileView: () => null,
+}));
 
 import App from "../App";
 
@@ -88,4 +114,25 @@ it("keeps the selected Agent workspace while visiting another tool", () => {
   fireEvent.click(screen.getByRole("button", { name: "Agent" }));
 
   expect(screen.getByLabelText("测试工作区")).toHaveValue("/repo");
+});
+
+it("keeps the Statistics workspace mounted while visiting another tool", async () => {
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "统计" }));
+  fireEvent.change(await screen.findByLabelText("测试统计位置"), {
+    target: { value: "calls:240" },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "花园" }));
+  fireEvent.click(screen.getByRole("button", { name: "统计" }));
+
+  expect(screen.getByLabelText("测试统计位置")).toHaveValue("calls:240");
+});
+
+it("opens Statistics directly from a desktop deep link", async () => {
+  window.history.replaceState({}, "", "/?tool=statistics");
+
+  render(<App />);
+
+  expect(await screen.findByLabelText("测试统计位置")).toBeVisible();
 });

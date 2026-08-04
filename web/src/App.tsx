@@ -1,6 +1,6 @@
-/** 组合卡片、复习、花园、Agent 和 Profile 五个顶层工具。 */
+/** 组合花园、提取、复习、Agent、统计和画像六个顶层工具。 */
 
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AppLayout, type Tool } from "./components/layout/AppLayout";
 import { ExtractionInput } from "./components/cards/ExtractionInput";
 import { ReviewModal } from "./components/cards/ReviewModal";
@@ -12,6 +12,13 @@ import { ProfileView } from "./components/profile/ProfileView";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
 import { useReviewStore } from "./stores/reviewStore";
+
+const StatisticsWorkspace = lazy(async () => {
+  const module = await import("./statistics/ui/StatisticsWorkspace");
+  return { default: module.StatisticsWorkspace };
+});
+const READ_ONLY_INSPECTION =
+  import.meta.env.VITE_TROWEL_INSPECTION_MODE === "1";
 
 function App() {
   const {
@@ -35,7 +42,10 @@ function App() {
   const { addNotification } = useNotificationStore();
   const { startSession, phase } = useReviewStore();
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [activeTool, setActiveTool] = useState<Tool>("garden");
+  const [activeTool, setActiveTool] = useState<Tool>(readInitialTool);
+  const [statisticsMounted, setStatisticsMounted] = useState(
+    () => readInitialTool() === "statistics",
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
@@ -47,10 +57,23 @@ function App() {
     }
   }, [drafts.length]);
 
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (activeTool === "statistics") {
+      url.searchParams.set("tool", "statistics");
+    } else {
+      url.searchParams.delete("tool");
+      url.searchParams.delete("statistics_tab");
+      url.searchParams.delete("trace_id");
+    }
+    window.history.replaceState(window.history.state, "", url);
+  }, [activeTool]);
+
   const handleToolChange = (tool: Tool) => {
     if (tool === "review") {
       startSession();
     } else {
+      if (tool === "statistics") setStatisticsMounted(true);
       setActiveTool(tool);
     }
     setSidebarOpen(false);
@@ -94,6 +117,7 @@ function App() {
       onToolChange={handleToolChange}
       sidebarOpen={sidebarOpen}
       onToggleSidebar={() => setSidebarOpen((o) => !o)}
+      inspectionOnly={READ_ONLY_INSPECTION}
     >
       <NotificationBanner
         count={drafts.length}
@@ -111,12 +135,27 @@ function App() {
         />
       )}
       {!reviewActive && activeTool === "profile" && <ProfileView />}
-      <div
-        className="agent-workspace-slot"
-        hidden={activeTool !== "cc"}
-      >
-        <AgentWorkspace />
-      </div>
+      {!READ_ONLY_INSPECTION && (
+        <div className="agent-workspace-slot" hidden={activeTool !== "cc"}>
+          <AgentWorkspace />
+        </div>
+      )}
+      {statisticsMounted && (
+        <div
+          className="statistics-workspace-slot"
+          hidden={activeTool !== "statistics"}
+        >
+          <Suspense
+            fallback={
+              <div className="statistics-workspace-loading" role="status">
+                正在打开统计…
+              </div>
+            }
+          >
+            <StatisticsWorkspace active={activeTool === "statistics"} />
+          </Suspense>
+        </div>
+      )}
 
       <ReviewSession />
 
@@ -150,6 +189,13 @@ function App() {
       )}
     </AppLayout>
   );
+}
+
+/** 只接受已注册的一级入口，避免陈旧 URL 把应用带进空白页。 */
+function readInitialTool(): Tool {
+  if (READ_ONLY_INSPECTION) return "statistics";
+  const requested = new URLSearchParams(window.location.search).get("tool");
+  return requested === "statistics" ? "statistics" : "garden";
 }
 
 export default App;

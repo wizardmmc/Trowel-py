@@ -96,12 +96,8 @@ def open_session(
     )
     if same_kind_connections >= limit:
         if internal_session:
-            raise CcCapacityError(
-                f"当前委派数量已满：连接上限为 {limit}"
-            )
-        raise CcCapacityError(
-            f"连接数已达上限（{limit}），请先关闭一些 session"
-        )
+            raise CcCapacityError(f"当前委派数量已满：连接上限为 {limit}")
+        raise CcCapacityError(f"连接数已达上限（{limit}），请先关闭一些 session")
     sid = uuid.uuid4().hex
 
     from trowel_py.memory.mcp_config import write_mcp_config
@@ -122,6 +118,11 @@ def open_session(
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
             delegation_depth=req.delegation_depth,
+            agent_api_credential=(
+                resource_registry.registration_credential
+                if resource_registry is not None
+                else ""
+            ),
         )
     )
     try:

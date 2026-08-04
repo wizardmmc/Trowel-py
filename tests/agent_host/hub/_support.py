@@ -119,12 +119,17 @@ class FakeCodexManager:
         text: str,
         *,
         before_turn_start=None,
+        autonomous: bool = False,
+        memory_eligible: bool = True,
     ) -> str:
 
         self.sent.append((session.session_id, text))
         manages_turn_state = hasattr(session, "begin_send")
         if manages_turn_state:
-            session.begin_send()
+            session.begin_send(
+                autonomous=autonomous,
+                memory_eligible=memory_eligible,
+            )
         if getattr(session, "binding", None) is None and hasattr(
             session, "attach_thread_binding"
         ):
@@ -144,10 +149,16 @@ class FakeCodexManager:
             turn_id = getattr(event, "turn_id", None)
             if isinstance(turn_id, str):
                 if manages_turn_state:
-                    session.record_turn_started(turn_id, text)
+                    if autonomous:
+                        session.record_autonomous_turn_started(turn_id)
+                    else:
+                        session.record_turn_started(turn_id, text)
                 return turn_id
         if manages_turn_state:
-            session.record_turn_started("fake-turn-id", text)
+            if autonomous:
+                session.record_autonomous_turn_started("fake-turn-id")
+            else:
+                session.record_turn_started("fake-turn-id", text)
         return "fake-turn-id"
 
     async def interrupt(self, session: Any) -> None:

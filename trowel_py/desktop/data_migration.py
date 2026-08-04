@@ -214,13 +214,7 @@ def _previous_app_shutdown_blockers(previous_app_root: Path) -> tuple[str, ...]:
             "start and fully quit Trowel first",
         )
 
-    clean_exit = (
-        exit_marker is not None
-        and exit_marker.get("version") == 1
-        and exit_marker.get("app_instance_id") == snapshot["app_instance_id"]
-        and exit_marker.get("status") == "closed"
-        and exit_marker.get("remaining_resource_count") == 0
-    )
+    clean_exit = _exit_marker_is_clean(exit_marker, snapshot["app_instance_id"])
     blockers: list[str] = []
     if not clean_exit:
         blockers.append(
@@ -266,13 +260,38 @@ def _clean_previous_app_instance_id(previous_app_root: Path) -> str | None:
         snapshot.get("version") == 1
         and isinstance(instance_id, str)
         and bool(instance_id)
-        and exit_marker.get("version") == 1
-        and exit_marker.get("app_instance_id") == instance_id
-        and exit_marker.get("status") == "closed"
-        and exit_marker.get("remaining_resource_count") == 0
+        and _exit_marker_is_clean(exit_marker, instance_id)
     ):
         return instance_id
     return None
+
+
+def _exit_marker_is_clean(
+    marker: dict[str, Any] | None,
+    expected_instance_id: str,
+) -> bool:
+    """兼容判断 v1/v2 Host 标记是否证明同一实例已经干净退出。
+
+    Args:
+        marker: 宽松读取的退出标记；缺失时为 None。
+        expected_instance_id: 当前资源快照中的去敏应用实例身份。
+
+    Returns:
+        版本受支持、实例一致、进程树归零时为 True。
+    """
+
+    if marker is None or marker.get("version") not in {1, 2}:
+        return False
+    terminal = (
+        marker.get("process_tree_result")
+        if marker.get("version") == 2
+        else marker.get("status")
+    )
+    return (
+        marker.get("app_instance_id") == expected_instance_id
+        and terminal == "closed"
+        and marker.get("remaining_resource_count") == 0
+    )
 
 
 def plan_desktop_data_migration(
@@ -708,7 +727,7 @@ def _merge_non_user_identities(
         DesktopDataMigrationError: 任一已有来源无法按冻结格式解析。
     """
 
-    merged = {"claude_code": set(), "codex": set()}
+    merged: dict[str, set[str]] = {"claude_code": set(), "codex": set()}
     found = False
     for source in (legacy, current):
         if not source.exists():

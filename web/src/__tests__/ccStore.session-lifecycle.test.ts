@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   apiCreateSession,
   apiDeleteSession,
@@ -6,6 +6,7 @@ import {
   ev,
   mockCreate,
   releaseAllStreams,
+  releaseMessageStreams,
   stream,
 } from "./ccStoreTestHarness";
 import { createAgentStore } from "../agent";
@@ -31,6 +32,32 @@ describe("createAgentStore — multi-session lifecycle", () => {
     stream.apply!(ev("finished"));
     await releaseAllStreams();
     await sending;
+  });
+
+  it("keeps the Claude event watcher alive for an autonomous follow-up turn", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+
+    const sending = store.getState().send("start delegate");
+    expect(stream.eventApply).not.toBeNull();
+    expect(stream.messageApply).not.toBeNull();
+    stream.messageApply!(ev("finished"));
+    await releaseMessageStreams();
+    await sending;
+
+    stream.eventApply!(
+      ev(
+        "turn_start",
+        { autonomous: true },
+        { turn_id: "turn-auto" },
+      ),
+    );
+    expect(store.getState().sessions.s1.turns.at(-1)?.turnId).toBe("turn-auto");
+    expect(store.getState().sessions.s1.abort).not.toBeNull();
+
+    stream.eventApply!(ev("finished", {}, { turn_id: "turn-auto" }));
+    expect(store.getState().sessions.s1.abort).toBeNull();
   });
 
   it("shows the first prompt immediately, then applies the generated title", async () => {
@@ -138,6 +165,56 @@ describe("createAgentStore — multi-session lifecycle", () => {
     expect(store.getState().sessions.s2).toBeUndefined();
     expect(store.getState().sessions.s1).toBeDefined();
     expect(apiDeleteSession).toHaveBeenCalledWith("s2");
+  });
+
+  it("keeps a temp visible when the backend cannot finish closing it", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/a" });
+    const first = store.getState().send("one");
+    stream.apply!(ev("finished"));
+    await releaseAllStreams();
+    await first;
+    mockCreate("s2", { runtime: "codex" });
+    await store.getState().startSession({ workdir: "/b", runtime: "codex" });
+    apiDeleteSession.mockResolvedValueOnce({
+      closed: false,
+      status: "needs_reconcile",
+      remaining_resource_count: 2,
+      remaining_resource_kinds: ["codex_session_close"],
+      error: "Codex close needs reconciliation",
+    });
+
+    await store.getState().activateSession("s1");
+
+    expect(store.getState().activeSid).toBe("s1");
+    expect(store.getState().sessions.s2).toMatchObject({
+      connected: true,
+      transportError: "Codex close needs reconciliation",
+    });
+  });
+
+  it("keeps a failed temp close visible after returning to workspace home", async () => {
+    const store = createAgentStore();
+    mockCreate("s1", { runtime: "codex" });
+    await store.getState().startSession({ workdir: "/a", runtime: "codex" });
+    apiDeleteSession.mockResolvedValueOnce({
+      closed: false,
+      status: "needs_reconcile",
+      remaining_resource_count: 1,
+      remaining_resource_kinds: ["codex_session_close"],
+      error: "empty thread still loaded",
+    });
+
+    store.getState().showWorkspaceHome();
+
+    expect(store.getState().activeSid).toBeNull();
+    await vi.waitFor(() => {
+      expect(store.getState().sessions.s1).toMatchObject({
+        connected: true,
+        transportError: "empty thread still loaded",
+      });
+    });
   });
 
   it("startSession also drops a never-connected temp active", async () => {

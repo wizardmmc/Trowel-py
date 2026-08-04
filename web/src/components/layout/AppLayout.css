@@ -164,6 +164,27 @@
   min-height: 0;
 }
 
+.app-main--statistics {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.statistics-workspace-slot {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+
+.statistics-workspace-loading {
+  display: grid;
+  height: 100%;
+  min-height: 180px;
+  place-content: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
 .app-main__hamburger {
   display: none;
 }

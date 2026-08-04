@@ -67,6 +67,33 @@ def test_ensure_columns_idempotent(tmp_path) -> None:
     second.close()
 
 
+def test_old_binding_schema_migrates_terminal_columns(tmp_path) -> None:
+    database = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(database))
+    conn.executescript(
+        "CREATE TABLE session_bindings ("
+        "trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL,"
+        "session_kind TEXT NOT NULL, workdir TEXT NOT NULL,"
+        "bound_at TEXT NOT NULL, start_offset INTEGER);"
+        "INSERT INTO session_bindings VALUES ("
+        "'legacy-trowel', 'legacy-cc', 'user', '/workspace', 't', 0);"
+    )
+    conn.close()
+
+    migrated = sqlite3.connect(str(database))
+    repo = create_sessions_repository(migrated)
+    columns = {
+        row["name"] for row in migrated.execute("PRAGMA table_info(session_bindings)")
+    }
+    binding = repo.claude.find_cc_by_trowel("legacy-trowel")
+
+    assert {"status", "completed_at"} <= columns
+    assert binding is not None
+    assert binding.status == "unknown"
+    assert binding.completed_at is None
+    migrated.close()
+
+
 def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
     database = tmp_path / "sessions.db"
     conn = sqlite3.connect(str(database))
@@ -82,9 +109,11 @@ def test_schema_contains_persistent_session_review_queue(tmp_path) -> None:
         "runtime",
         "requested_at",
         "not_before",
+        "closed_at",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",
+        "problem_recorded_at",
     }
     conn.close()
 
@@ -112,14 +141,18 @@ def test_old_review_queue_migrates_frozen_source_columns(tmp_path) -> None:
 
     assert {
         "not_before",
+        "closed_at",
         "native_session_id",
         "source_start_offset",
         "source_end_offset",
+        "problem_recorded_at",
     } <= columns
     assert request is not None
     assert request.native_session_id == ""
+    assert request.closed_at == "2026-07-31T10:00:00"
     assert request.source_start_offset is None
     assert request.source_end_offset is None
+    assert request.problem_recorded_at is None
     migrated.close()
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,43 @@ async def test_stream_cc_writes_back_native_before_consumer_closes(
     persisted = hub.get(binding.session_id)
     assert persisted is not None
     assert persisted.native_session_id == "native-before-terminal"
+
+
+async def test_wait_until_idle_resumes_after_parent_stream_finishes(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """内部通知只等待实时 turn，不通过模型或 MCP 状态查询探活。"""
+
+    binding = hub.create(cc_req(workdir))
+    host = hub._cc_registry[binding.session_id]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def send(_text: str):
+        host.running = True
+        started.set()
+        try:
+            await release.wait()
+            yield {"type": "finished", "duration_ms": 1}
+        finally:
+            host.running = False
+
+    host.send = send
+    turn = asyncio.create_task(
+        _collect(hub.stream(binding.session_id, "parent work"))
+    )
+    await started.wait()
+    waiter = asyncio.create_task(hub.wait_until_idle(binding.session_id))
+    await asyncio.sleep(0)
+
+    assert not waiter.done()
+
+    release.set()
+    await turn
+    await asyncio.wait_for(waiter, timeout=0.1)
+
+
+async def _collect(stream):
+    """把异步事件流消费到结束，供并发时序测试使用。"""
+
+    return [event async for event in stream]

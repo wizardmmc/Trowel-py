@@ -4,6 +4,7 @@ import type { SidecarStartOptions, StartedSidecar } from "./sidecar";
 import {
   countLiveSnapshotResources,
   signalSnapshotResources,
+  type ExitMarkerInput,
   writeExitMarker,
 } from "./resourceCleanup";
 
@@ -24,6 +25,7 @@ export interface SidecarShutdownResult {
   readonly status: "closed" | "needs_reconcile";
   readonly remainingResourceCount: number;
   readonly forced: boolean;
+  readonly exitMarkerRecorded: boolean;
 }
 
 export interface SidecarShutdownDependencies {
@@ -38,10 +40,10 @@ export interface SidecarShutdownDependencies {
   readonly countResources: (options: SidecarStartOptions) => Promise<number>;
   readonly recordExit: (
     options: SidecarStartOptions,
-    status: "closed" | "needs_reconcile",
-    remainingResourceCount: number,
+    marker: ExitMarkerInput,
   ) => Promise<void>;
   readonly delay: (milliseconds: number) => Promise<void>;
+  readonly now: () => Date;
 }
 
 const DEFAULT_DEPENDENCIES: SidecarShutdownDependencies = {
@@ -51,6 +53,7 @@ const DEFAULT_DEPENDENCIES: SidecarShutdownDependencies = {
   recordExit: writeExitMarker,
   delay: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now: () => new Date(),
 };
 
 export async function shutdownSidecar(
@@ -59,17 +62,15 @@ export async function shutdownSidecar(
   dependencies: SidecarShutdownDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<SidecarShutdownResult> {
   /** cooperative 阶段失败也继续按快照收敛，不能把 HTTP 失败当作退出完成。 */
+  const requestedAt = dependencies.now();
   let processExited = false;
   void running.process.exited.then(() => {
     processExited = true;
   });
-  let cooperative = false;
-  try {
-    const report = await dependencies.requestDrain(running, COOPERATIVE_TIMEOUT_MS);
-    cooperative = report.status === "closed";
-  } catch {
-    cooperative = false;
-  }
+  const cooperative = await dependencies
+    .requestDrain(running, COOPERATIVE_TIMEOUT_MS)
+    .then((report) => report.status === "closed")
+    .catch(() => false);
 
   running.process.signal("SIGTERM");
   await dependencies.signalResources(options, "SIGTERM");
@@ -97,11 +98,19 @@ export async function shutdownSidecar(
   const remainingResourceCount =
     resourceCount.remaining + (resourceCount.verified ? 0 : 1) + (exited ? 0 : 1);
   const status = remainingResourceCount === 0 ? "closed" : "needs_reconcile";
-  await dependencies.recordExit(options, status, remainingResourceCount);
+  await dependencies.recordExit(options, {
+    exitReason: "app_exit",
+    requestedAt: requestedAt.toISOString(),
+    completedAt: dependencies.now().toISOString(),
+    exitMode: forced ? "forced" : "cooperative",
+    processTreeResult: status,
+    remainingResourceCount,
+  });
   return {
     status,
     remainingResourceCount,
     forced,
+    exitMarkerRecorded: true,
   };
 }
 

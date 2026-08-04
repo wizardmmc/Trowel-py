@@ -8,9 +8,13 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trowel_py.memory.access_log import read_access_log, read_outcome_log
+
+if TYPE_CHECKING:
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
+    from trowel_py.memory.types import Note
 
 
 def compute_north_star(
@@ -19,6 +23,9 @@ def compute_north_star(
     today: str | None,
     store_cls: type,
     harmful_retire_threshold: int,
+    notes_with_id: list[tuple[str, "Note"]] | None = None,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
 ) -> dict[str, Any]:
     """计算 Note 语料风险比例和原始使用事件计数。
 
@@ -45,13 +52,20 @@ def compute_north_star(
         store_cls: 接收根目录并提供 ``load_notes_with_id()`` 的存储类。
         harmful_retire_threshold: ``harmful_refs`` 达到或超过该值时判为高风险；
             函数不校验范围。
+        notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
+        access_records: 可选的同请求访问日志快照；提供时不再次读取日志。
+        outcome_records: 可选的同请求反馈日志快照；提供时不再次读取日志。
 
     Returns:
         包含 ``as_of``、``harmful_memory_rate``、活动 Note 数、矛盾或已取代
         Note 合计、达到 harmful 阈值的 Note 数、阈值本身、原始读取与 harmful
         反馈事件数，以及固定为 ``None`` 的已知问题重复率占位值的字典。
     """
-    all_notes = list(store_cls(root).load_notes_with_id())
+    all_notes = list(
+        notes_with_id
+        if notes_with_id is not None
+        else store_cls(root).load_notes_with_id()
+    )
     active = [note for _stem, note in all_notes if note.status == "active"]
     # 分子只从未退休总体取值，与分母保持同一范围，结果不会超过 1。
     non_retired = [note for _stem, note in all_notes if note.status != "retired"]
@@ -67,9 +81,11 @@ def compute_north_star(
     } | {note.memory_id for note in harmful_high if note.memory_id}
     harmful_rate = len(harmful_ids) / max(len(non_retired), 1)
 
-    reads = sum(1 for record in read_access_log(root) if record.action == "read")
+    access = read_access_log(root) if access_records is None else access_records
+    outcomes = read_outcome_log(root) if outcome_records is None else outcome_records
+    reads = sum(1 for record in access if record.action == "read")
     harmful_outcomes = sum(
-        1 for record in read_outcome_log(root) if record.outcome == "harmful"
+        1 for record in outcomes if record.outcome == "harmful"
     )
 
     return {

@@ -8,17 +8,10 @@ import { readHttpError } from "./httpError";
 export type { Runtime } from "./agentEvent";
 
 export type PermissionPreset =
-  | "follow"
-  | "read-only"
-  | "workspace-write"
-  | "danger-full-access";
+  "follow" | "read-only" | "workspace-write" | "danger-full-access";
 
 export type SessionTitleSource =
-  | "new"
-  | "native"
-  | "prompt"
-  | "generated"
-  | "manual";
+  "new" | "native" | "prompt" | "generated" | "manual";
 
 export type SessionKind = "user" | "delegate" | "probe";
 
@@ -117,12 +110,7 @@ export interface AgentSettingsSelection {
 }
 
 export type CodexCommandAction =
-  | "status"
-  | "compact"
-  | "review"
-  | "goal"
-  | "diff"
-  | "agent";
+  "status" | "compact" | "review" | "goal" | "diff" | "agent";
 
 export interface CodexCommand {
   readonly name: string;
@@ -154,8 +142,7 @@ export interface AgentPendingRequest {
   readonly cwd: string | null;
   readonly reason: string | null;
   readonly available_decisions: readonly (
-    | string
-    | Readonly<Record<string, unknown>>
+    string | Readonly<Record<string, unknown>>
   )[];
   readonly status: "pending" | "answered" | "expired" | "host_closed";
   readonly decision: string | null;
@@ -172,6 +159,7 @@ export interface AgentSessionCloseResult {
 }
 
 const AGENT_API_BASE = "/api/agent";
+const MODEL_CATALOG_TIMEOUT_MS = 5_000;
 
 interface ApiEnvelope<T, M = unknown> {
   readonly success: boolean;
@@ -239,7 +227,9 @@ export async function activateAgentSession(
   return { activeId: data.active_id };
 }
 
-export async function getAgentSession(sessionId: string): Promise<AgentSession> {
+export async function getAgentSession(
+  sessionId: string,
+): Promise<AgentSession> {
   return request<AgentSession>(`${AGENT_API_BASE}/sessions/${sessionId}`);
 }
 
@@ -247,11 +237,14 @@ export async function renameAgentSessionTitle(
   sessionId: string,
   title: string,
 ): Promise<AgentSession> {
-  return request<AgentSession>(`${AGENT_API_BASE}/sessions/${sessionId}/title`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
+  return request<AgentSession>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/title`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    },
+  );
 }
 
 export async function generateAgentSessionTitle(
@@ -312,15 +305,28 @@ export async function listAgentRequests(
   return data.requests;
 }
 
-export async function listAgentRuntimes(): Promise<readonly AgentRuntimeInfo[]> {
+export async function listAgentRuntimes(): Promise<
+  readonly AgentRuntimeInfo[]
+> {
   return request<readonly AgentRuntimeInfo[]>(`${AGENT_API_BASE}/runtimes`);
 }
 
+/** 读取可选模型目录，并在 sidecar 未响应时结束等待以免阻塞桌面启动。 */
 export async function listAgentModels(): Promise<readonly AgentModel[]> {
-  const data = await request<{ readonly models: readonly AgentModel[] }>(
-    `${AGENT_API_BASE}/models`,
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error("Codex model catalog request timed out")),
+    MODEL_CATALOG_TIMEOUT_MS,
   );
-  return data.models;
+  try {
+    const data = await request<{ readonly models: readonly AgentModel[] }>(
+      `${AGENT_API_BASE}/models`,
+      { signal: controller.signal },
+    );
+    return data.models;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function listCodexCommands(
@@ -480,9 +486,7 @@ export async function listAgentHistory(
   const result = await requestEnvelope<
     readonly AgentHistoryRow[],
     { readonly limit: number; readonly next_cursor: string | null }
-  >(
-    url,
-  );
+  >(url);
   return {
     rows: result.data ?? [],
     nextCursor: result.meta?.next_cursor ?? null,

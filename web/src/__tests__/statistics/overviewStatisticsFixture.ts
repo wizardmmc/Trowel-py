@@ -1,0 +1,253 @@
+/** 提供总览组件和 store 测试共用的公开响应样例。 */
+
+import type { OverviewStatistics } from "../../statistics/domain/overview";
+
+export const overviewStatisticsFixture: OverviewStatistics = {
+  generated_at: "2026-08-03T12:00:00Z",
+  window_start: "2026-08-03T00:00:00Z",
+  window_end: "2026-08-04T00:00:00Z",
+  timezone: "UTC",
+  sample_size: 5,
+  quality: "partial",
+  freshness: {
+    "agent.agent_sessions": {
+      updated_at: "2026-08-03T11:59:00Z",
+      status: "fresh",
+    },
+  },
+  agent: {
+    user_sessions: 3,
+    statuses: {
+      completed: 1,
+      running: 1,
+      interrupted: 1,
+      failed: 0,
+      unknown: 0,
+    },
+    tokens: {
+      input: 100,
+      output: 20,
+      cache_read: 25,
+      cache_creation: 5,
+      reasoning: 0,
+      unknown: 0,
+      total: 150,
+      total_includes_cache_input: true,
+      known_session_count: 3,
+      session_count: 3,
+      quality: "reliable",
+    },
+    first_visible_response: {
+      sample_size: 5,
+      p50_ms: 1000,
+      p95_ms: null,
+      p99_ms: null,
+      quality: "reliable",
+    },
+    activity: {
+      session_sum_ms: 30000,
+      concurrent_union_ms: 20000,
+      quality: "reliable",
+    },
+    quality: "reliable",
+  },
+  token_trend: [
+    {
+      date: "2026-07-28",
+      session_count: 0,
+      known_token_session_count: 0,
+      token_total: null,
+      quality: "unavailable",
+    },
+    {
+      date: "2026-07-29",
+      session_count: 1,
+      known_token_session_count: 1,
+      token_total: 80,
+      quality: "partial",
+    },
+    {
+      date: "2026-07-30",
+      session_count: 1,
+      known_token_session_count: 1,
+      token_total: 90,
+      quality: "reliable",
+    },
+    {
+      date: "2026-07-31",
+      session_count: 2,
+      known_token_session_count: 2,
+      token_total: 120,
+      quality: "reliable",
+    },
+    {
+      date: "2026-08-01",
+      session_count: 2,
+      known_token_session_count: 2,
+      token_total: 130,
+      quality: "reliable",
+    },
+    {
+      date: "2026-08-02",
+      session_count: 2,
+      known_token_session_count: 2,
+      token_total: 140,
+      quality: "reliable",
+    },
+    {
+      date: "2026-08-03",
+      session_count: 3,
+      known_token_session_count: 3,
+      token_total: 150,
+      quality: "reliable",
+    },
+  ],
+  memory: {
+    search_hits: 47,
+    reads: 5,
+    judged_effects: 13,
+    helpful: 6,
+    helpful_rate: {
+      numerator: 6,
+      denominator: 13,
+      ratio: 6 / 13,
+      quality: "reliable",
+    },
+    judgement_coverage: {
+      numerator: 147,
+      denominator: 148,
+      ratio: 147 / 148,
+      quality: "reliable",
+    },
+    recall_miss_rate: {
+      numerator: 6,
+      denominator: 147,
+      ratio: 6 / 147,
+      quality: "reliable",
+    },
+    attribution_coverage: {
+      numerator: 60,
+      denominator: 64,
+      ratio: 60 / 64,
+      quality: "reliable",
+    },
+    active_notes: 120,
+    quality: "reliable",
+  },
+  statuses: [
+    {
+      code: "agent_interrupted",
+      level: "warning",
+      title: "1 个用户 session 被中断",
+      detail: "只报告账本终态，不推断中断原因。",
+      source: "agent_sessions",
+      quality: "reliable",
+      freshness: {
+        updated_at: "2026-08-03T11:59:00Z",
+        status: "fresh",
+      },
+    },
+    {
+      code: "rss_single_sample",
+      level: "unavailable",
+      title: "RSS 只有一次采样，只展示事实，不判断上涨。",
+      detail: "运行统计保留了该采集缺口。",
+      source: "telemetry",
+      quality: "partial",
+      freshness: {
+        updated_at: "2026-08-03T11:58:00Z",
+        status: "fresh",
+      },
+    },
+  ],
+  session_problems: {
+    reviewed_session_count: 2,
+    problem_count: 1,
+    quality: "reliable",
+    freshness: {
+      updated_at: "2026-08-03T11:50:00Z",
+      status: "fresh",
+    },
+    items: [
+      {
+        trowel_session_id: "agent-a",
+        runtime: "codex",
+        closed_at: "2026-08-03T11:50:00Z",
+        problem_text: "为什么这次调用出现了明显延迟？",
+      },
+    ],
+  },
+  database_files: [
+    {
+      name: "sessions.db",
+      owner: "memory.sessions",
+      database_bytes: 4096,
+      wal_bytes: 0,
+      shm_bytes: 0,
+      total_bytes: 4096,
+      quality: "reliable",
+    },
+    {
+      name: "workspaces.db",
+      owner: "desktop",
+      database_bytes: 0,
+      wal_bytes: 0,
+      shm_bytes: 0,
+      total_bytes: 0,
+      quality: "unavailable",
+    },
+    {
+      name: "telemetry.db",
+      owner: "telemetry",
+      database_bytes: 8192,
+      wal_bytes: 1024,
+      shm_bytes: 0,
+      total_bytes: 9216,
+      quality: "reliable",
+    },
+  ],
+  sources: {
+    agent: {
+      label: "Agent",
+      sample_size: 3,
+      quality: "reliable",
+      freshness: {
+        updated_at: "2026-08-03T11:59:00Z",
+        status: "fresh",
+      },
+    },
+    memory: {
+      label: "Memory",
+      sample_size: 64,
+      quality: "reliable",
+      freshness: {
+        updated_at: "2026-08-03T11:57:00Z",
+        status: "fresh",
+      },
+    },
+    runtime: {
+      label: "运行",
+      sample_size: 4,
+      quality: "partial",
+      freshness: {
+        updated_at: "2026-08-03T11:58:00Z",
+        status: "fresh",
+      },
+    },
+    calls: {
+      label: "调用详情",
+      sample_size: 0,
+      quality: "unavailable",
+      freshness: { updated_at: null, status: "unavailable" },
+    },
+    session_problems: {
+      label: "会话问题",
+      sample_size: 1,
+      quality: "reliable",
+      freshness: {
+        updated_at: "2026-08-03T11:50:00Z",
+        status: "fresh",
+      },
+    },
+  },
+};

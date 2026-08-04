@@ -20,7 +20,7 @@ from mcp.server.stdio import stdio_server
 
 from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
 from trowel_py.agent_mcp.http_errors import agent_api_error_detail
-from trowel_py.agent_mcp.interactive import InteractiveBroker
+from trowel_py.agent_mcp.interactive_client import InteractiveBrokerClient
 from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
 
 _SERVER_NAME = AGENT_MCP_SERVER_NAME
@@ -29,6 +29,7 @@ _TOOL_DELEGATE_START = "delegate_start"
 _TOOL_DELEGATE_RESPOND = "delegate_respond"
 _TOOL_DELEGATE_STATUS = "delegate_status"
 _TOOL_DELEGATE_CLOSE = "delegate_close"
+_CLAUDE_ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
 _SUCCESS_TERMINALS = frozenset({"finished"})
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
 _ALL_TERMINALS = _SUCCESS_TERMINALS | _ERROR_TERMINALS
@@ -213,6 +214,13 @@ def _server_base_url() -> str:
     return str(url).rstrip("/")
 
 
+def _agent_host_headers() -> dict[str, str] | None:
+    """读取桌面模式下 Agent MCP 访问 Agent Host 所需的实例凭据。"""
+
+    credential = os.environ.get("TROWEL_RESOURCE_REGISTRATION_CREDENTIAL", "").strip()
+    return {"Authorization": f"Bearer {credential}"} if credential else None
+
+
 def _create_body(
     context: ParentContext,
     *,
@@ -330,9 +338,7 @@ async def _verified_parent_context(
         context,
         workdir=str(resolved_workdir),
         permission=(
-            "danger-full-access"
-            if context.runtime == "codex"
-            else "bypassPermissions"
+            "danger-full-access" if context.runtime == "codex" else "bypassPermissions"
         ),
         memory_enabled=_binding_bool(data, "memory_enabled"),
         profile_enabled=_binding_bool(data, "profile_enabled"),
@@ -424,7 +430,9 @@ async def _read_child_binding(
         data = payload.get("data") if isinstance(payload, dict) else None
         return dict(data) if isinstance(data, dict) else fallback
     except Exception:
-        logger.warning("failed to read final child binding %s", session_id, exc_info=True)
+        logger.warning(
+            "failed to read final child binding %s", session_id, exc_info=True
+        )
         return fallback
 
 
@@ -566,7 +574,9 @@ async def delegate_agent(
                         f"delete {session_id} failed after delegation error: "
                         f"{delete_error!r}"
                     )
-                logger.exception("delete failed; binding may remain", exc_info=delete_error)
+                logger.exception(
+                    "delete failed; binding may remain", exc_info=delete_error
+                )
     assert result is not None
     return result
 
@@ -576,11 +586,13 @@ def _tool() -> types.Tool:
 
     return types.Tool(
         name=_TOOL_DELEGATE,
+        _meta=_CLAUDE_ALWAYS_LOAD_META,
         description=(
             "Delegate one bounded task to a Trowel-hosted Claude Code or Codex "
             "session. Workdir, permissions and parent identity are inherited "
             "from the current Trowel session and cannot be supplied by the model. "
-            "Use delegate_start instead when a Claude task may need guidance."
+            "Use delegate_start instead when a Claude task may need guidance or "
+            "run for several minutes."
         ),
         inputSchema={
             "type": "object",
@@ -605,10 +617,13 @@ def _interactive_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name=_TOOL_DELEGATE_START,
+            _meta=_CLAUDE_ALWAYS_LOAD_META,
             description=(
-                "Start a Claude delegation and return when it asks for guidance "
-                "or reaches a terminal state. The child remains live until "
-                "delegate_close."
+                "Start a long-running or interactive Claude delegation in the "
+                "background and immediately return its handle. Continue independent "
+                "parent work without polling. When the child asks or finishes, Agent "
+                "Host automatically starts a parent turn after the current turn is "
+                "idle. The child remains live until delegate_close."
             ),
             inputSchema={
                 "type": "object",
@@ -627,9 +642,12 @@ def _interactive_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name=_TOOL_DELEGATE_RESPOND,
+            _meta=_CLAUDE_ALWAYS_LOAD_META,
             description=(
-                "Answer a pending Claude AskUserQuestion and wait for the same "
-                "child to ask again or finish."
+                "Answer a pending Claude AskUserQuestion and immediately return "
+                "after the answer is accepted. Continue independent parent work; "
+                "Agent Host automatically delivers the next question or terminal "
+                "state when the parent session is idle."
             ),
             inputSchema={
                 "type": "object",
@@ -646,11 +664,17 @@ def _interactive_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name=_TOOL_DELEGATE_STATUS,
-            description="Read a live interactive delegation from this MCP process.",
+            _meta=_CLAUDE_ALWAYS_LOAD_META,
+            description=(
+                "Immediately read a live interactive delegation. Do not repeatedly "
+                "poll while the child is running. Normal actionable updates are "
+                "delivered automatically; use this tool only for recovery or an "
+                "explicit status check."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "delegation_id": {"type": "string", "minLength": 1}
+                    "delegation_id": {"type": "string", "minLength": 1},
                 },
                 "required": ["delegation_id"],
                 "additionalProperties": False,
@@ -658,15 +682,14 @@ def _interactive_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name=_TOOL_DELEGATE_CLOSE,
+            _meta=_CLAUDE_ALWAYS_LOAD_META,
             description=(
                 "Interrupt if necessary, delete the child session, and close the "
                 "interactive delegation handle."
             ),
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "delegation_id": {"type": "string", "minLength": 1}
-                },
+                "properties": {"delegation_id": {"type": "string", "minLength": 1}},
                 "required": ["delegation_id"],
                 "additionalProperties": False,
             },
@@ -686,29 +709,15 @@ def _text(payload: dict[str, Any]) -> list[types.TextContent]:
     """把字典编码为单个 JSON MCP 文本结果。"""
 
     return [
-        types.TextContent(
-            type="text", text=json.dumps(payload, ensure_ascii=False)
-        )
+        types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))
     ]
 
 
-def _interactive_parent(
-    broker: InteractiveBroker,
-    delegation_id: str,
-) -> ParentContext:
-    """重新读取并校验 MCP 环境中的父会话配置，再确认交互委派句柄属于该会话。"""
-
-    context = _parent_context()
-    if broker.parent_session_id(delegation_id) != context.session_id:
-        raise DelegationError("interactive delegation does not belong to this parent")
-    return context
-
-
-def _build_server(broker: InteractiveBroker) -> Server:
+def _build_server(broker: InteractiveBrokerClient) -> Server:
     """创建 MCP 服务，并注册工具列表和调用分发。
 
     Args:
-        broker: 持有进程内交互委派状态的 broker。
+        broker: 访问 Agent Host 应用级委派状态的客户端。
 
     Returns:
         已注册委派工具处理器的 MCP 服务。
@@ -723,12 +732,13 @@ def _build_server(broker: InteractiveBroker) -> Server:
         return _tools()
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    async def call_tool(
+        name: str, arguments: dict[str, Any]
+    ) -> list[types.TextContent]:
         """校验工具参数并分发到阻塞或交互委派实现。
 
         阻塞委派、交互委派启动和回答操作会通过 Agent API 复核父会话的当前
-        绑定；查询和关闭操作只重新校验 MCP 环境中的父会话配置和句柄归属，
-        不读取 Agent API 当前绑定。
+        绑定；查询和关闭操作把 MCP 环境中的父会话身份交给 Agent Host 复核。
 
         Args:
             name: MCP 客户端请求调用的工具名称。
@@ -747,13 +757,9 @@ def _build_server(broker: InteractiveBroker) -> Server:
                     context=_parent_context(),
                     runtime=str(arguments.get("target_runtime", "")),
                     task=str(arguments.get("task", "")),
-                    model=(
-                        str(arguments["model"]) if arguments.get("model") else None
-                    ),
+                    model=(str(arguments["model"]) if arguments.get("model") else None),
                     effort=(
-                        str(arguments["effort"])
-                        if arguments.get("effort")
-                        else None
+                        str(arguments["effort"]) if arguments.get("effort") else None
                     ),
                 )
             return _text(result.to_dict())
@@ -776,9 +782,7 @@ def _build_server(broker: InteractiveBroker) -> Server:
                         context,
                         runtime=runtime,
                         model=(
-                            str(arguments["model"])
-                            if arguments.get("model")
-                            else None
+                            str(arguments["model"]) if arguments.get("model") else None
                         ),
                         effort=(
                             str(arguments["effort"])
@@ -789,7 +793,7 @@ def _build_server(broker: InteractiveBroker) -> Server:
                 )
             )
         if name == _TOOL_DELEGATE_RESPOND:
-            context = _interactive_parent(broker, delegation_id)
+            context = _parent_context()
             async with httpx.AsyncClient(
                 base_url=_server_base_url(), timeout=httpx.Timeout(None)
             ) as client:
@@ -800,37 +804,53 @@ def _build_server(broker: InteractiveBroker) -> Server:
                 for key, value in raw_answers.items()
             ):
                 raise ValueError("answers must be an object of strings")
-            return _text(await broker.respond(delegation_id, raw_answers))
+            return _text(
+                await broker.respond(
+                    delegation_id,
+                    raw_answers,
+                    parent_session_id=context.session_id,
+                )
+            )
         if name == _TOOL_DELEGATE_STATUS:
-            _interactive_parent(broker, delegation_id)
-            return _text(broker.status(delegation_id))
+            context = _parent_context()
+            return _text(
+                await broker.status(
+                    delegation_id,
+                    parent_session_id=context.session_id,
+                )
+            )
         if name == _TOOL_DELEGATE_CLOSE:
-            _interactive_parent(broker, delegation_id)
-            return _text(await broker.close(delegation_id))
+            context = _parent_context()
+            return _text(
+                await broker.close(
+                    delegation_id,
+                    parent_session_id=context.session_id,
+                )
+            )
         raise ValueError(f"unknown tool: {name}")
 
     return server
 
 
 async def main() -> None:
-    """运行 stdio MCP 服务，并在退出时尝试清理进程仍在管理的交互委派。"""
+    """运行无状态 stdio MCP 服务；交互委派由 Agent Host 生命周期持有。"""
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     from trowel_py.resource_lifecycle.reporting import report_current_process
 
     await report_current_process()
-    broker = InteractiveBroker(
-        base_url=_server_base_url(), cleanup_timeout=_cleanup_timeout_seconds()
+    broker = InteractiveBrokerClient(
+        base_url=_server_base_url(),
+        headers=_agent_host_headers(),
     )
     server = _build_server(broker)
     init_options = server.create_initialization_options(
         notification_options=NotificationOptions(), experimental_capabilities={}
     )
     async with stdio_server() as (read_stream, write_stream):
-        try:
-            await server.run(read_stream, write_stream, init_options)
-        finally:
-            await broker.shutdown()
+        await server.run(read_stream, write_stream, init_options)
 
 
 if __name__ == "__main__":

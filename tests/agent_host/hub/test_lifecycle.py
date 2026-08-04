@@ -307,7 +307,11 @@ async def test_close_keeps_binding_when_registry_still_has_session_resource(
 ) -> None:
     """runtime 自报完成不能越过资源账本中的未关闭 handle。"""
 
-    registry = ResourceRegistry(app_instance_id="test-instance")
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="test-instance",
+        owner_close_observer=observations.append,
+    )
     store = BindingStore(tmp_path / "resource-bindings.json")
     hub = SessionHub(
         store,
@@ -330,9 +334,92 @@ async def test_close_keeps_binding_when_registry_still_has_session_resource(
     assert result.status == "needs_reconcile"
     assert result.remaining_resource_count == 1
     assert result.remaining_resource_kinds == ("workflow_watcher",)
+    assert len(observations) == 1
+    assert observations[0].status == "needs_reconcile"
+    assert observations[0].remaining_resource_count == 1
     assert store.get(binding.session_id) == binding
     with pytest.raises(SessionConflictError, match="正在关闭"):
         _ = [event async for event in hub.stream(binding.session_id, "too late")]
+
+
+async def test_close_records_cc_session_owner_after_runtime_reaches_zero(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+) -> None:
+    """CC 没有 manager 内部回调时，统一 session 生命周期仍提交成功终态。"""
+
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="test-instance",
+        owner_close_observer=observations.append,
+    )
+    hub = SessionHub(
+        BindingStore(tmp_path / "closed-owner-bindings.json"),
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        resource_registry=registry,
+    )
+    binding = hub.create(cc_req(workdir))
+
+    result = await hub.close_result(binding.session_id)
+
+    assert result.status == "closed"
+    assert len(observations) == 1
+    assert observations[0].owner_scope is OwnerScope.SESSION
+    assert observations[0].status == "closed"
+
+
+async def test_close_exception_records_session_owner_needs_reconcile(
+    tmp_path: Path,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+    codex_mgr: FakeCodexManager,
+    name_counts: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """runtime 意外抛错时仍应留下 owner 失败事实和可重试 binding。"""
+
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="test-instance",
+        owner_close_observer=observations.append,
+    )
+    store = BindingStore(tmp_path / "failed-owner-bindings.json")
+    hub = SessionHub(
+        store,
+        codex_manager=codex_mgr,
+        cc_registry=cc_registry,
+        cc_opener=make_cc_opener(cc_registry, name_counts),
+        codex_config_home=tmp_path,
+        resource_registry=registry,
+    )
+    binding = hub.create(codex_req(workdir))
+    registry.register_handle(
+        resource_id="unclosed-watcher",
+        owner_scope=OwnerScope.SESSION,
+        resource_kind="workflow_watcher",
+        agent_session_id=binding.session_id,
+    )
+
+    async def fail_close(*_args, **_kwargs) -> None:
+        raise OSError("simulated runtime transport failure")
+
+    monkeypatch.setattr(codex_mgr, "close_session", fail_close)
+
+    with pytest.raises(OSError, match="simulated runtime transport failure"):
+        await hub.close_result(binding.session_id)
+
+    assert len(observations) == 1
+    assert observations[0].owner_scope is OwnerScope.SESSION
+    assert observations[0].status == "needs_reconcile"
+    assert observations[0].remaining_resource_count == 1
+    assert registry.get("unclosed-watcher").state.value == "needs_reconcile"
+    assert store.get(binding.session_id) == binding
 
 
 @pytest.mark.parametrize("request_factory", [cc_req, codex_req])

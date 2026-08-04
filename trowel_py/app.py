@@ -4,7 +4,9 @@ import logging
 import os
 import uuid
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -37,6 +39,10 @@ from trowel_py.pet.routes import router as pet_router
 from trowel_py.player.routes import router as player_router
 from trowel_py.profile.routes import router as profile_router
 from trowel_py.review.routes import router as review_router
+from trowel_py.statistics.routes import router as statistics_router
+from trowel_py.telemetry.lifecycle import start_telemetry, stop_telemetry
+from trowel_py.telemetry.http_middleware import RuntimeTelemetryMiddleware
+from trowel_py.telemetry.routes import router as telemetry_router
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +65,17 @@ async def lifespan(app: FastAPI):
         if desktop_instance_id and desktop_data_dir
         else None
     )
+    previous_snapshot_exists = bool(snapshot_path and snapshot_path.is_file())
+    reconcile_started_at: datetime | None = None
+    reconcile_ended_at: datetime | None = None
     if snapshot_path is not None:
+        reconcile_started_at = datetime.now(UTC)
         app.state.previous_reconcile_report = await asyncio.to_thread(
             reconcile_previous_snapshot,
             snapshot_path,
             current_instance_id=app_instance_id,
         )
+        reconcile_ended_at = datetime.now(UTC)
     resource_registry = ResourceRegistry(
         app_instance_id=app_instance_id,
         snapshot_path=snapshot_path,
@@ -74,7 +85,95 @@ async def lifespan(app: FastAPI):
         ),
         registration_credential=getattr(app.state, "desktop_credential", None),
     )
+    start_telemetry(app)
+    from trowel_py.telemetry.sqlite import configure_sqlite_telemetry
+    from trowel_py.telemetry.sse import SseConnectionTracker
+
+    configure_sqlite_telemetry(app.state.telemetry_port)
+    from trowel_py.telemetry.agent_events import AgentTelemetryObserver
+
+    app.state.agent_telemetry_observer = AgentTelemetryObserver(
+        app.state.telemetry_port
+    )
+    app.state.sse_tracker = SseConnectionTracker(app.state.telemetry_port)
+    app.state.sidecar_sampler = None
+    try:
+        from trowel_py.telemetry.sidecar import SidecarSampler
+
+        app.state.sidecar_sampler = SidecarSampler(app.state.telemetry_port)
+        app.state.sidecar_sampler.start()
+    except Exception:
+        logger.warning("[telemetry] sidecar sampler failed to start", exc_info=True)
+    if previous_snapshot_exists and reconcile_started_at and reconcile_ended_at:
+        from trowel_py.telemetry.events import emit_metric, emit_span
+
+        reconcile_report = app.state.previous_reconcile_report
+        reconcile_failed = bool(
+            reconcile_report.remaining
+            or reconcile_report.identity_mismatch
+            or reconcile_report.errors
+        )
+        emit_span(
+            app.state.telemetry_port,
+            component="runtime",
+            operation="desktop.reconcile",
+            started_at=reconcile_started_at,
+            ended_at=reconcile_ended_at,
+            status="error" if reconcile_failed else "ok",
+            attributes={
+                "quality": "partial"
+                if reconcile_report.identity_mismatch
+                else "reliable"
+            },
+        )
+        emit_metric(
+            app.state.telemetry_port,
+            component="runtime",
+            name="resource.remaining",
+            kind="gauge",
+            unit="1",
+            value=reconcile_report.remaining + reconcile_report.identity_mismatch,
+            status="error" if reconcile_failed else "ok",
+            operation="desktop.reconcile",
+            observed_at=reconcile_ended_at,
+            attributes={"quality": "reliable"},
+        )
+    from trowel_py.telemetry.resource_events import create_owner_close_observer
+
+    resource_registry.set_owner_close_observer(
+        create_owner_close_observer(app.state.telemetry_port)
+    )
     app.state.resource_registry = resource_registry
+    app.state.runtime_statistics_reader = None
+    app.state.call_statistics_reader = None
+    try:
+        from trowel_py.memory.paths import resolve_memory_root as _runtime_memory_root
+        from trowel_py.statistics.calls.repository import CallStatisticsReader
+        from trowel_py.statistics.runtime.repository import RuntimeStatisticsReader
+
+        telemetry_database = app.state.telemetry_database
+        telemetry_reader = app.state.telemetry_reader
+        if telemetry_database is not None and telemetry_reader is not None:
+            app.state.call_statistics_reader = CallStatisticsReader(telemetry_database)
+            app.state.runtime_statistics_reader = RuntimeStatisticsReader(
+                telemetry_reader,
+                {
+                    "sessions.db": (
+                        _runtime_memory_root() / "meta" / "sessions.db",
+                        "memory.sessions",
+                    ),
+                    "workspaces.db": (
+                        resolve_recent_workspaces_path(),
+                        "agent.workspaces",
+                    ),
+                    "telemetry.db": (
+                        telemetry_database.path,
+                        "telemetry",
+                    ),
+                },
+            )
+    except Exception:
+        logger.warning("[statistics] runtime reader failed to start", exc_info=True)
     if snapshot_path is not None:
         resource_registry.register_process_group(
             resource_id=f"sidecar:{app_instance_id}",
@@ -100,6 +199,26 @@ async def lifespan(app: FastAPI):
     )
     if bootstrap_layer_one():
         logger.info("[memory] seeded layer-one core.md (试用期)")
+    app.state.memory_statistics_reader = None
+    app.state.session_problem_statistics_reader = None
+    try:
+        from trowel_py.memory.paths import (
+            resolve_memory_root as _statistics_memory_root,
+        )
+        from trowel_py.statistics.memory.repository import FileMemoryStatisticsReader
+        from trowel_py.statistics.session_problems.repository import (
+            FileSessionProblemStatisticsReader,
+        )
+
+        statistics_memory_root = _statistics_memory_root()
+        app.state.memory_statistics_reader = FileMemoryStatisticsReader(
+            statistics_memory_root
+        )
+        app.state.session_problem_statistics_reader = (
+            FileSessionProblemStatisticsReader(statistics_memory_root)
+        )
+    except Exception:
+        logger.warning("[memory] statistics reader failed to start", exc_info=True)
     # 可选后台组件必须隔离启动失败，避免局部配置或依赖问题阻断应用。
     try:
         from trowel_py.memory import paths as _mem_paths
@@ -209,6 +328,7 @@ async def lifespan(app: FastAPI):
             logger.info("[quota] GLM poller off (set TROWEL_QUOTA_POLL=1 to enable)")
     except Exception:
         logger.warning("[quota] read model failed to start", exc_info=True)
+    app.state.agent_statistics_reader = None
     try:
         from trowel_py.agent_host import (
             BindingStore,
@@ -220,13 +340,16 @@ async def lifespan(app: FastAPI):
         from trowel_py.agent_host.runtimes import (
             ClaudeCodeRuntimeAdapter,
             CodexRuntimeAdapter,
+            RuntimeSessionPort,
         )
         from trowel_py.agent_host.session_titles import NativeSessionTitleGenerator
         from trowel_py.cc_host.routes import get_registry
         from trowel_py.memory.paths import resolve_memory_root
+        from trowel_py.statistics.agent.repository import FileAgentObservationReader
 
         cc_registry = get_registry()
-        runtime_ports = {
+        binding_store = BindingStore(resolve_bindings_path())
+        runtime_ports: dict[Runtime, RuntimeSessionPort] = {
             Runtime.CLAUDE_CODE: ClaudeCodeRuntimeAdapter(cc_registry),
             Runtime.CODEX: CodexRuntimeAdapter(app.state.codex_host_manager),
         }
@@ -253,13 +376,31 @@ async def lifespan(app: FastAPI):
             )
             codex_history_root = None
 
+        app.state.agent_statistics_reader = (
+            FileAgentObservationReader(codex_history_root, binding_store)
+            if codex_history_root is not None
+            else None
+        )
+
+        def observe_agent_event(payload: Mapping[str, object]) -> None:
+            """先记录去正文调用事实，再更新可选额度 read model。
+
+            Args:
+                payload: SessionHub 已转换的统一 AgentEvent。
+            """
+
+            app.state.agent_telemetry_observer(payload)
+            if quota_observer is not None:
+                quota_observer(payload)
+
         app.state.agent_hub = SessionHub(
-            BindingStore(resolve_bindings_path()),
+            binding_store,
             codex_manager=app.state.codex_host_manager,
             cc_registry=cc_registry,
             cc_proxy_base_url=app.state.proxy_base_url,
             cc_settings_path=app.state.cc_settings_path,
-            event_observer=quota_observer,
+            event_observer=observe_agent_event,
+            turn_observer=app.state.agent_telemetry_observer,
             runtime_ports=runtime_ports,
             session_review_requester=request_session_review,
             title_generator=NativeSessionTitleGenerator(
@@ -275,6 +416,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
+    app.state.agent_delegation_broker = None
+    app.state.agent_delegation_wakeup = None
+    if app.state.agent_hub is not None:
+        from trowel_py.agent_host.delegation_wakeup import (
+            DelegationWakeupCoordinator,
+        )
+        from trowel_py.agent_mcp.interactive import InteractiveBroker
+
+        internal_headers = (
+            {"Authorization": f"Bearer {app.state.desktop_credential}"}
+            if app.state.desktop_credential
+            else None
+        )
+        app.state.agent_delegation_wakeup = DelegationWakeupCoordinator(
+            app.state.agent_hub
+        )
+        app.state.agent_delegation_broker = InteractiveBroker(
+            base_url=app.state.proxy_base_url,
+            headers=internal_headers,
+            notifier=app.state.agent_delegation_wakeup.publish,
+        )
     app.state.drain_coordinator = DrainCoordinator(
         resource_registry=resource_registry,
         agent_hub=app.state.agent_hub,
@@ -291,12 +453,35 @@ async def lifespan(app: FastAPI):
         codex_manager=app.state.codex_host_manager,
     )
     yield
+    delegation_wakeup = getattr(app.state, "agent_delegation_wakeup", None)
+    if delegation_wakeup is not None:
+        try:
+            await delegation_wakeup.shutdown()
+        except Exception:
+            logger.warning(
+                "[agent] delegation wakeup coordinator failed to close",
+                exc_info=True,
+            )
+    delegation_broker = getattr(app.state, "agent_delegation_broker", None)
+    if delegation_broker is not None:
+        try:
+            await delegation_broker.shutdown()
+        except Exception:
+            logger.warning("[agent] delegation broker failed to close", exc_info=True)
     try:
         report = await app.state.drain_coordinator.drain()
         if report.status != "closed":
             logger.warning("[app] shutdown needs resource reconciliation: %s", report)
     except Exception:
         logger.warning("[app] coordinated drain failed", exc_info=True)
+    sidecar_sampler = getattr(app.state, "sidecar_sampler", None)
+    if sidecar_sampler is not None:
+        try:
+            await sidecar_sampler.close()
+        except Exception:
+            logger.warning("[telemetry] sidecar sampler failed to close", exc_info=True)
+    configure_sqlite_telemetry(None)
+    await asyncio.to_thread(stop_telemetry, app, timeout_seconds=1.0)
     _quota_http = getattr(app.state, "quota_http_client", None)
     if _quota_http is not None:
         try:
@@ -322,12 +507,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     desktop_credential = os.environ.pop("TROWEL_DESKTOP_CREDENTIAL", None)
-    desktop_renderer_origin = os.environ.pop(
-        "TROWEL_DESKTOP_RENDERER_ORIGIN", None
-    )
-    app.state.desktop_instance_id = os.environ.pop(
-        "TROWEL_APP_INSTANCE_ID", ""
-    )
+    desktop_renderer_origin = os.environ.pop("TROWEL_DESKTOP_RENDERER_ORIGIN", None)
+    app.state.desktop_instance_id = os.environ.pop("TROWEL_APP_INSTANCE_ID", "")
     app.state.desktop_data_dir = os.environ.get("TROWEL_DESKTOP_DATA_DIR", "").strip()
     app.state.desktop_credential = desktop_credential
 
@@ -353,6 +534,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RuntimeTelemetryMiddleware)
 
     @app.get("/api/health")
     def health() -> dict[str, object]:
@@ -393,6 +575,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix="/api/agent")
     app.include_router(quota_router)
     app.include_router(desktop_router, prefix="/api/desktop")
+    app.include_router(telemetry_router, prefix="/api/telemetry")
+    app.include_router(statistics_router, prefix="/api/statistics")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

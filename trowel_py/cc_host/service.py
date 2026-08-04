@@ -9,6 +9,7 @@ import os
 import signal
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -46,6 +47,7 @@ from trowel_py.cc_host.schemas import (
     ElicitationRequestEvent,
     ErrorEvent,
     FinishedEvent,
+    InterruptedEvent,
     LocalCommandEvent,
     ModelChangedEvent,
     SessionExitedEvent,
@@ -57,6 +59,8 @@ from trowel_py.cc_host.schemas import (
     TrowelEvent,
     TurnStartEvent,
 )
+from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
+from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
 from trowel_py.memory.injection import build_memory_injection
 from trowel_py.model_os.self_assembler import build_session_injection
 from trowel_py.resource_lifecycle.models import OwnerScope, ProcessIdentity
@@ -64,6 +68,28 @@ from trowel_py.resource_lifecycle.processes import ProcessController
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
+
+_CLAUDE_AGENT_MCP_TOOL_NAMES = tuple(
+    f"mcp__{AGENT_MCP_SERVER_NAME}__{name}" for name in AGENT_MCP_TOOL_NAMES
+)
+
+
+@dataclass
+class _TurnExecution:
+    """记录当前逻辑 turn 与 CC 进程代次的关联状态。
+
+    Attributes:
+        turn_id: Trowel 为当前逻辑 turn 分配的 ID。
+        process_generation: 接受本轮输入的 CC 进程代次；尚未启动时为 None。
+        interrupt_requested: 是否已向本轮所属进程成功发送 SIGINT。
+        terminal_observed: 是否已从 stdout 读取本轮原生 result。
+    """
+
+    turn_id: str
+    process_generation: int | None = None
+    interrupt_requested: bool = False
+    terminal_observed: bool = False
+
 
 def _wf_debug(msg: str) -> None:
     """保留 workflow 调试调用点，默认不输出内容。"""
@@ -267,7 +293,8 @@ class CCHost:
         self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
         self._bg_tracker = BackgroundActivityTracker()
         # 成功 result 等后台结束；错误 result 立即结束，每轮只发布一个终态。
-        self._pending_terminal: FinishedEvent | ErrorEvent | None = None
+        self._pending_terminal: FinishedEvent | InterruptedEvent | ErrorEvent | None = None
+        self._active_turn: _TurnExecution | None = None
         if resume_from:
             self._register_session_blocking(str(self._jsonl_path(resume_from)))
         if checkpoint.is_git_repo(self.workdir) and resume_from:
@@ -393,6 +420,9 @@ class CCHost:
             resume_from=resume_from,
             append_system_prompt=injection,
             mcp_config=self._mcp_config,
+            allowed_tools=(
+                _CLAUDE_AGENT_MCP_TOOL_NAMES if self.agent_mcp_enabled else None
+            ),
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -425,6 +455,9 @@ class CCHost:
                 env["TROWEL_NATIVE_SESSION_ID"] = self._cc_session_id
         if self.agent_mcp_enabled:
             env = dict(env) if env is not None else dict(os.environ)
+            # Claude Code 2.1.x 会异步连接 --mcp-config，首轮可能在 Agent MCP
+            # tools/list 返回前构造工具提示；显式等待可保证 GLM 首轮看见委派工具。
+            env["MCP_CONNECTION_NONBLOCKING"] = "false"
             env["MCP_CONNECT_TIMEOUT_MS"] = "5000"
             env["MCP_TIMEOUT"] = "10000"
         return env
@@ -555,7 +588,7 @@ class CCHost:
             return
         self._signal_root_process(proc, signal_name)
 
-    def _signal_root_process(self, proc: Any, signal_name: str) -> None:
+    def _signal_root_process(self, proc: Any, signal_name: str) -> bool:
         """无进程身份控制器时，只向当前根进程发送信号。
 
         Args:
@@ -571,7 +604,8 @@ class CCHost:
             else:
                 proc.kill()
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            return False
+        return True
 
     async def _wait_process_exit(self, proc: Any, timeout_s: float) -> bool:
         """有界等待根进程退出，并在可用时同时核验整个进程组。
@@ -626,12 +660,11 @@ class CCHost:
         if resource_id is not None and self._resource_registry is not None:
             self._resource_registry.mark_needs_reconcile(resource_id, error)
 
-    def _interrupt_proc(self, proc: Any) -> None:
-        """向进程组发送 SIGINT，并容忍检查后退出的竞态。"""
+    def _interrupt_proc(self, proc: Any) -> bool:
+        """向进程组发送 SIGINT，并返回是否确实发出了信号。"""
         if self._process_controller is not None and self._process_identity is not None:
-            self._signal_registered_process_group("SIGINT")
-            return
-        self._signal_root_process(proc, "SIGINT")
+            return self._signal_registered_process_group("SIGINT")
+        return self._signal_root_process(proc, "SIGINT")
 
     def _sync_kill(self) -> None:
         """在 GeneratorExit 等无法 await 的路径中同步终止已核验进程组。"""
@@ -647,7 +680,7 @@ class CCHost:
         except Exception:  # noqa: BLE001 — 清理不能遮蔽原始退出原因
             pass
 
-    def _signal_registered_process_group(self, signal_name: str) -> None:
+    def _signal_registered_process_group(self, signal_name: str) -> bool:
         """重查根 PID 启动身份后，才向登记的 CC 进程组发送信号。
 
         Args:
@@ -657,34 +690,70 @@ class CCHost:
         controller = self._process_controller
         identity = self._process_identity
         if controller is None or identity is None:
-            return
+            return False
         current = controller.inspect(identity.pid)
         if current is not None and current != identity:
             self._mark_process_resource_needs_reconcile(
                 "Claude Code process identity changed before signal"
             )
-            return
+            return False
         if current is None and not controller.group_alive(identity.process_group):
-            return
+            return False
         try:
             controller.signal_group(identity.process_group, signal_name)
         except ProcessLookupError:
-            return
+            return False
         except (PermissionError, OSError, RuntimeError) as exc:
             self._mark_process_resource_needs_reconcile(
                 f"Claude Code process-group signal failed: {type(exc).__name__}"
             )
+            return False
+        return True
 
     async def interrupt(self) -> None:
         """中断当前 turn；已知原生会话 ID 时，后续发送会恢复上下文。"""
         proc = self._proc
-        if proc is None or proc.returncode is not None:
+        execution = self._active_turn
+        if (
+            proc is None
+            or proc.returncode is not None
+            or execution is None
+            or execution.process_generation != self._process_generation
+            or execution.terminal_observed
+        ):
             return
-        self._interrupt_proc(proc)
+        if self._interrupt_proc(proc):
+            execution.interrupt_requested = True
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass
+
+    def _normalize_terminal(
+        self,
+        event: TrowelEvent,
+        execution: _TurnExecution,
+    ) -> TrowelEvent:
+        """只把当前 turn 主动中断后的执行错误归一成中断终态。
+
+        Args:
+            event: Translator 根据原生 result 生成的无上下文事件。
+            execution: 当前逻辑 turn 与进程代次的关联状态。
+
+        Returns:
+            同一 turn、同一进程代次已请求中断时返回 ``InterruptedEvent``；其他
+            事件保持原样。
+        """
+
+        if (
+            isinstance(event, ErrorEvent)
+            and event.subclass == "error_during_execution"
+            and execution.interrupt_requested
+            and execution.process_generation == self._process_generation
+            and self._active_turn is execution
+        ):
+            return InterruptedEvent()
+        return event
 
     async def close(self) -> None:
         """关闭后台 drain、workflow watcher 和会话子进程。
@@ -786,24 +855,39 @@ class CCHost:
         except Exception as exc:  # noqa: BLE001 — 注册失败不能中断 CC 会话
             _wf_debug(f"memory session register failed (ignored): {exc}")
 
-    async def _maybe_update_completed(self) -> None:
-        """在线程池中更新当前 CC 会话已完整处理的 transcript 水位。"""
+    async def _maybe_update_completed(self, status: str = "completed") -> None:
+        """在线程池中更新 transcript 水位和当前 binding 终态。
+
+        Args:
+            status: 当前逻辑 turn 的 completed、interrupted 或 failed 终态。
+        """
         if not self._cc_session_id:
             return
         jsonl_path = self._jsonl_path(self._cc_session_id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
-            None, self._update_completed_blocking, str(jsonl_path)
+            None, self._update_completed_blocking, str(jsonl_path), status
         )
 
-    def _update_completed_blocking(self, jsonl_path: str) -> None:
-        """同步更新当前 CC 会话的 completed 水位；失败时不影响当前轮次。"""
+    def _update_completed_blocking(
+        self,
+        jsonl_path: str,
+        status: str = "completed",
+    ) -> None:
+        """同步更新当前 CC 水位和 binding 终态；失败不影响当前轮次。
+
+        Args:
+            jsonl_path: 当前原生 transcript 文件路径。
+            status: 当前逻辑 turn 的 completed、interrupted 或 failed 终态。
+        """
         if not self._cc_session_id:
             return
         try:
             session_registration.update_completed(
                 cc_session_id=self._cc_session_id,
+                trowel_session_id=self.session_id,
                 jsonl_path=jsonl_path,
+                status=status,
                 registrar=self._session_registrar,
             )
         except Exception as exc:  # noqa: BLE001 — 水位失败不能中断 CC turn
@@ -946,6 +1030,8 @@ class CCHost:
         self.running = True
         payload = _user_msg(action.text)
         turn_id, revertible = await self._prepare_checkpoint()
+        execution = _TurnExecution(turn_id=turn_id)
+        self._active_turn = execution
         yield TurnStartEvent(
             type="turn_start", turn_id=turn_id, revertible=revertible
         )
@@ -977,6 +1063,7 @@ class CCHost:
             self._pending_terminal = None
             self._bg_tracker.reset()
             await self._ensure_process()
+            execution.process_generation = self._process_generation
             if not await self._safe_write(payload):
                 yield ErrorEvent(
                     type="error",
@@ -1127,7 +1214,10 @@ class CCHost:
                     if isinstance(effective_model, str) and effective_model:
                         self._effective_model = effective_model
                 self._update_bg_tracker(ev)
+                if ev.get("type") == "result":
+                    execution.terminal_observed = True
                 for tev in translator.translate(ev):
+                    tev = self._normalize_terminal(tev, execution)
                     if isinstance(tev, ElicitationRequestEvent):
                         self._pending_elicit = {
                             "request_id": tev.request_id,
@@ -1149,7 +1239,7 @@ class CCHost:
                         self._init_roster = list(tev.slash_commands)
                     # Translator 每个 result 只产出一个终态；先缓冲，再按后台状态决策。
                     if ev.get("type") == "result" and isinstance(
-                        tev, (FinishedEvent, ErrorEvent)
+                        tev, (FinishedEvent, InterruptedEvent, ErrorEvent)
                     ):
                         self._pending_terminal = tev
                         continue
@@ -1167,7 +1257,11 @@ class CCHost:
                         self._pending_terminal = None
                         if terminal is not None:
                             yield terminal
-                        await self._maybe_update_completed()
+                        await self._maybe_update_completed(
+                            "interrupted"
+                            if isinstance(terminal, InterruptedEvent)
+                            else "failed"
+                        )
                         break
                     if self._has_background_activity():
                         # 后台仍活动时，result 只是原生分段边界；丢弃成功终态，
@@ -1192,7 +1286,7 @@ class CCHost:
                             if isinstance(terminal, FinishedEvent):
                                 self._last_finished = terminal
                         # 退出循环前推进 completed 水位，增量提炼只能读取完整 turn。
-                        await self._maybe_update_completed()
+                        await self._maybe_update_completed("completed")
                         break
             # 正常 result 后短暂确认进程状态：存活则复用，退出则通知前端。
             if normal_end and self._proc is not None:
@@ -1217,6 +1311,8 @@ class CCHost:
             raise
         finally:
             self.running = False
+            if not cancelled and self._active_turn is execution:
+                self._active_turn = None
             # 取消路径由 drain 接管；其他非干净退出必须同步杀进程。
             if not normal_end and not cancelled:
                 self._sync_kill()
@@ -1327,7 +1423,22 @@ class CCHost:
                         self._bg_tracker.reset()
                     # 水位失败不能终止 drain；后续正常终态还会再次推进。
                     try:
-                        await self._maybe_update_completed()
+                        execution = self._active_turn
+                        interrupted = bool(
+                            execution is not None
+                            and execution.interrupt_requested
+                            and execution.process_generation
+                            == self._process_generation
+                            and ev.get("subtype") == "error_during_execution"
+                        )
+                        await self._maybe_update_completed(
+                            "completed"
+                            if ev.get("subtype") == "success"
+                            and not ev.get("is_error")
+                            else "interrupted"
+                            if interrupted
+                            else "failed"
+                        )
                     except Exception as exc:  # noqa: BLE001 — 水位异常不能终止 drain
                         logger.warning(
                             "drain completed-offset update failed: %s", exc
@@ -1335,6 +1446,7 @@ class CCHost:
                     return
         finally:
             self.running = False
+            self._active_turn = None
             self._drain_task = None
 
     # end_session 最多等待三秒；超时后强杀，避免关闭流程卡住。

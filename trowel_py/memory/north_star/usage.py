@@ -7,11 +7,17 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from trowel_py.memory.activity_dates import _parse_iso_datetime
+
 if TYPE_CHECKING:
-    from trowel_py.memory.promotion_policy import PromotionPolicy
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
+    from trowel_py.memory.judgements import JudgementReport
+    from trowel_py.memory.promotion_policy import PromotionPolicy, QualityLabel
+    from trowel_py.memory.types import Note
 
 
 def memory_usage_metrics(
@@ -19,6 +25,13 @@ def memory_usage_metrics(
     *,
     policy: "PromotionPolicy | None" = None,
     local_tz: Any | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    notes_with_id: list[tuple[str, "Note"]] | None = None,
+    strict_read_only: bool = False,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
+    judgement_reports: list["JudgementReport"] | None = None,
 ) -> dict[str, Any]:
     """从访问日志、会话归因、Note 效果和判断报告计算使用质量。
 
@@ -62,27 +75,77 @@ def memory_usage_metrics(
             默认策略。
         local_tz: 重算 Note 效果时解释活动日期的时区；为 None 或其他假值时使用
             系统本地时区。
+        window_start: 可选半开查询窗起点；与 ``window_end`` 同时提供时，只有
+            带稳定活动时间且落在窗内的证据进入结果。
+        window_end: 可选半开查询窗终点；不能单独提供。
+        notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
+        strict_read_only: 是否禁止 sessions.db schema 迁移并只读打开数据库。
+        access_records: 可选的同请求访问日志快照；提供时不再次读取文件。
+        outcome_records: 可选的同请求反馈日志快照；提供时不再次读取文件。
+        judgement_reports: 可选的同请求判效报告快照；提供时不再次读取文件。
 
     Returns:
         包含生效策略、identity、retrieval、effect、recall 四组指标，以及固定为
         ``None`` 的 ``known_issue_repeat_rate`` 占位值的字典。比例字段同时返回
         对应分子和分母。
     """
-    from trowel_py.memory.access_log import read_access_log
+    from trowel_py.memory.access_log import read_access_log, read_outcome_log
     from trowel_py.memory.attribution import AttributionIndex
     from trowel_py.memory.judgements import load_all_judgement_reports
     from trowel_py.memory.promotion_policy import default_policy
-    from trowel_py.memory.recompute import compute_note_effects
+    from trowel_py.memory.recompute import compute_note_effects_from_notes
     from trowel_py.memory.store import MemoryStore
 
+    if (window_start is None) != (window_end is None):
+        raise ValueError("window_start and window_end must be provided together")
     active_policy = policy or default_policy()
     root_path = Path(root)
-    index = AttributionIndex.from_root(root_path)
-    effects = compute_note_effects(root_path, local_tz=local_tz)
+    index = AttributionIndex.from_root(root_path, read_only=strict_read_only)
+    effective_tz = local_tz or datetime.now().astimezone().tzinfo
+    note_rows = (
+        notes_with_id
+        if notes_with_id is not None
+        else MemoryStore(root_path).load_notes_with_id()
+    )
+    all_access_records = (
+        read_access_log(root_path) if access_records is None else access_records
+    )
+    all_outcomes = (
+        read_outcome_log(root_path) if outcome_records is None else outcome_records
+    )
+    all_reports = (
+        load_all_judgement_reports(root_path)
+        if judgement_reports is None
+        else judgement_reports
+    )
+    access_records, unknown_access_timestamps = _filter_timestamped_records(
+        all_access_records,
+        window_start,
+        window_end,
+    )
+    effects = compute_note_effects_from_notes(
+        root_path,
+        note_rows,
+        local_tz=effective_tz,
+        window_start=window_start,
+        window_end=window_end,
+        attribution_index=index,
+        access_records=all_access_records,
+        outcome_records=all_outcomes,
+        judgement_reports=all_reports,
+    )
 
     resolved = [
-        (record, index.resolve(record.trowel_session_id, record.cc_session_id))
-        for record in read_access_log(root_path)
+        (
+            record,
+            index.resolve(
+                record.trowel_session_id,
+                record.cc_session_id,
+                host_kind=record.host_kind,
+                native_session_id=record.native_session_id,
+            ),
+        )
+        for record in access_records
     ]
     records_total = len(resolved)
     attributed = sum(1 for _record, attribution in resolved if attribution.attributed)
@@ -92,6 +155,10 @@ def memory_usage_metrics(
         identity_coverage,
         records_total,
     )
+    identity_quality = _quality_with_incomplete(
+        identity_quality,
+        bool(unknown_access_timestamps),
+    )
 
     user_records = [record for record, attribution in resolved if attribution.is_user]
     reads = sum(1 for record in user_records if record.action == "read")
@@ -99,11 +166,21 @@ def memory_usage_metrics(
     search_hits = sum(
         1 for record in user_records if record.action == "search" and record.memory_id
     )
-    search_calls = sum(
-        1
+    search_call_records = [
+        record
         for record in user_records
         if record.action == "search" and not record.memory_id
+    ]
+    search_calls = len(search_call_records)
+    hit_search_ids = {
+        record.search_id
+        for record in user_records
+        if record.action == "search" and record.memory_id and record.search_id
+    }
+    nonempty_search_calls = sum(
+        1 for record in search_call_records if record.search_id in hit_search_ids
     )
+    empty_search_calls = search_calls - nonempty_search_calls
     read_sessions = len(
         {
             cc_session_id
@@ -116,15 +193,30 @@ def memory_usage_metrics(
         identity_coverage,
         search_hits,
     )
+    retrieval_quality = _quality_with_incomplete(
+        retrieval_quality,
+        bool(unknown_access_timestamps),
+    )
 
     helpful_sessions = sum(effect.helpful_refs for effect in effects.values())
     harmful_sessions = sum(effect.harmful_refs for effect in effects.values())
     unused_sessions = sum(effect.unused_refs for effect in effects.values())
+    unknown_sessions = sum(effect.unknown_refs for effect in effects.values())
 
-    reports = load_all_judgement_reports(root_path)
+    reports, unknown_judgement_dates = _filter_reports(
+        all_reports,
+        window_start,
+        window_end,
+        effective_tz,
+    )
+    _outcomes, unknown_outcome_timestamps = _filter_timestamped_records(
+        all_outcomes,
+        window_start,
+        window_end,
+    )
     id_to_stem = {
         note.memory_id: stem
-        for stem, note in MemoryStore(root_path).load_notes_with_id()
+        for stem, note in note_rows
         if note.memory_id
     }
     judged_user_sessions: set[str] = set()
@@ -164,6 +256,14 @@ def memory_usage_metrics(
         judgement_coverage,
         judged_user_segments,
     )
+    effect_quality = _quality_with_incomplete(
+        effect_quality,
+        bool(
+            unknown_access_timestamps
+            or unknown_outcome_timestamps
+            or unknown_judgement_dates
+        ),
+    )
 
     recall_miss_total = retrieval_miss + awareness_miss
     recall_miss_rate = (
@@ -174,6 +274,10 @@ def memory_usage_metrics(
     recall_quality = active_policy.judgement_quality(
         judgement_coverage,
         judged_user_segments,
+    )
+    recall_quality = _quality_with_incomplete(
+        recall_quality,
+        bool(unknown_judgement_dates),
     )
 
     return {
@@ -187,6 +291,8 @@ def memory_usage_metrics(
         },
         "retrieval": {
             "search_calls": search_calls,
+            "nonempty_search_calls": nonempty_search_calls,
+            "empty_search_calls": empty_search_calls,
             "search_hits": search_hits,
             "reads": reads,
             "read_sessions": read_sessions,
@@ -202,6 +308,7 @@ def memory_usage_metrics(
             "helpful_sessions": helpful_sessions,
             "harmful_sessions": harmful_sessions,
             "unused_sessions": unused_sessions,
+            "unknown_sessions": unknown_sessions,
             "hit_quality": hit_quality,
             "hit_quality_numerator": helpful_sessions,
             "hit_quality_denominator": effect_denominator,
@@ -215,6 +322,156 @@ def memory_usage_metrics(
             "recall_miss_rate_denominator": judged_user_segments,
             "quality": recall_quality,
         },
+        "sources": {
+            "access": _timestamp_source(
+                all_access_records,
+                access_records,
+                unknown_access_timestamps,
+            ),
+            "outcomes": _timestamp_source(
+                all_outcomes,
+                _outcomes,
+                unknown_outcome_timestamps,
+            ),
+            "judgements": _judgement_source(
+                all_reports,
+                reports,
+                unknown_judgement_dates,
+                effective_tz,
+            ),
+        },
         # 尚无客观会话失败真值，不能用 recall 软指标替代。
         "known_issue_repeat_rate": None,
     }
+
+
+def _quality_with_incomplete(
+    quality: "QualityLabel",
+    incomplete: bool,
+) -> "QualityLabel":
+    """在来源时间不完整时把领域质量降为 partial。"""
+    return "partial" if incomplete else quality
+
+
+def _filter_timestamped_records(
+    records: list[Any],
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> tuple[list[Any], int]:
+    """筛选窗内日志，并统计无法归到任何日期的旧记录。"""
+    if window_start is None or window_end is None:
+        return records, 0
+    selected: list[Any] = []
+    unknown = 0
+    for record in records:
+        value = _parse_iso_datetime(record.ts)
+        if value is None:
+            unknown += 1
+            continue
+        comparable = value.astimezone(window_start.tzinfo)
+        if window_start <= comparable < window_end:
+            selected.append(record)
+    return selected, unknown
+
+
+def _filter_reports(
+    reports: list[Any],
+    window_start: datetime | None,
+    window_end: datetime | None,
+    local_tz: tzinfo | None,
+) -> tuple[list[Any], int]:
+    """按来源活动日期筛选判效报告，并单列没有稳定日期的旧报告。"""
+    if window_start is None or window_end is None:
+        return reports, 0
+    selected: list[Any] = []
+    unknown = 0
+    start_date = window_start.astimezone(local_tz).date()
+    end_date = window_end.astimezone(local_tz).date()
+    for report in reports:
+        dates: list[date] = []
+        for raw in report.activity_dates:
+            try:
+                dates.append(date.fromisoformat(raw))
+            except ValueError:
+                continue
+        if not dates:
+            unknown += 1
+            continue
+        if any(start_date <= value < end_date for value in dates):
+            selected.append(report)
+    return selected, unknown
+
+
+def _timestamp_source(
+    all_records: list[Any],
+    selected_records: list[Any],
+    unknown_count: int,
+) -> dict[str, Any]:
+    """汇总日志事实源的更新时间、样本范围和时间完整性。"""
+    all_times = [
+        value
+        for record in all_records
+        if (value := _parse_iso_datetime(record.ts)) is not None
+    ]
+    selected_times = [
+        value
+        for record in selected_records
+        if (value := _parse_iso_datetime(record.ts)) is not None
+    ]
+    return {
+        "updated_at": max(all_times).isoformat() if all_times else None,
+        "sample_start": min(selected_times).isoformat() if selected_times else None,
+        "sample_end": max(selected_times).isoformat() if selected_times else None,
+        "sample_size": len(selected_records),
+        "unknown_time_records": unknown_count,
+        "quality": "partial"
+        if unknown_count
+        else ("reliable" if all_records else "unavailable"),
+    }
+
+
+def _judgement_source(
+    all_reports: list[Any],
+    selected_reports: list[Any],
+    unknown_count: int,
+    local_tz: tzinfo | None,
+) -> dict[str, Any]:
+    """汇总判效来源的活动日期范围和旧记录缺口。"""
+    all_dates = sorted(
+        {
+            value
+            for report in all_reports
+            for raw in report.activity_dates
+            if (value := _safe_date(raw)) is not None
+        }
+    )
+    selected_dates = sorted(
+        {
+            value
+            for report in selected_reports
+            for raw in report.activity_dates
+            if (value := _safe_date(raw)) is not None
+        }
+    )
+
+    def as_timestamp(value: date) -> str:
+        return datetime.combine(value, time.min, tzinfo=local_tz).isoformat()
+
+    return {
+        "updated_at": as_timestamp(all_dates[-1]) if all_dates else None,
+        "sample_start": as_timestamp(selected_dates[0]) if selected_dates else None,
+        "sample_end": as_timestamp(selected_dates[-1]) if selected_dates else None,
+        "sample_size": len(selected_reports),
+        "unknown_time_records": unknown_count,
+        "quality": "partial"
+        if unknown_count
+        else ("reliable" if all_reports else "unavailable"),
+    }
+
+
+def _safe_date(raw: str) -> date | None:
+    """解析 ISO 日期，非法旧值返回 None。"""
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None

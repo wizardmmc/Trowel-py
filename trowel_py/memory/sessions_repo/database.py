@@ -5,7 +5,15 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .models import CodexTurnRecord, ReviewRequest, SessionBinding, SessionRecord
+from trowel_py.telemetry.sqlite import open_observed_sqlite
+
+from .models import (
+    CodexTurnRecord,
+    ReviewRequest,
+    SessionBinding,
+    SessionProblemRecord,
+    SessionRecord,
+)
 
 _META_DIR = "meta"
 _SESSIONS_DB = "sessions.db"
@@ -31,7 +39,9 @@ CREATE TABLE IF NOT EXISTS session_bindings (
     session_kind      TEXT NOT NULL,
     workdir           TEXT NOT NULL,
     bound_at          TEXT NOT NULL,
-    start_offset      INTEGER
+    start_offset      INTEGER,
+    status            TEXT NOT NULL DEFAULT 'running',
+    completed_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_cc ON session_bindings(cc_session_id);
 CREATE TABLE IF NOT EXISTS codex_turns (
@@ -60,12 +70,30 @@ CREATE TABLE IF NOT EXISTS session_review_requests (
     runtime            TEXT NOT NULL,
     requested_at       TEXT NOT NULL,
     not_before         TEXT NOT NULL,
+    closed_at          TEXT NOT NULL DEFAULT '',
     native_session_id  TEXT NOT NULL DEFAULT '',
     source_start_offset INTEGER,
-    source_end_offset   INTEGER
+    source_end_offset   INTEGER,
+    problem_recorded_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_session_review_requests_order
     ON session_review_requests(requested_at, trowel_session_id);
+CREATE TABLE IF NOT EXISTS session_review_problems (
+    trowel_session_id   TEXT PRIMARY KEY,
+    runtime             TEXT NOT NULL,
+    closed_at           TEXT NOT NULL,
+    closed_at_epoch_us  INTEGER NOT NULL,
+    problem_text        TEXT,
+    reviewed_at         TEXT NOT NULL,
+    pipeline_version    INTEGER NOT NULL,
+    run_id              TEXT NOT NULL,
+    generator_runtime   TEXT NOT NULL,
+    generator_model     TEXT NOT NULL,
+    generator_effort    TEXT NOT NULL,
+    source_quality      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_review_problems_closed
+    ON session_review_problems(closed_at_epoch_us DESC, trowel_session_id DESC);
 """
 
 _ADD_COLUMN_SQL = {
@@ -93,6 +121,10 @@ _CODEX_ADD_COLUMN_SQL = {
 
 _BINDING_ADD_COLUMN_SQL = {
     "start_offset": "ALTER TABLE session_bindings ADD COLUMN start_offset INTEGER",
+    "status": (
+        "ALTER TABLE session_bindings ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'"
+    ),
+    "completed_at": "ALTER TABLE session_bindings ADD COLUMN completed_at TEXT",
 }
 
 _REVIEW_REQUEST_ADD_COLUMN_SQL = {
@@ -104,11 +136,18 @@ _REVIEW_REQUEST_ADD_COLUMN_SQL = {
         "ALTER TABLE session_review_requests"
         " ADD COLUMN native_session_id TEXT NOT NULL DEFAULT ''"
     ),
+    "closed_at": (
+        "ALTER TABLE session_review_requests"
+        " ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''"
+    ),
     "source_start_offset": (
         "ALTER TABLE session_review_requests ADD COLUMN source_start_offset INTEGER"
     ),
     "source_end_offset": (
         "ALTER TABLE session_review_requests ADD COLUMN source_end_offset INTEGER"
+    ),
+    "problem_recorded_at": (
+        "ALTER TABLE session_review_requests ADD COLUMN problem_recorded_at TEXT"
     ),
 }
 
@@ -167,7 +206,7 @@ def open_sessions_db(memory_root: Path) -> sqlite3.Connection:
     """
     meta = memory_root / _META_DIR
     meta.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(meta / _SESSIONS_DB))
+    conn = open_observed_sqlite(meta / _SESSIONS_DB, domain="sessions")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -190,7 +229,11 @@ def open_sessions_db_readonly(
     database = memory_root / _META_DIR / _SESSIONS_DB
     if not database.exists():
         return None
-    conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    conn = open_observed_sqlite(
+        f"file:{database}?mode=ro",
+        domain="sessions",
+        uri=True,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -229,6 +272,8 @@ def row_to_binding(row: sqlite3.Row) -> SessionBinding:
         workdir=row["workdir"],
         bound_at=row["bound_at"],
         start_offset=row["start_offset"],
+        status=row["status"] or "unknown",
+        completed_at=row["completed_at"],
     )
 
 
@@ -267,7 +312,27 @@ def row_to_review_request(row: sqlite3.Row) -> ReviewRequest:
         runtime=row["runtime"],
         requested_at=row["requested_at"],
         not_before=row["not_before"] or row["requested_at"],
+        closed_at=row["closed_at"] or row["requested_at"],
         native_session_id=row["native_session_id"] or "",
         source_start_offset=row["source_start_offset"],
         source_end_offset=row["source_end_offset"],
+        problem_recorded_at=row["problem_recorded_at"],
+    )
+
+
+def row_to_session_problem(row: sqlite3.Row) -> SessionProblemRecord:
+    """把会话问题表的一行转换为冻结记录。"""
+
+    return SessionProblemRecord(
+        trowel_session_id=row["trowel_session_id"],
+        runtime=row["runtime"],
+        closed_at=row["closed_at"],
+        problem_text=row["problem_text"],
+        reviewed_at=row["reviewed_at"],
+        pipeline_version=int(row["pipeline_version"]),
+        run_id=row["run_id"],
+        generator_runtime=row["generator_runtime"],
+        generator_model=row["generator_model"],
+        generator_effort=row["generator_effort"],
+        source_quality=row["source_quality"],
     )

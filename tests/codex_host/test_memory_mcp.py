@@ -6,7 +6,11 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 from trowel_py.codex_host.manager import CodexHostManager
 from trowel_py.codex_host.protocol import TROWEL_NOTE_SEARCH_SERVER_NAME
@@ -24,6 +28,7 @@ def test_to_thread_config_shape_carries_identity_env() -> None:
         command="/usr/bin/python",
         module_args=("-m", "trowel_py.memory.mcp_server"),
         memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
         trowel_session_id="trowel-1",
     )
     servers = cfg.to_thread_config()
@@ -33,6 +38,7 @@ def test_to_thread_config_shape_carries_identity_env() -> None:
     assert server["args"] == ["-m", "trowel_py.memory.mcp_server"]
     env = server["env"]
     assert env["MEMORY_ROOT"] == "/tmp/mem"
+    assert env["TROWEL_DATA_ROOT"] == "/tmp/trowel-data"
     assert env["TROWEL_SESSION_ID"] == "trowel-1"
     assert env["TROWEL_HOST_KIND"] == "codex"
     # fresh thread 尚无原生 thread ID，不能用 Trowel session ID 冒充。
@@ -48,6 +54,7 @@ def test_to_thread_config_resume_stamps_real_thread_id() -> None:
         command="/usr/bin/python",
         module_args=("-m", "trowel_py.memory.mcp_server"),
         memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
         trowel_session_id="trowel-1",
     )
     env = cfg.to_thread_config(native_session_id="codex-thread-abc")[
@@ -63,6 +70,7 @@ def test_to_thread_config_carries_private_process_registration_env() -> None:
     cfg = build_default_trowel_memory_mcp(
         trowel_session_id="sid",
         memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
         registration_env={
             "TROWEL_RESOURCE_REGISTRATION_URL": "http://127.0.0.1/register",
             "TROWEL_RESOURCE_REGISTRATION_CREDENTIAL": "private-credential",
@@ -74,23 +82,80 @@ def test_to_thread_config_carries_private_process_registration_env() -> None:
 
     assert env["TROWEL_RESOURCE_REGISTRATION_TOKEN"] == "private-token"
     assert env["TROWEL_SESSION_ID"] == "sid"
+    assert env["TROWEL_DATA_ROOT"] == "/tmp/trowel-data"
 
 
 def test_build_default_trowel_memory_mcp_uses_current_interpreter() -> None:
     cfg = build_default_trowel_memory_mcp(
-        trowel_session_id="sid", memory_root="/tmp/mem"
+        trowel_session_id="sid",
+        memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
     )
     assert cfg.command == sys.executable
     assert cfg.module_args == ("-m", "trowel_py.memory.mcp_server")
     assert cfg.server_name == TROWEL_NOTE_SEARCH_SERVER_NAME
     assert cfg.memory_root == "/tmp/mem"
+    assert cfg.application_data_root == "/tmp/trowel-data"
     assert cfg.trowel_session_id == "sid"
+
+
+def test_memory_mcp_child_loads_config_from_desktop_data_root(
+    tmp_path: Path,
+) -> None:
+    """模拟打包子进程，确认工作目录和模块位置都不参与配置查找。"""
+
+    data_root = tmp_path / "Application Support" / "Trowel"
+    packaged_workdir = tmp_path / "Trowel.app" / "Contents" / "Resources"
+    data_root.mkdir(parents=True)
+    packaged_workdir.mkdir(parents=True)
+    (data_root / "config.toml").write_text(
+        """[llm]
+active = "desktop"
+
+[llm.desktop]
+provider = "anthropic"
+model = "packaged-config-model"
+api_key = "test-key"
+""",
+        encoding="utf-8",
+    )
+    cfg = build_default_trowel_memory_mcp(
+        trowel_session_id="sid",
+        memory_root=str(data_root / "memory"),
+        application_data_root=str(data_root),
+    )
+    mcp_environment = cfg.to_thread_config()[TROWEL_NOTE_SEARCH_SERVER_NAME]["env"]
+    child_environment = {
+        **os.environ,
+        **mcp_environment,
+    }
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "from trowel_py.config import load_llm_config; "
+                "config = load_llm_config(); "
+                "print(json.dumps({'model': config.model}))"
+            ),
+        ],
+        cwd=packaged_workdir,
+        env=child_environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(probe.stdout) == {"model": "packaged-config-model"}
 
 
 def test_thread_start_params_includes_mcp_servers_when_memory_on() -> None:
     manager = CodexHostManager()
     cfg = build_default_trowel_memory_mcp(
-        trowel_session_id="sid", memory_root="/tmp/mem"
+        trowel_session_id="sid",
+        memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
     )
     session = CodexSession(
         CodexSessionConfig(
@@ -152,7 +217,9 @@ def test_thread_resume_params_re_attaches_memory_mcp_with_thread_id() -> None:
 
     manager = CodexHostManager()
     cfg = build_default_trowel_memory_mcp(
-        trowel_session_id="sid", memory_root="/tmp/mem"
+        trowel_session_id="sid",
+        memory_root="/tmp/mem",
+        application_data_root="/tmp/trowel-data",
     )
     session = CodexSession(
         CodexSessionConfig(

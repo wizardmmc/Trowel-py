@@ -152,6 +152,189 @@ def test_closed_requires_the_owner_to_have_no_live_resources(tmp_path: Path) -> 
     assert summary.remaining_resource_kinds == ()
 
 
+def test_closed_resources_leave_only_a_bounded_recent_lookup_cache(
+    tmp_path: Path,
+) -> None:
+    """安全快照和活资源表不能把已关闭历史永久累积下来。"""
+
+    registry = make_registry(tmp_path)
+    for index in range(300):
+        resource_id = f"watcher-{index}"
+        registry.register_handle(
+            resource_id=resource_id,
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="workflow_watcher",
+            agent_session_id=f"session-{index}",
+        )
+        registry.mark_closed(resource_id)
+
+    payload = json.loads((tmp_path / "resource-lifecycle.json").read_text())
+
+    assert payload["resources"] == []
+    assert len(registry._records) == 0
+    assert len(registry._recent_closed) == 256
+    assert registry.get("watcher-299").state is ResourceState.CLOSED
+    with pytest.raises(KeyError):
+        registry.get("watcher-0")
+
+
+def test_owner_state_changes_publish_once_and_repeated_close_is_a_noop(
+    tmp_path: Path,
+) -> None:
+    """同一 owner 的批量转换只落一次快照，重复终态不再 fsync。"""
+
+    writes: list[dict[str, object]] = []
+    registry = ResourceRegistry(
+        app_instance_id="app-private-id",
+        snapshot_path=tmp_path / "resource-lifecycle.json",
+        process_controller=FakeProcessController(),
+        now=lambda: datetime.fromisoformat("2026-08-01T12:00:00"),
+        snapshot_writer=lambda _path, payload: writes.append(payload),
+    )
+    for index in range(8):
+        registry.register_handle(
+            resource_id=f"watcher-{index}",
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="workflow_watcher",
+            agent_session_id="session-private-id",
+        )
+    writes.clear()
+
+    registry.mark_owner_closing(
+        OwnerScope.SESSION,
+        agent_session_id="session-private-id",
+    )
+    registry.mark_owner_closed(
+        OwnerScope.SESSION,
+        agent_session_id="session-private-id",
+    )
+    registry.mark_owner_closed(
+        OwnerScope.SESSION,
+        agent_session_id="session-private-id",
+    )
+
+    assert len(writes) == 2
+    assert writes[-1]["resources"] == []
+    with pytest.raises(RuntimeError, match="owner is closing"):
+        registry.register_handle(
+            resource_id="late-watcher",
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="workflow_watcher",
+            agent_session_id="session-private-id",
+        )
+
+
+def test_closed_owner_barriers_reject_late_callbacks_with_bounded_memory(
+    tmp_path: Path,
+) -> None:
+    """近期 owner 终态继续挡住迟到登记，同时身份集合保持固定上限。"""
+
+    registry = make_registry(tmp_path)
+    for index in range(300):
+        session_id = f"session-{index}"
+        registry.mark_owner_closing(
+            OwnerScope.SESSION,
+            agent_session_id=session_id,
+        )
+        registry.mark_owner_closed(
+            OwnerScope.SESSION,
+            agent_session_id=session_id,
+        )
+
+    assert len(registry._closing_owners) == 0
+    assert len(registry._owner_closing_started_at) == 0
+    assert len(registry._recent_closed_owners) == 256
+    with pytest.raises(RuntimeError, match="owner is closing"):
+        registry.register_handle(
+            resource_id="late-watcher",
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="workflow_watcher",
+            agent_session_id="session-299",
+        )
+
+
+def test_owner_close_observer_receives_no_owner_identity(tmp_path: Path) -> None:
+    """owner 关闭回调只包含层级、耗时和数量，不携带内部身份。"""
+
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="app-private-id",
+        snapshot_path=tmp_path / "resource-lifecycle.json",
+        process_controller=FakeProcessController(),
+        now=lambda: datetime.fromisoformat("2026-08-01T12:00:00+08:00"),
+        owner_close_observer=observations.append,
+    )
+    registry.register_handle(
+        resource_id="private-resource-id",
+        owner_scope=OwnerScope.SESSION,
+        resource_kind="workflow_watcher",
+        agent_session_id="private-session-id",
+    )
+
+    registry.mark_owner_closing(
+        OwnerScope.SESSION,
+        agent_session_id="private-session-id",
+    )
+    registry.mark_owner_closed(
+        OwnerScope.SESSION,
+        agent_session_id="private-session-id",
+    )
+    registry.mark_owner_closed(
+        OwnerScope.SESSION,
+        agent_session_id="private-session-id",
+    )
+
+    assert len(observations) == 1
+    assert observations[0].owner_scope is OwnerScope.SESSION
+    assert observations[0].status == "closed"
+    assert observations[0].closed_resource_count == 1
+    assert "private" not in repr(observations[0])
+
+
+def test_owner_needs_reconcile_observer_reports_remaining_without_identity(
+    tmp_path: Path,
+) -> None:
+    """owner 未归零时保留屏障，并只上报层级、错误终态和残留数量。"""
+
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="app-private-id",
+        snapshot_path=tmp_path / "resource-lifecycle.json",
+        process_controller=FakeProcessController(),
+        now=lambda: datetime.fromisoformat("2026-08-01T12:00:00+08:00"),
+        owner_close_observer=observations.append,
+    )
+    registry.register_handle(
+        resource_id="private-resource-id",
+        owner_scope=OwnerScope.SESSION,
+        resource_kind="workflow_watcher",
+        agent_session_id="private-session-id",
+    )
+    registry.mark_owner_closing(
+        OwnerScope.SESSION,
+        agent_session_id="private-session-id",
+    )
+
+    registry.mark_owner_needs_reconcile(
+        OwnerScope.SESSION,
+        agent_session_id="private-session-id",
+    )
+
+    assert registry.get("private-resource-id").state is ResourceState.NEEDS_RECONCILE
+    assert len(observations) == 1
+    assert observations[0].owner_scope is OwnerScope.SESSION
+    assert observations[0].status == "needs_reconcile"
+    assert observations[0].remaining_resource_count == 1
+    assert "private" not in repr(observations[0])
+    with pytest.raises(RuntimeError, match="owner is closing"):
+        registry.register_handle(
+            resource_id="late-resource-id",
+            owner_scope=OwnerScope.SESSION,
+            resource_kind="workflow_watcher",
+            agent_session_id="private-session-id",
+        )
+
+
 def test_closing_session_rejects_new_session_and_turn_resources(tmp_path: Path) -> None:
     """owner 开始关闭后不能再出现同会话的新临时资源。"""
 

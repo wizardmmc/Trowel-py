@@ -81,3 +81,61 @@ def test_from_root_missing_db_returns_empty_index(tmp_path) -> None:
     assert idx.resolve("t1", "cc-x").basis == "cc_session_id"
     assert idx.resolve("", "").basis == "unattributed"
     assert not (tmp_path / "meta" / "sessions.db").exists()
+
+
+def test_from_root_read_only_does_not_migrate_old_database(tmp_path) -> None:
+    """观察查询遇到旧 schema 时宁可不可用，也不能改写正式数据库。"""
+
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    database_path = meta / "sessions.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute("CREATE TABLE legacy_only(value TEXT)")
+    connection.commit()
+    connection.close()
+
+    index = AttributionIndex.from_root(tmp_path, read_only=True)
+
+    assert index.resolve("", "").basis == "unattributed"
+    check = sqlite3.connect(database_path)
+    try:
+        tables = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_schema WHERE type='table'"
+            )
+        }
+    finally:
+        check.close()
+    assert tables == {"legacy_only"}
+
+
+def test_resolve_codex_access_via_trowel_session() -> None:
+    """Codex turn 的 Trowel 身份必须进入与 CC 相同的用户归因入口。"""
+
+    repo = _repo()
+    repo.codex.register_turn(
+        thread_id="thread-codex",
+        turn_id="turn-codex",
+        trowel_session_id="trowel-codex",
+        workdir="/w",
+        journal_path="/journal",
+        registered_at="2026-08-03T10:00:00+08:00",
+        model="gpt-5.6-sol",
+        effort="xhigh",
+        provider="openai",
+        memory_enabled=True,
+        profile_enabled=True,
+        session_kind="user",
+    )
+
+    attribution = AttributionIndex.from_repo(repo).resolve(
+        "trowel-codex",
+        "",
+        host_kind="codex",
+        native_session_id="thread-codex",
+    )
+
+    assert attribution.cc_session_id == "thread-codex"
+    assert attribution.session_kind == "user"
+    assert attribution.is_user

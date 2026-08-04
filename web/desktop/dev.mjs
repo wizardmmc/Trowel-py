@@ -1,7 +1,14 @@
 /** 启动随机端口 Vite、Electron 和可选隔离数据的 Python sidecar 开发链。 */
 
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +27,7 @@ const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
 const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
 const rendererCrashSmoke = process.argv.includes("--renderer-crash-smoke");
 const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
-const developmentDataMode = resolveDevelopmentDataMode(process.argv);
+const readOnlyInspection = process.argv.includes("--observe");
 const smoke =
   rendererSmoke ||
   diagnosticSmoke ||
@@ -28,18 +35,22 @@ const smoke =
   sidecarHangSmoke ||
   rendererCrashSmoke ||
   sharedServiceSmoke;
+const developmentDataMode = resolveDevelopmentDataMode(process.argv, {
+  usesTemporaryDataRoot: smoke,
+});
 const tempRoot = smoke
   ? await mkdtemp(path.join(os.tmpdir(), "trowel-desktop-smoke-"))
   : null;
 const runtimeRoot =
   tempRoot ?? await mkdtemp(path.join(os.tmpdir(), "trowel-desktop-dev-"));
+const privateDataRoot = tempRoot ?? (readOnlyInspection ? runtimeRoot : null);
 const serviceDescriptorPath = path.join(runtimeRoot, "agent-service.json");
 const rendererPort = await reservePort();
-const rendererUrl = `http://127.0.0.1:${rendererPort}`;
+const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : ""}`;
 
-if (tempRoot) {
-  const dataDirectory = path.join(tempRoot, "data");
-  const memoryDirectory = path.join(tempRoot, "memory");
+if (privateDataRoot) {
+  const dataDirectory = path.join(privateDataRoot, "data");
+  const memoryDirectory = path.join(privateDataRoot, "memory");
   await mkdir(dataDirectory, { recursive: true });
   await writeFile(
     path.join(dataDirectory, "config.toml"),
@@ -57,12 +68,15 @@ const vite = spawn(
     env: {
       ...process.env,
       TROWEL_DESKTOP_SERVICE_FILE: serviceDescriptorPath,
+      ...(readOnlyInspection ? { VITE_TROWEL_INSPECTION_MODE: "1" } : {}),
     },
   },
 );
 let desktop = null;
+let desktopExitCode = null;
 let interrupted = false;
 let stoppedSidecarPid = null;
+let smokeFailed = false;
 
 /** 终端中断时先结束子进程，让 finally 有机会清理私有 descriptor。 */
 function handleTerminationSignal() {
@@ -81,6 +95,14 @@ try {
     TROWEL_RENDERER_URL: rendererUrl,
     TROWEL_DESKTOP_SERVICE_FILE: serviceDescriptorPath,
     TROWEL_DESKTOP_DATA_MODE: developmentDataMode,
+    ...(readOnlyInspection
+      ? {
+          TROWEL_DESKTOP_INSPECTION_ONLY: "1",
+          TROWEL_DESKTOP_READ_DATA_DIR:
+            process.env.TROWEL_DESKTOP_READ_DATA_DIR ??
+            defaultCanonicalDataDirectory(),
+        }
+      : {}),
     ...(rendererSmoke ? { TROWEL_DESKTOP_SMOKE: "1" } : {}),
     ...(diagnosticSmoke
       ? {
@@ -94,18 +116,18 @@ try {
     ...(rendererCrashSmoke
       ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
       : {}),
-    ...(tempRoot
+    ...(privateDataRoot
       ? {
-          TROWEL_DESKTOP_DATA_DIR: path.join(tempRoot, "data"),
-          TROWEL_DESKTOP_LOG_DIR: path.join(tempRoot, "logs"),
-          TROWEL_ELECTRON_USER_DATA_DIR: path.join(tempRoot, "electron"),
+          TROWEL_DESKTOP_DATA_DIR: path.join(privateDataRoot, "data"),
+          TROWEL_DESKTOP_LOG_DIR: path.join(privateDataRoot, "logs"),
+          TROWEL_ELECTRON_USER_DATA_DIR: path.join(privateDataRoot, "electron"),
           TROWEL_AGENT_SESSIONS_PATH: path.join(
-            tempRoot,
+            privateDataRoot,
             "data",
             "agent_sessions.json",
           ),
           TROWEL_WORKSPACES_PATH: path.join(
-            tempRoot,
+            privateDataRoot,
             "data",
             "workspaces.db",
           ),
@@ -155,6 +177,21 @@ try {
     desktop.kill("SIGTERM");
   }
   const exitCode = await primaryExit;
+  desktopExitCode = exitCode;
+  if (rendererSmoke) {
+    if (exitCode !== 0) throw new Error("Electron telemetry smoke did not exit cleanly.");
+    await verifyTelemetryDatabase(
+      path.join(tempRoot, "data", "telemetry.db"),
+    );
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(
+        `Telemetry smoke did not end with a clean resource marker: ${JSON.stringify(marker)}`,
+      );
+    }
+  }
   if (sidecarHangSmoke) {
     if (exitCode !== 0) throw new Error("Primary Electron instance did not exit cleanly.");
     if (stoppedSidecarPid !== null && processAlive(stoppedSidecarPid)) {
@@ -181,6 +218,10 @@ try {
     console.log("TROWEL_DESKTOP_RENDERER_CRASH_SMOKE_OK");
   }
   process.exitCode = interrupted || expectedDesktopStop ? 0 : exitCode;
+  smokeFailed = smoke && process.exitCode !== 0;
+} catch (error) {
+  smokeFailed = smoke;
+  throw error;
 } finally {
   process.removeListener("SIGINT", handleTerminationSignal);
   process.removeListener("SIGTERM", handleTerminationSignal);
@@ -193,7 +234,76 @@ try {
       // 退出核验和进程结束之间可能发生正常竞态。
     }
   }
-  await rm(runtimeRoot, { recursive: true, force: true });
+  if (smokeFailed) {
+    await printSmokeDiagnostics(runtimeRoot, desktopExitCode);
+  }
+  if (process.env.TROWEL_KEEP_DESKTOP_SMOKE_DIR === "1") {
+    console.error(`TROWEL_DESKTOP_SMOKE_DIR=${runtimeRoot}`);
+  } else {
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+}
+
+/** 返回 Electron 在各平台使用的正式 Trowel 业务数据目录。 */
+function defaultCanonicalDataDirectory() {
+  if (process.platform === "darwin") {
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      "Trowel",
+      "data",
+    );
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "Trowel", "data");
+  }
+  const appData = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
+  return path.join(appData, "Trowel", "data");
+}
+
+/** 失败时输出隔离现场中的文件清单和两份生命周期日志。 */
+async function printSmokeDiagnostics(root, exitCode) {
+  console.error(`TROWEL_DESKTOP_EXIT_CODE=${String(exitCode)}`);
+  try {
+    const files = await readdir(root, { recursive: true });
+    console.error(`TROWEL_DESKTOP_SMOKE_FILES=${JSON.stringify(files.sort())}`);
+  } catch (error) {
+    console.error("TROWEL_DESKTOP_SMOKE_FILES_UNAVAILABLE", error);
+  }
+  for (const relativePath of ["logs/desktop-host.log", "logs/trowel.log"]) {
+    try {
+      const content = await readFile(path.join(root, relativePath), "utf8");
+      console.error(`TROWEL_DESKTOP_SMOKE_LOG=${relativePath}\n${content}`);
+    } catch {
+      console.error(`TROWEL_DESKTOP_SMOKE_LOG_MISSING=${relativePath}`);
+    }
+  }
+}
+
+/** Electron 退出后只读确认被接受的 smoke span 已由 sidecar drain 到数据库。 */
+async function verifyTelemetryDatabase(databasePath) {
+  const executable =
+    process.env.TROWEL_PYTHON_EXECUTABLE ??
+    path.join(projectRoot, ".venv", "bin", "python");
+  const script = [
+    "import pathlib, sqlite3, sys",
+    "uri = pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro'",
+    "connection = sqlite3.connect(uri, uri=True)",
+    "count = connection.execute(\"SELECT COUNT(*) FROM raw_spans WHERE component='electron' AND operation='desktop.start'\").fetchone()[0]",
+    "connection.close()",
+    "raise SystemExit(0 if count >= 1 else 1)",
+  ].join("; ");
+  const verifier = spawn(executable, ["-c", script, databasePath], {
+    cwd: projectRoot,
+    stdio: ["ignore", "ignore", "inherit"],
+    env: process.env,
+  });
+  const exitCode = await childExit(verifier);
+  if (exitCode !== 0) {
+    throw new Error("Accepted desktop telemetry was not drained to telemetry.db.");
+  }
 }
 
 async function waitForJson(filePath, timeoutMs = 15_000) {

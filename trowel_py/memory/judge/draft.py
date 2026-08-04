@@ -32,6 +32,7 @@ def _parse_draft(
     *,
     cc_session_id: str,
     segment_id: str = "",
+    activity_dates: tuple[str, ...] = (),
 ) -> JudgementReport:
     """解析判效 JSON，并规范化 Hit 与 Recall miss。
 
@@ -46,6 +47,7 @@ def _parse_draft(
         text: ``judgement-draft.json`` 的完整文本。
         cc_session_id: 写入报告的被判效 CC 会话 ID。
         segment_id: 写入报告的可选来源片段 ID。
+        activity_dates: 已从真实来源事件、完成时间或登记时间确认的活动日期。
 
     Returns:
         分别保持 ``hits`` 和 ``recall_miss`` 中保留项原顺序的判效报告。
@@ -103,4 +105,5 @@ def _parse_draft(
         recall_miss=tuple(misses),
         summary=str(data.get("summary") or ""),
         segment_id=segment_id,
+        activity_dates=activity_dates,
     )

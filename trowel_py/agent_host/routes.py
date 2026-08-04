@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.capabilities import (
     CC_CAPABILITIES,
     CODEX_CAPABILITIES,
@@ -35,6 +37,7 @@ from trowel_py.agent_host.local_files import (
 )
 from trowel_py.agent_host.schemas import (
     AnswerAgentRequest,
+    AnswerInteractiveDelegationRequest,
     CreateAgentSessionRequest,
     GenerateAgentSessionTitleRequest,
     PatchAgentSessionRequest,
@@ -43,11 +46,16 @@ from trowel_py.agent_host.schemas import (
     SetCodexGoalRequest,
     SendMessageBody,
     StartCodexReviewRequest,
+    StartInteractiveDelegationRequest,
 )
+from trowel_py.agent_mcp.interactive import InteractiveBroker
+from trowel_py.agent_mcp.interactive_errors import InteractiveDelegationError
 from trowel_py.agent_host.workspaces import (
     RecentWorkspaceStore,
     WorkspaceUnavailableError,
 )
+from trowel_py.telemetry.port import NoopTelemetryPort
+from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 
 router = APIRouter()
 
@@ -165,6 +173,141 @@ def get_hub(request: Request) -> SessionHub:
     if hub is None:
         raise HTTPException(status_code=503, detail="agent hub not initialized")
     return hub
+
+
+def get_interactive_broker(request: Request) -> InteractiveBroker:
+    """取得由 Agent Host 生命周期持有的交互委派 broker。
+
+    Args:
+        request: 当前 HTTP 请求，用于访问应用状态。
+
+    Returns:
+        跨父 turn 持有 child 和委派句柄的 broker。
+
+    Raises:
+        HTTPException: broker 尚未初始化时返回 503。
+    """
+
+    broker = getattr(request.app.state, "agent_delegation_broker", None)
+    if broker is None:
+        raise HTTPException(
+            status_code=503, detail="agent delegation broker unavailable"
+        )
+    return broker
+
+
+def _require_interactive_owner(
+    broker: InteractiveBroker,
+    delegation_id: str,
+    parent_session_id: str,
+) -> None:
+    """确认委派句柄属于当前 MCP 声明的父会话。
+
+    Args:
+        broker: 保存委派记录的应用级 broker。
+        delegation_id: 要访问的委派句柄。
+        parent_session_id: 当前 Agent MCP 绑定的父会话 ID。
+
+    Raises:
+        HTTPException: 句柄未知或不属于当前父会话时返回 404。
+    """
+
+    try:
+        owner = broker.parent_session_id(delegation_id)
+    except InteractiveDelegationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if owner != parent_session_id:
+        raise HTTPException(status_code=404, detail="interactive delegation not found")
+
+
+def _interactive_error(exc: InteractiveDelegationError) -> HTTPException:
+    """把 broker 操作失败转换成 Agent MCP 可读取的 HTTP 错误。"""
+
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+def _validated_interactive_child_body(
+    parent: SessionBinding,
+    submitted: dict[str, Any],
+) -> dict[str, Any]:
+    """复核交互 child 的继承字段和禁止递归约束。
+
+    Args:
+        parent: Session Hub 当前保存的父会话 binding。
+        submitted: Agent MCP 根据已复核父上下文生成的 child 创建参数。
+
+    Returns:
+        与父 binding 和交互委派不变量完全一致的创建参数。
+
+    Raises:
+        HTTPException: 父权限不再允许委派，或 child 参数改变了受保护字段。
+    """
+
+    if parent.runtime is Runtime.CLAUDE_CODE:
+        permission_ok = parent.permission == "bypassPermissions"
+    else:
+        permission_ok = (
+            parent.effective_sandbox == "danger-full-access"
+            and parent.effective_approval == "never"
+            and parent.network_access is True
+        )
+    if not permission_ok:
+        raise HTTPException(
+            status_code=409,
+            detail="parent permission no longer allows full-access delegation",
+        )
+
+    expected: dict[str, Any] = {
+        "runtime": "claude_code",
+        "workdir": str(Path(parent.workdir).expanduser().resolve()),
+        "memory_enabled": parent.memory_enabled,
+        "profile_enabled": parent.profile_enabled,
+        "self_enabled": parent.self_enabled,
+        "session_kind": "delegate",
+        "memory_eligibility": False,
+        "agent_mcp_enabled": False,
+        "parent_session_id": parent.session_id,
+        "delegation_depth": 1,
+        "permission_mode": "bypassPermissions",
+    }
+    for optional in ("model", "effort"):
+        value = submitted.get(optional)
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"delegation child has invalid {optional}",
+                )
+            expected[optional] = value
+    if submitted != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="delegation child configuration does not match parent policy",
+        )
+    return expected
+
+
+def _observe_sse(
+    request: Request,
+    session_id: str,
+    *,
+    reconnect_eligible: bool,
+) -> SseObservation:
+    """取得应用级 SSE tracker；测试未组装时使用一次性 no-op tracker。
+
+    Args:
+        request: 当前 HTTP 请求，用于读取应用状态。
+        session_id: 仅在 tracker 内做不可逆摘要的会话 ID。
+        reconnect_eligible: 持续 watcher 是否参与重连判断。
+
+    Returns:
+        不读取或缓存任何 SSE 事件的旁路观察器。
+    """
+
+    tracker = getattr(request.app.state, "sse_tracker", None)
+    if tracker is None:
+        tracker = SseConnectionTracker(NoopTelemetryPort(), capacity=1)
+    return tracker.begin(session_id, reconnect_eligible=reconnect_eligible)
 
 
 def get_workspace_store(request: Request) -> RecentWorkspaceStore:
@@ -358,6 +501,92 @@ def get_session(
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
+@router.post("/internal/delegations", include_in_schema=False)
+async def start_interactive_delegation(
+    body: StartInteractiveDelegationRequest,
+    hub: SessionHub = Depends(get_hub),
+    broker: InteractiveBroker = Depends(get_interactive_broker),
+) -> dict[str, Any]:
+    """复核父 binding 后，在 Agent Host 中原子登记跨 turn 交互委派。"""
+
+    parent = hub.get(body.parent_session_id)
+    if (
+        parent is None
+        or parent.session_kind != "user"
+        or parent.delegation_depth != 0
+        or not parent.agent_mcp_enabled
+    ):
+        raise HTTPException(status_code=404, detail="delegation parent not found")
+    create_body = _validated_interactive_child_body(parent, body.create_body)
+
+    try:
+        data = await broker.start(
+            parent_session_id=body.parent_session_id,
+            task=body.task,
+            create_body=create_body,
+        )
+    except InteractiveDelegationError as exc:
+        raise _interactive_error(exc) from exc
+    return {"success": True, "data": data, "error": None}
+
+
+@router.get(
+    "/internal/delegations/{delegation_id}",
+    include_in_schema=False,
+)
+def get_interactive_delegation(
+    delegation_id: str,
+    parent_session_id: str = Query(..., min_length=1),
+    broker: InteractiveBroker = Depends(get_interactive_broker),
+) -> dict[str, Any]:
+    """立即返回属于指定父会话的交互委派快照。"""
+
+    _require_interactive_owner(broker, delegation_id, parent_session_id)
+    return {"success": True, "data": broker.status(delegation_id), "error": None}
+
+
+@router.post(
+    "/internal/delegations/{delegation_id}/answers",
+    include_in_schema=False,
+)
+async def answer_interactive_delegation(
+    delegation_id: str,
+    body: AnswerInteractiveDelegationRequest,
+    broker: InteractiveBroker = Depends(get_interactive_broker),
+) -> dict[str, Any]:
+    """把答案写回属于指定父会话的 Claude Code child。"""
+
+    _require_interactive_owner(broker, delegation_id, body.parent_session_id)
+    try:
+        data = await broker.respond(delegation_id, body.answers)
+    except InteractiveDelegationError as exc:
+        raise _interactive_error(exc) from exc
+    return {"success": True, "data": data, "error": None}
+
+
+@router.delete(
+    "/internal/delegations/{delegation_id}",
+    include_in_schema=False,
+)
+async def close_interactive_delegation(
+    delegation_id: str,
+    request: Request,
+    parent_session_id: str = Query(..., min_length=1),
+    broker: InteractiveBroker = Depends(get_interactive_broker),
+) -> dict[str, Any]:
+    """收敛属于指定父会话的 child，并删除应用级委派句柄。"""
+
+    _require_interactive_owner(broker, delegation_id, parent_session_id)
+    try:
+        data = await broker.close(delegation_id)
+    except InteractiveDelegationError as exc:
+        raise _interactive_error(exc) from exc
+    wakeup = getattr(request.app.state, "agent_delegation_wakeup", None)
+    if wakeup is not None:
+        await wakeup.forget_delegation(delegation_id)
+    return {"success": True, "data": data, "error": None}
+
+
 @router.get("/sessions/{session_id}/files", response_class=StreamingResponse)
 def get_session_file(
     session_id: str,
@@ -508,6 +737,7 @@ async def generate_session_title(
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """移除指定会话，使 Trowel 不再显示或管理它。
@@ -524,6 +754,15 @@ async def delete_session(
         尚未关闭的资源数量、类型和去敏错误；closed 字段保留旧调用方兼容。
     """
 
+    wakeup = getattr(request.app.state, "agent_delegation_wakeup", None)
+    if wakeup is not None:
+        await wakeup.close_parent(session_id)
+    broker = getattr(request.app.state, "agent_delegation_broker", None)
+    if broker is not None:
+        try:
+            await broker.close_parent(session_id)
+        except InteractiveDelegationError as exc:
+            raise _interactive_error(exc) from exc
     result = await hub.close_result(session_id)
     return {
         "success": True,
@@ -650,7 +889,9 @@ async def set_codex_goal(
     """
 
     if not body.model_fields_set:
-        raise HTTPException(status_code=422, detail="Goal update requires at least one field")
+        raise HTTPException(
+            status_code=422, detail="Goal update requires at least one field"
+        )
     goal = await _await_hub(
         hub.set_codex_goal,
         session_id,
@@ -783,43 +1024,55 @@ async def start_codex_review(
 
 
 @router.get("/sessions/{session_id}/events")
-def stream_codex_events(
+def stream_agent_events(
     session_id: str,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
-    """持续向客户端发送指定 Codex 会话的实时事件。
+    """持续向客户端发送指定 Agent 会话的实时事件。
 
-    接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、
-    工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的
-    事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前
-    正在执行的任务。
+    接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。Claude Code
+    消息请求、Agent Host 内部续轮和 Codex 原生 reader 都进入同一订阅；一轮处理结束
+    后连接仍保持，可继续接收后续轮次。多个客户端会各自收到相同事件，客户端断开不
+    会中断当前任务。
 
     此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始
     发送后再发生的会话错误，会作为最后一条 error 事件返回。
 
     Args:
-        session_id: 要接收实时事件的 Codex 会话 ID。
-        hub: 负责订阅 Codex 事件的 Session Hub。
+        session_id: 要接收实时事件的 Trowel 会话 ID。
+        request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。
+        hub: 负责订阅双 runtime 统一事件的 Session Hub。
 
     Returns:
         持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。
 
     Raises:
-        HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时
-            返回 422；Codex 当前不可用时返回 503。
+        HTTPException: 建立事件流前找不到会话或实时 runtime 时返回 404。
     """
 
     # 在返回 200 前完成 runtime/归属检查。
-    _call_hub(hub.require_codex_session, session_id)
+    _call_hub(hub.require_event_session, session_id)
+    observation = _observe_sse(request, session_id, reconnect_eligible=True)
 
     async def gen():
         """把订阅到的会话事件逐个编码为 SSE 数据帧，并在发生会话错误时用最后一帧报告错误。"""
 
+        stream_error = False
         try:
-            async for event in hub.subscribe_codex_events(session_id):
+            async for event in hub.subscribe_agent_events(session_id):
+                observation.first_event()
                 yield _sse(event)
+        except asyncio.CancelledError:
+            stream_error = True
+            observation.disconnect()
+            raise
         except SessionHubError as exc:
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, exc))
+        finally:
+            observation.close(error=stream_error)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -864,6 +1117,7 @@ async def start_codex_turn(
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: str,
+    request: Request,
     body: SendMessageBody,
     hub: SessionHub = Depends(get_hub),
 ) -> StreamingResponse:
@@ -871,18 +1125,41 @@ async def send_message(
 
     未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有
     明确结束信号。
+
+    Args:
+        session_id: 要发送消息的 Trowel 会话 ID。
+        request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。
+        body: 用户发送的非空消息正文。
+        hub: 负责启动轮次并产出共享事件的 Session Hub。
+
+    Returns:
+        持续发送当前轮次事件并带明确终态的 SSE 响应。
     """
+
+    observation = _observe_sse(request, session_id, reconnect_eligible=False)
 
     async def gen():
         """把共享事件和运行错误编码为同一个 SSE 响应流。"""
 
+        stream_error = False
         try:
             async for event in hub.stream(session_id, body.text):
+                observation.first_event()
                 yield _sse(event)
+        except asyncio.CancelledError:
+            stream_error = True
+            observation.disconnect()
+            raise
         except SessionHubError as exc:
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, str(exc)))
         except Exception as exc:  # noqa: BLE001 - 转为终止 error frame
+            stream_error = True
+            observation.first_event()
             yield _sse(hub.error_envelope(session_id, str(exc)))
+        finally:
+            observation.close(error=stream_error)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

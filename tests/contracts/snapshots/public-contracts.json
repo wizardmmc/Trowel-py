@@ -180,6 +180,12 @@
       },
       {
         "type": "index",
+        "name": "idx_session_review_problems_closed",
+        "table": "session_review_problems",
+        "sql": "CREATE INDEX idx_session_review_problems_closed ON session_review_problems(closed_at_epoch_us DESC, trowel_session_id DESC)"
+      },
+      {
+        "type": "index",
         "name": "idx_session_review_requests_order",
         "table": "session_review_requests",
         "sql": "CREATE INDEX idx_session_review_requests_order ON session_review_requests(requested_at, trowel_session_id)"
@@ -206,13 +212,19 @@
         "type": "table",
         "name": "session_bindings",
         "table": "session_bindings",
-        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, start_offset INTEGER )"
+        "sql": "CREATE TABLE session_bindings ( trowel_session_id TEXT PRIMARY KEY, cc_session_id TEXT NOT NULL, session_kind TEXT NOT NULL, workdir TEXT NOT NULL, bound_at TEXT NOT NULL, start_offset INTEGER, status TEXT NOT NULL DEFAULT 'running', completed_at TEXT )"
+      },
+      {
+        "type": "table",
+        "name": "session_review_problems",
+        "table": "session_review_problems",
+        "sql": "CREATE TABLE session_review_problems ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, closed_at TEXT NOT NULL, closed_at_epoch_us INTEGER NOT NULL, problem_text TEXT, reviewed_at TEXT NOT NULL, pipeline_version INTEGER NOT NULL, run_id TEXT NOT NULL, generator_runtime TEXT NOT NULL, generator_model TEXT NOT NULL, generator_effort TEXT NOT NULL, source_quality TEXT NOT NULL )"
       },
       {
         "type": "table",
         "name": "session_review_requests",
         "table": "session_review_requests",
-        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, not_before TEXT NOT NULL, native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER )"
+        "sql": "CREATE TABLE session_review_requests ( trowel_session_id TEXT PRIMARY KEY, runtime TEXT NOT NULL, requested_at TEXT NOT NULL, not_before TEXT NOT NULL, closed_at TEXT NOT NULL DEFAULT '', native_session_id TEXT NOT NULL DEFAULT '', source_start_offset INTEGER, source_end_offset INTEGER, problem_recorded_at TEXT )"
       },
       {
         "type": "table",
@@ -287,6 +299,116 @@
         "name": "task_create_keys",
         "table": "task_create_keys",
         "sql": "CREATE TABLE task_create_keys ( idempotency_key TEXT PRIMARY KEY NOT NULL CHECK (length(trim(idempotency_key)) > 0), task_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      }
+    ],
+    "telemetry": [
+      {
+        "type": "index",
+        "name": "raw_metrics_name_idx",
+        "table": "raw_metrics",
+        "sql": "CREATE INDEX raw_metrics_name_idx ON raw_metrics(name, observed_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_metrics_observed_idx",
+        "table": "raw_metrics",
+        "sql": "CREATE INDEX raw_metrics_observed_idx ON raw_metrics(observed_at_ns DESC)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_aggregation_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_aggregation_idx ON raw_spans( hour_start_ns, component, operation, status, runtime, model, duration_bucket, duration_ms )"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_operation_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_operation_idx ON raw_spans(operation, status, started_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_session_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_session_idx ON raw_spans(session_ref, started_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_started_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_started_idx ON raw_spans(started_at_ns DESC)"
+      },
+      {
+        "type": "index",
+        "name": "raw_spans_trace_idx",
+        "table": "raw_spans",
+        "sql": "CREATE INDEX raw_spans_trace_idx ON raw_spans(trace_id, started_at_ns)"
+      },
+      {
+        "type": "index",
+        "name": "span_links_target_trace_idx",
+        "table": "span_links",
+        "sql": "CREATE INDEX span_links_target_trace_idx ON span_links(linked_trace_id, linked_span_id)"
+      },
+      {
+        "type": "table",
+        "name": "_migrations",
+        "table": "_migrations",
+        "sql": "CREATE TABLE _migrations( name TEXT PRIMARY KEY )"
+      },
+      {
+        "type": "table",
+        "name": "daily_metric_stats",
+        "table": "daily_metric_stats",
+        "sql": "CREATE TABLE daily_metric_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, value_sum REAL NOT NULL, value_min REAL NOT NULL, value_max REAL NOT NULL, PRIMARY KEY( bucket_start_ns, component, name, kind, unit, operation, status, runtime, model ) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "daily_span_stats",
+        "table": "daily_span_stats",
+        "sql": "CREATE TABLE daily_span_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, duration_sum_ms REAL NOT NULL, duration_min_ms REAL NOT NULL, duration_max_ms REAL NOT NULL, duration_b00 INTEGER NOT NULL, duration_b01 INTEGER NOT NULL, duration_b02 INTEGER NOT NULL, duration_b03 INTEGER NOT NULL, duration_b04 INTEGER NOT NULL, duration_b05 INTEGER NOT NULL, duration_b06 INTEGER NOT NULL, duration_b07 INTEGER NOT NULL, duration_b08 INTEGER NOT NULL, duration_b09 INTEGER NOT NULL, duration_b10 INTEGER NOT NULL, duration_b11 INTEGER NOT NULL, duration_b12 INTEGER NOT NULL, duration_b13 INTEGER NOT NULL, duration_b14 INTEGER NOT NULL, PRIMARY KEY(bucket_start_ns, component, operation, status, runtime, model) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "hourly_metric_stats",
+        "table": "hourly_metric_stats",
+        "sql": "CREATE TABLE hourly_metric_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL, value_sum REAL NOT NULL, value_min REAL NOT NULL, value_max REAL NOT NULL, PRIMARY KEY( bucket_start_ns, component, name, kind, unit, operation, status, runtime, model ) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "hourly_span_stats",
+        "table": "hourly_span_stats",
+        "sql": "CREATE TABLE hourly_span_stats ( bucket_start_ns INTEGER NOT NULL, component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, sample_count INTEGER NOT NULL CHECK(sample_count BETWEEN 0 AND 1048575), duration_sum_ms REAL NOT NULL, duration_min_ms REAL NOT NULL, duration_max_ms REAL NOT NULL, histogram_p0 INTEGER NOT NULL CHECK(histogram_p0 >= 0), histogram_p1 INTEGER NOT NULL CHECK(histogram_p1 >= 0), histogram_p2 INTEGER NOT NULL CHECK(histogram_p2 >= 0), histogram_p3 INTEGER NOT NULL CHECK(histogram_p3 >= 0), histogram_p4 INTEGER NOT NULL CHECK(histogram_p4 >= 0), PRIMARY KEY(bucket_start_ns, component, operation, status, runtime, model) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "raw_metrics",
+        "table": "raw_metrics",
+        "sql": "CREATE TABLE raw_metrics ( metric_key BLOB PRIMARY KEY NOT NULL CHECK(length(metric_key) = 16), observed_at_ns INTEGER NOT NULL, component TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, unit TEXT NOT NULL, value REAL NOT NULL CHECK(value >= 0), status TEXT NOT NULL, runtime TEXT, model TEXT, operation TEXT, attributes_json TEXT NOT NULL ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "raw_spans",
+        "table": "raw_spans",
+        "sql": "CREATE TABLE raw_spans ( trace_id BLOB NOT NULL CHECK(length(trace_id) = 16), span_id BLOB NOT NULL CHECK(length(span_id) = 8), parent_span_id BLOB CHECK(parent_span_id IS NULL OR length(parent_span_id) = 8), started_at_ns INTEGER NOT NULL, hour_start_ns INTEGER NOT NULL, ended_at_ns INTEGER NOT NULL, duration_ms REAL NOT NULL CHECK(duration_ms >= 0), duration_bucket INTEGER NOT NULL CHECK(duration_bucket BETWEEN 0 AND 14), component TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, session_ref BLOB CHECK(session_ref IS NULL OR length(session_ref) = 16), call_ref BLOB CHECK(call_ref IS NULL OR length(call_ref) = 16), attributes_json TEXT NOT NULL, PRIMARY KEY(span_id) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "span_links",
+        "table": "span_links",
+        "sql": "CREATE TABLE span_links ( span_id BLOB NOT NULL, link_index INTEGER NOT NULL CHECK(link_index >= 0), linked_trace_id BLOB NOT NULL CHECK(length(linked_trace_id) = 16), linked_span_id BLOB CHECK(linked_span_id IS NULL OR length(linked_span_id) = 8), PRIMARY KEY(span_id, link_index) ) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "telemetry_batches",
+        "table": "telemetry_batches",
+        "sql": "CREATE TABLE telemetry_batches ( batch_id TEXT PRIMARY KEY NOT NULL, fingerprint BLOB NOT NULL CHECK(length(fingerprint) = 32), schema_version INTEGER NOT NULL, source_component TEXT NOT NULL, collected_at_ns INTEGER NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('normal', 'backfill')), accepted_count INTEGER NOT NULL CHECK(accepted_count >= 0), rejected_count INTEGER NOT NULL CHECK(rejected_count >= 0), created_at_ns INTEGER NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "telemetry_watermarks",
+        "table": "telemetry_watermarks",
+        "sql": "CREATE TABLE telemetry_watermarks ( stage TEXT PRIMARY KEY NOT NULL CHECK(stage IN ('raw', 'hour', 'day')), through_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL ) WITHOUT ROWID"
       }
     ]
   },
@@ -3065,9 +3187,9 @@
       },
       "/api/agent/sessions/{session_id}/events": {
         "get": {
-          "summary": "Stream Codex Events",
-          "description": "持续向客户端发送指定 Codex 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、\n工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的\n事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前\n正在执行的任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Codex 会话 ID。\n    hub: 负责订阅 Codex 事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时\n        返回 422；Codex 当前不可用时返回 503。",
-          "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
+          "summary": "Stream Agent Events",
+          "description": "持续向客户端发送指定 Agent 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。Claude Code\n消息请求、Agent Host 内部续轮和 Codex 原生 reader 都进入同一订阅；一轮处理结束\n后连接仍保持，可继续接收后续轮次。多个客户端会各自收到相同事件，客户端断开不\n会中断当前任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Trowel 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    hub: 负责订阅双 runtime 统一事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话或实时 runtime 时返回 404。",
+          "operationId": "stream_agent_events_api_agent_sessions__session_id__events_get",
           "parameters": [
             {
               "name": "session_id",
@@ -3156,7 +3278,7 @@
       "/api/agent/sessions/{session_id}/messages": {
         "post": {
           "summary": "Send Message",
-          "description": "发送一条消息并以 SSE 返回共享事件。\n\n未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有\n明确结束信号。",
+          "description": "发送一条消息并以 SSE 返回共享事件。\n\n未知会话、host 故障和 turn 启动失败都会转换为终止 ``error`` frame，保证流有\n明确结束信号。\n\nArgs:\n    session_id: 要发送消息的 Trowel 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    body: 用户发送的非空消息正文。\n    hub: 负责启动轮次并产出共享事件的 Session Hub。\n\nReturns:\n    持续发送当前轮次事件并带明确终态的 SSE 响应。",
           "operationId": "send_message_api_agent_sessions__session_id__messages_post",
           "parameters": [
             {
@@ -3357,6 +3479,654 @@
           }
         }
       },
+      "/api/telemetry/batches": {
+        "post": {
+          "tags": [
+            "telemetry"
+          ],
+          "summary": "Submit Telemetry Batch",
+          "description": "校验并把遥测批次放入不等待 SQLite 的有界队列。\n\nArgs:\n    body: 来源组件提交的版本化 span/metric 批次。\n    request: 用于读取当前应用持有的 collector。\n\nReturns:\n    202 接受结果；collector 不可用时返回统一 503 envelope。",
+          "operationId": "submit_telemetry_batch_api_telemetry_batches_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryBatchRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "202": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_TelemetrySubmitData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/overview": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Overview Statistics",
+          "description": "并行读取五个公开 read model，并返回可局部降级的总览。\n\nArgs:\n    request: 用于读取应用已装配的 Statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功总览；日期参数无效时返回统一错误 envelope。",
+          "operationId": "get_overview_statistics_api_statistics_overview_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_OverviewStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/session-problems": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Session Problem List",
+          "description": "按会话关闭时间倒序返回一页非空复盘问题。\n\n完整分析但没有问题的会话只进入时间窗计数，不进入列表。响应不会公开生成\nAgent 的模型、运行 ID、原生会话 ID 或本机路径。",
+          "operationId": "get_session_problem_list_api_statistics_session_problems_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "50",
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_SessionProblemListData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/calls": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Call List",
+          "description": "筛选原始受控 span，并按稳定游标返回最近调用。\n\nArgs:\n    request: 用于读取应用持有的调用详情 reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n    component: 可选受控组件筛选。\n    operation: 可选受控操作名筛选。\n    runtime: 可选 Claude Code 或 Codex 筛选。\n    status: 可选 ok、error 或 unset 筛选。\n    minimum_duration_value: 字符串形式的非负毫秒耗时下限。\n    limit_value: 字符串形式的 1 至 200 页面大小。\n    cursor: 上一页返回的稳定游标。\n\nReturns:\n    成功调用页；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_call_list_api_statistics_calls_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "component",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Component"
+              }
+            },
+            {
+              "name": "operation",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Operation"
+              }
+            },
+            {
+              "name": "runtime",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Runtime"
+              }
+            },
+            {
+              "name": "status",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Status"
+              }
+            },
+            {
+              "name": "minimum_duration_ms",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "0",
+                "title": "Minimum Duration Ms"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "50",
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_CallListData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/calls/{trace_id}": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Call Detail",
+          "description": "按去身份化 trace ID 返回有限跨层图和明确缺口。\n\nArgs:\n    trace_id: 调用列表返回的 16 字节十六进制随机身份。\n    request: 用于读取应用持有的调用详情 reader。\n\nReturns:\n    成功详情；参数无效、找不到或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_call_detail_api_statistics_calls__trace_id__get",
+          "parameters": [
+            {
+              "name": "trace_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Trace Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_CallDetailData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/agent": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Agent Statistics",
+          "description": "读取双 runtime 用户 session，并返回 Agent 页 read model。\n\nArgs:\n    request: 用于读取应用持有的 Agent statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_agent_statistics_api_statistics_agent_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_AgentStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/memory": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Memory Statistics",
+          "description": "读取 Memory 使用事实和资产，并返回不含正文的 read model。\n\nArgs:\n    request: 用于读取应用持有的 Memory statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_memory_statistics_api_statistics_memory_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_MemoryStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/runtime": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Runtime Statistics",
+          "description": "读取桌面生命周期、连接、SQLite 和资源 owner 统计。\n\nArgs:\n    request: 用于读取应用持有的 runtime reader 和 collector。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功 read model；参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_runtime_statistics_api_statistics_runtime_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_RuntimeStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/statistics/telemetry": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Telemetry Statistics",
+          "description": "读取聚合遥测，并统一返回时间窗、样本质量和来源新鲜度。\n\nArgs:\n    request: 用于读取应用持有的 telemetry reader 和 collector。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n    resolution_value: hour 或 day。\n\nReturns:\n    成功 read model；查询参数或来源不可用时返回统一错误 envelope。",
+          "operationId": "get_telemetry_statistics_api_statistics_telemetry_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            },
+            {
+              "name": "resolution",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "hour",
+                "title": "Resolution"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_TelemetryStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/{full_path}": {
         "get": {
           "summary": " Spa Fallback",
@@ -3400,6 +4170,492 @@
     },
     "components": {
       "schemas": {
+        "AgentActivityData": {
+          "properties": {
+            "session_sum_ms": {
+              "type": "integer",
+              "title": "Session Sum Ms"
+            },
+            "concurrent_union_ms": {
+              "type": "integer",
+              "title": "Concurrent Union Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "session_sum_ms",
+            "concurrent_union_ms",
+            "quality"
+          ],
+          "title": "AgentActivityData",
+          "description": "公开 session 活动时长之和与跨 session 并集。\n\nAttributes:\n    session_sum_ms: 各 session 内合并活动区间后的毫秒数之和。\n    concurrent_union_ms: 所有 session 区间合并后的毫秒数，不重复计算并发。\n    quality: 所有活动区间中最低的终点质量。"
+        },
+        "AgentLatencyDistributionData": {
+          "properties": {
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "p50_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P50 Ms"
+            },
+            "p95_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P95 Ms"
+            },
+            "p99_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P99 Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "sample_size",
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "quality"
+          ],
+          "title": "AgentLatencyDistributionData",
+          "description": "公开首次可见响应分布和样本门槛结果。\n\nAttributes:\n    sample_size: 用户提交到首段可见文字的有效样本数。\n    p50_ms: 至少 5 个样本时的中位数，否则为 None。\n    p95_ms: 至少 20 个样本时的 p95，否则为 None。\n    p99_ms: 至少 100 个样本时的 p99，否则为 None。\n    quality: 有 p50 时继承来源质量，否则为 unavailable。"
+        },
+        "AgentModelSummaryData": {
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "cache_input_ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Input Ratio"
+            },
+            "activity_ms": {
+              "type": "integer",
+              "title": "Activity Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "runtime",
+            "model",
+            "session_count",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "cache_input_ratio",
+            "activity_ms",
+            "quality"
+          ],
+          "title": "AgentModelSummaryData",
+          "description": "公开一个 runtime/model 分组的 session 使用情况。\n\nAttributes:\n    runtime: claude_code 或 codex。\n    model: runtime 实际回报的模型；未知时为 None。\n    session_count: 查询窗内使用过该模型的 Trowel session 数。\n    statuses: 这些 session 的状态分组。\n    tokens: 只归属于该模型的 token 增量。\n    first_visible_response: 首段文字由该模型产生的延迟分布。\n    cache_input_ratio: 缓存读取在全部输入中的比例；字段缺失或输入为 0 时为 None。\n    activity_ms: 使用过该模型的 session 活动时长之和。\n    quality: 分组来源的最低质量。"
+        },
+        "AgentSessionData": {
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "title": "Session Id"
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "models": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Models"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "activity_ms": {
+              "type": "integer",
+              "title": "Activity Ms"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "running",
+                "interrupted",
+                "failed",
+                "unknown"
+              ],
+              "title": "Status"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "session_id",
+            "runtime",
+            "models",
+            "started_at",
+            "activity_ms",
+            "first_visible_response",
+            "tokens",
+            "status",
+            "quality"
+          ],
+          "title": "AgentSessionData",
+          "description": "公开最近一个 Trowel session 的统计行。\n\nAttributes:\n    session_id: Trowel 分配的会话 ID，不是原生 runtime ID。\n    runtime: claude_code 或 codex。\n    models: 当前时间窗内 runtime 实际回报的模型集合。\n    started_at: 当前 session 首个可观察活动时间。\n    activity_ms: 当前 session 内合并活动区间后的毫秒数。\n    first_visible_response: 当前 session 内的首响分布。\n    tokens: 当前 session 在查询窗内的 token 增量。\n    status: 查询窗结束时可确认的状态。\n    quality: 当前 session 来源的最低质量。"
+        },
+        "AgentStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "activity": {
+              "$ref": "#/components/schemas/AgentActivityData"
+            },
+            "cache_input_ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Input Ratio"
+            },
+            "model_summaries": {
+              "items": {
+                "$ref": "#/components/schemas/AgentModelSummaryData"
+              },
+              "type": "array",
+              "title": "Model Summaries"
+            },
+            "sessions": {
+              "items": {
+                "$ref": "#/components/schemas/AgentSessionData"
+              },
+              "type": "array",
+              "title": "Sessions"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "activity",
+            "cache_input_ratio",
+            "model_summaries",
+            "sessions"
+          ],
+          "title": "AgentStatisticsData",
+          "description": "公开 Agent 页所需的时间窗、总览、模型和 session 明细。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内 Trowel user session 数。\n    quality: 全部 session 来源的最低质量。\n    freshness: Agent 事实源最后更新时间。\n    statuses: session 状态分组。\n    tokens: 查询窗内全部 token 增量。\n    first_visible_response: 查询窗内全部首次可见响应分布。\n    activity: 活动时长之和与跨 session 并集。\n    cache_input_ratio: 按各 runtime 原生输入语义计算后汇总的缓存读取占比。\n    model_summaries: 按 runtime 和真实模型分组的结果。\n    sessions: 按开始时间倒序排列的最近 session，最多 100 条。"
+        },
+        "AgentStatusCountsData": {
+          "properties": {
+            "completed": {
+              "type": "integer",
+              "title": "Completed"
+            },
+            "running": {
+              "type": "integer",
+              "title": "Running"
+            },
+            "interrupted": {
+              "type": "integer",
+              "title": "Interrupted"
+            },
+            "failed": {
+              "type": "integer",
+              "title": "Failed"
+            },
+            "unknown": {
+              "type": "integer",
+              "title": "Unknown"
+            }
+          },
+          "type": "object",
+          "required": [
+            "completed",
+            "running",
+            "interrupted",
+            "failed",
+            "unknown"
+          ],
+          "title": "AgentStatusCountsData",
+          "description": "公开 Trowel sessions 的确定性状态数量。\n\nAttributes:\n    completed: 最后终态为正常完成的 session 数。\n    running: 查询窗结束时仍在运行的 session 数。\n    interrupted: 最后终态为用户中断的 session 数。\n    failed: 最后终态为执行失败的 session 数。\n    unknown: 旧记录或来源不足而无法确认终态的 session 数。"
+        },
+        "AgentTokenUsageData": {
+          "properties": {
+            "input": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Input"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Output"
+            },
+            "cache_read": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Read"
+            },
+            "cache_creation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Creation"
+            },
+            "reasoning": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reasoning"
+            },
+            "unknown": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Unknown"
+            },
+            "total": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Total"
+            },
+            "total_includes_cache_input": {
+              "type": "boolean",
+              "title": "Total Includes Cache Input",
+              "default": true
+            },
+            "known_session_count": {
+              "type": "integer",
+              "title": "Known Session Count"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "cache_read",
+            "cache_creation",
+            "reasoning",
+            "unknown",
+            "total",
+            "known_session_count",
+            "session_count",
+            "quality"
+          ],
+          "title": "AgentTokenUsageData",
+          "description": "公开分类 token 增量及其质量。\n\nAttributes:\n    input: 输入 token；来源未提供时为 None。\n    output: 输出 token；来源未提供时为 None。\n    cache_read: 缓存输入 token；来源未提供时为 None。\n    cache_creation: 缓存创建 token；来源未提供时为 None。\n    reasoning: 推理输出 token；来源未提供时为 None。\n    unknown: 无法归类的原生 token；无法计算时为 None。\n    total: 当前时间窗总 token；无法可靠计算时为 None。\n    total_includes_cache_input: total 是否包含 cache_read。\n    known_session_count: 对 total 有可用水位的 session 数。\n    session_count: 当前 token 分组包含的全部 session 数。\n    quality: token 来源的最低质量。"
+        },
         "AnswerAgentRequest": {
           "properties": {
             "decision": {
@@ -3433,6 +4689,330 @@
           "type": "object",
           "title": "AnswerElicitRequest",
           "description": "提交对待处理 `AskUserQuestion` 的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入\n        `control_response.updatedInput.answers`。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
+        },
+        "ApiEnvelope_AgentStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[AgentStatisticsData]"
+        },
+        "ApiEnvelope_CallDetailData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallDetailData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[CallDetailData]"
+        },
+        "ApiEnvelope_CallListData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallListData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[CallListData]"
+        },
+        "ApiEnvelope_MemoryStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MemoryStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[MemoryStatisticsData]"
+        },
+        "ApiEnvelope_OverviewStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OverviewStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[OverviewStatisticsData]"
+        },
+        "ApiEnvelope_RuntimeStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RuntimeStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[RuntimeStatisticsData]"
+        },
+        "ApiEnvelope_SessionProblemListData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SessionProblemListData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[SessionProblemListData]"
+        },
+        "ApiEnvelope_TelemetryStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TelemetryStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[TelemetryStatisticsData]"
+        },
+        "ApiEnvelope_TelemetrySubmitData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TelemetrySubmitData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[TelemetrySubmitData]"
         },
         "BaseBranchReviewTarget": {
           "properties": {
@@ -3470,6 +5050,424 @@
           ],
           "title": "BuyItemRequest",
           "description": "指定要购买的商品目录 ID。"
+        },
+        "CallDetailData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "ended_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Ended At"
+            },
+            "root_operation": {
+              "type": "string",
+              "title": "Root Operation"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "spans": {
+              "items": {
+                "$ref": "#/components/schemas/CallSpanData"
+              },
+              "type": "array",
+              "title": "Spans"
+            },
+            "unavailable": {
+              "items": {
+                "$ref": "#/components/schemas/UnavailableIntervalData"
+              },
+              "type": "array",
+              "title": "Unavailable"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "trace_id",
+            "started_at",
+            "ended_at",
+            "root_operation",
+            "status",
+            "quality",
+            "sample_size",
+            "freshness",
+            "spans",
+            "unavailable"
+          ],
+          "title": "CallDetailData",
+          "description": "公开一次调用及 link 可达 span 的有限详情。\n\nAttributes:\n    generated_at: 本次详情生成时间。\n    trace_id: 用户选择的随机 trace 身份。\n    started_at: 选中 trace 的最早开始时刻。\n    ended_at: 选中 trace 的最晚结束时刻。\n    root_operation: 选中 trace 最早根 span 的受控操作名。\n    status: 根 span 终态；子 span 和关联 trace 保留各自终态。\n    quality: 图完整时 reliable；黑盒、坏图或截断时 partial。\n    sample_size: 本次有限图中的 span 数。\n    freshness: telemetry 原始 span 的新鲜度。\n    spans: 已按开始时间排序并消除父环的 span。\n    unavailable: 黑盒、断父、坏 link 或截断缺口。"
+        },
+        "CallListData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/CallListItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next Cursor"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "items",
+            "next_cursor"
+          ],
+          "title": "CallListData",
+          "description": "返回一页调用及其共同时间窗和新鲜度。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前页实际返回的调用数。\n    quality: 当前页调用的合并质量。\n    freshness: telemetry 原始 span 的当前新鲜度。\n    items: 按开始时间与稳定 ID 倒序排列的调用。\n    next_cursor: 下一页游标；到末尾时为 None。"
+        },
+        "CallListItemData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "type": "string",
+              "title": "Span Id"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "duration_ms": {
+              "type": "number",
+              "title": "Duration Ms"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "started_at",
+            "duration_ms",
+            "status",
+            "component",
+            "operation",
+            "runtime",
+            "quality"
+          ],
+          "title": "CallListItemData",
+          "description": "表示最近调用表的一行。\n\nAttributes:\n    trace_id: 用于下钻的随机 trace 身份。\n    span_id: 当前列表行对应的随机 span 身份。\n    started_at: 当前操作的 UTC 开始时刻。\n    duration_ms: 当前操作耗时。\n    status: ok、error 或 unset。\n    component: 实际记录该操作的受控组件。\n    operation: 不含动态值的受控操作名。\n    runtime: 可选 Claude Code 或 Codex 分类。\n    quality: 当前行是否包含黑盒或损坏缺口。"
+        },
+        "CallSpanData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "type": "string",
+              "title": "Span Id"
+            },
+            "parent_span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent Span Id"
+            },
+            "links": {
+              "items": {
+                "$ref": "#/components/schemas/CallTraceLinkData"
+              },
+              "type": "array",
+              "title": "Links"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Started At"
+            },
+            "ended_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Ended At"
+            },
+            "duration_ms": {
+              "type": "number",
+              "title": "Duration Ms"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error",
+                "unset"
+              ],
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "attributes": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "type": "object",
+              "title": "Attributes"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "parent_span_id",
+            "links",
+            "component",
+            "operation",
+            "started_at",
+            "ended_at",
+            "duration_ms",
+            "status",
+            "runtime",
+            "attributes"
+          ],
+          "title": "CallSpanData",
+          "description": "公开 trace 树中一个不含正文和本机身份的 span。\n\nAttributes:\n    trace_id: 当前 span 所在 trace 的随机身份。\n    span_id: 当前 span 的随机身份。\n    parent_span_id: 已校验且不会形成环的真实父 span；根节点为 None。\n    links: 已去重的非父子关联。\n    component: 实际执行操作的受控组件。\n    operation: 不含动态值的受控操作名。\n    started_at: 当前操作的 UTC 开始时刻。\n    ended_at: 当前操作的 UTC 结束时刻。\n    duration_ms: 当前操作耗时。\n    status: ok、error 或 unset。\n    runtime: 可选 Claude Code 或 Codex 分类。\n    attributes: allowlist 中的有限数值字段；布尔和文本不公开。"
+        },
+        "CallTraceLinkData": {
+          "properties": {
+            "trace_id": {
+              "type": "string",
+              "title": "Trace Id"
+            },
+            "span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Span Id"
+            },
+            "available": {
+              "type": "boolean",
+              "title": "Available"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trace_id",
+            "span_id",
+            "available"
+          ],
+          "title": "CallTraceLinkData",
+          "description": "公开一条父子关系之外的 span link。\n\nAttributes:\n    trace_id: 关联目标的随机 trace 身份。\n    span_id: 已知时使用的目标 span 身份。\n    available: 当前有界详情是否读到了关联目标。"
+        },
+        "CollectorStatistics": {
+          "properties": {
+            "accepted": {
+              "type": "integer",
+              "title": "Accepted"
+            },
+            "rejected": {
+              "type": "integer",
+              "title": "Rejected"
+            },
+            "dropped": {
+              "type": "integer",
+              "title": "Dropped"
+            },
+            "queued_records": {
+              "type": "integer",
+              "title": "Queued Records"
+            },
+            "inflight_records": {
+              "type": "integer",
+              "title": "Inflight Records"
+            },
+            "running": {
+              "type": "boolean",
+              "title": "Running"
+            },
+            "last_error_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Error Category"
+            }
+          },
+          "type": "object",
+          "required": [
+            "accepted",
+            "rejected",
+            "dropped",
+            "queued_records",
+            "inflight_records",
+            "running",
+            "last_error_category"
+          ],
+          "title": "CollectorStatistics",
+          "description": "公开 collector 当前进程的有界状态和累计计数。\n\nAttributes:\n    accepted: 已进入队列的记录总数。\n    rejected: 白名单或批次冲突拒绝总数。\n    dropped: 容量、数据库或关闭失败丢弃总数。\n    queued_records: 仍在内存队列中的记录数。\n    inflight_records: writer 正在处理的记录数。\n    running: writer 线程是否存活。\n    last_error_category: 最近后台失败分类；没有失败时为 None。"
         },
         "CommitReviewTarget": {
           "properties": {
@@ -3790,6 +5788,60 @@
           "title": "CustomReviewTarget",
           "description": "要求 Codex 按给定范围和关注点进行审查。\n\nAttributes:\n    type: 固定为 custom，用于选择这种审查目标。\n    instructions: 描述审查范围和要求的非空文字。"
         },
+        "DatabaseFileStatistics": {
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "sessions.db",
+                "workspaces.db",
+                "telemetry.db"
+              ],
+              "title": "Name"
+            },
+            "owner": {
+              "type": "string",
+              "title": "Owner"
+            },
+            "database_bytes": {
+              "type": "integer",
+              "title": "Database Bytes"
+            },
+            "wal_bytes": {
+              "type": "integer",
+              "title": "Wal Bytes"
+            },
+            "shm_bytes": {
+              "type": "integer",
+              "title": "Shm Bytes"
+            },
+            "total_bytes": {
+              "type": "integer",
+              "title": "Total Bytes"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "name",
+            "owner",
+            "database_bytes",
+            "wal_bytes",
+            "shm_bytes",
+            "total_bytes",
+            "quality"
+          ],
+          "title": "DatabaseFileStatistics",
+          "description": "描述一份业务数据库及 WAL/SHM 的当前体积。\n\nAttributes:\n    name: 只含文件名的受控数据库名称。\n    owner: 负责写入该库的领域模块。\n    database_bytes: 主数据库文件大小。\n    wal_bytes: WAL 文件大小。\n    shm_bytes: SHM 文件大小。\n    total_bytes: 三者当前总大小。\n    quality: 文件路径可解析时为 reliable，否则 unavailable。"
+        },
         "EquipRequest": {
           "properties": {
             "item_id": {
@@ -3898,6 +5950,921 @@
           },
           "type": "object",
           "title": "HTTPValidationError"
+        },
+        "MemoryAssetsData": {
+          "properties": {
+            "as_of": {
+              "type": "string",
+              "title": "As Of"
+            },
+            "active_notes": {
+              "type": "integer",
+              "title": "Active Notes"
+            },
+            "raw_reads": {
+              "type": "integer",
+              "title": "Raw Reads"
+            },
+            "raw_harmful_outcomes": {
+              "type": "integer",
+              "title": "Raw Harmful Outcomes"
+            },
+            "contradicted_or_superseded": {
+              "type": "integer",
+              "title": "Contradicted Or Superseded"
+            },
+            "harmful_high_notes": {
+              "type": "integer",
+              "title": "Harmful High Notes"
+            },
+            "dictionary_status": {
+              "type": "string",
+              "enum": [
+                "consistent",
+                "stale",
+                "missing"
+              ],
+              "title": "Dictionary Status"
+            },
+            "dictionary_updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dictionary Updated At"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "as_of",
+            "active_notes",
+            "raw_reads",
+            "raw_harmful_outcomes",
+            "contradicted_or_superseded",
+            "harmful_high_notes",
+            "dictionary_status",
+            "dictionary_updated_at",
+            "quality"
+          ],
+          "title": "MemoryAssetsData",
+          "description": "公开当前 Memory 资产规模和 Dictionary 状态。\n\nAttributes:\n    as_of: 当前资产快照的本地日期。\n    active_notes: 当前可检索的 active Note 数。\n    raw_reads: 未按用户会话过滤的原始读取记录数。\n    raw_harmful_outcomes: 原始 harmful outcome 记录数。\n    contradicted_or_superseded: 当前矛盾或已被替代的未退休 Note 数。\n    harmful_high_notes: harmful 引用达到退休阈值的未退休 Note 数。\n    dictionary_status: consistent、stale 或 missing。\n    dictionary_updated_at: 最近成功发布或标记 stale 的时间；未知时为 None。\n    quality: Note 与 Dictionary 来源的整体完整度。"
+        },
+        "MemoryAttributionData": {
+          "properties": {
+            "attributed": {
+              "type": "integer",
+              "title": "Attributed"
+            },
+            "unattributed": {
+              "type": "integer",
+              "title": "Unattributed"
+            },
+            "coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "attributed",
+            "unattributed",
+            "coverage",
+            "quality"
+          ],
+          "title": "MemoryAttributionData",
+          "description": "公开访问事件的身份归因覆盖情况。\n\nAttributes:\n    attributed: 已归到用户或内部会话的访问记录数。\n    unattributed: 无法确认会话归属的访问记录数。\n    coverage: 以全部访问记录为分母的归因覆盖率。\n    quality: 访问记录身份与时间的证据完整度。"
+        },
+        "MemoryEffectData": {
+          "properties": {
+            "helpful": {
+              "type": "integer",
+              "title": "Helpful"
+            },
+            "harmful": {
+              "type": "integer",
+              "title": "Harmful"
+            },
+            "unused": {
+              "type": "integer",
+              "title": "Unused"
+            },
+            "unknown": {
+              "type": "integer",
+              "title": "Unknown"
+            },
+            "judged_user_sessions": {
+              "type": "integer",
+              "title": "Judged User Sessions"
+            },
+            "eligible_user_sessions": {
+              "type": "integer",
+              "title": "Eligible User Sessions"
+            },
+            "judgement_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "helpful_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "helpful",
+            "harmful",
+            "unused",
+            "unknown",
+            "judged_user_sessions",
+            "eligible_user_sessions",
+            "judgement_coverage",
+            "helpful_rate",
+            "quality"
+          ],
+          "title": "MemoryEffectData",
+          "description": "公开 Note 与用户会话对的唯一效果结论。\n\nAttributes:\n    helpful: 判定为产生帮助的 Note-session 对数。\n    harmful: 判定为造成误导的 Note-session 对数。\n    unused: 明确读到但未用于决策的 Note-session 对数。\n    unknown: 无法判断效果的 Note-session 对数，不进入效果分母。\n    judged_user_sessions: 当前时间窗内已有判效的用户会话数。\n    eligible_user_sessions: 有访问或判效证据的用户会话数。\n    judgement_coverage: 已判效用户会话占可判会话的比例。\n    helpful_rate: helpful 占 helpful、harmful、unused 总和的比例。\n    quality: 判效证据和来源活动日期的完整度。"
+        },
+        "MemoryRatioData": {
+          "properties": {
+            "numerator": {
+              "type": "integer",
+              "title": "Numerator"
+            },
+            "denominator": {
+              "type": "integer",
+              "title": "Denominator"
+            },
+            "ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ratio"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "numerator",
+            "denominator",
+            "ratio",
+            "quality"
+          ],
+          "title": "MemoryRatioData",
+          "description": "公开一个不能与其他指标混用分母的比例。\n\nAttributes:\n    numerator: 当前指标自己的分子。\n    denominator: 当前指标自己的分母；没有样本时为 0。\n    ratio: 分子除以分母；没有分母时为 None。\n    quality: 当前分子、分母和比例的证据完整度。"
+        },
+        "MemoryRecallData": {
+          "properties": {
+            "retrieval_miss": {
+              "type": "integer",
+              "title": "Retrieval Miss"
+            },
+            "awareness_miss": {
+              "type": "integer",
+              "title": "Awareness Miss"
+            },
+            "judged_user_sessions": {
+              "type": "integer",
+              "title": "Judged User Sessions"
+            },
+            "miss_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "retrieval_miss",
+            "awareness_miss",
+            "judged_user_sessions",
+            "miss_rate",
+            "quality"
+          ],
+          "title": "MemoryRecallData",
+          "description": "公开本应使用却未使用的 Memory 召回缺口。\n\nAttributes:\n    retrieval_miss: 检索和 Dictionary 都未召回的条目数。\n    awareness_miss: 已出现在线索中但 Agent 没意识到可用的条目数。\n    judged_user_sessions: recall miss 比例使用的已判效用户会话分母。\n    miss_rate: 两类 miss 合计除以已判效用户会话数的比例。\n    quality: 判效覆盖和来源活动日期的完整度。"
+        },
+        "MemoryRetrievalData": {
+          "properties": {
+            "search_calls": {
+              "type": "integer",
+              "title": "Search Calls"
+            },
+            "nonempty_search_calls": {
+              "type": "integer",
+              "title": "Nonempty Search Calls"
+            },
+            "empty_search_calls": {
+              "type": "integer",
+              "title": "Empty Search Calls"
+            },
+            "search_hits": {
+              "type": "integer",
+              "title": "Search Hits"
+            },
+            "reads": {
+              "type": "integer",
+              "title": "Reads"
+            },
+            "read_sessions": {
+              "type": "integer",
+              "title": "Read Sessions"
+            },
+            "read_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "search_calls",
+            "nonempty_search_calls",
+            "empty_search_calls",
+            "search_hits",
+            "reads",
+            "read_sessions",
+            "read_rate",
+            "quality"
+          ],
+          "title": "MemoryRetrievalData",
+          "description": "公开搜索调用、候选命中和实际读取。\n\nAttributes:\n    search_calls: 带查询文本的搜索调用记录数。\n    nonempty_search_calls: 至少产生一个候选命中的搜索调用数。\n    empty_search_calls: 没有候选命中的搜索调用数。\n    search_hits: 搜索返回的 Note 候选记录数，不是调用数。\n    reads: 实际打开 Note 正文的记录数。\n    read_sessions: 至少读取过一条 Note 的用户会话数。\n    read_rate: 以候选命中为分母的读取比例。\n    quality: 搜索与读取来源的证据完整度。"
+        },
+        "MemorySourceData": {
+          "properties": {
+            "updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated At"
+            },
+            "sample_start": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sample Start"
+            },
+            "sample_end": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sample End"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "unknown_time_records": {
+              "type": "integer",
+              "title": "Unknown Time Records"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "updated_at",
+            "sample_start",
+            "sample_end",
+            "sample_size",
+            "unknown_time_records",
+            "quality"
+          ],
+          "title": "MemorySourceData",
+          "description": "公开一个 Memory 事实源的范围和时间完整性。\n\nAttributes:\n    updated_at: 当前来源最后一个可解析事实时间；未知时为 None。\n    sample_start: 本次查询命中样本的最早时间；没有样本时为 None。\n    sample_end: 本次查询命中样本的最晚时间；没有样本时为 None。\n    sample_size: 本次查询读取的来源记录数。\n    unknown_time_records: 因旧格式或损坏而无法归入日期的记录数。\n    quality: 当前来源的时间和内容完整度。"
+        },
+        "MemoryStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "sources": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/MemorySourceData"
+              },
+              "type": "object",
+              "title": "Sources"
+            },
+            "attribution": {
+              "$ref": "#/components/schemas/MemoryAttributionData"
+            },
+            "retrieval": {
+              "$ref": "#/components/schemas/MemoryRetrievalData"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/MemoryEffectData"
+            },
+            "recall": {
+              "$ref": "#/components/schemas/MemoryRecallData"
+            },
+            "assets": {
+              "$ref": "#/components/schemas/MemoryAssetsData"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "sources",
+            "attribution",
+            "retrieval",
+            "effect",
+            "recall",
+            "assets"
+          ],
+          "title": "MemoryStatisticsData",
+          "description": "公开 Memory 页所需的时间窗、四类指标、资产和来源。\n\nAttributes:\n    generated_at: 本次只读快照生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内可解码访问记录数，不混入判效或资产数量。\n    quality: 全部 Memory 来源中的最低质量。\n    freshness: 与其他 Statistics API 共用的来源新鲜度摘要。\n    sources: 每个 Memory 来源的样本范围、数量和质量。\n    attribution: 访问事件归因覆盖。\n    retrieval: 搜索、候选命中和实际读取。\n    effect: Note-session 对的效果分类。\n    recall: retrieval miss 与 awareness miss。\n    assets: 当前 Note、日志和 Dictionary 资产快照。"
+        },
+        "MetricAggregateData": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "name": {
+              "type": "string",
+              "title": "Name"
+            },
+            "kind": {
+              "type": "string",
+              "title": "Kind"
+            },
+            "unit": {
+              "type": "string",
+              "title": "Unit"
+            },
+            "operation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation"
+            },
+            "status": {
+              "type": "string",
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "sample_count": {
+              "type": "integer",
+              "title": "Sample Count"
+            },
+            "value_sum": {
+              "type": "number",
+              "title": "Value Sum"
+            },
+            "value_min": {
+              "type": "number",
+              "title": "Value Min"
+            },
+            "value_max": {
+              "type": "number",
+              "title": "Value Max"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "component",
+            "name",
+            "kind",
+            "unit",
+            "operation",
+            "status",
+            "runtime",
+            "model",
+            "sample_count",
+            "value_sum",
+            "value_min",
+            "value_max"
+          ],
+          "title": "MetricAggregateData",
+          "description": "公开一个小时或日的受控 metric 数值聚合。\n\nAttributes:\n    bucket_start: 当前小时或日期桶的 UTC 起点。\n    component: 受控组件。\n    name: schema v1 指标名。\n    kind: counter、gauge 或 histogram。\n    unit: 次数、字节或毫秒。\n    operation: 可选受控操作名。\n    status: 受控终态。\n    runtime: 可选 runtime 维度。\n    model: 可选模型维度。\n    sample_count: 当前分组样本数。\n    value_sum: 样本值之和。\n    value_min: 最小样本值。\n    value_max: 最大样本值。"
+        },
+        "OverviewAgentData": {
+          "properties": {
+            "user_sessions": {
+              "type": "integer",
+              "title": "User Sessions"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "activity": {
+              "$ref": "#/components/schemas/AgentActivityData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "user_sessions",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "activity",
+            "quality"
+          ],
+          "title": "OverviewAgentData",
+          "description": "公开当前选择时间窗的 Agent 关键事实。\n\nAttributes:\n    user_sessions: 与查询窗相交的 Trowel 用户 session 数。\n    statuses: 用户 session 的确定性终态数量。\n    tokens: 按 runtime 水位归一后的分类 token 增量。\n    first_visible_response: 用户提交到首段可见文字的延迟分布。\n    activity: session 活动时长之和与并发区间并集。\n    quality: Agent 来源在当前时间窗的整体质量。"
+        },
+        "OverviewMemoryData": {
+          "properties": {
+            "search_hits": {
+              "type": "integer",
+              "title": "Search Hits"
+            },
+            "reads": {
+              "type": "integer",
+              "title": "Reads"
+            },
+            "judged_effects": {
+              "type": "integer",
+              "title": "Judged Effects"
+            },
+            "helpful": {
+              "type": "integer",
+              "title": "Helpful"
+            },
+            "helpful_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "judgement_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "recall_miss_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "attribution_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "active_notes": {
+              "type": "integer",
+              "title": "Active Notes"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "search_hits",
+            "reads",
+            "judged_effects",
+            "helpful",
+            "helpful_rate",
+            "judgement_coverage",
+            "recall_miss_rate",
+            "attribution_coverage",
+            "active_notes",
+            "quality"
+          ],
+          "title": "OverviewMemoryData",
+          "description": "公开 Memory 漏斗、效果和资产摘要。\n\nAttributes:\n    search_hits: 搜索返回的 Note 候选数量。\n    reads: 实际打开 Note 正文的次数。\n    judged_effects: helpful、harmful 与 unused 的共同效果分母。\n    helpful: 判定为 helpful 的 Note-session 对数。\n    helpful_rate: helpful 使用自己的效果分母计算的比例。\n    judgement_coverage: 已判定用户 session 占可判 session 的比例。\n    recall_miss_rate: 两类 recall miss 占已判定 session 的比例。\n    attribution_coverage: Memory 访问记录能归到会话的比例。\n    active_notes: 当前可检索的 active Note 数。\n    quality: Memory 来源在当前时间窗的整体质量。"
+        },
+        "OverviewSessionProblemsData": {
+          "properties": {
+            "reviewed_session_count": {
+              "type": "integer",
+              "title": "Reviewed Session Count"
+            },
+            "problem_count": {
+              "type": "integer",
+              "title": "Problem Count"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/SessionProblemItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            }
+          },
+          "type": "object",
+          "required": [
+            "reviewed_session_count",
+            "problem_count",
+            "quality",
+            "freshness",
+            "items"
+          ],
+          "title": "OverviewSessionProblemsData",
+          "description": "公开最近会话问题和整个时间窗的处理数量。\n\nAttributes:\n    reviewed_session_count: 时间窗内已经完成问题分析的会话数。\n    problem_count: 分析后得到非空问题的会话数。\n    quality: 会话问题来源的整体质量。\n    freshness: 最近一条完成记录的处理时刻。\n    items: 按关闭时间从新到旧排列的可复制问题，最多五条。"
+        },
+        "OverviewSourceData": {
+          "properties": {
+            "label": {
+              "type": "string",
+              "title": "Label"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            }
+          },
+          "type": "object",
+          "required": [
+            "label",
+            "sample_size",
+            "quality",
+            "freshness"
+          ],
+          "title": "OverviewSourceData",
+          "description": "公开一个下游 read model 的样本和质量摘要。\n\nAttributes:\n    label: 前端展示的稳定领域名称。\n    sample_size: 下游 read model 自己定义的样本数量。\n    quality: 下游 read model 报告的质量。\n    freshness: 下游全部事实源合并后的最近更新时间和状态。"
+        },
+        "OverviewStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "agent": {
+              "$ref": "#/components/schemas/OverviewAgentData"
+            },
+            "token_trend": {
+              "items": {
+                "$ref": "#/components/schemas/OverviewTokenTrendPointData"
+              },
+              "type": "array",
+              "title": "Token Trend"
+            },
+            "memory": {
+              "$ref": "#/components/schemas/OverviewMemoryData"
+            },
+            "statuses": {
+              "items": {
+                "$ref": "#/components/schemas/OverviewStatusData"
+              },
+              "type": "array",
+              "title": "Statuses"
+            },
+            "session_problems": {
+              "$ref": "#/components/schemas/OverviewSessionProblemsData"
+            },
+            "database_files": {
+              "items": {
+                "$ref": "#/components/schemas/DatabaseFileStatistics"
+              },
+              "type": "array",
+              "title": "Database Files"
+            },
+            "sources": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/OverviewSourceData"
+              },
+              "type": "object",
+              "title": "Sources"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "agent",
+            "token_trend",
+            "memory",
+            "statuses",
+            "session_problems",
+            "database_files",
+            "sources"
+          ],
+          "title": "OverviewStatisticsData",
+          "description": "汇总五个公开 read model，供 Statistics 总览一次读取。\n\nAttributes:\n    generated_at: 本次总览响应生成时刻。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前有可用样本的下游 read model 数量，范围为 0 至 5。\n    quality: 五个下游来源的合并质量；混合质量统一标 partial。\n    freshness: 按领域前缀保留的全部下游来源新鲜度。\n    agent: 当前选择时间窗的 Agent 摘要。\n    token_trend: 当前选择范围内从旧到新的逐日 token 统计。\n    memory: 当前选择时间窗的 Memory 摘要。\n    statuses: 确定性 session、运行和采集缺口事实。\n    session_problems: 当前选择时间窗最近五条会话问题。\n    database_files: 三个受控本机数据库及附属文件的当前体积。\n    sources: 五个下游 read model 的质量和样本摘要。"
+        },
+        "OverviewStatusData": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "info",
+                "warning",
+                "error",
+                "unavailable"
+              ],
+              "title": "Level"
+            },
+            "title": {
+              "type": "string",
+              "title": "Title"
+            },
+            "detail": {
+              "type": "string",
+              "title": "Detail"
+            },
+            "source": {
+              "type": "string",
+              "title": "Source"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "level",
+            "title",
+            "detail",
+            "source",
+            "quality",
+            "freshness"
+          ],
+          "title": "OverviewStatusData",
+          "description": "公开一条由确定性规则生成的状态或采集缺口。\n\nAttributes:\n    code: 前端稳定识别的状态代码，不包含动态身份。\n    level: 状态在列表中的严重程度；unavailable 表示证据缺失。\n    title: 可直接展示的状态事实。\n    detail: 解释事实边界且不做原因猜测的补充文本。\n    source: 产生该事实的受控 read model 或事实源名称。\n    quality: 支撑该状态的数据质量。\n    freshness: 该状态事实最后更新到的时刻。"
+        },
+        "OverviewTokenTrendPointData": {
+          "properties": {
+            "date": {
+              "type": "string",
+              "format": "date",
+              "title": "Date"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
+            "known_token_session_count": {
+              "type": "integer",
+              "title": "Known Token Session Count"
+            },
+            "token_total": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Total"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "date",
+            "session_count",
+            "known_token_session_count",
+            "token_total",
+            "quality"
+          ],
+          "title": "OverviewTokenTrendPointData",
+          "description": "公开所选时间范围趋势中的一个当地日期。\n\nAttributes:\n    date: 该点代表的调用方当地日期。\n    session_count: 当天可归因的 Trowel 用户 session 数。\n    known_token_session_count: 当天 total token 水位可用的 session 数。\n    token_total: 当天可归因 token；来源不足时为 None，不用 0 代替。\n    quality: 当天 token 水位的证据质量。"
         },
         "PatchAgentSessionRequest": {
           "properties": {
@@ -4114,6 +7081,407 @@
           "title": "ReviewRequest",
           "description": "描述如何处理一张卡片草稿。\n\nAttributes:\n    action: 审核动作；``\"accept\"`` 原样保存，``\"edit\"`` 应用 ``edits`` 后\n        保存，``\"reject\"`` 不保存卡片。\n    edits: ``action`` 为 ``\"edit\"`` 时覆盖草稿字段的键值；没有修改时为\n        ``None``。模型不限制 ``action`` 与 ``edits`` 的组合：``\"accept\"``\n        或 ``\"reject\"`` 携带的修改会被忽略，``\"edit\"`` 没有修改时会原样保存。"
         },
+        "RuntimeConnectionStatistics": {
+          "properties": {
+            "connect_count": {
+              "type": "integer",
+              "title": "Connect Count"
+            },
+            "disconnect_count": {
+              "type": "integer",
+              "title": "Disconnect Count"
+            },
+            "reconnect_count": {
+              "type": "integer",
+              "title": "Reconnect Count"
+            },
+            "operations": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Operations"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "connect_count",
+            "disconnect_count",
+            "reconnect_count",
+            "operations",
+            "quality"
+          ],
+          "title": "RuntimeConnectionStatistics",
+          "description": "汇总 SSE 的建连、断线、重连和首事件事实。\n\nAttributes:\n    connect_count: 时间窗内建连次数。\n    disconnect_count: 客户端断开或传输异常次数。\n    reconnect_count: 同一前端生命周期再次建连次数。\n    operations: SSE 各受控阶段的耗时分布。\n    quality: 当前 SSE 事实整体可用程度。"
+        },
+        "RuntimeDistribution": {
+          "properties": {
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "label": {
+              "type": "string",
+              "title": "Label"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "error_count": {
+              "type": "integer",
+              "title": "Error Count"
+            },
+            "p50_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P50 Ms"
+            },
+            "p95_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P95 Ms"
+            },
+            "p99_ms": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "P99 Ms"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "operation",
+            "label",
+            "sample_size",
+            "error_count",
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "quality"
+          ],
+          "title": "RuntimeDistribution",
+          "description": "描述一个受控运行操作的耗时与错误分布。\n\nAttributes:\n    operation: 不含动态路径或身份的稳定操作名。\n    label: 前端直接展示的大白话名称。\n    sample_size: 时间窗内全部终态样本数。\n    error_count: status 为 error 的样本数。\n    p50_ms: 样本至少 5 个时的中位耗时，否则为 None。\n    p95_ms: 样本至少 20 个时的尾部耗时，否则为 None。\n    p99_ms: 样本至少 100 个时的尾部耗时，否则为 None。\n    quality: 当前操作的数据可用程度。"
+        },
+        "RuntimeGap": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "message": {
+              "type": "string",
+              "title": "Message"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "RuntimeGap",
+          "description": "解释运行页没有显示某个数字的稳定原因。\n\nAttributes:\n    code: 前端可稳定识别的缺口代码。\n    message: 不含异常正文或路径的大白话说明。"
+        },
+        "RuntimeGauge": {
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "ms",
+                "By",
+                "1"
+              ],
+              "title": "Unit"
+            },
+            "observed_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Observed At"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "value",
+            "unit",
+            "observed_at",
+            "sample_size",
+            "quality"
+          ],
+          "title": "RuntimeGauge",
+          "description": "描述一个最新值及其采样基础。\n\nAttributes:\n    value: 最新样本值；没有事实时为 None。\n    unit: 指标使用的稳定单位。\n    observed_at: 最新样本时刻；没有事实时为 None。\n    sample_size: 时间窗内同指标样本数。\n    quality: 单样本只标 partial，不推断趋势或异常。"
+        },
+        "RuntimeGaugePoint": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "minimum": {
+              "type": "number",
+              "title": "Minimum"
+            },
+            "maximum": {
+              "type": "number",
+              "title": "Maximum"
+            },
+            "average": {
+              "type": "number",
+              "title": "Average"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "minimum",
+            "maximum",
+            "average",
+            "sample_size"
+          ],
+          "title": "RuntimeGaugePoint",
+          "description": "描述一个聚合时间桶中的 gauge 变化范围。\n\nAttributes:\n    bucket_start: 当前 UTC 小时或日期桶起点。\n    minimum: 桶内最小样本值。\n    maximum: 桶内最大样本值。\n    average: 桶内样本平均值。\n    sample_size: 桶内采样次数。"
+        },
+        "RuntimeStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Resolution"
+            },
+            "sidecar": {
+              "$ref": "#/components/schemas/SidecarStatistics"
+            },
+            "last_clean_exit_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Clean Exit At"
+            },
+            "lifecycle": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Lifecycle"
+            },
+            "fastapi": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Fastapi"
+            },
+            "sse": {
+              "$ref": "#/components/schemas/RuntimeConnectionStatistics"
+            },
+            "sqlite": {
+              "$ref": "#/components/schemas/SQLiteStatistics"
+            },
+            "resources": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Resources"
+            },
+            "resource_remaining_count": {
+              "type": "integer",
+              "title": "Resource Remaining Count"
+            },
+            "gaps": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeGap"
+              },
+              "type": "array",
+              "title": "Gaps"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "resolution",
+            "sidecar",
+            "last_clean_exit_at",
+            "lifecycle",
+            "fastapi",
+            "sse",
+            "sqlite",
+            "resources",
+            "resource_remaining_count",
+            "gaps"
+          ],
+          "title": "RuntimeStatisticsData",
+          "description": "汇总桌面生命周期、服务、连接、数据库和资源 owner 统计。\n\nAttributes:\n    generated_at: 本次 read model 生成时刻。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 参与本页的 span 与 metric 聚合样本数。\n    quality: 整页来源质量。\n    freshness: 遥测聚合事实源的新鲜度。\n    resolution: 当前读取小时还是日聚合。\n    sidecar: sidecar 存活和内存摘要。\n    last_clean_exit_at: 当前时间窗最后一次进程树归零时刻。\n    lifecycle: 启动、关闭、退出和恢复操作分布。\n    fastapi: 受控 FastAPI 路由组分布。\n    sse: SSE 连接阶段统计。\n    sqlite: SQLite 逻辑操作与文件统计。\n    resources: 四层资源 owner 的关闭分布。\n    resource_remaining_count: 当前时间窗最后一次 owner 或恢复核验的残留数量。\n    gaps: 页面明确展示的数据缺口。"
+        },
+        "SQLiteStatistics": {
+          "properties": {
+            "busy_count": {
+              "type": "integer",
+              "title": "Busy Count"
+            },
+            "locked_count": {
+              "type": "integer",
+              "title": "Locked Count"
+            },
+            "operations": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeDistribution"
+              },
+              "type": "array",
+              "title": "Operations"
+            },
+            "files": {
+              "items": {
+                "$ref": "#/components/schemas/DatabaseFileStatistics"
+              },
+              "type": "array",
+              "title": "Files"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "busy_count",
+            "locked_count",
+            "operations",
+            "files",
+            "quality"
+          ],
+          "title": "SQLiteStatistics",
+          "description": "汇总受控 SQLite 逻辑操作、锁错误和文件体积。\n\nAttributes:\n    busy_count: SQLITE_BUSY 分类数量。\n    locked_count: SQLITE_LOCKED 分类数量。\n    operations: 只按稳定逻辑操作名分组的耗时分布。\n    files: 不暴露绝对路径的数据库文件快照。\n    quality: 当前 SQLite 事实整体可用程度。"
+        },
         "SendMessageBody": {
           "properties": {
             "text": {
@@ -4143,6 +7511,125 @@
           ],
           "title": "SendMessageRequest",
           "description": "向 CC 会话发送一条非空消息。\n\nAttributes:\n    text: 作为本轮用户输入发送给 CC 的文字。"
+        },
+        "SessionProblemItemData": {
+          "properties": {
+            "trowel_session_id": {
+              "type": "string",
+              "title": "Trowel Session Id"
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "closed_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Closed At"
+            },
+            "problem_text": {
+              "type": "string",
+              "title": "Problem Text"
+            }
+          },
+          "type": "object",
+          "required": [
+            "trowel_session_id",
+            "runtime",
+            "closed_at",
+            "problem_text"
+          ],
+          "title": "SessionProblemItemData",
+          "description": "公开一条可复制问题及其原会话身份。"
+        },
+        "SessionProblemListData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "reviewed_session_count": {
+              "type": "integer",
+              "title": "Reviewed Session Count"
+            },
+            "problem_count": {
+              "type": "integer",
+              "title": "Problem Count"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/SessionProblemItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next Cursor"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "reviewed_session_count",
+            "problem_count",
+            "items",
+            "next_cursor"
+          ],
+          "title": "SessionProblemListData",
+          "description": "返回一页问题、完整时间窗计数和来源状态。"
         },
         "SetCodexGoalRequest": {
           "properties": {
@@ -4193,6 +7680,155 @@
           "type": "object",
           "title": "SetCodexGoalRequest",
           "description": "指定要创建或更新的 Codex Goal 字段。\n\nAttributes:\n    objective: Goal 要完成的任务；None 表示不修改。\n    status: Goal 当前的执行状态；None 表示不修改。\n    token_budget: Goal 最多可以使用的 token 数量。省略该字段时保留原限制；\n        明确传入 None 时取消限制。"
+        },
+        "SidecarStatistics": {
+          "properties": {
+            "uptime": {
+              "$ref": "#/components/schemas/RuntimeGauge"
+            },
+            "rss": {
+              "$ref": "#/components/schemas/RuntimeGauge"
+            },
+            "restart_count": {
+              "type": "integer",
+              "title": "Restart Count"
+            },
+            "abnormal_exit_count": {
+              "type": "integer",
+              "title": "Abnormal Exit Count"
+            },
+            "rss_series": {
+              "items": {
+                "$ref": "#/components/schemas/RuntimeGaugePoint"
+              },
+              "type": "array",
+              "title": "Rss Series"
+            }
+          },
+          "type": "object",
+          "required": [
+            "uptime",
+            "rss",
+            "restart_count",
+            "abnormal_exit_count",
+            "rss_series"
+          ],
+          "title": "SidecarStatistics",
+          "description": "汇总 Python sidecar 的存活、内存和异常事实。\n\nAttributes:\n    uptime: 最新存活时长。\n    rss: 最新常驻内存采样。\n    restart_count: 时间窗内启动后的重启次数。\n    abnormal_exit_count: 时间窗内非预期退出次数。\n    rss_series: 按小时或日聚合的 RSS 最小、最大和平均值。"
+        },
+        "SourceFreshness": {
+          "properties": {
+            "updated_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated At"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "fresh",
+                "stale",
+                "unavailable"
+              ],
+              "title": "Status"
+            }
+          },
+          "type": "object",
+          "required": [
+            "updated_at",
+            "status"
+          ],
+          "title": "SourceFreshness",
+          "description": "描述一个 Statistics 事实源最后处理到哪里。\n\nAttributes:\n    updated_at: 来源最后处理到的事实时刻；从未产出时为 None。\n    status: fresh 表示聚合追上 raw，stale 表示仍有未聚合事实。"
+        },
+        "SpanAggregateData": {
+          "properties": {
+            "bucket_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Bucket Start"
+            },
+            "component": {
+              "type": "string",
+              "title": "Component"
+            },
+            "operation": {
+              "type": "string",
+              "title": "Operation"
+            },
+            "status": {
+              "type": "string",
+              "title": "Status"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runtime"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "sample_count": {
+              "type": "integer",
+              "title": "Sample Count"
+            },
+            "duration_sum_ms": {
+              "type": "number",
+              "title": "Duration Sum Ms"
+            },
+            "duration_min_ms": {
+              "type": "number",
+              "title": "Duration Min Ms"
+            },
+            "duration_max_ms": {
+              "type": "number",
+              "title": "Duration Max Ms"
+            },
+            "histogram_counts": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array",
+              "title": "Histogram Counts"
+            }
+          },
+          "type": "object",
+          "required": [
+            "bucket_start",
+            "component",
+            "operation",
+            "status",
+            "runtime",
+            "model",
+            "sample_count",
+            "duration_sum_ms",
+            "duration_min_ms",
+            "duration_max_ms",
+            "histogram_counts"
+          ],
+          "title": "SpanAggregateData",
+          "description": "公开一个小时或日的受控 span 耗时分布。\n\nAttributes:\n    bucket_start: 当前小时或日期桶的 UTC 起点。\n    component: 受控组件。\n    operation: 受控操作名。\n    status: 受控终态。\n    runtime: 可选 runtime 维度。\n    model: 可选模型维度。\n    sample_count: 当前分组样本数。\n    duration_sum_ms: 样本总耗时。\n    duration_min_ms: 最短耗时。\n    duration_max_ms: 最长耗时。\n    histogram_counts: 固定非累计耗时 bucket 的样本数。"
         },
         "StartCodexReviewRequest": {
           "properties": {
@@ -4270,6 +7906,265 @@
           ],
           "title": "SuggestionStatusUpdate",
           "description": "接收用户对一条画像建议的处理结果。\n\n该请求只修改建议队列中的状态，不会把建议正文写入用户画像。\n\nAttributes:\n    status: ``accepted`` 将建议标记为已接受，``discarded`` 将建议标记为\n        已丢弃。"
+        },
+        "TelemetryBatchRequest": {
+          "properties": {
+            "batch_id": {
+              "type": "string",
+              "title": "Batch Id"
+            },
+            "schema_version": {
+              "type": "integer",
+              "title": "Schema Version"
+            },
+            "source_component": {
+              "type": "string",
+              "title": "Source Component"
+            },
+            "collected_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Collected At"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "normal",
+                "backfill"
+              ],
+              "title": "Mode",
+              "default": "normal"
+            },
+            "spans": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array",
+              "maxItems": 1000,
+              "title": "Spans"
+            },
+            "metrics": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array",
+              "maxItems": 1000,
+              "title": "Metrics"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "batch_id",
+            "schema_version",
+            "source_component",
+            "collected_at"
+          ],
+          "title": "TelemetryBatchRequest",
+          "description": "承载一个来源组件提交的版本化 span/metric 批次。\n\nAttributes:\n    batch_id: 客户端为幂等重试生成的受控身份。\n    schema_version: Trowel 遥测公开 schema 版本，当前只接受 1。\n    source_component: 发送本批次的组件，不代替每条事实的 component。\n    collected_at: 上报方组装批次的带时区时间。\n    mode: normal 最多 250 条；backfill 最多 1000 条。\n    spans: 等待逐条白名单校验的 span 原始对象。\n    metrics: 等待逐条白名单校验的 metric 原始对象。"
+        },
+        "TelemetryStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Resolution"
+            },
+            "collector": {
+              "$ref": "#/components/schemas/CollectorStatistics"
+            },
+            "database_bytes": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object",
+              "title": "Database Bytes"
+            },
+            "histogram_upper_bounds_ms": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array",
+              "title": "Histogram Upper Bounds Ms"
+            },
+            "spans": {
+              "items": {
+                "$ref": "#/components/schemas/SpanAggregateData"
+              },
+              "type": "array",
+              "title": "Spans"
+            },
+            "metrics": {
+              "items": {
+                "$ref": "#/components/schemas/MetricAggregateData"
+              },
+              "type": "array",
+              "title": "Metrics"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "resolution",
+            "collector",
+            "database_bytes",
+            "histogram_upper_bounds_ms",
+            "spans",
+            "metrics"
+          ],
+          "title": "TelemetryStatisticsData",
+          "description": "汇总 Statistics API 公共元数据和遥测聚合结果。\n\nAttributes:\n    generated_at: 本次响应生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前响应全部 span 与 metric 样本数。\n    quality: reliable、partial 或 unavailable。\n    freshness: 各事实源最后更新时间和状态。\n    resolution: 当前返回小时还是日聚合。\n    collector: collector 当前进程状态。\n    database_bytes: 主库、WAL、SHM 和总占用字节数。\n    histogram_upper_bounds_ms: span 非累计直方图 bucket 的毫秒上界。\n    spans: 当前时间窗 span 聚合。\n    metrics: 当前时间窗 metric 聚合。"
+        },
+        "TelemetrySubmitData": {
+          "properties": {
+            "accepted": {
+              "type": "integer",
+              "title": "Accepted"
+            },
+            "rejected": {
+              "type": "integer",
+              "title": "Rejected"
+            },
+            "dropped": {
+              "type": "integer",
+              "title": "Dropped"
+            },
+            "duplicate": {
+              "type": "boolean",
+              "title": "Duplicate"
+            },
+            "error_categories": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object",
+              "title": "Error Categories"
+            }
+          },
+          "type": "object",
+          "required": [
+            "accepted",
+            "rejected",
+            "dropped",
+            "duplicate",
+            "error_categories"
+          ],
+          "title": "TelemetrySubmitData",
+          "description": "公开一次遥测提交的接受、拒绝和丢弃结果。\n\nAttributes:\n    accepted: 已进入后端有界队列的记录数。\n    rejected: 未通过 schema、版本或隐私校验的记录数。\n    dropped: 因容量或生命周期没有进入队列的记录数。\n    duplicate: 当前批次是否是已知幂等重试。\n    error_categories: 各拒绝或丢弃类别对应的记录数。"
+        },
+        "UnavailableIntervalData": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "reason": {
+              "type": "string",
+              "title": "Reason"
+            },
+            "source_span_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Span Id"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started At"
+            },
+            "ended_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ended At"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "reason",
+            "source_span_id",
+            "started_at",
+            "ended_at"
+          ],
+          "title": "UnavailableIntervalData",
+          "description": "说明 trace 中无法可靠还原的一段关系或时间。\n\nAttributes:\n    code: 供前端稳定分组的缺口类别。\n    reason: 不含异常正文或动态身份的用户可读原因。\n    source_span_id: 能定位到已知 span 时使用的随机身份。\n    started_at: 缺口边界可核查时的开始时刻。\n    ended_at: 缺口边界可核查时的结束时刻。"
         },
         "UncommittedChangesReviewTarget": {
           "properties": {

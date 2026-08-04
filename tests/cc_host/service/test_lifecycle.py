@@ -11,6 +11,7 @@ from trowel_py.cc_host.service import CCHost
 from trowel_py.resource_lifecycle import OwnerScope, ProcessIdentity, ResourceRegistry
 from trowel_py.schemas.cc_host import (
     ErrorEvent,
+    InterruptedEvent,
     LocalCommandEvent,
     SessionExitedEvent,
     StalledWarningEvent,
@@ -171,14 +172,112 @@ class TestLocalAndRestart:
 
 
 class TestInterrupt:
+    async def test_requested_interrupt_maps_matching_execution_error(
+        self, tmp_path: Path
+    ) -> None:
+        proc = FakeProc([line(init_event())], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        send_task = asyncio.create_task(collect(host.send("run a long command")))
+        await _wait_until_input_is_sent(host, proc)
+
+        await host.interrupt()
+        proc.stdout.feed_data(
+            (
+                line(
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "errors": ["Interrupted by user"],
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        proc.stdout.feed_eof()
+
+        events = await send_task
+        terminals = [
+            event
+            for event in events
+            if isinstance(event, (InterruptedEvent, ErrorEvent))
+        ]
+        assert len(terminals) == 1
+        assert isinstance(terminals[0], InterruptedEvent)
+
+    async def test_execution_error_without_interrupt_stays_error(
+        self, tmp_path: Path
+    ) -> None:
+        proc = FakeProc(
+            [
+                line(init_event()),
+                line(
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "errors": ["tool failed"],
+                    }
+                ),
+            ]
+        )
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        events = await collect(host.send("run a failing command"))
+
+        terminals = [
+            event
+            for event in events
+            if isinstance(event, (InterruptedEvent, ErrorEvent))
+        ]
+        assert len(terminals) == 1
+        assert isinstance(terminals[0], ErrorEvent)
+
+    async def test_interrupt_marker_does_not_leak_into_next_turn(
+        self, tmp_path: Path
+    ) -> None:
+        proc = FakeProc([line(init_event())], feed_eof=False)
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+        first_task = asyncio.create_task(collect(host.send("first turn")))
+        await _wait_until_input_is_sent(host, proc)
+        await host.interrupt()
+        proc.stdout.feed_data((line(result_ok()) + "\n").encode())
+        await first_task
+
+        proc.stdout.feed_data(
+            (
+                line(
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "errors": ["second turn failed"],
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        second_events = await collect(host.send("second turn"))
+
+        terminals = [
+            event
+            for event in second_events
+            if isinstance(event, (InterruptedEvent, ErrorEvent))
+        ]
+        assert len(terminals) == 1
+        assert isinstance(terminals[0], ErrorEvent)
+
     async def test_interrupt_marks_dead_and_next_send_resumes(self, tmp_path: Path):
-        proc1 = FakeProc([line(init_event()), line(result_ok())])
+        proc1 = FakeProc([line(init_event())], feed_eof=False)
         proc2 = FakeProc([line(init_event(sid="s-1")), line(result_ok())])
         spawner = FakeSpawner([proc1, proc2])
         host = CCHost("sid", tmp_path, spawner=spawner)
-        host._interrupt_proc = lambda p: setattr(p, "returncode", 0)
-        await collect(host.send("hi"))
+        host._interrupt_proc = lambda p: (setattr(p, "returncode", 0) or True)
+        first_task = asyncio.create_task(collect(host.send("hi")))
+        await _wait_until_input_is_sent(host, proc1)
         await host.interrupt()
+        proc1.stdout.feed_eof()
+        await first_task
         assert host.is_dead is True
         await collect(host.send("next"))
         assert len(spawner.spawned) == 2
@@ -209,6 +308,16 @@ class TestInterrupt:
 
         assert proc.signals == [signal.SIGINT]
         assert group_signals == []
+
+
+async def _wait_until_input_is_sent(host: CCHost, proc: FakeProc) -> None:
+    """等待测试 turn 已绑定当前进程并写入输入。"""
+
+    for _ in range(100):
+        if host._proc is proc and proc.stdin.written:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("CC test turn did not start")
 
 
 class FakeProcessController:

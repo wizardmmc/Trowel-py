@@ -12,17 +12,16 @@ from trowel_py.llm.client import LLMConfig
 
 
 def _find_config_path() -> Path:
-    """按工作目录、用户配置目录和源码根目录的顺序选择配置文件。
+    """按工作目录和应用数据目录的顺序选择配置文件。
 
     Returns:
-        第一个已存在的 ``config.toml``；都不存在时返回源码根目录下的候选路径。
+        第一个已存在的 ``config.toml``；都不存在时返回应用数据目录候选路径。
     """
-    here = Path(__file__).resolve().parent.parent
     application_config = resolve_application_data_root() / "config.toml"
     candidates = (
         [application_config]
         if has_application_data_root_override()
-        else [Path.cwd() / "config.toml", application_config, here / "config.toml"]
+        else [Path.cwd() / "config.toml", application_config]
     )
     for c in candidates:
         if c.exists():

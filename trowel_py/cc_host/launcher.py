@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from asyncio import subprocess as asubprocess
+from collections.abc import Sequence
 from typing import Any
 
 # 缺省时省略 model、fallback_model 与 effort，让 CC 按自身配置解析。
@@ -28,8 +29,26 @@ def build_args(
     resume_from: str | None = None,
     append_system_prompt: str | None = None,
     mcp_config: str | None = None,
+    allowed_tools: Sequence[str] | None = None,
 ) -> list[str]:
-    """构造 CC argv；workdir 只由子进程 cwd 承载，不进入 argv。"""
+    """构造 Claude Code stream-json 子进程的启动参数。
+
+    Args:
+        workdir: 子进程的工作目录；只由 ``cwd`` 承载，不进入参数列表。
+        model: 本轮使用的模型；None 表示沿用 Claude Code 配置。
+        fallback_model: 主模型不可用时的备用模型；None 表示不覆盖配置。
+        effort: 模型思考强度；None 表示不覆盖配置。
+        permission_mode: Claude Code 的权限模式。
+        permission_prompt_tool: print 模式下处理权限交互的 MCP 工具名；None 或
+            空字符串表示不注册。
+        resume_from: 要恢复的 Claude Code 原生会话 ID；None 表示新会话。
+        append_system_prompt: 追加到 Claude Code 默认系统提示词的 Trowel 上下文。
+        mcp_config: 本会话独占的 MCP 配置文件；提供时同时启用 strict 模式。
+        allowed_tools: 预先授权并向 Claude Code 声明需要发现的工具全名。
+
+    Returns:
+        可直接传给 ``asyncio.create_subprocess_exec`` 的 argv。
+    """
 
     args = [
         CLAUDE_BIN,
@@ -55,6 +74,9 @@ def build_args(
         args += ["--resume", resume_from]
     if append_system_prompt:
         args += ["--append-system-prompt", append_system_prompt]
+    if allowed_tools:
+        # 单个逗号分隔值避免 Commander 的可变参数吞掉后续选项。
+        args += ["--allowedTools", ",".join(allowed_tools)]
     # strict 模式隔离项目、用户和插件中的额外 MCP 配置。
     if mcp_config:
         args += ["--mcp-config", mcp_config, "--strict-mcp-config"]

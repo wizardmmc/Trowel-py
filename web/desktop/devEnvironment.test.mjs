@@ -13,6 +13,14 @@ it("uses long-term App data unless isolated mode is explicit", () => {
   expect(resolveDevelopmentDataMode(["node", "dev.mjs", "--isolated"])).toBe(
     "isolated-dev",
   );
+  expect(resolveDevelopmentDataMode(["node", "dev.mjs", "--observe"])).toBe(
+    "isolated-dev",
+  );
+  expect(
+    resolveDevelopmentDataMode(["node", "dev.mjs", "--smoke"], {
+      usesTemporaryDataRoot: true,
+    }),
+  ).toBe("isolated-dev");
 });
 
 it("removes parent Desktop Host ownership while preserving runtime settings", () => {
@@ -27,7 +35,9 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
       TROWEL_DESKTOP_CREDENTIAL: "stable-secret",
       TROWEL_DESKTOP_DATA_DIR: "/stable/data",
       TROWEL_DESKTOP_DATA_MODE: "packaged",
+      TROWEL_DESKTOP_INSPECTION_ONLY: "1",
       TROWEL_DESKTOP_LOG_DIR: "/stable/logs",
+      TROWEL_DESKTOP_READ_DATA_DIR: "/stable/read-data",
       TROWEL_DESKTOP_RENDERER_ORIGIN: "file://stable",
       TROWEL_DESKTOP_SERVICE_FILE: "/stable/service.json",
       TROWEL_DESKTOP_SMOKE: "1",
@@ -59,7 +69,9 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
     "TROWEL_DATA_ROOT",
     "TROWEL_DESKTOP_CREDENTIAL",
     "TROWEL_DESKTOP_DATA_DIR",
+    "TROWEL_DESKTOP_INSPECTION_ONLY",
     "TROWEL_DESKTOP_LOG_DIR",
+    "TROWEL_DESKTOP_READ_DATA_DIR",
     "TROWEL_DESKTOP_RENDERER_ORIGIN",
     "TROWEL_DESKTOP_SMOKE",
     "TROWEL_ELECTRON_USER_DATA_DIR",

@@ -38,6 +38,14 @@ import { createDesktopWindow, focusDesktopWindow } from "./window";
 import { handleDesktopWindowClose } from "./windowClosePolicy";
 import { configureSafeStorageForSmoke } from "./safeStoragePolicy";
 import type { SidecarLaunchCommand } from "./sidecar";
+import type { SidecarShutdownResult } from "./shutdown";
+import { createDesktopTelemetrySender } from "./telemetryPort";
+import { TelemetryBatcher } from "../shared/telemetry-batcher";
+import { DesktopRuntimeTelemetry } from "./runtimeTelemetry";
+import {
+  countLiveSnapshotResources,
+  writeExitMarker,
+} from "./resourceCleanup";
 
 const PRODUCT_NAME = "Trowel";
 
@@ -85,13 +93,17 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  void startDesktopApplication().catch(() => {
-    console.error("Trowel desktop host failed before diagnostics were available.");
+  void startDesktopApplication().catch((error) => {
+    console.error(
+      "Trowel desktop host failed before diagnostics were available.",
+      error,
+    );
     app.exit(1);
   });
 }
 
 async function startDesktopApplication(): Promise<void> {
+  const applicationStartedAt = new Date();
   const instanceId = randomUUID();
   const credential = randomBytes(32).toString("base64url");
   const desktopPaths = resolveDesktopPaths({
@@ -104,6 +116,17 @@ async function startDesktopApplication(): Promise<void> {
   });
   const { dataDirectory, logDirectory } = desktopPaths;
   const logLifecycle = createLifecycleLogger(logDirectory);
+  const sidecarOptions = {
+    command: resolveSidecarLaunchCommand(projectRoot),
+    cwd: projectRoot,
+    dataDirectory,
+    logDirectory,
+    dataMode: desktopDataMode,
+    instanceId,
+    credential,
+    expectedAppVersion: app.getVersion(),
+    rendererOrigin: rendererOrigin(rendererUrl),
+  };
 
   await app.whenReady();
   await configureRendererSession(session.defaultSession);
@@ -116,6 +139,9 @@ async function startDesktopApplication(): Promise<void> {
   let finalQuit = false;
   let quitPromise: Promise<void> | null = null;
   let statusTray: Tray | null = null;
+  let desktopTelemetry: DesktopRuntimeTelemetry | null = null;
+  let sidecarReadyCount = 0;
+  let firstScreenRecorded = false;
 
   /** readiness 通过后向同一开发链中的浏览器发布共享服务。 */
   const publishAgentService = async (): Promise<void> => {
@@ -152,6 +178,8 @@ async function startDesktopApplication(): Promise<void> {
       if (crashedPage === "renderer" && details.reason !== "clean-exit") {
         previousRendererCrashAt = now;
         logLifecycle("renderer_gone", details.reason);
+        desktopTelemetry?.recordRendererCrash(new Date(now));
+        void desktopTelemetry?.flush();
       }
       if (action === "reload") {
         void loadRenderer().catch((error) => {
@@ -178,6 +206,7 @@ async function startDesktopApplication(): Promise<void> {
       if (process.platform === "darwin" && !finalQuit) {
         logLifecycle("window_hidden");
       }
+      desktopTelemetry?.recordWindowClose(new Date());
     });
     mainWindow.on("closed", () => {
       mainWindow = null;
@@ -195,16 +224,31 @@ async function startDesktopApplication(): Promise<void> {
     }
     currentPage = "renderer";
     logLifecycle("renderer_loaded");
+    const rendererReady = waitForRendererReady(window);
+    void rendererReady
+      .then(() => {
+        if (firstScreenRecorded) return;
+        firstScreenRecorded = true;
+        desktopTelemetry?.recordFirstScreen(new Date());
+      })
+      .catch((error) => {
+        logLifecycle(
+          "renderer_ready_observation_failed",
+          error instanceof Error ? error.name : "unknown",
+        );
+      });
     const runRendererCrashSmoke =
       rendererCrashSmoke && !rendererCrashSmokeStarted;
     if (rendererSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke) {
       try {
-        await waitForRendererReady(window);
+        await rendererReady;
       } catch (error) {
         console.error("TROWEL_DESKTOP_SMOKE_FAILED", error);
         throw error;
       }
       if (rendererSmoke) {
+        if (!host) throw new Error("desktop host is not initialized");
+        await verifyTelemetrySmoke(host);
         console.log("TROWEL_DESKTOP_SMOKE_OK");
         app.quit();
       }
@@ -263,20 +307,47 @@ async function startDesktopApplication(): Promise<void> {
     }
   };
 
-  host = new DesktopHost(
-    {
-      command: resolveSidecarLaunchCommand(projectRoot),
-      cwd: projectRoot,
-      dataDirectory,
-      logDirectory,
-      dataMode: desktopDataMode,
-      instanceId,
-      credential,
-      expectedAppVersion: app.getVersion(),
-      rendererOrigin: rendererOrigin(rendererUrl),
+  host = new DesktopHost(sidecarOptions, {
+    loadRenderer,
+    loadDiagnostics,
+    onSidecarReady: (running) => {
+      const batcher = new TelemetryBatcher({
+        sourceComponent: "electron",
+        send: createDesktopTelemetrySender(running.transport),
+      });
+      desktopTelemetry = new DesktopRuntimeTelemetry(
+        batcher,
+        applicationStartedAt,
+      );
+      desktopTelemetry.recordSidecarReady(new Date());
+      if (sidecarReadyCount > 0) {
+        desktopTelemetry.recordSidecarRestart(new Date());
+      }
+      sidecarReadyCount += 1;
     },
-    { loadRenderer, loadDiagnostics },
-  );
+    onUnexpectedExit: () => {
+      const requestedAt = new Date();
+      void (async () => {
+        const remainingResourceCount = await countLiveSnapshotResources(
+          sidecarOptions,
+        ).catch(() => 1);
+        await writeExitMarker(sidecarOptions, {
+          exitReason: "sidecar_abnormal",
+          requestedAt: requestedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          exitMode: "forced",
+          processTreeResult:
+            remainingResourceCount === 0 ? "closed" : "needs_reconcile",
+          remainingResourceCount,
+        });
+      })().catch((error) => {
+        logLifecycle(
+          "sidecar_exit_marker_failed",
+          error instanceof Error ? error.name : "unknown",
+        );
+      });
+    },
+  });
   removeIpcHandlers = registerDesktopIpc({
     host,
     getWindow: () => mainWindow,
@@ -367,15 +438,53 @@ async function startDesktopApplication(): Promise<void> {
     event.preventDefault();
     if (quitPromise) return;
     logLifecycle("host_quit");
+    const exitRequestedAt = new Date();
     quitPromise = (async () => {
       try {
+        await desktopTelemetry?.drain(250);
+      } catch {
+        // 遥测排空失败不占用应用退出链。
+      }
+      let shutdownResult: SidecarShutdownResult = {
+        status: "needs_reconcile",
+        remainingResourceCount: 1,
+        forced: true,
+        exitMarkerRecorded: false,
+      };
+      try {
         const result = await host?.stop();
+        if (result) shutdownResult = result;
         logLifecycle("host_drain_finished", result?.status ?? "closed");
       } catch (error) {
         logLifecycle(
           "host_drain_failed",
           error instanceof Error ? error.name : "unknown",
         );
+      }
+      if (!shutdownResult.exitMarkerRecorded) {
+        const remainingResourceCount = await countLiveSnapshotResources(
+          sidecarOptions,
+        ).catch(() => Math.max(shutdownResult.remainingResourceCount, 1));
+        const processTreeResult =
+          remainingResourceCount === 0 ? "closed" : "needs_reconcile";
+        try {
+          await writeExitMarker(sidecarOptions, {
+            exitReason: "app_exit",
+            requestedAt: exitRequestedAt.toISOString(),
+            completedAt: new Date().toISOString(),
+            exitMode:
+              shutdownResult.forced || processTreeResult === "needs_reconcile"
+                ? "forced"
+                : "cooperative",
+            processTreeResult,
+            remainingResourceCount,
+          });
+        } catch (error) {
+          logLifecycle(
+            "host_exit_marker_failed",
+            error instanceof Error ? error.name : "unknown",
+          );
+        }
       }
       try {
         await removeAgentService();
@@ -480,6 +589,39 @@ async function waitForRendererReady(window: BrowserWindow): Promise<void> {
   throw new Error(
     `renderer did not settle its sidecar API requests: ${JSON.stringify(lastState)}`,
   );
+}
+
+async function verifyTelemetrySmoke(host: DesktopHost): Promise<void> {
+  /** 通过真实实例凭据验证批量接收和 Host 退出前 drain。 */
+  const context = host.context();
+  const batcher = new TelemetryBatcher({
+    sourceComponent: "electron",
+    send: createDesktopTelemetrySender(context.transport),
+    flushIntervalMs: 10,
+    idFactory: () => `batch-smoke-${randomUUID()}`,
+  });
+  const startedAt = new Date();
+  const endedAt = new Date(startedAt.getTime() + 1);
+  batcher.recordSpan({
+    trace_id: randomBytes(16).toString("hex"),
+    span_id: randomBytes(8).toString("hex"),
+    parent_span_id: null,
+    started_at: startedAt.toISOString(),
+    ended_at: endedAt.toISOString(),
+    component: "electron",
+    operation: "desktop.start",
+    status: "ok",
+    runtime: null,
+    model: null,
+    session_ref: null,
+    call_ref: null,
+    attributes: { quality: "reliable", sampled: true },
+    links: [],
+  });
+  const report = await batcher.drain(2_000);
+  if (!report.drained || report.dropped !== 0) {
+    throw new Error(`desktop telemetry drain failed: ${JSON.stringify(report)}`);
+  }
 }
 
 async function crashRendererAndVerifyRecovery(

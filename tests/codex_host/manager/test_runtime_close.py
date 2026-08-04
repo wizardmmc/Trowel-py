@@ -118,6 +118,247 @@ async def test_close_user_thread_already_archived_restores_history() -> None:
     await manager.close()
 
 
+async def test_close_unmaterialized_user_thread_deletes_empty_native_state() -> None:
+    """首条用户消息前没有 rollout，关闭应删除空原生状态而不是永久卡住。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/start"
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-empty")})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/goal/get"
+        yield Step.send({"id": msg["id"], "result": {"goal": None}})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/archive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id t-empty",
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/unarchive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no archived rollout found for thread id t-empty",
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/read"
+        assert msg["params"] == {"threadId": "t-empty", "includeTurns": True}
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": (
+                        "thread t-empty is not materialized yet; includeTurns is "
+                        "unavailable before first user message"
+                    ),
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/delete"
+        yield Step.send({"id": msg["id"], "result": {}})
+        yield Step.recv()
+
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake, resource_registry=registry)
+    session = CodexSession(_cfg("s-empty"))
+    manager.register(session)
+    assert await manager.get_goal(session) is None
+
+    await manager.close_session(session, preserve_history=True)
+
+    methods = [item["method"] for item in fake.received]
+    assert methods.index("thread/archive") < methods.index("thread/unarchive")
+    assert methods.index("thread/unarchive") < methods.index("thread/read")
+    assert methods.index("thread/read") < methods.index("thread/delete")
+    summary = registry.owner_summary(
+        OwnerScope.SESSION,
+        agent_session_id="s-empty",
+    )
+    assert summary.status == "closed"
+    assert summary.live_resource_count == 0
+    await manager.close()
+
+
+async def test_close_never_deletes_when_thread_read_can_return_history() -> None:
+    """即使两处 rollout 都缺失，只要能读到历史就必须保留 binding。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/start"
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-history")})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/goal/get"
+        yield Step.send({"id": msg["id"], "result": {"goal": None}})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/archive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id t-history",
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/unarchive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": (
+                        "no archived rollout found for thread id t-history"
+                    ),
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/read"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "result": {"thread": {"id": "t-history", "turns": []}},
+            }
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("s-history"))
+    manager.register(session)
+    assert await manager.get_goal(session) is None
+
+    with pytest.raises(ProtocolViolationError, match="no archived rollout found"):
+        await manager.close_session(session, preserve_history=True)
+
+    methods = [item["method"] for item in fake.received]
+    assert "thread/read" in methods
+    assert "thread/delete" not in methods
+    await manager.close()
+
+
+@pytest.mark.parametrize(
+    ("loaded_thread_ids", "should_close"),
+    [([], True), (["t-empty"], False)],
+)
+async def test_close_handles_codex_0144_agent_jobs_delete_failure_only_after_unload(
+    loaded_thread_ids: list[str],
+    should_close: bool,
+) -> None:
+    """0.144 缺表错误只有在原生 thread 已卸载后才能降级为关闭成功。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/start"
+        yield Step.send({"id": msg["id"], "result": _thread_result("t-empty")})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/goal/get"
+        yield Step.send({"id": msg["id"], "result": {"goal": None}})
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/archive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id t-empty",
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/unarchive"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": (
+                        "no archived rollout found for thread id t-empty"
+                    ),
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/read"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32600,
+                    "message": (
+                        "thread t-empty is not materialized yet; includeTurns is "
+                        "unavailable before first user message"
+                    ),
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/delete"
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "error": {
+                    "code": -32603,
+                    "message": (
+                        "failed to delete app-server state for t-empty: error "
+                        "returned from database: (code: 1) no such table: "
+                        "agent_jobs"
+                    ),
+                },
+            }
+        )
+        msg = yield Step.recv()
+        assert msg["method"] == "thread/loaded/list"
+        yield Step.send({"id": msg["id"], "result": {"data": loaded_thread_ids}})
+        yield Step.recv()
+
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake, resource_registry=registry)
+    session = CodexSession(_cfg("s-empty"))
+    manager.register(session)
+    assert await manager.get_goal(session) is None
+
+    if should_close:
+        await manager.close_session(session, preserve_history=True)
+        summary = registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id="s-empty",
+        )
+        assert summary.status == "closed"
+        assert summary.live_resource_count == 0
+    else:
+        with pytest.raises(ProtocolViolationError, match="no such table"):
+            await manager.close_session(session, preserve_history=True)
+
+    methods = [item["method"] for item in fake.received]
+    assert methods.index("thread/delete") < methods.index("thread/loaded/list")
+    await manager.close()
+
+
 async def test_close_missing_archived_rollout_keeps_user_binding_retryable() -> None:
     """用户历史无法恢复时必须报错，不能把关闭伪装成成功。"""
 
@@ -291,7 +532,7 @@ async def test_close_rechecks_resources_after_restoring_history(
     def record_mark_closed(*args, **kwargs) -> None:
         """记录 owner 最终提交发生的顺序。"""
 
-        events.append("closed")
+        events.append(f"closed:{args[0].value}")
         original_mark_closed(*args, **kwargs)
 
     monkeypatch.setattr(registry, "reconcile_process_groups", record_reconcile)
@@ -309,7 +550,12 @@ async def test_close_rechecks_resources_after_restoring_history(
         terminal_timeout_s=0.05,
     )
 
-    assert events == ["unarchive", "reconcile", "closed"]
+    assert events == [
+        "unarchive",
+        "closed:turn",
+        "reconcile",
+        "closed:session",
+    ]
     await manager.close()
 
 
@@ -410,7 +656,11 @@ async def test_archive_closes_registered_thread_and_turn_resources() -> None:
         yield Step.send({"id": msg["id"], "result": {}})
         yield Step.recv()
 
-    registry = ResourceRegistry(app_instance_id="test-instance")
+    observations = []
+    registry = ResourceRegistry(
+        app_instance_id="test-instance",
+        owner_close_observer=observations.append,
+    )
     fake = FakeAppServer(behavior())
     manager = _manager(fake, resource_registry=registry)
     session = CodexSession(_cfg("s1"))
@@ -438,6 +688,8 @@ async def test_archive_closes_registered_thread_and_turn_resources() -> None:
         agent_session_id="s1",
     )
     assert after.live_resource_count == 0
+    assert OwnerScope.TURN in {item.owner_scope for item in observations}
+    assert all(item.status == "closed" for item in observations)
     await manager.close()
 
 

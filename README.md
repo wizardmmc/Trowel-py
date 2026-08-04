@@ -81,6 +81,17 @@ cd web
 bun run desktop:dev:isolated
 ```
 
+只验收统计页面时可直接读取正式 App 的真实数据，并把所有业务写接口关闭：
+
+```bash
+cd web
+bun run desktop:dev:observe
+```
+
+观察模式只显示“统计”入口，不启动 Agent runtime、Memory/Profile 后台任务，也不向
+正式数据库写入遥测。正式 App 可以同时运行；统计数字会随正式 App 的数据变化，并在
+“运行”页每 5 秒刷新一次。
+
 ### 构建本地 macOS App
 
 以下命令构建包含冻结 Python sidecar 的本地 `.app`，随后直接打开构建结果：

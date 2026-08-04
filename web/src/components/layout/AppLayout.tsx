@@ -4,7 +4,13 @@ import type { CSSProperties, ReactNode } from "react";
 import { DESKTOP_LAYOUT_PX } from "../../../shared/desktop-layout";
 import "./AppLayout.css";
 
-export type Tool = "garden" | "extract" | "review" | "cc" | "profile";
+export type Tool =
+  | "garden"
+  | "extract"
+  | "review"
+  | "cc"
+  | "statistics"
+  | "profile";
 
 interface AppLayoutProps {
   readonly children: ReactNode;
@@ -12,6 +18,7 @@ interface AppLayoutProps {
   readonly onToolChange: (tool: Tool) => void;
   readonly sidebarOpen: boolean;
   readonly onToggleSidebar: () => void;
+  readonly inspectionOnly?: boolean;
 }
 
 function IconGarden() {
@@ -52,6 +59,14 @@ function IconAgent() {
   );
 }
 
+function IconStatistics() {
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+    </svg>
+  );
+}
+
 function IconProfile() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -66,6 +81,7 @@ const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
   { id: "cc", icon: <IconAgent />, label: "Agent" },
+  { id: "statistics", icon: <IconStatistics />, label: "统计" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
 
@@ -75,6 +91,7 @@ export function AppLayout({
   onToolChange,
   sidebarOpen,
   onToggleSidebar,
+  inspectionOnly = false,
 }: AppLayoutProps) {
   const layoutStyle = {
     "--app-sidebar-width": `${DESKTOP_LAYOUT_PX.sidebarWidth}px`,
@@ -96,7 +113,7 @@ export function AppLayout({
           />
         </div>
         <nav className="sidebar-nav">
-          {TOOLS.map((tool) => (
+          {TOOLS.filter((tool) => !inspectionOnly || tool.id === "statistics").map((tool) => (
             <button
               key={tool.id}
               className={`sidebar-nav__item ${activeTool === tool.id ? "sidebar-nav__item--active" : ""}`}
@@ -110,7 +127,9 @@ export function AppLayout({
           ))}
         </nav>
       </aside>
-      <main className={`app-main${activeTool === "cc" ? " app-main--flush" : ""}`}>
+      <main
+        className={`app-main${activeTool === "cc" ? " app-main--flush" : ""}${activeTool === "statistics" ? " app-main--statistics" : ""}`}
+      >
         {activeTool !== "cc" && (
           <div className="app-main__drag-region" aria-hidden="true" />
         )}
@@ -119,7 +138,11 @@ export function AppLayout({
           onClick={onToggleSidebar}
           aria-label="菜单"
         >
-          <svg className="app-main__hamburger-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <svg
+            className="app-main__hamburger-svg"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
             <path d="M4 6h16M4 12h16M4 18h16" />
           </svg>
         </button>

@@ -6,7 +6,7 @@ import json
 from datetime import timedelta, timezone
 from pathlib import Path
 
-from trowel_py.memory.activity_dates import extract_activity_dates
+from trowel_py.memory.activity_dates import _parse_iso_datetime, extract_activity_dates
 
 CST = timezone(timedelta(hours=8))
 
@@ -14,6 +14,14 @@ CST = timezone(timedelta(hours=8))
 def _line(**over: object) -> bytes:
     obj = {"type": "user", "timestamp": "2026-07-16T10:00:00.000Z", **over}
     return (json.dumps(obj) + "\n").encode("utf-8")
+
+
+def test_naive_iso_datetime_uses_explicit_local_timezone() -> None:
+    value = _parse_iso_datetime("2026-07-16T00:30:00", CST)
+
+    assert value is not None
+    assert value.utcoffset() == timedelta(hours=8)
+    assert value.astimezone(timezone.utc).isoformat() == "2026-07-15T16:30:00+00:00"
 
 
 def test_single_day(tmp_path: Path) -> None:

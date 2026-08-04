@@ -70,6 +70,12 @@ class ReviewHost(FakeHost):
 
 
 def _host_factory(_session: SessionRecord, workdir: Path) -> ReviewHost:
+    if "session-problems" in workdir.parts:
+        (workdir / "problem.json").write_text(
+            json.dumps({"problem": None}),
+            encoding="utf-8",
+        )
+        return ReviewHost([FINISHED])
     (workdir / "draft.json").write_text(
         json.dumps(
             {
@@ -336,7 +342,7 @@ async def test_immediate_review_skips_preclaimed_cross_session_codex_fragment(
 
     def unexpected_factory(session_record: SessionRecord, _workdir: Path) -> ReviewHost:
         calls.append(session_record.native_session_id)
-        return ReviewHost([FINISHED])
+        return _host_factory(session_record, _workdir)
 
     await run_daily_review(
         event={"review_session_id": "agent-a"},
@@ -345,12 +351,13 @@ async def test_immediate_review_skips_preclaimed_cross_session_codex_fragment(
         host_factory=unexpected_factory,
     )
 
-    assert calls == []
+    assert calls == ["agent-a"]
     assert not (memory_root / "meta" / "persisted-segments").exists()
     conn = open_sessions_db(memory_root)
     try:
         repo = create_sessions_repository(conn)
         assert repo.review_requests.find("agent-a") is not None
+        assert repo.session_problems.find("agent-a") is not None
         [pending] = repo.codex.claim_pending_fragments()
         assert pending.turn_ids == ("turn-a", "turn-b")
     finally:

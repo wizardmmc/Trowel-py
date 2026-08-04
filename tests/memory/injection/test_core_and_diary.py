@@ -106,6 +106,18 @@ def test_injection_carries_memory_root_and_tool_usage(tmp_path: Path) -> None:
     assert "requires_read" in output
 
 
+def test_injection_requires_search_read_outcome_closure(tmp_path: Path) -> None:
+    output = build_memory_injection("2026-07-09", root=tmp_path)
+
+    assert "可能依赖历史决定、既有排障经验或用户偏好" in output
+    assert "先调用 memory.search" in output
+    assert "必须调用 memory.read 正文" in output
+    assert "对对应 read_id 调用 memory.outcome" in output
+    assert "无法判断时用 unknown" in output
+    assert "不得虚构反馈" in output
+    assert "没有读取正文时不要调用 outcome" in output
+
+
 def test_no_notes_body_injected(tmp_path: Path) -> None:
     write_core(tmp_path, [item("a", "x", "active")])
     MemoryStore(tmp_path).write_note(

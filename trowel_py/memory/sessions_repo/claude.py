@@ -92,6 +92,15 @@ class ClaudeSessionsRepository:
         ).fetchall()
         return [row_to_record(row) for row in rows]
 
+    def find(self, cc_session_id: str) -> ClaudeSessionRecord | None:
+        """按 Claude Code 原生会话 ID 读取当前来源记录。"""
+
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE cc_session_id = ?",
+            (cc_session_id,),
+        ).fetchone()
+        return row_to_record(row) if row is not None else None
+
     def mark_extracted(self, cc_session_id: str, when: str) -> None:
         """写入旧式整会话提炼完成时间。"""
         self._conn.execute(
@@ -213,7 +222,8 @@ class ClaudeSessionsRepository:
         self._conn.execute(
             "INSERT OR IGNORE INTO session_bindings"
             " (trowel_session_id, cc_session_id, session_kind, workdir,"
-            " bound_at, start_offset) VALUES (?, ?, ?, ?, ?, ?)",
+            " bound_at, start_offset, status, completed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 binding.trowel_session_id,
                 binding.cc_session_id,
@@ -221,8 +231,41 @@ class ClaudeSessionsRepository:
                 binding.workdir,
                 binding.bound_at,
                 binding.start_offset,
+                binding.status,
+                binding.completed_at,
             ),
         )
+        self._conn.commit()
+
+    def update_binding_status(
+        self,
+        trowel_session_id: str,
+        *,
+        status: str,
+        completed_at: str | None,
+    ) -> None:
+        """记录一个 CC binding 的最新 turn 状态。
+
+        Args:
+            trowel_session_id: 要更新的 Trowel 会话 ID。
+            status: running、completed、interrupted、failed 或 unknown。
+            completed_at: 终态记录时间；running 或 unknown 时可以为 None。
+
+        Raises:
+            ValueError: status 不属于稳定状态集合。
+            KeyError: 找不到对应的 Trowel binding。
+        """
+
+        if status not in {"running", "completed", "interrupted", "failed", "unknown"}:
+            raise ValueError(f"unknown Claude binding status: {status}")
+        cursor = self._conn.execute(
+            "UPDATE session_bindings SET status = ?, completed_at = ?"
+            " WHERE trowel_session_id = ?",
+            (status, completed_at, trowel_session_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(trowel_session_id)
         self._conn.commit()
 
     def find_cc_by_trowel(

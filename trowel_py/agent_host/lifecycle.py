@@ -177,19 +177,28 @@ class SessionLifecycle:
 
         self.remember_non_user_identity(binding)
         token = self._capacity.begin_close(binding.session_id)
+        owner_close_pending = False
         try:
+            if require_idle and self._capacity.has_in_flight_turn(binding):
+                raise SessionInFlightError(busy_message)
             if self._resource_registry is not None:
                 self._resource_registry.mark_owner_closing(
                     OwnerScope.SESSION,
                     agent_session_id=binding.session_id,
                 )
-            if require_idle and self._capacity.has_in_flight_turn(binding):
-                raise SessionInFlightError(busy_message)
+                owner_close_pending = True
             if before_runtime_close is not None:
                 before_runtime_close()
             runtime = self._runtime_ports[binding.runtime]
             result = await runtime.close(binding)
             if not result.is_closed:
+                if self._resource_registry is not None:
+                    self._resource_registry.mark_owner_needs_reconcile(
+                        OwnerScope.SESSION,
+                        agent_session_id=binding.session_id,
+                        remaining_resource_count=result.remaining_resource_count,
+                    )
+                    owner_close_pending = False
                 self._capacity.cancel_close(binding.session_id, token)
                 return result
             if self._resource_registry is not None:
@@ -198,12 +207,23 @@ class SessionLifecycle:
                     agent_session_id=binding.session_id,
                 )
                 if summary.live_resource_count:
+                    self._resource_registry.mark_owner_needs_reconcile(
+                        OwnerScope.SESSION,
+                        agent_session_id=binding.session_id,
+                        remaining_resource_count=summary.live_resource_count,
+                    )
+                    owner_close_pending = False
                     self._capacity.cancel_close(binding.session_id, token)
                     return RuntimeCloseResult.needs_reconcile(
                         remaining_resource_count=summary.live_resource_count,
                         remaining_resource_kinds=summary.remaining_resource_kinds,
                         error="session resources still need reconciliation",
                     )
+                self._resource_registry.mark_owner_closed(
+                    OwnerScope.SESSION,
+                    agent_session_id=binding.session_id,
+                )
+                owner_close_pending = False
             if before_binding_delete is not None:
                 before_binding_delete()
             self._capacity.complete_close(
@@ -212,6 +232,25 @@ class SessionLifecycle:
                 delete_binding=delete_binding,
             )
             return RuntimeCloseResult.closed()
-        except BaseException:
+        except BaseException as exc:
+            if owner_close_pending and self._resource_registry is not None:
+                try:
+                    summary = self._resource_registry.owner_summary(
+                        OwnerScope.SESSION,
+                        agent_session_id=binding.session_id,
+                    )
+                    self._resource_registry.mark_owner_needs_reconcile(
+                        OwnerScope.SESSION,
+                        agent_session_id=binding.session_id,
+                        remaining_resource_count=max(
+                            summary.live_resource_count,
+                            1,
+                        ),
+                    )
+                except BaseException as registry_error:
+                    exc.add_note(
+                        "failed to record session reconciliation after close error: "
+                        f"{registry_error!r}"
+                    )
             self._capacity.cancel_close(binding.session_id, token)
             raise

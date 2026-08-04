@@ -43,7 +43,10 @@ vi.mock("../api/cc", () => ({
 
 export const stream = {
   apply: null as ((event: AgentEvent) => void) | null,
-  resolvers: [] as Array<() => void>,
+  messageApply: null as ((event: AgentEvent) => void) | null,
+  eventApply: null as ((event: AgentEvent) => void) | null,
+  messageResolvers: [] as Array<() => void>,
+  eventResolvers: [] as Array<() => void>,
 };
 
 vi.mock("../agent/transport/stream", () => ({
@@ -51,7 +54,8 @@ vi.mock("../agent/transport/stream", () => ({
     (_url: string, _body: unknown, apply: (event: AgentEvent) => void) =>
       new Promise<void>((resolve) => {
         stream.apply = apply;
-        stream.resolvers.push(resolve);
+        stream.messageApply = apply;
+        stream.messageResolvers.push(resolve);
       }),
   ),
   getEventStream: vi.fn(
@@ -62,7 +66,8 @@ vi.mock("../agent/transport/stream", () => ({
     ) =>
       new Promise<void>((resolve) => {
         stream.apply = apply;
-        stream.resolvers.push(resolve);
+        stream.eventApply = apply;
+        stream.eventResolvers.push(resolve);
         options?.onOpen?.();
       }),
   ),
@@ -156,8 +161,24 @@ export function mockCreate(
 }
 
 export async function releaseAllStreams(): Promise<void> {
-  const resolvers = stream.resolvers;
-  stream.resolvers = [];
+  // Claude 的当前 POST 流结束后，常驻事件流仍应继续监听自动续轮；Codex
+  // 没有 POST 流时，该辅助函数才表示关闭它唯一的常驻流。
+  const hasMessageStream = stream.messageResolvers.length > 0;
+  const resolvers = hasMessageStream
+    ? stream.messageResolvers
+    : stream.eventResolvers;
+  if (hasMessageStream) {
+    stream.messageResolvers = [];
+  } else {
+    stream.eventResolvers = [];
+  }
+  for (const resolve of resolvers) resolve();
+  await Promise.resolve();
+}
+
+export async function releaseMessageStreams(): Promise<void> {
+  const resolvers = stream.messageResolvers;
+  stream.messageResolvers = [];
   for (const resolve of resolvers) resolve();
   await Promise.resolve();
 }
@@ -165,7 +186,10 @@ export async function releaseAllStreams(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   stream.apply = null;
-  stream.resolvers = [];
+  stream.messageApply = null;
+  stream.eventApply = null;
+  stream.messageResolvers = [];
+  stream.eventResolvers = [];
   seqCounter = 0;
   apiGenerateSessionTitle.mockImplementation(async (_sid, text) => ({
     ...mockAgentSessionForTitle(text),

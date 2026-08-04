@@ -7,7 +7,9 @@ const DESKTOP_HOST_OWNED_VARIABLES = [
   "TROWEL_DESKTOP_DATA_DIR",
   "TROWEL_DESKTOP_DATA_MODE",
   "TROWEL_DESKTOP_DIAGNOSTIC_SMOKE",
+  "TROWEL_DESKTOP_INSPECTION_ONLY",
   "TROWEL_DESKTOP_LOG_DIR",
+  "TROWEL_DESKTOP_READ_DATA_DIR",
   "TROWEL_DESKTOP_RENDERER_ORIGIN",
   "TROWEL_DESKTOP_RENDERER_CRASH_SMOKE",
   "TROWEL_DESKTOP_RESIDENCY_SMOKE",
@@ -27,7 +29,12 @@ export function buildDevelopmentDesktopEnvironment(parent, overrides) {
   return { ...environment, ...overrides };
 }
 
-/** 日常开发默认使用长期数据，只有显式参数才切换到隔离沙箱。 */
-export function resolveDevelopmentDataMode(argv) {
-  return argv.includes("--isolated") ? "isolated-dev" : "canonical-dev";
+/** 日常开发默认使用长期数据，临时数据根和显式参数使用隔离沙箱。 */
+export function resolveDevelopmentDataMode(
+  argv,
+  { usesTemporaryDataRoot = false } = {},
+) {
+  return usesTemporaryDataRoot || argv.includes("--isolated") || argv.includes("--observe")
+    ? "isolated-dev"
+    : "canonical-dev";
 }

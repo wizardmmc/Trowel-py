@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -89,6 +89,36 @@ class SendMessageBody(BaseModel):
     """
 
     text: str = Field(min_length=1)
+
+
+class StartInteractiveDelegationRequest(BaseModel):
+    """携带 Agent MCP 已复核的父会话和 child 创建参数。
+
+    Attributes:
+        parent_session_id: 发起委派的父 Trowel 会话 ID。
+        task: 交给 Claude Code child 的非空任务正文。
+        create_body: Agent MCP 根据父 binding 生成的 child 会话创建请求。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_session_id: NonEmptyText
+    task: NonEmptyText
+    create_body: dict[str, Any]
+
+
+class AnswerInteractiveDelegationRequest(BaseModel):
+    """携带委派归属和 Claude Code AskUserQuestion 的答案。
+
+    Attributes:
+        parent_session_id: 当前 MCP 进程声明的父 Trowel 会话 ID。
+        answers: 以完整问题或唯一标题为键的答案映射。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_session_id: NonEmptyText
+    answers: dict[str, str]
 
 
 class RenameAgentSessionRequest(BaseModel):
