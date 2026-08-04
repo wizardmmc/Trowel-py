@@ -1,6 +1,7 @@
 """创建采用项目统一设置的 SQLite 连接。"""
 
 import sqlite3
+import stat
 from pathlib import Path
 
 from trowel_py.application_paths import (
@@ -38,8 +39,9 @@ def create_db(db_path: str | Path | None = None) -> sqlite3.Connection:
         已启用字典式行读取、WAL 和外键约束的 SQLite 连接。
     """
 
+    resolved_path = resolve_database_path(db_path)
     conn = sqlite3.connect(
-        resolve_database_path(db_path),
+        resolved_path,
         timeout=10,
         check_same_thread=False,
     )
@@ -47,4 +49,25 @@ def create_db(db_path: str | Path | None = None) -> sqlite3.Connection:
     # WAL 允许读取与写入并行；外键检查是 SQLite 的连接级开关。
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    _restrict_database_permissions(resolved_path)
     return conn
+
+
+def _restrict_database_permissions(db_path: str | Path) -> None:
+    """把主库及已创建的 WAL 辅助文件收紧为仅当前用户可读写。
+
+    Args:
+        db_path: 已成功打开的 SQLite 文件路径；内存库和 SQLite URI 会跳过。
+    """
+
+    raw_path = str(db_path)
+    if raw_path == ":memory:" or raw_path.startswith("file:"):
+        return
+    private_mode = stat.S_IRUSR | stat.S_IWUSR
+    for path in (
+        Path(db_path),
+        Path(f"{raw_path}-wal"),
+        Path(f"{raw_path}-shm"),
+    ):
+        if path.exists():
+            path.chmod(private_mode)

@@ -27,6 +27,7 @@ from trowel_py.cc_host.proxy import (
     router as proxy_router,
 )
 from trowel_py.cc_host.routes import router as cc_host_router
+from trowel_py.configuration.routes import router as configuration_router
 from trowel_py.desktop.access import (
     DesktopCredentialMiddleware,
     validate_desktop_renderer_origin,
@@ -577,6 +578,7 @@ def create_app() -> FastAPI:
     app.include_router(desktop_router, prefix="/api/desktop")
     app.include_router(telemetry_router, prefix="/api/telemetry")
     app.include_router(statistics_router, prefix="/api/statistics")
+    app.include_router(configuration_router, prefix="/api/configuration")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()
