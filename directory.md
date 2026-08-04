@@ -30,6 +30,7 @@
 | `desktop/data_root_lock.py` / `desktop/data_compatibility.py` | 独占长期数据根，并阻止 dev 抢先执行正式 App 尚未应用的 schema migration |
 | `config.py` | 模型服务配置读取 |
 | `db/` | 主数据库连接与 SQL 迁移 |
+| `configuration/` | Trowel 自有连接、只写 secret、模型目录、会话配置、任务绑定、路径和分层诊断 API |
 | `agent_host/` | Claude Code 与 Codex 的统一会话边界 |
 | `agent_host/capabilities.py` | 版本化保存两种 runtime 已实证可用的公开能力矩阵 |
 | `agent_host/runtimes/` | 两种 runtime 的共同实时状态、创建回滚、关闭操作和对称事件适配器 |
