@@ -1,5 +1,6 @@
 """验证 Agent 统计只读读取真实 sessions registry 与原生文件。"""
 
+import json
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -203,3 +204,90 @@ def test_stale_running_registry_rows_are_not_reported_as_live(
 
     assert result.statuses.running == 0
     assert result.statuses.unknown == 1
+
+
+def test_codex_journal_facts_are_reused_until_source_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """切换时间范围不重复扫描 Codex journal，追加事件后缓存自动失效。"""
+
+    memory_root = tmp_path / "memory"
+    journal = tmp_path / "turn.jsonl"
+    events = [
+        {
+            "type": "turn_started",
+            "timestamp": "2026-08-03T10:00:00+08:00",
+            "payload": {},
+        },
+        {
+            "type": "finished",
+            "timestamp": "2026-08-03T10:00:01+08:00",
+            "payload": {},
+        },
+    ]
+    journal.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    connection = open_sessions_db(memory_root)
+    repository = create_sessions_repository(connection)
+    repository.codex.register_turn(
+        thread_id="thread-cache",
+        turn_id="turn-cache",
+        trowel_session_id="session-cache",
+        workdir="/private/workspace",
+        journal_path=str(journal),
+        registered_at="2026-08-03T10:00:00+08:00",
+        model="gpt-5.6-sol",
+        effort="high",
+        provider="openai",
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    repository.codex.complete_turn(
+        "thread-cache",
+        "turn-cache",
+        status="completed",
+        completed_at="2026-08-03T10:00:01+08:00",
+    )
+    connection.close()
+
+    from trowel_py.statistics.agent import codex as codex_adapter
+
+    original_read = codex_adapter._read_statistics_events
+    scans = 0
+
+    def counting_read(handle):
+        """记录完整 journal 的统计扫描次数。"""
+
+        nonlocal scans
+        scans += 1
+        return original_read(handle)
+
+    monkeypatch.setattr(codex_adapter, "_read_statistics_events", counting_read)
+    reader = FileAgentObservationReader(
+        memory_root,
+        BindingStore(tmp_path / "agent_sessions.json"),
+    )
+    one_day = parse_statistics_window(date(2026, 8, 3), date(2026, 8, 3), "UTC")
+    one_month = parse_statistics_window(date(2026, 7, 5), date(2026, 8, 3), "UTC")
+
+    reader.read(one_day)
+    reader.read(one_month)
+    assert scans == 1
+
+    with journal.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "type": "status",
+                    "timestamp": "2026-08-03T10:00:02+08:00",
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+    reader.read(one_month)
+
+    assert scans == 2

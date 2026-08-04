@@ -244,6 +244,153 @@ def test_memory_statistics_loads_note_snapshot_once(
     assert calls == 1
 
 
+def test_memory_statistics_reuses_note_snapshot_until_a_note_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """切换时间范围复用 Note 快照，文件改动后立即重读。"""
+
+    stem = write_note(tmp_path, "cached-note")
+    original_load = MemoryStore.load_notes_with_id
+    calls = 0
+
+    def counting_load(store: MemoryStore, filter=None):
+        """记录跨请求触发的完整 Note 扫描次数。"""
+
+        nonlocal calls
+        calls += 1
+        return original_load(store, filter)
+
+    monkeypatch.setattr(MemoryStore, "load_notes_with_id", counting_load)
+    reader = FileMemoryStatisticsReader(tmp_path)
+    one_day = parse_statistics_window(
+        date(2026, 8, 2),
+        date(2026, 8, 2),
+        "Asia/Shanghai",
+    )
+    one_month = parse_statistics_window(
+        date(2026, 7, 4),
+        date(2026, 8, 2),
+        "Asia/Shanghai",
+    )
+
+    build_memory_statistics(reader, one_day)
+    build_memory_statistics(reader, one_month)
+    assert calls == 1
+
+    MemoryStore(tmp_path).update_note_fields(stem, {"updated": "2026-08-03"})
+    build_memory_statistics(reader, one_month)
+
+    assert calls == 2
+
+
+def test_memory_statistics_reloads_note_changed_during_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Note 在加载期间变化时，下一次查询不能继续复用旧快照。"""
+
+    stem = write_note(tmp_path, "racing-note")
+    original_load = MemoryStore.load_notes_with_id
+    calls = 0
+
+    def changing_load(store: MemoryStore, filter=None):
+        """在首轮读取完成后模拟另一个写入者原子更新 Note。"""
+
+        nonlocal calls
+        calls += 1
+        rows = original_load(store, filter)
+        if calls == 1:
+            MemoryStore(tmp_path).update_note_fields(
+                stem,
+                {"updated": "2026-08-03"},
+            )
+        return rows
+
+    monkeypatch.setattr(MemoryStore, "load_notes_with_id", changing_load)
+    reader = FileMemoryStatisticsReader(tmp_path)
+    window = parse_statistics_window(
+        date(2026, 8, 2),
+        date(2026, 8, 2),
+        "Asia/Shanghai",
+    )
+
+    build_memory_statistics(reader, window)
+    build_memory_statistics(reader, window)
+
+    assert calls == 2
+
+
+def test_memory_statistics_reuses_evidence_snapshot_across_ranges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """访问、反馈和判效文件在切换范围时只解析一次，追加记录后局部失效。"""
+
+    _seed_production_shape_memory(tmp_path)
+    from trowel_py.memory import access_log as access_module
+    from trowel_py.memory import recompute as recompute_module
+    from trowel_py.memory.north_star import health as health_module
+
+    original_access = access_module.read_access_log
+    original_outcomes = access_module.read_outcome_log
+    access_calls = 0
+    outcome_calls = 0
+
+    def counting_access(root):
+        """记录完整访问日志的解析次数。"""
+
+        nonlocal access_calls
+        access_calls += 1
+        return original_access(root)
+
+    def counting_outcomes(root):
+        """记录完整反馈日志的解析次数。"""
+
+        nonlocal outcome_calls
+        outcome_calls += 1
+        return original_outcomes(root)
+
+    for module in (access_module, recompute_module, health_module):
+        monkeypatch.setattr(module, "read_access_log", counting_access)
+        monkeypatch.setattr(module, "read_outcome_log", counting_outcomes)
+
+    reader = FileMemoryStatisticsReader(tmp_path)
+    one_day = parse_statistics_window(
+        date(2026, 8, 2),
+        date(2026, 8, 2),
+        "Asia/Shanghai",
+    )
+    one_month = parse_statistics_window(
+        date(2026, 7, 4),
+        date(2026, 8, 2),
+        "Asia/Shanghai",
+    )
+
+    build_memory_statistics(reader, one_day)
+    build_memory_statistics(reader, one_month)
+
+    assert access_calls == 1
+    assert outcome_calls == 1
+
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="2026-08-02T11:00:00+08:00",
+            trowel_session_id="",
+            cc_session_id="s000",
+            toolUseId="tool-new-evidence",
+            action="search",
+            search_id="new-evidence",
+            query="新增访问证据",
+        ),
+    )
+    build_memory_statistics(reader, one_month)
+
+    assert access_calls == 2
+    assert outcome_calls == 1
+
+
 def test_legacy_judgement_is_not_forced_into_selected_date(tmp_path: Path) -> None:
     stem = write_note(tmp_path, "legacy-note")
     _seed_sessions(tmp_path, 1)

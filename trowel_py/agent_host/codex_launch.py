@@ -72,6 +72,7 @@ def prepare_codex_session(
         build_default_trowel_agent_mcp,
         build_default_trowel_memory_mcp,
     )
+    from trowel_py.application_paths import resolve_application_data_root
     from trowel_py.memory.injection import build_memory_injection
     from trowel_py.memory.codex_journal import CodexTurnJournal
     from trowel_py.memory.paths import resolve_memory_root
@@ -152,6 +153,7 @@ def prepare_codex_session(
         build_default_trowel_memory_mcp(
             trowel_session_id=session_id,
             memory_root=str(memory_root),
+            application_data_root=str(resolve_application_data_root()),
             registration_env=memory_registration_env,
         )
         if req.memory_enabled

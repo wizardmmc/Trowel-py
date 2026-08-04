@@ -73,19 +73,19 @@ function FactStrip({ data }: { readonly data: MemoryStatistics }) {
       />
       <Fact
         label="命中后读取"
-        value={formatRatioCounts(data.retrieval.read_rate)}
-        meta={`${formatPercent(data.retrieval.read_rate.ratio)} · 候选命中是分母`}
+        value={formatRatioWithApproximatePercent(data.retrieval.read_rate)}
+        meta="候选命中是分母"
         explanation="打开读取次数 / 搜索返回的 Note 候选数。它不是搜索调用成功率。"
       />
       <Fact
         label="HELPFUL"
-        value={formatRatioCounts(data.effect.helpful_rate)}
+        value={formatRatioWithApproximatePercent(data.effect.helpful_rate)}
         meta={`harmful ${data.effect.harmful} · unused ${data.effect.unused}`}
         explanation="helpful Note-session 对 / helpful、harmful、unused 的合计。unknown 不进入分母。"
       />
       <Fact
         label="RECALL MISS"
-        value={formatRatioCounts(data.recall.miss_rate)}
+        value={formatRatioWithApproximatePercent(data.recall.miss_rate)}
         meta={`检索 ${data.recall.retrieval_miss} · awareness ${data.recall.awareness_miss}`}
         explanation="retrieval miss 与 awareness miss 合计 / 已判效用户会话。一个会话可能有多条 miss。"
       />
@@ -330,6 +330,19 @@ function QualityBadge({ quality }: { readonly quality: StatisticsQuality }) {
 
 function formatRatioCounts(value: MemoryRatio): string {
   return `${formatInteger(value.numerator)} / ${formatInteger(value.denominator)}`;
+}
+
+/** 在真实分子分母后附上近似比例；比例不可用时只保留计数。 */
+function formatRatioWithApproximatePercent(value: MemoryRatio): string {
+  const counts = formatRatioCounts(value);
+  return value.quality === "unavailable" || value.ratio === null
+    ? counts
+    : `${counts} ≈ ${formatApproximatePercent(value.ratio)}`;
+}
+
+/** 与总览保持一致，把近似比例展示为一位小数。 */
+function formatApproximatePercent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function formatPercent(value: number | null): string {

@@ -18,6 +18,8 @@ from .health import compute_north_star as _compute_north_star
 from .usage import memory_usage_metrics as _memory_usage_metrics
 
 if TYPE_CHECKING:
+    from trowel_py.memory.access_log import AccessRecord, OutcomeRecord
+    from trowel_py.memory.judgements import JudgementReport
     from trowel_py.memory.promotion_policy import PromotionPolicy
     from trowel_py.memory.types import Note
 
@@ -56,6 +58,8 @@ def compute_north_star_from_notes(
     notes_with_id: list[tuple[str, "Note"]],
     *,
     today: str | None = None,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
 ) -> dict[str, Any]:
     """使用同请求已加载的 Note 快照计算语料健康和原始日志计数。
 
@@ -63,6 +67,8 @@ def compute_north_star_from_notes(
         root: access 与 outcome 日志所在的 Memory 根目录。
         notes_with_id: 文件 stem 与 Note 组成的同请求只读快照。
         today: 报告的 ``as_of`` 日期；为空时使用系统本地日期。
+        access_records: 调用方已加载的访问日志快照；省略时读取文件。
+        outcome_records: 调用方已加载的反馈日志快照；省略时读取文件。
 
     Returns:
         与 ``compute_north_star`` 相同、但不再次扫描 Note 文件的健康指标。
@@ -73,6 +79,8 @@ def compute_north_star_from_notes(
         store_cls=MemoryStore,
         harmful_retire_threshold=HARMFUL_RETIRE_THRESHOLD,
         notes_with_id=notes_with_id,
+        access_records=access_records,
+        outcome_records=outcome_records,
     )
 
 
@@ -115,6 +123,9 @@ def memory_usage_metrics_from_notes(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     strict_read_only: bool = False,
+    access_records: list["AccessRecord"] | None = None,
+    outcome_records: list["OutcomeRecord"] | None = None,
+    judgement_reports: list["JudgementReport"] | None = None,
 ) -> dict[str, Any]:
     """使用同请求已加载的 Note 快照计算 Memory 使用质量。
 
@@ -126,6 +137,9 @@ def memory_usage_metrics_from_notes(
         window_start: 可选半开查询窗起点；必须与终点同时提供。
         window_end: 可选半开查询窗终点；必须与起点同时提供。
         strict_read_only: 是否禁止 sessions.db 迁移并使用只读连接。
+        access_records: 调用方已加载的访问日志快照；省略时读取文件。
+        outcome_records: 调用方已加载的反馈日志快照；省略时读取文件。
+        judgement_reports: 调用方已加载的判效报告快照；省略时读取文件。
 
     Returns:
         与 ``memory_usage_metrics`` 相同、但不再次扫描 Note 文件的指标字典。
@@ -138,6 +152,9 @@ def memory_usage_metrics_from_notes(
         window_end=window_end,
         notes_with_id=notes_with_id,
         strict_read_only=strict_read_only,
+        access_records=access_records,
+        outcome_records=outcome_records,
+        judgement_reports=judgement_reports,
     )
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from trowel_py.agent_host.store import resolve_bindings_path
 from trowel_py.agent_host.workspaces import resolve_recent_workspaces_path
 from trowel_py.application_paths import resolve_application_data_root
+from trowel_py import config
 from trowel_py.db.connection import resolve_database_path
 from trowel_py.memory import paths as memory_paths
 from trowel_py.memory.mcp_config import _config_path
@@ -132,3 +133,20 @@ def test_browser_defaults_still_use_home_without_desktop_override(
     assert resolve_application_data_root() == expected
     assert resolve_bindings_path() == expected / "agent_sessions.json"
     assert resolve_recent_workspaces_path() == expected / "workspaces.db"
+
+
+def test_llm_config_does_not_fall_back_to_source_or_packaged_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """工作目录无配置时返回应用数据候选，不读取仓库或 ``_internal``。"""
+
+    workdir = tmp_path / "workdir"
+    home = tmp_path / "home"
+    workdir.mkdir()
+    home.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("TROWEL_DATA_ROOT", raising=False)
+
+    assert config._find_config_path() == home / ".trowel" / "config.toml"
