@@ -158,6 +158,12 @@ class ResourceRegistry:
 
         return self._process_controller
 
+    @property
+    def registration_credential(self) -> str:
+        """返回本应用自有子进程访问本地私有 API 使用的桌面凭据。"""
+
+        return self._registration_credential
+
     def set_owner_close_observer(
         self,
         observer: OwnerCloseObserver | None,
@@ -355,7 +361,9 @@ class ResourceRegistry:
             if reported_identity in descendants:
                 matching.append(candidate)
         if len(matching) != 1:
-            raise ValueError("reported resource is not in one trusted runtime process tree")
+            raise ValueError(
+                "reported resource is not in one trusted runtime process tree"
+            )
         return matching[0]
 
     def register_handle(
@@ -916,9 +924,7 @@ class ResourceRegistry:
                 self._process_controller.signal_group(process_group, signal_name)
                 signaled.add(process_group)
             except (ProcessLookupError, PermissionError, OSError, RuntimeError) as exc:
-                errors.append(
-                    f"{signal_name} process group: {type(exc).__name__}"
-                )
+                errors.append(f"{signal_name} process group: {type(exc).__name__}")
                 failed_resources.update(
                     {
                         record.resource_id: (
@@ -945,9 +951,7 @@ class ResourceRegistry:
         }
         while remaining and time.monotonic() < deadline:
             if poll_interval > 0:
-                time.sleep(
-                    min(poll_interval, max(deadline - time.monotonic(), 0.0))
-                )
+                time.sleep(min(poll_interval, max(deadline - time.monotonic(), 0.0)))
             remaining = {
                 group
                 for group in remaining
@@ -1043,7 +1047,9 @@ class ResourceRegistry:
             if existing is not None:
                 if existing == record:
                     return existing
-                raise ValueError(f"live resource id already registered: {record.resource_id}")
+                raise ValueError(
+                    f"live resource id already registered: {record.resource_id}"
+                )
             self._recent_closed.pop(record.resource_id, None)
             self._records[record.resource_id] = record
             self._publish_snapshot()
@@ -1288,7 +1294,9 @@ class ResourceRegistry:
             "version": SNAPSHOT_VERSION,
             "app_instance_id": redact_identity(self._app_instance_id),
             "updated_at": self._stamp(),
-            "resources": [self._snapshot_record(record) for record in self._records.values()],
+            "resources": [
+                self._snapshot_record(record) for record in self._records.values()
+            ],
         }
         self._snapshot_writer(path, payload)
 

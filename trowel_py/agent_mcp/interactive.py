@@ -1,4 +1,4 @@
-"""同一 MCP 进程内的 Claude child 交互生命周期。"""
+"""由 Agent Host 跨 MCP 进程持有的 Claude child 交互生命周期。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from typing import Any, TypeVar
 import httpx
 
 from trowel_py.agent_mcp.http_errors import agent_api_error_detail
+from trowel_py.agent_mcp.interactive_errors import (
+    InteractiveDelegationCleanupError,
+    InteractiveDelegationError,
+)
 
+_BACKGROUND_STATES = frozenset({"starting", "running", "unknown_requires_reconcile"})
 _ACTIONABLE_STATES = frozenset({"needs_guidance", "completed", "failed"})
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
 
@@ -22,24 +27,12 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class InteractiveDelegationError(RuntimeError):
-    """表示交互委派的输入无效、操作失败或句柄无效。"""
-
-    pass
-
-
-class InteractiveDelegationCleanupError(InteractiveDelegationError):
-    """表示无法确认子会话已经清理。"""
-
-    pass
-
-
 @dataclass
 class _InteractiveDelegation:
-    """保存当前 MCP 进程内一次交互委派的实时状态。
+    """保存 Agent Host 进程内一次交互委派的实时状态。
 
     Attributes:
-        delegation_id: 当前 MCP 进程为本次委派生成的 ID。
+        delegation_id: Agent Host 为本次委派生成的 ID。
         parent_session_id: 发起委派的 Trowel 会话 ID。
         child_session_id: 子会话的 Trowel 会话 ID；创建完成前为空字符串。
         child_binding: 子会话绑定信息；创建响应提供初值，session_started 事件补充
@@ -57,10 +50,11 @@ class _InteractiveDelegation:
         cleanup_error: 最近一次清理失败的原因；没有失败时为 None。
         error: 父会话可见的委派失败原因；没有失败时为 None。
         version: 每次 transition() 更新 status、question 和 error 时递增的版本号，
-            供状态长轮询判断是否返回。
-        condition: 用于唤醒状态长轮询调用的异步条件变量。
+            供父会话识别两次查询之间是否发生变化。
+        condition: 用于关闭创建中委派时等待子会话 ID 的异步条件变量。
         close_lock: 防止同一子会话被并发清理的异步锁。
         consumer: 独占子会话 SSE 的后台任务；任务尚未启动时为 None。
+        closing: 是否已经开始显式收敛；此时 child 的中断终态不能再次唤醒父会话。
     """
 
     delegation_id: str
@@ -79,6 +73,7 @@ class _InteractiveDelegation:
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     close_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     consumer: asyncio.Task[None] | None = None
+    closing: bool = False
 
     async def transition(
         self,
@@ -106,18 +101,34 @@ class _InteractiveDelegation:
             self.condition.notify_all()
             return self.version
 
-    async def wait_actionable(self, *, after_version: int = -1) -> None:
-        """等待版本前进且委派进入父会话需要处理的状态。
+    async def wait_for_update(
+        self,
+        *,
+        after_version: int,
+        timeout: float,
+    ) -> None:
+        """等待状态版本前进或委派离开后台运行状态。
 
         Args:
-            after_version: 已观察的状态版本；只有更高版本才返回。
+            after_version: 调用方已经观察到的状态版本。
+            timeout: 本次等待的最长秒数。
         """
 
         async with self.condition:
-            await self.condition.wait_for(
-                lambda: self.version > after_version
-                and self.status in _ACTIONABLE_STATES
-            )
+            if self.version > after_version or self.status not in _BACKGROUND_STATES:
+                return
+            try:
+                await asyncio.wait_for(
+                    self.condition.wait_for(
+                        lambda: (
+                            self.version > after_version
+                            or self.status not in _BACKGROUND_STATES
+                        )
+                    ),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                pass
 
     def snapshot(self) -> dict[str, Any]:
         """生成供父会话查询的当前委派快照。
@@ -129,6 +140,7 @@ class _InteractiveDelegation:
 
         return {
             "delegation_id": self.delegation_id,
+            "version": self.version,
             "parent": {"trowel_session_id": self.parent_session_id},
             "child": {
                 "trowel_session_id": self.child_session_id,
@@ -154,21 +166,26 @@ class _InteractiveDelegation:
 
 
 class InteractiveBroker:
-    """在一个 stdio MCP 进程内持有 child SSE，供后续 tool call 继续。"""
+    """在 Agent Host 应用进程内持有 child SSE，供后续 MCP 进程继续。"""
 
     def __init__(
         self,
         *,
         base_url: str,
         transport: httpx.AsyncBaseTransport | None = None,
+        headers: dict[str, str] | None = None,
+        notifier: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         cleanup_timeout: float = 10.0,
         consumer_stop_timeout: float = 10.0,
     ) -> None:
-        """配置 Agent API 地址、清理时限和进程内委派记录。
+        """配置 Agent API 地址、清理时限和应用级委派记录。
 
         Args:
             base_url: Trowel Agent API 的根地址。
             transport: 发起 Agent API 请求时使用的可选 httpx transport。
+            headers: Agent Host 自调用时携带的可选请求头。
+            notifier: 可执行状态变化后接收完整快照的异步回调；未提供时只保留查询
+                接口，不自动唤醒父会话。
             cleanup_timeout: 关闭创建中的委派时等待子会话 ID 的秒数；也用于计算
                 整个清理流程的超时上限。
             consumer_stop_timeout: 等待子会话事件任务自行结束的秒数；超时后取消
@@ -179,9 +196,12 @@ class InteractiveBroker:
             raise ValueError("interactive cleanup timeouts must be positive")
         self._base_url = base_url.rstrip("/")
         self._transport = transport
+        self._headers = dict(headers or {})
+        self._notifier = notifier
         self._cleanup_timeout = cleanup_timeout
         self._consumer_stop_timeout = consumer_stop_timeout
         self._records: dict[str, _InteractiveDelegation] = {}
+        self._closed_parents: set[str] = set()
 
     def _client(self) -> httpx.AsyncClient:
         """创建不设 HTTP 超时的 Agent API 客户端。"""
@@ -190,6 +210,7 @@ class InteractiveBroker:
             base_url=self._base_url,
             timeout=httpx.Timeout(None),
             transport=self._transport,
+            headers=self._headers,
         )
 
     async def start(
@@ -215,6 +236,10 @@ class InteractiveBroker:
             raise ValueError("task must not be empty")
         if create_body.get("runtime") != "claude_code":
             raise ValueError("interactive delegation only supports claude_code")
+        if parent_session_id in self._closed_parents:
+            raise InteractiveDelegationError(
+                f"parent session {parent_session_id} is closing or closed"
+            )
         record = _InteractiveDelegation(
             delegation_id=uuid.uuid4().hex,
             parent_session_id=parent_session_id,
@@ -223,11 +248,6 @@ class InteractiveBroker:
         record.consumer = asyncio.create_task(
             self._consume(record, task=task, create_body=create_body)
         )
-        try:
-            await record.wait_actionable()
-        except asyncio.CancelledError:
-            await self.close(record.delegation_id)
-            raise
         return record.snapshot()
 
     async def respond(
@@ -239,7 +259,7 @@ class InteractiveBroker:
         状态，供父会话重试。
 
         Args:
-            delegation_id: 当前 MCP 进程生成的委派 ID。
+            delegation_id: Agent Host 生成的委派 ID。
             answers: 每个完整问题或唯一标题对应的答案；必须覆盖全部待答问题。
 
         Returns:
@@ -252,12 +272,13 @@ class InteractiveBroker:
                 f"delegation {delegation_id} is not waiting for guidance"
             )
         pending_question = record.question
-        baseline = await record.transition("running")
+        normalized_answers = _normalize_answers(pending_question, answers)
+        await self._transition(record, "running")
         try:
             async with self._client() as client:
                 response = await client.post(
                     f"/api/cc/sessions/{record.child_session_id}/answer",
-                    json={"answers": answers, "cancel": False},
+                    json={"answers": normalized_answers, "cancel": False},
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -266,13 +287,13 @@ class InteractiveBroker:
                         "CC rejected the elicitation answer"
                     )
         except Exception as exc:
-            await record.transition(
+            await self._transition(
+                record,
                 "needs_guidance",
                 question=pending_question,
                 error=str(exc),
             )
             raise
-        await record.wait_actionable(after_version=baseline)
         return record.snapshot()
 
     def status(self, delegation_id: str) -> dict[str, Any]:
@@ -293,7 +314,7 @@ class InteractiveBroker:
         异常。
 
         Args:
-            delegation_id: 当前 MCP 进程生成的委派 ID。
+            delegation_id: Agent Host 生成的委派 ID。
 
         Returns:
             已关闭或等待重试清理的委派快照。
@@ -312,7 +333,8 @@ class InteractiveBroker:
         except TimeoutError as exc:
             record.cleanup_status = "preserved"
             record.cleanup_error = repr(exc)
-            await record.transition(
+            await self._transition(
+                record,
                 "unknown_requires_reconcile",
                 error=(
                     "cleanup timed out; child binding may remain: "
@@ -324,28 +346,88 @@ class InteractiveBroker:
             ) from exc
 
     async def shutdown(self) -> None:
-        """尝试逐一清理当前 MCP 进程仍在管理的交互委派。"""
+        """尝试逐一清理 Agent Host 进程仍在管理的交互委派。"""
 
         for delegation_id in list(self._records):
             try:
                 await self.close(delegation_id)
             except Exception:
                 logger.warning(
-                    "interactive delegation %s cleanup failed during MCP shutdown",
+                    "interactive delegation %s cleanup failed during Agent Host shutdown",
                     delegation_id,
                     exc_info=True,
                 )
 
+    async def close_parent(self, parent_session_id: str) -> None:
+        """在父会话关闭前收敛它创建的全部交互委派。
+
+        Args:
+            parent_session_id: 即将关闭的父 Trowel 会话 ID。
+
+        Raises:
+            InteractiveDelegationCleanupError: 任一 child 无法确认已经清理。
+        """
+
+        self._closed_parents.add(parent_session_id)
+        delegation_ids = [
+            record.delegation_id
+            for record in self._records.values()
+            if record.parent_session_id == parent_session_id
+        ]
+        errors: list[str] = []
+        for delegation_id in delegation_ids:
+            try:
+                await self.close(delegation_id)
+            except Exception as exc:  # noqa: BLE001 - 保留所有未清理句柄后统一拒绝父关闭。
+                errors.append(f"{delegation_id}: {exc}")
+        if errors:
+            raise InteractiveDelegationCleanupError(
+                "parent delegation cleanup failed: " + "; ".join(errors)
+            )
+
     def _require(self, delegation_id: str) -> _InteractiveDelegation:
-        """读取进程内委派记录，并明确拒绝未知或已失效的句柄。"""
+        """读取应用级委派记录，并明确拒绝未知或已失效的句柄。"""
 
         record = self._records.get(delegation_id)
         if record is None:
-            raise InteractiveDelegationError(
-                f"unknown delegation_id: {delegation_id}; "
-                "the MCP process may have restarted"
-            )
+            raise InteractiveDelegationError(f"unknown delegation_id: {delegation_id}")
         return record
+
+    async def _transition(
+        self,
+        record: _InteractiveDelegation,
+        status: str,
+        *,
+        question: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """更新委派状态，并把可执行的新版本交给父会话调度器。
+
+        通知失败只记录日志；broker 状态和 child SSE reader 不能依赖父会话是否
+        当前可恢复。
+
+        Args:
+            record: 本次状态变化所属的应用级委派记录。
+            status: 新的父会话可见状态。
+            question: needs_guidance 状态携带的原始提问。
+            error: 状态变化附带的失败原因。
+        """
+
+        await record.transition(status, question=question, error=error)
+        if (
+            self._notifier is None
+            or record.closing
+            or status not in _ACTIONABLE_STATES
+        ):
+            return
+        try:
+            await self._notifier(record.snapshot())
+        except Exception:  # noqa: BLE001 - 通知失败不能改写已经观察到的 child 状态。
+            logger.warning(
+                "interactive delegation %s parent notification failed",
+                record.delegation_id,
+                exc_info=True,
+            )
 
     async def _close_record(self, record: _InteractiveDelegation) -> dict[str, Any]:
         """串行清理一次委派。
@@ -354,8 +436,37 @@ class InteractiveBroker:
         """
 
         async with record.close_lock:
+            record.closing = True
             if record.cleanup_status == "deleted":
                 return record.snapshot()
+            if not record.child_session_id and record.status == "starting":
+                baseline = record.version
+                await record.wait_for_update(
+                    after_version=baseline,
+                    timeout=self._cleanup_timeout,
+                )
+                if not record.child_session_id and record.status == "starting":
+                    error = (
+                        "child creation did not resolve; no binding id is available "
+                        "for cleanup"
+                    )
+                    record.cleanup_status = "preserved"
+                    record.cleanup_error = error
+                    await self._transition(
+                        record,
+                        "unknown_requires_reconcile",
+                        error=error,
+                    )
+                    raise InteractiveDelegationCleanupError(error)
+            if (
+                not record.child_session_id
+                and record.status == "unknown_requires_reconcile"
+            ):
+                raise InteractiveDelegationCleanupError(
+                    record.cleanup_error
+                    or "child creation did not resolve; no binding id is available "
+                    "for cleanup"
+                )
             async with self._client() as client:
                 if record.child_session_id and record.terminal_event is None:
                     try:
@@ -366,7 +477,8 @@ class InteractiveBroker:
                     except Exception as exc:
                         record.cleanup_status = "preserved"
                         record.cleanup_error = repr(exc)
-                        await record.transition(
+                        await self._transition(
+                            record,
                             "unknown_requires_reconcile",
                             error=(
                                 "interrupt failed; child binding was preserved: "
@@ -387,11 +499,13 @@ class InteractiveBroker:
                     except Exception as exc:
                         record.cleanup_status = "preserved"
                         record.cleanup_error = repr(exc)
-                        await record.transition("cleanup_pending", error=str(exc))
+                        await self._transition(
+                            record, "cleanup_pending", error=str(exc)
+                        )
                         return record.snapshot()
             record.cleanup_status = "deleted"
             record.cleanup_error = None
-            await record.transition("closed")
+            await self._transition(record, "closed")
             result = record.snapshot()
             self._records.pop(record.delegation_id, None)
             return result
@@ -428,9 +542,7 @@ class InteractiveBroker:
         """
 
         cleanup = asyncio.create_task(
-            asyncio.wait_for(
-                operation(), timeout=timeout or self._cleanup_timeout
-            )
+            asyncio.wait_for(operation(), timeout=timeout or self._cleanup_timeout)
         )
         while True:
             try:
@@ -452,7 +564,7 @@ class InteractiveBroker:
         """创建子会话并独占读取事件流，用提问和终态更新委派记录。
 
         Args:
-            record: 本次委派共享的进程内状态。
+            record: 本次委派共享的 Agent Host 应用级状态。
             task: 交给子会话执行的初始任务。
             create_body: 创建 Claude Code 子会话时发送给 Agent API 的请求体。
         """
@@ -475,7 +587,7 @@ class InteractiveBroker:
                     )
                 record.child_binding = dict(data)
                 record.child_session_id = data["session_id"]
-                await record.transition("running")
+                await self._transition(record, "running")
 
                 async with client.stream(
                     "POST",
@@ -506,16 +618,15 @@ class InteractiveBroker:
                             model = event_payload.get("model")
                             if isinstance(model, str) and model:
                                 record.child_binding["model"] = model
-                        elif event_type == "text" and isinstance(
-                            event_payload, dict
-                        ):
+                        elif event_type == "text" and isinstance(event_payload, dict):
                             text = event_payload.get("text")
                             if isinstance(text, str):
                                 record.answer_chunks.append(text)
                         elif event_type == "elicit_request" and isinstance(
                             event_payload, dict
                         ):
-                            await record.transition(
+                            await self._transition(
+                                record,
                                 "needs_guidance", question=dict(event_payload)
                             )
                         elif event_type == "finished":
@@ -523,12 +634,13 @@ class InteractiveBroker:
                             break
                         elif event_type in _ERROR_TERMINALS:
                             record.terminal_event = event_type
-                            await record.transition(
-                                "failed", error=_event_error(event)
+                            await self._transition(
+                                record, "failed", error=_event_error(event)
                             )
                             return
                     else:
-                        await record.transition(
+                        await self._transition(
+                            record,
                             "failed",
                             error="delegated stream ended without terminal event",
                         )
@@ -539,16 +651,14 @@ class InteractiveBroker:
                     record.child_session_id,
                     record.child_binding,
                 )
-                await record.transition("completed")
+                await self._transition(record, "completed")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             error = (
-                str(exc)
-                if isinstance(exc, InteractiveDelegationError)
-                else repr(exc)
+                str(exc) if isinstance(exc, InteractiveDelegationError) else repr(exc)
             )
-            await record.transition("failed", error=error)
+            await self._transition(record, "failed", error=error)
 
 
 def _event_error(event: dict[str, Any]) -> str:
@@ -562,6 +672,71 @@ def _event_error(event: dict[str, Any]) -> str:
         if payload.get("error"):
             return str(payload["error"])
     return f"delegated session ended with {event.get('type', 'unknown')}"
+
+
+def _normalize_answers(
+    pending_question: dict[str, Any],
+    answers: dict[str, str],
+) -> dict[str, str]:
+    """把唯一标题或完整问题形式的答案键统一成完整问题。
+
+    Args:
+        pending_question: 当前 elicit_request 事件的 payload。
+        answers: 父会话按唯一标题或完整问题提供的回答。
+
+    Returns:
+        以完整问题为键、完整覆盖本轮问题的回答。
+
+    Raises:
+        InteractiveDelegationError: 问题结构无效，或回答缺失、重复、未知或有歧义。
+    """
+
+    raw_questions = pending_question.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise InteractiveDelegationError("pending guidance has no questions")
+
+    questions: list[str] = []
+    headers: dict[str, list[str]] = {}
+    for raw in raw_questions:
+        if not isinstance(raw, dict):
+            raise InteractiveDelegationError("pending guidance has an invalid question")
+        question = raw.get("question")
+        if not isinstance(question, str) or not question:
+            raise InteractiveDelegationError("pending guidance has an invalid question")
+        if question in questions:
+            raise InteractiveDelegationError(
+                f"duplicate pending guidance question: {question}"
+            )
+        questions.append(question)
+        header = raw.get("header")
+        if isinstance(header, str) and header:
+            headers.setdefault(header, []).append(question)
+
+    normalized: dict[str, str] = {}
+    for key, value in answers.items():
+        if key in questions:
+            question = key
+        else:
+            matches = headers.get(key, [])
+            if not matches:
+                raise InteractiveDelegationError(f"unknown guidance answer key: {key}")
+            if len(matches) != 1:
+                raise InteractiveDelegationError(
+                    f"ambiguous guidance answer header: {key}"
+                )
+            question = matches[0]
+        if question in normalized:
+            raise InteractiveDelegationError(
+                f"duplicate guidance answer for question: {question}"
+            )
+        normalized[question] = value
+
+    missing = [question for question in questions if question not in normalized]
+    if missing:
+        raise InteractiveDelegationError(
+            "missing guidance answer for question(s): " + ", ".join(missing)
+        )
+    return normalized
 
 
 async def _read_child_binding(
@@ -587,5 +762,7 @@ async def _read_child_binding(
         data = payload.get("data") if isinstance(payload, dict) else None
         return dict(data) if isinstance(data, dict) else fallback
     except Exception:
-        logger.warning("failed to read final child binding %s", session_id, exc_info=True)
+        logger.warning(
+            "failed to read final child binding %s", session_id, exc_info=True
+        )
         return fallback

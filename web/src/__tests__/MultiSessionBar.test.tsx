@@ -14,6 +14,12 @@ vi.mock("../agent/transport/api", () => ({
     Promise.resolve({ display_title: title, title_source: "manual" }),
   ),
   listAgentRequests: vi.fn().mockResolvedValue([]),
+  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+}));
+
+vi.mock("../agent/transport/stream", () => ({
+  getEventStream: vi.fn(() => new Promise<void>(() => {})),
+  postMessageStream: vi.fn(),
 }));
 
 import { MultiSessionBar } from "../components/cc/MultiSessionBar";

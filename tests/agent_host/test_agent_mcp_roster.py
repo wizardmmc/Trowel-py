@@ -24,6 +24,7 @@ def test_cc_agent_mcp_is_independent_from_memory(
         agent_mcp_enabled=True,
         memory_root=str(tmp_path / "memory"),
         base_url="http://127.0.0.1:8123",
+        agent_api_credential="desktop-secret",
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -36,6 +37,7 @@ def test_cc_agent_mcp_is_independent_from_memory(
     assert agent["env"]["TROWEL_PARENT_WORKDIR"] == str(tmp_path)
     assert agent["env"]["TROWEL_PARENT_PERMISSION"] == "bypassPermissions"
     assert agent["env"]["TROWEL_AGENT_BASE_URL"] == "http://127.0.0.1:8123"
+    assert agent["env"]["TROWEL_RESOURCE_REGISTRATION_CREDENTIAL"] == ("desktop-secret")
 
 
 def test_cc_delegate_roster_can_keep_memory_without_recursive_agent(

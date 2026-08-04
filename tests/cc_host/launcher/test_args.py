@@ -126,3 +126,20 @@ def test_mcp_config_coexists_with_system_prompt() -> None:
     assert "--mcp-config" in args
     assert "--strict-mcp-config" in args
     assert "--append-system-prompt" in args
+
+
+def test_allowed_tools_are_passed_as_one_comma_separated_value() -> None:
+    args = build_args(
+        workdir=WORKDIR,
+        allowed_tools=(
+            "mcp__trowel_agents__delegate_start",
+            "mcp__trowel_agents__delegate_close",
+        ),
+        mcp_config="/tmp/agent-mcp.json",
+    )
+
+    index = args.index("--allowedTools")
+    assert args[index + 1] == (
+        "mcp__trowel_agents__delegate_start,mcp__trowel_agents__delegate_close"
+    )
+    assert args[index + 2] == "--mcp-config"

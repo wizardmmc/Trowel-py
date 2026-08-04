@@ -734,6 +734,8 @@ class CodexHostManager:
         text: str,
         *,
         before_turn_start: BeforeTurnStart | None = None,
+        autonomous: bool = False,
+        memory_eligible: bool = True,
     ) -> str:
         """执行一个 turn：确保连接、按需挂载 thread，再启动原生 turn。
 
@@ -741,10 +743,23 @@ class CodexHostManager:
         turn 复用已加载的 thread。
         ``before_turn_start`` 在挂载后、原生工作前同步执行，确保持久化
         失败时不会留下失去追踪的 turn。返回原生 ``turn_id``。
+
+        Args:
+            session: 接收本轮输入的 Codex 会话。
+            text: 发送给 Codex 的输入正文。
+            before_turn_start: 原生 thread 挂载后、turn/start 前执行的同步持久化门禁。
+            autonomous: 是否由 Trowel 内部事件启动；为 True 时不合成 USER 事件。
+            memory_eligible: 自主 turn 是否允许进入会后 Memory 流程。
+
+        Returns:
+            Codex 接受本轮后返回的原生 turn ID。
         """
 
         self._require_registered(session)
-        session.begin_send()
+        session.begin_send(
+            autonomous=autonomous,
+            memory_eligible=memory_eligible,
+        )
         try:
             await self.attach(session)
             client = await self.ensure_ready()
@@ -790,7 +805,10 @@ class CodexHostManager:
                 raise
             session.commit_turn_settings(model=model, effort=effort)
             self._register_turn_resource(session, turn_id)
-            session.record_turn_started(turn_id, text)
+            if autonomous:
+                session.record_autonomous_turn_started(turn_id)
+            else:
+                session.record_turn_started(turn_id, text)
             return turn_id
         except BaseException:
             # 所有失败都需释放 _sending，成功路径由 record_turn_started 清除。
