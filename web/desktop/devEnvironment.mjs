@@ -7,7 +7,9 @@ const DESKTOP_HOST_OWNED_VARIABLES = [
   "TROWEL_DESKTOP_DATA_DIR",
   "TROWEL_DESKTOP_DATA_MODE",
   "TROWEL_DESKTOP_DIAGNOSTIC_SMOKE",
+  "TROWEL_DESKTOP_INSPECTION_ONLY",
   "TROWEL_DESKTOP_LOG_DIR",
+  "TROWEL_DESKTOP_READ_DATA_DIR",
   "TROWEL_DESKTOP_RENDERER_ORIGIN",
   "TROWEL_DESKTOP_RENDERER_CRASH_SMOKE",
   "TROWEL_DESKTOP_RESIDENCY_SMOKE",
@@ -32,7 +34,7 @@ export function resolveDevelopmentDataMode(
   argv,
   { usesTemporaryDataRoot = false } = {},
 ) {
-  return usesTemporaryDataRoot || argv.includes("--isolated")
+  return usesTemporaryDataRoot || argv.includes("--isolated") || argv.includes("--observe")
     ? "isolated-dev"
     : "canonical-dev";
 }

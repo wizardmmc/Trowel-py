@@ -6,6 +6,7 @@ import {
   resetTransportForTests,
 } from "../../platform/transport";
 import {
+  fetchOverviewStatistics,
   fetchAgentStatistics,
   fetchCallDetail,
   fetchCallStatistics,
@@ -13,11 +14,9 @@ import {
   fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../../statistics/transport/api";
+import { overviewStatisticsFixture } from "./overviewStatisticsFixture";
 import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
-import {
-  callDetailFixture,
-  callListFixture,
-} from "./callStatisticsFixture";
+import { callDetailFixture, callListFixture } from "./callStatisticsFixture";
 
 afterEach(() => {
   resetTransportForTests();
@@ -51,12 +50,14 @@ const responseData = {
 };
 
 it("uses a relative statistics URL in browser mode", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({ success: true, data: responseData, error: null }),
-      { status: 200 },
-    ),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(
+        JSON.stringify({ success: true, data: responseData, error: null }),
+        { status: 200 },
+      ),
+    );
   vi.stubGlobal("fetch", fetchMock);
 
   const result = await fetchTelemetryStatistics(
@@ -71,12 +72,14 @@ it("uses a relative statistics URL in browser mode", async () => {
 });
 
 it("uses the same API with desktop base URL and credential", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({ success: true, data: responseData, error: null }),
-      { status: 200 },
-    ),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(
+        JSON.stringify({ success: true, data: responseData, error: null }),
+        { status: 200 },
+      ),
+    );
   vi.stubGlobal("fetch", fetchMock);
   configureTransport({
     baseUrl: "http://127.0.0.1:43123",
@@ -98,12 +101,18 @@ it("uses the same API with desktop base URL and credential", async () => {
 it("throws the envelope error instead of treating missing data as zero", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({ success: false, data: null, error: "source unavailable" }),
-        { status: 503 },
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            success: false,
+            data: null,
+            error: "source unavailable",
+          }),
+          { status: 503 },
+        ),
       ),
-    ),
   );
 
   await expect(
@@ -136,6 +145,31 @@ it("requests Agent statistics with the shared date range", async () => {
   expect(result.sample_size).toBe(0);
   expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "/api/statistics/agent?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
+  );
+});
+
+it("requests Overview statistics with the shared date range", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: overviewStatisticsFixture,
+        error: null,
+      }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const result = await fetchOverviewStatistics({
+    startDate: "2026-08-03",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+
+  expect(result.agent.user_sessions).toBe(3);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/statistics/overview?start_date=2026-08-03&end_date=2026-08-03&timezone=Asia%2FShanghai",
   );
 });
 
@@ -190,12 +224,14 @@ it("requests Runtime statistics with the shared date range", async () => {
 });
 
 it("adds only active call filters and a stable paging cursor", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({ success: true, data: callListFixture, error: null }),
-      { status: 200 },
-    ),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(
+        JSON.stringify({ success: true, data: callListFixture, error: null }),
+        { status: 200 },
+      ),
+    );
   vi.stubGlobal("fetch", fetchMock);
 
   await fetchCallStatistics(
@@ -216,17 +252,17 @@ it("adds only active call filters and a stable paging cursor", async () => {
 });
 
 it("encodes the trace identity when requesting call detail", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({ success: true, data: callDetailFixture, error: null }),
-      { status: 200 },
-    ),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(
+        JSON.stringify({ success: true, data: callDetailFixture, error: null }),
+        { status: 200 },
+      ),
+    );
   vi.stubGlobal("fetch", fetchMock);
 
   await fetchCallDetail("trace/id");
 
-  expect(fetchMock.mock.calls[0]?.[0]).toBe(
-    "/api/statistics/calls/trace%2Fid",
-  );
+  expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/statistics/calls/trace%2Fid");
 });

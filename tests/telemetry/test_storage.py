@@ -6,6 +6,8 @@ import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from tests.telemetry.support import (
     BASE_TIME,
     batch_request,
@@ -55,6 +57,25 @@ def test_initialize_creates_wal_database_and_versioned_schema(tmp_path: Path) ->
     assert synchronous == 1
     assert checkpoint == 1000
     assert "span_links_target_trace_idx" in indexes
+
+
+def test_read_only_database_can_query_but_cannot_open_write_paths(tmp_path: Path) -> None:
+    """观察进程只能读取正式 telemetry.db，不能改变连接或数据库状态。"""
+
+    writable = _database(tmp_path)
+    read_only = TelemetryDatabase(writable.path, read_only=True)
+
+    with read_only.connect_reader() as connection:
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("CREATE TABLE forbidden(value INTEGER)")
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        read_only.initialize()
+    with pytest.raises(RuntimeError, match="read-only"):
+        read_only.open_writer()
+    with pytest.raises(RuntimeError, match="read-only"):
+        read_only.checkpoint()
 
 
 def test_write_is_idempotent_and_rejects_batch_id_conflicts(tmp_path: Path) -> None:

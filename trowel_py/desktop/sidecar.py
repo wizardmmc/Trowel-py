@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -25,6 +27,8 @@ class DesktopSidecarSettings:
         data_mode: 当前进程使用正式、日常开发还是隔离开发数据。
         log_dir: sidecar 生命周期日志写入的目录。
         renderer_origin: 本实例 renderer 发起跨来源 API 请求时使用的来源。
+        inspection_only: 是否只启动真实数据只读统计应用。
+        read_data_dir: 观察模式读取的正式业务数据根；普通实例为 ``None``。
     """
 
     instance_id: str
@@ -34,6 +38,8 @@ class DesktopSidecarSettings:
     data_mode: DesktopDataMode
     log_dir: Path
     renderer_origin: str
+    inspection_only: bool
+    read_data_dir: Path | None
 
 
 def load_sidecar_settings(environment: Mapping[str, str]) -> DesktopSidecarSettings:
@@ -74,6 +80,13 @@ def load_sidecar_settings(environment: Mapping[str, str]) -> DesktopSidecarSetti
         raise ValueError("TROWEL_DESKTOP_DATA_DIR must be absolute")
     if not log_dir.is_absolute():
         raise ValueError("TROWEL_DESKTOP_LOG_DIR must be absolute")
+    inspection_only = environment.get("TROWEL_DESKTOP_INSPECTION_ONLY") == "1"
+    raw_read_data_dir = environment.get("TROWEL_DESKTOP_READ_DATA_DIR", "").strip()
+    if inspection_only and not raw_read_data_dir:
+        raise ValueError("TROWEL_DESKTOP_READ_DATA_DIR is required in inspection mode")
+    read_data_dir = Path(raw_read_data_dir).expanduser() if raw_read_data_dir else None
+    if read_data_dir is not None and not read_data_dir.is_absolute():
+        raise ValueError("TROWEL_DESKTOP_READ_DATA_DIR must be absolute")
 
     from trowel_py.desktop.access import validate_desktop_renderer_origin
 
@@ -87,6 +100,8 @@ def load_sidecar_settings(environment: Mapping[str, str]) -> DesktopSidecarSetti
         data_mode=cast(DesktopDataMode, raw_data_mode),
         log_dir=log_dir,
         renderer_origin=renderer_origin,
+        inspection_only=inspection_only,
+        read_data_dir=read_data_dir,
     )
 
 
@@ -179,9 +194,17 @@ def run_sidecar(settings: DesktopSidecarSettings) -> None:
         configure_desktop_runtime_path(Path.home(), os.environ)
         _configure_logging(settings.log_dir)
 
-        # 在发布数据根后再导入应用，确保模块按当前桌面实例解析持久化路径。
-        import uvicorn
+        if settings.inspection_only:
+            if settings.read_data_dir is None:
+                raise RuntimeError("inspection read data directory is unavailable")
+            os.environ["TROWEL_DESKTOP_READ_DATA_DIR"] = str(
+                settings.read_data_dir
+            )
+            _write_empty_resource_snapshot(settings)
+            _run_uvicorn(settings, "trowel_py.desktop.inspection:create_inspection_app")
+            return
 
+        # 在发布数据根后再导入应用，确保模块按当前桌面实例解析持久化路径。
         from trowel_py.db.connection import create_db
         from trowel_py.db.migrate import run_migrations
 
@@ -197,13 +220,49 @@ def run_sidecar(settings: DesktopSidecarSettings) -> None:
             settings.port,
             settings.data_mode,
         )
-        uvicorn.run(
-            "trowel_py.app:create_app",
-            factory=True,
-            host="127.0.0.1",
-            port=settings.port,
-            log_level="info",
+        _run_uvicorn(settings, "trowel_py.app:create_app")
+
+
+def _run_uvicorn(settings: DesktopSidecarSettings, factory: str) -> None:
+    """用当前桌面实例端口启动指定 FastAPI 工厂。
+
+    Args:
+        settings: 已校验的桌面 sidecar 设置。
+        factory: ``模块:函数`` 形式的 Uvicorn 应用工厂。
+    """
+
+    import uvicorn
+
+    uvicorn.run(
+        factory,
+        factory=True,
+        host="127.0.0.1",
+        port=settings.port,
+        log_level="info",
+    )
+
+
+def _write_empty_resource_snapshot(settings: DesktopSidecarSettings) -> None:
+    """为不启动子进程的观察实例发布可核验的空资源快照。
+
+    Args:
+        settings: 提供临时数据目录和本次实例身份的 sidecar 设置。
+    """
+
+    identity = hashlib.sha256(settings.instance_id.encode("utf-8")).hexdigest()[:20]
+    snapshot_path = settings.data_dir / "resource-lifecycle.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "app_instance_id": identity,
+                "resources": [],
+            }
         )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _configure_logging(log_dir: Path) -> None:

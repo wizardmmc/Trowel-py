@@ -25,9 +25,11 @@ it("renders five stable tabs and delegates all state changes", () => {
 
   expect(screen.getAllByRole("tab")).toHaveLength(5);
   fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
-  fireEvent.change(screen.getByLabelText("开始日期"), {
+  fireEvent.click(screen.getByRole("button", { name: "选择统计日期范围" }));
+  fireEvent.change(screen.getByLabelText("自定义开始日期"), {
     target: { value: "2026-08-02" },
   });
+  fireEvent.click(screen.getByRole("button", { name: "应用自定义日期" }));
 
   expect(onTabChange).toHaveBeenCalledWith("memory");
   expect(onDateRangeChange).toHaveBeenCalledWith({

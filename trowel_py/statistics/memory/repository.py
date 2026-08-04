@@ -16,13 +16,20 @@ class FileMemoryStatisticsReader:
         root: Note、访问日志、判效报告和 Dictionary 状态所在的 Memory 根目录。
     """
 
-    def __init__(self, root: Path | str) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        strict_read_only: bool = False,
+    ) -> None:
         """保存后续查询使用的 Memory 根目录。
 
         Args:
             root: 要读取的隔离或正式 Memory 根目录。
+            strict_read_only: 是否禁止 sessions.db schema 迁移。
         """
         self.root = Path(root)
+        self.strict_read_only = strict_read_only
 
     def read(self, window: StatisticsWindow) -> dict[str, Any]:
         """读取查询窗内的 Memory 使用事实和当前资产快照。
@@ -38,4 +45,5 @@ class FileMemoryStatisticsReader:
             window_start=window.start,
             window_end=window.end,
             local_tz=window.start.tzinfo,
+            strict_read_only=self.strict_read_only,
         )

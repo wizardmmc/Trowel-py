@@ -103,6 +103,23 @@ class CodexTurnsRepository:
         ).fetchall()
         return [row_to_codex_turn(row) for row in rows]
 
+    def list_attribution_turns(self) -> list[CodexTurnRecord]:
+        """返回归因索引需要的全部 Codex turn 身份。
+
+        归因必须同时覆盖用户会话与内部会话，因此不能复用只读取已封口用户
+        turn 的查询。调用方只使用 thread、Trowel session 和 session kind，不把
+        其他字段公开到统计结果。
+
+        Returns:
+            按登记时间稳定排列的全部 Codex turn 记录。
+        """
+
+        rows = self._conn.execute(
+            "SELECT * FROM codex_turns"
+            " ORDER BY registered_at, thread_id, turn_id"
+        ).fetchall()
+        return [row_to_codex_turn(row) for row in rows]
+
     def list_completed_for_trowel_session(
         self,
         trowel_session_id: str,

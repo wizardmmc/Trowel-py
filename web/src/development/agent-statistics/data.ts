@@ -18,6 +18,8 @@ const CLAUDE_TOKENS = {
   unknown: null,
   total: 15_911,
   total_includes_cache_input: true,
+  known_session_count: 1,
+  session_count: 1,
   quality: "reliable",
 } satisfies AgentTokenUsage;
 
@@ -30,6 +32,8 @@ const CODEX_TOKENS = {
   unknown: null,
   total: 242_839,
   total_includes_cache_input: true,
+  known_session_count: 1,
+  session_count: 1,
   quality: "reliable",
 } satisfies AgentTokenUsage;
 
@@ -76,6 +80,8 @@ export const agentStatisticsPreviewData: AgentStatistics = {
     unknown: null,
     total: 258_750,
     total_includes_cache_input: true,
+    known_session_count: 2,
+    session_count: 2,
     quality: "reliable",
   },
   first_visible_response: {
@@ -90,6 +96,12 @@ export const agentStatisticsPreviewData: AgentStatistics = {
     concurrent_union_ms: CLAUDE_ACTIVITY_MS + CODEX_ACTIVITY_MS,
     quality: "reliable",
   },
+  cache_input_ratio:
+    (CLAUDE_TOKENS.cache_read + CODEX_TOKENS.cache_read) /
+    (CLAUDE_TOKENS.input +
+      CLAUDE_TOKENS.cache_read +
+      CLAUDE_TOKENS.cache_creation +
+      CODEX_TOKENS.input),
   model_summaries: [
     {
       runtime: "claude_code",
@@ -104,7 +116,11 @@ export const agentStatisticsPreviewData: AgentStatistics = {
       },
       tokens: CLAUDE_TOKENS,
       first_visible_response: NO_LATENCY_SAMPLE,
-      cache_input_ratio: 0.909,
+      cache_input_ratio:
+        CLAUDE_TOKENS.cache_read /
+        (CLAUDE_TOKENS.input +
+          CLAUDE_TOKENS.cache_read +
+          CLAUDE_TOKENS.cache_creation),
       activity_ms: CLAUDE_ACTIVITY_MS,
       quality: "reliable",
     },

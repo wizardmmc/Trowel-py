@@ -3521,6 +3521,67 @@
           }
         }
       },
+      "/api/statistics/overview": {
+        "get": {
+          "tags": [
+            "statistics"
+          ],
+          "summary": "Get Overview Statistics",
+          "description": "并行读取五个公开 read model，并返回可局部降级的总览。\n\nArgs:\n    request: 用于读取应用已装配的 Statistics reader。\n    start_date: 首尾均包含的第一个 ISO 日期。\n    end_date: 首尾均包含的最后一个 ISO 日期。\n    timezone_name: 解释日期边界的 IANA 时区名称。\n\nReturns:\n    成功总览；日期参数无效时返回统一错误 envelope。",
+          "operationId": "get_overview_statistics_api_statistics_overview_get",
+          "parameters": [
+            {
+              "name": "start_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Start Date"
+              }
+            },
+            {
+              "name": "end_date",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "End Date"
+              }
+            },
+            {
+              "name": "timezone",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Timezone"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ApiEnvelope_OverviewStatisticsData_"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/statistics/session-problems": {
         "get": {
           "tags": [
@@ -4270,7 +4331,7 @@
             "quality"
           ],
           "title": "AgentModelSummaryData",
-          "description": "公开一个 runtime/model 分组的 session 使用情况。\n\nAttributes:\n    runtime: claude_code 或 codex。\n    model: runtime 实际回报的模型；未知时为 None。\n    session_count: 查询窗内使用过该模型的 Trowel session 数。\n    statuses: 这些 session 的状态分组。\n    tokens: 只归属于该模型的 token 增量。\n    first_visible_response: 首段文字由该模型产生的延迟分布。\n    cache_input_ratio: cache_read/input 的比例；字段缺失或 input 为 0 时为 None。\n    activity_ms: 使用过该模型的 session 活动时长之和。\n    quality: 分组来源的最低质量。"
+          "description": "公开一个 runtime/model 分组的 session 使用情况。\n\nAttributes:\n    runtime: claude_code 或 codex。\n    model: runtime 实际回报的模型；未知时为 None。\n    session_count: 查询窗内使用过该模型的 Trowel session 数。\n    statuses: 这些 session 的状态分组。\n    tokens: 只归属于该模型的 token 增量。\n    first_visible_response: 首段文字由该模型产生的延迟分布。\n    cache_input_ratio: 缓存读取在全部输入中的比例；字段缺失或输入为 0 时为 None。\n    activity_ms: 使用过该模型的 session 活动时长之和。\n    quality: 分组来源的最低质量。"
         },
         "AgentSessionData": {
           "properties": {
@@ -4397,6 +4458,17 @@
             "activity": {
               "$ref": "#/components/schemas/AgentActivityData"
             },
+            "cache_input_ratio": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cache Input Ratio"
+            },
             "model_summaries": {
               "items": {
                 "$ref": "#/components/schemas/AgentModelSummaryData"
@@ -4425,11 +4497,12 @@
             "tokens",
             "first_visible_response",
             "activity",
+            "cache_input_ratio",
             "model_summaries",
             "sessions"
           ],
           "title": "AgentStatisticsData",
-          "description": "公开 Agent 页所需的时间窗、总览、模型和 session 明细。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内 Trowel user session 数。\n    quality: 全部 session 来源的最低质量。\n    freshness: Agent 事实源最后更新时间。\n    statuses: session 状态分组。\n    tokens: 查询窗内全部 token 增量。\n    first_visible_response: 查询窗内全部首次可见响应分布。\n    activity: 活动时长之和与跨 session 并集。\n    model_summaries: 按 runtime 和真实模型分组的结果。\n    sessions: 按开始时间倒序排列的最近 session，最多 100 条。"
+          "description": "公开 Agent 页所需的时间窗、总览、模型和 session 明细。\n\nAttributes:\n    generated_at: 本次 read model 生成时间。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 查询窗内 Trowel user session 数。\n    quality: 全部 session 来源的最低质量。\n    freshness: Agent 事实源最后更新时间。\n    statuses: session 状态分组。\n    tokens: 查询窗内全部 token 增量。\n    first_visible_response: 查询窗内全部首次可见响应分布。\n    activity: 活动时长之和与跨 session 并集。\n    cache_input_ratio: 按各 runtime 原生输入语义计算后汇总的缓存读取占比。\n    model_summaries: 按 runtime 和真实模型分组的结果。\n    sessions: 按开始时间倒序排列的最近 session，最多 100 条。"
         },
         "AgentStatusCountsData": {
           "properties": {
@@ -4549,6 +4622,14 @@
               "title": "Total Includes Cache Input",
               "default": true
             },
+            "known_session_count": {
+              "type": "integer",
+              "title": "Known Session Count"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
             "quality": {
               "type": "string",
               "enum": [
@@ -4568,10 +4649,12 @@
             "reasoning",
             "unknown",
             "total",
+            "known_session_count",
+            "session_count",
             "quality"
           ],
           "title": "AgentTokenUsageData",
-          "description": "公开分类 token 增量及其质量。\n\nAttributes:\n    input: 输入 token；来源未提供时为 None。\n    output: 输出 token；来源未提供时为 None。\n    cache_read: 缓存输入 token；来源未提供时为 None。\n    cache_creation: 缓存创建 token；来源未提供时为 None。\n    reasoning: 推理输出 token；来源未提供时为 None。\n    unknown: 无法归类的原生 token；无法计算时为 None。\n    total: 当前时间窗总 token；无法可靠计算时为 None。\n    total_includes_cache_input: total 是否包含 cache_read。\n    quality: token 来源的最低质量。"
+          "description": "公开分类 token 增量及其质量。\n\nAttributes:\n    input: 输入 token；来源未提供时为 None。\n    output: 输出 token；来源未提供时为 None。\n    cache_read: 缓存输入 token；来源未提供时为 None。\n    cache_creation: 缓存创建 token；来源未提供时为 None。\n    reasoning: 推理输出 token；来源未提供时为 None。\n    unknown: 无法归类的原生 token；无法计算时为 None。\n    total: 当前时间窗总 token；无法可靠计算时为 None。\n    total_includes_cache_input: total 是否包含 cache_read。\n    known_session_count: 对 total 有可用水位的 session 数。\n    session_count: 当前 token 分组包含的全部 session 数。\n    quality: token 来源的最低质量。"
         },
         "AnswerAgentRequest": {
           "properties": {
@@ -4750,6 +4833,42 @@
             "error"
           ],
           "title": "ApiEnvelope[MemoryStatisticsData]"
+        },
+        "ApiEnvelope_OverviewStatisticsData_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "title": "Success"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OverviewStatisticsData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ApiEnvelope[OverviewStatisticsData]"
         },
         "ApiEnvelope_RuntimeStatisticsData_": {
           "properties": {
@@ -6372,6 +6491,380 @@
           ],
           "title": "MetricAggregateData",
           "description": "公开一个小时或日的受控 metric 数值聚合。\n\nAttributes:\n    bucket_start: 当前小时或日期桶的 UTC 起点。\n    component: 受控组件。\n    name: schema v1 指标名。\n    kind: counter、gauge 或 histogram。\n    unit: 次数、字节或毫秒。\n    operation: 可选受控操作名。\n    status: 受控终态。\n    runtime: 可选 runtime 维度。\n    model: 可选模型维度。\n    sample_count: 当前分组样本数。\n    value_sum: 样本值之和。\n    value_min: 最小样本值。\n    value_max: 最大样本值。"
+        },
+        "OverviewAgentData": {
+          "properties": {
+            "user_sessions": {
+              "type": "integer",
+              "title": "User Sessions"
+            },
+            "statuses": {
+              "$ref": "#/components/schemas/AgentStatusCountsData"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/AgentTokenUsageData"
+            },
+            "first_visible_response": {
+              "$ref": "#/components/schemas/AgentLatencyDistributionData"
+            },
+            "activity": {
+              "$ref": "#/components/schemas/AgentActivityData"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "user_sessions",
+            "statuses",
+            "tokens",
+            "first_visible_response",
+            "activity",
+            "quality"
+          ],
+          "title": "OverviewAgentData",
+          "description": "公开当前选择时间窗的 Agent 关键事实。\n\nAttributes:\n    user_sessions: 与查询窗相交的 Trowel 用户 session 数。\n    statuses: 用户 session 的确定性终态数量。\n    tokens: 按 runtime 水位归一后的分类 token 增量。\n    first_visible_response: 用户提交到首段可见文字的延迟分布。\n    activity: session 活动时长之和与并发区间并集。\n    quality: Agent 来源在当前时间窗的整体质量。"
+        },
+        "OverviewMemoryData": {
+          "properties": {
+            "search_hits": {
+              "type": "integer",
+              "title": "Search Hits"
+            },
+            "reads": {
+              "type": "integer",
+              "title": "Reads"
+            },
+            "judged_effects": {
+              "type": "integer",
+              "title": "Judged Effects"
+            },
+            "helpful": {
+              "type": "integer",
+              "title": "Helpful"
+            },
+            "helpful_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "judgement_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "recall_miss_rate": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "attribution_coverage": {
+              "$ref": "#/components/schemas/MemoryRatioData"
+            },
+            "active_notes": {
+              "type": "integer",
+              "title": "Active Notes"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "search_hits",
+            "reads",
+            "judged_effects",
+            "helpful",
+            "helpful_rate",
+            "judgement_coverage",
+            "recall_miss_rate",
+            "attribution_coverage",
+            "active_notes",
+            "quality"
+          ],
+          "title": "OverviewMemoryData",
+          "description": "公开 Memory 漏斗、效果和资产摘要。\n\nAttributes:\n    search_hits: 搜索返回的 Note 候选数量。\n    reads: 实际打开 Note 正文的次数。\n    judged_effects: helpful、harmful 与 unused 的共同效果分母。\n    helpful: 判定为 helpful 的 Note-session 对数。\n    helpful_rate: helpful 使用自己的效果分母计算的比例。\n    judgement_coverage: 已判定用户 session 占可判 session 的比例。\n    recall_miss_rate: 两类 recall miss 占已判定 session 的比例。\n    attribution_coverage: Memory 访问记录能归到会话的比例。\n    active_notes: 当前可检索的 active Note 数。\n    quality: Memory 来源在当前时间窗的整体质量。"
+        },
+        "OverviewSessionProblemsData": {
+          "properties": {
+            "reviewed_session_count": {
+              "type": "integer",
+              "title": "Reviewed Session Count"
+            },
+            "problem_count": {
+              "type": "integer",
+              "title": "Problem Count"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/SessionProblemItemData"
+              },
+              "type": "array",
+              "title": "Items"
+            }
+          },
+          "type": "object",
+          "required": [
+            "reviewed_session_count",
+            "problem_count",
+            "quality",
+            "freshness",
+            "items"
+          ],
+          "title": "OverviewSessionProblemsData",
+          "description": "公开最近会话问题和整个时间窗的处理数量。\n\nAttributes:\n    reviewed_session_count: 时间窗内已经完成问题分析的会话数。\n    problem_count: 分析后得到非空问题的会话数。\n    quality: 会话问题来源的整体质量。\n    freshness: 最近一条完成记录的处理时刻。\n    items: 按关闭时间从新到旧排列的可复制问题，最多五条。"
+        },
+        "OverviewSourceData": {
+          "properties": {
+            "label": {
+              "type": "string",
+              "title": "Label"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            }
+          },
+          "type": "object",
+          "required": [
+            "label",
+            "sample_size",
+            "quality",
+            "freshness"
+          ],
+          "title": "OverviewSourceData",
+          "description": "公开一个下游 read model 的样本和质量摘要。\n\nAttributes:\n    label: 前端展示的稳定领域名称。\n    sample_size: 下游 read model 自己定义的样本数量。\n    quality: 下游 read model 报告的质量。\n    freshness: 下游全部事实源合并后的最近更新时间和状态。"
+        },
+        "OverviewStatisticsData": {
+          "properties": {
+            "generated_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Generated At"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window Start"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Window End"
+            },
+            "timezone": {
+              "type": "string",
+              "title": "Timezone"
+            },
+            "sample_size": {
+              "type": "integer",
+              "title": "Sample Size"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              "type": "object",
+              "title": "Freshness"
+            },
+            "agent": {
+              "$ref": "#/components/schemas/OverviewAgentData"
+            },
+            "token_trend": {
+              "items": {
+                "$ref": "#/components/schemas/OverviewTokenTrendPointData"
+              },
+              "type": "array",
+              "title": "Token Trend"
+            },
+            "memory": {
+              "$ref": "#/components/schemas/OverviewMemoryData"
+            },
+            "statuses": {
+              "items": {
+                "$ref": "#/components/schemas/OverviewStatusData"
+              },
+              "type": "array",
+              "title": "Statuses"
+            },
+            "session_problems": {
+              "$ref": "#/components/schemas/OverviewSessionProblemsData"
+            },
+            "database_files": {
+              "items": {
+                "$ref": "#/components/schemas/DatabaseFileStatistics"
+              },
+              "type": "array",
+              "title": "Database Files"
+            },
+            "sources": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/OverviewSourceData"
+              },
+              "type": "object",
+              "title": "Sources"
+            }
+          },
+          "type": "object",
+          "required": [
+            "generated_at",
+            "window_start",
+            "window_end",
+            "timezone",
+            "sample_size",
+            "quality",
+            "freshness",
+            "agent",
+            "token_trend",
+            "memory",
+            "statuses",
+            "session_problems",
+            "database_files",
+            "sources"
+          ],
+          "title": "OverviewStatisticsData",
+          "description": "汇总五个公开 read model，供 Statistics 总览一次读取。\n\nAttributes:\n    generated_at: 本次总览响应生成时刻。\n    window_start: 查询包含的开始时刻。\n    window_end: 查询不包含的结束时刻。\n    timezone: 调用方选择的 IANA 时区。\n    sample_size: 当前有可用样本的下游 read model 数量，范围为 0 至 5。\n    quality: 五个下游来源的合并质量；混合质量统一标 partial。\n    freshness: 按领域前缀保留的全部下游来源新鲜度。\n    agent: 当前选择时间窗的 Agent 摘要。\n    token_trend: 当前选择范围内从旧到新的逐日 token 统计。\n    memory: 当前选择时间窗的 Memory 摘要。\n    statuses: 确定性 session、运行和采集缺口事实。\n    session_problems: 当前选择时间窗最近五条会话问题。\n    database_files: 三个受控本机数据库及附属文件的当前体积。\n    sources: 五个下游 read model 的质量和样本摘要。"
+        },
+        "OverviewStatusData": {
+          "properties": {
+            "code": {
+              "type": "string",
+              "title": "Code"
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "info",
+                "warning",
+                "error",
+                "unavailable"
+              ],
+              "title": "Level"
+            },
+            "title": {
+              "type": "string",
+              "title": "Title"
+            },
+            "detail": {
+              "type": "string",
+              "title": "Detail"
+            },
+            "source": {
+              "type": "string",
+              "title": "Source"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            },
+            "freshness": {
+              "$ref": "#/components/schemas/SourceFreshness"
+            }
+          },
+          "type": "object",
+          "required": [
+            "code",
+            "level",
+            "title",
+            "detail",
+            "source",
+            "quality",
+            "freshness"
+          ],
+          "title": "OverviewStatusData",
+          "description": "公开一条由确定性规则生成的状态或采集缺口。\n\nAttributes:\n    code: 前端稳定识别的状态代码，不包含动态身份。\n    level: 状态在列表中的严重程度；unavailable 表示证据缺失。\n    title: 可直接展示的状态事实。\n    detail: 解释事实边界且不做原因猜测的补充文本。\n    source: 产生该事实的受控 read model 或事实源名称。\n    quality: 支撑该状态的数据质量。\n    freshness: 该状态事实最后更新到的时刻。"
+        },
+        "OverviewTokenTrendPointData": {
+          "properties": {
+            "date": {
+              "type": "string",
+              "format": "date",
+              "title": "Date"
+            },
+            "session_count": {
+              "type": "integer",
+              "title": "Session Count"
+            },
+            "known_token_session_count": {
+              "type": "integer",
+              "title": "Known Token Session Count"
+            },
+            "token_total": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Total"
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "reliable",
+                "partial",
+                "unavailable"
+              ],
+              "title": "Quality"
+            }
+          },
+          "type": "object",
+          "required": [
+            "date",
+            "session_count",
+            "known_token_session_count",
+            "token_total",
+            "quality"
+          ],
+          "title": "OverviewTokenTrendPointData",
+          "description": "公开所选时间范围趋势中的一个当地日期。\n\nAttributes:\n    date: 该点代表的调用方当地日期。\n    session_count: 当天可归因的 Trowel 用户 session 数。\n    known_token_session_count: 当天 total token 水位可用的 session 数。\n    token_total: 当天可归因 token；来源不足时为 None，不用 0 代替。\n    quality: 当天 token 水位的证据质量。"
         },
         "PatchAgentSessionRequest": {
           "properties": {

@@ -14,6 +14,7 @@ from trowel_py.statistics.calls.schemas import CallDetailData, CallListData
 from trowel_py.statistics.calls.service import build_call_detail, build_call_list
 from trowel_py.statistics.memory.schemas import MemoryStatisticsData
 from trowel_py.statistics.memory.service import build_memory_statistics
+from trowel_py.statistics.overview.routes import router as overview_router
 from trowel_py.statistics.runtime.schemas import RuntimeStatisticsData
 from trowel_py.statistics.runtime.service import build_runtime_statistics
 from trowel_py.statistics.schemas import ApiEnvelope, TelemetryStatisticsData
@@ -25,6 +26,7 @@ from trowel_py.statistics.service import build_telemetry_statistics
 from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
 
 router = APIRouter(tags=["statistics"])
+router.include_router(overview_router)
 
 
 @router.get(

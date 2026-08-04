@@ -15,7 +15,8 @@ import type {
   CallStatus,
   StatisticsQuality,
 } from "../domain/types";
-import "./statistics.css";
+import { StatisticsSelect } from "./StatisticsSelect";
+import "./call-statistics.css";
 
 export interface CallStatisticsPanelProps {
   readonly calls: CallList | null;
@@ -58,6 +59,26 @@ const STATUS_LABELS: Readonly<Record<CallStatus, string>> = {
   unset: "未结束",
 };
 
+const RUNTIME_OPTIONS = [
+  { value: "all", label: "全部 Runtime" },
+  { value: "claude_code", label: "Claude Code" },
+  { value: "codex", label: "Codex" },
+] as const;
+
+const STATUS_OPTIONS = [
+  { value: "all", label: "全部状态" },
+  { value: "ok", label: "完成" },
+  { value: "error", label: "失败" },
+  { value: "unset", label: "未结束" },
+] as const;
+
+const MINIMUM_DURATION_OPTIONS = [
+  { value: "0", label: "不限" },
+  { value: "100", label: "100 ms" },
+  { value: "1000", label: "1 秒" },
+  { value: "5000", label: "5 秒" },
+] as const;
+
 const QUALITY_LABELS: Readonly<Record<StatisticsQuality, string>> = {
   reliable: "链路完整",
   partial: "存在缺口",
@@ -89,92 +110,81 @@ export function CallStatisticsPanel({
       <div className="call-statistics__filters">
         <label>
           <span>调用组件</span>
-          <select
-            aria-label="调用组件"
+          <StatisticsSelect
+            ariaLabel="调用组件"
             value={filters.component}
-            onChange={(event) =>
+            options={COMPONENT_OPTIONS}
+            triggerClassName="call-statistics__filter-select"
+            onValueChange={(value) =>
               updateFilter(
                 "component",
-                event.target.value as CallFilters["component"],
+                value as CallFilters["component"],
               )
             }
-          >
-            {COMPONENT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label>
           <span>操作</span>
-          <select
-            aria-label="调用操作"
+          <StatisticsSelect
+            ariaLabel="调用操作"
             value={filters.operation}
-            onChange={(event) =>
+            options={[
+              { value: "all", label: "全部操作" },
+              ...TELEMETRY_OPERATIONS.map((operation) => ({
+                value: operation,
+                label: operation,
+              })),
+            ]}
+            triggerClassName="call-statistics__filter-select"
+            onValueChange={(value) =>
               updateFilter(
                 "operation",
-                event.target.value as CallFilters["operation"],
+                value as CallFilters["operation"],
               )
             }
-          >
-            <option value="all">全部操作</option>
-            {TELEMETRY_OPERATIONS.map((operation) => (
-              <option key={operation} value={operation}>
-                {operation}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label>
           <span>Runtime</span>
-          <select
-            aria-label="调用 Runtime"
+          <StatisticsSelect
+            ariaLabel="调用 Runtime"
             value={filters.runtime}
-            onChange={(event) =>
+            options={RUNTIME_OPTIONS}
+            triggerClassName="call-statistics__filter-select"
+            onValueChange={(value) =>
               updateFilter(
                 "runtime",
-                event.target.value as CallFilters["runtime"],
+                value as CallFilters["runtime"],
               )
             }
-          >
-            <option value="all">全部 Runtime</option>
-            <option value="claude_code">Claude Code</option>
-            <option value="codex">Codex</option>
-          </select>
+          />
         </label>
         <label>
           <span>状态</span>
-          <select
-            aria-label="调用状态"
+          <StatisticsSelect
+            ariaLabel="调用状态"
             value={filters.status}
-            onChange={(event) =>
+            options={STATUS_OPTIONS}
+            triggerClassName="call-statistics__filter-select"
+            onValueChange={(value) =>
               updateFilter(
                 "status",
-                event.target.value as CallFilters["status"],
+                value as CallFilters["status"],
               )
             }
-          >
-            <option value="all">全部状态</option>
-            <option value="ok">完成</option>
-            <option value="error">失败</option>
-            <option value="unset">未结束</option>
-          </select>
+          />
         </label>
         <label>
           <span>最小耗时</span>
-          <select
-            aria-label="最小耗时"
-            value={filters.minimumDurationMs}
-            onChange={(event) =>
-              updateFilter("minimumDurationMs", Number(event.target.value))
+          <StatisticsSelect
+            ariaLabel="最小耗时"
+            value={String(filters.minimumDurationMs)}
+            options={MINIMUM_DURATION_OPTIONS}
+            triggerClassName="call-statistics__filter-select"
+            onValueChange={(value) =>
+              updateFilter("minimumDurationMs", Number(value))
             }
-          >
-            <option value={0}>不限</option>
-            <option value={100}>100 ms</option>
-            <option value={1000}>1 秒</option>
-            <option value={5000}>5 秒</option>
-          </select>
+          />
         </label>
       </div>
 

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 from trowel_py.agent_host.binding import SessionBinding
 from trowel_py.agent_host.store import BindingStore
 from trowel_py.memory.sessions_repo import open_sessions_db_readonly
-from trowel_py.statistics.agent.claude import analyze_claude_binding
+from trowel_py.statistics.agent.claude import analyze_claude_binding_many
 from trowel_py.statistics.agent.codec import parse_timestamp
-from trowel_py.statistics.agent.codex import analyze_codex_session
+from trowel_py.statistics.agent.codex import analyze_codex_session_many
 from trowel_py.statistics.agent.models import (
     ClaudeBindingSource,
     CodexTurnSource,
@@ -55,14 +56,45 @@ class FileAgentObservationReader:
             双 runtime adapter 生成的统一 session 观察结果；数据库尚不存在时为空。
         """
 
+        return self.read_many((window,))[0]
+
+    def read_many(
+        self,
+        windows: Sequence[StatisticsWindow],
+    ) -> tuple[list[SessionObservation], ...]:
+        """读取一次 registry 和原生日志，再生成多个时间窗的 session 事实。
+
+        Args:
+            windows: 要从同一份来源快照生成的统计半开时间窗。
+
+        Returns:
+            与输入时间窗顺序一致的统一 session 观察结果。
+        """
+
+        requested = tuple(windows)
+        if not requested:
+            return ()
         connection = open_sessions_db_readonly(self._memory_root)
         if connection is None:
-            return []
+            return tuple([] for _ in requested)
         try:
             active = self._active_user_bindings()
-            observations = self._read_claude(connection, active, window)
-            observations.extend(self._read_codex(connection, active, window))
-            return observations
+            observations: list[list[SessionObservation]] = [
+                [] for _ in requested
+            ]
+            for source in self._claude_sources(connection, active, requested):
+                for index, observation in enumerate(
+                    analyze_claude_binding_many(source, requested)
+                ):
+                    if observation is not None:
+                        observations[index].append(observation)
+            for sources in self._codex_sources(connection, active, requested):
+                for index, observation in enumerate(
+                    analyze_codex_session_many(sources, requested)
+                ):
+                    if observation is not None:
+                        observations[index].append(observation)
+            return tuple(observations)
         finally:
             connection.close()
 
@@ -79,13 +111,13 @@ class FileAgentObservationReader:
             if binding.session_kind == "user"
         }
 
-    def _read_claude(
+    def _claude_sources(
         self,
         connection: sqlite3.Connection,
         active: dict[str, SessionBinding],
-        window: StatisticsWindow,
-    ) -> list[SessionObservation]:
-        """读取 CC binding 水位并交给 Claude adapter。"""
+        windows: Sequence[StatisticsWindow],
+    ) -> list[ClaudeBindingSource]:
+        """读取可能与任一时间窗相交的 CC binding 水位。"""
 
         columns = _columns(connection, "session_bindings")
         status_sql = "b.status" if "status" in columns else "'unknown'"
@@ -105,7 +137,7 @@ class FileAgentObservationReader:
         for row in rows:
             grouped[str(row["cc_session_id"])].append(row)
 
-        observations: list[SessionObservation] = []
+        sources: list[ClaudeBindingSource] = []
         for native_session_id, bindings in grouped.items():
             for index, row in enumerate(bindings):
                 session_id = str(row["trowel_session_id"])
@@ -128,11 +160,14 @@ class FileAgentObservationReader:
                 overlap_end = (
                     next_bound_at or binding_completed_at or session_completed_at
                 )
-                if not _source_overlaps_window(
-                    row["bound_at"],
-                    overlap_end,
-                    window,
-                    running=bool(live is not None and live.running),
+                if not any(
+                    _source_overlaps_window(
+                        row["bound_at"],
+                        overlap_end,
+                        window,
+                        running=bool(live is not None and live.running),
+                    )
+                    for window in windows
                 ):
                     continue
                 transcript = Path(str(row["jsonl_path"] or ""))
@@ -156,40 +191,41 @@ class FileAgentObservationReader:
                 status = (
                     "running"
                     if live is not None and live.running
-                    else _status(row["binding_status"])
+                    else _non_live_status(row["binding_status"])
                 )
-                source = ClaudeBindingSource(
-                    session_id=session_id,
-                    native_session_id=native_session_id,
-                    transcript_path=transcript,
-                    start_offset=(
-                        int(row["start_offset"])
-                        if _non_negative_int(row["start_offset"])
-                        else None
-                    ),
-                    end_offset=min(end_offset, file_size) if file_size else end_offset,
-                    bound_at=str(row["bound_at"]),
-                    completed_at=(
-                        None
-                        if live is not None and live.running
-                        else binding_completed_at
-                        or (session_completed_at if next_bound_at is None else None)
-                    ),
-                    status=status,
-                    model=live.model if live is not None else None,
+                sources.append(
+                    ClaudeBindingSource(
+                        session_id=session_id,
+                        native_session_id=native_session_id,
+                        transcript_path=transcript,
+                        start_offset=(
+                            int(row["start_offset"])
+                            if _non_negative_int(row["start_offset"])
+                            else None
+                        ),
+                        end_offset=(
+                            min(end_offset, file_size) if file_size else end_offset
+                        ),
+                        bound_at=str(row["bound_at"]),
+                        completed_at=(
+                            None
+                            if live is not None and live.running
+                            else binding_completed_at
+                            or (session_completed_at if next_bound_at is None else None)
+                        ),
+                        status=status,
+                        model=live.model if live is not None else None,
+                    )
                 )
-                observation = analyze_claude_binding(source, window)
-                if observation is not None:
-                    observations.append(observation)
-        return observations
+        return sources
 
-    def _read_codex(
+    def _codex_sources(
         self,
         connection: sqlite3.Connection,
         active: dict[str, SessionBinding],
-        window: StatisticsWindow,
-    ) -> list[SessionObservation]:
-        """读取 Codex turns 并按 Trowel session 交给 Codex adapter。"""
+        windows: Sequence[StatisticsWindow],
+    ) -> list[list[CodexTurnSource]]:
+        """读取可能与任一时间窗相交的 Codex turns，并按 session 分组。"""
 
         rows = connection.execute(
             "SELECT thread_id, turn_id, trowel_session_id, journal_path,"
@@ -201,11 +237,14 @@ class FileAgentObservationReader:
         for row in rows:
             session_id = str(row["trowel_session_id"])
             live = active.get(session_id)
-            if not _source_overlaps_window(
-                row["registered_at"],
-                row["completed_at"],
-                window,
-                running=bool(live is not None and live.running),
+            if not any(
+                _source_overlaps_window(
+                    row["registered_at"],
+                    row["completed_at"],
+                    window,
+                    running=bool(live is not None and live.running),
+                )
+                for window in windows
             ):
                 continue
             grouped[session_id].append(
@@ -220,11 +259,15 @@ class FileAgentObservationReader:
                         if row["completed_at"] is not None
                         else None
                     ),
-                    status=_status(row["status"]),
+                    status=(
+                        _status(row["status"])
+                        if live is not None and live.running
+                        else _non_live_status(row["status"])
+                    ),
                     model=str(row["model"] or ""),
                 )
             )
-        observations = []
+        source_groups = []
         for session_id, sources in grouped.items():
             live = active.get(session_id)
             if live is not None and live.running:
@@ -239,16 +282,16 @@ class FileAgentObservationReader:
                     status="running",
                     model=last.model or live.model or "",
                 )
-            observation = analyze_codex_session(sources, window)
-            if observation is not None:
-                observations.append(observation)
-        return observations
+            source_groups.append(sources)
+        return source_groups
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     """返回 SQLite 表的列名集合。"""
 
-    return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})")}
+    return {
+        str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})")
+    }
 
 
 def _source_overlaps_window(
@@ -287,6 +330,13 @@ def _status(value: object) -> SessionStatus:
 
     raw = str(value or "unknown")
     return cast(SessionStatus, raw if raw in _SESSION_STATUSES else "unknown")
+
+
+def _non_live_status(value: object) -> SessionStatus:
+    """把没有实时 binding 支撑的持久 running 降级为终态未知。"""
+
+    status = _status(value)
+    return "unknown" if status == "running" else status
 
 
 def _non_negative_int(value: object) -> bool:

@@ -36,6 +36,37 @@ def test_load_sidecar_settings_reads_explicit_instance_directories(
     assert settings.data_mode == "packaged"
     assert settings.log_dir == log_dir
     assert settings.renderer_origin == "http://127.0.0.1:43124"
+    assert settings.inspection_only is False
+    assert settings.read_data_dir is None
+
+
+def test_load_sidecar_settings_requires_explicit_read_root_for_inspection(
+    tmp_path: Path,
+) -> None:
+    """只读观察实例必须把临时运行目录和真实读取目录分开。"""
+
+    base = {
+        "TROWEL_APP_INSTANCE_ID": "instance-123",
+        "TROWEL_DESKTOP_CREDENTIAL": "desktop-secret",
+        "TROWEL_SERVER_PORT": "43123",
+        "TROWEL_DESKTOP_DATA_DIR": str(tmp_path / "temporary-data"),
+        "TROWEL_DESKTOP_LOG_DIR": str(tmp_path / "logs"),
+        "TROWEL_DESKTOP_RENDERER_ORIGIN": "http://127.0.0.1:43124",
+        "TROWEL_DESKTOP_DATA_MODE": "isolated-dev",
+        "TROWEL_DESKTOP_INSPECTION_ONLY": "1",
+    }
+
+    with pytest.raises(ValueError, match="TROWEL_DESKTOP_READ_DATA_DIR"):
+        load_sidecar_settings(base)
+
+    read_root = tmp_path / "canonical-data"
+    settings = load_sidecar_settings(
+        {**base, "TROWEL_DESKTOP_READ_DATA_DIR": str(read_root)}
+    )
+
+    assert settings.inspection_only is True
+    assert settings.read_data_dir == read_root
+    assert settings.data_dir != settings.read_data_dir
 
 
 @pytest.mark.parametrize(

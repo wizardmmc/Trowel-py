@@ -13,7 +13,9 @@ import { recordRendererReady } from './statistics/rendererTelemetry'
 
 async function bootstrapRenderer() {
   await initializePlatform()
-  const telemetry = createRendererTelemetryPort()
+  const telemetry = import.meta.env.VITE_TROWEL_INSPECTION_MODE === '1'
+    ? null
+    : createRendererTelemetryPort()
   configureTransportTelemetry(telemetry)
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
@@ -22,12 +24,14 @@ async function bootstrapRenderer() {
   )
   requestAnimationFrame(() => {
     window.__TROWEL_RENDERER_READY__ = true
-    recordRendererReady(telemetry, performance.timeOrigin, new Date())
-    void telemetry.flush()
+    if (telemetry) {
+      recordRendererReady(telemetry, performance.timeOrigin, new Date())
+      void telemetry.flush()
+    }
   })
   window.addEventListener('pagehide', () => {
     configureTransportTelemetry(null)
-    void telemetry.drain(100)
+    if (telemetry) void telemetry.drain(100)
   }, { once: true })
 }
 

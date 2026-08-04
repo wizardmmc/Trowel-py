@@ -15,16 +15,21 @@ import type {
   StatisticsTab,
   TelemetryStatistics,
 } from "../domain/types";
+import type { OverviewStatistics } from "../domain/overview";
 import {
   fetchAgentStatistics,
   fetchCallDetail,
   fetchCallStatistics,
   fetchMemoryStatistics,
+  fetchOverviewStatistics,
   fetchRuntimeStatistics,
   fetchTelemetryStatistics,
 } from "../transport/api";
 
 export interface StatisticsApi {
+  readonly fetchOverview: (
+    range: StatisticsDateRange,
+  ) => Promise<OverviewStatistics>;
   readonly fetchAgent: (range: StatisticsDateRange) => Promise<AgentStatistics>;
   readonly fetchMemory: (
     range: StatisticsDateRange,
@@ -49,6 +54,7 @@ export interface StatisticsState {
   readonly dateRange: StatisticsDateRange;
   readonly resolution: StatisticsResolution;
   readonly telemetry: TelemetryStatistics | null;
+  readonly overview: OverviewStatistics | null;
   readonly agent: AgentStatistics | null;
   readonly memory: MemoryStatistics | null;
   readonly runtime: RuntimeStatistics | null;
@@ -56,6 +62,8 @@ export interface StatisticsState {
   readonly callDetail: CallDetail | null;
   readonly loading: boolean;
   readonly error: string | null;
+  readonly overviewLoading: boolean;
+  readonly overviewError: string | null;
   readonly agentLoading: boolean;
   readonly agentError: string | null;
   readonly memoryLoading: boolean;
@@ -70,6 +78,7 @@ export interface StatisticsState {
   readonly callFilters: CallFilters;
   readonly selectedCallSpanId: string | null;
   readonly selectedCallTraceId: string | null;
+  readonly deepLinkedCallTraceId: string | null;
   readonly runtimeFilter: AgentRuntimeFilter;
   readonly modelFilter: string;
   readonly setActiveTab: (tab: StatisticsTab) => void;
@@ -78,6 +87,7 @@ export interface StatisticsState {
   readonly setRuntimeFilter: (runtime: AgentRuntimeFilter) => void;
   readonly setModelFilter: (model: string) => void;
   readonly refreshTelemetry: () => Promise<void>;
+  readonly refreshOverview: () => Promise<void>;
   readonly refreshAgent: () => Promise<void>;
   readonly refreshMemory: () => Promise<void>;
   readonly refreshRuntime: () => Promise<void>;
@@ -85,6 +95,7 @@ export interface StatisticsState {
   readonly refreshCalls: () => Promise<void>;
   readonly loadMoreCalls: () => Promise<void>;
   readonly selectCall: (call: CallListItem) => Promise<void>;
+  readonly openCallTrace: (traceId: string) => Promise<void>;
 }
 
 export const DEFAULT_CALL_FILTERS: CallFilters = {
@@ -96,6 +107,7 @@ export const DEFAULT_CALL_FILTERS: CallFilters = {
 };
 
 const defaultApi: StatisticsApi = {
+  fetchOverview: fetchOverviewStatistics,
   fetchAgent: fetchAgentStatistics,
   fetchMemory: fetchMemoryStatistics,
   fetchTelemetry: fetchTelemetryStatistics,
@@ -110,238 +122,28 @@ export function createStatisticsStore(
 ) {
   const api = { ...defaultApi, ...apiOverrides };
   let latestTelemetryRequest = 0;
+  let latestOverviewRequest = 0;
   let latestAgentRequest = 0;
   let latestMemoryRequest = 0;
   let latestRuntimeRequest = 0;
   let latestCallsRequest = 0;
   let latestCallDetailRequest = 0;
-  return createStore<StatisticsState>((set, get) => ({
-    activeTab: "overview",
-    dateRange: initialDateRange(),
-    resolution: "hour",
-    telemetry: null,
-    agent: null,
-    memory: null,
-    runtime: null,
-    calls: null,
-    callDetail: null,
-    loading: false,
-    error: null,
-    agentLoading: false,
-    agentError: null,
-    memoryLoading: false,
-    memoryError: null,
-    runtimeLoading: false,
-    runtimeError: null,
-    callsLoading: false,
-    callsLoadingMore: false,
-    callsError: null,
-    callDetailLoading: false,
-    callDetailError: null,
-    callFilters: DEFAULT_CALL_FILTERS,
-    selectedCallSpanId: null,
-    selectedCallTraceId: null,
-    runtimeFilter: "all",
-    modelFilter: "all",
-    setActiveTab: (activeTab) => set({ activeTab }),
-    setDateRange: (dateRange) => {
-      latestTelemetryRequest += 1;
-      latestAgentRequest += 1;
-      latestMemoryRequest += 1;
-      latestRuntimeRequest += 1;
-      latestCallsRequest += 1;
-      latestCallDetailRequest += 1;
-      set({
-        dateRange,
-        telemetry: null,
-        agent: null,
-        memory: null,
-        runtime: null,
-        calls: null,
-        callDetail: null,
-        loading: false,
-        error: null,
-        agentLoading: false,
-        agentError: null,
-        memoryLoading: false,
-        memoryError: null,
-        runtimeLoading: false,
-        runtimeError: null,
-        callsLoading: false,
-        callsLoadingMore: false,
-        callsError: null,
-        callDetailLoading: false,
-        callDetailError: null,
-        selectedCallSpanId: null,
-        selectedCallTraceId: null,
-        modelFilter: "all",
-      });
-    },
-    setResolution: (resolution) => {
-      latestTelemetryRequest += 1;
-      set({ resolution, telemetry: null, loading: false, error: null });
-    },
-    setRuntimeFilter: (runtimeFilter) =>
-      set({ runtimeFilter, modelFilter: "all" }),
-    setModelFilter: (modelFilter) => set({ modelFilter }),
-    refreshTelemetry: async () => {
-      const request = ++latestTelemetryRequest;
-      const { dateRange, resolution } = get();
-      set({ loading: true, error: null });
-      try {
-        const telemetry = await api.fetchTelemetry(dateRange, resolution);
-        if (request !== latestTelemetryRequest) return;
-        set({ telemetry, loading: false });
-      } catch (error) {
-        if (request !== latestTelemetryRequest) return;
-        set({
-          loading: false,
-          error: error instanceof Error ? error.message : "统计数据读取失败",
-        });
-      }
-    },
-    refreshAgent: async () => {
-      const request = ++latestAgentRequest;
-      const { dateRange } = get();
-      set({ agentLoading: true, agentError: null });
-      try {
-        const agent = await api.fetchAgent(dateRange);
-        if (request !== latestAgentRequest) return;
-        set({ agent, agentLoading: false });
-      } catch (error) {
-        if (request !== latestAgentRequest) return;
-        set({
-          agentLoading: false,
-          agentError:
-            error instanceof Error ? error.message : "Agent 统计数据读取失败",
-        });
-      }
-    },
-    refreshMemory: async () => {
-      const request = ++latestMemoryRequest;
-      const { dateRange } = get();
-      set({ memoryLoading: true, memoryError: null });
-      try {
-        const memory = await api.fetchMemory(dateRange);
-        if (request !== latestMemoryRequest) return;
-        set({ memory, memoryLoading: false });
-      } catch (error) {
-        if (request !== latestMemoryRequest) return;
-        set({
-          memoryLoading: false,
-          memoryError:
-            error instanceof Error ? error.message : "Memory 统计数据读取失败",
-        });
-      }
-    },
-    refreshRuntime: async () => {
-      const request = ++latestRuntimeRequest;
-      const { dateRange } = get();
-      set({ runtimeLoading: true, runtimeError: null });
-      try {
-        const runtime = await api.fetchRuntime(dateRange);
-        if (request !== latestRuntimeRequest) return;
-        set({ runtime, runtimeLoading: false });
-      } catch (error) {
-        if (request !== latestRuntimeRequest) return;
-        set({
-          runtimeLoading: false,
-          runtimeError:
-            error instanceof Error ? error.message : "运行统计数据读取失败",
-        });
-      }
-    },
-    setCallFilters: (callFilters) => {
-      latestCallsRequest += 1;
-      latestCallDetailRequest += 1;
-      set({
-        callFilters,
-        calls: null,
-        callDetail: null,
-        callsLoading: false,
-        callsLoadingMore: false,
-        callsError: null,
-        callDetailLoading: false,
-        callDetailError: null,
-        selectedCallSpanId: null,
-        selectedCallTraceId: null,
-      });
-    },
-    refreshCalls: async () => {
-      const request = ++latestCallsRequest;
-      const { dateRange, callFilters } = get();
-      set({ callsLoading: true, callsError: null });
-      try {
-        const calls = await api.fetchCalls(dateRange, callFilters);
-        if (request !== latestCallsRequest) return;
-        const first = calls.items[0] ?? null;
-        set({
-          calls,
-          callsLoading: false,
-          selectedCallSpanId: first?.span_id ?? null,
-          selectedCallTraceId: first?.trace_id ?? null,
-          callDetail: null,
-          callDetailError: null,
-        });
-        if (first) await get().selectCall(first);
-      } catch (error) {
-        if (request !== latestCallsRequest) return;
-        set({
-          callsLoading: false,
-          callsError:
-            error instanceof Error ? error.message : "调用列表读取失败",
-        });
-      }
-    },
-    loadMoreCalls: async () => {
-      const current = get().calls;
-      if (!current?.next_cursor || get().callsLoadingMore) return;
-      const request = ++latestCallsRequest;
-      const { dateRange, callFilters } = get();
-      set({ callsLoadingMore: true, callsError: null });
-      try {
-        const nextPage = await api.fetchCalls(
-          dateRange,
-          callFilters,
-          current.next_cursor,
-        );
-        if (request !== latestCallsRequest) return;
-        const knownSpanIds = new Set(current.items.map((item) => item.span_id));
-        const appended = nextPage.items.filter(
-          (item) => !knownSpanIds.has(item.span_id),
-        );
-        const items = [...current.items, ...appended];
-        set({
-          calls: {
-            ...nextPage,
-            sample_size: items.length,
-            quality: combineCallQuality(items),
-            freshness: mergeFreshness(current.freshness, nextPage.freshness),
-            items,
-          },
-          callsLoadingMore: false,
-        });
-      } catch (error) {
-        if (request !== latestCallsRequest) return;
-        set({
-          callsLoadingMore: false,
-          callsError:
-            error instanceof Error ? error.message : "更多调用读取失败",
-        });
-      }
-    },
-    selectCall: async (call) => {
+  return createStore<StatisticsState>((set, get) => {
+    const loadCallDetail = async (
+      traceId: string,
+      spanId: string | null,
+    ): Promise<void> => {
       const existing = get().callDetail;
       set({
-        selectedCallSpanId: call.span_id,
-        selectedCallTraceId: call.trace_id,
+        selectedCallSpanId: spanId,
+        selectedCallTraceId: traceId,
         callDetailError: null,
       });
-      if (existing?.trace_id === call.trace_id) return;
+      if (existing?.trace_id === traceId) return;
       const request = ++latestCallDetailRequest;
       set({ callDetail: null, callDetailLoading: true });
       try {
-        const callDetail = await api.fetchCallDetail(call.trace_id);
+        const callDetail = await api.fetchCallDetail(traceId);
         if (request !== latestCallDetailRequest) return;
         set({ callDetail, callDetailLoading: false });
       } catch (error) {
@@ -352,8 +154,279 @@ export function createStatisticsStore(
             error instanceof Error ? error.message : "调用详情读取失败",
         });
       }
-    },
-  }));
+    };
+
+    return {
+      activeTab: "overview",
+      dateRange: initialDateRange(),
+      resolution: "hour",
+      telemetry: null,
+      overview: null,
+      agent: null,
+      memory: null,
+      runtime: null,
+      calls: null,
+      callDetail: null,
+      loading: false,
+      error: null,
+      overviewLoading: false,
+      overviewError: null,
+      agentLoading: false,
+      agentError: null,
+      memoryLoading: false,
+      memoryError: null,
+      runtimeLoading: false,
+      runtimeError: null,
+      callsLoading: false,
+      callsLoadingMore: false,
+      callsError: null,
+      callDetailLoading: false,
+      callDetailError: null,
+      callFilters: DEFAULT_CALL_FILTERS,
+      selectedCallSpanId: null,
+      selectedCallTraceId: null,
+      deepLinkedCallTraceId: null,
+      runtimeFilter: "all",
+      modelFilter: "all",
+      setActiveTab: (activeTab) => set({ activeTab }),
+      setDateRange: (dateRange) => {
+        latestOverviewRequest += 1;
+        latestTelemetryRequest += 1;
+        latestAgentRequest += 1;
+        latestMemoryRequest += 1;
+        latestRuntimeRequest += 1;
+        latestCallsRequest += 1;
+        latestCallDetailRequest += 1;
+        set({
+          dateRange,
+          telemetry: null,
+          overview: null,
+          agent: null,
+          memory: null,
+          runtime: null,
+          calls: null,
+          callDetail: null,
+          loading: false,
+          error: null,
+          overviewLoading: false,
+          overviewError: null,
+          agentLoading: false,
+          agentError: null,
+          memoryLoading: false,
+          memoryError: null,
+          runtimeLoading: false,
+          runtimeError: null,
+          callsLoading: false,
+          callsLoadingMore: false,
+          callsError: null,
+          callDetailLoading: false,
+          callDetailError: null,
+          selectedCallSpanId: null,
+          selectedCallTraceId: null,
+          deepLinkedCallTraceId: null,
+          modelFilter: "all",
+        });
+      },
+      setResolution: (resolution) => {
+        latestTelemetryRequest += 1;
+        set({ resolution, telemetry: null, loading: false, error: null });
+      },
+      setRuntimeFilter: (runtimeFilter) =>
+        set({ runtimeFilter, modelFilter: "all" }),
+      setModelFilter: (modelFilter) => set({ modelFilter }),
+      refreshTelemetry: async () => {
+        const request = ++latestTelemetryRequest;
+        const { dateRange, resolution } = get();
+        set({ loading: true, error: null });
+        try {
+          const telemetry = await api.fetchTelemetry(dateRange, resolution);
+          if (request !== latestTelemetryRequest) return;
+          set({ telemetry, loading: false });
+        } catch (error) {
+          if (request !== latestTelemetryRequest) return;
+          set({
+            loading: false,
+            error: error instanceof Error ? error.message : "统计数据读取失败",
+          });
+        }
+      },
+      refreshOverview: async () => {
+        if (get().overviewLoading) return;
+        const request = ++latestOverviewRequest;
+        const { dateRange } = get();
+        set({ overviewLoading: true, overviewError: null });
+        try {
+          const overview = await api.fetchOverview(dateRange);
+          if (request !== latestOverviewRequest) return;
+          set({ overview, overviewLoading: false });
+        } catch (error) {
+          if (request !== latestOverviewRequest) return;
+          set({
+            overviewLoading: false,
+            overviewError:
+              error instanceof Error ? error.message : "统计总览读取失败",
+          });
+        }
+      },
+      refreshAgent: async () => {
+        const request = ++latestAgentRequest;
+        const { dateRange } = get();
+        set({ agentLoading: true, agentError: null });
+        try {
+          const agent = await api.fetchAgent(dateRange);
+          if (request !== latestAgentRequest) return;
+          set({ agent, agentLoading: false });
+        } catch (error) {
+          if (request !== latestAgentRequest) return;
+          set({
+            agentLoading: false,
+            agentError:
+              error instanceof Error ? error.message : "Agent 统计数据读取失败",
+          });
+        }
+      },
+      refreshMemory: async () => {
+        const request = ++latestMemoryRequest;
+        const { dateRange } = get();
+        set({ memoryLoading: true, memoryError: null });
+        try {
+          const memory = await api.fetchMemory(dateRange);
+          if (request !== latestMemoryRequest) return;
+          set({ memory, memoryLoading: false });
+        } catch (error) {
+          if (request !== latestMemoryRequest) return;
+          set({
+            memoryLoading: false,
+            memoryError:
+              error instanceof Error
+                ? error.message
+                : "Memory 统计数据读取失败",
+          });
+        }
+      },
+      refreshRuntime: async () => {
+        if (get().runtimeLoading) return;
+        const request = ++latestRuntimeRequest;
+        const { dateRange } = get();
+        set({ runtimeLoading: true, runtimeError: null });
+        try {
+          const runtime = await api.fetchRuntime(dateRange);
+          if (request !== latestRuntimeRequest) return;
+          set({ runtime, runtimeLoading: false });
+        } catch (error) {
+          if (request !== latestRuntimeRequest) return;
+          set({
+            runtimeLoading: false,
+            runtimeError:
+              error instanceof Error ? error.message : "运行统计数据读取失败",
+          });
+        }
+      },
+      setCallFilters: (callFilters) => {
+        latestCallsRequest += 1;
+        latestCallDetailRequest += 1;
+        set({
+          callFilters,
+          calls: null,
+          callDetail: null,
+          callsLoading: false,
+          callsLoadingMore: false,
+          callsError: null,
+          callDetailLoading: false,
+          callDetailError: null,
+          selectedCallSpanId: null,
+          selectedCallTraceId: null,
+          deepLinkedCallTraceId: null,
+        });
+      },
+      refreshCalls: async () => {
+        const request = ++latestCallsRequest;
+        const { dateRange, callFilters } = get();
+        set({ callsLoading: true, callsError: null });
+        try {
+          const calls = await api.fetchCalls(dateRange, callFilters);
+          if (request !== latestCallsRequest) return;
+          const deepLinkedTraceId = get().deepLinkedCallTraceId;
+          const first = calls.items[0] ?? null;
+          const deepLinkedRow = deepLinkedTraceId
+            ? (calls.items.find(
+                (item) => item.trace_id === deepLinkedTraceId,
+              ) ?? null)
+            : null;
+          set({
+            calls,
+            callsLoading: false,
+            selectedCallSpanId: deepLinkedRow?.span_id ?? null,
+            selectedCallTraceId: deepLinkedTraceId ?? first?.trace_id ?? null,
+            callDetail: null,
+            callDetailError: null,
+          });
+          if (deepLinkedTraceId) {
+            await loadCallDetail(
+              deepLinkedTraceId,
+              deepLinkedRow?.span_id ?? null,
+            );
+          } else if (first) {
+            await get().selectCall(first);
+          }
+        } catch (error) {
+          if (request !== latestCallsRequest) return;
+          set({
+            callsLoading: false,
+            callsError:
+              error instanceof Error ? error.message : "调用列表读取失败",
+          });
+        }
+      },
+      loadMoreCalls: async () => {
+        const current = get().calls;
+        if (!current?.next_cursor || get().callsLoadingMore) return;
+        const request = ++latestCallsRequest;
+        const { dateRange, callFilters } = get();
+        set({ callsLoadingMore: true, callsError: null });
+        try {
+          const nextPage = await api.fetchCalls(
+            dateRange,
+            callFilters,
+            current.next_cursor,
+          );
+          if (request !== latestCallsRequest) return;
+          const knownSpanIds = new Set(
+            current.items.map((item) => item.span_id),
+          );
+          const appended = nextPage.items.filter(
+            (item) => !knownSpanIds.has(item.span_id),
+          );
+          const items = [...current.items, ...appended];
+          set({
+            calls: {
+              ...nextPage,
+              sample_size: items.length,
+              quality: combineCallQuality(items),
+              freshness: mergeFreshness(current.freshness, nextPage.freshness),
+              items,
+            },
+            callsLoadingMore: false,
+          });
+        } catch (error) {
+          if (request !== latestCallsRequest) return;
+          set({
+            callsLoadingMore: false,
+            callsError:
+              error instanceof Error ? error.message : "更多调用读取失败",
+          });
+        }
+      },
+      selectCall: async (call) => {
+        set({ deepLinkedCallTraceId: null });
+        await loadCallDetail(call.trace_id, call.span_id);
+      },
+      openCallTrace: async (traceId) => {
+        set({ deepLinkedCallTraceId: traceId });
+        await loadCallDetail(traceId, null);
+      },
+    };
+  });
 }
 
 const CALL_QUALITY_ORDER = {

@@ -1,0 +1,247 @@
+.statistics-date-range__trigger {
+  display: inline-flex;
+  width: 112px;
+  height: 34px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  cursor: pointer;
+  font: 500 10px var(--font-sans);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.statistics-date-range__trigger:hover,
+.statistics-date-range__trigger[aria-expanded="true"] {
+  border-color: rgba(74, 124, 89, 0.48);
+  background: var(--garden-soft);
+}
+
+.statistics-date-range__trigger > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statistics-date-range__trigger svg:first-child {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: var(--garden-green);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+.statistics-date-range__trigger svg:last-child {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--text-tertiary);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: transform 120ms ease;
+}
+
+.statistics-date-range__trigger[aria-expanded="true"] svg:last-child {
+  transform: rotate(180deg);
+}
+
+.statistics-date-range__popover {
+  padding: 12px;
+}
+
+.statistics-date-range__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--soil-brown-soft);
+}
+
+.statistics-date-range__presets button,
+.statistics-date-range__actions button {
+  min-height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font: 500 10px var(--font-sans);
+}
+
+.statistics-date-range__presets button:hover,
+.statistics-date-range__presets button[aria-pressed="true"] {
+  border-color: var(--garden-green);
+  color: var(--text-inverse);
+  background: var(--garden-green);
+}
+
+.statistics-date-range__layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.statistics-date-range__fields {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.statistics-date-range__fields > p {
+  margin: 0 0 1px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.statistics-date-range__field {
+  display: grid;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid rgba(139, 115, 85, 0.24);
+  border-radius: var(--radius-md);
+  background: rgba(245, 240, 232, 0.32);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.statistics-date-range__field.is-active {
+  border-color: var(--garden-green);
+  background: var(--garden-soft);
+  box-shadow: 0 0 0 1px rgba(74, 124, 89, 0.12);
+}
+
+.statistics-date-range__field span {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.statistics-date-range__field input {
+  width: 100%;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text-primary);
+  background: transparent;
+  font: 11px var(--font-mono);
+}
+
+.statistics-date-range__error {
+  color: var(--color-error) !important;
+}
+
+.statistics-date-range__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 3px;
+}
+
+.statistics-date-range__actions button.is-primary {
+  border-color: var(--garden-green);
+  color: var(--text-inverse);
+  background: var(--garden-green);
+}
+
+.statistics-date-range__calendar {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(139, 115, 85, 0.22);
+  border-radius: var(--radius-md);
+  background: rgba(245, 240, 232, 0.34);
+}
+
+.statistics-date-range__month {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.statistics-date-range__month button {
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font: 500 11px var(--font-sans);
+}
+
+.statistics-date-range__month button:hover {
+  color: var(--garden-green);
+  background: var(--garden-soft);
+}
+
+.statistics-date-range__weekdays,
+.statistics-date-range__days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  text-align: center;
+}
+
+.statistics-date-range__weekdays span {
+  padding: 3px 0;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.statistics-date-range__days {
+  gap: 1px;
+}
+
+.statistics-date-range__days button {
+  position: relative;
+  height: 28px;
+  border: 0;
+  border-radius: 3px;
+  color: var(--text-primary);
+  background: transparent;
+  cursor: pointer;
+  font: 10px var(--font-mono);
+}
+
+.statistics-date-range__days button:hover {
+  background: var(--neutral-soft);
+}
+
+.statistics-date-range__days button.is-outside {
+  color: rgba(107, 107, 107, 0.32);
+}
+
+.statistics-date-range__days button.is-in-range {
+  color: var(--garden-green);
+  background: var(--garden-soft);
+}
+
+.statistics-date-range__days button.is-endpoint {
+  color: var(--text-inverse);
+  background: var(--garden-green);
+  font-weight: 700;
+}
+
+.statistics-date-range__days button.is-today:not(.is-endpoint) {
+  box-shadow: inset 0 0 0 1px rgba(74, 124, 89, 0.45);
+}
+
+@media (max-width: 660px) {
+  .statistics-date-range__layout {
+    grid-template-columns: 1fr;
+  }
+}

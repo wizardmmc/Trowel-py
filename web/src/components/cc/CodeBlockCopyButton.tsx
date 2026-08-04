@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { copyText } from "./copyText";
+import { copyText } from "../../lib/copyText";
 
 interface CodeBlockCopyButtonProps {
   readonly text: string;

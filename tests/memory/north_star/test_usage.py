@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trowel_py.memory.access_log import AccessRecord, log_access
+from trowel_py.memory.access_log import (
+    AccessRecord,
+    OutcomeRecord,
+    log_access,
+    log_outcome,
+)
 from trowel_py.memory.judgements import save_judgement_report
 from trowel_py.memory.north_star import memory_usage_metrics
 from trowel_py.memory.promotion_policy import PromotionPolicy
@@ -204,6 +209,80 @@ def test_identity_resolves_via_trowel_binding(tmp_path: Path) -> None:
     assert metrics["retrieval"]["read_rate"] == 1.0
     assert metrics["identity"]["unattributed"] == 0
     assert metrics["identity"]["coverage"] == 1.0
+
+
+def test_usage_counts_codex_search_read_and_outcome(tmp_path: Path) -> None:
+    """Codex 访问和反馈必须与 Claude Code 一样进入用户 Memory 指标。"""
+
+    conn = open_sessions_db(tmp_path)
+    try:
+        create_sessions_repository(conn).codex.register_turn(
+            thread_id="thread-codex",
+            turn_id="turn-codex",
+            trowel_session_id="trowel-codex",
+            workdir="/project",
+            journal_path="/journal",
+            registered_at="2026-08-03T10:00:00+08:00",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+            provider="openai",
+            memory_enabled=True,
+            profile_enabled=True,
+        )
+    finally:
+        conn.close()
+    note_stem = write_note(tmp_path, "m0")
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="2026-08-03T10:01:00+08:00",
+            trowel_session_id="trowel-codex",
+            cc_session_id="",
+            toolUseId="",
+            action="search",
+            search_id="search-codex",
+            memory_id=note_stem,
+            rank=0,
+            host_kind="codex",
+            native_session_id="thread-codex",
+        ),
+    )
+    log_access(
+        tmp_path,
+        AccessRecord(
+            ts="2026-08-03T10:02:00+08:00",
+            trowel_session_id="trowel-codex",
+            cc_session_id="",
+            toolUseId="",
+            action="read",
+            search_id="search-codex",
+            read_id="read-codex",
+            memory_id=note_stem,
+            host_kind="codex",
+            native_session_id="thread-codex",
+        ),
+    )
+    log_outcome(
+        tmp_path,
+        OutcomeRecord(
+            ts="2026-08-03T10:03:00+08:00",
+            trowel_session_id="trowel-codex",
+            cc_session_id="",
+            toolUseId="",
+            read_id="read-codex",
+            memory_id=note_stem,
+            outcome="helpful",
+            host_kind="codex",
+            native_session_id="thread-codex",
+        ),
+    )
+
+    metrics = memory_usage_metrics(tmp_path)
+
+    assert metrics["identity"]["attributed"] == 2
+    assert metrics["retrieval"]["search_hits"] == 1
+    assert metrics["retrieval"]["reads"] == 1
+    assert metrics["effect"]["helpful_sessions"] == 1
 
 
 def test_quality_insufficient_with_no_data(tmp_path: Path) -> None:

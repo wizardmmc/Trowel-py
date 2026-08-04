@@ -1,5 +1,6 @@
-/** 通过 Clipboard API 或旧浏览器降级路径复制文本。 */
+/** 提供不依赖具体页面的文本复制能力。 */
 
+/** 优先使用 Clipboard API，并为本地页面保留同步降级路径。 */
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {

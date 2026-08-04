@@ -28,6 +28,8 @@ export const agentStatisticsFixture: AgentStatistics = {
     unknown: null,
     total: 312_000,
     total_includes_cache_input: true,
+    known_session_count: 2,
+    session_count: 2,
     quality: "partial",
   },
   first_visible_response: {
@@ -42,6 +44,7 @@ export const agentStatisticsFixture: AgentStatistics = {
     concurrent_union_ms: 5_400_000,
     quality: "reliable",
   },
+  cache_input_ratio: 270_000 / (220_000 + 80_000 + 60_000 + 8_000),
   model_summaries: [
     {
       runtime: "codex",
@@ -63,6 +66,8 @@ export const agentStatisticsFixture: AgentStatistics = {
         unknown: null,
         total: 230_000,
         total_includes_cache_input: true,
+        known_session_count: 1,
+        session_count: 1,
         quality: "reliable",
       },
       first_visible_response: {
@@ -96,6 +101,8 @@ export const agentStatisticsFixture: AgentStatistics = {
         unknown: null,
         total: 82_000,
         total_includes_cache_input: true,
+        known_session_count: 1,
+        session_count: 1,
         quality: "partial",
       },
       first_visible_response: {
@@ -105,7 +112,7 @@ export const agentStatisticsFixture: AgentStatistics = {
         p99_ms: null,
         quality: "unavailable",
       },
-      cache_input_ratio: 0.75,
+      cache_input_ratio: 60_000 / (80_000 + 60_000 + 8_000),
       activity_ms: 3_600_000,
       quality: "partial",
     },
@@ -133,6 +140,8 @@ export const agentStatisticsFixture: AgentStatistics = {
         unknown: null,
         total: 230_000,
         total_includes_cache_input: true,
+        known_session_count: 1,
+        session_count: 1,
         quality: "reliable",
       },
       status: "completed",
@@ -160,6 +169,8 @@ export const agentStatisticsFixture: AgentStatistics = {
         unknown: null,
         total: 82_000,
         total_includes_cache_input: true,
+        known_session_count: 1,
+        session_count: 1,
         quality: "partial",
       },
       status: "interrupted",

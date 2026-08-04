@@ -1,6 +1,7 @@
 /** 验证调用列表筛选、键盘选择和 trace 缺口展示。 */
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { CallStatisticsPanel } from "../../statistics/ui/CallStatisticsPanel";
 import {
@@ -8,7 +9,8 @@ import {
   callListFixture,
 } from "./callStatisticsFixture";
 
-test("filters calls and selects rows with pointer or keyboard", () => {
+test("filters calls and selects rows with pointer or keyboard", async () => {
+  const user = userEvent.setup();
   const onFiltersChange = vi.fn();
   const onSelectCall = vi.fn();
   render(
@@ -34,9 +36,9 @@ test("filters calls and selects rows with pointer or keyboard", () => {
     />,
   );
 
-  fireEvent.change(screen.getByLabelText("调用组件"), {
-    target: { value: "sqlite" },
-  });
+  expect(screen.getByLabelText("调用组件").tagName).toBe("BUTTON");
+  await user.click(screen.getByLabelText("调用组件"));
+  await user.click(screen.getByRole("option", { name: "SQLite" }));
   expect(onFiltersChange).toHaveBeenCalledWith(
     expect.objectContaining({ component: "sqlite" }),
   );

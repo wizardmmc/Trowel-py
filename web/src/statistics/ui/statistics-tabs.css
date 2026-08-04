@@ -1,0 +1,104 @@
+.statistics-tabs {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.statistics-tabs__toolbar {
+  display: flex;
+  min-height: 52px;
+  flex: 0 0 auto;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.statistics-tabs__toolbar [role="tablist"] {
+  display: flex;
+  min-width: 0;
+  gap: 24px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.statistics-tabs__toolbar [role="tablist"]::-webkit-scrollbar {
+  display: none;
+}
+
+.statistics-tabs__toolbar [role="tab"] {
+  position: relative;
+  min-width: max-content;
+  min-height: 51px;
+  padding: 0 2px;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font: 500 12px var(--font-sans);
+}
+
+.statistics-tabs__toolbar [role="tab"]::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  content: "";
+}
+
+.statistics-tabs__toolbar [role="tab"]:hover,
+.statistics-tabs__toolbar [role="tab"][aria-selected="true"] {
+  color: var(--garden-green);
+}
+
+.statistics-tabs__toolbar [role="tab"][aria-selected="true"] {
+  font-weight: 700;
+}
+
+.statistics-tabs__toolbar [role="tab"][aria-selected="true"]::after {
+  background: var(--garden-green);
+}
+
+.statistics-tabs__toolbar [role="tab"]:focus-visible {
+  outline: 2px solid var(--sunshine-ring);
+  outline-offset: 2px;
+}
+
+.statistics-tabs__range {
+  display: flex;
+  min-height: 51px;
+  align-items: center;
+}
+
+.statistics-tabs__panel {
+  min-height: 0;
+  flex: 1;
+  padding: 18px 0 8px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 1180px) {
+  .statistics-tabs__toolbar {
+    min-height: 94px;
+    flex-wrap: wrap;
+    gap: 0 20px;
+  }
+
+  .statistics-tabs__toolbar [role="tablist"] {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .statistics-tabs__toolbar [role="tab"] {
+    min-height: 47px;
+  }
+
+  .statistics-tabs__range {
+    min-height: 44px;
+  }
+}

@@ -163,13 +163,13 @@ class SessionObservation:
 
 
 def combine_token_usage(values: list[TokenUsage]) -> TokenUsage:
-    """严格合并 token；任一样本缺少的分类在结果中保持未知。
+    """合并已知 token；缺失样本不清空同组已经观测到的数量。
 
     Args:
         values: 同一统计分组中的 token 增量。
 
     Returns:
-        各分类之和；空列表或任一样本缺字段时该分类为 None。
+        各分类的已知小计；空列表或全部样本都缺该字段时为 None。
     """
 
     if not values:
@@ -177,7 +177,8 @@ def combine_token_usage(values: list[TokenUsage]) -> TokenUsage:
     totals: dict[str, int | None] = {}
     for field in TOKEN_FIELDS:
         parts = [getattr(value, field) for value in values]
-        totals[field] = sum(parts) if all(part is not None for part in parts) else None
+        known = [part for part in parts if part is not None]
+        totals[field] = sum(known) if known else None
     return TokenUsage(**totals)
 
 

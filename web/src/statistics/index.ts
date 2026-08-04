@@ -2,9 +2,13 @@
 
 export * from "./application/store";
 export * from "./domain/types";
+export * from "./domain/overview";
 export * from "./transport/api";
 export * from "./telemetryPort";
 export * from "./ui/StatisticsTabs";
+export * from "./ui/StatisticsWorkspace";
+export * from "./ui/OverviewStatisticsPanel";
+export * from "./ui/OverviewStatisticsView";
 export * from "./ui/AgentStatisticsPanel";
 export * from "./ui/AgentStatisticsView";
 export * from "./ui/MemoryStatisticsPanel";

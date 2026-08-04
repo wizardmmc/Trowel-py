@@ -1,8 +1,8 @@
-"""把访问记录解析为所属 CC 会话及会话类型。
+"""把访问记录解析为所属 Agent 会话及会话类型。
 
 解析优先使用 ``trowel_session_id`` 绑定，其次使用记录中的非空
-``cc_session_id``；没有可验证映射时保持未归属，不猜测所有者。索引一次读取
-绑定与会话类型，随后在内存中批量解析。
+``cc_session_id``；Codex 记录使用 thread ID 作为兼容原生身份。没有可验证映射
+时保持未归属，不猜测所有者。索引一次读取绑定与会话类型，随后在内存中批量解析。
 """
 
 from __future__ import annotations
@@ -16,9 +16,15 @@ from trowel_py.memory.sessions_repo import (
     SessionsRepository,
     create_sessions_repository,
     open_sessions_db,
+    open_sessions_db_readonly,
 )
 
-AttributionBasis = Literal["trowel_binding", "cc_session_id", "unattributed"]
+AttributionBasis = Literal[
+    "trowel_binding",
+    "native_session_id",
+    "cc_session_id",
+    "unattributed",
+]
 
 
 @dataclass(frozen=True)
@@ -31,7 +37,7 @@ class Attribution:
 
     @property
     def attributed(self) -> bool:
-        """判断记录是否已归到某个 Claude Code 会话。"""
+        """判断记录是否已归到某个 Agent 原生会话。"""
         return self.basis != "unattributed"
 
     @property
@@ -47,22 +53,25 @@ class AttributionIndex:
         self,
         by_trowel: dict[str, SessionBinding],
         cc_kinds: dict[str, str],
+        native_kinds: dict[tuple[str, str], str] | None = None,
     ) -> None:
         """保存解析访问记录所需的会话绑定和类型映射。
 
         Args:
             by_trowel: Trowel 会话 ID 到持久化会话绑定的映射。
             cc_kinds: Claude Code 会话 ID 到会话用途的映射。
+            native_kinds: runtime 与原生会话 ID 到会话用途的映射。
         """
 
         self._by_trowel = by_trowel
         self._cc_kinds = cc_kinds
+        self._native_kinds = native_kinds or {}
 
     @classmethod
     def empty(cls) -> "AttributionIndex":
         """返回不包含任何会话映射的归因索引。"""
 
-        return cls({}, {})
+        return cls({}, {}, {})
 
     @classmethod
     def from_repo(cls, repo: SessionsRepository) -> "AttributionIndex":
@@ -71,17 +80,46 @@ class AttributionIndex:
             binding.trowel_session_id: binding
             for binding in repo.claude.all_bindings()
         }
-        return cls(by_trowel, repo.claude.all_cc_kinds())
+        native_kinds = {
+            ("cc", cc_session_id): session_kind
+            for cc_session_id, session_kind in repo.claude.all_cc_kinds().items()
+        }
+        for turn in repo.codex.list_attribution_turns():
+            native_kinds[("codex", turn.thread_id)] = turn.session_kind
+            if turn.trowel_session_id and turn.trowel_session_id not in by_trowel:
+                by_trowel[turn.trowel_session_id] = SessionBinding(
+                    trowel_session_id=turn.trowel_session_id,
+                    cc_session_id=turn.thread_id,
+                    session_kind=turn.session_kind,
+                    workdir=turn.workdir,
+                    bound_at=turn.registered_at,
+                )
+        cc_kinds = repo.claude.all_cc_kinds()
+        cc_kinds.update(
+            {
+                native_id: session_kind
+                for (host_kind, native_id), session_kind in native_kinds.items()
+                if host_kind == "codex"
+            }
+        )
+        return cls(by_trowel, cc_kinds, native_kinds)
 
     @classmethod
-    def from_root(cls, root: Path | str) -> "AttributionIndex":
+    def from_root(
+        cls,
+        root: Path | str,
+        *,
+        read_only: bool = False,
+    ) -> "AttributionIndex":
         """从 Memory 根目录的会话数据库加载归属索引。
 
-        数据库缺失时不创建文件；数据库存在时，会按会话仓储的初始化逻辑补齐
-        schema。现有数据库无法打开、初始化或加载时返回空索引。
+        数据库缺失时不创建文件。普通模式按会话仓储初始化逻辑补齐 schema；
+        只读模式使用 SQLite ``mode=ro`` 且不迁移。现有数据库无法打开、初始化
+        或加载时返回空索引。
 
         Args:
             root: Memory 根目录。
+            read_only: 是否禁止 schema 初始化并使用只读连接。
 
         Returns:
             数据库当前内容对应的索引；无法读取数据库时为空索引。
@@ -89,18 +127,43 @@ class AttributionIndex:
         if not (Path(root) / "meta" / "sessions.db").exists():
             return cls.empty()
         try:
-            conn = open_sessions_db(Path(root))
+            conn = (
+                open_sessions_db_readonly(Path(root))
+                if read_only
+                else open_sessions_db(Path(root))
+            )
         except Exception:
             return cls.empty()
+        if conn is None:
+            return cls.empty()
         try:
-            return cls.from_repo(create_sessions_repository(conn))
+            return cls.from_repo(
+                create_sessions_repository(conn, migrate=not read_only)
+            )
         except Exception:
             return cls.empty()
         finally:
             conn.close()
 
-    def resolve(self, trowel_session_id: str, cc_session_id: str) -> Attribution:
-        """按绑定优先、记录内 CC 标识次之的顺序解析归属。"""
+    def resolve(
+        self,
+        trowel_session_id: str,
+        cc_session_id: str,
+        *,
+        host_kind: str = "",
+        native_session_id: str = "",
+    ) -> Attribution:
+        """按 Trowel 绑定、宿主原生标识、兼容 CC 标识的顺序解析归属。
+
+        Args:
+            trowel_session_id: 访问日志保存的 Trowel 会话 ID。
+            cc_session_id: 旧日志保存的 Claude Code 会话 ID。
+            host_kind: 当前日志实际运行端，支持 ``cc`` 和 ``codex``。
+            native_session_id: Claude Code session ID 或 Codex thread ID。
+
+        Returns:
+            已核对的会话类别和兼容原生身份；没有任何身份时保持未归属。
+        """
         if trowel_session_id:
             binding = self._by_trowel.get(trowel_session_id)
             if binding is not None:
@@ -108,6 +171,14 @@ class AttributionIndex:
                     cc_session_id=binding.cc_session_id,
                     session_kind=binding.session_kind,
                     basis="trowel_binding",
+                )
+        if host_kind and native_session_id:
+            session_kind = self._native_kinds.get((host_kind, native_session_id))
+            if session_kind is not None:
+                return Attribution(
+                    cc_session_id=native_session_id,
+                    session_kind=session_kind,
+                    basis="native_session_id",
                 )
         if cc_session_id:
             return Attribution(

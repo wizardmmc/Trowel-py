@@ -1,5 +1,6 @@
 """验证 Agent 统计只读读取真实 sessions registry 与原生文件。"""
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
@@ -11,9 +12,10 @@ from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,
 )
+from trowel_py.statistics.agent.models import ClaudeBindingSource, CodexTurnSource
 from trowel_py.statistics.agent.repository import FileAgentObservationReader
 from trowel_py.statistics.agent.service import build_agent_statistics
-from trowel_py.statistics.window import parse_statistics_window
+from trowel_py.statistics.window import StatisticsWindow, parse_statistics_window
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 
@@ -82,7 +84,7 @@ def test_file_reader_combines_registry_sources_without_exposing_private_fields(
     assert "/private/workspace" not in rendered
 
 
-def test_file_reader_does_not_send_out_of_window_files_to_adapters(
+def test_file_reader_batches_windows_without_sending_out_of_window_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -132,24 +134,30 @@ def test_file_reader_does_not_send_out_of_window_files_to_adapters(
     connection.close()
     analyzed: list[str] = []
 
-    def capture_claude(source, _window):
+    def capture_claude(
+        source: ClaudeBindingSource,
+        windows: Sequence[StatisticsWindow],
+    ) -> tuple[None, ...]:
         """记录被交给 Claude adapter 的 Trowel session。"""
 
         analyzed.append(source.session_id)
-        return None
+        return tuple(None for _ in windows)
 
-    def capture_codex(sources, _window):
+    def capture_codex(
+        sources: list[CodexTurnSource],
+        windows: Sequence[StatisticsWindow],
+    ) -> tuple[None, ...]:
         """记录被交给 Codex adapter 的 Trowel session。"""
 
         analyzed.extend(source.session_id for source in sources)
-        return None
+        return tuple(None for _ in windows)
 
     monkeypatch.setattr(
-        "trowel_py.statistics.agent.repository.analyze_claude_binding",
+        "trowel_py.statistics.agent.repository.analyze_claude_binding_many",
         capture_claude,
     )
     monkeypatch.setattr(
-        "trowel_py.statistics.agent.repository.analyze_codex_session",
+        "trowel_py.statistics.agent.repository.analyze_codex_session_many",
         capture_codex,
     )
     reader = FileAgentObservationReader(
@@ -158,6 +166,40 @@ def test_file_reader_does_not_send_out_of_window_files_to_adapters(
     )
     window = parse_statistics_window(date(2026, 8, 3), date(2026, 8, 3), "UTC")
 
-    reader.read(window)
+    reader.read_many((window, window))
 
     assert analyzed == ["trowel-cc-inside", "trowel-codex-inside"]
+
+
+def test_stale_running_registry_rows_are_not_reported_as_live(
+    tmp_path: Path,
+) -> None:
+    """只有 binding store 的实时状态可以声明 session 仍在运行。"""
+
+    memory_root = tmp_path / "memory"
+    connection = open_sessions_db(memory_root)
+    repository = create_sessions_repository(connection)
+    repository.codex.register_turn(
+        thread_id="thread-stale",
+        turn_id="turn-stale",
+        trowel_session_id="trowel-stale",
+        workdir="/private/workspace",
+        journal_path=str(tmp_path / "missing.jsonl"),
+        registered_at="2026-08-03T10:00:00+00:00",
+        model="gpt-5.6-sol",
+        effort="high",
+        provider="openai",
+        memory_enabled=True,
+        profile_enabled=True,
+    )
+    connection.close()
+    reader = FileAgentObservationReader(
+        memory_root,
+        BindingStore(tmp_path / "agent_sessions.json"),
+    )
+    window = parse_statistics_window(date(2026, 8, 3), date(2026, 8, 3), "UTC")
+
+    result = build_agent_statistics(reader, window)
+
+    assert result.statuses.running == 0
+    assert result.statuses.unknown == 1

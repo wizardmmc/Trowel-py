@@ -25,6 +25,8 @@ class AgentTokenUsageData(BaseModel):
         unknown: 无法归类的原生 token；无法计算时为 None。
         total: 当前时间窗总 token；无法可靠计算时为 None。
         total_includes_cache_input: total 是否包含 cache_read。
+        known_session_count: 对 total 有可用水位的 session 数。
+        session_count: 当前 token 分组包含的全部 session 数。
         quality: token 来源的最低质量。
     """
 
@@ -36,6 +38,8 @@ class AgentTokenUsageData(BaseModel):
     unknown: int | None
     total: int | None
     total_includes_cache_input: bool = True
+    known_session_count: int
+    session_count: int
     quality: Quality
 
 
@@ -99,7 +103,7 @@ class AgentModelSummaryData(BaseModel):
         statuses: 这些 session 的状态分组。
         tokens: 只归属于该模型的 token 增量。
         first_visible_response: 首段文字由该模型产生的延迟分布。
-        cache_input_ratio: cache_read/input 的比例；字段缺失或 input 为 0 时为 None。
+        cache_input_ratio: 缓存读取在全部输入中的比例；字段缺失或输入为 0 时为 None。
         activity_ms: 使用过该模型的 session 活动时长之和。
         quality: 分组来源的最低质量。
     """
@@ -156,6 +160,7 @@ class AgentStatisticsData(BaseModel):
         tokens: 查询窗内全部 token 增量。
         first_visible_response: 查询窗内全部首次可见响应分布。
         activity: 活动时长之和与跨 session 并集。
+        cache_input_ratio: 按各 runtime 原生输入语义计算后汇总的缓存读取占比。
         model_summaries: 按 runtime 和真实模型分组的结果。
         sessions: 按开始时间倒序排列的最近 session，最多 100 条。
     """
@@ -171,5 +176,6 @@ class AgentStatisticsData(BaseModel):
     tokens: AgentTokenUsageData
     first_visible_response: AgentLatencyDistributionData
     activity: AgentActivityData
+    cache_input_ratio: float | None
     model_summaries: list[AgentModelSummaryData]
     sessions: list[AgentSessionData]

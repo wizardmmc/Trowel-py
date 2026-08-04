@@ -7,7 +7,7 @@ import type {
   RuntimeStatistics,
   StatisticsQuality,
 } from "../domain/types";
-import "./statistics.css";
+import "./runtime-statistics.css";
 
 export interface RuntimeStatisticsPanelProps {
   readonly data: RuntimeStatistics | null;
