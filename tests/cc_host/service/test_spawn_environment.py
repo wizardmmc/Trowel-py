@@ -52,6 +52,30 @@ async def test_spawn_args_include_mcp_config(tmp_path: Path) -> None:
     ]
 
 
+async def test_agent_mcp_tools_are_preapproved_for_claude(tmp_path: Path) -> None:
+    process = FakeProc([line(init_event()), line(result_ok())])
+    spawner = FakeSpawner([process])
+    host = CCHost(
+        "session-id",
+        tmp_path,
+        spawner=spawner,
+        mcp_config=str(tmp_path / "agent-mcp.json"),
+        agent_mcp_enabled=True,
+    )
+
+    await collect(host.send("hi"))
+
+    args = spawner.spawned[0][0]
+    index = args.index("--allowedTools")
+    assert args[index + 1].split(",") == [
+        "mcp__trowel_agents__delegate",
+        "mcp__trowel_agents__delegate_start",
+        "mcp__trowel_agents__delegate_respond",
+        "mcp__trowel_agents__delegate_status",
+        "mcp__trowel_agents__delegate_close",
+    ]
+
+
 def test_build_spawn_env_injects_identity_when_mcp_config(tmp_path: Path) -> None:
     host = CCHost(
         "session-id",
@@ -98,6 +122,7 @@ def test_build_spawn_env_no_identity_without_mcp_config(tmp_path: Path) -> None:
 def test_agent_mcp_startup_timeouts_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("MCP_CONNECTION_NONBLOCKING", "true")
     monkeypatch.setenv("MCP_CONNECT_TIMEOUT_MS", "999999")
     monkeypatch.setenv("MCP_TIMEOUT", "999999")
     host = CCHost(
@@ -110,5 +135,6 @@ def test_agent_mcp_startup_timeouts_are_bounded(
     env = host._build_spawn_env()
 
     assert env is not None
+    assert env["MCP_CONNECTION_NONBLOCKING"] == "false"
     assert env["MCP_CONNECT_TIMEOUT_MS"] == "5000"
     assert env["MCP_TIMEOUT"] == "10000"

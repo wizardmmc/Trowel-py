@@ -59,6 +59,8 @@ from trowel_py.cc_host.schemas import (
     TrowelEvent,
     TurnStartEvent,
 )
+from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
+from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
 from trowel_py.memory.injection import build_memory_injection
 from trowel_py.model_os.self_assembler import build_session_injection
 from trowel_py.resource_lifecycle.models import OwnerScope, ProcessIdentity
@@ -66,6 +68,10 @@ from trowel_py.resource_lifecycle.processes import ProcessController
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
 
 logger = logging.getLogger(__name__)
+
+_CLAUDE_AGENT_MCP_TOOL_NAMES = tuple(
+    f"mcp__{AGENT_MCP_SERVER_NAME}__{name}" for name in AGENT_MCP_TOOL_NAMES
+)
 
 
 @dataclass
@@ -414,6 +420,9 @@ class CCHost:
             resume_from=resume_from,
             append_system_prompt=injection,
             mcp_config=self._mcp_config,
+            allowed_tools=(
+                _CLAUDE_AGENT_MCP_TOOL_NAMES if self.agent_mcp_enabled else None
+            ),
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -446,6 +455,9 @@ class CCHost:
                 env["TROWEL_NATIVE_SESSION_ID"] = self._cc_session_id
         if self.agent_mcp_enabled:
             env = dict(env) if env is not None else dict(os.environ)
+            # Claude Code 2.1.x 会异步连接 --mcp-config，首轮可能在 Agent MCP
+            # tools/list 返回前构造工具提示；显式等待可保证 GLM 首轮看见委派工具。
+            env["MCP_CONNECTION_NONBLOCKING"] = "false"
             env["MCP_CONNECT_TIMEOUT_MS"] = "5000"
             env["MCP_TIMEOUT"] = "10000"
         return env

@@ -416,6 +416,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
+    app.state.agent_delegation_broker = None
+    app.state.agent_delegation_wakeup = None
+    if app.state.agent_hub is not None:
+        from trowel_py.agent_host.delegation_wakeup import (
+            DelegationWakeupCoordinator,
+        )
+        from trowel_py.agent_mcp.interactive import InteractiveBroker
+
+        internal_headers = (
+            {"Authorization": f"Bearer {app.state.desktop_credential}"}
+            if app.state.desktop_credential
+            else None
+        )
+        app.state.agent_delegation_wakeup = DelegationWakeupCoordinator(
+            app.state.agent_hub
+        )
+        app.state.agent_delegation_broker = InteractiveBroker(
+            base_url=app.state.proxy_base_url,
+            headers=internal_headers,
+            notifier=app.state.agent_delegation_wakeup.publish,
+        )
     app.state.drain_coordinator = DrainCoordinator(
         resource_registry=resource_registry,
         agent_hub=app.state.agent_hub,
@@ -432,6 +453,21 @@ async def lifespan(app: FastAPI):
         codex_manager=app.state.codex_host_manager,
     )
     yield
+    delegation_wakeup = getattr(app.state, "agent_delegation_wakeup", None)
+    if delegation_wakeup is not None:
+        try:
+            await delegation_wakeup.shutdown()
+        except Exception:
+            logger.warning(
+                "[agent] delegation wakeup coordinator failed to close",
+                exc_info=True,
+            )
+    delegation_broker = getattr(app.state, "agent_delegation_broker", None)
+    if delegation_broker is not None:
+        try:
+            await delegation_broker.shutdown()
+        except Exception:
+            logger.warning("[agent] delegation broker failed to close", exc_info=True)
     try:
         report = await app.state.drain_coordinator.drain()
         if report.status != "closed":

@@ -3187,9 +3187,9 @@
       },
       "/api/agent/sessions/{session_id}/events": {
         "get": {
-          "summary": "Stream Codex Events",
-          "description": "持续向客户端发送指定 Codex 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。事件包括回复文本、\n工具调用、操作确认和状态变化等；一轮处理结束后连接仍保持，可继续接收后续轮次的\n事件。多个同时连接的客户端会各自收到相同事件，客户端断开也不会中断 Codex 当前\n正在执行的任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Codex 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    hub: 负责订阅 Codex 事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话时返回 404；会话由 Claude Code 运行时\n        返回 422；Codex 当前不可用时返回 503。",
-          "operationId": "stream_codex_events_api_agent_sessions__session_id__events_get",
+          "summary": "Stream Agent Events",
+          "description": "持续向客户端发送指定 Agent 会话的实时事件。\n\n接口使用 SSE，也就是通过一条保持连接的 HTTP 响应不断发送事件。Claude Code\n消息请求、Agent Host 内部续轮和 Codex 原生 reader 都进入同一订阅；一轮处理结束\n后连接仍保持，可继续接收后续轮次。多个客户端会各自收到相同事件，客户端断开不\n会中断当前任务。\n\n此接口不负责重放历史事件，重新连接后不保证补发断线期间错过的内容。HTTP 响应开始\n发送后再发生的会话错误，会作为最后一条 error 事件返回。\n\nArgs:\n    session_id: 要接收实时事件的 Trowel 会话 ID。\n    request: 当前 HTTP 请求，用于取得应用级 SSE 观察器。\n    hub: 负责订阅双 runtime 统一事件的 Session Hub。\n\nReturns:\n    持续发送 SSE 事件的响应。每条事件包含所属会话、事件类型、顺序编号和具体内容。\n\nRaises:\n    HTTPException: 建立事件流前找不到会话或实时 runtime 时返回 404。",
+          "operationId": "stream_agent_events_api_agent_sessions__session_id__events_get",
           "parameters": [
             {
               "name": "session_id",

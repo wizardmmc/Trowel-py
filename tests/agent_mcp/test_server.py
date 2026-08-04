@@ -44,9 +44,7 @@ def _parent_binding(workdir: Path, **changes: object) -> dict[str, object]:
 
 
 def _sse(*events: dict[str, object]) -> bytes:
-    return b"".join(
-        f"data: {json.dumps(event)}\n\n".encode() for event in events
-    )
+    return b"".join(f"data: {json.dumps(event)}\n\n".encode() for event in events)
 
 
 def _request(
@@ -80,10 +78,17 @@ def test_interactive_tools_only_publish_verified_claude_guidance() -> None:
         "delegate_status",
         "delegate_close",
     }
-    start_runtime = tools["delegate_start"].inputSchema["properties"][
-        "target_runtime"
-    ]
+    assert all(
+        tool.meta == {"anthropic/alwaysLoad": True} for tool in tools.values()
+    )
+    start_runtime = tools["delegate_start"].inputSchema["properties"]["target_runtime"]
     assert start_runtime["enum"] == ["claude_code"]
+    assert "immediately return" in tools["delegate_start"].description
+    assert "without polling" in tools["delegate_start"].description
+    assert "automatically starts a parent turn" in tools["delegate_start"].description
+    assert "several minutes" in tools["delegate"].description
+    status_properties = tools["delegate_status"].inputSchema["properties"]
+    assert status_properties == {"delegation_id": {"type": "string", "minLength": 1}}
     for tool_name in ("delegate_start", "delegate_respond"):
         properties = tools[tool_name].inputSchema["properties"]
         for field in (
@@ -93,6 +98,16 @@ def test_interactive_tools_only_publish_verified_claude_guidance() -> None:
             "delegation_depth",
         ):
             assert field not in properties
+
+
+def test_agent_host_headers_use_desktop_process_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """桌面 Agent MCP 使用既有私有进程凭据访问 Agent Host。"""
+
+    monkeypatch.setenv("TROWEL_RESOURCE_REGISTRATION_CREDENTIAL", "desktop-secret")
+
+    assert server._agent_host_headers() == {"Authorization": "Bearer desktop-secret"}
 
 
 @pytest.mark.anyio
@@ -138,11 +153,7 @@ async def test_delegate_reports_running_capacity_detail(tmp_path: Path) -> None:
                 content=_sse(
                     {
                         "type": "error",
-                        "payload": {
-                            "errors": [
-                                "当前委派数量已满：同时在跑上限为 5"
-                            ]
-                        },
+                        "payload": {"errors": ["当前委派数量已满：同时在跑上限为 5"]},
                     }
                 ),
             )
@@ -175,15 +186,16 @@ async def test_mcp_dispatch_revalidates_parent_before_responding(
     verified: list[str] = []
 
     class Broker:
-        def parent_session_id(self, delegation_id: str) -> str:
-            assert delegation_id == "delegation-1"
-            return "parent-1"
-
         async def respond(
-            self, delegation_id: str, answers: dict[str, str]
+            self,
+            delegation_id: str,
+            answers: dict[str, str],
+            *,
+            parent_session_id: str,
         ) -> dict[str, object]:
             assert delegation_id == "delegation-1"
             assert answers == {"A or B?": "B"}
+            assert parent_session_id == "parent-1"
             return {"delegation_id": delegation_id, "status": "completed"}
 
     async def verify(
@@ -212,6 +224,47 @@ async def test_mcp_dispatch_revalidates_parent_before_responding(
         "status": "completed",
     }
     assert verified == ["parent-1"]
+
+
+@pytest.mark.anyio
+async def test_mcp_dispatch_reads_status_without_waiting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """状态工具同步读取 broker 快照，不建立阻塞等待。"""
+
+    context = _context(tmp_path)
+
+    class Broker:
+        async def status(
+            self,
+            delegation_id: str,
+            *,
+            parent_session_id: str,
+        ) -> dict[str, object]:
+            assert delegation_id == "delegation-1"
+            assert parent_session_id == "parent-1"
+            return {
+                "delegation_id": delegation_id,
+                "version": 8,
+                "status": "completed",
+            }
+
+    monkeypatch.setattr(server, "_parent_context", lambda: context)
+    handler = server._build_server(Broker()).request_handlers[types.CallToolRequest]
+
+    result = await handler(
+        _request(
+            "delegate_status",
+            {"delegation_id": "delegation-1"},
+        )
+    )
+
+    assert _tool_payload(result) == {
+        "delegation_id": "delegation-1",
+        "version": 8,
+        "status": "completed",
+    }
 
 
 def test_parent_context_fails_closed_for_non_full_access(
@@ -454,7 +507,9 @@ async def test_delegate_rejects_when_effective_parent_permission_was_downgraded(
                     )
                 },
             )
-        raise AssertionError("child session must not be created after permission downgrade")
+        raise AssertionError(
+            "child session must not be created after permission downgrade"
+        )
 
     async with httpx.AsyncClient(
         base_url="http://trowel.test", transport=httpx.MockTransport(handler)

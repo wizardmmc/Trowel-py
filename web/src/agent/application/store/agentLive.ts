@@ -1,15 +1,12 @@
-/** 管理各 Codex 会话的 SSE watcher、终态收口和 goal 刷新。 */
+/** 管理双 runtime 会话的常驻事件流，并补充 Codex Goal 刷新。 */
 
-import {
-  agentEventsUrl,
-  getCodexGoal,
-} from "../../transport/api";
+import { agentEventsUrl, getCodexGoal } from "../../transport/api";
 import type { AgentEvent } from "../../transport/agentEvent";
 import { getEventStream } from "../../transport/stream";
 import { endActiveTurnOnStreamClose } from "../../domain/reducer";
 import type { PerSessionState } from "./sessionState";
 
-interface CodexLiveCallbacks {
+interface AgentLiveCallbacks {
   readonly getSession: (sid: string) => PerSessionState | undefined;
   readonly applyEvent: (sid: string, event: AgentEvent) => void;
   readonly updateSession: (
@@ -24,7 +21,7 @@ interface Watcher {
   readonly rejectReady: (reason: unknown) => void;
 }
 
-export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
+export function createAgentLiveController(callbacks: AgentLiveCallbacks) {
   const watchers = new Map<string, Watcher>();
 
   function applyLiveEvent(sid: string, event: AgentEvent): void {
@@ -52,7 +49,7 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
     const existing = watchers.get(sid);
     if (existing) return existing.ready;
     const session = callbacks.getSession(sid);
-    if (!session || session.runtime !== "codex") return Promise.resolve();
+    if (!session) return Promise.resolve();
 
     const controller = new AbortController();
     let opened = false;
@@ -122,13 +119,15 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
     });
   }
 
-  async function refreshGoal(sid: string): Promise<void> {
+  async function refreshCodexGoal(sid: string): Promise<void> {
+    const session = callbacks.getSession(sid);
+    if (session?.runtime !== "codex") return;
     try {
       const goal = await getCodexGoal(sid);
-      callbacks.updateSession(sid, (session) => ({ ...session, goal }));
+      callbacks.updateSession(sid, (current) => ({ ...current, goal }));
     } catch (error) {
-      callbacks.updateSession(sid, (session) => ({
-        ...session,
+      callbacks.updateSession(sid, (current) => ({
+        ...current,
         transportError: errorMessage(error),
       }));
     }
@@ -138,7 +137,7 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
     const watcher = watchers.get(sid);
     if (!watcher) return;
     watcher.controller.abort();
-    watcher.rejectReady(new Error("Codex event watcher stopped"));
+    watcher.rejectReady(new Error("Agent event watcher stopped"));
     watchers.delete(sid);
   }
 
@@ -146,7 +145,13 @@ export function createCodexLiveController(callbacks: CodexLiveCallbacks) {
     for (const sid of watchers.keys()) stop(sid);
   }
 
-  return { ensureWatcher, watchInBackground, refreshGoal, stop, stopAll };
+  return {
+    ensureWatcher,
+    watchInBackground,
+    refreshCodexGoal,
+    stop,
+    stopAll,
+  };
 }
 
 function errorMessage(error: unknown): string {

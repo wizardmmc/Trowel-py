@@ -104,12 +104,18 @@ def _render_l0(store: MemoryStore) -> str:
 
 
 def _render_memory_root(root: Path) -> str:
-    """渲染绝对 Memory 根路径和 search→read 使用约束。"""
+    """渲染绝对 Memory 根路径和 search→read→outcome 使用约束。"""
     return (
-        "# memory 根路径 + 检索\n"
+        "# memory 根路径 + 检索闭环\n"
         f"根：{root.resolve()}\n"
         "查笔记：memory.search(query) → memory.read(uri)\n"
-        "search 结果里 requires_read=true 的笔记，看摘要不够，必须 memory.read 正文"
+        "处理可能依赖历史决定、既有排障经验或用户偏好的任务时，先调用 "
+        "memory.search。\n"
+        "命中 requires_read=true 时必须调用 memory.read 正文，不能只用摘要。\n"
+        "每次 memory.read 后，在确认该笔记是否实际影响本次判断后，必须对对应 "
+        "read_id 调用 memory.outcome，反馈 helpful、harmful、unused 或 unknown；"
+        "无法判断时用 unknown，不得虚构反馈。\n"
+        "没有读取正文时不要调用 outcome。"
     )
 
 

@@ -302,10 +302,14 @@ class SessionHub:
         self._codex_event_subscribers: dict[
             str, set[asyncio.Queue[dict[str, Any] | None]]
         ] = {}
+        self._agent_event_subscribers: dict[
+            str, set[asyncio.Queue[dict[str, Any] | None]]
+        ] = {}
         self._codex_event_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_close_tasks: dict[str, asyncio.Task[SessionCloseResult]] = {}
         self._closed_session_results: dict[str, SessionCloseResult] = {}
         self._closing_session_ids: set[str] = set()
+        self._turn_idle_conditions: dict[str, asyncio.Condition] = {}
         self._runtime_ports: dict[Runtime, RuntimeSessionPort] = (
             dict(runtime_ports)
             if runtime_ports is not None
@@ -1852,7 +1856,9 @@ class SessionHub:
                 binding,
                 require_idle=False,
                 busy_message="",
-                before_runtime_close=lambda: self._stop_codex_event_pump(session_id),
+                before_runtime_close=lambda: self._stop_session_event_delivery(
+                    session_id
+                ),
                 before_binding_delete=review_requester,
                 delete_binding=delete_binding,
             )
@@ -1868,6 +1874,7 @@ class SessionHub:
             self._active_id = None
         if delete_binding:
             self._closed_session_results[session_id] = result
+        await self._release_turn_idle_waiters(session_id)
         return result
 
     async def delete(self, session_id: str) -> bool:
@@ -1932,25 +1939,115 @@ class SessionHub:
     async def stream(self, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
         """原子取得委派在跑名额后，按 binding 产出统一事件。"""
 
+        async for event in self._stream_turn(session_id, text, autonomous=False):
+            yield event
+
+    async def _stream_turn(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        autonomous: bool,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """按普通输入或内部通知语义启动并消费一个完整 turn。
+
+        Args:
+            session_id: 接收输入的 Trowel 会话 ID。
+            text: 交给父 runtime 的输入正文。
+            autonomous: 是否由 Agent Host 内部事件触发；为 True 时不把输入伪装成
+                前端已经乐观创建的用户 turn。
+
+        Yields:
+            Claude Code 或 Codex 转换后的统一事件。
+        """
+
         self._require_accepting_work()
         binding = self._require(session_id)
         reservation = self._reserve_delegate_turn(binding)
         try:
-            async for event in self._stream_admitted(binding, text):
+            async for event in self._stream_admitted(
+                binding, text, autonomous=autonomous
+            ):
                 yield event
         finally:
             self._capacity.release_turn(reservation)
+            await self._notify_turn_state_changed(session_id)
+
+    async def wait_until_idle(self, session_id: str) -> None:
+        """等待指定会话没有未结束 turn，不占用模型或 MCP 工具调用。
+
+        原生终态会主动唤醒等待者。Claude Code 客户端断开后的 drain 没有经过
+        Session Hub 事件流，因此每秒重新核对一次实时状态作为恢复兜底。
+
+        Args:
+            session_id: 要等待的父 Trowel 会话 ID。
+
+        Raises:
+            SessionNotFoundError: 等待期间父会话被删除。
+        """
+
+        condition = self._turn_idle_conditions.setdefault(
+            session_id, asyncio.Condition()
+        )
+        while True:
+            binding = self._require(session_id)
+            if not self._live_status(binding)[1]:
+                return
+            async with condition:
+                binding = self._require(session_id)
+                if not self._live_status(binding)[1]:
+                    return
+                try:
+                    await asyncio.wait_for(condition.wait(), timeout=1.0)
+                except TimeoutError:
+                    pass
+
+    def run_automatic_turn(
+        self, session_id: str, text: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """为 Agent Host 内部通知启动统一父会话 turn。
+
+        Args:
+            session_id: 接收通知的父 Trowel 会话 ID。
+            text: 包含委派状态快照和处理要求的内部消息。
+
+        Returns:
+            与普通消息相同的统一事件迭代器；调用方必须持续消费到终态。
+        """
+
+        return self._stream_turn(session_id, text, autonomous=True)
+
+    async def _notify_turn_state_changed(self, session_id: str) -> None:
+        """唤醒等待指定会话重新核对空闲状态的内部任务。"""
+
+        condition = self._turn_idle_conditions.get(session_id)
+        if condition is None:
+            return
+        async with condition:
+            condition.notify_all()
+
+    async def _release_turn_idle_waiters(self, session_id: str) -> None:
+        """关闭会话时唤醒等待者，并删除该会话的空闲条件。"""
+
+        condition = self._turn_idle_conditions.pop(session_id, None)
+        if condition is None:
+            return
+        async with condition:
+            condition.notify_all()
 
     async def _stream_admitted(
         self,
         binding: SessionBinding,
         text: str,
+        *,
+        autonomous: bool,
     ) -> AsyncIterator[dict[str, Any]]:
         """产出已经通过全局在跑准入的会话事件。
 
         Args:
             binding: 已通过准入的会话记录。
             text: 要发送给会话的输入。
+            autonomous: 是否由 Agent Host 内部通知启动本轮。
 
         Yields:
             Claude Code 或 Codex 转换后的统一事件。
@@ -1969,8 +2066,11 @@ class SessionHub:
             try:
                 async for event in host.send(text):
                     raw = dict(event) if isinstance(event, dict) else event.model_dump()
+                    if autonomous and raw.get("type") == "turn_start":
+                        raw["autonomous"] = True
                     envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
                     self._observe(envelope)
+                    self._publish_agent_event(session_id, envelope)
                     if raw.get("type") == "session_started" or raw.get("type") in (
                         _TURN_TERMINAL_TYPES | {"session_exited"}
                     ):
@@ -1991,13 +2091,14 @@ class SessionHub:
         queue = self._add_codex_event_subscriber(session_id, session)
         turn_id: str | None = None
         try:
-            turn_id = await self._codex.send(
-                session,
-                text,
-                before_turn_start=lambda attached: self._writeback_codex_before_turn(
-                    session_id, attached
-                ),
-            )
+            send_options: dict[str, Any] = {
+                "before_turn_start": lambda attached: (
+                    self._writeback_codex_before_turn(session_id, attached)
+                )
+            }
+            if autonomous:
+                send_options.update(autonomous=True, memory_eligible=True)
+            turn_id = await self._codex.send(session, text, **send_options)
             # turn 接受后再写回已提交的有效设置。
             self._writeback_codex_native(session_id, session)
         except TurnConflictError as exc:
@@ -2120,6 +2221,80 @@ class SessionHub:
 
         return iterate()
 
+    def require_event_session(self, session_id: str) -> SessionBinding:
+        """确认会话仍有可供常驻订阅接收事件的 runtime 对象。
+
+        Claude Code 进程按 turn 懒启动并在轮间退出，因此可订阅性取决于 Host 是否仍
+        持有会话对象，不能使用当前子进程的 connected 状态判断。
+
+        Args:
+            session_id: 要建立实时订阅的 Trowel 会话 ID。
+
+        Returns:
+            经过持久 binding 与 runtime 对象双重确认的会话记录。
+
+        Raises:
+            SessionNotFoundError: binding 不存在或对应 runtime 对象已经删除。
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CLAUDE_CODE:
+            if session_id not in self._cc_registry:
+                raise SessionNotFoundError(f"cc session {session_id} not live")
+        else:
+            self._require_codex_session(session_id)
+        return binding
+
+    def subscribe_agent_events(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        """持续返回 Claude Code 或 Codex 会话之后产生的统一事件。
+
+        该订阅不重放历史。Claude Code 的消息请求和 Agent Host 内部续轮会把同一
+        AgentEvent fan-out 到这里；Codex 继续由唯一原生 reader 负责 fan-out。
+
+        Args:
+            session_id: 要订阅的 Trowel 会话 ID。
+
+        Yields:
+            建立订阅后产生的统一 AgentEvent。
+        """
+
+        async def iterate() -> AsyncIterator[dict[str, Any]]:
+            """登记一个公共订阅者，并在停止迭代时移除自己的队列。"""
+
+            binding = self.require_event_session(session_id)
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            self._agent_event_subscribers.setdefault(session_id, set()).add(queue)
+            if binding.runtime is Runtime.CODEX:
+                session = self._require_codex_session(session_id)
+                self._ensure_codex_event_pump(session_id, session)
+            try:
+                while True:
+                    payload = await queue.get()
+                    if payload is None:
+                        return
+                    yield payload
+            finally:
+                subscribers = self._agent_event_subscribers.get(session_id)
+                if subscribers is not None:
+                    subscribers.discard(queue)
+                    if not subscribers:
+                        self._agent_event_subscribers.pop(session_id, None)
+
+        return iterate()
+
+    def _publish_agent_event(
+        self, session_id: str, payload: dict[str, Any]
+    ) -> None:
+        """把一条统一事件复制给当前会话的全部常驻订阅者。
+
+        Args:
+            session_id: 事件所属的 Trowel 会话 ID。
+            payload: 已转换为 wire 字典的 AgentEvent。
+        """
+
+        for queue in tuple(self._agent_event_subscribers.get(session_id, ())):
+            queue.put_nowait(payload)
+
     def _add_codex_event_subscriber(
         self, session_id: str, session: Any
     ) -> asyncio.Queue[dict[str, Any] | None]:
@@ -2192,8 +2367,11 @@ class SessionHub:
                     continue
                 payload = envelope.model_dump(by_alias=True)
                 self._observe(payload)
+                self._publish_agent_event(session_id, payload)
                 for queue in tuple(self._codex_event_subscribers.get(session_id, ())):
                     queue.put_nowait(payload)
+                if _is_terminal(payload):
+                    await self._notify_turn_state_changed(session_id)
         except asyncio.CancelledError:
             raise
         finally:
@@ -2213,6 +2391,17 @@ class SessionHub:
         if task is not None and not task.done():
             task.cancel()
         for queue in tuple(self._codex_event_subscribers.pop(session_id, ())):
+            queue.put_nowait(None)
+
+    def _stop_session_event_delivery(self, session_id: str) -> None:
+        """停止会话的原生 reader，并关闭全部公共实时订阅。
+
+        Args:
+            session_id: 正在关闭的 Trowel 会话 ID。
+        """
+
+        self._stop_codex_event_pump(session_id)
+        for queue in tuple(self._agent_event_subscribers.pop(session_id, ())):
             queue.put_nowait(None)
 
     def _observe(self, payload: Mapping[str, Any]) -> None:

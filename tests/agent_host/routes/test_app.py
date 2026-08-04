@@ -34,3 +34,5 @@ def test_agent_hub_attached_to_app_state():
         assert app.state.agent_hub.codex_available == (
             app.state.codex_host_manager is not None
         )
+        assert app.state.agent_delegation_wakeup is not None
+        assert app.state.agent_delegation_broker is not None

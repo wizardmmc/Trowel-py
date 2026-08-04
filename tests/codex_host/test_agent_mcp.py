@@ -27,6 +27,7 @@ def test_codex_agent_mcp_is_required_and_bounded() -> None:
     server = params["config"]["mcp_servers"]["trowel_agents"]
     assert server["required"] is True
     assert server["startup_timeout_sec"] == 10.0
+    assert "tool_timeout_sec" not in server
     assert server["command"]
     assert server["args"] == ["-m", "trowel_py.agent_mcp.server"]
     assert server["enabled_tools"] == [

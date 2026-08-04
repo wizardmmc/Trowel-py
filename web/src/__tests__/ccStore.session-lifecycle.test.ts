@@ -6,6 +6,7 @@ import {
   ev,
   mockCreate,
   releaseAllStreams,
+  releaseMessageStreams,
   stream,
 } from "./ccStoreTestHarness";
 import { createAgentStore } from "../agent";
@@ -31,6 +32,32 @@ describe("createAgentStore — multi-session lifecycle", () => {
     stream.apply!(ev("finished"));
     await releaseAllStreams();
     await sending;
+  });
+
+  it("keeps the Claude event watcher alive for an autonomous follow-up turn", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+
+    const sending = store.getState().send("start delegate");
+    expect(stream.eventApply).not.toBeNull();
+    expect(stream.messageApply).not.toBeNull();
+    stream.messageApply!(ev("finished"));
+    await releaseMessageStreams();
+    await sending;
+
+    stream.eventApply!(
+      ev(
+        "turn_start",
+        { autonomous: true },
+        { turn_id: "turn-auto" },
+      ),
+    );
+    expect(store.getState().sessions.s1.turns.at(-1)?.turnId).toBe("turn-auto");
+    expect(store.getState().sessions.s1.abort).not.toBeNull();
+
+    stream.eventApply!(ev("finished", {}, { turn_id: "turn-auto" }));
+    expect(store.getState().sessions.s1.abort).toBeNull();
   });
 
   it("shows the first prompt immediately, then applies the generated title", async () => {
