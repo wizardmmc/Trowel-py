@@ -39,6 +39,7 @@ def test_memory_off_drops_all_memory_sections_keeps_profile(
     assert "DAY_MARKER" not in output
     assert "memory 根路径" not in output
     assert "memory.search" not in output
+    assert "memory.outcome" not in output
 
 
 def test_profile_off_drops_profile_section_keeps_memory(
