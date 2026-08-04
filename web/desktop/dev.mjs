@@ -27,6 +27,7 @@ const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
 const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
 const rendererCrashSmoke = process.argv.includes("--renderer-crash-smoke");
 const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
+const readOnlyInspection = process.argv.includes("--observe");
 const smoke =
   rendererSmoke ||
   diagnosticSmoke ||
@@ -42,13 +43,14 @@ const tempRoot = smoke
   : null;
 const runtimeRoot =
   tempRoot ?? await mkdtemp(path.join(os.tmpdir(), "trowel-desktop-dev-"));
+const privateDataRoot = tempRoot ?? (readOnlyInspection ? runtimeRoot : null);
 const serviceDescriptorPath = path.join(runtimeRoot, "agent-service.json");
 const rendererPort = await reservePort();
-const rendererUrl = `http://127.0.0.1:${rendererPort}`;
+const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : ""}`;
 
-if (tempRoot) {
-  const dataDirectory = path.join(tempRoot, "data");
-  const memoryDirectory = path.join(tempRoot, "memory");
+if (privateDataRoot) {
+  const dataDirectory = path.join(privateDataRoot, "data");
+  const memoryDirectory = path.join(privateDataRoot, "memory");
   await mkdir(dataDirectory, { recursive: true });
   await writeFile(
     path.join(dataDirectory, "config.toml"),
@@ -66,6 +68,7 @@ const vite = spawn(
     env: {
       ...process.env,
       TROWEL_DESKTOP_SERVICE_FILE: serviceDescriptorPath,
+      ...(readOnlyInspection ? { VITE_TROWEL_INSPECTION_MODE: "1" } : {}),
     },
   },
 );
@@ -92,6 +95,14 @@ try {
     TROWEL_RENDERER_URL: rendererUrl,
     TROWEL_DESKTOP_SERVICE_FILE: serviceDescriptorPath,
     TROWEL_DESKTOP_DATA_MODE: developmentDataMode,
+    ...(readOnlyInspection
+      ? {
+          TROWEL_DESKTOP_INSPECTION_ONLY: "1",
+          TROWEL_DESKTOP_READ_DATA_DIR:
+            process.env.TROWEL_DESKTOP_READ_DATA_DIR ??
+            defaultCanonicalDataDirectory(),
+        }
+      : {}),
     ...(rendererSmoke ? { TROWEL_DESKTOP_SMOKE: "1" } : {}),
     ...(diagnosticSmoke
       ? {
@@ -105,18 +116,18 @@ try {
     ...(rendererCrashSmoke
       ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
       : {}),
-    ...(tempRoot
+    ...(privateDataRoot
       ? {
-          TROWEL_DESKTOP_DATA_DIR: path.join(tempRoot, "data"),
-          TROWEL_DESKTOP_LOG_DIR: path.join(tempRoot, "logs"),
-          TROWEL_ELECTRON_USER_DATA_DIR: path.join(tempRoot, "electron"),
+          TROWEL_DESKTOP_DATA_DIR: path.join(privateDataRoot, "data"),
+          TROWEL_DESKTOP_LOG_DIR: path.join(privateDataRoot, "logs"),
+          TROWEL_ELECTRON_USER_DATA_DIR: path.join(privateDataRoot, "electron"),
           TROWEL_AGENT_SESSIONS_PATH: path.join(
-            tempRoot,
+            privateDataRoot,
             "data",
             "agent_sessions.json",
           ),
           TROWEL_WORKSPACES_PATH: path.join(
-            tempRoot,
+            privateDataRoot,
             "data",
             "workspaces.db",
           ),
@@ -231,6 +242,25 @@ try {
   } else {
     await rm(runtimeRoot, { recursive: true, force: true });
   }
+}
+
+/** 返回 Electron 在各平台使用的正式 Trowel 业务数据目录。 */
+function defaultCanonicalDataDirectory() {
+  if (process.platform === "darwin") {
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      "Trowel",
+      "data",
+    );
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "Trowel", "data");
+  }
+  const appData = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
+  return path.join(appData, "Trowel", "data");
 }
 
 /** 失败时输出隔离现场中的文件清单和两份生命周期日志。 */

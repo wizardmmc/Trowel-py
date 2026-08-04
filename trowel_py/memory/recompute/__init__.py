@@ -130,6 +130,7 @@ def compute_note_effects_from_notes(
     local_tz: tzinfo | None = None,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    attribution_index: AttributionIndex | None = None,
 ) -> dict[str, NoteEffect]:
     """使用同请求已加载的 Note 快照汇总用户会话级效果证据。
 
@@ -139,6 +140,7 @@ def compute_note_effects_from_notes(
         local_tz: 读取时间采用的时区；省略时使用系统本地时区。
         window_start: 可选半开时间窗起点；提供时只聚合窗内证据。
         window_end: 可选半开时间窗终点，必须与起点同时提供。
+        attribution_index: 可复用的会话归因快照；提供时不再次打开数据库。
 
     Returns:
         与 ``compute_note_effects`` 相同、但不再次扫描 Note 文件的聚合结果。
@@ -149,6 +151,7 @@ def compute_note_effects_from_notes(
         window_start=window_start,
         window_end=window_end,
         notes_with_id=notes_with_id,
+        attribution_index=attribution_index,
     )
 
 
@@ -159,6 +162,7 @@ def _run_compute_note_effects(
     window_start: datetime | None,
     window_end: datetime | None,
     notes_with_id: list[tuple[str, "Note"]] | None,
+    attribution_index: AttributionIndex | None = None,
 ) -> dict[str, NoteEffect]:
     """把公开入口依赖统一注入底层效果聚合器。"""
     return _compute_note_effects(
@@ -167,6 +171,7 @@ def _run_compute_note_effects(
         window_start=window_start,
         window_end=window_end,
         notes_with_id=notes_with_id,
+        attribution_index=attribution_index,
         store_cls=MemoryStore,
         attribution_index_cls=AttributionIndex,
         system_local_tz_fn=_system_local_tz,

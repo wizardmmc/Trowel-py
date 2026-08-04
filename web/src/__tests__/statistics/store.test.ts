@@ -3,10 +3,8 @@
 import { expect, it, vi } from "vitest";
 import { createStatisticsStore } from "../../statistics/application/store";
 import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
-import {
-  callDetailFixture,
-  callListFixture,
-} from "./callStatisticsFixture";
+import { overviewStatisticsFixture } from "./overviewStatisticsFixture";
+import { callDetailFixture, callListFixture } from "./callStatisticsFixture";
 
 it("updates shared tab and date state without fetching", () => {
   const fetchTelemetry = vi.fn();
@@ -39,6 +37,79 @@ it("loads telemetry through the injected transport and keeps quality", async () 
   expect(store.getState().telemetry).toBe(payload);
   expect(store.getState().loading).toBe(false);
   expect(store.getState().error).toBeNull();
+});
+
+it("loads Overview independently and invalidates it on date changes", async () => {
+  const fetchOverview = vi.fn().mockResolvedValue(overviewStatisticsFixture);
+  const store = createStatisticsStore({ fetchOverview });
+
+  await store.getState().refreshOverview();
+  expect(store.getState().overview).toBe(overviewStatisticsFixture);
+
+  store.getState().setDateRange({
+    startDate: "2026-08-01",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+
+  expect(store.getState().overview).toBeNull();
+  expect(store.getState().overviewLoading).toBe(false);
+  expect(store.getState().overviewError).toBeNull();
+});
+
+it("deduplicates concurrent Overview reads for the same date range", async () => {
+  let resolveOverview!: (value: typeof overviewStatisticsFixture) => void;
+  const pending = new Promise<typeof overviewStatisticsFixture>((resolve) => {
+    resolveOverview = resolve;
+  });
+  const fetchOverview = vi.fn().mockReturnValue(pending);
+  const store = createStatisticsStore({ fetchOverview });
+
+  const first = store.getState().refreshOverview();
+  const second = store.getState().refreshOverview();
+  resolveOverview(overviewStatisticsFixture);
+  await Promise.all([first, second]);
+
+  expect(fetchOverview).toHaveBeenCalledTimes(1);
+});
+
+it("ignores an Overview response from an obsolete date range", async () => {
+  let resolveOld!: (value: typeof overviewStatisticsFixture) => void;
+  const oldResponse = new Promise<typeof overviewStatisticsFixture>(
+    (resolve) => {
+      resolveOld = resolve;
+    },
+  );
+  const newerOverview = { ...overviewStatisticsFixture, sample_size: 4 };
+  const fetchOverview = vi
+    .fn()
+    .mockReturnValueOnce(oldResponse)
+    .mockResolvedValueOnce(newerOverview);
+  const store = createStatisticsStore({ fetchOverview });
+
+  const oldRefresh = store.getState().refreshOverview();
+  store.getState().setDateRange({
+    startDate: "2026-08-02",
+    endDate: "2026-08-03",
+    timezone: "Asia/Shanghai",
+  });
+  await store.getState().refreshOverview();
+  resolveOld(overviewStatisticsFixture);
+  await oldRefresh;
+
+  expect(store.getState().overview?.sample_size).toBe(4);
+  expect(store.getState().overviewLoading).toBe(false);
+});
+
+it("keeps Overview refresh errors separate from other pages", async () => {
+  const store = createStatisticsStore({
+    fetchOverview: vi.fn().mockRejectedValue(new Error("overview offline")),
+  });
+
+  await store.getState().refreshOverview();
+
+  expect(store.getState().overviewError).toBe("overview offline");
+  expect(store.getState().agentError).toBeNull();
 });
 
 it("keeps the last data but exposes refresh failures", async () => {
@@ -159,9 +230,7 @@ it("ignores stale call detail after filters start a newer request", async () => 
   resolveOldDetail(callDetailFixture);
   await oldRefresh;
 
-  expect(store.getState().callDetail?.root_operation).toBe(
-    "runtime.call",
-  );
+  expect(store.getState().callDetail?.root_operation).toBe("runtime.call");
   expect(store.getState().selectedCallSpanId).toBe(
     callListFixture.items[0].span_id,
   );
@@ -179,7 +248,10 @@ it("appends a cursor page without duplicating spans or changing selection", asyn
     next_cursor: null,
     quality: "reliable" as const,
     freshness: {
-      telemetry: { updated_at: "2026-08-03T11:59:00Z", status: "fresh" as const },
+      telemetry: {
+        updated_at: "2026-08-03T11:59:00Z",
+        status: "fresh" as const,
+      },
     },
   };
   const fetchCalls = vi

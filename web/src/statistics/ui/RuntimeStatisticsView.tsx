@@ -9,6 +9,8 @@ import {
 } from "../application/store";
 import { RuntimeStatisticsPanel } from "./RuntimeStatisticsPanel";
 
+const RUNTIME_REFRESH_INTERVAL_MS = 5_000;
+
 export interface RuntimeStatisticsViewProps {
   readonly store?: StoreApi<StatisticsState>;
 }
@@ -24,6 +26,18 @@ export function RuntimeStatisticsView({
 
   useEffect(() => {
     void refreshRuntime();
+    const refreshVisiblePage = () => {
+      if (document.visibilityState === "visible") void refreshRuntime();
+    };
+    const interval = window.setInterval(
+      refreshVisiblePage,
+      RUNTIME_REFRESH_INTERVAL_MS,
+    );
+    document.addEventListener("visibilitychange", refreshVisiblePage);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshVisiblePage);
+    };
   }, [
     dateRange.startDate,
     dateRange.endDate,
@@ -32,6 +46,9 @@ export function RuntimeStatisticsView({
   ]);
 
   return (
-    <RuntimeStatisticsPanel data={data} loading={loading} error={error} />
+    <div className="runtime-statistics-view">
+      <p className="runtime-statistics-view__refresh">每 5 秒自动刷新</p>
+      <RuntimeStatisticsPanel data={data} loading={loading} error={error} />
+    </div>
   );
 }

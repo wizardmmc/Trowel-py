@@ -11,7 +11,8 @@ import type {
   AgentStatusCounts,
   StatisticsQuality,
 } from "../domain/types";
-import "./statistics.css";
+import { StatisticsSelect } from "./StatisticsSelect";
+import "./agent-statistics.css";
 
 export interface AgentStatisticsPanelProps {
   readonly data: AgentStatistics | null;
@@ -38,6 +39,12 @@ const QUALITY_LABELS: Readonly<Record<StatisticsQuality, string>> = {
   partial: "部分数据",
   unavailable: "数据不可用",
 };
+
+const RUNTIME_FILTER_OPTIONS = [
+  { value: "all", label: "全部 Runtime" },
+  { value: "claude_code", label: "Claude Code" },
+  { value: "codex", label: "Codex" },
+] as const;
 
 export function AgentStatisticsPanel({
   data,
@@ -92,36 +99,33 @@ export function AgentStatisticsPanel({
             <div className="agent-statistics__filter-group">
               <label>
                 <span>Runtime</span>
-                <select
-                  aria-label="Runtime 筛选"
+                <StatisticsSelect
+                  ariaLabel="Runtime 筛选"
                   value={runtimeFilter}
-                  onChange={(event) =>
+                  options={RUNTIME_FILTER_OPTIONS}
+                  triggerClassName="agent-statistics__filter-select"
+                  onValueChange={(value) =>
                     onRuntimeFilterChange(
-                      event.currentTarget.value as AgentRuntimeFilter,
+                      value as AgentRuntimeFilter,
                     )
                   }
-                >
-                  <option value="all">全部 Runtime</option>
-                  <option value="claude_code">Claude Code</option>
-                  <option value="codex">Codex</option>
-                </select>
+                />
               </label>
               <label>
                 <span>模型</span>
-                <select
-                  aria-label="模型筛选"
+                <StatisticsSelect
+                  ariaLabel="模型筛选"
                   value={modelFilter}
-                  onChange={(event) =>
-                    onModelFilterChange(event.currentTarget.value)
-                  }
-                >
-                  <option value="all">全部模型</option>
-                  {modelOptions.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: "all", label: "全部模型" },
+                    ...modelOptions.map((model) => ({
+                      value: model,
+                      label: model,
+                    })),
+                  ]}
+                  triggerClassName="agent-statistics__filter-select"
+                  onValueChange={onModelFilterChange}
+                />
               </label>
             </div>
             <QualityBadge quality={data.quality} />
@@ -141,12 +145,12 @@ function FactStrip({ data }: { readonly data: AgentStatistics }) {
       <Fact
         label="SESSION 状态"
         value={`${data.statuses.completed} / ${data.sample_size}`}
-        meta={`${data.statuses.running} 运行 · ${data.statuses.interrupted} 中断 · ${data.statuses.failed} 失败`}
+        meta={`${data.statuses.running} 运行 · ${data.statuses.interrupted} 中断 · ${data.statuses.failed} 失败 · ${data.statuses.unknown} 未知`}
       />
       <Fact
         label="合计 TOKEN"
         value={formatTokens(data.tokens.total)}
-        meta={data.tokens.total_includes_cache_input ? "包含缓存输入" : "不含缓存输入"}
+        meta={`${data.tokens.total_includes_cache_input ? "包含缓存输入" : "不含缓存输入"} · ${tokenCoverage(data.tokens.known_session_count, data.tokens.session_count)}`}
       />
       <Fact
         label="首次可见响应"
@@ -191,7 +195,7 @@ function StatusPanel({
   ];
   return (
     <section className="agent-statistics__surface">
-      <header><strong>Session 状态</strong><span>{total} 个用户 session</span></header>
+      <header><strong>Session 状态</strong><span>未知=缺少可靠终态，不代表运行中</span></header>
       <div className="agent-statistics__metrics">
         {rows.map(([status, count]) => (
           <div className="agent-statistics__metric" key={status}>
@@ -213,17 +217,16 @@ function StatusPanel({
 }
 
 function UsagePanel({ data }: { readonly data: AgentStatistics }) {
-  const cacheRatio =
-    data.tokens.cache_read !== null && data.tokens.input
-      ? data.tokens.cache_read / data.tokens.input
-      : null;
   return (
     <section className="agent-statistics__surface">
       <header><strong>使用概况</strong><span>当前时间窗</span></header>
       <dl className="agent-statistics__usage-grid">
         <UsageFact label="Session 时长之和" value={formatDuration(data.activity.session_sum_ms)} />
         <UsageFact label="并发活动并集" value={formatDuration(data.activity.concurrent_union_ms)} />
-        <UsageFact label="缓存输入占比" value={formatRatio(cacheRatio)} />
+        <UsageFact
+          label="缓存输入占比"
+          value={formatRatio(data.cache_input_ratio)}
+        />
         <UsageFact label="输出 token" value={formatTokens(data.tokens.output)} />
       </dl>
     </section>
@@ -236,11 +239,11 @@ function UsageFact({ label, value }: { readonly label: string; readonly value: s
 
 function ModelTable({ rows }: { readonly rows: readonly AgentModelSummary[] }) {
   return (
-    <section className="agent-statistics__surface agent-statistics__table-section">
+    <section className="agent-statistics__surface agent-statistics__table-section is-model-table">
       <header><strong>按模型汇总</strong><span>{rows.length} 个 runtime/model 分组</span></header>
       <div className="agent-statistics__table-scroll">
         <table>
-          <thead><tr><th>模型</th><th>Runtime</th><th>Session</th><th>首响 p50 / p95</th><th>Token / Session</th><th>缓存输入</th><th>状态</th><th>质量</th></tr></thead>
+          <thead><tr><th>模型</th><th>Runtime</th><th>Session</th><th>首响 p50 / p95</th><th>合计 Token</th><th>平均 / Session</th><th>缓存输入</th><th>状态</th><th>质量</th></tr></thead>
           <tbody>
             {rows.map((row) => (
               <tr key={`${row.runtime}:${row.model ?? "unknown"}`}>
@@ -248,13 +251,14 @@ function ModelTable({ rows }: { readonly rows: readonly AgentModelSummary[] }) {
                 <td>{runtimeLabel(row.runtime)}</td>
                 <td className="is-mono">{row.session_count}</td>
                 <td className="is-mono">{formatDistribution(row.first_visible_response)}</td>
-                <td className="is-mono">{formatPerSession(row.tokens.total, row.session_count)}</td>
+                <td className="is-mono">{formatTokens(row.tokens.total)}<small>{tokenCoverage(row.tokens.known_session_count, row.tokens.session_count)}</small></td>
+                <td className="is-mono">{formatPerSession(row.tokens.total, row.tokens.known_session_count)}</td>
                 <td className="is-mono">{formatRatio(row.cache_input_ratio)}</td>
                 <td>{statusSummary(row.statuses)}</td>
                 <td><QualityBadge quality={row.quality} /></td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={8} className="is-empty">当前筛选没有模型数据</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={9} className="is-empty">当前筛选没有模型数据</td></tr>}
           </tbody>
         </table>
       </div>
@@ -274,7 +278,7 @@ function SessionTable({
       <header><strong>最近 Session</strong><span>一行一个 Trowel session</span></header>
       <div className="agent-statistics__table-scroll">
         <table>
-          <thead><tr><th>Session</th><th>Runtime / 模型</th><th>开始</th><th>会话内运行</th><th>首响 p50</th><th>Token</th><th>状态</th><th>质量</th></tr></thead>
+          <thead><tr><th>Session</th><th>Runtime / 模型</th><th>开始</th><th>会话内运行</th><th>Token</th><th>状态</th><th>质量</th></tr></thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.session_id}>
@@ -284,13 +288,12 @@ function SessionTable({
                 <td><span>{runtimeLabel(row.runtime)}</span><small>{row.models.join(" · ") || "未知模型"}</small></td>
                 <td className="is-mono">{formatStart(row.started_at, timezone)}</td>
                 <td>{formatDuration(row.activity_ms)}</td>
-                <td className="is-mono">{formatLatency(row.first_visible_response.p50_ms)}</td>
-                <td className="is-mono">{formatTokens(row.tokens.total)}</td>
+                <td className="is-mono">{formatTokens(row.tokens.total)}<small>{tokenCoverage(row.tokens.known_session_count, row.tokens.session_count)}</small></td>
                 <td><StatusLabel status={row.status} /></td>
                 <td><QualityBadge quality={row.quality} /></td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={8} className="is-empty">当前筛选没有 session</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={7} className="is-empty">当前筛选没有 session</td></tr>}
           </tbody>
         </table>
       </div>
@@ -344,6 +347,13 @@ function formatDistribution(value: AgentLatencyDistribution): string {
 
 function formatPerSession(total: number | null, sessions: number): string {
   return total === null || sessions === 0 ? "不可用" : formatTokens(total / sessions);
+}
+
+function tokenCoverage(known: number, total: number): string {
+  if (total === 0) return "无 session 样本";
+  return known === total
+    ? `${known} / ${total} session 有水位`
+    : `已知小计 · ${known} / ${total} session 有水位`;
 }
 
 function formatStart(value: string, timezone: string): string {

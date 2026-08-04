@@ -1,13 +1,13 @@
 /** 纯 props 展示 Memory 的归因、检索、效果、召回和资产统计。 */
 
-import { useId } from "react";
 import type {
   MemoryRatio,
   MemorySource,
   MemoryStatistics,
   StatisticsQuality,
 } from "../domain/types";
-import "./statistics.css";
+import { StatisticsPopover } from "./StatisticsPopover";
+import "./memory-statistics.css";
 
 export interface MemoryStatisticsPanelProps {
   readonly data: MemoryStatistics | null;
@@ -68,7 +68,7 @@ function FactStrip({ data }: { readonly data: MemoryStatistics }) {
       <Fact
         label="归因覆盖"
         value={formatPercent(data.attribution.coverage.ratio)}
-        meta={formatRatioCounts(data.attribution.coverage)}
+        meta={`${formatRatioCounts(data.attribution.coverage)} 条访问事件`}
         explanation="已确认会话归属的访问记录 / 全部可解码访问记录。"
       />
       <Fact
@@ -104,21 +104,22 @@ function Fact({
   readonly meta: string;
   readonly explanation: string;
 }) {
-  const tooltipId = useId();
   return (
     <div className="memory-statistics__fact">
       <div className="memory-statistics__fact-label">
         <span>{label}</span>
-        <button
-          type="button"
-          aria-label={`解释${label}`}
-          aria-describedby={tooltipId}
+        <StatisticsPopover
+          triggerAriaLabel={`解释${label}`}
+          contentAriaLabel={`${label}口径`}
+          triggerContent={<span aria-hidden="true">?</span>}
+          triggerClassName="memory-statistics__explanation-trigger"
+          contentClassName="memory-statistics__explanation-popover"
+          role="tooltip"
+          align="start"
+          preferredWidth={280}
         >
-          ?
-        </button>
-        <span id={tooltipId} role="tooltip" className="memory-statistics__tooltip">
-          {explanation}
-        </span>
+          <p>{explanation}</p>
+        </StatisticsPopover>
       </div>
       <strong>{value}</strong>
       <small>{meta}</small>

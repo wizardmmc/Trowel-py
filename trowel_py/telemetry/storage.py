@@ -204,19 +204,30 @@ class TelemetryDatabase:
         busy_timeout_ms: 单次 SQLite 锁等待上限，超时由 collector 记为 dropped。
     """
 
-    def __init__(self, path: Path, *, busy_timeout_ms: int = 100) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        busy_timeout_ms: int = 100,
+        read_only: bool = False,
+    ) -> None:
         """保存数据库路径和锁等待上限。
 
         Args:
             path: 独立 telemetry.db 文件路径。
             busy_timeout_ms: SQLite 遇到写锁时最多等待的毫秒数。
+            read_only: 是否禁止迁移、写连接和 checkpoint，并用 ``mode=ro``
+                打开查询连接。
         """
 
         self.path = Path(path)
         self.busy_timeout_ms = busy_timeout_ms
+        self.read_only = read_only
 
     def initialize(self) -> None:
         """创建目录、应用独立迁移并立即关闭初始化连接。"""
+
+        self._require_writable("initialize")
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = self._connect()
@@ -238,6 +249,7 @@ class TelemetryDatabase:
         的尾延迟预算。生产生命周期由独立 checkpointer 保持 WAL 有界。
         """
 
+        self._require_writable("open writer")
         return TelemetryWriter(self._connect(wal_autocheckpoint_pages=0))
 
     def reader(self) -> "TelemetryReader":
@@ -252,6 +264,7 @@ class TelemetryDatabase:
             SQLite 返回的 busy、WAL 总页数和已归并页数。
         """
 
+        self._require_writable("checkpoint")
         connection = self._connect(wal_autocheckpoint_pages=0)
         try:
             row = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
@@ -271,18 +284,44 @@ class TelemetryDatabase:
                 由独立 checkpointer 承担归并和 fsync。
         """
 
-        connection = sqlite3.connect(
-            self.path,
-            timeout=max(self.busy_timeout_ms, 0) / 1000,
-            check_same_thread=True,
-        )
+        if self.read_only:
+            connection = sqlite3.connect(
+                f"{self.path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=max(self.busy_timeout_ms, 0) / 1000,
+                check_same_thread=True,
+            )
+        else:
+            connection = sqlite3.connect(
+                self.path,
+                timeout=max(self.busy_timeout_ms, 0) / 1000,
+                check_same_thread=True,
+            )
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        connection.execute(f"PRAGMA wal_autocheckpoint={wal_autocheckpoint_pages}")
+        if self.read_only:
+            connection.execute("PRAGMA query_only=ON")
+        else:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute(
+                f"PRAGMA wal_autocheckpoint={wal_autocheckpoint_pages}"
+            )
         connection.execute(f"PRAGMA busy_timeout={max(self.busy_timeout_ms, 0)}")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
+
+    def _require_writable(self, operation: str) -> None:
+        """拒绝只读观察实例进入任何数据库写侧路径。
+
+        Args:
+            operation: 用于异常诊断的调用名称。
+
+        Raises:
+            RuntimeError: 当前数据库被声明为只读。
+        """
+
+        if self.read_only:
+            raise RuntimeError(f"telemetry database is read-only: cannot {operation}")
 
 
 class TelemetryWriter(AbstractContextManager["TelemetryWriter"]):

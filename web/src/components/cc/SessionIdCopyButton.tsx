@@ -2,15 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { copyText } from "./copyText";
+import { copyText } from "../../lib/copyText";
 
 interface SessionIdCopyButtonProps {
   readonly sessionId: string;
 }
 
-export function SessionIdCopyButton({
-  sessionId,
-}: SessionIdCopyButtonProps) {
+export function SessionIdCopyButton({ sessionId }: SessionIdCopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<number | null>(null);
 

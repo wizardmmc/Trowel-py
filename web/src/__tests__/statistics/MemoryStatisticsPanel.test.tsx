@@ -1,6 +1,6 @@
 /** 验证 Memory 统计纯展示保留各自分母、未知样本和来源质量。 */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { MemoryStatisticsPanel } from "../../statistics/ui/MemoryStatisticsPanel";
 import { memoryStatisticsFixture } from "./memoryStatisticsFixture";
@@ -24,9 +24,15 @@ it("renders the four facts, funnel, effects, assets and sources", () => {
   expect(screen.getByText("需要重建")).toBeInTheDocument();
   expect(screen.getByText("来源更新")).toBeInTheDocument();
   expect(screen.getAllByText("部分数据").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "解释命中后读取" })).toHaveAttribute(
-    "aria-describedby",
-  );
+  const trigger = screen.getByRole("button", { name: "解释命中后读取" });
+  const fact = trigger.closest(".memory-statistics__fact");
+  fireEvent.click(trigger);
+  const explanation = screen.getByRole("tooltip", {
+    name: "命中后读取口径",
+  });
+  expect(explanation).toBeVisible();
+  expect(fact).not.toContainElement(explanation);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
 });
 
 it("shows unavailable without turning missing data into zero", () => {

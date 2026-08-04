@@ -13,6 +13,16 @@ import type {
   StatisticsResolution,
   TelemetryStatistics,
 } from "../domain/types";
+import type { OverviewStatistics } from "../domain/overview";
+
+export async function fetchOverviewStatistics(
+  range: StatisticsDateRange,
+): Promise<OverviewStatistics> {
+  const query = dateRangeQuery(range);
+  return fetchStatistics<OverviewStatistics>(
+    `/api/statistics/overview?${query.toString()}`,
+  );
+}
 
 export async function fetchAgentStatistics(
   range: StatisticsDateRange,

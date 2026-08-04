@@ -20,6 +20,7 @@ def read_memory_statistics(
     window_start: datetime,
     window_end: datetime,
     local_tz: tzinfo | None,
+    strict_read_only: bool = False,
 ) -> dict[str, Any]:
     """读取查询窗内使用事实和当前 Memory 资产快照。
 
@@ -32,6 +33,7 @@ def read_memory_statistics(
         window_start: 查询包含的开始时刻。
         window_end: 查询不包含的结束时刻。
         local_tz: 活动日期使用的时区；为 None 时使用系统本地时区。
+        strict_read_only: 是否禁止会话数据库迁移并使用只读归因快照。
 
     Returns:
         包含 ``usage``、``assets`` 和 ``sources`` 的只读快照。
@@ -44,6 +46,7 @@ def read_memory_statistics(
         local_tz=local_tz,
         window_start=window_start,
         window_end=window_end,
+        strict_read_only=strict_read_only,
     )
     health = compute_north_star_from_notes(root_path, note_rows)
     dictionary = load_state(root_path)

@@ -24,6 +24,7 @@
 | `cli.py` | `trowel-py` 命令行入口 |
 | `application_paths.py` | 统一解析 Trowel 自有数据库、Memory、配置与本地索引的数据根目录 |
 | `desktop/` | Electron Host 使用的 sidecar 启动、实例认证、版本握手与 readiness |
+| `desktop/inspection.py` | 为桌面统计 UI 验收提供只读真实数据应用，不启动 runtime、后台任务或正式库写入 |
 | `desktop/packaged_entrypoint.py` | 冻结可执行文件的白名单分发入口，只启动 sidecar、Agent MCP 或 Memory MCP |
 | `desktop/data_migration.py` | 离线盘点并原子迁移旧 Memory/Profile、当前候选 journal 与本地索引，不导入旧 Garden |
 | `desktop/data_root_lock.py` / `desktop/data_compatibility.py` | 独占长期数据根，并阻止 dev 抢先执行正式 App 尚未应用的 schema migration |
@@ -63,6 +64,8 @@
 | `quota/` | provider 额度读取与归一化 |
 | `telemetry/` | 本地 span/metric 白名单、W3C 上下文、Agent/runtime/MCP 关联、异步采集、独立 SQLite、聚合、清理、运行埋点和退出标记导入 |
 | `statistics/` | 统计时间窗、统一质量响应和只读 API |
+| `statistics/agent/` | 双 runtime session、token、首响和活动区间的统一读取，以及单次来源快照到多时间窗的批量投影 |
+| `statistics/overview/` | 并行组合各统计 read model 的总览 API、七日趋势、确定性状态、会话问题和来源质量 |
 | `statistics/runtime/` | 桌面启动退出、sidecar、FastAPI、SSE、SQLite 和资源 owner 的运行统计 read model |
 | `statistics/calls/` | 稳定游标调用列表、有限跨 trace 图、坏关系降级和去正文详情 read model |
 | `quota/glm/` | GLM quota 的稳定 client、payload 解析与 httpx transport |
@@ -145,7 +148,8 @@
 | `web/src/stores/` | Agent 之外的产品 Zustand store；旧 `ccStore`、`ccReducer` 与 selector 路径已删除 |
 | `web/src/components/` | 按 cards、cc、garden、profile 等领域组织的页面组件；runtime 专属展示从 `agent/runtimes` facade 读取 |
 | `web/src/styles/` | 全局 token 与样式 |
-| `web/src/statistics/` | 五个统计页签共用的 DTO、transport、store、日期状态，以及 Agent、Memory、运行、调用详情的生产容器和纯展示组件 |
+| `web/src/statistics/` | 总览、Agent、Memory、运行和调用详情五页签共用的 DTO、transport、store、日期/URL 状态、生产容器、纯展示组件和按需图表入口 |
+| `web/src/lib/` | 不属于具体产品领域的轻量浏览器 helper，如带权限降级的文本复制 |
 | `web/src/development/*-statistics/` | 复用生产组件和脱敏样例的独立统计页预览入口 |
 | `web/shared/telemetry-*` | Electron 与 renderer 共用的版本化批次和有界 batcher |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |

@@ -31,6 +31,7 @@ def compute_note_effects(
     notes_with_id: list[tuple[str, "Note"]] | None = None,
     store_cls: Any = MemoryStore,
     attribution_index_cls: Any = AttributionIndex,
+    attribution_index: AttributionIndex | None = None,
     system_local_tz_fn: Any = _system_local_tz,
     parse_iso_to_date_fn: Any = _parse_iso_to_date,
     read_access_log_fn: Any = read_access_log,
@@ -54,6 +55,7 @@ def compute_note_effects(
         notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
         store_cls: 用于加载 note 的存储实现。
         attribution_index_cls: 用于判定记录所属会话类型的索引实现。
+        attribution_index: 调用方已加载的归因快照；提供时不再打开会话数据库。
         system_local_tz_fn: 返回系统本地时区的函数。
         parse_iso_to_date_fn: 将日志时间换算为本地日期的函数。
         read_access_log_fn: 读取 access 记录的函数。
@@ -71,7 +73,7 @@ def compute_note_effects(
         else store_cls(root_path).load_notes_with_id()
     )
     id_to_stem = {n.memory_id: stem for stem, n in notes.items() if n.memory_id}
-    index = attribution_index_cls.from_root(root_path)
+    index = attribution_index or attribution_index_cls.from_root(root_path)
     tz = local_tz or system_local_tz_fn()
     if (window_start is None) != (window_end is None):
         raise ValueError("window_start and window_end must be provided together")
@@ -88,7 +90,12 @@ def compute_note_effects(
     for rec in read_access_log_fn(root_path):
         if not _timestamp_in_window(rec.ts, window_start, window_end):
             continue
-        attr = index.resolve(rec.trowel_session_id, rec.cc_session_id)
+        attr = index.resolve(
+            rec.trowel_session_id,
+            rec.cc_session_id,
+            host_kind=rec.host_kind,
+            native_session_id=rec.native_session_id,
+        )
         if not attr.is_user:
             continue
         cc = attr.cc_session_id or ""
@@ -116,7 +123,12 @@ def compute_note_effects(
         if linked is None:
             continue
         _rstem, reader_cc = linked
-        oattr = index.resolve(orec.trowel_session_id, orec.cc_session_id)
+        oattr = index.resolve(
+            orec.trowel_session_id,
+            orec.cc_session_id,
+            host_kind=orec.host_kind,
+            native_session_id=orec.native_session_id,
+        )
         if not oattr.is_user or (oattr.cc_session_id or "") != reader_cc:
             continue
         if orec.outcome == "helpful":

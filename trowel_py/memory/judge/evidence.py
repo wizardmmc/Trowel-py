@@ -43,6 +43,8 @@ def _summarize_access_log(
         if index.resolve(
             record.trowel_session_id,
             record.cc_session_id,
+            host_kind=record.host_kind,
+            native_session_id=record.native_session_id,
         ).cc_session_id
         == cc_session_id
     ]

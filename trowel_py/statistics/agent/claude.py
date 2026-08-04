@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -15,6 +16,7 @@ from trowel_py.statistics.agent.codec import (
 from trowel_py.statistics.agent.models import (
     ClaudeBindingSource,
     ModelObservation,
+    Quality,
     SessionObservation,
     TokenUsage,
     combine_token_usage,
@@ -54,25 +56,32 @@ def analyze_claude_binding(
         查询窗内的统一 session 事实；来源与时间窗无交集时为 None。
     """
 
+    return analyze_claude_binding_many(source, (window,))[0]
+
+
+def analyze_claude_binding_many(
+    source: ClaudeBindingSource,
+    windows: Sequence[StatisticsWindow],
+) -> tuple[SessionObservation | None, ...]:
+    """只解析一次 CC transcript，再投影到多个时间窗。
+
+    Args:
+        source: 带 Trowel 身份和字节水位的 transcript 来源。
+        windows: 要从同一份 transcript 生成的时间窗。
+
+    Returns:
+        与输入时间窗顺序一致的 session 事实；没有交集的位置为 None。
+    """
+
     bound_at = parse_timestamp(source.bound_at, local_naive=True)
     if source.start_offset is None or not source.transcript_path.is_file():
-        if not is_in_window(bound_at, window):
-            return None
-        return SessionObservation(
-            session_id=source.session_id,
-            runtime="claude_code",
-            models=(source.model,) if source.model else (),
-            started_at=bound_at,
-            status=source.status,
-            tokens=TokenUsage(),
-            response_samples=(),
-            intervals=(),
-            quality="unavailable" if not source.transcript_path.is_file() else "partial",
+        return tuple(
+            _missing_claude_observation(source, bound_at, window) for window in windows
         )
 
     seen_message_ids: set[str] = set()
-    usage_samples: list[tuple[str | None, TokenUsage]] = []
-    models: set[str] = set()
+    usage_samples: list[tuple[datetime | None, str | None, TokenUsage]] = []
+    model_samples: list[tuple[datetime | None, str]] = []
     turns: list[_ClaudeTurn] = []
     current: _ClaudeTurn | None = None
     last_observed: datetime | None = bound_at
@@ -85,6 +94,8 @@ def analyze_claude_binding(
         timestamp = parse_timestamp(event.get("timestamp"))
         if timestamp is not None:
             last_observed = timestamp
+        if _is_synthetic_assistant(event):
+            continue
         if _is_visible_user(event):
             if current is not None:
                 turns.append(current)
@@ -106,8 +117,8 @@ def analyze_claude_binding(
         if event.get("type") != "assistant" or message is None:
             continue
         model = message.get("model")
-        if isinstance(model, str) and model and is_in_window(timestamp, window):
-            models.add(model)
+        if isinstance(model, str) and model:
+            model_samples.append((timestamp, model))
         usage = mapping(message.get("usage"))
         message_id = message.get("id")
         if usage is None or not isinstance(message_id, str) or not message_id:
@@ -115,14 +126,75 @@ def analyze_claude_binding(
         if message_id in seen_message_ids:
             continue
         seen_message_ids.add(message_id)
-        if is_in_window(timestamp, window):
-            usage_samples.append(
-                (model if isinstance(model, str) and model else None, _claude_usage(usage))
+        usage_samples.append(
+            (
+                timestamp,
+                model if isinstance(model, str) and model else None,
+                _claude_usage(usage),
             )
+        )
     if current is not None:
         turns.append(current)
 
     completed_at = parse_timestamp(source.completed_at, local_naive=True)
+    return tuple(
+        _project_claude_observation(
+            source,
+            window,
+            bound_at=bound_at,
+            last_observed=last_observed,
+            completed_at=completed_at,
+            turns=turns,
+            model_samples=model_samples,
+            usage_samples=usage_samples,
+        )
+        for window in windows
+    )
+
+
+def _missing_claude_observation(
+    source: ClaudeBindingSource,
+    bound_at: datetime | None,
+    window: StatisticsWindow,
+) -> SessionObservation | None:
+    """把缺少 transcript 或起始水位的 binding 投影到一个时间窗。"""
+
+    if bound_at is None or not is_in_window(bound_at, window):
+        return None
+    return SessionObservation(
+        session_id=source.session_id,
+        runtime="claude_code",
+        models=(source.model,) if source.model else (),
+        started_at=bound_at,
+        status=source.status,
+        tokens=TokenUsage(),
+        response_samples=(),
+        intervals=(),
+        quality="unavailable" if not source.transcript_path.is_file() else "partial",
+    )
+
+
+def _project_claude_observation(
+    source: ClaudeBindingSource,
+    window: StatisticsWindow,
+    *,
+    bound_at: datetime | None,
+    last_observed: datetime | None,
+    completed_at: datetime | None,
+    turns: Sequence[_ClaudeTurn],
+    model_samples: Sequence[tuple[datetime | None, str]],
+    usage_samples: Sequence[tuple[datetime | None, str | None, TokenUsage]],
+) -> SessionObservation | None:
+    """把一次解析得到的 CC 事实裁剪到一个统计时间窗。"""
+
+    window_usage = [
+        (model, usage)
+        for timestamp, model, usage in usage_samples
+        if is_in_window(timestamp, window)
+    ]
+    models = {
+        model for timestamp, model in model_samples if is_in_window(timestamp, window)
+    }
     response_samples: list[int] = []
     model_response_samples: dict[str | None, list[int]] = {}
     intervals = []
@@ -130,7 +202,12 @@ def analyze_claude_binding(
         start = turn.start
         first = turn.first
         end = turn.last
-        if is_in_window(start, window) and first is not None and first >= start:
+        if (
+            start is not None
+            and is_in_window(start, window)
+            and first is not None
+            and first >= start
+        ):
             latency = round((first - start).total_seconds() * 1000)
             response_samples.append(latency)
             first_model = turn.first_model
@@ -149,7 +226,7 @@ def analyze_claude_binding(
         if interval is not None:
             intervals.append(interval)
 
-    has_window_fact = bool(usage_samples or response_samples or intervals)
+    has_window_fact = bool(window_usage or response_samples or intervals)
     if not has_window_fact and not is_in_window(bound_at, window):
         return None
     started_at = next(
@@ -160,21 +237,21 @@ def analyze_claude_binding(
         return None
     if source.model and not models and is_in_window(bound_at, window):
         models.add(source.model)
-    quality = "reliable" if completed_at is not None else "partial"
+    quality: Quality = "reliable" if completed_at is not None else "partial"
     return SessionObservation(
         session_id=source.session_id,
         runtime="claude_code",
         models=tuple(sorted(models)),
         started_at=started_at,
         status=source.status,
-        tokens=combine_token_usage([usage for _, usage in usage_samples]),
+        tokens=combine_token_usage([usage for _, usage in window_usage]),
         response_samples=tuple(response_samples),
         intervals=tuple(intervals),
         quality=quality,
         model_observations=combine_model_observations(
             [
                 ModelObservation(model=model, tokens=usage, response_samples=())
-                for model, usage in usage_samples
+                for model, usage in window_usage
             ]
             + [
                 ModelObservation(
@@ -204,7 +281,11 @@ def _claude_usage(raw: object) -> TokenUsage:
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 values[target_name] = value
     known = list(values.values())
-    total = sum(known) if all(value is not None for value in known) else None
+    total = (
+        sum(value or 0 for value in known)
+        if all(value is not None for value in known)
+        else None
+    )
     return TokenUsage(**values, total=total)
 
 
@@ -234,7 +315,9 @@ def _is_visible_user_text(text: str) -> bool:
     stripped = text.lstrip()
     if not stripped or "<local-command-stdout>" in text:
         return False
-    return not stripped.startswith(("<task-notification>", "<system-reminder>", "<cparam>"))
+    return not stripped.startswith(
+        ("<task-notification>", "<system-reminder>", "<cparam>")
+    )
 
 
 def _has_visible_text(event: object) -> bool:
@@ -254,4 +337,17 @@ def _has_visible_text(event: object) -> bool:
             and block.get("text")
             for block in content
         )
+    )
+
+
+def _is_synthetic_assistant(event: object) -> bool:
+    """判断记录是否是 Claude Code 生成的内部 synthetic assistant。"""
+
+    raw = mapping(event)
+    message = mapping(raw.get("message")) if raw is not None else None
+    return bool(
+        raw is not None
+        and raw.get("type") == "assistant"
+        and message is not None
+        and message.get("model") == "<synthetic>"
     )

@@ -1,10 +1,14 @@
 /** 验证运行统计容器按共享日期刷新并展示样本缺口。 */
 
-import { render, screen, waitFor } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { createStatisticsStore } from "../../statistics/application/store";
 import { RuntimeStatisticsView } from "../../statistics/ui/RuntimeStatisticsView";
 import { runtimeStatisticsFixture } from "./runtimeStatisticsFixture";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 test("mounting and date changes load runtime statistics", async () => {
   const fetchRuntime = vi.fn().mockResolvedValue(runtimeStatisticsFixture);
@@ -31,4 +35,22 @@ test("mounting and date changes load runtime statistics", async () => {
     endDate: "2026-08-03",
     timezone: "Asia/Shanghai",
   });
+});
+
+test("refreshes the mounted runtime page every five seconds", async () => {
+  vi.useFakeTimers();
+  const fetchRuntime = vi.fn().mockResolvedValue(runtimeStatisticsFixture);
+  const store = createStatisticsStore({ fetchRuntime });
+
+  render(<RuntimeStatisticsView store={store} />);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(fetchRuntime).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+
+  expect(fetchRuntime).toHaveBeenCalledTimes(2);
 });

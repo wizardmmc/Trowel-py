@@ -114,6 +114,7 @@ def memory_usage_metrics_from_notes(
     local_tz: Any | None = None,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    strict_read_only: bool = False,
 ) -> dict[str, Any]:
     """使用同请求已加载的 Note 快照计算 Memory 使用质量。
 
@@ -124,6 +125,7 @@ def memory_usage_metrics_from_notes(
         local_tz: 解释会话活动日期的本地时区；为空时使用系统本地时区。
         window_start: 可选半开查询窗起点；必须与终点同时提供。
         window_end: 可选半开查询窗终点；必须与起点同时提供。
+        strict_read_only: 是否禁止 sessions.db 迁移并使用只读连接。
 
     Returns:
         与 ``memory_usage_metrics`` 相同、但不再次扫描 Note 文件的指标字典。
@@ -135,6 +137,7 @@ def memory_usage_metrics_from_notes(
         window_start=window_start,
         window_end=window_end,
         notes_with_id=notes_with_id,
+        strict_read_only=strict_read_only,
     )
 
 

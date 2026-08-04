@@ -1,6 +1,7 @@
 /** 验证 Agent 统计纯展示的事实、筛选和缺失态。 */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { AgentStatisticsPanel } from "../../statistics/ui/AgentStatisticsPanel";
 import { agentStatisticsFixture } from "./agentStatisticsFixture";
@@ -24,9 +25,11 @@ it("renders session facts, quality, models and recent sessions", () => {
   expect(screen.getByText("trowel-session-codex")).toBeInTheDocument();
   expect(screen.getAllByText("部分数据").length).toBeGreaterThan(0);
   expect(screen.getByText("14.7 秒")).toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "首响中位数" })).toBeNull();
 });
 
-it("delegates runtime and model filter changes", () => {
+it("delegates runtime and model filter changes", async () => {
+  const user = userEvent.setup();
   const onRuntimeFilterChange = vi.fn();
   const onModelFilterChange = vi.fn();
   render(
@@ -41,12 +44,12 @@ it("delegates runtime and model filter changes", () => {
     />,
   );
 
-  fireEvent.change(screen.getByLabelText("Runtime 筛选"), {
-    target: { value: "codex" },
-  });
-  fireEvent.change(screen.getByLabelText("模型筛选"), {
-    target: { value: "glm-5.2" },
-  });
+  expect(screen.getByLabelText("Runtime 筛选").tagName).toBe("BUTTON");
+  expect(screen.getByLabelText("模型筛选").tagName).toBe("BUTTON");
+  await user.click(screen.getByLabelText("Runtime 筛选"));
+  await user.click(screen.getByRole("option", { name: "Codex" }));
+  await user.click(screen.getByLabelText("模型筛选"));
+  await user.click(screen.getByRole("option", { name: "glm-5.2" }));
 
   expect(onRuntimeFilterChange).toHaveBeenCalledWith("codex");
   expect(onModelFilterChange).toHaveBeenCalledWith("glm-5.2");

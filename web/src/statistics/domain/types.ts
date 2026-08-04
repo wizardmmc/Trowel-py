@@ -44,6 +44,8 @@ export interface AgentTokenUsage {
   readonly unknown: number | null;
   readonly total: number | null;
   readonly total_includes_cache_input: boolean;
+  readonly known_session_count: number;
+  readonly session_count: number;
   readonly quality: StatisticsQuality;
 }
 
@@ -105,6 +107,7 @@ export interface AgentStatistics {
   readonly tokens: AgentTokenUsage;
   readonly first_visible_response: AgentLatencyDistribution;
   readonly activity: AgentActivity;
+  readonly cache_input_ratio: number | null;
   readonly model_summaries: readonly AgentModelSummary[];
   readonly sessions: readonly AgentSession[];
 }

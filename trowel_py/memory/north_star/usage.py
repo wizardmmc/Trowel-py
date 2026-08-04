@@ -26,6 +26,7 @@ def memory_usage_metrics(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     notes_with_id: list[tuple[str, "Note"]] | None = None,
+    strict_read_only: bool = False,
 ) -> dict[str, Any]:
     """从访问日志、会话归因、Note 效果和判断报告计算使用质量。
 
@@ -73,6 +74,7 @@ def memory_usage_metrics(
             带稳定活动时间且落在窗内的证据进入结果。
         window_end: 可选半开查询窗终点；不能单独提供。
         notes_with_id: 可选的同请求 Note 快照；提供时不再次扫描 Note 文件。
+        strict_read_only: 是否禁止 sessions.db schema 迁移并只读打开数据库。
 
     Returns:
         包含生效策略、identity、retrieval、effect、recall 四组指标，以及固定为
@@ -90,7 +92,7 @@ def memory_usage_metrics(
         raise ValueError("window_start and window_end must be provided together")
     active_policy = policy or default_policy()
     root_path = Path(root)
-    index = AttributionIndex.from_root(root_path)
+    index = AttributionIndex.from_root(root_path, read_only=strict_read_only)
     effective_tz = local_tz or datetime.now().astimezone().tzinfo
     note_rows = (
         notes_with_id
@@ -109,10 +111,19 @@ def memory_usage_metrics(
         local_tz=effective_tz,
         window_start=window_start,
         window_end=window_end,
+        attribution_index=index,
     )
 
     resolved = [
-        (record, index.resolve(record.trowel_session_id, record.cc_session_id))
+        (
+            record,
+            index.resolve(
+                record.trowel_session_id,
+                record.cc_session_id,
+                host_kind=record.host_kind,
+                native_session_id=record.native_session_id,
+            ),
+        )
         for record in access_records
     ]
     records_total = len(resolved)
