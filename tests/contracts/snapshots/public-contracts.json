@@ -2305,6 +2305,23 @@
           }
         }
       },
+      "/api/agent/events": {
+        "get": {
+          "summary": "Stream Application Agent Events",
+          "description": "用一条 SSE 向 renderer 发送本实例全部用户会话的实时事件。\n\n首帧声明当前 sidecar 的连接代次。普通数据帧继续直接承载 AgentEvent；慢消费者\n只收到受影响 session 的 gap 控制帧，其他会话仍可继续实时更新。断线期间的事实\n由 active snapshot 和 history 对账，本接口不会重放用户 prompt。\n\nArgs:\n    request: 当前 HTTP 请求，用于记录应用级 SSE 连接质量。\n    hub: 提供多路复用事件和连接代次的 Session Hub。\n\nReturns:\n    带 readiness、heartbeat、局部 gap 和 AgentEvent 的持续 SSE 响应。",
+          "operationId": "stream_application_agent_events_api_agent_events_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/agent/sessions": {
         "post": {
           "summary": "Create Session",
@@ -3291,9 +3308,9 @@
       },
       "/api/agent/sessions/{session_id}/turns": {
         "post": {
-          "summary": "Start Codex Turn",
-          "description": "向指定 Codex 会话发送一段文字，并启动新一轮处理。\n\n接口在 Codex 接受输入并创建轮次后立即返回，不等待这一轮结束。回复文本、工具调用\n和最终状态等后续事件通过 /events 接口发送；为了避免漏掉较早的事件，调用方应先\n建立事件流连接，再启动轮次。\n\n/compact、/review 等由 Trowel 单独处理的 Codex 命令不能作为普通文字发送，必须\n调用各自的接口。\n\nArgs:\n    session_id: 要启动新一轮处理的 Codex 会话 ID。\n    body: 要发送给 Codex 的非空文字。\n    hub: 负责启动 Codex 轮次的 Session Hub。\n\nReturns:\n    统一响应。data.turn_id 为 Codex 创建的轮次 ID；返回该 ID 不表示本轮已经结束。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前已有轮次正在启动或运行时返回 409；\n        输入为空、会话由 Claude Code 运行或输入是专用命令时返回 422；Codex\n        未能接受输入或保存会话信息时返回 502；Codex 当前不可用时返回 503。",
-          "operationId": "start_codex_turn_api_agent_sessions__session_id__turns_post",
+          "summary": "Start Agent Turn",
+          "description": "向指定 Agent 会话发送一段文字，并启动新一轮处理。\n\n接口不等待整轮完成。两种 runtime 都在返回前确定稳定根 turn ID；Claude Code\n由 Agent Host 后台消费原生流。回复文本、\n工具调用和终态统一通过应用级 /events 发送。\n\n/compact、/review 等由 Trowel 单独处理的 Codex 命令不能作为普通文字发送，必须\n调用各自的接口。\n\nArgs:\n    session_id: 要启动新一轮处理的 Trowel 会话 ID。\n    body: 要发送给 Agent 的非空文字。\n    hub: 负责启动双 runtime 轮次的 Session Hub。\n\nReturns:\n    统一响应。data.turn_id 为后续常驻事件流沿用的稳定根 turn ID。返回成功只\n    表示 Agent Host 已接管本次输入。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；当前已有轮次正在启动或运行时返回 409；\n        输入为空或是专用命令时返回 422；runtime 未能接受输入时返回 502；\n        runtime 当前不可用时返回 503。",
+          "operationId": "start_agent_turn_api_agent_sessions__session_id__turns_post",
           "parameters": [
             {
               "name": "session_id",
@@ -3323,7 +3340,7 @@
                   "schema": {
                     "type": "object",
                     "additionalProperties": true,
-                    "title": "Response Start Codex Turn Api Agent Sessions  Session Id  Turns Post"
+                    "title": "Response Start Agent Turn Api Agent Sessions  Session Id  Turns Post"
                   }
                 }
               }

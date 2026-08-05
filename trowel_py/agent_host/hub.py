@@ -9,7 +9,7 @@ import asyncio
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +58,10 @@ from trowel_py.agent_host.lifecycle import (
     SessionLifecycle,
     SessionReconcileRequiredError,
 )
+from trowel_py.agent_host.live_events import (
+    ApplicationEventBroadcaster,
+    ApplicationEventSubscription,
+)
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.agent_host.session_titles import (
     SessionTitleGenerator,
@@ -96,7 +100,7 @@ _log = logging.getLogger(__name__)
 
 # 连接上限按仍有 binding 的已注册 session/thread 计数，共享 manager 不合并名额。
 MAX_CONNECTIONS = USER_CONNECTION_LIMIT
-# 用户会话的在跑上限仍由前端执行；该常量保留公开兼容。
+# 用户会话的在跑上限由前后端共同执行；该常量保留公开兼容。
 MAX_RUNNING = USER_RUNNING_LIMIT
 # 委派子会话由后端单独限制，两个 runtime 共用同一组连接和在跑名额。
 MAX_DELEGATE_CONNECTIONS = DELEGATE_CONNECTION_LIMIT
@@ -305,11 +309,21 @@ class SessionHub:
         self._agent_event_subscribers: dict[
             str, set[asyncio.Queue[dict[str, Any] | None]]
         ] = {}
+        self._application_events = ApplicationEventBroadcaster()
+        self._live_generation = uuid.uuid4().hex
+        self._session_state_generations: dict[str, int] = {}
+        self._current_root_turn_ids: dict[str, str | None] = {}
+        self._last_root_turn_states: dict[str, str] = {}
+        self._last_event_sequences: dict[str, int] = {}
         self._codex_event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._detached_turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_close_tasks: dict[str, asyncio.Task[SessionCloseResult]] = {}
         self._closed_session_results: dict[str, SessionCloseResult] = {}
         self._closing_session_ids: set[str] = set()
         self._turn_idle_conditions: dict[str, asyncio.Condition] = {}
+        self._session_create_requests: dict[
+            str, tuple[str, asyncio.Task[SessionBinding]]
+        ] = {}
         self._runtime_ports: dict[Runtime, RuntimeSessionPort] = (
             dict(runtime_ports)
             if runtime_ports is not None
@@ -336,6 +350,52 @@ class SessionHub:
             self._resource_registry,
         )
         self._lifecycle.migrate_non_user_identities()
+
+    async def coalesce_session_create(
+        self,
+        request_id: str,
+        fingerprint: str,
+        operation: Callable[[], Awaitable[SessionBinding]],
+    ) -> SessionBinding:
+        """按 renderer 请求 ID 合并可能因客户端超时而重试的会话创建。
+
+        Args:
+            request_id: renderer 为一次逻辑创建生成的稳定 ID。
+            fingerprint: 创建参数的稳定表示，防止同一 ID 被挪作他用。
+            operation: 真正执行一次创建并返回 binding 的异步函数。
+
+        Returns:
+            首次创建或同 ID 已完成创建得到的同一个 binding。
+
+        Raises:
+            InvalidSessionRequestError: 同一请求 ID 携带了不同创建参数。
+        """
+
+        existing = self._session_create_requests.get(request_id)
+        if existing is not None:
+            existing_fingerprint, task = existing
+            if existing_fingerprint != fingerprint:
+                raise InvalidSessionRequestError(
+                    "session create request ID was reused with different parameters"
+                )
+        else:
+            task = asyncio.create_task(
+                operation(), name=f"agent-session-create:{request_id}"
+            )
+            self._session_create_requests[request_id] = (fingerprint, task)
+
+            def discard_failed(completed: asyncio.Task[SessionBinding]) -> None:
+                """失败请求允许使用同一 ID 重试；成功结果保留供未知接收状态对账。"""
+
+                if completed.cancelled() or completed.exception() is not None:
+                    if self._session_create_requests.get(request_id) == (
+                        fingerprint,
+                        completed,
+                    ):
+                        self._session_create_requests.pop(request_id, None)
+
+            task.add_done_callback(discard_failed)
+        return await asyncio.shield(task)
 
     @property
     def store(self) -> BindingStore:
@@ -532,8 +592,11 @@ class SessionHub:
         try:
             with self._capacity.admit_connection(req.session_kind):
                 if req.runtime == "claude_code":
-                    return self._create_cc(req)
-                return self._create_codex(req)
+                    binding = self._create_cc(req)
+                else:
+                    binding = self._create_codex(req)
+                self._touch_session_state(binding.session_id)
+                return binding
         except CapacityLimitError as exc:
             raise SessionConflictError(str(exc)) from exc
 
@@ -1154,10 +1217,77 @@ class SessionHub:
             connected, running = self._live_status(binding)
             item["connected"] = connected
             item["running"] = running
+            item.update(self._lifecycle_snapshot(binding, running=running))
             items.append(item)
         user_ids = {str(item["session_id"]) for item in items}
         active_id = self._active_id if self._active_id in user_ids else None
         return items, active_id
+
+    @property
+    def live_generation(self) -> str:
+        """返回当前 Agent Host 进程的实时事件流代次。"""
+
+        return self._live_generation
+
+    def _lifecycle_snapshot(
+        self, binding: SessionBinding, *, running: bool
+    ) -> dict[str, object]:
+        """生成 renderer 对账使用的资源与根 turn 快照。
+
+        Args:
+            binding: 当前仍存在的用户会话记录。
+            running: runtime port 现场确认的未结束 turn 事实。
+
+        Returns:
+            资源状态、根 turn 状态和身份、状态代次及最近事件序号。
+        """
+
+        close_task = self._session_close_tasks.get(binding.session_id)
+        if close_task is not None and not close_task.done():
+            resource_state = "closing"
+        elif binding.session_id in self._closing_session_ids:
+            resource_state = "needs_reconcile"
+        else:
+            resource_state = "connected"
+        observed_turn_state = self._last_root_turn_states.get(
+            binding.session_id, "idle"
+        )
+        unfinished_states = {
+            "starting",
+            "running",
+            "awaiting_input",
+        }
+        terminal_states = {"completed", "failed", "interrupted"}
+        if observed_turn_state in terminal_states:
+            # 原生任务在 terminal 发布后才释放容量令牌。这个极短窗口里
+            # runtime 仍可能报告 running，但业务根 turn 已有更强的终态事实。
+            turn_state = observed_turn_state
+        elif running and observed_turn_state in unfinished_states:
+            turn_state = observed_turn_state
+        elif running:
+            turn_state = "running"
+        elif observed_turn_state in unfinished_states:
+            # runtime 已确认没有在途 turn，但 Host 没观察到对应 terminal，说明
+            # 原生事件链异常结束。不能继续把 snapshot 宣称为 running。
+            turn_state = "failed"
+        else:
+            turn_state = observed_turn_state
+        return {
+            "resource_state": resource_state,
+            "turn_state": turn_state,
+            "current_turn_id": self._current_root_turn_ids.get(binding.session_id),
+            "state_generation": self._session_state_generations.get(
+                binding.session_id, 1
+            ),
+            "last_event_seq": self._last_event_sequences.get(binding.session_id),
+        }
+
+    def _touch_session_state(self, session_id: str) -> int:
+        """递增指定会话的 snapshot 代次并返回新值。"""
+
+        generation = self._session_state_generations.get(session_id, 0) + 1
+        self._session_state_generations[session_id] = generation
+        return generation
 
     def _live_status(self, binding: SessionBinding) -> tuple[bool, bool]:
         """计算会话列表中的 connected 和 running 状态。
@@ -1173,10 +1303,15 @@ class SessionHub:
         """
 
         state = self._capacity.live_state(binding)
-        return state.connected, state.has_in_flight_turn
+        detached = self._detached_turn_tasks.get(binding.session_id)
+        detached_running = detached is not None and not detached.done()
+        return (
+            state.connected,
+            self._capacity.has_in_flight_turn(binding) or detached_running,
+        )
 
-    def _reserve_delegate_turn(self, binding: SessionBinding) -> object | None:
-        """预留委派在跑名额，并把容量拒绝转换为 Hub 冲突错误。"""
+    def _reserve_turn(self, binding: SessionBinding) -> object:
+        """预留对应会话池的在跑名额，并把容量拒绝转换为 Hub 冲突错误。"""
 
         if binding.session_id in self._closing_session_ids:
             raise SessionConflictError(
@@ -1489,7 +1624,7 @@ class SessionHub:
         """
 
         binding = self._require(session_id)
-        reservation = self._reserve_delegate_turn(binding)
+        reservation = self._reserve_turn(binding)
         try:
             session = self._require_codex_session(session_id)
             codex = self._require_codex_runtime()
@@ -1531,7 +1666,7 @@ class SessionHub:
         """
 
         binding = self._require(session_id)
-        reservation = self._reserve_delegate_turn(binding)
+        reservation = self._reserve_turn(binding)
         try:
             session = self._require_codex_session(session_id)
             codex = self._require_codex_runtime()
@@ -1867,6 +2002,7 @@ class SessionHub:
         result = SessionCloseResult.from_runtime(runtime_result)
         if result.status != "closed":
             return result
+        self._closing_session_ids.discard(session_id)
         # 删除 adapter，避免复用 id 继承旧序号。
         self._cc_adapters.pop(session_id, None)
         self._codex_adapters.pop(session_id, None)
@@ -1874,6 +2010,20 @@ class SessionHub:
             self._active_id = None
         if delete_binding:
             self._closed_session_results[session_id] = result
+            self._session_state_generations.pop(session_id, None)
+            self._current_root_turn_ids.pop(session_id, None)
+            self._last_root_turn_states.pop(session_id, None)
+            self._last_event_sequences.pop(session_id, None)
+            for request_id, (_, create_task) in tuple(
+                self._session_create_requests.items()
+            ):
+                if (
+                    create_task.done()
+                    and not create_task.cancelled()
+                    and create_task.exception() is None
+                    and create_task.result().session_id == session_id
+                ):
+                    self._session_create_requests.pop(request_id, None)
         await self._release_turn_idle_waiters(session_id)
         return result
 
@@ -1963,7 +2113,7 @@ class SessionHub:
 
         self._require_accepting_work()
         binding = self._require(session_id)
-        reservation = self._reserve_delegate_turn(binding)
+        reservation = self._reserve_turn(binding)
         try:
             async for event in self._stream_admitted(
                 binding, text, autonomous=autonomous
@@ -2041,6 +2191,7 @@ class SessionHub:
         text: str,
         *,
         autonomous: bool,
+        accepted_turn_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """产出已经通过全局在跑准入的会话事件。
 
@@ -2048,6 +2199,8 @@ class SessionHub:
             binding: 已通过准入的会话记录。
             text: 要发送给会话的输入。
             autonomous: 是否由 Agent Host 内部通知启动本轮。
+            accepted_turn_id: detached `/turns` 已返回给 renderer 的稳定根 turn ID；
+                其他调用链为 None，不合成起点。
 
         Yields:
             Claude Code 或 Codex 转换后的统一事件。
@@ -2063,12 +2216,24 @@ class SessionHub:
                 cc_adapter = ClaudeCodeEventAdapter(session_id)
                 self._cc_adapters[session_id] = cc_adapter
             observation_id = self._prepare_turn_observation(binding)
+            root_started = False
             try:
                 async for event in host.send(text):
                     raw = dict(event) if isinstance(event, dict) else event.model_dump()
+                    if (
+                        not root_started
+                        and raw.get("type") != "turn_start"
+                        and isinstance(accepted_turn_id, str)
+                    ):
+                        accepted = self._cc_accepted_turn_start(session_id, cc_adapter)
+                        self._observe(accepted)
+                        self._publish_agent_event(session_id, accepted)
+                        root_started = True
+                        yield accepted
                     if autonomous and raw.get("type") == "turn_start":
                         raw["autonomous"] = True
                     envelope = cc_adapter.wrap(raw).model_dump(by_alias=True)
+                    root_started = root_started or raw.get("type") == "turn_start"
                     self._observe(envelope)
                     self._publish_agent_event(session_id, envelope)
                     if raw.get("type") == "session_started" or raw.get("type") in (
@@ -2154,7 +2319,7 @@ class SessionHub:
 
         self._require_accepting_work()
         binding = self._require(session_id)
-        reservation = self._reserve_delegate_turn(binding)
+        reservation = self._reserve_turn(binding)
         try:
             session = self._require_codex_session(session_id)
             codex = self._require_codex_runtime()
@@ -2186,6 +2351,188 @@ class SessionHub:
                 raise
         finally:
             self._capacity.release_turn(reservation)
+
+    async def start_turn(self, session_id: str, text: str) -> str:
+        """启动由应用级 SSE 承载结果的普通用户 turn。
+
+        Codex 在原生 manager 接受输入后返回真实 turn ID。Claude Code 先预留与
+        原生首帧共用的逻辑 turn ID，再由 Agent Host 后台任务持有输入消费，避免
+        renderer 再建立一条 POST SSE。
+
+        Args:
+            session_id: 接收用户输入的 Trowel 会话 ID。
+            text: 不会写入日志或错误的用户输入正文。
+
+        Returns:
+            已被 runtime 接受的稳定根 turn ID。
+
+        Raises:
+            SessionConflictError: 同一 Claude Code 会话已有后台 turn，或后端容量拒绝。
+            SessionHubError: 会话、runtime 或输入不满足既有启动契约。
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is Runtime.CODEX:
+            return await self.start_codex_turn(session_id, text)
+        existing = self._detached_turn_tasks.get(session_id)
+        if existing is not None and not existing.done():
+            raise SessionConflictError("session already has an in-flight turn")
+        if self._live_status(binding)[1]:
+            raise SessionConflictError("session already has an in-flight turn")
+        reservation = self._reserve_turn(binding)
+        host = self._cc_registry.get(session_id)
+        if host is None:
+            self._capacity.release_turn(reservation)
+            raise SessionNotFoundError(f"cc session {session_id} not live")
+        turn_id: str | None = None
+        try:
+            reserve_turn_id = getattr(host, "reserve_turn_id", None)
+            turn_id = (
+                reserve_turn_id() if callable(reserve_turn_id) else uuid.uuid4().hex
+            )
+            cc_adapter = self._cc_adapters.get(session_id)
+            if cc_adapter is None:
+                cc_adapter = ClaudeCodeEventAdapter(session_id)
+                self._cc_adapters[session_id] = cc_adapter
+            cc_adapter.begin_turn(turn_id)
+            self._last_root_turn_states[session_id] = "starting"
+            self._current_root_turn_ids[session_id] = turn_id
+            self._touch_session_state(session_id)
+            task = asyncio.create_task(
+                self._consume_detached_turn(binding, text, reservation),
+                name=f"agent-detached-turn:{session_id}",
+            )
+        except BaseException:
+            cancel_reserved_turn = getattr(host, "cancel_reserved_turn", None)
+            if callable(cancel_reserved_turn) and turn_id is not None:
+                cancel_reserved_turn(turn_id)
+            self._capacity.release_turn(reservation)
+            raise
+        self._detached_turn_tasks[session_id] = task
+        task.add_done_callback(
+            lambda completed, key=session_id: self._discard_detached_turn_task(
+                key, completed
+            )
+        )
+        assert turn_id is not None
+        return turn_id
+
+    async def _consume_detached_turn(
+        self,
+        binding: SessionBinding,
+        text: str,
+        reservation: object,
+    ) -> None:
+        """消费 Claude Code turn 到终态，并把启动异常发布到应用级事件流。
+
+        Args:
+            binding: 后台 turn 所属的用户会话记录。
+            text: 交给 Claude Code 的用户输入正文。
+            reservation: `/turns` 返回前取得的用户在跑容量令牌。
+        """
+
+        session_id = binding.session_id
+        terminal_seen = False
+        session_exited = False
+        local_completion_seen = False
+        root_started = False
+        try:
+            async for event in self._stream_admitted(
+                binding,
+                text,
+                autonomous=False,
+                accepted_turn_id=self._current_root_turn_ids.get(session_id),
+            ):
+                root_started = root_started or event.get("type") == "turn_start"
+                terminal_seen = terminal_seen or _is_terminal(event)
+                session_exited = session_exited or event.get("type") == "session_exited"
+                local_completion_seen = local_completion_seen or event.get("type") in {
+                    "local_command",
+                    "model_changed",
+                }
+            if terminal_seen or session_exited:
+                return
+            if local_completion_seen:
+                adapter = self._cc_adapters[session_id]
+                envelope = adapter.wrap(
+                    {
+                        "type": "finished",
+                        "usage": {},
+                        "total_cost_usd": None,
+                        "num_turns": None,
+                        "synthetic_reason": "local_command_completed",
+                    }
+                ).model_dump(by_alias=True)
+            else:
+                envelope = self.error_envelope(
+                    session_id,
+                    RuntimeTurnError(
+                        "Claude Code stream closed without a terminal event"
+                    ),
+                )
+            self._observe(envelope)
+            self._publish_agent_event(session_id, envelope)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 后台入口必须把失败交回 renderer。
+            _log.warning(
+                "detached Claude Code turn failed: %s",
+                type(exc).__name__,
+            )
+            if not root_started:
+                adapter = self._cc_adapters[session_id]
+                accepted = self._cc_accepted_turn_start(session_id, adapter)
+                self._observe(accepted)
+                self._publish_agent_event(session_id, accepted)
+            envelope = self.error_envelope(session_id, exc)
+            self._observe(envelope)
+            self._publish_agent_event(session_id, envelope)
+        finally:
+            self._capacity.release_turn(reservation)
+            await self._notify_turn_state_changed(session_id)
+
+    def _cc_accepted_turn_start(
+        self,
+        session_id: str,
+        adapter: ClaudeCodeEventAdapter,
+    ) -> dict[str, Any]:
+        """生成首个原生事件缺失时使用的稳定根 turn 起点。
+
+        Args:
+            session_id: 已经接受输入的 Claude Code 会话 ID。
+            adapter: 预先绑定了稳定 turn ID 的会话事件适配器。
+
+        Returns:
+            可以直接发布的合成 turn_start 信封。
+        """
+
+        turn_id = self._current_root_turn_ids.get(session_id)
+        if not isinstance(turn_id, str):
+            raise RuntimeTurnError("Claude Code accepted turn has no stable ID")
+        return adapter.wrap(
+            {
+                "type": "turn_start",
+                "turn_id": turn_id,
+                "autonomous": False,
+                "revertible": False,
+                "synthetic_reason": "agent_host_accepted",
+            }
+        ).model_dump(by_alias=True)
+
+    def _discard_detached_turn_task(
+        self, session_id: str, completed: asyncio.Task[None]
+    ) -> None:
+        """移除已结束的 Claude Code 后台消费任务并取走异常。
+
+        Args:
+            session_id: 任务所属的 Trowel 会话 ID。
+            completed: 已触发 done callback 的任务对象。
+        """
+
+        if self._detached_turn_tasks.get(session_id) is completed:
+            self._detached_turn_tasks.pop(session_id, None)
+        if not completed.cancelled():
+            completed.exception()
 
     def subscribe_codex_events(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
         """持续返回指定 Codex 会话产生的事件。
@@ -2282,6 +2629,24 @@ class SessionHub:
 
         return iterate()
 
+    def subscribe_application_events(
+        self, *, queue_capacity: int = 512
+    ) -> ApplicationEventSubscription:
+        """订阅当前应用全部 user session 的统一 AgentEvent。
+
+        新建和恢复的用户会话会自动进入同一个订阅。delegate 与 probe 会话保留原有
+        owner 边界，不进入 renderer 的公开应用流。
+
+        Args:
+            queue_capacity: 单个 renderer 最多积压的普通事件数。溢出时只报告受影响
+                session 的缺口，不关闭其他 session 的事件流。
+
+        Returns:
+            可接收事件、局部缺口和 heartbeat 超时的应用订阅对象。
+        """
+
+        return self._application_events.subscribe(queue_capacity)
+
     def _publish_agent_event(
         self, session_id: str, payload: dict[str, Any]
     ) -> None:
@@ -2292,8 +2657,70 @@ class SessionHub:
             payload: 已转换为 wire 字典的 AgentEvent。
         """
 
+        self._observe_live_event(session_id, payload)
+        binding = self._store.get(session_id)
+        if binding is not None and binding.session_kind == "user":
+            self._application_events.publish(payload)
         for queue in tuple(self._agent_event_subscribers.get(session_id, ())):
             queue.put_nowait(payload)
+
+    def _observe_live_event(
+        self, session_id: str, payload: Mapping[str, Any]
+    ) -> None:
+        """把已发布事件折叠为 session snapshot 使用的根 turn 事实。
+
+        Args:
+            session_id: 事件所属的 Trowel 会话 ID。
+            payload: 已转换的 AgentEvent wire 字典。
+        """
+
+        sequence = payload.get("seq")
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            self._last_event_sequences[session_id] = sequence
+        binding = self._store.get(session_id)
+        if binding is None:
+            return
+        thread_id = payload.get("thread_id")
+        root_event = (
+            binding.runtime is Runtime.CLAUDE_CODE
+            or (
+                binding.native_session_id is not None
+                and thread_id == binding.native_session_id
+            )
+        )
+        if root_event:
+            event_type = payload.get("type")
+            turn_id = payload.get("turn_id")
+            if event_type == "turn_start":
+                self._current_root_turn_ids[session_id] = (
+                    turn_id if isinstance(turn_id, str) else None
+                )
+                self._last_root_turn_states[session_id] = "running"
+            elif event_type in _TURN_TERMINAL_TYPES:
+                current_turn_id = self._current_root_turn_ids.get(session_id)
+                identity_matches = (
+                    isinstance(current_turn_id, str)
+                    and isinstance(turn_id, str)
+                    and turn_id == current_turn_id
+                ) or (
+                    binding.runtime is Runtime.CLAUDE_CODE
+                    and current_turn_id is None
+                    and turn_id is None
+                    and self._last_root_turn_states.get(session_id) == "starting"
+                )
+                if identity_matches:
+                    terminal_states = {
+                        "finished": "completed",
+                        "interrupted": "interrupted",
+                        "error": "failed",
+                    }
+                    self._last_root_turn_states[session_id] = terminal_states[
+                        str(event_type)
+                    ]
+                    self._current_root_turn_ids[session_id] = (
+                        turn_id if isinstance(turn_id, str) else current_turn_id
+                    )
+        self._touch_session_state(session_id)
 
     def _add_codex_event_subscriber(
         self, session_id: str, session: Any
@@ -2394,12 +2821,15 @@ class SessionHub:
             queue.put_nowait(None)
 
     def _stop_session_event_delivery(self, session_id: str) -> None:
-        """停止会话的原生 reader，并关闭全部公共实时订阅。
+        """停止会话的后台 turn、原生 reader，并关闭旧的单会话订阅。
 
         Args:
             session_id: 正在关闭的 Trowel 会话 ID。
         """
 
+        detached = self._detached_turn_tasks.pop(session_id, None)
+        if detached is not None and not detached.done():
+            detached.cancel()
         self._stop_codex_event_pump(session_id)
         for queue in tuple(self._agent_event_subscribers.pop(session_id, ())):
             queue.put_nowait(None)

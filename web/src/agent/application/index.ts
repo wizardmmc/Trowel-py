@@ -2,6 +2,7 @@
 export * from "./frameSelector";
 export * from "./codexCommandRoster";
 export * from "./sessionLifecycle";
+export * from "./sessionDiagnostics";
 export * from "./store";
 export * from "./store/approvalState";
 export * from "./store/codexSubagents";

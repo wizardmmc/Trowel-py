@@ -142,6 +142,7 @@ describe("postMessageStream", () => {
   it("opens a GET event stream without a request body", async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
+      headers: new Headers({ "X-Trowel-Agent-Generation": "generation-1" }),
       body: makeStream([
         `data: ${env({ type: "plan_updated", seq: 1, runtime: "codex" })}\n\n`,
       ]),
@@ -158,6 +159,49 @@ describe("postMessageStream", () => {
       signal: undefined,
     });
     expect(opened).toHaveBeenCalledOnce();
+    expect(opened).toHaveBeenCalledWith("generation-1");
     expect(received[0].type).toBe("plan_updated");
+  });
+
+  it("routes ready and per-session gap frames without treating them as AgentEvent", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      body: makeStream([
+        'event: ready\ndata: {"generation":"generation-2"}\n\n',
+        ": heartbeat\n\n",
+        'event: gap\ndata: {"session_id":"s2"}\n\n',
+      ]),
+    } as Response);
+    const received: AgentEvent[] = [];
+    const controls = vi.fn();
+
+    await getEventStream("/events", (event) => received.push(event), {
+      onControl: controls,
+    });
+
+    expect(received).toEqual([]);
+    expect(controls.mock.calls.map(([control]) => control)).toEqual([
+      { type: "ready", generation: "generation-2" },
+      { type: "gap", sessionId: "s2" },
+    ]);
+  });
+
+  it("ends a silent half-open stream after three default heartbeat periods", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "X-Trowel-Agent-Generation": "generation-1" }),
+      body: new ReadableStream<Uint8Array>({ start() {} }),
+    } as Response);
+    try {
+      const stream = getEventStream("/events", () => {});
+      void stream.catch(() => {});
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      await expect(stream).rejects.toThrow("heartbeat timed out");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

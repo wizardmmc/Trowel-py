@@ -49,6 +49,11 @@ function makeSession(
     needsReplay: false,
     tasks,
     ...over,
+    resourceState: over.resourceState ?? "connected",
+    turnState: over.turnState ?? "idle",
+    liveState: over.liveState ?? "ready",
+    currentTurnId: over.currentTurnId ?? null,
+    stateGeneration: over.stateGeneration ?? 1,
     codexSubagents: over.codexSubagents ?? {},
   };
 }

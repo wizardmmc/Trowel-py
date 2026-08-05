@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ev, mockCreate, releaseAllStreams, stream } from "./ccStoreTestHarness";
+import {
+  apiGetEventStream,
+  ev,
+  listHistory,
+  mockCreate,
+  stream,
+} from "./ccStoreTestHarness";
 import {
   createAgentStore,
   MAX_CONNECTIONS,
@@ -27,10 +33,14 @@ describe("createAgentStore — send admission", () => {
     for (let index = 0; index <= MAX_RUNNING; index += 1) {
       mockCreate(`s${index}`);
       await store.getState().startSession({ workdir: `/wd${index}` });
-      const sending = store.getState().send("init");
-      stream.apply!(ev("finished"));
-      await releaseAllStreams();
-      await sending;
+      await store.getState().send("init");
+      stream.apply!(
+        ev("finished", {}, {
+          session_id: `s${index}`,
+          turn_id: "turn-1",
+          seq: 1,
+        }),
+      );
     }
 
     const sends: Promise<unknown>[] = [];
@@ -39,13 +49,14 @@ describe("createAgentStore — send admission", () => {
       sends.push(store.getState().send("burst"));
     }
     const sessions = Object.values(store.getState().sessions);
-    expect(sessions.filter((session) => session.abort !== null)).toHaveLength(MAX_RUNNING);
+    expect(sessions.filter((session) => session.turnState === "running")).toHaveLength(MAX_RUNNING);
     expect(
       sessions.filter(
-        (session) => session.abort === null && session.transportError?.includes("in-turn"),
+        (session) =>
+          session.turnState !== "running" &&
+          session.transportError?.includes("in-turn"),
       ),
     ).toHaveLength(1);
-    await releaseAllStreams();
     await Promise.all(sends);
   });
 
@@ -54,10 +65,14 @@ describe("createAgentStore — send admission", () => {
     for (let index = 0; index < MAX_CONNECTIONS; index += 1) {
       mockCreate(`s${index}`);
       await store.getState().startSession({ workdir: `/wd${index}` });
-      const sending = store.getState().send("x");
-      stream.apply!(ev("finished"));
-      await releaseAllStreams();
-      await sending;
+      await store.getState().send("x");
+      stream.apply!(
+        ev("finished", {}, {
+          session_id: `s${index}`,
+          turn_id: "turn-1",
+          seq: 1,
+        }),
+      );
     }
     mockCreate("sX");
     await store.getState().startSession({ workdir: "/wdx" });
@@ -81,6 +96,64 @@ describe("createAgentStore — send admission", () => {
 
     expect(store.getState().sessions.user.abort).not.toBeNull();
     expect(store.getState().sessions.user.transportError).toBeNull();
-    await releaseAllStreams();
+  });
+
+  it("clears the previous structured problem when a retry is admitted", async () => {
+    const store = createAgentStore();
+    mockCreate("user");
+    await store.getState().startSession({ workdir: "/user" });
+    store.setState((state) => ({
+      ...state,
+      sessions: {
+        ...state.sessions,
+        user: {
+          ...state.sessions.user,
+          transportError: "previous request failed",
+          transportProblem: {
+            code: "http_error",
+            message: "previous request failed",
+            operation: "turn_start",
+            budgetMs: 30_000,
+            status: 409,
+            occurredAt: "2026-08-05T00:00:00.000Z",
+          },
+        },
+      },
+    }));
+
+    await store.getState().send("retry");
+
+    expect(store.getState().sessions.user.transportError).toBeNull();
+    expect(store.getState().sessions.user.transportProblem).toBeNull();
+  });
+
+  it("keeps one watcher and read APIs available with 20 connected and 5 running", async () => {
+    const store = createAgentStore();
+    for (let index = 0; index < MAX_CONNECTIONS; index += 1) {
+      mockCreate(`s${index}`);
+      await store.getState().startSession({ workdir: `/wd${index}` });
+      await store.getState().send("materialize");
+      stream.apply!(
+        ev("finished", {}, {
+          session_id: `s${index}`,
+          turn_id: "turn-1",
+          seq: 1,
+        }),
+      );
+    }
+    for (let index = 0; index < MAX_RUNNING; index += 1) {
+      await store.getState().activateSession(`s${index}`);
+      await store.getState().send("run");
+    }
+
+    await store.getState().refreshHistory("/wd0");
+    await store.getState().activateSession(`s${MAX_RUNNING}`);
+    await store.getState().send("sixth");
+
+    expect(apiGetEventStream).toHaveBeenCalledTimes(1);
+    expect(listHistory).toHaveBeenCalledWith("/wd0", { limit: 20 });
+    expect(store.getState().sessions[`s${MAX_RUNNING}`].transportError).toMatch(
+      /in-turn/,
+    );
   });
 });

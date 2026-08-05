@@ -106,6 +106,7 @@ function ToolBlockView({
 }: ToolBlockProps) {
   const done = item.status === "done";
   const failed = item.status === "failed";
+  const missing = item.status === "missing";
   const codexCommand = item.toolName === "command";
   const codexMcp = showCodexMcpPresentation && isCodexMcp(item);
   const codexNative = codexCommand || codexMcp;
@@ -152,8 +153,11 @@ function ToolBlockView({
       />
       {stat !== null && <StatPill stat={stat} />}
       {lines !== null && <span className="cc-tool__stat">{lines} lines</span>}
-      {!done && !failed && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
+      {!done && !failed && !missing && (isDiffTool(item.toolName) || item.toolName === "Read" || codexNative) && (
         <span className="cc-tool__spinner" aria-label="进行中" />
+      )}
+      {missing && (
+        <span className="cc-tool__exit" aria-label="结果事件缺失">结果事件缺失</span>
       )}
       {failed && typeof item.exitCode === "number" && (
         <span className="cc-tool__exit">exit {item.exitCode}</span>
@@ -177,7 +181,7 @@ function ToolBlockView({
           {seconds && <span className="cc-tool__elapsed">{seconds}</span>}
         </span>
       )}
-      {!done && !failed && seconds && (
+      {!done && !failed && !missing && seconds && (
         <span className="cc-tool__elapsed cc-tool__elapsed--running">{seconds}</span>
       )}
       {done && codexNative && <span className="cc-tool__sr-only" aria-label="完成">完成</span>}

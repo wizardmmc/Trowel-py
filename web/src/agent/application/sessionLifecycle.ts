@@ -11,7 +11,7 @@ interface SessionLifecycleOptions {
   readonly activeWorkdir: string | null;
   readonly activeConnected: boolean;
   readonly activeTurnCount: number;
-  readonly activeHasAbort: boolean;
+  readonly activeRunning: boolean;
   readonly activeSid: string | null;
   readonly refreshHistory: (workdir: string) => Promise<void>;
   readonly loadHistoryIntoView: () => Promise<void>;
@@ -22,7 +22,7 @@ export function useSessionLifecycle({
   activeWorkdir,
   activeConnected,
   activeTurnCount,
-  activeHasAbort,
+  activeRunning,
   activeSid,
   refreshHistory,
   loadHistoryIntoView,
@@ -63,7 +63,7 @@ export function useSessionLifecycle({
       activeSid &&
       activeConnected &&
       activeTurnCount === 0 &&
-      !activeHasAbort
+      !activeRunning
     ) {
       void loadHistoryIntoView();
     }

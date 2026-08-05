@@ -11,6 +11,7 @@ import {
   shell,
   Tray,
   type BrowserWindow,
+  type Session,
 } from "electron";
 import {
   applicationMenuTemplate,
@@ -66,11 +67,19 @@ const singleInstanceSmoke =
   process.env.TROWEL_DESKTOP_SINGLE_INSTANCE_SMOKE === "1";
 const rendererCrashSmoke =
   process.env.TROWEL_DESKTOP_RENDERER_CRASH_SMOKE === "1";
+const agentTransportSmoke =
+  process.env.TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE === "1";
 const serviceDescriptorPath = process.env.TROWEL_DESKTOP_SERVICE_FILE;
 
 configureSafeStorageForSmoke(
   app.commandLine,
-  rendererSmoke || settingsSmoke || diagnosticSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke,
+  rendererSmoke ||
+    settingsSmoke ||
+    diagnosticSmoke ||
+    residencySmoke ||
+    singleInstanceSmoke ||
+    rendererCrashSmoke ||
+    agentTransportSmoke,
 );
 app.setName(PRODUCT_NAME);
 
@@ -131,6 +140,9 @@ async function startDesktopApplication(): Promise<void> {
 
   await app.whenReady();
   await configureRendererSession(session.defaultSession);
+  const agentStreamObservation = agentTransportSmoke
+    ? observeAgentStreams(session.defaultSession)
+    : null;
   let mainWindow: BrowserWindow | null = null;
   let removeIpcHandlers: (() => void) | null = null;
   let host: DesktopHost | null = null;
@@ -242,7 +254,14 @@ async function startDesktopApplication(): Promise<void> {
       });
     const runRendererCrashSmoke =
       rendererCrashSmoke && !rendererCrashSmokeStarted;
-    if (rendererSmoke || settingsSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke) {
+    if (
+      rendererSmoke ||
+      settingsSmoke ||
+      residencySmoke ||
+      singleInstanceSmoke ||
+      rendererCrashSmoke ||
+      agentTransportSmoke
+    ) {
       try {
         await rendererReady;
       } catch (error) {
@@ -273,6 +292,19 @@ async function startDesktopApplication(): Promise<void> {
         } catch (error) {
           process.exitCode = 1;
           console.error("TROWEL_DESKTOP_RESIDENCY_SMOKE_FAILED", error);
+        }
+        app.quit();
+      }
+      if (agentTransportSmoke) {
+        try {
+          if (!agentStreamObservation) {
+            throw new Error("Agent stream observation was not initialized");
+          }
+          await verifyAgentTransportSmoke(window, agentStreamObservation);
+          console.log("TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE_OK");
+        } catch (error) {
+          process.exitCode = 1;
+          console.error("TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE_FAILED", error);
         }
         app.quit();
       }
@@ -676,6 +708,349 @@ async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
   throw new Error(
     `settings renderer did not reach the desktop contract: ${JSON.stringify(lastState)}`,
   );
+}
+
+interface AgentStreamObservation {
+  /** renderer 发起应用级事件流的累计次数。 */
+  eventStarts: number;
+  /** renderer 发起旧 session 级消息流的累计次数。 */
+  messageStarts: number;
+  /** renderer 发起旧 session 级事件流的累计次数。 */
+  sessionEventStarts: number;
+  /** 尚未完成的应用级事件流请求。 */
+  readonly activeEventIds: Set<number>;
+  /** 尚未完成的旧 session 级消息流请求。 */
+  readonly activeMessageIds: Set<number>;
+  /** 尚未完成的旧 session 级事件流请求。 */
+  readonly activeSessionEventIds: Set<number>;
+}
+
+/** 在 Electron 网络栈边界记录 Agent 长连接，不读取请求正文或凭据。 */
+function observeAgentStreams(browserSession: Session): AgentStreamObservation {
+  const observation: AgentStreamObservation = {
+    eventStarts: 0,
+    messageStarts: 0,
+    sessionEventStarts: 0,
+    activeEventIds: new Set<number>(),
+    activeMessageIds: new Set<number>(),
+    activeSessionEventIds: new Set<number>(),
+  };
+  const filter = {
+    urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"],
+  };
+
+  browserSession.webRequest.onBeforeRequest(filter, (details, callback) => {
+    const kind = agentStreamKind(details.url);
+    if (kind === "application_events") {
+      observation.eventStarts += 1;
+      observation.activeEventIds.add(details.id);
+    } else if (kind === "session_events") {
+      observation.sessionEventStarts += 1;
+      observation.activeSessionEventIds.add(details.id);
+    } else if (kind === "messages") {
+      observation.messageStarts += 1;
+      observation.activeMessageIds.add(details.id);
+    }
+    callback({ cancel: false });
+  });
+  const markFinished = (details: { readonly id: number; readonly url: string }) => {
+    const kind = agentStreamKind(details.url);
+    if (kind === "application_events") {
+      observation.activeEventIds.delete(details.id);
+    } else if (kind === "session_events") {
+      observation.activeSessionEventIds.delete(details.id);
+    } else if (kind === "messages") {
+      observation.activeMessageIds.delete(details.id);
+    }
+  };
+  browserSession.webRequest.onCompleted(filter, markFinished);
+  browserSession.webRequest.onErrorOccurred(filter, markFinished);
+  return observation;
+}
+
+/** 把网络请求路径归类为新应用流、旧 session 流或普通请求。 */
+function agentStreamKind(
+  url: string,
+): "application_events" | "session_events" | "messages" | null {
+  const pathname = new URL(url).pathname;
+  if (pathname === "/api/agent/events") return "application_events";
+  if (
+    pathname.startsWith("/api/agent/sessions/") &&
+    pathname.endsWith("/events")
+  ) {
+    return "session_events";
+  }
+  if (
+    pathname.startsWith("/api/agent/sessions/") &&
+    pathname.endsWith("/messages")
+  ) {
+    return "messages";
+  }
+  return null;
+}
+
+/**
+ * 从真实 Electron renderer 穿过 Chromium HTTP/1.1 栈验证单 SSE 与 20/5 容量。
+ *
+ * 所有会话都使用隔离目录和只保持进程存活的可控 runtime。返回结果只含计数和耗时，
+ * 不把临时 session ID、工作目录或输入正文写入日志。
+ */
+async function verifyAgentTransportSmoke(
+  window: BrowserWindow,
+  observation: AgentStreamObservation,
+): Promise<void> {
+  const result = (await window.webContents.executeJavaScript(
+    `(async () => {
+      const workdir = ${JSON.stringify(projectRoot)};
+      const context = await window.trowelDesktop.getContext();
+      const authHeaders = { Authorization: "Bearer " + context.transport.credential };
+      const api = async (path, options = {}, timeoutMs = 3000) => {
+        const headers = { ...authHeaders, ...(options.headers || {}) };
+        return fetch(context.transport.baseUrl + path, {
+          ...options,
+          headers,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      };
+      const json = async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error("request returned " + response.status);
+        return body.data;
+      };
+      const waitUntil = async (read, accept, label, timeoutMs = 8000) => {
+        const deadline = Date.now() + timeoutMs;
+        let value;
+        while (Date.now() < deadline) {
+          value = await read();
+          if (accept(value)) return value;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        throw new Error(
+          "condition timed out: " + label + "; last=" + JSON.stringify(value),
+        );
+      };
+      const createBody = JSON.stringify({
+        runtime: "claude_code",
+        workdir,
+        permission_mode: "bypassPermissions",
+        memory_enabled: false,
+        profile_enabled: false,
+        self_enabled: false,
+      });
+      const sessions = await Promise.all(
+        Array.from({ length: 20 }, async () => {
+          const response = await api("/api/agent/sessions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Trowel-Request-Id": crypto.randomUUID(),
+            },
+            body: createBody,
+          });
+          return json(response);
+        }),
+      );
+      await Promise.all(
+        sessions.map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/title", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "Smoke" }),
+          }).then(json),
+        ),
+      );
+      const turn = (sessionId, text) =>
+        api("/api/agent/sessions/" + sessionId + "/turns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        }, 5000);
+      const active = () =>
+        api("/api/agent/sessions/active").then(json).then((data) => data.sessions);
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { count: rows.length };
+        },
+        (facts) => facts.count === 20,
+        "twenty registered sessions",
+      );
+      for (let offset = 0; offset < sessions.length; offset += 5) {
+        const warmed = await Promise.all(
+          sessions.slice(offset, offset + 5).map((session) =>
+            turn(session.session_id, "warm"),
+          ),
+        );
+        if (warmed.some((response) => !response.ok)) {
+          throw new Error("session warm-up was not accepted");
+        }
+        await waitUntil(
+          async () => {
+            const rows = await active();
+            return { running: rows.filter((row) => row.running).length };
+          },
+          (facts) => facts.running === 0,
+          "warm-up batch completed",
+        );
+      }
+      const connectedFacts = await waitUntil(
+        async () => {
+          const rows = await active();
+          return {
+            count: rows.length,
+            connected: rows.filter((row) => row.connected).length,
+          };
+        },
+        (facts) => facts.count === 20 && facts.connected === 20,
+        "twenty connected sessions",
+      );
+      document.querySelector('button[aria-label="Agent"]')?.click();
+      window.dispatchEvent(new Event("focus"));
+      const rendered = await waitUntil(
+        async () => document.querySelectorAll(".cc-multibar__item").length,
+        (count) => count >= 7,
+        "at least seven rendered sessions",
+      );
+
+      const firstFive = sessions.slice(0, 5);
+      const accepted = await Promise.all(
+        firstFive.map((session) => turn(session.session_id, "hold")),
+      );
+      if (accepted.some((response) => response.status !== 200)) {
+        throw new Error("five turns were not accepted");
+      }
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 5,
+        "five running sessions",
+      );
+
+      const sixthStartedAt = performance.now();
+      const sixth = await turn(sessions[5].session_id, "hold");
+      const sixthElapsedMs = performance.now() - sixthStartedAt;
+      if (sixth.status !== 409 || sixthElapsedMs >= 2000) {
+        throw new Error("sixth turn did not receive a bounded capacity rejection");
+      }
+      const overflowStartedAt = performance.now();
+      const overflow = await api("/api/agent/sessions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Trowel-Request-Id": crypto.randomUUID(),
+        },
+        body: createBody,
+      });
+      const overflowElapsedMs = performance.now() - overflowStartedAt;
+      if (overflow.status !== 409 || overflowElapsedMs >= 2000) {
+        throw new Error("twenty-first session did not receive a bounded capacity rejection");
+      }
+
+      const readsStartedAt = performance.now();
+      const reads = await Promise.all([
+        api("/api/agent/session-defaults"),
+        ...sessions.slice(0, 6).map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/history"),
+        ),
+      ]);
+      const readsElapsedMs = performance.now() - readsStartedAt;
+      if (reads.some((response) => !response.ok) || readsElapsedMs >= 2000) {
+        throw new Error("seven concurrent reads exceeded the renderer budget");
+      }
+
+      await Promise.all(
+        firstFive.map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/interrupt", {
+            method: "POST",
+          }, 8000).then(json),
+        ),
+      );
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 0,
+        "interrupt released running capacity",
+      );
+      const replacement = await turn(sessions[5].session_id, "hold");
+      if (!replacement.ok) throw new Error("capacity was not released after interrupt");
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 1,
+        "replacement turn running",
+      );
+
+      const closed = await Promise.all(
+        sessions.map((session) =>
+          api("/api/agent/sessions/" + session.session_id, {
+            method: "DELETE",
+          }, 12000),
+        ),
+      );
+      if (closed.some((response) => !response.ok)) {
+        throw new Error("session cleanup failed");
+      }
+      await waitUntil(
+        async () => ({ count: (await active()).length }),
+        (facts) => facts.count === 0,
+        "all sessions closed",
+      );
+      return {
+        connected: connectedFacts.connected,
+        rendered,
+        running: firstFive.length,
+        reads: reads.length,
+        sixthElapsedMs,
+        overflowElapsedMs,
+        readsElapsedMs,
+      };
+    })()`,
+    true,
+  )) as {
+    readonly connected: number;
+    readonly rendered: number;
+    readonly running: number;
+    readonly reads: number;
+    readonly sixthElapsedMs: number;
+    readonly overflowElapsedMs: number;
+    readonly readsElapsedMs: number;
+  };
+
+  if (
+    result.connected !== 20 ||
+    result.rendered < 7 ||
+    result.running !== 5 ||
+    result.reads !== 7 ||
+    observation.eventStarts < 1 ||
+    observation.activeEventIds.size !== 1 ||
+    observation.sessionEventStarts !== 0 ||
+    observation.activeSessionEventIds.size !== 0 ||
+    observation.messageStarts !== 0 ||
+    observation.activeMessageIds.size !== 0
+  ) {
+    throw new Error(
+      `Agent transport facts did not match the 20/5 single-stream contract: ${JSON.stringify(
+        {
+          connected: result.connected,
+          rendered: result.rendered,
+          running: result.running,
+          reads: result.reads,
+          eventStarts: observation.eventStarts,
+          activeEvents: observation.activeEventIds.size,
+          sessionEventStarts: observation.sessionEventStarts,
+          activeSessionEvents: observation.activeSessionEventIds.size,
+          messageStarts: observation.messageStarts,
+          activeMessages: observation.activeMessageIds.size,
+        },
+      )}`,
+    );
+  }
 }
 
 async function verifyTelemetrySmoke(host: DesktopHost): Promise<void> {

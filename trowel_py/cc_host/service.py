@@ -289,6 +289,7 @@ class CCHost:
         self._session_start_turn_id = uuid.uuid4().hex
         self._session_start_saved = False
         self._turn_count = 0
+        self._reserved_turn_id: str | None = None
         # Workflow 不写 stdout 且可能跨 turn，watcher 必须跨轮读取磁盘状态。
         self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
         self._bg_tracker = BackgroundActivityTracker()
@@ -791,14 +792,38 @@ class CCHost:
         """结束当前 CC 子进程，使 revert 后的下一轮从截断的 JSONL 恢复。"""
         await self._kill()
 
-    async def _prepare_checkpoint(self) -> tuple[str, bool]:
+    def reserve_turn_id(self) -> str:
+        """为下一次 ``send`` 预留逻辑 turn ID，供接收响应和首帧共用。"""
+
+        if self._reserved_turn_id is not None:
+            raise RuntimeError("next Claude Code turn already has a reserved ID")
+        if (
+            self._turn_count == 0
+            and checkpoint.is_enabled()
+            and checkpoint.is_git_repo(self.workdir)
+        ):
+            turn_id = self._session_start_turn_id
+        else:
+            turn_id = uuid.uuid4().hex
+        self._reserved_turn_id = turn_id
+        return turn_id
+
+    def cancel_reserved_turn(self, turn_id: str) -> None:
+        """撤销尚未交给 ``send`` 的预留 ID。"""
+
+        if self._reserved_turn_id == turn_id:
+            self._reserved_turn_id = None
+
+    async def _prepare_checkpoint(
+        self, reserved_turn_id: str | None = None
+    ) -> tuple[str, bool]:
         """Git 工作区首轮复用启动 checkpoint，后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
         if not checkpoint.is_enabled() or not checkpoint.is_git_repo(self.workdir):
-            return uuid.uuid4().hex, False
+            return reserved_turn_id or uuid.uuid4().hex, False
         if self._turn_count == 1:
-            return self._session_start_turn_id, True
-        turn_id = uuid.uuid4().hex
+            return reserved_turn_id or self._session_start_turn_id, True
+        turn_id = reserved_turn_id or uuid.uuid4().hex
         cc_sid = self._cc_session_id
         if not cc_sid:
             return turn_id, False
@@ -979,6 +1004,8 @@ class CCHost:
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
         """处理会话输入；SendText 独占 stdout 直到逻辑 turn 结束。"""
+        reserved_turn_id = self._reserved_turn_id
+        self._reserved_turn_id = None
         action = classify_input(text, self.workdir)
         # 每个子进程只能有一个 stdout reader；控制命令不写用户消息，因此不受此门禁。
         if self.running and isinstance(action, SendText):
@@ -1029,7 +1056,7 @@ class CCHost:
 
         self.running = True
         payload = _user_msg(action.text)
-        turn_id, revertible = await self._prepare_checkpoint()
+        turn_id, revertible = await self._prepare_checkpoint(reserved_turn_id)
         execution = _TurnExecution(turn_id=turn_id)
         self._active_turn = execution
         yield TurnStartEvent(

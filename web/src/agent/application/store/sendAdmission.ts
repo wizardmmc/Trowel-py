@@ -1,7 +1,12 @@
 /** 原子执行会话发送准入，并在通过时写入乐观 turn。 */
 
 import type { Turn } from "../../domain/reducer";
-import type { PerSessionState } from "./sessionState";
+import {
+  CLEARED_TRANSPORT_ISSUE,
+  isRootTurnInFlight,
+  transportIssueFromMessage,
+  type PerSessionState,
+} from "./sessionState";
 
 export const MAX_RUNNING = 5;
 export const MAX_CONNECTIONS = 20;
@@ -22,9 +27,20 @@ export function admitSessionSend(
   abort: AbortController,
 ): SendAdmission {
   const session = sessions[sid];
-  if (!session || session.abort) {
+  if (!session) {
     return { accepted: false, sessions };
   }
+  if (session.resourceState !== "connected") {
+    return rejectWithError(
+      sessions,
+      sid,
+      session,
+      session.resourceState === "needs_reconcile"
+        ? "会话资源仍待对账，请先重试关闭或复制诊断"
+        : "会话资源正在关闭，不能启动新 turn",
+    );
+  }
+  if (isRootTurnInFlight(session)) return { accepted: false, sessions };
   if (session.commandPending) {
     return rejectWithError(
       sessions,
@@ -36,7 +52,7 @@ export function admitSessionSend(
 
   const running = Object.values(sessions).filter(
     (candidate) =>
-      candidate.sessionKind !== "delegate" && candidate.abort !== null,
+      candidate.sessionKind !== "delegate" && isRootTurnInFlight(candidate),
   ).length;
   if (running >= MAX_RUNNING) {
     return rejectWithError(
@@ -73,9 +89,12 @@ export function admitSessionSend(
         turns: [...session.turns, turn],
         phase: "awaiting_first",
         meta: { ...session.meta, lastTurnTokens: null },
-        transportError: null,
+        ...CLEARED_TRANSPORT_ISSUE,
         abort,
         connected: true,
+        resourceState: "connected",
+        turnState: "starting",
+        currentTurnId: null,
       },
     },
   };
@@ -91,7 +110,7 @@ function rejectWithError(
     accepted: false,
     sessions: {
       ...sessions,
-      [sid]: { ...session, transportError },
+      [sid]: { ...session, ...transportIssueFromMessage(transportError) },
     },
   };
 }

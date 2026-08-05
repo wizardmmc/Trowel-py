@@ -1,7 +1,9 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from tests.agent_host.hub._support import FakeCodexManager
@@ -12,6 +14,7 @@ from tests.agent_host.routes.support import (
     parse_sse,
 )
 from trowel_py.agent_host.hub import SessionHub
+from trowel_py.agent_host import routes
 
 
 def test_post_interrupt(client: TestClient, workdir: Path) -> None:
@@ -20,6 +23,67 @@ def test_post_interrupt(client: TestClient, workdir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["interrupted"] is True
+
+
+def test_turn_start_timeout_returns_structured_unknown_acceptance(
+    client: TestClient,
+    hub: SessionHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """后端预算耗尽时明确表示接收状态未知，不能诱导 renderer 重发。"""
+
+    async def slow_start(_session_id: str, _text: str) -> str:
+        """模拟 runtime 接收请求持续挂起。"""
+
+        await asyncio.sleep(1)
+        return "unreachable"
+
+    monkeypatch.setattr(hub, "start_turn", slow_start)
+    monkeypatch.setattr(routes, "TURN_ACCEPT_TIMEOUT_S", 0.001)
+
+    response = client.post(
+        "/api/agent/sessions/slow/turns",
+        json={"text": "redacted-in-test"},
+    )
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "turn_acceptance_unknown"
+    assert response.json()["meta"] == {
+        "operation": "turn_start",
+        "timeout_ms": 1,
+    }
+
+
+async def test_application_event_route_starts_with_ready_and_multiplexes(
+    hub: SessionHub,
+) -> None:
+    """应用 SSE 首帧报告 generation，后续普通帧保留 session 路由身份。"""
+
+    app = FastAPI()
+    request = Request({"type": "http", "app": app, "headers": []})
+    response = await routes.stream_application_agent_events(request, hub)
+    iterator = response.body_iterator
+
+    ready = await anext(iterator)
+    event = {
+        "schema": "agent-event-v1",
+        "session_id": "session-redacted",
+        "runtime": "claude_code",
+        "seq": 1,
+        "type": "text",
+        "thread_id": None,
+        "turn_id": "turn-redacted",
+        "item_id": None,
+        "payload": {"text": "fixture"},
+    }
+    hub._application_events.publish(event)
+    delivered = await anext(iterator)
+    await iterator.aclose()
+
+    assert ready.startswith(b"event: ready\n")
+    assert hub.live_generation.encode() in ready
+    assert delivered.startswith(b"data: ")
+    assert b'"session_id": "session-redacted"' in delivered
 
 
 def test_post_answer_codex_request_routes_by_session(

@@ -14,7 +14,7 @@ vi.mock("../agent/transport/api", () => ({
     Promise.resolve({ display_title: title, title_source: "manual" }),
   ),
   listAgentRequests: vi.fn().mockResolvedValue([]),
-  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+  agentEventsUrl: () => "/api/agent/events",
 }));
 
 vi.mock("../agent/transport/stream", () => ({
@@ -54,6 +54,11 @@ function makeSession(over: Partial<PerSessionState> & { name?: string }): PerSes
     lastSeq: null,
     needsReplay: false,
     ...over,
+    resourceState: over.resourceState ?? "connected",
+    turnState: over.turnState ?? "idle",
+    liveState: over.liveState ?? "ready",
+    currentTurnId: over.currentTurnId ?? null,
+    stateGeneration: over.stateGeneration ?? 1,
     codexSubagents: over.codexSubagents ?? {},
   };
 }
@@ -191,7 +196,14 @@ describe("MultiSessionBar", () => {
 
   it("shows the running text for an in-turn session", () => {
     setSessions(
-      { s1: makeSession({ name: "x", abort: new AbortController() }) },
+      {
+        s1: makeSession({
+          name: "x",
+          abort: new AbortController(),
+          turnState: "running",
+          currentTurnId: "turn-1",
+        }),
+      },
       "s1",
     );
     render(<MultiSessionBar onNewSameWorkdir={() => {}} onChangeWorkdir={() => {}} />);
@@ -213,6 +225,8 @@ describe("MultiSessionBar", () => {
         s1: makeSession({
           name: "x",
           abort: new AbortController(),
+          turnState: "running",
+          currentTurnId: "turn-1",
           phase: "background_waiting",
         }),
       },
@@ -314,7 +328,12 @@ describe("MultiSessionBar", () => {
   it("footer shows running + connection counts", () => {
     setSessions(
       {
-        s1: makeSession({ name: "a", abort: new AbortController() }),
+        s1: makeSession({
+          name: "a",
+          abort: new AbortController(),
+          turnState: "running",
+          currentTurnId: "turn-1",
+        }),
         s2: makeSession({ name: "b" }),
       },
       "s1",

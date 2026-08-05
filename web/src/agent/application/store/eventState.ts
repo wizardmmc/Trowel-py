@@ -4,44 +4,47 @@ import type { AgentEvent } from "../../transport/agentEvent";
 import { agentEventToTrowel } from "../../transport/agentEvent";
 import { reduceEvent } from "../../domain/reducer";
 import type { PerSessionState } from "./sessionState";
-import { reduceCodexSubagentEvent } from "./codexSubagents";
+import {
+  isUnknownCodexChildEvent,
+  reduceCodexSubagentEvent,
+} from "./codexSubagents";
 
 export type AgentEventReduction =
   | { readonly kind: "duplicate" }
   | { readonly kind: "session_exited" }
   | { readonly kind: "updated"; readonly session: PerSessionState };
 
-interface AgentEventReductionOptions {
-  readonly acceptRequestErrorSeqReset?: boolean;
-}
-
 /** 把一个带 seq 的统一事件归约到单个会话，不处理 Zustand 字典编排。 */
 export function reduceAgentEvent(
   current: PerSessionState,
   event: AgentEvent,
-  options: AgentEventReductionOptions = {},
 ): AgentEventReduction {
-  const activeTurn = current.turns.at(-1)?.status === "active";
-  const requestErrorSeqReset =
-    options.acceptRequestErrorSeqReset === true &&
-    activeTurn &&
-    event.type === "error" &&
-    current.lastSeq !== null &&
-    event.seq <= current.lastSeq;
   if (
     current.lastSeq !== null &&
-    event.seq <= current.lastSeq &&
-    !requestErrorSeqReset
+    event.seq <= current.lastSeq
   ) {
     return { kind: "duplicate" };
   }
-  const baseline = requestErrorSeqReset ? { ...current, lastSeq: null } : current;
+  const baseline = current;
   const gapped =
     baseline.lastSeq !== null && event.seq > baseline.lastSeq + 1;
 
   // Claude Code 进程退出会删除连接行；Codex host_exited 仍保留绑定。
   if (event.type === "session_exited") {
     return { kind: "session_exited" };
+  }
+
+  if (isUnknownCodexChildEvent(baseline, event)) {
+    return {
+      kind: "updated",
+      session: {
+        ...baseline,
+        lastSeq: event.seq,
+        needsReplay: true,
+        liveState: "gapped",
+        turnState: "unknown",
+      },
+    };
   }
 
   const childReduced = reduceCodexSubagentEvent(baseline, event);
@@ -52,6 +55,28 @@ export function reduceAgentEvent(
         ...childReduced,
         lastSeq: event.seq,
         needsReplay: baseline.needsReplay || gapped,
+        liveState: gapped ? "gapped" : childReduced.liveState,
+        turnState: gapped ? "unknown" : childReduced.turnState,
+      },
+    };
+  }
+
+  const rootTerminal = isRootTerminal(baseline, event);
+  const terminalMatches =
+    !rootTerminal ||
+    (!baseline.needsReplay &&
+      !gapped &&
+      event.turn_id !== null &&
+      event.turn_id === baseline.currentTurnId);
+  if (rootTerminal && !terminalMatches) {
+    return {
+      kind: "updated",
+      session: {
+        ...baseline,
+        lastSeq: event.seq,
+        needsReplay: true,
+        liveState: "gapped",
+        turnState: "unknown",
       },
     };
   }
@@ -63,7 +88,46 @@ export function reduceAgentEvent(
     ...reduced,
     lastSeq: event.seq,
     needsReplay: baseline.needsReplay || gapped,
+    liveState: gapped ? "gapped" : baseline.liveState,
+    turnState: gapped ? "unknown" : baseline.turnState,
   };
+
+  if (event.type === "turn_start") {
+    next = {
+      ...next,
+      currentTurnId: event.turn_id,
+      turnState: event.turn_id === null ? "unknown" : "running",
+      abort: next.abort ?? new AbortController(),
+      commandPending: null,
+    };
+  } else if (rootTerminal) {
+    const terminalState = {
+      finished: "completed",
+      interrupted: "interrupted",
+      error: "failed",
+    } as const;
+    next = {
+      ...next,
+      turnState: terminalState[event.type],
+      abort: null,
+      commandPending: null,
+    };
+  } else if (
+    event.type === "elicit_request" ||
+    (event.type === "approval_request" && event.payload.status === "pending")
+  ) {
+    next = { ...next, turnState: "awaiting_input" };
+  } else if (
+    event.type === "host_status" &&
+    event.payload.status === "host_exited"
+  ) {
+    next = {
+      ...next,
+      turnState: "failed",
+      abort: null,
+      commandPending: null,
+    };
+  }
 
   const effort = (flat as { effort?: string | null }).effort;
   if (event.type === "model_changed" && effort != null) {
@@ -102,6 +166,24 @@ export function reduceAgentEvent(
   }
 
   return { kind: "updated", session: next };
+}
+
+function isRootTerminal(
+  session: PerSessionState,
+  event: AgentEvent,
+): event is AgentEvent & { readonly type: "finished" | "interrupted" | "error" } {
+  if (
+    event.type !== "finished" &&
+    event.type !== "interrupted" &&
+    event.type !== "error"
+  ) {
+    return false;
+  }
+  if (event.runtime === "claude_code") return event.thread_id === null;
+  return (
+    session.nativeSessionId !== null &&
+    event.thread_id === session.nativeSessionId
+  );
 }
 
 function codexPermissionLabel(

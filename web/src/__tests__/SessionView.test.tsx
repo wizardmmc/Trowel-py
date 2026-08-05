@@ -55,11 +55,12 @@ vi.mock("../agent/transport/api", () => ({
   setCodexGoal: vi.fn(),
   clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
   startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
+  startAgentTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   updateAgentSessionSettings: vi.fn(),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
-  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+  agentEventsUrl: () => "/api/agent/events",
 }));
 
 vi.mock("../agent/transport/stream", () => ({
@@ -68,9 +69,9 @@ vi.mock("../agent/transport/stream", () => ({
     (
       _url: string,
       _apply: unknown,
-      options?: { onOpen?: () => void },
+      options?: { onOpen?: (generation: string | null) => void },
     ) => {
-      options?.onOpen?.();
+      options?.onOpen?.("generation-1");
       return new Promise<void>(() => {});
     },
   ),
@@ -104,6 +105,15 @@ import {
   saveNewSessionPreferences,
 } from "../components/cc/newSessionPreferences";
 import { listSlashItems } from "../api/cc";
+
+/** 创建由测试控制完成顺序的 Promise。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -407,6 +417,7 @@ describe("SessionView", () => {
           workdir: "/wd",
           resume_from: "older-thread",
         }),
+        expect.any(String),
       );
     });
   });
@@ -493,6 +504,51 @@ describe("SessionView", () => {
     expect(vi.mocked(createSession)).not.toHaveBeenCalled();
   });
 
+  it("double-clicking new session reuses one defaults preparation", async () => {
+    const defaults = deferred<null>();
+    vi.mocked(getAgentSessionDefaults).mockReturnValueOnce(defaults.promise);
+    render(<SessionView workdir="/wd" />);
+
+    const open = screen.getByRole("button", { name: "同目录新开" });
+    fireEvent.click(open);
+    fireEvent.click(open);
+
+    expect(vi.mocked(getAgentSessionDefaults)).toHaveBeenCalledOnce();
+    expect(open).toBeDisabled();
+    defaults.resolve(null);
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+  });
+
+  it("ignores a late defaults response for an older workdir request", async () => {
+    const older = deferred<null>();
+    const newer = deferred<null>();
+    vi.mocked(getAgentSessionDefaults)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const { rerender } = render(
+      <SessionView
+        workdir=""
+        newSessionWorkdirRequest={{ id: 1, workdir: "/older" }}
+      />,
+    );
+    await waitFor(() => expect(getAgentSessionDefaults).toHaveBeenCalledOnce());
+    rerender(
+      <SessionView
+        workdir=""
+        newSessionWorkdirRequest={{ id: 2, workdir: "/newer" }}
+      />,
+    );
+    await waitFor(() => expect(getAgentSessionDefaults).toHaveBeenCalledTimes(2));
+
+    newer.resolve(null);
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+    older.resolve(null);
+    await Promise.resolve();
+
+    expect(screen.getByTitle("/newer")).toBeInTheDocument();
+    expect(screen.queryByTitle("/older")).toBeNull();
+  });
+
   it("挂载时只恢复 live session 列表，不自动创建新 session", async () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [
@@ -576,6 +632,11 @@ describe("SessionView", () => {
           transportError: null,
           abort: null,
           connected: true,
+          resourceState: "connected",
+          turnState: "idle",
+          liveState: "ready",
+          currentTurnId: null,
+          stateGeneration: 1,
           memoryEnabled: true,
           profileEnabled: true,
           runtime: "codex",

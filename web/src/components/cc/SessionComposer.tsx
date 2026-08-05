@@ -135,6 +135,7 @@ export function SessionComposer({
       streaming={streaming}
       disabled={
         !activeSid ||
+        active?.resourceState !== "connected" ||
         phase === "awaiting_input" ||
         active?.commandPending != null
       }
