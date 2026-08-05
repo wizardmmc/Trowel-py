@@ -12,6 +12,10 @@ export async function readHttpError(
       for (const key of ["error", "detail"] as const) {
         const value = payload[key];
         if (typeof value === "string" && value.trim()) return value;
+        if (value && typeof value === "object") {
+          const message = (value as Record<string, unknown>).message;
+          if (typeof message === "string" && message.trim()) return message;
+        }
       }
     }
   } catch {

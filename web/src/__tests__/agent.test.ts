@@ -195,7 +195,7 @@ describe("api/agent", () => {
     );
   });
 
-  it("listAgentModels releases desktop startup when the optional catalog hangs", async () => {
+  it("listAgentModels waits 30 seconds before the renderer fallback", async () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) =>
       new Promise((_resolve, reject) => {
@@ -205,13 +205,47 @@ describe("api/agent", () => {
 
     try {
       const request = listAgentModels();
-      const rejection = expect(request).rejects.toThrow();
-      await vi.advanceTimersByTimeAsync(5_000);
-      await rejection;
-      expect((vi.mocked(globalThis.fetch).mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+      let rejected = false;
+      void request.catch(() => {
+        rejected = true;
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(
+        (vi.mocked(globalThis.fetch).mock.calls[0][1] as RequestInit).signal
+          ?.aborted,
+      ).toBe(false);
+      expect(rejected).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(request).rejects.toThrow(
+        "Codex model catalog request timed out",
+      );
+      expect(
+        (vi.mocked(globalThis.fetch).mock.calls[0][1] as RequestInit).signal
+          ?.aborted,
+      ).toBe(true);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("listAgentModels surfaces the backend timeout message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: false,
+          data: null,
+          error: {
+            code: "request_timeout",
+            message: "Codex model catalog request timed out",
+          },
+        }),
+        { status: 504 },
+      ),
+    );
+
+    await expect(listAgentModels()).rejects.toThrow(
+      "Codex model catalog request timed out",
+    );
   });
 
   it("updateAgentSessionSettings PATCHes model and effort together", async () => {
