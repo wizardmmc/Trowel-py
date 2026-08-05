@@ -23,6 +23,8 @@ import {
   setCodexGoal,
   clearCodexGoal,
   startCodexTurn,
+  startAgentTurn,
+  AgentTransportError,
   updateAgentSessionSettings,
 } from "../agent/transport";
 
@@ -42,16 +44,21 @@ describe("api/agent", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockEnvelope({ session_id: "s1", runtime: "codex" }));
 
-    const session = await createAgentSession({
-      runtime: "codex",
-      workdir: "/tmp/proj",
-      model: "gpt-5.6-sol",
-    });
+    const session = await createAgentSession(
+      {
+        runtime: "codex",
+        workdir: "/tmp/proj",
+        model: "gpt-5.6-sol",
+      },
+      "stable-create-id",
+    );
     expect(session.session_id).toBe("s1");
 
     const [url, init] = spy.mock.calls[0];
     expect(url).toBe("/api/agent/sessions");
     expect((init as RequestInit).method).toBe("POST");
+    expect(new Headers((init as RequestInit).headers).get("X-Trowel-Request-Id"))
+      .toBe("stable-create-id");
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       runtime: "codex",
       workdir: "/tmp/proj",
@@ -151,6 +158,53 @@ describe("api/agent", () => {
     const [url, init] = spy.mock.calls[0];
     expect(url).toBe("/api/agent/sessions/s1/interrupt");
     expect((init as RequestInit).method).toBe("POST");
+  });
+
+  it("turn start timeout reports acceptance as unknown", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      }),
+    );
+    try {
+      const request = startAgentTurn("s1", "hello");
+      void request.catch(() => {});
+      await vi.advanceTimersByTimeAsync(30_000);
+      const error = await request.catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(AgentTransportError);
+      expect((error as AgentTransportError).problem).toMatchObject({
+        code: "turn_acceptance_unknown",
+        operation: "turn_start",
+        budgetMs: 30_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("turn start deadline also covers a stalled response body", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => ({
+      ok: true,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason),
+          );
+        }),
+    }) as Response);
+    try {
+      const request = startAgentTurn("s1", "hello");
+      void request.catch(() => {});
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(request).rejects.toMatchObject({
+        problem: { code: "turn_acceptance_unknown" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("listAgentRuntimes returns the runtime catalog", async () => {
@@ -323,7 +377,7 @@ describe("api/agent", () => {
       .mockResolvedValueOnce(mockEnvelope({ cleared: true }))
       .mockResolvedValueOnce(mockEnvelope({ turn_id: "turn-1" }));
 
-    expect(agentEventsUrl("s1")).toBe("/api/agent/sessions/s1/events");
+    expect(agentEventsUrl()).toBe("/api/agent/events");
     expect((await getCodexGoal("s1"))?.tokensUsed).toBe(7448);
     await setCodexGoal("s1", { objective: "Ship the rail", token_budget: 12000 });
     expect(await clearCodexGoal("s1")).toEqual({ cleared: true });

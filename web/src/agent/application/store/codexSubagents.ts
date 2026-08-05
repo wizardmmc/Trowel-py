@@ -220,6 +220,22 @@ export function reduceCodexSubagentEvent(
   return rootState;
 }
 
+/** 判断 Codex 事件是否声称来自尚未登记 owner 的 child thread。 */
+export function isUnknownCodexChildEvent(
+  session: PerSessionState,
+  event: AgentEvent,
+): boolean {
+  const threadId = event.thread_id;
+  const rootThreadId = session.nativeSessionId;
+  return (
+    event.runtime === "codex" &&
+    threadId !== null &&
+    rootThreadId !== null &&
+    threadId !== rootThreadId &&
+    session.codexSubagents[threadId] === undefined
+  );
+}
+
 export function replayCodexSubagentHistory(
   session: PerSessionState,
   threadId: string,

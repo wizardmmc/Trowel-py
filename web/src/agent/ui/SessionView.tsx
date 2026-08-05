@@ -24,6 +24,7 @@ import type {
 } from "../application";
 import {
   getAgentSessionDefaults,
+  isRootTurnInFlight,
   useCodexCommandRoster,
   useAgentStore,
   useAgentStoreFrameSelector,
@@ -61,15 +62,6 @@ interface SessionViewProps {
   readonly onWorkdirActivated?: (workdir: string) => void;
   readonly emptyWorkspaceContent?: ReactNode;
 }
-
-const ACTIVE_PHASES = new Set([
-  "awaiting_first",
-  "thinking",
-  "generating",
-  "tool",
-  "retrying",
-  "compacting",
-]);
 
 const EMPTY_TURNS: readonly Turn[] = [];
 
@@ -123,7 +115,7 @@ function SessionTranscriptPane({
     : null;
   const viewPhase = openedSubagent?.state.phase ?? phase;
   const viewTurns = openedSubagent?.state.turns ?? turns;
-  const streaming = ACTIVE_PHASES.has(phase);
+  const streaming = active ? isRootTurnInFlight(active) : false;
   const viewStreaming = openedSubagent
     ? openedSubagent.status === "started" || openedSubagent.status === "progress"
     : streaming;
@@ -269,6 +261,7 @@ export function SessionView({
     (s) => s.loadCodexSubagentHistory,
   );
   const send = useAgentStore((s) => s.send);
+  const closeSession = useAgentStore((s) => s.closeSession);
   const interrupt = useAgentStore((s) => s.interrupt);
   const answerElicit = useAgentStore((s) => s.answerElicit);
   const cancelElicit = useAgentStore((s) => s.cancelElicit);
@@ -303,6 +296,11 @@ export function SessionView({
   const [reviewError, setReviewError] = useState<string | null>(null);
   const reviewRequestRef = useRef<symbol | null>(null);
   const handledNewSessionRequestRef = useRef<number | null>(null);
+  const newSessionPreparationGenerationRef = useRef(0);
+  const pendingNewSessionPreparationRef = useRef<{
+    readonly workdir: string;
+    readonly promise: Promise<void>;
+  } | null>(null);
   const [commandNotice, setCommandNotice] = useState<{
     readonly sessionId: string;
     readonly level: "loading" | "success" | "error";
@@ -332,6 +330,7 @@ export function SessionView({
     activePresentation?.composerActions.slashSource === "codex",
   );
   const [creating, setCreating] = useState(false);
+  const [preparingNewSession, setPreparingNewSession] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
   const jumpToBottomRef = useRef<(() => void) | null>(null);
@@ -342,7 +341,7 @@ export function SessionView({
     : null;
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
-  const streaming = ACTIVE_PHASES.has(phase);
+  const streaming = active ? isRootTurnInFlight(active) : false;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
@@ -384,20 +383,42 @@ export function SessionView({
     activeWorkdir: active?.workdir ?? null,
     activeConnected: active?.connected ?? false,
     activeTurnCount,
-    activeHasAbort: Boolean(active?.abort),
+    activeRunning: active ? isRootTurnInFlight(active) : false,
     activeSid,
     refreshHistory,
     loadHistoryIntoView,
   });
 
   /** 读取最近配置并打开指定目录的新会话对话框。 */
-  const prepareNewSession = useCallback(async (targetWorkdir: string) => {
+  const prepareNewSession = useCallback((targetWorkdir: string) => {
+    const existing = pendingNewSessionPreparationRef.current;
+    if (existing?.workdir === targetWorkdir) return existing.promise;
+
+    const generation = ++newSessionPreparationGenerationRef.current;
     setCreateError(null);
-    const latest = await getAgentSessionDefaults().catch(() => null);
-    setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
-    setNewSessionWorkdir(targetWorkdir);
-    setShowNewDialog(true);
+    setPreparingNewSession(true);
+    const promise = (async () => {
+      const latest = await getAgentSessionDefaults().catch(() => null);
+      if (newSessionPreparationGenerationRef.current !== generation) return;
+      setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
+      setNewSessionWorkdir(targetWorkdir);
+      setShowNewDialog(true);
+    })().finally(() => {
+      if (newSessionPreparationGenerationRef.current !== generation) return;
+      pendingNewSessionPreparationRef.current = null;
+      setPreparingNewSession(false);
+    });
+    pendingNewSessionPreparationRef.current = { workdir: targetWorkdir, promise };
+    return promise;
   }, []);
+
+  useEffect(
+    () => () => {
+      newSessionPreparationGenerationRef.current += 1;
+      pendingNewSessionPreparationRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     const request = newSessionWorkdirRequest;
@@ -597,6 +618,7 @@ export function SessionView({
     <div className="cc-3col">
       <MultiSessionBar
         onNewSameWorkdir={() => void handleNewSameWorkdir()}
+        newSessionPreparing={preparingNewSession}
         onChangeWorkdir={() =>
           (onRequestNewWorkdir ?? onRequestChangeWorkdir)?.()
         }
@@ -630,7 +652,13 @@ export function SessionView({
           onNew={() => void handleNewSameWorkdir()}
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
-        <SessionBanners active={active} activeSid={activeSid} />
+        <SessionBanners
+          active={active}
+          activeSid={activeSid}
+          onRetryClose={
+            activeSid ? () => void closeSession(activeSid) : undefined
+          }
+        />
         <SessionTranscriptPane
           activeSid={activeSid}
           openedSubagentId={openedSubagentId}

@@ -240,6 +240,101 @@ async def test_delete_unknown_returns_false(hub: SessionHub):
     assert await hub.delete("nope") is False
 
 
+async def test_cancelled_create_waiter_does_not_cancel_idempotent_operation(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """HTTP waiter 取消后创建继续，重试取得同一 binding，并在 close 后清缓存。"""
+
+    release = asyncio.Event()
+    calls = 0
+
+    async def create_once():
+        """模拟已超过 renderer 预算但仍会成功的后端创建。"""
+
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return hub.create(cc_req(workdir))
+
+    first = asyncio.create_task(
+        hub.coalesce_session_create("slow-create", "same", create_once)
+    )
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    retry = asyncio.create_task(
+        hub.coalesce_session_create("slow-create", "same", create_once)
+    )
+    release.set()
+    binding = await retry
+
+    assert calls == 1
+    assert await hub.delete(binding.session_id) is True
+    assert "slow-create" not in hub._session_create_requests
+
+
+async def test_failed_idempotent_create_can_retry(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """明确失败不会把请求 ID 永久缓存。"""
+
+    async def fail():
+        """模拟创建在提交 binding 前失败。"""
+
+        raise RuntimeError("create failed")
+
+    with pytest.raises(RuntimeError, match="create failed"):
+        await hub.coalesce_session_create("retryable-create", "same", fail)
+    await asyncio.sleep(0)
+
+    binding = await hub.coalesce_session_create(
+        "retryable-create",
+        "same",
+        lambda: _create_binding(hub, workdir),
+    )
+
+    assert binding.session_id
+
+
+async def test_delete_releases_ephemeral_snapshot_state(
+    hub: SessionHub, workdir: Path
+) -> None:
+    """成功删除 binding 后不保留按历史会话增长的 lifecycle 映射。"""
+
+    binding = hub.create(cc_req(workdir))
+    sid = binding.session_id
+    hub._publish_agent_event(
+        sid,
+        {
+            "schema": "agent-event-v1",
+            "session_id": sid,
+            "runtime": "claude_code",
+            "seq": 1,
+            "type": "turn_start",
+            "thread_id": None,
+            "turn_id": "turn-before-close",
+            "item_id": None,
+            "payload": {},
+        },
+    )
+
+    assert await hub.delete(sid) is True
+
+    assert sid not in hub._session_state_generations
+    assert sid not in hub._current_root_turn_ids
+    assert sid not in hub._last_root_turn_states
+    assert sid not in hub._last_event_sequences
+    assert sid not in hub._closing_session_ids
+
+
+async def _create_binding(hub: SessionHub, workdir: Path):
+    """为幂等创建测试返回一个异步创建结果。"""
+
+    return hub.create(cc_req(workdir))
+
+
 async def test_close_result_reports_not_found_without_raising(hub: SessionHub) -> None:
     """显式关闭结果应区分会话本来就不存在。"""
 

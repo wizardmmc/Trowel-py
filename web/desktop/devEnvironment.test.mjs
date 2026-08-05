@@ -33,6 +33,7 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
       TROWEL_APP_INSTANCE_ID: "stable-instance",
       TROWEL_DATA_ROOT: "/stable/data",
       TROWEL_DESKTOP_CREDENTIAL: "stable-secret",
+      TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE: "1",
       TROWEL_DESKTOP_DATA_DIR: "/stable/data",
       TROWEL_DESKTOP_DATA_MODE: "packaged",
       TROWEL_DESKTOP_INSPECTION_ONLY: "1",
@@ -44,6 +45,7 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
       TROWEL_ELECTRON_USER_DATA_DIR: "/stable/electron",
       TROWEL_PROJECT_ROOT: "/stable/project",
       TROWEL_RENDERER_URL: "http://stable.invalid",
+      TROWEL_RUNTIME_DISCOVERY_DISABLED: "1",
       TROWEL_SERVER_PORT: "43123",
     },
     {
@@ -68,6 +70,7 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
     "TROWEL_APP_INSTANCE_ID",
     "TROWEL_DATA_ROOT",
     "TROWEL_DESKTOP_CREDENTIAL",
+    "TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE",
     "TROWEL_DESKTOP_DATA_DIR",
     "TROWEL_DESKTOP_INSPECTION_ONLY",
     "TROWEL_DESKTOP_LOG_DIR",
@@ -75,6 +78,7 @@ it("removes parent Desktop Host ownership while preserving runtime settings", ()
     "TROWEL_DESKTOP_RENDERER_ORIGIN",
     "TROWEL_DESKTOP_SMOKE",
     "TROWEL_ELECTRON_USER_DATA_DIR",
+    "TROWEL_RUNTIME_DISCOVERY_DISABLED",
     "TROWEL_SERVER_PORT",
   ]) {
     expect(environment[name]).toBeUndefined();

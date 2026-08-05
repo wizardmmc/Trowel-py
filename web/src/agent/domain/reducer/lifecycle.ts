@@ -1,7 +1,7 @@
 /** 处理会话开始、模型变化和连接状态对应的 reducer 生命周期。 */
 
 import type { Phase, ReducerState } from "./model";
-import { applyErrorEvent } from "./terminal";
+import { applyErrorEvent, finalizeRunningTools } from "./terminal";
 
 /**
  * 在 live SSE 干净关闭但没有终态事件时结束 active turn。
@@ -62,7 +62,11 @@ const ACTIVE_PHASES: ReadonlySet<Phase> = new Set([
 export function finalizeHistoryForView(state: ReducerState): ReducerState {
   const turns = state.turns.map((turn) =>
     turn.status === "active"
-      ? { ...turn, status: "done" as const }
+      ? {
+          ...turn,
+          status: "done" as const,
+          items: finalizeRunningTools(turn.items),
+        }
       : turn,
   );
   const phase: Phase = ACTIVE_PHASES.has(state.phase) ? "done" : state.phase;

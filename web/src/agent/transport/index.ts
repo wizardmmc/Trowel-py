@@ -2,5 +2,6 @@
 export * from "./agentEvent";
 export * from "./api";
 export * from "./events";
+export * from "./httpError";
 export * from "./stream";
 export * from "./workdirs";

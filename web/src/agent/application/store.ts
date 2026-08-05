@@ -7,7 +7,6 @@ import {
   revertSession as apiRevertSession,
 } from "../../api/cc";
 import {
-  agentMessagesUrl as messagesUrl,
   answerAgentRequest as apiAnswerAgentRequest,
   createAgentSession as apiCreateSession,
   clearCodexGoal as apiClearCodexGoal,
@@ -23,7 +22,7 @@ import {
   renameAgentSessionTitle as apiRenameSessionTitle,
   setCodexGoal as apiSetCodexGoal,
   startCodexReview as apiStartCodexReview,
-  startCodexTurn as apiStartCodexTurn,
+  startAgentTurn as apiStartAgentTurn,
   updateAgentSessionSettings as apiUpdateSessionSettings,
   updateAgentPermissionPreset as apiUpdatePermissionPreset,
   type AgentEventLike,
@@ -36,18 +35,20 @@ import {
   type Runtime,
 } from "../transport/api";
 import type { AgentEvent } from "../transport/agentEvent";
-import { postMessageStream } from "../transport/stream";
+import {
+  agentProblemFromUnknown,
+  type AgentTransportProblem,
+} from "../transport/httpError";
 
+import { nextTurnId, reduceEvent, type Turn } from "../domain/reducer";
 import {
-  endActiveTurnOnStreamClose,
-  nextTurnId,
-  reduceEvent,
-  type Turn,
-} from "../domain/reducer";
-import {
+  CLEARED_TRANSPORT_ISSUE,
   createNewSessionState,
   createReconciledSessionState,
+  isRootTurnInFlight,
   promptSessionTitle,
+  transportIssueFromMessage,
+  transportIssueFromProblem,
   type PerSessionState,
   type StartSessionParams,
 } from "./store/sessionState";
@@ -58,10 +59,7 @@ import { admitSessionSend } from "./store/sendAdmission";
 import { createAgentLiveController } from "./store/agentLive";
 import { replayCodexSubagentHistory } from "./store/codexSubagents";
 
-export type {
-  PerSessionState,
-  StartSessionParams,
-} from "./store/sessionState";
+export type { PerSessionState, StartSessionParams } from "./store/sessionState";
 export { MAX_CONNECTIONS, MAX_RUNNING } from "./store/sendAdmission";
 
 /** 管理多会话字典与 transport；事件状态变化统一交给纯 reducer。 */
@@ -104,25 +102,31 @@ export interface AgentState {
   reset: () => void;
 }
 
-export function createAgentStore() {
+interface AgentStoreOptions {
+  /** 仅用于缩短测试中的实时连接 readiness 预算。 */
+  readonly liveReadinessTimeoutMs?: number;
+}
+
+export function createAgentStore(options: AgentStoreOptions = {}) {
   return create<AgentState>((set, get) => {
     let historyGeneration = 0;
     let historyLoadMorePromise: Promise<void> | null = null;
     let historyLoadMoreToken: symbol | null = null;
     let activeSessionRefreshGeneration = 0;
+    let activeSessionRefreshPromise: Promise<void> | null = null;
+    let activeSessionRefreshFollowUp = false;
     let sessionStartGeneration = 0;
-    function applyTo(
-      sid: string,
-      event: AgentEvent,
-      options: { readonly currentRequest?: boolean } = {},
-    ): boolean {
+    let pendingSessionStart: {
+      readonly key: string;
+      readonly promise: Promise<AgentSession>;
+    } | null = null;
+    const sessionStartRequestIds = new Map<string, string>();
+    function applyTo(sid: string, event: AgentEvent): boolean {
       let applied = false;
       set((state) => {
         const cur = state.sessions[sid];
         if (!cur) return state;
-        const result = reduceAgentEvent(cur, event, {
-          acceptRequestErrorSeqReset: options.currentRequest,
-        });
+        const result = reduceAgentEvent(cur, event);
         if (result.kind === "duplicate") return state;
         applied = true;
         if (result.kind === "session_exited") {
@@ -142,25 +146,85 @@ export function createAgentStore() {
       return applied;
     }
 
-    const agentLive = createAgentLiveController({
-      getSession: (sid) => get().sessions[sid],
-      applyEvent: (sid, event) => {
-        applyTo(sid, event);
-      },
-      updateSession: (sid, update) => {
-        set((state) => {
-          const current = state.sessions[sid];
-          if (!current) return state;
-          return {
+    const agentLive = createAgentLiveController(
+      {
+        getSession: (sid) => get().sessions[sid],
+        applyEvent: (sid, event) => {
+          return applyTo(sid, event);
+        },
+        updateSession: (sid, update) => {
+          set((state) => {
+            const current = state.sessions[sid];
+            if (!current) return state;
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: update(current),
+              },
+            };
+          });
+        },
+        updateAllSessions: (update) => {
+          set((state) => ({
             ...state,
-            sessions: {
-              ...state.sessions,
-              [sid]: update(current),
-            },
-          };
-        });
+            sessions: Object.fromEntries(
+              Object.entries(state.sessions).map(([sid, session]) => [
+                sid,
+                update(session),
+              ]),
+            ),
+          }));
+        },
+        materializeSession: async (sid, firstEvent) => {
+          const result = await listActiveSessions();
+          const backend = result.sessions.find(
+            (session) =>
+              session.session_id === sid &&
+              (session.session_kind ?? "user") === "user",
+          );
+          if (!backend) return false;
+          set((state) => {
+            if (state.sessions[sid]) return state;
+            let materialized = createReconciledSessionState(backend);
+            if (
+              firstEvent.type !== "turn_start" &&
+              backend.current_turn_id &&
+              (backend.turn_state === "starting" ||
+                backend.turn_state === "running" ||
+                backend.turn_state === "awaiting_input")
+            ) {
+              materialized = {
+                ...materialized,
+                ...reduceEvent(materialized, {
+                  type: "turn_start",
+                  turn_id: backend.current_turn_id,
+                  autonomous: true,
+                  revertible: false,
+                }),
+              };
+            }
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sid]: {
+                  ...materialized,
+                  lastSeq: null,
+                  liveState: "reconnecting",
+                  needsReplay: false,
+                },
+              },
+            };
+          });
+          return true;
+        },
+        reconcileSessions: async () => {
+          await get().refreshActiveSessions();
+        },
       },
-    });
+      { readinessTimeoutMs: options.liveReadinessTimeoutMs },
+    );
 
     function applyApprovalRequest(
       sid: string,
@@ -190,12 +254,11 @@ export function createAgentStore() {
       }
     }
 
-    function patchActive(
+    function patchSession(
+      sid: string,
       fn: (s: PerSessionState) => Partial<PerSessionState>,
     ): void {
       set((state) => {
-        const sid = state.activeSid;
-        if (!sid) return state;
         const cur = state.sessions[sid];
         if (!cur) return state;
         return {
@@ -205,13 +268,56 @@ export function createAgentStore() {
       });
     }
 
+    function patchActive(
+      fn: (s: PerSessionState) => Partial<PerSessionState>,
+    ): void {
+      const sid = get().activeSid;
+      if (sid) patchSession(sid, fn);
+    }
+
+    /** 捕获某操作上一次失败；成功回调只允许清除这个对象本身。 */
+    function previousProblemForOperation(
+      sid: string,
+      operation: string,
+    ): AgentTransportProblem | null {
+      const problem = get().sessions[sid]?.transportProblem ?? null;
+      return problem?.operation === operation ? problem : null;
+    }
+
+    /** 清除本次重试已修复的问题，同时保留等待期间由并发操作写入的新问题。 */
+    function clearProblemIfUnchanged(
+      sid: string,
+      previousProblem: AgentTransportProblem | null,
+    ): void {
+      if (!previousProblem) return;
+      set((state) => {
+        const session = state.sessions[sid];
+        if (!session || session.transportProblem !== previousProblem) {
+          return state;
+        }
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: { ...session, ...CLEARED_TRANSPORT_ISSUE },
+          },
+        };
+      });
+    }
+
     /** 收口尚未被 runtime 接受的乐观 turn，并保留启动失败原因。 */
     function failOptimisticTurn(sid: string, error: unknown): void {
+      const problem = agentProblemFromUnknown(error, {
+        code: "request_timeout",
+        operation: "turn_start",
+        budgetMs: null,
+      });
+      const acceptanceUnknown = problem.code === "turn_acceptance_unknown";
       set((state) => {
         const session = state.sessions[sid];
         if (!session) return state;
         const turns = session.turns.map((item, index) =>
-          index === session.turns.length - 1
+          !acceptanceUnknown && index === session.turns.length - 1
             ? { ...item, status: "error" as const }
             : item,
         );
@@ -222,14 +328,16 @@ export function createAgentStore() {
             [sid]: {
               ...session,
               turns,
-              phase: "error",
+              phase: acceptanceUnknown ? session.phase : "error",
               abort: null,
-              transportError:
-                error instanceof Error ? error.message : String(error),
+              turnState: acceptanceUnknown ? "unknown" : "failed",
+              transportError: problem.message,
+              transportProblem: problem,
             },
           },
         };
       });
+      if (acceptanceUnknown) void get().refreshActiveSessions();
     }
 
     /** 请求关闭尚未发送消息的后端会话，并保留可重试的失败原因。 */
@@ -249,6 +357,11 @@ export function createAgentStore() {
 
     /** 把关闭失败的临时会话留在多开栏，避免后端连接变成不可见占位。 */
     function keepTemporaryCloseFailure(sid: string, error: string): void {
+      const problem = agentProblemFromUnknown(new Error(error), {
+        code: "close_needs_reconcile",
+        operation: "session_close",
+        budgetMs: null,
+      });
       set((state) => {
         const session = state.sessions[sid];
         if (!session) return state;
@@ -259,7 +372,9 @@ export function createAgentStore() {
             [sid]: {
               ...session,
               connected: true,
+              resourceState: "needs_reconcile",
               transportError: error,
+              transportProblem: problem,
             },
           },
         };
@@ -275,8 +390,82 @@ export function createAgentStore() {
       } else if (!session.connected) {
         return;
       }
-      agentLive.watchInBackground(sid);
+      try {
+        await agentLive.ensureWatcher();
+      } catch {
+        // session snapshot 已经是权威资源事实；live 暂不可用不能让物化整体失败。
+        return;
+      }
       await agentLive.refreshCodexGoal(sid);
+    }
+
+    /**
+     * 用持久化历史补齐实时流缺口，再把活动快照的生命周期水位盖回去。
+     * history 与 live 的 seq 空间相互独立，不能把 history 尾号当 live 水位。
+     */
+    async function reconcileSessionHistory(
+      sid: string,
+      snapshot: AgentSession,
+      retryCount = 0,
+    ): Promise<void> {
+      let envelopes: readonly AgentEventLike[];
+      try {
+        envelopes = await getAgentHistory(sid);
+      } catch {
+        return;
+      }
+      let snapshotBecameStale = false;
+      set((state) => {
+        const current = state.sessions[sid];
+        if (!current) return state;
+        const snapshotSeq = snapshot.last_event_seq ?? null;
+        const liveAdvancedAfterSnapshot =
+          current.lastSeq !== null &&
+          (snapshotSeq === null || current.lastSeq > snapshotSeq);
+        if (liveAdvancedAfterSnapshot) {
+          snapshotBecameStale = true;
+          return state;
+        }
+        const replayed = replayAgentHistory(current, envelopes);
+        return {
+          ...state,
+          sessions: {
+            ...state.sessions,
+            [sid]: {
+              ...replayed,
+              connected: snapshot.connected,
+              resourceState: snapshot.resource_state ?? current.resourceState,
+              turnState:
+                snapshot.turn_state ??
+                (snapshot.running ? "running" : current.turnState),
+              currentTurnId:
+                snapshot.current_turn_id !== undefined
+                  ? snapshot.current_turn_id
+                  : current.currentTurnId,
+              stateGeneration:
+                snapshot.state_generation ?? current.stateGeneration,
+              lastSeq: snapshotSeq,
+              liveState: current.liveState,
+              needsReplay: false,
+              transportError: isLiveTransportProblem(current.transportProblem)
+                ? null
+                : current.transportError,
+              transportProblem: isLiveTransportProblem(current.transportProblem)
+                ? null
+                : current.transportProblem,
+            },
+          },
+        };
+      });
+      if (!snapshotBecameStale || retryCount >= 1) return;
+      try {
+        const latest = (await listActiveSessions()).sessions.find(
+          (session) => session.session_id === sid,
+        );
+        if (latest) await reconcileSessionHistory(sid, latest, retryCount + 1);
+      } catch {
+        // 保留 needsReplay，等待下一次 live control 或显式刷新再对账。
+      }
     }
 
     async function dropTempActive(): Promise<void> {
@@ -299,6 +488,47 @@ export function createAgentStore() {
       });
     }
 
+    /** 执行一次真实创建；同参数重复点击由公开 action 复用这一个 Promise。 */
+    async function startSessionOnce(
+      params: StartSessionParams,
+      requestId: string,
+    ): Promise<AgentSession> {
+      const generation = ++sessionStartGeneration;
+      // 未连接的临时会话不计入并发上限，切换前直接丢弃。
+      await dropTempActive();
+      const runtime: Runtime = params.runtime ?? "claude_code";
+      const session = await apiCreateSession({ ...params, runtime }, requestId);
+      const sid = session.session_id;
+      if (generation !== sessionStartGeneration) {
+        const closeError = await closeTemporaryBackendSession(sid);
+        if (closeError) {
+          const failedSession = {
+            ...createNewSessionState(session, params),
+            connected: true,
+            resourceState: "needs_reconcile" as const,
+            transportError: closeError,
+            transportProblem: closeProblem(closeError),
+          };
+          set((state) => ({
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [sid]: state.sessions[sid] ?? failedSession,
+            },
+          }));
+        }
+        return session;
+      }
+      const perSession = createNewSessionState(session, params);
+      set((state) => ({
+        ...state,
+        sessions: { ...state.sessions, [sid]: perSession },
+        activeSid: sid,
+      }));
+      await restoreMaterializedAgentLive(sid);
+      return session;
+    }
+
     return {
       sessions: {},
       closingSessionIds: new Set<string>(),
@@ -313,38 +543,22 @@ export function createAgentStore() {
       historyError: null,
 
       startSession: async (params) => {
-        const generation = ++sessionStartGeneration;
-        // 未连接的临时会话不计入并发上限，切换前直接丢弃。
-        await dropTempActive();
-        const runtime: Runtime = params.runtime ?? "claude_code";
-        const session = await apiCreateSession({ ...params, runtime });
-        const sid = session.session_id;
-        if (generation !== sessionStartGeneration) {
-          const closeError = await closeTemporaryBackendSession(sid);
-          if (closeError) {
-            const failedSession = {
-              ...createNewSessionState(session, params),
-              connected: true,
-              transportError: closeError,
-            };
-            set((state) => ({
-              ...state,
-              sessions: {
-                ...state.sessions,
-                [sid]: state.sessions[sid] ?? failedSession,
-              },
-            }));
-          }
+        const key = sessionStartKey(params);
+        if (pendingSessionStart?.key === key)
+          return pendingSessionStart.promise;
+        const requestId =
+          sessionStartRequestIds.get(key) ?? createSessionRequestId();
+        sessionStartRequestIds.set(key, requestId);
+        const promise = startSessionOnce(params, requestId);
+        pendingSessionStart = { key, promise };
+        try {
+          const session = await promise;
+          sessionStartRequestIds.delete(key);
           return session;
+        } finally {
+          if (pendingSessionStart?.promise === promise)
+            pendingSessionStart = null;
         }
-        const perSession = createNewSessionState(session, params);
-        set((state) => ({
-          ...state,
-          sessions: { ...state.sessions, [sid]: perSession },
-          activeSid: sid,
-        }));
-        await restoreMaterializedAgentLive(sid);
-        return session;
       },
 
       activateSession: async (sid) => {
@@ -367,7 +581,13 @@ export function createAgentStore() {
         if (!sid) return;
         const session = state.sessions[sid];
         set({ activeSid: null });
-        if (!session || session.connected || session.meta.exited || session.abort) return;
+        if (
+          !session ||
+          session.connected ||
+          session.meta.exited ||
+          session.abort
+        )
+          return;
         void (async () => {
           const closeError = await closeTemporaryBackendSession(sid);
           if (closeError) {
@@ -399,6 +619,10 @@ export function createAgentStore() {
         set((state) => ({
           ...state,
           closingSessionIds: new Set(state.closingSessionIds).add(sid),
+          sessions: {
+            ...state.sessions,
+            [sid]: { ...cur, resourceState: "closing" },
+          },
         }));
         cur.abort?.abort();
         agentLive.stop(sid);
@@ -417,12 +641,21 @@ export function createAgentStore() {
                   ...state.sessions,
                   [sid]: {
                     ...session,
+                    resourceState: "needs_reconcile",
+                    turnState: isRootTurnInFlight(session)
+                      ? "unknown"
+                      : session.turnState,
+                    abort: null,
                     transportError:
                       result.error ?? "会话资源尚未完全关闭，请重试。",
+                    transportProblem: closeProblem(
+                      result.error ?? "会话资源尚未完全关闭，请重试。",
+                    ),
                   },
                 },
               };
             });
+            void get().refreshActiveSessions();
             return;
           }
         } catch (error) {
@@ -438,11 +671,23 @@ export function createAgentStore() {
                 ...state.sessions,
                 [sid]: {
                   ...session,
-                  transportError: (error as Error).message,
+                  resourceState: "needs_reconcile",
+                  turnState: isRootTurnInFlight(session)
+                    ? "unknown"
+                    : session.turnState,
+                  abort: null,
+                  transportError:
+                    error instanceof Error ? error.message : String(error),
+                  transportProblem: agentProblemFromUnknown(error, {
+                    code: "close_needs_reconcile",
+                    operation: "session_close",
+                    budgetMs: null,
+                  }),
                 },
               },
             };
           });
+          void get().refreshActiveSessions();
           return;
         }
         set((state) => {
@@ -456,61 +701,166 @@ export function createAgentStore() {
       },
 
       refreshActiveSessions: async () => {
-        const generation = ++activeSessionRefreshGeneration;
-        let backend: readonly AgentSession[];
-        try {
-          const result = await listActiveSessions();
-          backend = result.sessions;
-        } catch {
-          return;
+        if (activeSessionRefreshPromise) {
+          activeSessionRefreshFollowUp = true;
+          return activeSessionRefreshPromise;
         }
-        if (generation !== activeSessionRefreshGeneration) return;
-        const userSessions = backend.filter(
-          (session) => (session.session_kind ?? "user") === "user",
-        );
-        const newConnectedAgentSessions: string[] = [];
-        set((state) => {
-          const merged = Object.fromEntries(
-            Object.entries(state.sessions).filter(
-              ([, session]) => session.sessionKind === "delegate",
-            ),
-          );
-          for (const b of userSessions) {
-            const existing = state.sessions[b.session_id];
-            if (existing) {
-              const displayTitle = b.display_title ?? existing.displayTitle;
-              const titleSource = b.title_source ?? existing.titleSource;
-              if (
-                displayTitle !== existing.displayTitle ||
-                titleSource !== existing.titleSource
-              ) {
-                merged[b.session_id] = {
-                  ...existing,
-                  displayTitle,
-                  titleSource,
-                };
-              } else {
-                merged[b.session_id] = existing;
-              }
-            } else {
-              merged[b.session_id] = createReconciledSessionState(b);
-              if (b.connected) {
-                newConnectedAgentSessions.push(b.session_id);
-              }
-            }
+        const refresh = (async () => {
+          activeSessionRefreshFollowUp = false;
+          let liveReady = false;
+          let refreshBatchCount = 0;
+          // 必须等应用 SSE 真正 ready 后再读 session 快照。只启动后台 Promise 仍会留下
+          // “快照已读、订阅尚未建立”的窗口，跨 renderer 创建的 session 会同时漏过两边。
+          try {
+            await agentLive.ensureWatcher();
+            liveReady = true;
+          } catch {
+            // 实时流不可用时仍读取权威快照，让已有 session 保持可见并展示 live 错误。
           }
-          const activeSid =
-            state.activeSid && merged[state.activeSid]
-              ? state.activeSid
-              : null;
-          return { ...state, sessions: merged, activeSid };
-        });
-        for (const sessionId of newConnectedAgentSessions) {
-          void restoreMaterializedAgentLive(sessionId);
+          while (true) {
+            const generation = ++activeSessionRefreshGeneration;
+            let backend: readonly AgentSession[];
+            try {
+              const result = await listActiveSessions();
+              backend = result.sessions;
+            } catch {
+              break;
+            }
+            if (generation !== activeSessionRefreshGeneration) break;
+            const userSessions = backend.filter(
+              (session) => (session.session_kind ?? "user") === "user",
+            );
+            const newConnectedAgentSessions: string[] = [];
+            const historyReplays: AgentSession[] = [];
+            set((state) => {
+              const merged = Object.fromEntries(
+                Object.entries(state.sessions).filter(
+                  ([, session]) => session.sessionKind === "delegate",
+                ),
+              );
+              for (const b of userSessions) {
+                const existing = state.sessions[b.session_id];
+                if (existing) {
+                  if (!existing.connected && b.connected) {
+                    newConnectedAgentSessions.push(b.session_id);
+                  }
+                  const displayTitle = b.display_title ?? existing.displayTitle;
+                  const titleSource = b.title_source ?? existing.titleSource;
+                  const incomingGeneration = b.state_generation ?? 0;
+                  const acceptsSnapshot =
+                    incomingGeneration >= existing.stateGeneration;
+                  const incomingSeq = b.last_event_seq ?? null;
+                  const requiresReplay =
+                    acceptsSnapshot &&
+                    (existing.needsReplay ||
+                      existing.liveState === "gapped" ||
+                      (incomingSeq !== null &&
+                        incomingSeq !== existing.lastSeq));
+                  if (requiresReplay) historyReplays.push(b);
+                  merged[b.session_id] = {
+                    ...existing,
+                    displayTitle,
+                    titleSource,
+                    connected: b.connected,
+                    resourceState: acceptsSnapshot
+                      ? (b.resource_state ?? existing.resourceState)
+                      : existing.resourceState,
+                    turnState: acceptsSnapshot
+                      ? (b.turn_state ??
+                        (b.running ? "running" : existing.turnState))
+                      : existing.turnState,
+                    currentTurnId: acceptsSnapshot
+                      ? b.current_turn_id !== undefined
+                        ? b.current_turn_id
+                        : existing.currentTurnId
+                      : existing.currentTurnId,
+                    stateGeneration: acceptsSnapshot
+                      ? incomingGeneration
+                      : existing.stateGeneration,
+                    lastSeq:
+                      acceptsSnapshot && !requiresReplay
+                        ? (incomingSeq ?? existing.lastSeq)
+                        : existing.lastSeq,
+                    liveState:
+                      acceptsSnapshot && !requiresReplay
+                        ? "ready"
+                        : existing.liveState,
+                    needsReplay: requiresReplay || existing.needsReplay,
+                    transportError:
+                      acceptsSnapshot &&
+                      !requiresReplay &&
+                      isLiveTransportProblem(existing.transportProblem)
+                        ? null
+                        : existing.transportError,
+                    transportProblem:
+                      acceptsSnapshot &&
+                      !requiresReplay &&
+                      isLiveTransportProblem(existing.transportProblem)
+                        ? null
+                        : existing.transportProblem,
+                  };
+                } else {
+                  const materialized = createReconciledSessionState(b);
+                  const requiresReplay = b.last_event_seq != null;
+                  merged[b.session_id] = requiresReplay
+                    ? {
+                        ...materialized,
+                        lastSeq: null,
+                        liveState: "reconnecting",
+                        needsReplay: true,
+                      }
+                    : materialized;
+                  if (requiresReplay) historyReplays.push(b);
+                  if (b.connected) {
+                    newConnectedAgentSessions.push(b.session_id);
+                  }
+                }
+              }
+              const activeSid =
+                state.activeSid && merged[state.activeSid]
+                  ? state.activeSid
+                  : null;
+              return { ...state, sessions: merged, activeSid };
+            });
+            if (liveReady) {
+              await runWithConcurrency(
+                newConnectedAgentSessions,
+                3,
+                restoreMaterializedAgentLive,
+              );
+            }
+            await runWithConcurrency(historyReplays, 3, async (snapshot) =>
+              reconcileSessionHistory(snapshot.session_id, snapshot),
+            );
+            if (
+              liveReady &&
+              (newConnectedAgentSessions.length > 0 ||
+                historyReplays.length > 0)
+            ) {
+              await agentLive.ensureWatcher();
+            }
+            refreshBatchCount += 1;
+            const shouldRunFollowUp =
+              activeSessionRefreshFollowUp && refreshBatchCount < 2;
+            activeSessionRefreshFollowUp = false;
+            if (!shouldRunFollowUp) break;
+          }
+        })();
+        activeSessionRefreshPromise = refresh;
+        try {
+          await refresh;
+        } finally {
+          if (activeSessionRefreshPromise === refresh) {
+            activeSessionRefreshPromise = null;
+          }
         }
       },
 
       refreshHistory: async (workdir) => {
+        const issueOwnerSid = get().activeSid;
+        const previousProblem = issueOwnerSid
+          ? previousProblemForOperation(issueOwnerSid, "history_list")
+          : null;
         const generation = ++historyGeneration;
         historyLoadMorePromise = null;
         historyLoadMoreToken = null;
@@ -537,13 +887,22 @@ export function createAgentStore() {
             historyCursor: page.nextCursor,
             historyHasMore: page.nextCursor !== null,
           });
+          if (issueOwnerSid) {
+            clearProblemIfUnchanged(issueOwnerSid, previousProblem);
+          }
         } catch (err) {
           if (generation !== historyGeneration) return;
           set({
             loadingHistory: false,
             historyError: (err as Error).message,
           });
-          patchActive(() => ({ transportError: (err as Error).message }));
+          if (issueOwnerSid) {
+            patchSession(issueOwnerSid, () =>
+              transportIssueFromProblem(
+                problemForOperation(err, "history_list"),
+              ),
+            );
+          }
         }
       },
 
@@ -618,7 +977,10 @@ export function createAgentStore() {
         const current = get().sessions[sid];
         if (!current || current.runtime !== "codex" || current.abort) return;
         try {
-          const selection = await apiUpdateSessionSettings(sid, { model, effort });
+          const selection = await apiUpdateSessionSettings(sid, {
+            model,
+            effort,
+          });
           set((state) => {
             const session = state.sessions[sid];
             if (!session) return state;
@@ -633,13 +995,13 @@ export function createAgentStore() {
                   settingsNotice: selection.adjusted
                     ? `当前模型不支持所选 effort，已改为 ${selection.effort}`
                     : "将在下一轮生效",
-                  transportError: null,
+                  ...CLEARED_TRANSPORT_ISSUE,
                 },
               },
             };
           });
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          patchActive(() => transportIssueFromMessage((err as Error).message));
         }
       },
 
@@ -662,13 +1024,13 @@ export function createAgentStore() {
                   // requested preset 立即更新；effective facts 仍以原生响应为准。
                   permissionPreset: result.permission_preset,
                   settingsNotice: "将在下一轮生效",
-                  transportError: null,
+                  ...CLEARED_TRANSPORT_ISSUE,
                 },
               },
             };
           });
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          patchActive(() => transportIssueFromMessage((err as Error).message));
         }
       },
 
@@ -677,6 +1039,7 @@ export function createAgentStore() {
         if (!sid) return;
         const cur = get().sessions[sid];
         if (!cur) return;
+        const liveSeqAtRequest = cur.lastSeq;
         let envelopes: readonly AgentEventLike[] = [];
         try {
           envelopes = await getAgentHistory(sid);
@@ -686,7 +1049,7 @@ export function createAgentStore() {
         }
         set((state) => {
           const s = state.sessions[sid];
-          if (!s) return state;
+          if (!s || s.lastSeq !== liveSeqAtRequest) return state;
           return {
             ...state,
             sessions: {
@@ -761,11 +1124,7 @@ export function createAgentStore() {
               ...state,
               sessions: {
                 ...state.sessions,
-                [sid]: replayCodexSubagentHistory(
-                  current,
-                  threadId,
-                  envelopes,
-                ),
+                [sid]: replayCodexSubagentHistory(current, threadId, envelopes),
               },
             };
           });
@@ -823,7 +1182,7 @@ export function createAgentStore() {
                   ...session,
                   displayTitle: updated.display_title ?? normalized,
                   titleSource: updated.title_source ?? "manual",
-                  transportError: null,
+                  ...CLEARED_TRANSPORT_ISSUE,
                 },
               },
             };
@@ -838,8 +1197,9 @@ export function createAgentStore() {
                 ...state.sessions,
                 [sid]: {
                   ...session,
-                  transportError:
+                  ...transportIssueFromMessage(
                     error instanceof Error ? error.message : String(error),
+                  ),
                 },
               },
             };
@@ -852,7 +1212,6 @@ export function createAgentStore() {
         if (!sid) {
           return;
         }
-        const runtime = get().sessions[sid]?.runtime;
         // 上限检查与 abort 写入必须在同一个 set 回调中原子完成。
         const turn: Turn = {
           id: nextTurnId(),
@@ -866,12 +1225,7 @@ export function createAgentStore() {
         const abort = new AbortController();
         let accepted = true;
         set((state) => {
-          const admission = admitSessionSend(
-            state.sessions,
-            sid,
-            turn,
-            abort,
-          );
+          const admission = admitSessionSend(state.sessions, sid, turn, abort);
           accepted = admission.accepted;
           if (admission.sessions === state.sessions) return state;
           return { ...state, sessions: admission.sessions };
@@ -927,72 +1281,28 @@ export function createAgentStore() {
           }
         }
 
-        if (runtime === "codex") {
-          try {
-            await agentLive.ensureWatcher(sid);
-          } catch (error) {
-            failOptimisticTurn(sid, error);
-            return;
-          }
-        } else {
-          // POST 流仍承载当前消息；常驻流同时接收之后由 Agent Host 启动的续轮。
-          agentLive.watchInBackground(sid);
-        }
-
-        if (runtime === "codex") {
-          try {
-            await apiStartCodexTurn(sid, text);
-          } catch (error) {
-            failOptimisticTurn(sid, error);
-          }
-          return;
-        }
-
-        let transportOk = false;
-        let allowNonTerminalClose = false;
         try {
-          await postMessageStream(
-            messagesUrl(sid),
-            { text },
-            (ev) => {
-              const applied = applyTo(sid, ev, { currentRequest: true });
-              if (applied && permitsNonTerminalClose(ev)) {
-                allowNonTerminalClose = true;
-              }
-            },
-            { signal: abort.signal },
-          );
-          transportOk = true;
-        } catch (err) {
-          set((state) => {
-            const s = state.sessions[sid];
-            if (!s) return state;
-            return {
-              ...state,
-              sessions: {
-                ...state.sessions,
-                [sid]: { ...s, transportError: (err as Error).message },
-              },
-            };
-          });
-          if (!abort.signal.aborted) await recoverApprovalRequests(sid);
-        } finally {
-          set((state) => {
-            const s = state.sessions[sid];
-            if (!s) return state;
-            const closed = endActiveTurnOnStreamClose(s, {
-              aborted: abort.signal.aborted,
-              transportOk,
-              allowNonTerminalClose,
+          await agentLive.ensureWatcher();
+          const accepted = await apiStartAgentTurn(sid, text);
+          if (accepted.turnId !== null) {
+            set((state) => {
+              const session = state.sessions[sid];
+              if (!session || session.turnState !== "starting") return state;
+              return {
+                ...state,
+                sessions: {
+                  ...state.sessions,
+                  [sid]: {
+                    ...session,
+                    currentTurnId: accepted.turnId,
+                    turnState: "running",
+                  },
+                },
+              };
             });
-            return {
-              ...state,
-              sessions: {
-                ...state.sessions,
-                [sid]: { ...s, ...closed, abort: null },
-              },
-            };
-          });
+          }
+        } catch (error) {
+          failOptimisticTurn(sid, error);
         }
       },
 
@@ -1004,27 +1314,60 @@ export function createAgentStore() {
         try {
           await interruptSession(sid);
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          const problem = agentProblemFromUnknown(err, {
+            code: "turn_state_unknown",
+            operation: "turn_interrupt",
+            budgetMs: null,
+          });
+          patchActive((session) => ({
+            turnState:
+              problem.code === "turn_state_unknown"
+                ? "unknown"
+                : session.turnState,
+            transportError: problem.message,
+            transportProblem: problem,
+          }));
+          if (problem.code === "turn_state_unknown") {
+            void get().refreshActiveSessions();
+          }
         }
       },
 
       answerElicit: async (answers) => {
         const sid = get().activeSid;
         if (!sid) return;
+        const previousProblem = previousProblemForOperation(
+          sid,
+          "elicitation_answer",
+        );
         try {
           await apiAnswerElicit(sid, { answers, cancel: false });
+          clearProblemIfUnchanged(sid, previousProblem);
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          patchSession(sid, () =>
+            transportIssueFromProblem(
+              problemForOperation(err, "elicitation_answer"),
+            ),
+          );
         }
       },
 
       cancelElicit: async () => {
         const sid = get().activeSid;
         if (!sid) return;
+        const previousProblem = previousProblemForOperation(
+          sid,
+          "elicitation_answer",
+        );
         try {
           await apiAnswerElicit(sid, { answers: {}, cancel: true });
+          clearProblemIfUnchanged(sid, previousProblem);
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          patchSession(sid, () =>
+            transportIssueFromProblem(
+              problemForOperation(err, "elicitation_answer"),
+            ),
+          );
         }
       },
 
@@ -1033,9 +1376,14 @@ export function createAgentStore() {
         if (!sid) return;
         const session = get().sessions[sid];
         if (session?.runtime !== "codex") return;
+        const previousProblem = previousProblemForOperation(
+          sid,
+          "approval_answer",
+        );
         try {
           const result = await apiAnswerAgentRequest(sid, requestId, decision);
           applyApprovalRequest(sid, result.request);
+          clearProblemIfUnchanged(sid, previousProblem);
         } catch (err) {
           set((state) => {
             const current = state.sessions[sid];
@@ -1044,7 +1392,12 @@ export function createAgentStore() {
               ...state,
               sessions: {
                 ...state.sessions,
-                [sid]: { ...current, transportError: (err as Error).message },
+                [sid]: {
+                  ...current,
+                  ...transportIssueFromProblem(
+                    problemForOperation(err, "approval_answer"),
+                  ),
+                },
               },
             };
           });
@@ -1063,12 +1416,14 @@ export function createAgentStore() {
               ...state,
               sessions: {
                 ...state.sessions,
-                [sid]: { ...session, goal, transportError: null },
+                [sid]: { ...session, goal, ...CLEARED_TRANSPORT_ISSUE },
               },
             };
           });
         } catch (error) {
-          patchActive(() => ({ transportError: (error as Error).message }));
+          patchActive(() =>
+            transportIssueFromMessage((error as Error).message),
+          );
         }
       },
 
@@ -1084,12 +1439,18 @@ export function createAgentStore() {
               ...state,
               sessions: {
                 ...state.sessions,
-                [sid]: { ...session, goal: null, transportError: null },
+                [sid]: {
+                  ...session,
+                  goal: null,
+                  ...CLEARED_TRANSPORT_ISSUE,
+                },
               },
             };
           });
         } catch (error) {
-          patchActive(() => ({ transportError: (error as Error).message }));
+          patchActive(() =>
+            transportIssueFromMessage((error as Error).message),
+          );
         }
       },
 
@@ -1103,7 +1464,7 @@ export function createAgentStore() {
           if (
             !session ||
             session.runtime !== "codex" ||
-            session.abort ||
+            isRootTurnInFlight(session) ||
             session.commandPending
           ) {
             return state;
@@ -1118,14 +1479,17 @@ export function createAgentStore() {
                 ...session,
                 commandPending: "compact",
                 phase: "compacting",
-                transportError: null,
+                turnState: "starting",
+                currentTurnId: null,
+                ...CLEARED_TRANSPORT_ISSUE,
               },
             },
           };
         });
-        if (!accepted) throw new Error("/compact is unavailable for this session");
+        if (!accepted)
+          throw new Error("/compact is unavailable for this session");
         try {
-          await agentLive.ensureWatcher(sid);
+          await agentLive.ensureWatcher();
           await apiCompactCodexSession(sid);
         } catch (error) {
           set((state) => {
@@ -1138,11 +1502,12 @@ export function createAgentStore() {
                 [sid]: {
                   ...session,
                   commandPending: null,
+                  turnState: "idle",
                   phase:
                     session.phase === "compacting"
-                      ? phaseBeforeCompact ?? "idle"
+                      ? (phaseBeforeCompact ?? "idle")
                       : session.phase,
-                  transportError: (error as Error).message,
+                  ...transportIssueFromMessage((error as Error).message),
                 },
               },
             };
@@ -1160,7 +1525,7 @@ export function createAgentStore() {
           if (
             !session ||
             session.runtime !== "codex" ||
-            session.abort ||
+            isRootTurnInFlight(session) ||
             session.commandPending
           ) {
             return state;
@@ -1173,14 +1538,17 @@ export function createAgentStore() {
               [sid]: {
                 ...session,
                 commandPending: "review",
-                transportError: null,
+                turnState: "starting",
+                currentTurnId: null,
+                ...CLEARED_TRANSPORT_ISSUE,
               },
             },
           };
         });
-        if (!accepted) throw new Error("/review is unavailable for this session");
+        if (!accepted)
+          throw new Error("/review is unavailable for this session");
         try {
-          await agentLive.ensureWatcher(sid);
+          await agentLive.ensureWatcher();
           const result = await apiStartCodexReview(sid, target);
           set((state) => {
             const session = state.sessions[sid];
@@ -1188,6 +1556,11 @@ export function createAgentStore() {
             const alreadyObserved = session.turns.some(
               (turn) => turn.turnId === result.turnId,
             );
+            const observedTurn = session.turns.find(
+              (turn) => turn.turnId === result.turnId,
+            );
+            const terminalAlreadyObserved =
+              observedTurn !== undefined && observedTurn.status !== "active";
             const reduced = alreadyObserved
               ? session
               : reduceEvent(session, {
@@ -1204,11 +1577,17 @@ export function createAgentStore() {
                   ...session,
                   ...reduced,
                   commandPending: null,
-                  abort: alreadyObserved
-                    ? session.abort
-                    : session.abort ?? new AbortController(),
+                  abort: terminalAlreadyObserved
+                    ? null
+                    : alreadyObserved
+                      ? session.abort
+                      : (session.abort ?? new AbortController()),
+                  currentTurnId: result.turnId,
+                  turnState: terminalAlreadyObserved
+                    ? session.turnState
+                    : "running",
                   connected: true,
-                  transportError: null,
+                  ...CLEARED_TRANSPORT_ISSUE,
                 },
               },
             };
@@ -1224,7 +1603,8 @@ export function createAgentStore() {
                 [sid]: {
                   ...session,
                   commandPending: null,
-                  transportError: (error as Error).message,
+                  turnState: "idle",
+                  ...transportIssueFromMessage((error as Error).message),
                 },
               },
             };
@@ -1238,7 +1618,11 @@ export function createAgentStore() {
         if (!sid) return;
         const cur = get().sessions[sid];
         // 流式写入期间回退会与后端落盘竞争。
-        if (!cur || cur.abort) return;
+        if (!cur || isRootTurnInFlight(cur)) return;
+        const previousProblem = previousProblemForOperation(
+          sid,
+          "session_revert",
+        );
         try {
           await apiRevertSession(sid, turnId);
           set((state) => {
@@ -1255,17 +1639,25 @@ export function createAgentStore() {
                   ...s,
                   turns,
                   phase: turns.length === 0 ? "idle" : "done",
+                  ...(s.transportProblem === previousProblem && previousProblem
+                    ? CLEARED_TRANSPORT_ISSUE
+                    : {}),
                 },
               },
             };
           });
         } catch (err) {
-          patchActive(() => ({ transportError: (err as Error).message }));
+          patchSession(sid, () =>
+            transportIssueFromProblem(
+              problemForOperation(err, "session_revert"),
+            ),
+          );
         }
       },
 
       reset: () => {
         sessionStartGeneration += 1;
+        pendingSessionStart = null;
         for (const s of Object.values(get().sessions)) {
           s.abort?.abort();
         }
@@ -1290,19 +1682,74 @@ export function createAgentStore() {
 
 export const useAgentStore = createAgentStore();
 
-/** 只订阅活动会话，后台会话更新不会触发中心区域重渲染。 */
-export function useActiveSession(): PerSessionState | null {
-  return useAgentStore((s) =>
-    s.activeSid ? s.sessions[s.activeSid] ?? null : null,
+/** 以固定并发数执行后台恢复，避免占满浏览器同源连接池。 */
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  async function consume(): Promise<void> {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await worker(item);
+    }
+  }
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => consume()));
+}
+
+/** 为尚未完成的新建请求生成稳定键，防止双击产生两个后端会话。 */
+function sessionStartKey(params: StartSessionParams): string {
+  return JSON.stringify(
+    Object.entries(params).sort(([left], [right]) => left.localeCompare(right)),
   );
 }
 
-function permitsNonTerminalClose(event: AgentEvent): boolean {
-  if (event.type === "local_command") return true;
-  const stage = event.payload.stage;
+/** 生成一次逻辑创建跨超时重试复用的幂等请求 ID。 */
+function createSessionRequestId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+/** 为后端已经明确返回的清理失败创建可恢复问题。 */
+function closeProblem(message: string): AgentTransportProblem {
+  return agentProblemFromUnknown(new Error(message), {
+    code: "close_needs_reconcile",
+    operation: "session_close",
+    budgetMs: null,
+  });
+}
+
+/** 为尚未迁入 request policy 的旧调用补稳定 operation，同时保留已有错误码和状态。 */
+function problemForOperation(
+  error: unknown,
+  operation: string,
+): AgentTransportProblem {
+  const problem = agentProblemFromUnknown(error, {
+    code: "http_error",
+    operation,
+    budgetMs: null,
+  });
+  return problem.operation === operation ? problem : { ...problem, operation };
+}
+
+/** 判断问题是否会在实时流恢复并完成对账后自动消失。 */
+function isLiveTransportProblem(
+  problem: AgentTransportProblem | null | undefined,
+): boolean {
   return (
-    event.type === "status" &&
-    typeof stage === "string" &&
-    stage.startsWith("restarting:")
+    problem?.code === "live_unavailable" ||
+    problem?.code === "live_disconnected" ||
+    problem?.code === "event_gap" ||
+    problem?.code === "turn_acceptance_unknown" ||
+    problem?.code === "turn_state_unknown"
+  );
+}
+
+/** 只订阅活动会话，后台会话更新不会触发中心区域重渲染。 */
+export function useActiveSession(): PerSessionState | null {
+  return useAgentStore((s) =>
+    s.activeSid ? (s.sessions[s.activeSid] ?? null) : null,
   );
 }

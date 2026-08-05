@@ -1,5 +1,6 @@
 from dataclasses import replace
 from collections.abc import Callable
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,43 @@ def test_post_sessions_creates_codex(client: TestClient, workdir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["runtime"] == "codex"
+
+
+def test_post_sessions_reuses_same_idempotent_create(
+    client: TestClient, hub: SessionHub, workdir: Path
+) -> None:
+    """renderer 未确认首次响应时，用同一请求 ID 重试不会创建幽灵会话。"""
+
+    headers = {"X-Trowel-Request-Id": "create-request-1"}
+    first = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+    second = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["data"]["session_id"] == second.json()["data"]["session_id"]
+    assert len(hub.store.list_all()) == 1
+
+
+def test_post_sessions_rejects_idempotency_key_reuse_with_other_params(
+    client: TestClient, workdir: Path
+) -> None:
+    """同一创建请求 ID 不能绑定两套参数。"""
+
+    headers = {"X-Trowel-Request-Id": "create-request-2"}
+    first = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+    second = client.post(
+        "/api/agent/sessions",
+        json=cc_payload(workdir, memory_enabled=False),
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 400
 
 
 def test_post_sessions_missing_workdir_400(
@@ -84,6 +122,54 @@ def test_delegate_connection_capacity_returns_stable_409(
     assert response.json() == {
         "detail": "当前委派数量已满：连接上限为 1"
     }
+
+
+def test_twenty_session_runtime_pressure_gate(
+    client: TestClient, hub: SessionHub, workdir: Path
+) -> None:
+    """进程内 ASGI 边界在 20 连接/5 在跑时仍可读、可中断并可关闭。"""
+
+    sessions = [create_session(client, cc_payload(workdir)) for _ in range(20)]
+
+    async def hold_turn(_text: str):
+        """保持可控 runtime 在跑，直到 close 取消 detached owner。"""
+
+        yield {"type": "turn_start", "turn_id": "held-turn"}
+        await asyncio.Event().wait()
+
+    for session in sessions[:5]:
+        hub._cc_registry[session["session_id"]].send = hold_turn
+        response = client.post(
+            f"/api/agent/sessions/{session['session_id']}/turns",
+            json={"text": "hold"},
+        )
+        assert response.status_code == 200
+
+    connection_overflow = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir)
+    )
+    running_overflow = client.post(
+        f"/api/agent/sessions/{sessions[5]['session_id']}/turns",
+        json={"text": "sixth"},
+    )
+    assert connection_overflow.status_code == 409
+    assert running_overflow.status_code == 409
+
+    for session in sessions:
+        assert client.get("/api/agent/session-defaults").status_code == 200
+        assert client.get(
+            f"/api/agent/sessions/{session['session_id']}/history"
+        ).status_code == 200
+    for session in sessions[:5]:
+        assert client.post(
+            f"/api/agent/sessions/{session['session_id']}/interrupt"
+        ).status_code == 200
+    for session in sessions:
+        assert client.delete(
+            f"/api/agent/sessions/{session['session_id']}"
+        ).status_code == 200
+
+    assert hub.list_active()[0] == []
 
 
 def test_get_active_lists_mixed(

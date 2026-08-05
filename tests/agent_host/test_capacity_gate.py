@@ -204,3 +204,77 @@ def test_capacity_gate_counts_probe_turn_in_internal_running_pool(
     assert reservation is not None
     assert gate.delegate_running_count() == 1
     gate.release_turn(reservation)
+
+
+def test_capacity_gate_atomically_rejects_a_second_user_turn(
+    tmp_path: Path,
+) -> None:
+    """runtime 尚未更新 running 时，用户预留也必须挡住超额启动。"""
+
+    store = BindingStore(tmp_path / "bindings.json")
+    cc = _RuntimePort(
+        Runtime.CLAUDE_CODE,
+        {
+            "first": RuntimeLiveState(True, False),
+            "second": RuntimeLiveState(True, False),
+        },
+    )
+    first = _binding("first", Runtime.CLAUDE_CODE, kind="user")
+    second = _binding("second", Runtime.CLAUDE_CODE, kind="user")
+    store.put(first)
+    store.put(second)
+    gate = SessionCapacityGate(
+        store,
+        {Runtime.CLAUDE_CODE: cc},
+        CapacityLimits(
+            user_connections=20,
+            delegate_connections=5,
+            delegate_running=5,
+            user_running=1,
+        ),
+    )
+
+    reservation = gate.reserve_turn(first)
+    with pytest.raises(CapacityLimitError, match="同时 in-turn"):
+        gate.reserve_turn(second)
+
+    gate.release_turn(reservation)
+    next_reservation = gate.reserve_turn(second)
+    gate.release_turn(next_reservation)
+
+
+def test_user_and_internal_running_reservations_use_separate_pools(
+    tmp_path: Path,
+) -> None:
+    """用户与内部 turn 的启动预留不能互相消耗独立并发上限。"""
+
+    store = BindingStore(tmp_path / "bindings.json")
+    cc = _RuntimePort(
+        Runtime.CLAUDE_CODE,
+        {
+            "user": RuntimeLiveState(True, False),
+            "delegate": RuntimeLiveState(True, False),
+        },
+    )
+    user = _binding("user", Runtime.CLAUDE_CODE, kind="user")
+    delegate = _binding("delegate", Runtime.CLAUDE_CODE, kind="delegate")
+    store.put(user)
+    store.put(delegate)
+    gate = SessionCapacityGate(
+        store,
+        {Runtime.CLAUDE_CODE: cc},
+        CapacityLimits(
+            user_connections=20,
+            delegate_connections=5,
+            delegate_running=1,
+            user_running=1,
+        ),
+    )
+
+    user_reservation = gate.reserve_turn(user)
+    delegate_reservation = gate.reserve_turn(delegate)
+
+    assert gate.user_running_count() == 1
+    assert gate.delegate_running_count() == 1
+    gate.release_turn(user_reservation)
+    gate.release_turn(delegate_reservation)

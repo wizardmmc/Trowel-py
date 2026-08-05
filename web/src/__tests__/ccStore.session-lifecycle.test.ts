@@ -3,13 +3,14 @@ import {
   apiCreateSession,
   apiDeleteSession,
   apiGenerateSessionTitle,
+  apiStartAgentTurn,
   ev,
   mockCreate,
   releaseAllStreams,
-  releaseMessageStreams,
   stream,
 } from "./ccStoreTestHarness";
 import { createAgentStore } from "../agent";
+import { AgentTransportError } from "../agent/transport";
 
 describe("createAgentStore — multi-session lifecycle", () => {
   it("startSession creates a session that is NOT yet connected (not in the bar)", async () => {
@@ -20,6 +21,113 @@ describe("createAgentStore — multi-session lifecycle", () => {
     expect(state.activeSid).toBe("s1");
     expect(state.sessions.s1).toBeDefined();
     expect(state.sessions.s1.connected).toBe(false);
+  });
+
+  it("deduplicates the same pending session creation", async () => {
+    const store = createAgentStore();
+    const created = mockCreate("s1");
+    apiCreateSession.mockReset();
+    let resolveCreate!: (session: typeof created) => void;
+    apiCreateSession.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+
+    const first = store.getState().startSession({ workdir: "/wd" });
+    const second = store.getState().startSession({ workdir: "/wd" });
+    await vi.waitFor(() => expect(apiCreateSession).toHaveBeenCalledTimes(1));
+    resolveCreate(created);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([created, created]);
+    expect(Object.keys(store.getState().sessions)).toEqual(["s1"]);
+  });
+
+  it("reuses the create request ID after an unknown timeout", async () => {
+    const store = createAgentStore();
+    const created = mockCreate("s1");
+    apiCreateSession.mockReset();
+    apiCreateSession
+      .mockRejectedValueOnce(
+        new AgentTransportError({
+          code: "request_timeout",
+          message: "session create result is unknown",
+          operation: "session_create",
+          budgetMs: 30_000,
+          status: null,
+          occurredAt: "2026-08-05T00:00:00.000Z",
+        }),
+      )
+      .mockResolvedValueOnce(created);
+
+    await expect(store.getState().startSession({ workdir: "/wd" })).rejects.toThrow();
+    await store.getState().startSession({ workdir: "/wd" });
+
+    expect(apiCreateSession).toHaveBeenCalledTimes(2);
+    expect(apiCreateSession.mock.calls[0]?.[1]).toBe(
+      apiCreateSession.mock.calls[1]?.[1],
+    );
+  });
+
+  it("keeps input blocked when turn acceptance times out", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    apiStartAgentTurn.mockRejectedValueOnce(
+      new AgentTransportError({
+        code: "turn_acceptance_unknown",
+        message: "turn acceptance is unknown",
+        operation: "turn_start",
+        budgetMs: 30_000,
+        status: null,
+        occurredAt: "2026-08-05T00:00:00.000Z",
+      }),
+    );
+
+    await store.getState().send("hi");
+
+    expect(store.getState().sessions.s1).toMatchObject({
+      turnState: "unknown",
+      transportProblem: { code: "turn_acceptance_unknown" },
+    });
+    expect(store.getState().sessions.s1.turns[0].status).toBe("active");
+  });
+
+  it("applies a pre-response CC failure to the accepted root turn", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    let resolveAcceptance!: (value: { turnId: string }) => void;
+    apiStartAgentTurn.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAcceptance = resolve;
+        }),
+    );
+
+    const sending = store.getState().send("fails before native start");
+    await vi.waitFor(() => expect(apiStartAgentTurn).toHaveBeenCalledOnce());
+    stream.eventApply!(ev("turn_start", { revertible: false }, {
+      turn_id: "accepted-turn",
+      seq: 1,
+    }));
+    stream.eventApply!(ev("error", { errors: ["startup failed"] }, {
+      turn_id: "accepted-turn",
+      seq: 2,
+    }));
+    resolveAcceptance({ turnId: "accepted-turn" });
+    await sending;
+
+    expect(store.getState().sessions.s1).toMatchObject({
+      currentTurnId: "accepted-turn",
+      turnState: "failed",
+      abort: null,
+      needsReplay: false,
+    });
+    expect(store.getState().sessions.s1.turns[0]).toMatchObject({
+      userText: "fails before native start",
+      status: "error",
+    });
   });
 
   it("send() flips the session to connected (enters the bar)", async () => {
@@ -42,9 +150,8 @@ describe("createAgentStore — multi-session lifecycle", () => {
     const sending = store.getState().send("start delegate");
     expect(stream.eventApply).not.toBeNull();
     expect(stream.messageApply).not.toBeNull();
-    stream.messageApply!(ev("finished"));
-    await releaseMessageStreams();
     await sending;
+    stream.eventApply!(ev("finished", {}, { turn_id: "turn-1" }));
 
     stream.eventApply!(
       ev(
@@ -395,6 +502,11 @@ describe("createAgentStore — multi-session lifecycle", () => {
     expect(store.getState().sessions.s1).toBeDefined();
     expect(store.getState().activeSid).toBe("s1");
     expect(store.getState().sessions.s1.transportError).toMatch(/reconciliation/);
+
+    apiStartAgentTurn.mockClear();
+    await store.getState().send("must not restart while closing is unresolved");
+    expect(apiStartAgentTurn).not.toHaveBeenCalled();
+    expect(store.getState().sessions.s1.transportError).toMatch(/待对账/);
   });
 
   it("keeps the session when the close request fails", async () => {
@@ -423,10 +535,14 @@ describe("createAgentStore — multi-session lifecycle", () => {
     const store = createAgentStore();
     mockCreate("c1", { runtime: "codex" });
     await store.getState().startSession({ workdir: "/wd", runtime: "codex" });
-    const sending = store.getState().send("hi");
-    stream.apply!(ev("host_status", { status: "host_exited" }, { runtime: "codex" }));
-    await releaseAllStreams();
-    await sending;
+    await store.getState().send("hi");
+    stream.apply!(
+      ev(
+        "host_status",
+        { status: "host_exited" },
+        { runtime: "codex", session_id: "c1" },
+      ),
+    );
     expect(store.getState().sessions.c1).toBeDefined();
     expect(store.getState().activeSid).toBe("c1");
     expect(store.getState().sessions.c1?.phase).toBe("error");

@@ -140,6 +140,26 @@ describe("replayAgentHistory", () => {
     expect(replayed.phase).toBe("done");
   });
 
+  it("历史缺少 tool_result 时把工具收敛为结果事件缺失", () => {
+    const session = createNewSessionState(SESSION, { workdir: "/repo" });
+    const replayed = replayAgentHistory(session, [
+      event(1, "user", { text: "问题" }),
+      {
+        ...event(2, "tool_call", {
+          tool_use_id: "tool-1",
+          tool_name: "Read",
+          input: { file_path: "/repo/README.md" },
+        }),
+        item_id: "tool-1",
+      },
+    ]);
+
+    expect(replayed.turns[0].items[0]).toMatchObject({
+      kind: "tool",
+      status: "missing",
+    });
+  });
+
   it("回放后清空 live watermark 与缺口标记", () => {
     const session = {
       ...createNewSessionState(SESSION, { workdir: "/repo" }),

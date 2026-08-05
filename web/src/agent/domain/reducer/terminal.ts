@@ -45,6 +45,7 @@ export function applyFinishedEvent(
   const updatedLast: Turn = {
     ...last,
     status: "done",
+    items: finalizeRunningTools(last.items),
     durationSeconds,
     startedAtMs: undefined,
   };
@@ -90,8 +91,22 @@ function appendTerminalItem(
   const last = turns[turns.length - 1];
   const updatedLast: Turn = {
     ...last,
-    items: [...last.items, item],
+    items: [...finalizeRunningTools(last.items), item],
     status,
   };
   return { ...prev, turns: [...turns.slice(0, -1), updatedLast] };
+}
+
+/** 把根 turn 终态时仍在运行的工具标为结果事件缺失。 */
+export function finalizeRunningTools(
+  items: readonly TurnItem[],
+): readonly TurnItem[] {
+  return items.map((item) => {
+    if (item.kind !== "tool") return item;
+    return {
+      ...item,
+      status: item.status === "running" ? "missing" as const : item.status,
+      childTools: finalizeRunningTools(item.childTools) as typeof item.childTools,
+    };
+  });
 }

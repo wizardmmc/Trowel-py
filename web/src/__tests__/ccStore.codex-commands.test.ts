@@ -47,7 +47,7 @@ describe("createAgentStore - Codex native commands", () => {
     expect(store.getState().sessions.c1.abort).toBeNull();
   });
 
-  it("releases compact UI admission when its event stream closes", async () => {
+  it("keeps compact state unknown while the application stream reconnects", async () => {
     const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
     await store.getState().startSession({ workdir: "/a", runtime: "codex" });
@@ -55,9 +55,11 @@ describe("createAgentStore - Codex native commands", () => {
 
     await releaseAllStreams();
 
-    await vi.waitFor(() => {
-      expect(store.getState().sessions.c1.commandPending).toBeNull();
-    });
+    await vi.waitFor(() =>
+      expect(store.getState().sessions.c1.liveState).toBe("reconnecting"),
+    );
+    expect(store.getState().sessions.c1.commandPending).toBe("compact");
+    expect(store.getState().sessions.c1.turnState).toBe("unknown");
   });
 
   it("starts review as an autonomous turn without a user message", async () => {
@@ -113,7 +115,12 @@ describe("createAgentStore - Codex native commands", () => {
       ev(
         "finished",
         {},
-        { runtime: "codex", session_id: "c1", turn_id: "review-turn-1" },
+        {
+          runtime: "codex",
+          session_id: "c1",
+          thread_id: "thread-1",
+          turn_id: "review-turn-1",
+        },
       ),
     );
     resolveReview({ reviewThreadId: "thread-1", turnId: "review-turn-1" });

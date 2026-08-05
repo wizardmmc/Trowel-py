@@ -376,27 +376,6 @@
   font: 9px var(--font-mono);
 }
 
-.overview-statistics__problems button {
-  min-width: 58px;
-  min-height: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--garden-green);
-  background: transparent;
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.overview-statistics__problems button:hover {
-  border-color: rgba(74, 124, 89, 0.45);
-  background: var(--garden-soft);
-}
-
-.overview-statistics__problems button:focus-visible {
-  outline: 2px solid var(--sunshine-ring);
-  outline-offset: 2px;
-}
-
 .overview-statistics__surface-empty {
   display: grid;
   min-height: 80px;
