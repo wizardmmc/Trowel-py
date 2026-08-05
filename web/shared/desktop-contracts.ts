@@ -7,6 +7,7 @@ export const DESKTOP_IPC = {
   selectWorkdir: "desktop:select-workdir",
   openExternal: "desktop:open-external",
   openPath: "desktop:open-path",
+  revealPath: "desktop:reveal-path",
   requestQuit: "desktop:request-quit",
   getDiagnostics: "desktop:get-diagnostics",
   retrySidecar: "desktop:retry-sidecar",
@@ -46,6 +47,7 @@ export interface DesktopBridge {
   readonly selectWorkdir: (defaultPath?: string) => Promise<string | null>;
   readonly openExternal: (url: string) => Promise<void>;
   readonly openPath: (path: string, root: string) => Promise<void>;
+  readonly revealPath: (path: string, root: string) => Promise<void>;
   readonly requestQuit: () => Promise<void>;
   readonly getDiagnostics: () => Promise<DesktopDiagnosticState>;
   readonly retrySidecar: () => Promise<void>;

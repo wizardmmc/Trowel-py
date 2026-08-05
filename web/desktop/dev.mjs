@@ -22,6 +22,7 @@ import {
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const projectRoot = path.resolve(webRoot, "..");
 const rendererSmoke = process.argv.includes("--smoke");
+const settingsSmoke = process.argv.includes("--settings-smoke");
 const diagnosticSmoke = process.argv.includes("--diagnostic-smoke");
 const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
 const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
@@ -30,6 +31,7 @@ const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
 const readOnlyInspection = process.argv.includes("--observe");
 const smoke =
   rendererSmoke ||
+  settingsSmoke ||
   diagnosticSmoke ||
   singleInstanceSmoke ||
   sidecarHangSmoke ||
@@ -46,7 +48,7 @@ const runtimeRoot =
 const privateDataRoot = tempRoot ?? (readOnlyInspection ? runtimeRoot : null);
 const serviceDescriptorPath = path.join(runtimeRoot, "agent-service.json");
 const rendererPort = await reservePort();
-const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : ""}`;
+const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : settingsSmoke ? "/?tool=settings" : ""}`;
 
 if (privateDataRoot) {
   const dataDirectory = path.join(privateDataRoot, "data");
@@ -104,6 +106,7 @@ try {
         }
       : {}),
     ...(rendererSmoke ? { TROWEL_DESKTOP_SMOKE: "1" } : {}),
+    ...(settingsSmoke ? { TROWEL_DESKTOP_SETTINGS_SMOKE: "1" } : {}),
     ...(diagnosticSmoke
       ? {
           TROWEL_DESKTOP_DIAGNOSTIC_SMOKE: "1",
@@ -189,6 +192,17 @@ try {
     if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
       throw new Error(
         `Telemetry smoke did not end with a clean resource marker: ${JSON.stringify(marker)}`,
+      );
+    }
+  }
+  if (settingsSmoke) {
+    if (exitCode !== 0) throw new Error("Electron settings smoke did not exit cleanly.");
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(
+        `Settings smoke did not end with a clean resource marker: ${JSON.stringify(marker)}`,
       );
     }
   }

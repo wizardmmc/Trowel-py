@@ -33,7 +33,21 @@ it("accepts only the configured renderer origin and diagnostic file", () => {
   ).toBe(false);
   expect(
     isTrustedRendererUrl(
+      "file:///app/index.html?tool=settings",
+      "file:///app/index.html",
+      "file:///app/diagnostic.html",
+    ),
+  ).toBe(true);
+  expect(
+    isTrustedRendererUrl(
       "file:///tmp/attacker.html",
+      "file:///app/index.html",
+      "file:///app/diagnostic.html",
+    ),
+  ).toBe(false);
+  expect(
+    isTrustedRendererUrl(
+      "file:///app/attacker.html?tool=settings",
       "file:///app/index.html",
       "file:///app/diagnostic.html",
     ),

@@ -113,6 +113,7 @@ def test_path_status_uses_resolvers_for_each_desktop_mode(tmp_path: Path) -> Non
         assert status.paths["trowel_config"].exists is True
         assert status.paths["memory"].path == data_root / "memory"
         assert status.paths["profile"].path == data_root / "memory" / "profile.md"
+        assert status.paths["connection_registry"].path == data_root / "trowel.db"
         assert status.paths["claude_settings"].path == home / ".claude/settings.json"
         assert status.paths["codex_config"].path == home / ".codex/config.toml"
 

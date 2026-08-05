@@ -12,6 +12,9 @@ export const browserPlatform: PlatformPort = {
   openPath: async () => {
     throw new Error("browser mode cannot open a raw local path");
   },
+  revealPath: async () => {
+    throw new Error("browser mode cannot reveal a raw local path");
+  },
   requestQuit: async () => undefined,
   getDiagnostics: async () => null,
 };

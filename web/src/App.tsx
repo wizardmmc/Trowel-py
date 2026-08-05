@@ -1,4 +1,4 @@
-/** 组合花园、提取、复习、Agent、统计和画像六个顶层工具。 */
+/** 组合花园、提取、复习、Agent、统计、画像和设置七个顶层工具。 */
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AppLayout, type Tool } from "./components/layout/AppLayout";
@@ -16,6 +16,10 @@ import { useReviewStore } from "./stores/reviewStore";
 const StatisticsWorkspace = lazy(async () => {
   const module = await import("./statistics/ui/StatisticsWorkspace");
   return { default: module.StatisticsWorkspace };
+});
+const SettingsWorkspace = lazy(async () => {
+  const module = await import("./settings");
+  return { default: module.SettingsWorkspace };
 });
 const READ_ONLY_INSPECTION =
   import.meta.env.VITE_TROWEL_INSPECTION_MODE === "1";
@@ -46,6 +50,9 @@ function App() {
   const [statisticsMounted, setStatisticsMounted] = useState(
     () => readInitialTool() === "statistics",
   );
+  const [settingsMounted, setSettingsMounted] = useState(
+    () => readInitialTool() === "settings",
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
@@ -59,8 +66,12 @@ function App() {
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (activeTool === "statistics") {
-      url.searchParams.set("tool", "statistics");
+    if (activeTool === "statistics" || activeTool === "settings") {
+      url.searchParams.set("tool", activeTool);
+      if (activeTool === "settings") {
+        url.searchParams.delete("statistics_tab");
+        url.searchParams.delete("trace_id");
+      }
     } else {
       url.searchParams.delete("tool");
       url.searchParams.delete("statistics_tab");
@@ -74,6 +85,7 @@ function App() {
       startSession();
     } else {
       if (tool === "statistics") setStatisticsMounted(true);
+      if (tool === "settings") setSettingsMounted(true);
       setActiveTool(tool);
     }
     setSidebarOpen(false);
@@ -156,6 +168,15 @@ function App() {
           </Suspense>
         </div>
       )}
+      {settingsMounted && (
+        <div className="settings-workspace-slot" hidden={activeTool !== "settings"}>
+          <Suspense
+            fallback={<div className="settings-workspace-loading" role="status">正在打开设置…</div>}
+          >
+            <SettingsWorkspace active={activeTool === "settings"} />
+          </Suspense>
+        </div>
+      )}
 
       <ReviewSession />
 
@@ -195,7 +216,7 @@ function App() {
 function readInitialTool(): Tool {
   if (READ_ONLY_INSPECTION) return "statistics";
   const requested = new URLSearchParams(window.location.search).get("tool");
-  return requested === "statistics" ? "statistics" : "garden";
+  return requested === "statistics" || requested === "settings" ? requested : "garden";
 }
 
 export default App;

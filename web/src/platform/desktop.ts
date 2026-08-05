@@ -13,6 +13,7 @@ export function createDesktopPlatform(
     selectWorkdir: (defaultPath) => bridge.selectWorkdir(defaultPath),
     openExternal: (url) => bridge.openExternal(url),
     openPath: (path, root) => bridge.openPath(path, root),
+    revealPath: (path, root) => bridge.revealPath(path, root),
     requestQuit: () => bridge.requestQuit(),
     getDiagnostics: () => bridge.getDiagnostics(),
   };
