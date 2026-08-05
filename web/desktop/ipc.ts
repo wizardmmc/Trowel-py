@@ -75,6 +75,15 @@ export function registerDesktopIpc(options: DesktopIpcOptions): () => void {
     const error = await shell.openPath(allowedPath);
     if (error) throw new Error("operating system could not open the local path");
   });
+  ipcMain.handle(DESKTOP_IPC.revealPath, async (event, rawRequest) => {
+    trusted(event);
+    const request = pathRequest(rawRequest);
+    const [candidate, root] = await Promise.all([
+      realpath(request.path),
+      realpath(request.root),
+    ]);
+    shell.showItemInFolder(assertPathInsideRoot(candidate, root));
+  });
   ipcMain.handle(DESKTOP_IPC.retrySidecar, async (event) => {
     trusted(event);
     await options.host.retry();

@@ -705,6 +705,11 @@ class ConfigurationService:
                     "默认会话配置已经过期",
                     status_code=409,
                 )
+            if configuration.runtime == RuntimeKind.DIRECT_API:
+                raise ConfigurationError(
+                    "AGENT_RUNTIME_REQUIRED",
+                    "Agent 默认配置必须使用可创建会话的 runtime",
+                )
         self.repository.put_agent_defaults(
             expected_version=expected_version,
             session_configuration_id=session_configuration_id,

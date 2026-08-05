@@ -35,6 +35,7 @@ def build_path_status(
         "memory": _entry(memory_root, "directory"),
         "profile": _entry(memory_root / "profile.md", "file"),
         "trowel_config": _entry(data_root / "config.toml", "file"),
+        "connection_registry": _entry(data_root / "trowel.db", "file"),
         "claude_settings": _entry(user_home / ".claude" / "settings.json", "file"),
         "codex_config": _entry(codex_home / "config.toml", "file"),
     }

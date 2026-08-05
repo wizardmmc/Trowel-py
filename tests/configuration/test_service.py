@@ -429,6 +429,58 @@ def test_agent_defaults_can_be_saved_and_reset() -> None:
     assert saved_again.version == reset.version + 1
 
 
+@pytest.mark.asyncio
+async def test_direct_api_configuration_cannot_be_saved_as_agent_default() -> None:
+    """direct API 只服务后台任务，不能冒充可创建 Agent 会话的 runtime。"""
+
+    fetcher = FakeCatalogFetcher(
+        FetchedCatalog(
+            models=(FetchedModel(id="glm-5.2"),),
+            source_endpoint="https://open.bigmodel.cn/api/anthropic/v1/models",
+        )
+    )
+    service, _repository = build_service(fetcher=fetcher)
+    connection = service.create_connection(
+        ConnectionDraft(
+            name="GLM Weekly direct",
+            runtime=RuntimeKind.DIRECT_API,
+            kind=ConnectionKind.DIRECT_API,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://open.bigmodel.cn/api/anthropic",
+        )
+    )
+    with_secret = service.write_secret(
+        connection.id,
+        expected_version=connection.version,
+        kind=SecretKind.API_KEY,
+        value="test-key",
+    )
+    fetched = await service.fetch_models(
+        connection.id,
+        expected_version=with_secret.version,
+    )
+    configuration = service.create_session_configuration(
+        SessionConfigurationDraft(
+            name="GLM direct Weekly",
+            connection_id=connection.id,
+            model="glm-5.2",
+        ),
+        expected_connection_version=fetched.connection_version,
+    )
+
+    with pytest.raises(ConfigurationError) as raised:
+        service.put_agent_defaults(
+            expected_version=0,
+            session_configuration_id=configuration.id,
+            permission=None,
+            memory_enabled=True,
+            profile_enabled=True,
+            self_enabled=True,
+        )
+
+    assert raised.value.code == "AGENT_RUNTIME_REQUIRED"
+
+
 def test_stale_agent_defaults_update_cannot_overwrite_newer_value() -> None:
     service, _repository = build_service()
     saved = service.put_agent_defaults(

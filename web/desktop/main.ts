@@ -59,6 +59,7 @@ const rendererUrl =
 const diagnosticUrl = pathToFileURL(diagnosticEntry).toString();
 const preloadPath = path.resolve(__dirname, "preload.js");
 const rendererSmoke = process.env.TROWEL_DESKTOP_SMOKE === "1";
+const settingsSmoke = process.env.TROWEL_DESKTOP_SETTINGS_SMOKE === "1";
 const diagnosticSmoke = process.env.TROWEL_DESKTOP_DIAGNOSTIC_SMOKE === "1";
 const residencySmoke = process.env.TROWEL_DESKTOP_RESIDENCY_SMOKE === "1";
 const singleInstanceSmoke =
@@ -69,7 +70,7 @@ const serviceDescriptorPath = process.env.TROWEL_DESKTOP_SERVICE_FILE;
 
 configureSafeStorageForSmoke(
   app.commandLine,
-  rendererSmoke || diagnosticSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke,
+  rendererSmoke || settingsSmoke || diagnosticSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke,
 );
 app.setName(PRODUCT_NAME);
 
@@ -219,6 +220,8 @@ async function startDesktopApplication(): Promise<void> {
     const window = ensureWindow();
     if (process.env.TROWEL_RENDERER_URL) {
       await window.loadURL(rendererUrl);
+    } else if (settingsSmoke) {
+      await window.loadFile(rendererEntry, { query: { tool: "settings" } });
     } else {
       await window.loadFile(rendererEntry);
     }
@@ -239,7 +242,7 @@ async function startDesktopApplication(): Promise<void> {
       });
     const runRendererCrashSmoke =
       rendererCrashSmoke && !rendererCrashSmokeStarted;
-    if (rendererSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke) {
+    if (rendererSmoke || settingsSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke) {
       try {
         await rendererReady;
       } catch (error) {
@@ -250,6 +253,16 @@ async function startDesktopApplication(): Promise<void> {
         if (!host) throw new Error("desktop host is not initialized");
         await verifyTelemetrySmoke(host);
         console.log("TROWEL_DESKTOP_SMOKE_OK");
+        app.quit();
+      }
+      if (settingsSmoke) {
+        try {
+          await verifySettingsSmoke(window);
+          console.log("TROWEL_DESKTOP_SETTINGS_SMOKE_OK");
+        } catch (error) {
+          process.exitCode = 1;
+          console.error("TROWEL_DESKTOP_SETTINGS_SMOKE_FAILED", error);
+        }
         app.quit();
       }
       if (residencySmoke) {
@@ -588,6 +601,80 @@ async function waitForRendererReady(window: BrowserWindow): Promise<void> {
   }
   throw new Error(
     `renderer did not settle its sidecar API requests: ${JSON.stringify(lastState)}`,
+  );
+}
+
+/** 等待设置页真实 DTO 落地，并核对桌面平台专属布局与路径能力。 */
+async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastState: unknown = null;
+  while (Date.now() < deadline) {
+    try {
+      lastState = await window.webContents.executeJavaScript(
+        `(() => {
+          const workspace = document.querySelector('.settings-workspace');
+          const sidebar = document.querySelector('.settings-sidebar');
+          const dragRegion = document.querySelector('.settings-drag-region');
+          const labels = Array.from(
+            document.querySelectorAll('.settings-sidebar__item strong'),
+            (element) => element.textContent?.trim() ?? '',
+          );
+          const revealButtons = Array.from(
+            document.querySelectorAll('.settings-path-row button[aria-label^="打开"]'),
+          );
+          return {
+            tool: new URL(location.href).searchParams.get('tool'),
+            platform: document.documentElement.dataset.platform ?? null,
+            workspace: workspace !== null,
+            labels,
+            pathRows: document.querySelectorAll('.settings-path-row').length,
+            hasEnabledReveal: revealButtons.some((element) => !element.disabled),
+            secondaryWidth: sidebar?.getBoundingClientRect().width ?? 0,
+            dragRegionHeight: dragRegion?.getBoundingClientRect().height ?? 0,
+            dragRegionMode: dragRegion
+              ? getComputedStyle(dragRegion).getPropertyValue('-webkit-app-region')
+              : '',
+            horizontalOverflow:
+              document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          };
+        })()`,
+        true,
+      );
+    } catch {
+      lastState = "settings renderer unavailable";
+    }
+    if (
+      lastState &&
+      typeof lastState === "object" &&
+      "tool" in lastState &&
+      lastState.tool === "settings" &&
+      "platform" in lastState &&
+      lastState.platform === "desktop" &&
+      "workspace" in lastState &&
+      lastState.workspace === true &&
+      "labels" in lastState &&
+      Array.isArray(lastState.labels) &&
+      lastState.labels.join("|") ===
+        "存储与路径|模型连接|后台任务|Agent 默认|连接诊断|关于" &&
+      "pathRows" in lastState &&
+      lastState.pathRows === 7 &&
+      "hasEnabledReveal" in lastState &&
+      lastState.hasEnabledReveal === true &&
+      "secondaryWidth" in lastState &&
+      lastState.secondaryWidth === 216 &&
+      "dragRegionHeight" in lastState &&
+      lastState.dragRegionHeight === 48 &&
+      "dragRegionMode" in lastState &&
+      lastState.dragRegionMode === "drag" &&
+      "horizontalOverflow" in lastState &&
+      lastState.horizontalOverflow === false
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `settings renderer did not reach the desktop contract: ${JSON.stringify(lastState)}`,
   );
 }
 

@@ -18,11 +18,13 @@ it("exposes only typed desktop operations", async () => {
     "openTrowel",
     "requestQuit",
     "retrySidecar",
+    "revealPath",
     "selectWorkdir",
   ]);
 
   await bridge.openExternal("https://example.com/docs");
   await bridge.openPath("/repo/readme.md", "/repo");
+  await bridge.revealPath("/repo/readme.md", "/repo");
   await bridge.selectWorkdir("/repo");
   await bridge.openTrowel();
 
@@ -35,6 +37,10 @@ it("exposes only typed desktop operations", async () => {
     path: "/repo/readme.md",
     root: "/repo",
   });
-  expect(invoke).toHaveBeenNthCalledWith(3, "desktop:select-workdir", "/repo");
-  expect(invoke).toHaveBeenNthCalledWith(4, "desktop:open-trowel");
+  expect(invoke).toHaveBeenNthCalledWith(3, "desktop:reveal-path", {
+    path: "/repo/readme.md",
+    root: "/repo",
+  });
+  expect(invoke).toHaveBeenNthCalledWith(4, "desktop:select-workdir", "/repo");
+  expect(invoke).toHaveBeenNthCalledWith(5, "desktop:open-trowel");
 });

@@ -24,6 +24,9 @@ export function createDesktopBridge(invoke: InvokeDesktopIpc): DesktopBridge {
     openPath: async (path: string, root: string) => {
       await invoke(DESKTOP_IPC.openPath, { path, root });
     },
+    revealPath: async (path: string, root: string) => {
+      await invoke(DESKTOP_IPC.revealPath, { path, root });
+    },
     requestQuit: async () => {
       await invoke(DESKTOP_IPC.requestQuit);
     },

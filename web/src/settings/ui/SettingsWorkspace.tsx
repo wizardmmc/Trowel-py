@@ -1,0 +1,205 @@
+/** 组装设置二级导航、状态容器、六组纯展示页面和平台操作。 */
+
+import { useEffect } from "react";
+import { useStore } from "zustand";
+import type { StoreApi } from "zustand/vanilla";
+import { copyText } from "../../lib/copyText";
+import { getPlatform } from "../../platform";
+import { useNotificationStore } from "../../stores/notificationStore";
+import { settingsStore, type SettingsState } from "../application/store";
+import type { SecretKind } from "../domain/types";
+import { AboutPanel } from "./AboutPanel";
+import { AgentDefaultsPanel } from "./AgentDefaultsPanel";
+import { ConnectionsPanel } from "./ConnectionsPanel";
+import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { PathsPanel } from "./PathsPanel";
+import { SettingsSidebar } from "./SettingsSidebar";
+import { TaskBindingsPanel } from "./TaskBindingsPanel";
+import { SETTINGS_SECTIONS } from "./sectionMetadata";
+import "./settings-workspace.css";
+
+export interface SettingsWorkspaceProps {
+  readonly store?: StoreApi<SettingsState>;
+  readonly active?: boolean;
+}
+
+/** 订阅设置 owner，并把 I/O 回调下发给不直接接触 store 的页面。 */
+export function SettingsWorkspace({
+  store = settingsStore,
+  active = true,
+}: SettingsWorkspaceProps) {
+  const state = useStore(store);
+  const addNotification = useNotificationStore((item) => item.addNotification);
+  const platform = getPlatform();
+
+  useEffect(() => {
+    if (active) void store.getState().initialize();
+  }, [active, store]);
+
+  useEffect(() => {
+    if (active && state.activeSection === "diagnostics") {
+      void store.getState().refreshDiagnostics();
+    }
+  }, [active, state.activeSection, store]);
+
+  const revealPath = async (path: string) => {
+    try {
+      await platform.revealPath(path, path);
+    } catch {
+      addNotification("系统未能打开这个位置", "warning");
+    }
+  };
+  const copyPath = async (path: string) => {
+    try {
+      await copyText(path);
+      addNotification("路径已复制", "success");
+    } catch {
+      addNotification("路径复制失败", "warning");
+    }
+  };
+  const reloadConnection = async () => {
+    const id = store.getState().connectionEditor?.connectionId;
+    const reloaded = await store.getState().reloadCatalog();
+    if (reloaded && id) store.getState().openConnection(id);
+  };
+  const deleteCurrentConnection = () => {
+    const name = store.getState().connectionEditor?.draft.name || "这条连接";
+    if (!window.confirm(`删除“${name}”？相关凭据也会一并删除。`)) return;
+    void store.getState().removeConnection();
+  };
+  const reloadTask = async (taskId: Parameters<SettingsState["reloadTask"]>[0]) => {
+    const reloaded = await store.getState().reloadCatalog();
+    if (reloaded) store.getState().reloadTask(taskId);
+  };
+  const reloadAgentDefaults = async () => {
+    const reloaded = await store.getState().reloadCatalog();
+    if (reloaded) store.getState().reloadAgentDefaults();
+  };
+  const writeConnectionSecret = async (kind: SecretKind, value: string) => {
+    await store.getState().writeConnectionSecret(kind, value);
+    const editor = store.getState().connectionEditor;
+    addNotification(editor?.error ? "凭据保存失败" : "凭据状态已更新", editor?.error ? "warning" : "success");
+  };
+  const activeSectionTitle = SETTINGS_SECTIONS.find(
+    (section) => section.id === state.activeSection,
+  )?.label;
+  const sidebarStatus = state.loading || !state.initialized
+    ? "loading"
+    : state.error && !state.catalog
+      ? "error"
+      : "ready";
+
+  return (
+    <div className="settings-workspace">
+      <div className="settings-drag-region" aria-hidden="true">Trowel</div>
+      <div className="settings-tool-layout">
+        <SettingsSidebar
+          activeSection={state.activeSection}
+          status={sidebarStatus}
+          onSectionChange={state.setActiveSection}
+        />
+        <section className="settings-main-surface">
+          <header className="settings-surface-topbar">
+            <strong>{activeSectionTitle}</strong>
+            <span>更改只影响之后创建的会话和任务</span>
+          </header>
+          <main className="settings-detail">
+            {state.loading && !state.catalog ? (
+              <div className="settings-page-state" role="status">正在读取设置…</div>
+            ) : state.error && !state.catalog ? (
+              <div className="settings-page-state is-error" role="alert">
+                <strong>设置读取失败</strong>
+                <span>{state.error}</span>
+                <button type="button" className="settings-button" onClick={() => void state.initialize()}>重新读取</button>
+              </div>
+            ) : (
+              <>
+                {state.activeSection === "paths" && (
+                  <PathsPanel
+                    paths={state.paths}
+                    error={state.pathsError}
+                    browserMode={platform.environment === "browser"}
+                    onCopy={(path) => void copyPath(path)}
+                    onReveal={(path) => void revealPath(path)}
+                    onRefresh={() => void state.refreshPaths()}
+                  />
+                )}
+                {state.activeSection === "connections" && (
+                  <ConnectionsPanel
+                    catalog={state.catalog}
+                    editor={state.connectionEditor}
+                    runtimeFilter={state.connectionRuntimeFilter}
+                    onRuntimeFilterChange={state.setConnectionRuntimeFilter}
+                    onOpen={state.openConnection}
+                    onCreate={state.createConnectionDraft}
+                    onNewKindChange={state.changeNewConnectionKind}
+                    onClose={state.closeConnection}
+                    onDraftChange={state.updateConnectionDraft}
+                    onRoleChange={state.updateClaudeRole}
+                    onSave={() => void state.saveConnection()}
+                    onDelete={deleteCurrentConnection}
+                    onFetchModels={() => void state.fetchConnectionModels()}
+                    onWriteSecret={writeConnectionSecret}
+                    onDeleteSecret={(kind) => void state.deleteConnectionSecret(kind)}
+                    onReload={() => void reloadConnection()}
+                  />
+                )}
+                {state.activeSection === "tasks" && (
+                  <TaskBindingsPanel
+                    catalog={state.catalog}
+                    drafts={state.taskDrafts}
+                    enabled={state.taskEnabled}
+                    saving={state.taskSaving}
+                    errors={state.taskErrors}
+                    onChange={(taskId, configurationId) => {
+                      store.getState().setTaskDraft(taskId, configurationId);
+                      if (store.getState().taskEnabled[taskId]) {
+                        void store.getState().saveTask(taskId);
+                      }
+                    }}
+                    onToggle={(taskId, enabled) => {
+                      store.getState().setTaskEnabled(taskId, enabled);
+                      void store.getState().saveTask(taskId);
+                    }}
+                    onRetry={(taskId) => void store.getState().saveTask(taskId)}
+                    onReload={(taskId) => void reloadTask(taskId)}
+                  />
+                )}
+                {state.activeSection === "agent" && (
+                  <AgentDefaultsPanel
+                    catalog={state.catalog}
+                    draft={state.agentDraft}
+                    dirty={state.agentDirty}
+                    saving={state.agentSaving}
+                    error={state.agentError}
+                    conflict={state.agentConflict}
+                    onChange={(patch) => {
+                      store.getState().updateAgentDraft(patch);
+                      void store.getState().saveAgentDefaults();
+                    }}
+                    onRetry={() => void store.getState().saveAgentDefaults()}
+                    onReload={() => void reloadAgentDefaults()}
+                  />
+                )}
+                {state.activeSection === "diagnostics" && (
+                  <DiagnosticsPanel
+                    diagnostics={state.diagnostics}
+                    error={state.diagnosticsError}
+                    fetchedAt={state.diagnosticsFetchedAt}
+                    onRefresh={() => void state.refreshDiagnostics()}
+                  />
+                )}
+                {state.activeSection === "about" && (
+                  <AboutPanel
+                    version={platform.appVersion}
+                    environment={platform.environment}
+                  />
+                )}
+              </>
+            )}
+          </main>
+        </section>
+      </div>
+    </div>
+  );
+}
