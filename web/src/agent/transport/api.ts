@@ -159,7 +159,8 @@ export interface AgentSessionCloseResult {
 }
 
 const AGENT_API_BASE = "/api/agent";
-const MODEL_CATALOG_TIMEOUT_MS = 5_000;
+// 后端目录预算为 25 秒；renderer 只在后端无法返回时执行最终兜底。
+const MODEL_CATALOG_TIMEOUT_MS = 30_000;
 
 interface ApiEnvelope<T, M = unknown> {
   readonly success: boolean;

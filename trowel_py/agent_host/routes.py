@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.capabilities import (
@@ -58,6 +58,9 @@ from trowel_py.telemetry.port import NoopTelemetryPort
 from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 
 router = APIRouter()
+
+# renderer 允许 30 秒；后端先结束并预留 5 秒传输结构化错误。
+MODEL_CATALOG_TIMEOUT_S = 25.0
 
 _LOCAL_FILE_HEADERS = {
     "Cache-Control": "no-store",
@@ -1201,10 +1204,10 @@ def list_runtimes(
     return {"success": True, "data": runtimes, "error": None}
 
 
-@router.get("/models")
+@router.get("/models", response_model=dict)
 async def list_models(
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict | JSONResponse:
     """返回当前 Codex 提供的模型目录。
 
     Trowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。
@@ -1219,7 +1222,25 @@ async def list_models(
 
     if not hub.runtime_available(Runtime.CODEX):
         return {"success": True, "data": {"models": []}, "error": None}
-    models = await _await_hub(hub.list_codex_models)
+    try:
+        async with asyncio.timeout(MODEL_CATALOG_TIMEOUT_S):
+            models = await _await_hub(hub.list_codex_models)
+    except TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": "request_timeout",
+                    "message": "Codex model catalog request timed out",
+                },
+                "meta": {
+                    "operation": "codex_model_catalog",
+                    "timeout_ms": int(MODEL_CATALOG_TIMEOUT_S * 1000),
+                },
+            },
+        )
     return {"success": True, "data": {"models": models}, "error": None}
 
 
