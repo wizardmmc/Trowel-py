@@ -23,7 +23,7 @@ from trowel_py.cc_host import session_lifecycle
 from trowel_py.cc_host.history import parse_history
 from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
-from trowel_py.cc_host.session_scan import count_sessions, list_sessions
+from trowel_py.cc_host.session_scan import list_sessions
 from trowel_py.cc_host.slash_items import list_slash_items
 from trowel_py.resource_lifecycle.processes import ProcessController
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
@@ -43,9 +43,11 @@ _HISTORY_DROPDOWN_LIMIT = 10
 # registry 与派生索引由本模块持有；进程重启只清运行中状态，不影响磁盘历史。
 _REGISTRY: dict[str, CCHost] = {}
 
-_WORKDIR_INDEX: dict[str, set[str]] = {}   # workdir → {sid}（命名序号 + 按 workdir 查询）
-_SESSION_NAMES: dict[str, str] = {}         # sid → 显示名（basename + #N）
-_ACTIVE_SID: str | None = None              # 当前活跃 session（多开切换）
+_WORKDIR_INDEX: dict[
+    str, set[str]
+] = {}  # workdir → {sid}（命名序号 + 按 workdir 查询）
+_SESSION_NAMES: dict[str, str] = {}  # sid → 显示名（basename + #N）
+_ACTIVE_SID: str | None = None  # 当前活跃 session（多开切换）
 # MAX_RUNNING 仅保留公开兼容；当前路由只执行连接数门禁。
 MAX_RUNNING = USER_RUNNING_LIMIT
 MAX_CONNECTIONS = USER_CONNECTION_LIMIT
@@ -75,12 +77,31 @@ def set_active_session_id(session_id: str | None) -> None:
 
 
 def _require(sid: str, registry: dict[str, CCHost]) -> CCHost:
-    """返回已注册 host；未知 id 在进入流或执行副作用前抛出 404。"""
+    """只返回公开用户 host；内部 owner 会话与未知 id 都表现为 404。"""
 
     host = registry.get(sid)
-    if host is None:
+    if host is None or getattr(host, "session_kind", "user") == "discussion":
         raise HTTPException(status_code=404, detail=f"session {sid} not found")
     return host
+
+
+def _non_user_cc_session_ids(request: Request) -> frozenset[str]:
+    """读取 Agent Host 长期登记的非用户 CC 会话身份。
+
+    Args:
+        request: 用于取得应用唯一 Session Hub 的公开 HTTP 请求。
+
+    Returns:
+        必须从旧 CC 恢复入口和历史列表排除的原生会话 ID；独立路由测试未装配
+        Session Hub 时返回空集合。
+    """
+
+    hub = getattr(request.app.state, "agent_hub", None)
+    if hub is None:
+        return frozenset()
+    from trowel_py.agent_host.binding import Runtime
+
+    return hub.non_user_native_ids(Runtime.CLAUDE_CODE)
 
 
 def _sse(event: object) -> str:
@@ -210,6 +231,12 @@ def create_session(
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """创建新的 CC 会话，可通过原生会话 id 恢复已有会话。"""
+    if req.session_kind == "discussion":
+        raise HTTPException(status_code=404, detail="session kind not found")
+    if req.resume_from is not None and req.resume_from in _non_user_cc_session_ids(
+        request
+    ):
+        raise HTTPException(status_code=404, detail="session not found")
     opened = open_cc_session(req, request, registry)
     return {
         "success": True,
@@ -301,7 +328,11 @@ async def answer_elicit(
         ok = await host.cancel_elicit()
     else:
         ok = await host.answer_elicit(body.answers)
-    return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
+    return {
+        "success": ok,
+        "data": {"answered": ok},
+        "error": None if ok else "no_pending_elicit",
+    }
 
 
 @router.post("/sessions/{sid}/revert")
@@ -321,7 +352,9 @@ async def revert_turn(
     except checkpoint.NotAGitRepoError:
         raise HTTPException(status_code=400, detail="workdir is not a git repo")
     except checkpoint.UnknownCheckpointError:
-        raise HTTPException(status_code=404, detail=f"checkpoint {body.turn_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"checkpoint {body.turn_id} not found"
+        )
     # reload 丢弃内存进程；下一次发送从截断后的 jsonl 恢复。
     await host.reload()
     return {
@@ -337,15 +370,20 @@ async def revert_turn(
 
 @router.get("/sessions")
 def list_history(
+    request: Request,
     workdir: str = Query(..., min_length=1),
 ) -> dict:
     """列出工作目录最近 10 个可恢复 CC 会话，并在 meta.total 返回磁盘总数。"""
-    items = [asdict(s) for s in list_sessions(workdir, limit=_HISTORY_DROPDOWN_LIMIT)]
+    visible = list_sessions(
+        workdir,
+        excluded_ids=_non_user_cc_session_ids(request),
+    )
+    items = [asdict(s) for s in visible[:_HISTORY_DROPDOWN_LIMIT]]
     return {
         "success": True,
         "data": items,
         "error": None,
-        "meta": {"total": count_sessions(workdir), "limit": _HISTORY_DROPDOWN_LIMIT},
+        "meta": {"total": len(visible), "limit": _HISTORY_DROPDOWN_LIMIT},
     }
 
 
@@ -371,9 +409,7 @@ def list_models_endpoint() -> dict:
     return {"success": True, "data": items, "error": None}
 
 
-def _init_roster_for_workdir(
-    workdir: str, registry: dict[str, CCHost]
-) -> list[str]:
+def _init_roster_for_workdir(workdir: str, registry: dict[str, CCHost]) -> list[str]:
     """返回指定工作目录中可用的初始化命令。
 
     优先读取该目录当前选中会话的命令；该会话不属于目标目录或没有命令时，

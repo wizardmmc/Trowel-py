@@ -21,6 +21,10 @@ from trowel_py.profile.distill.adapters.claude import (
 from trowel_py.profile.distill.adapters.codex import (
     build_codex_backlog,
 )
+from trowel_py.profile.distill.adapters.discussion import (
+    DiscussionRepositoryOpener,
+    build_discussion_backlog,
+)
 from trowel_py.profile.distill.agent import HostFactory
 from trowel_py.profile.distill.gate import DistillError
 from trowel_py.profile.distill.models import ProfileDistillCandidate
@@ -29,12 +33,15 @@ from trowel_py.profile.distill.state import (
     load_codex_processed,
     load_processed,
 )
-from trowel_py.profile.suggestions import append_suggestions
+from trowel_py.profile.suggestions import append_suggestions_once as append_suggestions
 from trowel_py.memory.sessions_repo import (
     create_sessions_repository,
     open_sessions_db,
 )
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
+from trowel_py.discussion.artifacts import DiscussionArtifactStore
+from trowel_py.discussion.models import Discussion, UserMessage
+from trowel_py.discussion.repository import open_discussion_repository
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +86,10 @@ async def run_daily_distill(
     host_factory: HostFactory | None = None,
     date_str: str | None = None,
     resource_registry: ResourceRegistry | None = None,
+    discussion_repository_opener: DiscussionRepositoryOpener | None = None,
+    discussion_data_root: Path | None = None,
 ) -> None:
-    """串行提炼有新内容的 Claude 会话和 Codex turns。"""
+    """串行提炼 Claude、Codex 和 discussion 顶层用户原话。"""
     root = memory_root if memory_root is not None else resolve_memory_root()
     if date_str is None:
         date_str = datetime.now().date().isoformat()
@@ -95,7 +104,13 @@ async def run_daily_distill(
     try:
         with _distill_lock(root):
             await _run_daily_distill_locked(
-                root, proxy_base_url, settings_path, host_factory, date_str
+                root,
+                proxy_base_url,
+                settings_path,
+                host_factory,
+                date_str,
+                discussion_repository_opener,
+                discussion_data_root,
             )
     except BlockingIOError:
         logger.warning("profile distill already running; skipping this run")
@@ -107,6 +122,8 @@ async def _run_daily_distill_locked(
     settings_path: Path | str | None,
     host_factory: HostFactory | None,
     date_str: str,
+    discussion_repository_opener: DiscussionRepositoryOpener | None,
+    discussion_data_root: Path | None,
 ) -> None:
     """按完成顺序串行提炼 Claude 字节区间和 Codex turns。
 
@@ -122,6 +139,9 @@ async def _run_daily_distill_locked(
         settings_path: 传给单会话提炼的 provider settings 路径。
         host_factory: 可选的测试或替代 host 构造器。
         date_str: 新建议和队列使用的日期。
+        discussion_repository_opener: discussion 主库短连接工厂；测试使用自定义
+            Memory 根且未注入时不读取正式应用主库。
+        discussion_data_root: 测试可覆盖的 discussion artifact 数据根。
 
     Raises:
         OSError: 无法访问数据库、来源、队列或水位文件。
@@ -133,11 +153,38 @@ async def _run_daily_distill_locked(
         repo = create_sessions_repository(conn)
         claude_candidates = repo.claude.find_all_completed_sessions()
         codex_candidates = repo.codex.list_completed_user_turns()
+        effective_discussion_opener = discussion_repository_opener
+        if effective_discussion_opener is None:
+            configured_root = resolve_memory_root()
+            if root.resolve() == configured_root.resolve():
+                effective_discussion_opener = open_discussion_repository
+        pending_messages: tuple[UserMessage, ...] = ()
+        discussions: tuple[Discussion, ...] = ()
+        if effective_discussion_opener is not None:
+            with effective_discussion_opener() as discussion_repository:
+                pending_messages = discussion_repository.list_pending_profile_messages()
+                discussion_ids = tuple(
+                    dict.fromkeys(item.discussion_id for item in pending_messages)
+                )
+                discussions = tuple(
+                    discussion_repository.get_discussion(item_id)
+                    for item_id in discussion_ids
+                )
+        discussion_artifacts = DiscussionArtifactStore(discussion_data_root)
         backlog: list[ProfileDistillCandidate] = [
             *build_claude_backlog(claude_candidates, load_processed(root)),
             *build_codex_backlog(
                 codex_candidates,
                 load_codex_processed(root),
+            ),
+            *(
+                build_discussion_backlog(
+                    discussions,
+                    discussion_artifacts,
+                    effective_discussion_opener,
+                )
+                if effective_discussion_opener is not None
+                else ()
             ),
         ]
         backlog.sort(
@@ -149,9 +196,10 @@ async def _run_daily_distill_locked(
         )
         logger.info(
             "profile distill: %d Claude candidate(s), %d Codex candidate(s),"
-            " %d pending source(s) (date_str=%s)",
+            " %d discussion user message(s), %d pending source(s) (date_str=%s)",
             len(claude_candidates),
             len(codex_candidates),
+            len(pending_messages),
             len(backlog),
             date_str,
         )

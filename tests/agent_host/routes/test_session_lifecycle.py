@@ -10,6 +10,7 @@ from trowel_py.agent_host.hub import SessionHub
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.lifecycle import SessionCloseResult
+from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 
 from tests.agent_host.routes.support import (
     cc_payload,
@@ -96,6 +97,112 @@ def test_post_sessions_invalid_runtime_422(
     assert response.status_code == 422
 
 
+def test_public_agent_routes_hide_internal_discussion_session(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """participant binding 不得通过普通 Agent 查询、历史或活动列表泄漏。"""
+
+    binding = hub.create(
+        CreateAgentSessionRequest(
+            runtime="claude_code",
+            workdir=str(workdir),
+            session_kind="discussion",
+            owner_ref="discussion:test:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    assert client.get(f"/api/agent/sessions/{binding.session_id}").status_code == 404
+    assert (
+        client.get(f"/api/agent/sessions/{binding.session_id}/history").status_code
+        == 404
+    )
+    active = client.get("/api/agent/sessions/active").json()["data"]["sessions"]
+    assert all(item["session_id"] != binding.session_id for item in active)
+
+
+def test_public_create_rejects_reserved_discussion_kind(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    """renderer 即使伪造 owner_ref 也不能创建内部 participant session。"""
+
+    response = client.post(
+        "/api/agent/sessions",
+        json={
+            "runtime": "claude_code",
+            "workdir": str(workdir),
+            "session_kind": "discussion",
+            "owner_ref": "discussion:test:participant:0:v1",
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_public_create_cannot_resume_discussion_native_session(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """renderer 不能把已登记的 participant 原生历史重绑为用户会话。"""
+
+    hub.create(
+        CreateAgentSessionRequest(
+            runtime="claude_code",
+            workdir=str(workdir),
+            resume_from="private-native-session",
+            session_kind="discussion",
+            owner_ref="discussion:resume:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    response = client.post(
+        "/api/agent/sessions",
+        json=cc_payload(workdir, resume_from="private-native-session"),
+    )
+
+    assert response.status_code == 404
+
+
+def test_discussion_binding_does_not_replace_user_session_defaults(
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """内部 participant 的连接与关闭注入开关不能污染新建用户会话默认值。"""
+
+    hub.create(CreateAgentSessionRequest(**cc_payload(workdir, model="user-model")))
+    hub.create(
+        CreateAgentSessionRequest(
+            runtime="codex",
+            workdir=str(workdir),
+            model="private-model",
+            session_kind="discussion",
+            owner_ref="discussion:defaults:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    defaults = hub.latest_session_defaults()
+
+    assert defaults is not None
+    assert defaults["runtime"] == "claude_code"
+    assert defaults["model"] == "user-model"
+    assert defaults["memory_enabled"] is True
+
+
 def test_delegate_connection_capacity_returns_stable_409(
     hub_factory: Callable[[CapacityLimits | None], SessionHub],
     client_factory: Callable[[SessionHub], TestClient],
@@ -119,9 +226,7 @@ def test_delegate_connection_capacity_returns_stable_409(
         )
 
     assert response.status_code == 409
-    assert response.json() == {
-        "detail": "当前委派数量已满：连接上限为 1"
-    }
+    assert response.json() == {"detail": "当前委派数量已满：连接上限为 1"}
 
 
 def test_twenty_session_runtime_pressure_gate(
@@ -145,9 +250,7 @@ def test_twenty_session_runtime_pressure_gate(
         )
         assert response.status_code == 200
 
-    connection_overflow = client.post(
-        "/api/agent/sessions", json=cc_payload(workdir)
-    )
+    connection_overflow = client.post("/api/agent/sessions", json=cc_payload(workdir))
     running_overflow = client.post(
         f"/api/agent/sessions/{sessions[5]['session_id']}/turns",
         json={"text": "sixth"},
@@ -157,17 +260,24 @@ def test_twenty_session_runtime_pressure_gate(
 
     for session in sessions:
         assert client.get("/api/agent/session-defaults").status_code == 200
-        assert client.get(
-            f"/api/agent/sessions/{session['session_id']}/history"
-        ).status_code == 200
+        assert (
+            client.get(
+                f"/api/agent/sessions/{session['session_id']}/history"
+            ).status_code
+            == 200
+        )
     for session in sessions[:5]:
-        assert client.post(
-            f"/api/agent/sessions/{session['session_id']}/interrupt"
-        ).status_code == 200
+        assert (
+            client.post(
+                f"/api/agent/sessions/{session['session_id']}/interrupt"
+            ).status_code
+            == 200
+        )
     for session in sessions:
-        assert client.delete(
-            f"/api/agent/sessions/{session['session_id']}"
-        ).status_code == 200
+        assert (
+            client.delete(f"/api/agent/sessions/{session['session_id']}").status_code
+            == 200
+        )
 
     assert hub.list_active()[0] == []
 
@@ -232,9 +342,7 @@ def test_activate_delegate_is_rejected(
         codex_payload(workdir, session_kind="delegate"),
     )
 
-    response = client.post(
-        f"/api/agent/sessions/{delegate['session_id']}/activate"
-    )
+    response = client.post(f"/api/agent/sessions/{delegate['session_id']}/activate")
 
     assert response.status_code == 422
 

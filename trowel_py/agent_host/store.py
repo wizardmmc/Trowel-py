@@ -171,8 +171,45 @@ class BindingStore:
 
         with self._lock(exclusive=True):
             sessions = self._load_raw()
+            if binding.owner_ref is not None:
+                conflicting = next(
+                    (
+                        session_id
+                        for session_id, payload in sessions.items()
+                        if session_id != binding.session_id
+                        and payload.get("owner_ref") == binding.owner_ref
+                    ),
+                    None,
+                )
+                if conflicting is not None:
+                    raise ValueError(
+                        "agent session owner_ref already belongs to another binding"
+                    )
             sessions[binding.session_id] = binding.to_dict()
             self._save_raw(sessions)
+
+    def find_by_owner_ref(self, owner_ref: str) -> SessionBinding | None:
+        """按内部 owner_ref 查找唯一 binding。
+
+        Args:
+            owner_ref: discussion 等内部 owner 使用的稳定归属键。
+
+        Returns:
+            匹配的 binding；没有记录时为 None。
+
+        Raises:
+            ValueError: 旧数据中同一 owner_ref 意外对应多个 binding。
+        """
+
+        with self._lock(exclusive=False):
+            matches = [
+                payload
+                for payload in self._load_raw().values()
+                if payload.get("owner_ref") == owner_ref
+            ]
+        if len(matches) > 1:
+            raise ValueError("agent session owner_ref is not unique")
+        return binding_from_dict(matches[0]) if matches else None
 
     def get(self, session_id: str) -> SessionBinding | None:
         """按 Trowel 会话 ID 读取一个会话绑定。

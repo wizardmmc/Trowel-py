@@ -119,6 +119,46 @@ def test_build_spawn_env_no_identity_without_mcp_config(tmp_path: Path) -> None:
     assert host._build_spawn_env() is None
 
 
+def test_discussion_spawn_env_removes_trowel_private_root_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """participant 子进程不继承可直接定位 discussion/Memory 私有数据的变量。"""
+
+    for name in (
+        "TROWEL_DATA_ROOT",
+        "TROWEL_DESKTOP_DATA_DIR",
+        "TROWEL_AGENT_SESSIONS_PATH",
+        "MEMORY_ROOT",
+        "TROWEL_MEMORY_ROOT",
+    ):
+        monkeypatch.setenv(name, f"/private/{name}")
+    host = CCHost(
+        "discussion-session",
+        tmp_path,
+        proxy_base_url=None,
+        session_kind="discussion",
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=False,
+        agent_mcp_enabled=False,
+    )
+
+    env = host._build_spawn_env()
+
+    assert env is not None
+    assert all(
+        name not in env
+        for name in (
+            "TROWEL_DATA_ROOT",
+            "TROWEL_DESKTOP_DATA_DIR",
+            "TROWEL_AGENT_SESSIONS_PATH",
+            "MEMORY_ROOT",
+            "TROWEL_MEMORY_ROOT",
+        )
+    )
+
+
 def test_agent_mcp_startup_timeouts_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

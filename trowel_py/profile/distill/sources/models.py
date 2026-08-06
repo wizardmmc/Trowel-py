@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ProfileSourceRuntime = Literal["claude_code", "codex"]
+ProfileSourceRuntime = Literal["claude_code", "codex", "discussion"]
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class ProfileDistillSource:
 
     def __post_init__(self) -> None:
         """拒绝未知运行时、空身份和没有处理目标的来源。"""
-        if self.runtime not in {"claude_code", "codex"}:
+        if self.runtime not in {"claude_code", "codex", "discussion"}:
             raise ValueError(f"unknown profile source runtime: {self.runtime}")
         if not self.source_id:
             raise ValueError("profile source id must not be empty")

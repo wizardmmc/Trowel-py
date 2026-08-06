@@ -470,6 +470,16 @@ class CCHost:
             env["MCP_CONNECTION_NONBLOCKING"] = "false"
             env["MCP_CONNECT_TIMEOUT_MS"] = "5000"
             env["MCP_TIMEOUT"] = "10000"
+        if self.session_kind == "discussion":
+            env = dict(env) if env is not None else dict(os.environ)
+            for private_name in (
+                "TROWEL_DATA_ROOT",
+                "TROWEL_DESKTOP_DATA_DIR",
+                "TROWEL_AGENT_SESSIONS_PATH",
+                "MEMORY_ROOT",
+                "TROWEL_MEMORY_ROOT",
+            ):
+                env.pop(private_name, None)
         return env
 
     async def _ensure_process(self) -> None:

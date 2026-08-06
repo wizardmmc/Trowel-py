@@ -72,6 +72,68 @@ async def test_command_approval_waits_for_answer_and_reuses_native_id() -> None:
     await manager.close()
 
 
+async def test_internal_decline_completes_native_approval_without_timeout() -> None:
+    """内部 discussion 拒绝必须立即完成 app-server Future 并发出回授事件。"""
+
+    recorded = _server_request_fixture("server-request-approval.jsonl")
+
+    async def behavior():
+        """模拟真实 command approval，并要求收到 decline 原生响应。"""
+
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        start = yield Step.recv()
+        yield Step.send({"id": start["id"], "result": _thread_result("thr-1")})
+        turn = yield Step.recv()
+        yield Step.send({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}})
+        params = {**recorded["params"], "threadId": "thr-1", "turnId": "turn-1"}
+        yield Step.send({"method": recorded["method"], "id": 0, "params": params})
+        answer = yield Step.recv()
+        assert answer == {"id": 0, "result": {"decision": "decline"}}
+        yield Step.send(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thr-1",
+                    "turn": {"id": "turn-1", "status": "completed"},
+                },
+            }
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    manager = _manager(fake)
+    session = CodexSession(_cfg("session-a"))
+    manager.register(session)
+    await manager.send(session, "run the probe")
+    await asyncio.sleep(0.05)
+    pending = next(
+        event
+        for event in session.drain()
+        if event.type is CodexEventType.APPROVAL_REQUEST
+        and event.payload["status"] == "pending"
+    )
+
+    answered = manager.decline_request(
+        "session-a",
+        str(pending.payload["request_id"]),
+    )
+    assert answered.status.value == "answered"
+    assert answered.auto_resolved is True
+    assert answered.decision == "decline"
+    await asyncio.sleep(0.05)
+    resolution = next(
+        event
+        for event in session.drain()
+        if event.type is CodexEventType.APPROVAL_REQUEST
+    )
+    assert resolution.payload["status"] == "answered"
+    assert resolution.payload["decision"] == "decline"
+    assert resolution.payload["auto_resolved"] is True
+    await manager.close()
+
+
 async def test_file_approval_without_context_is_auto_declined() -> None:
 
     recorded = _server_request_fixture("server-request-file-approval-075.jsonl")

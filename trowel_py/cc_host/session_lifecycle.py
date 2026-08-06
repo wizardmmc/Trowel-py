@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from trowel_py.agent_capacity import DISCUSSION_CONNECTION_LIMIT
 from trowel_py.agent_host.store import next_session_display_name
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.schemas import CreateSessionRequest
@@ -70,6 +71,7 @@ def open_session(
     owned_settings_path: bool = False,
     close_callback: Any | None = None,
     memory_mcp_enabled: bool | None = None,
+    max_discussion_connections: int = DISCUSSION_CONNECTION_LIMIT,
 ) -> tuple[str, CCHost, str]:
     """按会话类别检查连接池后，创建主机并写入调用方状态。
 
@@ -89,19 +91,36 @@ def open_session(
         owned_settings_path: 是否由新 host 清理传入的私有 settings。
         close_callback: host 关闭或创建回滚后执行的一次性清理函数。
         memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        max_discussion_connections: 研讨 participant 的独立连接上限。
     """
 
     if not Path(req.workdir).is_dir():
         raise CcWorkdirNotFoundError("workdir does not exist")
-    internal_session = req.session_kind != "user"
-    limit = max_delegate_connections if internal_session else max_connections
+    if req.session_kind == "user":
+        pool = "user"
+        limit = max_connections
+    elif req.session_kind == "discussion":
+        pool = "discussion"
+        limit = max_discussion_connections
+    else:
+        pool = "internal"
+        limit = max_delegate_connections
     same_kind_connections = sum(
         1
         for host in registry.values()
-        if (host.session_kind != "user") == internal_session
+        if (
+            "user"
+            if host.session_kind == "user"
+            else "discussion"
+            if host.session_kind == "discussion"
+            else "internal"
+        )
+        == pool
     )
     if same_kind_connections >= limit:
-        if internal_session:
+        if pool == "discussion":
+            raise CcCapacityError(f"当前研讨参与者数量已满：连接上限为 {limit}")
+        if pool == "internal":
             raise CcCapacityError(f"当前委派数量已满：连接上限为 {limit}")
         raise CcCapacityError(f"连接数已达上限（{limit}），请先关闭一些 session")
     sid = uuid.uuid4().hex
@@ -118,9 +137,7 @@ def open_session(
             workdir=req.workdir,
             permission=req.permission_mode,
             memory_enabled=(
-                req.memory_enabled
-                if memory_mcp_enabled is None
-                else memory_mcp_enabled
+                req.memory_enabled if memory_mcp_enabled is None else memory_mcp_enabled
             ),
             agent_mcp_enabled=req.agent_mcp_enabled,
             memory_root=str(resolve_memory_root()),
@@ -227,7 +244,10 @@ def init_roster_for_workdir(
         sid for sid in sids if sid != active_session_id
     ]
     for sid in ordered:
-        roster = getattr(registry.get(sid), "_init_roster", None)
+        host = registry.get(sid)
+        if host is None or getattr(host, "session_kind", "user") != "user":
+            continue
+        roster = getattr(host, "_init_roster", None)
         if roster:
             return roster
     return []

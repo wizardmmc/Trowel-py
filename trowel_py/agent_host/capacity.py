@@ -7,7 +7,11 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from trowel_py.agent_capacity import USER_RUNNING_LIMIT
+from trowel_py.agent_capacity import (
+    DISCUSSION_CONNECTION_LIMIT,
+    DISCUSSION_RUNNING_LIMIT,
+    USER_RUNNING_LIMIT,
+)
 from trowel_py.agent_host.binding import Runtime, SessionBinding, SessionKind
 from trowel_py.agent_host.runtimes.base import (
     RuntimeLiveState,
@@ -25,12 +29,16 @@ class CapacityLimits:
         delegate_connections: 两种 runtime 共享的委派子会话连接上限。
         delegate_running: 两种 runtime 共享的委派子会话同时在跑上限。
         user_running: 用户会话同时在跑上限。
+        discussion_connections: discussion participant 最多保留多少个跨轮连接。
+        discussion_running: discussion participant 最多同时运行多少轮次。
     """
 
     user_connections: int
     delegate_connections: int
     delegate_running: int
     user_running: int = USER_RUNNING_LIMIT
+    discussion_connections: int = DISCUSSION_CONNECTION_LIMIT
+    discussion_running: int = DISCUSSION_RUNNING_LIMIT
 
 
 class CapacityLimitError(Exception):
@@ -90,7 +98,13 @@ class SessionCapacityGate:
 
         with self._lock:
             count = self.connection_count(session_kind)
-            if session_kind != "user":
+            if session_kind == "discussion":
+                if count >= self._limits.discussion_connections:
+                    raise CapacityLimitError(
+                        "当前研讨参与者数量已满："
+                        f"连接上限为 {self._limits.discussion_connections}"
+                    )
+            elif session_kind != "user":
                 if count >= self._limits.delegate_connections:
                     raise CapacityLimitError(
                         "当前委派数量已满："
@@ -133,7 +147,16 @@ class SessionCapacityGate:
                     f"（{self._limits.user_running}），等一个完成或中断"
                 )
             if (
-                binding.session_kind != "user"
+                binding.session_kind == "discussion"
+                and self._discussion_running_count_unlocked()
+                >= self._limits.discussion_running
+            ):
+                raise CapacityLimitError(
+                    "当前研讨运行数量已满："
+                    f"同时在跑上限为 {self._limits.discussion_running}"
+                )
+            if (
+                binding.session_kind not in {"user", "discussion"}
                 and self._delegate_running_count_unlocked()
                 >= self._limits.delegate_running
             ):
@@ -164,6 +187,12 @@ class SessionCapacityGate:
 
         with self._lock:
             return self._user_running_count_unlocked()
+
+    def discussion_running_count(self) -> int:
+        """返回已经预留或由 runtime 确认仍在处理的研讨轮次数量。"""
+
+        with self._lock:
+            return self._discussion_running_count_unlocked()
 
     def has_in_flight_turn(self, binding: SessionBinding) -> bool:
         """判断会话是否仍有容量预留或 runtime 未结束轮次。"""
@@ -247,7 +276,25 @@ class SessionCapacityGate:
         runtime_running = sum(
             1
             for binding in self._store.list_all()
-            if binding.session_kind != "user"
+            if binding.session_kind not in {"user", "discussion"}
+            and binding.session_id not in reserved_sessions
+            and self.live_state(binding).has_in_flight_turn
+        )
+        return len(reservation_ids) + runtime_running
+
+    def _discussion_running_count_unlocked(self) -> int:
+        """统计研讨运行占用；调用方必须持有容量锁。"""
+
+        reservation_ids = tuple(
+            session_id
+            for session_id in self._turn_reservations.values()
+            if self._binding_is_discussion(session_id)
+        )
+        reserved_sessions = set(reservation_ids)
+        runtime_running = sum(
+            1
+            for binding in self._store.list_all()
+            if binding.session_kind == "discussion"
             and binding.session_id not in reserved_sessions
             and self.live_state(binding).has_in_flight_turn
         )
@@ -281,7 +328,16 @@ class SessionCapacityGate:
         """判断一个容量预留是否属于仍存在的 delegate 或 probe binding。"""
 
         binding = self._store.get(session_id)
-        return binding is not None and binding.session_kind != "user"
+        return binding is not None and binding.session_kind not in {
+            "user",
+            "discussion",
+        }
+
+    def _binding_is_discussion(self, session_id: str) -> bool:
+        """判断一个容量预留是否属于研讨 participant binding。"""
+
+        binding = self._store.get(session_id)
+        return binding is not None and binding.session_kind == "discussion"
 
     def _binding_occupies_pool(
         self,
@@ -291,6 +347,10 @@ class SessionCapacityGate:
         """判断 runtime 登记项是否占用对应的用户或内部连接池。"""
 
         binding = self._store.get(session_id)
-        return binding is not None and (
-            (binding.session_kind == "user") == (session_kind == "user")
-        )
+        if binding is None:
+            return False
+        if session_kind == "discussion":
+            return binding.session_kind == "discussion"
+        if session_kind == "user":
+            return binding.session_kind == "user"
+        return binding.session_kind not in {"user", "discussion"}

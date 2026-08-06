@@ -8,6 +8,8 @@ import pytest
 from trowel_py.agent_host.binding import Runtime
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.hub import (
+    ConditionMismatchError,
+    FrozenConnectionExpectation,
     InvalidSessionRequestError,
     SessionHub,
     SessionConflictError,
@@ -257,6 +259,57 @@ def test_create_cc_freezes_connection_and_uses_private_proxy_path(
     settings_path.unlink()
     seen["close_callback"]()
     assert proxy_registry.released is True
+
+
+def test_discussion_frozen_connection_preflight_runs_before_runtime_create(
+    tmp_path: Path,
+) -> None:
+    """连接身份漂移时不能先用新凭据接触 participant 的冻结原生历史。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    launch = _connection_launch(RuntimeKind.CLAUDE_CODE)
+    opener_called = False
+
+    def forbidden_opener(*args, **kwargs):
+        """若 preflight 失效，记录越过连接边界并让测试失败。"""
+
+        nonlocal opener_called
+        del args, kwargs
+        opener_called = True
+        raise AssertionError("runtime create must not run before frozen preflight")
+
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry={},
+        cc_opener=forbidden_opener,
+        cc_proxy_base_url="http://127.0.0.1:8123",
+        configuration_resolver=lambda *_args: launch,
+        codex_config_home=tmp_path,
+    )
+
+    with pytest.raises(ConditionMismatchError, match="identity or capability changed"):
+        hub.create(
+            cc_req(
+                workdir,
+                connection_id=launch.connection_id,
+                model=launch.model,
+                memory_enabled=False,
+                profile_enabled=False,
+                self_enabled=False,
+                session_kind="discussion",
+                memory_eligibility=False,
+                agent_mcp_enabled=False,
+                owner_ref="discussion:preflight:participant:0:v1",
+            ),
+            frozen_connection=FrozenConnectionExpectation(
+                connection_identity_version=launch.connection_identity_version + 1,
+                capability_version=launch.capability_version,
+                capability_source=launch.capability_source,
+            ),
+        )
+
+    assert opener_called is False
 
 
 def test_create_codex_registers_session_in_selected_connection_pool(

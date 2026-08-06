@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
@@ -57,7 +58,37 @@ from trowel_py.agent_host.workspaces import (
 from trowel_py.telemetry.port import NoopTelemetryPort
 from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 
-router = APIRouter()
+
+class AgentPublicBoundaryRoute(APIRoute):
+    """阻止 renderer 按 ID 访问 discussion 领域私有会话。"""
+
+    def get_route_handler(self) -> Callable[[Request], Awaitable[Any]]:
+        """在公开 handler 前按持久 session_kind 执行 owner 边界检查。
+
+        Returns:
+            包含 discussion 私有会话过滤的 FastAPI handler。
+        """
+
+        original_handler = super().get_route_handler()
+
+        async def protected_handler(request: Request) -> Any:
+            """让 discussion binding 对公开 Agent API 表现为不存在。"""
+
+            session_id = request.path_params.get("session_id")
+            if isinstance(session_id, str):
+                hub = getattr(request.app.state, "agent_hub", None)
+                binding = hub.get(session_id) if hub is not None else None
+                if binding is not None and binding.session_kind == "discussion":
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": "session not found"},
+                    )
+            return await original_handler(request)
+
+        return protected_handler
+
+
+router = APIRouter(route_class=AgentPublicBoundaryRoute)
 
 # renderer 允许 30 秒；后端先结束并预留 5 秒传输结构化错误。
 MODEL_CATALOG_TIMEOUT_S = 25.0
@@ -437,9 +468,7 @@ async def stream_application_agent_events(
                 if delivery.event is not None:
                     yield _sse(delivery.event)
                 elif delivery.gapped_session_id is not None:
-                    yield _named_sse(
-                        "gap", {"session_id": delivery.gapped_session_id}
-                    )
+                    yield _named_sse("gap", {"session_id": delivery.gapped_session_id})
                 else:
                     yield b": heartbeat\n\n"
         except asyncio.CancelledError:
@@ -469,34 +498,18 @@ async def create_session(
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
+    if req.session_kind == "discussion":
+        raise HTTPException(status_code=404, detail="session kind not found")
+    if req.resume_from is not None and hub.is_non_user_native_id(
+        Runtime(req.runtime),
+        req.resume_from,
+    ):
+        raise HTTPException(status_code=404, detail="session not found")
+
     async def create_once() -> SessionBinding:
         """执行一次完整创建，恢复失败时同步撤销已提交 binding。"""
 
-        prepared = await _await_hub(hub.prepare_create_request, req)
-        explicit = prepared.model_fields_set
-        if prepared.resume_from is not None:
-            _call_hub(
-                hub.validate_resume,
-                Runtime(prepared.runtime),
-                prepared.resume_from,
-                memory_enabled=(
-                    prepared.memory_enabled if "memory_enabled" in explicit else None
-                ),
-                profile_enabled=(
-                    prepared.profile_enabled if "profile_enabled" in explicit else None
-                ),
-                self_enabled=(
-                    prepared.self_enabled if "self_enabled" in explicit else None
-                ),
-            )
-        binding = _call_hub(hub.create, prepared)
-        if prepared.resume_from is not None and prepared.runtime == "codex":
-            try:
-                binding = await _await_hub(hub.hydrate_resume, binding.session_id)
-            except HTTPException:
-                await hub.delete(binding.session_id)
-                raise
-        return binding
+        return await _await_hub(hub.create_complete_session, req)
 
     request_id = request.headers.get("x-trowel-request-id")
     if request_id:

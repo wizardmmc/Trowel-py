@@ -31,7 +31,7 @@ def _source_workdir_name(source: ProfileDistillSource) -> str:
     if source.runtime == "claude_code":
         return source.source_id
     digest = hashlib.sha256(source.source_id.encode("utf-8")).hexdigest()[:20]
-    return f"codex-{digest}"
+    return f"{source.runtime}-{digest}"
 
 
 async def process_profile_source(
