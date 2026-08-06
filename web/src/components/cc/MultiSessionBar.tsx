@@ -29,16 +29,16 @@ function dotClass(s: PerSessionState): string {
 }
 
 function statusText(s: PerSessionState, closing: boolean): string {
-  if (closing) return `${s.meta.model ?? "model"} · 关闭中`;
+  if (closing) return "关闭中";
   if (s.resourceState === "needs_reconcile") {
     const turnLabel = isRootTurnInFlight(s) ? "状态待对账" : "已停止";
-    return `${s.meta.model ?? "model"} · ${turnLabel} · 清理失败`;
+    return `${turnLabel} · 清理失败`;
   }
   if (s.liveState === "reconnecting") {
-    return `${s.meta.model ?? "model"} · 实时连接恢复中`;
+    return "实时连接恢复中";
   }
   if (s.liveState === "gapped" || s.turnState === "unknown") {
-    return `${s.meta.model ?? "model"} · 状态待对账`;
+    return "状态待对账";
   }
   if (isRootTurnInFlight(s)) {
     const phase =
@@ -49,9 +49,9 @@ function statusText(s: PerSessionState, closing: boolean): string {
           : s.phase === "background_waiting"
             ? "等后台任务"
           : "生成中";
-    return `${s.meta.model ?? "model"} · ${phase}`;
+    return phase;
   }
-  return `${s.meta.model ?? "model"} · 空闲`;
+  return "空闲";
 }
 
 function workdirName(workdir: string): string {
@@ -231,7 +231,13 @@ export function MultiSessionBar({
                             </span>
                           </span>
                           <span className="cc-multibar__row2">
-                            {statusText(s, isClosing)}
+                            {[
+                              s.connectionName,
+                              s.meta.model,
+                              statusText(s, isClosing),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
                           </span>
                           <span
                             className="cc-multibar__cond"

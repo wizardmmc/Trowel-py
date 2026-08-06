@@ -5,7 +5,7 @@ import json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from trowel_py.cc_host.proxy import TUI_SYSTEM_IDENTITY
+from trowel_py.cc_host.proxy import ClaudeConnectionProxyRegistry, TUI_SYSTEM_IDENTITY
 from trowel_py.cc_host.proxy import router as proxy_router
 
 
@@ -35,6 +35,7 @@ class FakeClient:
     def __init__(self, response=None):
         self.response = response or FakeResponse()
         self.sent: list[FakeRequest] = []
+        self.closed = False
 
     def build_request(self, method, url, **kwargs):
         return FakeRequest(method, url, kwargs.get("headers"), kwargs.get("content"))
@@ -42,6 +43,9 @@ class FakeClient:
     async def send(self, req, stream=False):
         self.sent.append(req)
         return self.response
+
+    async def aclose(self):
+        self.closed = True
 
 
 def _make_app(real_base_url: str, client: FakeClient) -> TestClient:
@@ -159,3 +163,35 @@ class TestProxyRouterFallback:
         )
         assert resp.status_code == 200
         assert client.sent[0].content == b"not json{"
+
+
+def test_connection_route_uses_lease_proxy_on_outbound_client() -> None:
+    """连接代理只作用于 Trowel 到供应商的请求，不污染 Claude loopback。"""
+
+    app = FastAPI()
+    shared_client = FakeClient()
+    outbound_client = FakeClient()
+    captured: dict[str, object] = {}
+
+    def client_factory(**kwargs):
+        captured.update(kwargs)
+        return outbound_client
+
+    registry = ClaudeConnectionProxyRegistry()
+    token = registry.acquire("https://provider.example/v1", "http://proxy.local")
+    app.state.cc_http_client = shared_client
+    app.state.cc_connection_proxy_registry = registry
+    app.state.cc_proxy_client_factory = client_factory
+    app.include_router(proxy_router)
+
+    response = TestClient(app).post(
+        f"/api/cc-runtime/{token}/v1/messages",
+        json=_p_body(),
+    )
+
+    assert response.status_code == 200
+    assert shared_client.sent == []
+    assert outbound_client.sent[0].url == "https://provider.example/v1/v1/messages"
+    assert captured["proxy"] == "http://proxy.local"
+    assert captured["trust_env"] is False
+    assert outbound_client.closed is True

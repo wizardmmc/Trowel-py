@@ -10,6 +10,14 @@ import {
   type SidecarReadiness,
   type SidecarStartDependencies,
 } from "./sidecar";
+import type { SidecarShutdownResult } from "./shutdown";
+
+const CLOSED_CLEANUP: SidecarShutdownResult = {
+  status: "closed",
+  remainingResourceCount: 0,
+  forced: false,
+  exitMarkerRecorded: true,
+};
 
 const READY: SidecarReadiness = {
   status: "ready",
@@ -37,7 +45,7 @@ function dependencies(
     spawn: vi.fn().mockReturnValue(processHandle()),
     readReadiness: vi.fn().mockResolvedValue(READY),
     delay: vi.fn().mockResolvedValue(undefined),
-    cleanup: vi.fn().mockResolvedValue(undefined),
+    cleanup: vi.fn().mockResolvedValue(CLOSED_CLEANUP),
     ...overrides,
   };
 }
@@ -172,6 +180,26 @@ describe("launchSidecar", () => {
 
     await expect(launchSidecar(OPTIONS, deps)).rejects.toMatchObject({
       category: "readiness_timeout",
+      cleanupResult: CLOSED_CLEANUP,
+    });
+  });
+
+  it("preserves an incomplete readiness cleanup on the startup error", async () => {
+    const cleanupResult: SidecarShutdownResult = {
+      status: "needs_reconcile",
+      remainingResourceCount: 2,
+      forced: true,
+      exitMarkerRecorded: true,
+    };
+    const deps = dependencies({
+      readReadiness: vi.fn().mockRejectedValue(new Error("not ready")),
+      delay: () => new Promise((resolve) => setTimeout(resolve, 2)),
+      cleanup: vi.fn().mockResolvedValue(cleanupResult),
+    });
+
+    await expect(launchSidecar(OPTIONS, deps)).rejects.toMatchObject({
+      category: "readiness_timeout",
+      cleanupResult,
     });
   });
 

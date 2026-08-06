@@ -169,6 +169,8 @@ class CCHost:
         resume_from: str | None = None,
         proxy_base_url: str | None = None,
         settings_path: Path | str | None = None,
+        owned_settings_path: bool = False,
+        close_callback: Callable[[], None] | None = None,
         spawner: Callable[
             [list[str], dict[str, Any]], Awaitable[Any]
         ] = _default_spawner,
@@ -207,6 +209,8 @@ class CCHost:
             proxy_base_url: CC 请求使用的本地代理地址；``None`` 表示不设置。
             settings_path: 提供 provider 环境变量的 CC settings 文件；``None``
                 表示不读取。
+            owned_settings_path: 是否由当前 host 在关闭或创建回滚时删除 settings。
+            close_callback: host 清理完成后执行的一次性连接租约释放函数。
             spawner: 接收 argv 和启动选项的异步子进程创建器。
             now: 返回单调时间的函数，用于检测 stdout 静默。
             stalled_threshold_mild: 发布轻度静默警告前的秒数。
@@ -245,6 +249,9 @@ class CCHost:
         self._resume_from = resume_from
         self._proxy_base_url = proxy_base_url
         self._settings_path = settings_path
+        self._owned_settings_path = owned_settings_path
+        self._close_callback = close_callback
+        self._close_callback_called = False
         self._spawner = spawner
         self._now = now
         self.stalled_threshold_mild = stalled_threshold_mild
@@ -424,6 +431,8 @@ class CCHost:
             allowed_tools=(
                 _CLAUDE_AGENT_MCP_TOOL_NAMES if self.agent_mcp_enabled else None
             ),
+            settings_path=self._settings_path,
+            setting_sources="" if self._settings_path is not None else None,
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -774,6 +783,7 @@ class CCHost:
         await self._close_process(active=active)
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
+        self._cleanup_connection_files()
 
     def discard_unstarted(self) -> None:
         """清理尚未启动的 host 及其自有 MCP 配置。
@@ -787,6 +797,16 @@ class CCHost:
         self._workflow_watcher.close()
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
+        self._cleanup_connection_files()
+
+    def _cleanup_connection_files(self) -> None:
+        """幂等删除私有 settings，并释放会话代理租约。"""
+
+        if self._owned_settings_path and self._settings_path:
+            Path(self._settings_path).unlink(missing_ok=True)
+        if self._close_callback is not None and not self._close_callback_called:
+            self._close_callback_called = True
+            self._close_callback()
 
     async def reload(self) -> None:
         """结束当前 CC 子进程，使 revert 后的下一轮从截断的 JSONL 恢复。"""

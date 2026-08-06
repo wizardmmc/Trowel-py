@@ -319,7 +319,11 @@ export function SessionView({
     codexModels,
     codexCatalogError,
     runtimesState,
+    connectionOptions,
+    connectionOptionsLoading,
+    connectionOptionsError,
     loadRuntimes,
+    loadConnectionOptions,
     loadCodexModels,
   } = useSessionCatalogs(catalogWorkdir);
   const activePresentation = active
@@ -330,6 +334,9 @@ export function SessionView({
     activePresentation?.composerActions.slashSource === "codex",
   );
   const [creating, setCreating] = useState(false);
+  const [historyResumeError, setHistoryResumeError] = useState<string | null>(
+    null,
+  );
   const [preparingNewSession, setPreparingNewSession] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
@@ -398,7 +405,10 @@ export function SessionView({
     setCreateError(null);
     setPreparingNewSession(true);
     const promise = (async () => {
-      const latest = await getAgentSessionDefaults().catch(() => null);
+      const [latest] = await Promise.all([
+        getAgentSessionDefaults().catch(() => null),
+        loadConnectionOptions(),
+      ]);
       if (newSessionPreparationGenerationRef.current !== generation) return;
       setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
       setNewSessionWorkdir(targetWorkdir);
@@ -410,7 +420,7 @@ export function SessionView({
     });
     pendingNewSessionPreparationRef.current = { workdir: targetWorkdir, promise };
     return promise;
-  }, []);
+  }, [loadConnectionOptions]);
 
   useEffect(
     () => () => {
@@ -436,6 +446,7 @@ export function SessionView({
     if (!row.native_session_id) return;
     const targetWorkdir = active?.workdir ?? workdir;
     if (!targetWorkdir.trim()) return;
+    setHistoryResumeError(null);
     try {
       await startSession({
         workdir: targetWorkdir,
@@ -444,8 +455,10 @@ export function SessionView({
         resume_title: row.title,
       });
       await loadHistoryIntoView();
-    } catch {
-      return;
+    } catch (error) {
+      setHistoryResumeError(
+        error instanceof Error ? error.message : "历史会话恢复失败",
+      );
     }
   }
 
@@ -652,6 +665,11 @@ export function SessionView({
           onNew={() => void handleNewSameWorkdir()}
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
+        {historyResumeError && (
+          <div className="cc-settings-notice" role="alert">
+            历史会话无法直接恢复：{historyResumeError}
+          </div>
+        )}
         <SessionBanners
           active={active}
           activeSid={activeSid}
@@ -756,6 +774,10 @@ export function SessionView({
                   codexModels,
                   codexCatalogError,
                   onRetryCodexCatalog: loadCodexModels,
+                  connectionOptions,
+                  connectionOptionsLoading,
+                  connectionOptionsError,
+                  onRetryConnectionOptions: loadConnectionOptions,
                   onCreate: (config) => void handleCreate(config),
                   onCancel: () => {
                     setShowNewDialog(false);

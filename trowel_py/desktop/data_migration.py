@@ -181,8 +181,7 @@ def _turn_overlap_audit(
             keep_legacy.add(journal.relative_to(current_memory))
         except ValueError:
             blockers.append(
-                "current overlapping journal is outside its Memory root: "
-                f"{journal}"
+                f"current overlapping journal is outside its Memory root: {journal}"
             )
     return len(overlap), tuple(blockers), keep_legacy
 
@@ -204,7 +203,7 @@ def _previous_app_shutdown_blockers(previous_app_root: Path) -> tuple[str, ...]:
     exit_marker = _read_json_object(previous_app_root / "resource-exit.json")
     if (
         snapshot is None
-        or snapshot.get("version") != 1
+        or snapshot.get("version") not in {1, 2}
         or not isinstance(snapshot.get("app_instance_id"), str)
         or not snapshot["app_instance_id"]
         or not isinstance(snapshot.get("resources"), list)
@@ -257,7 +256,7 @@ def _clean_previous_app_instance_id(previous_app_root: Path) -> str | None:
         return None
     instance_id = snapshot.get("app_instance_id")
     if (
-        snapshot.get("version") == 1
+        snapshot.get("version") in {1, 2}
         and isinstance(instance_id, str)
         and bool(instance_id)
         and _exit_marker_is_clean(exit_marker, instance_id)
@@ -328,9 +327,11 @@ def plan_desktop_data_migration(
         blockers.append(f"previous App database is missing: {previous / 'trowel.db'}")
     if config is not None and not config.is_file():
         blockers.append(f"selected config is missing: {config}")
-    symlink = next(
-        (path for path in legacy_memory.rglob("*") if path.is_symlink()), None
-    ) if legacy_memory.exists() else None
+    symlink = (
+        next((path for path in legacy_memory.rglob("*") if path.is_symlink()), None)
+        if legacy_memory.exists()
+        else None
+    )
     if symlink is not None:
         blockers.append(f"legacy memory contains a symbolic link: {symlink}")
     blockers.extend(_previous_app_shutdown_blockers(previous))
@@ -376,7 +377,9 @@ def _migration_lock(parent: Path) -> Iterator[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise DesktopDataMigrationError("another data migration is running") from exc
+            raise DesktopDataMigrationError(
+                "another data migration is running"
+            ) from exc
         yield
     finally:
         try:
@@ -441,7 +444,10 @@ def _copy_memory_tree(source: Path, destination: Path) -> None:
 def _same_file(left: Path, right: Path) -> bool:
     """按大小和字节内容判断两个普通文件是否相同。"""
 
-    return left.stat().st_size == right.stat().st_size and left.read_bytes() == right.read_bytes()
+    return (
+        left.stat().st_size == right.stat().st_size
+        and left.read_bytes() == right.read_bytes()
+    )
 
 
 def _append_jsonl_unique(source: Path, destination: Path) -> None:
@@ -585,13 +591,17 @@ def _merge_sessions_db(
                             keys,
                         ).fetchone()
                         if existing is not None:
-                            if tuple(existing[column] for column in columns) == tuple(values):
+                            if tuple(existing[column] for column in columns) == tuple(
+                                values
+                            ):
                                 continue
                             if table == "codex_turns" and _turn_lifecycle_rank(
                                 dict(existing)
                             ) >= _turn_lifecycle_rank(dict(row)):
                                 continue
-                            if tuple(existing[column] for column in columns) != tuple(values):
+                            if tuple(existing[column] for column in columns) != tuple(
+                                values
+                            ):
                                 raise DesktopDataMigrationError(
                                     f"conflicting sessions row: {table} {tuple(keys)}"
                                 )
@@ -611,8 +621,7 @@ def _rewrite_json_value(value: Any, roots: tuple[Path, ...], target: Path) -> An
 
     if isinstance(value, dict):
         return {
-            key: _rewrite_json_value(item, roots, target)
-            for key, item in value.items()
+            key: _rewrite_json_value(item, roots, target) for key, item in value.items()
         }
     if isinstance(value, list):
         return [_rewrite_json_value(item, roots, target) for item in value]
@@ -634,13 +643,9 @@ def _rewrite_structured_memory_paths(
             frontmatter, body = _split_frontmatter(text)
             if frontmatter is None:
                 continue
-            rewritten = _rewrite_json_value(
-                frontmatter, old_roots, published_memory
-            )
+            rewritten = _rewrite_json_value(frontmatter, old_roots, published_memory)
             if rewritten != frontmatter:
-                path.write_text(
-                    _dump_frontmatter(rewritten, body), encoding="utf-8"
-                )
+                path.write_text(_dump_frontmatter(rewritten, body), encoding="utf-8")
     meta = memory_root / "meta"
     if meta.is_dir():
         for path in meta.rglob("*.json"):
@@ -739,7 +744,9 @@ def _merge_non_user_identities(
             raise DesktopDataMigrationError(
                 f"non-user identity index is unreadable: {source}"
             ) from exc
-        raw_ids = payload.get("native_session_ids") if isinstance(payload, dict) else None
+        raw_ids = (
+            payload.get("native_session_ids") if isinstance(payload, dict) else None
+        )
         if (
             not isinstance(payload, dict)
             or payload.get("version") != 1
@@ -791,9 +798,7 @@ def _merge_workspaces(legacy: Path, current: Path, destination: Path) -> None:
         for database in (legacy, current):
             if not database.exists():
                 continue
-            reader = sqlite3.connect(
-                f"{database.resolve().as_uri()}?mode=ro", uri=True
-            )
+            reader = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
             try:
                 rows = reader.execute(
                     "SELECT path, opened_at FROM recent_workspaces"
@@ -892,9 +897,7 @@ def apply_desktop_data_migration(
         if not refreshed.ready:
             raise DesktopDataMigrationError("; ".join(refreshed.blockers))
         plan = refreshed
-        shutdown_instance_id = _clean_previous_app_instance_id(
-            plan.previous_app_root
-        )
+        shutdown_instance_id = _clean_previous_app_instance_id(plan.previous_app_root)
         if shutdown_instance_id is None:
             raise DesktopDataMigrationError(
                 "previous App clean-exit evidence changed before migration started"

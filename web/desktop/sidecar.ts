@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import type { DesktopTransportConfig } from "../shared/desktop-contracts";
 import { DESKTOP_PROTOCOL_VERSION } from "../shared/desktop-contracts";
 import type { DesktopDataMode } from "./desktopDataPaths";
+import type { SidecarShutdownResult } from "./shutdown";
 
 export interface SidecarReadiness {
   readonly status: "ready";
@@ -50,7 +51,7 @@ export interface SidecarStartDependencies {
   readonly cleanup: (
     sidecar: StartedSidecar,
     options: SidecarStartOptions,
-  ) => Promise<void>;
+  ) => Promise<SidecarShutdownResult>;
 }
 
 export interface SidecarStartOptions {
@@ -63,6 +64,10 @@ export interface SidecarStartOptions {
   readonly credential: string;
   readonly expectedAppVersion: string;
   readonly rendererOrigin: string;
+  /** readiness 成功后，Host 两次存活检查之间的毫秒数。 */
+  readonly livenessIntervalMs?: number;
+  /** 连续多少次 readiness 失败才判定 sidecar 已失联。 */
+  readonly livenessFailureThreshold?: number;
   readonly readinessTimeoutMs?: number;
   readonly pollIntervalMs?: number;
 }
@@ -82,18 +87,39 @@ export class SidecarStartError extends Error {
     | "port_or_permission"
     | "version_mismatch"
     | "readiness_timeout"
+    | "readiness_lost"
     | "early_exit";
   readonly exitCode: number | null;
+  readonly cleanupResult: SidecarShutdownResult | null;
 
   constructor(
     category: SidecarStartError["category"],
     message: string,
     exitCode: number | null = null,
+    cleanupResult: SidecarShutdownResult | null = null,
   ) {
     super(message);
     this.name = "SidecarStartError";
     this.category = category;
     this.exitCode = exitCode;
+    this.cleanupResult = cleanupResult;
+  }
+}
+
+export async function probeSidecarReadiness(
+  running: RunningSidecar,
+  options: SidecarStartOptions,
+): Promise<boolean> {
+  /** 核对已启动 sidecar 仍在同一私有端口回应当前实例和协议身份。 */
+  try {
+    const readiness = await readReadiness(
+      running.transport.baseUrl,
+      running.transport.credential,
+    );
+    validateReadiness(readiness, options);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -155,8 +181,9 @@ export async function launchSidecar(
       transport: { baseUrl, credential: options.credential },
     };
   } catch (error) {
+    let cleanupResult: SidecarShutdownResult;
     try {
-      await dependencies.cleanup(
+      cleanupResult = await dependencies.cleanup(
         {
           process,
           transport: { baseUrl, credential: options.credential },
@@ -165,18 +192,45 @@ export async function launchSidecar(
       );
     } catch {
       process.stop();
+      cleanupResult = {
+        status: "needs_reconcile",
+        remainingResourceCount: 1,
+        forced: true,
+        exitMarkerRecorded: false,
+      };
     }
-    throw error;
+    throw startErrorWithCleanupResult(error, cleanupResult);
   }
 }
 
 async function cleanupStartedSidecar(
   sidecar: StartedSidecar,
   options: SidecarStartOptions,
-): Promise<void> {
+): Promise<SidecarShutdownResult> {
   /** readiness 失败后仍复用完整退出链，避免丢失已启动的独立进程组。 */
   const { shutdownSidecar } = await import("./shutdown");
-  await shutdownSidecar(sidecar, options);
+  return shutdownSidecar(sidecar, options, "sidecar_abnormal");
+}
+
+function startErrorWithCleanupResult(
+  error: unknown,
+  cleanupResult: SidecarShutdownResult,
+): SidecarStartError {
+  /** 启动错误必须携带清理终态，Host 才能决定是否允许同实例重试。 */
+  if (error instanceof SidecarStartError) {
+    return new SidecarStartError(
+      error.category,
+      error.message,
+      error.exitCode,
+      cleanupResult,
+    );
+  }
+  return new SidecarStartError(
+    "early_exit",
+    "The Python sidecar failed before startup completed.",
+    null,
+    cleanupResult,
+  );
 }
 
 async function waitForReadiness(
@@ -260,7 +314,8 @@ function classifyExit(exit: SidecarExit): SidecarStartError {
 }
 
 function errorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  if (!error || typeof error !== "object" || !("code" in error))
+    return undefined;
   return typeof error.code === "string" ? error.code : undefined;
 }
 

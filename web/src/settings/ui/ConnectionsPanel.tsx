@@ -31,6 +31,9 @@ interface ConnectionsPanelProps {
   readonly onFetchModels: () => void;
   readonly onWriteSecret: (kind: SecretKind, value: string) => Promise<void>;
   readonly onDeleteSecret: (kind: SecretKind) => void;
+  readonly onStartOfficialLogin: () => void;
+  readonly onOpenOfficialLogin: (url: string) => void;
+  readonly onRefreshOfficialAccount: () => void;
   readonly onReload: () => void;
 }
 
@@ -111,7 +114,7 @@ function ConnectionTable({ connections, onOpen, compact = false }: ConnectionTab
                 <span><strong>{connection.name}</strong><small>{runtimeLabel(connection.runtime)}</small></span>
               </span>
               {!compact && <span className="settings-connection-main"><strong>{lastChoiceLabel(connection)}</strong><small>{connectionDetail(connection)}</small></span>}
-              <span className="settings-connection-provider"><strong>{connectionKindLabel(connection.kind)}</strong><code>{connection.upstream_host ?? connection.login_directory ?? "尚未填写地址"}</code></span>
+              <span className="settings-connection-provider"><strong>{connectionKindLabel(connection.kind)}</strong><code>{connectionProviderLabel(connection)}</code></span>
               <span className="settings-connection-actions">
                 <StatusPill status={connection.validation_status === "valid" ? "available" : "unknown"} label={connection.validation_status === "valid" ? "已验证" : "待验证"} />
                 <span className="settings-icon-button" aria-hidden="true"><SlidersIcon /></span>
@@ -137,14 +140,14 @@ function ConnectionEditor({
   onFetchModels,
   onWriteSecret,
   onDeleteSecret,
+  onStartOfficialLogin,
+  onOpenOfficialLogin,
+  onRefreshOfficialAccount,
   onReload,
 }: ConnectionsPanelProps & { readonly editor: ConnectionEditorState }) {
   const saved = catalog?.connections.find((item) => item.id === editor.connectionId);
   const requiresBaseUrl = editor.draft.kind !== "codex_official";
-  const canSave = Boolean(
-    editor.draft.name.trim() &&
-      (requiresBaseUrl ? editor.draft.base_url?.trim() : editor.draft.login_directory?.trim()),
-  );
+  const canSave = Boolean(editor.draft.name.trim() && (!requiresBaseUrl || editor.draft.base_url?.trim()));
   return (
     <section className="settings-panel settings-connection-editor" aria-labelledby="settings-connection-editor-title">
       <header className="settings-editor-header">
@@ -155,7 +158,7 @@ function ConnectionEditor({
         </div>
         <StatusPill
           status={saved?.auth.status === "configured" || saved?.auth.status === "referenced" ? "available" : "unknown"}
-          label={saved ? authStatusLabel(saved.auth.status) : "先保存基础信息"}
+          label={saved ? authStatusLabel(saved.auth.status) : "先保存供应商"}
         />
       </header>
 
@@ -179,7 +182,7 @@ function ConnectionEditor({
               <p>Official 沿用 Codex 原生登录；第三方连接使用 OpenAI Responses 兼容接口。</p>
               <div className="settings-runtime-choice" role="group" aria-label="Codex 连接种类">
                 <button type="button" aria-pressed={editor.draft.kind === "codex_official"} onClick={() => onNewKindChange("codex_official")}>
-                  <strong>OpenAI Official</strong><small>只引用 Codex 原生登录目录</small>
+                  <strong>OpenAI Official</strong><small>由 Trowel 管理独立的 ChatGPT 登录账号</small>
                 </button>
                 <button type="button" aria-pressed={editor.draft.kind === "codex_custom"} onClick={() => onNewKindChange("codex_custom")}>
                   <strong>第三方 Responses</strong><small>API key、请求地址与模型 catalog</small>
@@ -192,7 +195,7 @@ function ConnectionEditor({
 
       <div className="settings-form-section">
         <label className="settings-field">
-          <span>连接名称</span>
+          <span>供应商名称</span>
           <input
             value={editor.draft.name}
             maxLength={120}
@@ -225,6 +228,10 @@ function ConnectionEditor({
           onDraftChange={onDraftChange}
           onWriteSecret={onWriteSecret}
           onDeleteSecret={onDeleteSecret}
+          onFetchModels={onFetchModels}
+          onStartLogin={onStartOfficialLogin}
+          onOpenLogin={onOpenOfficialLogin}
+          onRefreshAccount={onRefreshOfficialAccount}
         />
       )}
       {editor.draft.kind === "codex_custom" && (
@@ -267,7 +274,7 @@ function ConnectionEditor({
         <div>
           <span>{editor.dirty ? "有尚未保存的修改" : "已与持久配置一致"}</span>
           <button type="button" className="settings-button is-primary" disabled={!canSave || editor.saving || (!editor.dirty && Boolean(editor.connectionId))} onClick={onSave}>
-            {editor.saving ? "保存中…" : editor.connectionId ? "保存连接" : "保存基础信息"}
+            {editor.saving ? "保存中…" : "保存供应商"}
           </button>
         </div>
       </footer>
@@ -323,19 +330,67 @@ interface OfficialFieldsProps {
   readonly onDraftChange: (patch: Partial<ConnectionDraft>) => void;
   readonly onWriteSecret: (kind: SecretKind, value: string) => Promise<void>;
   readonly onDeleteSecret: (kind: SecretKind) => void;
+  readonly onFetchModels: () => void;
+  readonly onStartLogin: () => void;
+  readonly onOpenLogin: (url: string) => void;
+  readonly onRefreshAccount: () => void;
 }
 
-/** Codex 官方连接只引用原生登录目录和可选代理，不接触 OAuth 正文。 */
-function CodexOfficialFields({ editor, savedProxyStatus, onDraftChange, onWriteSecret, onDeleteSecret }: OfficialFieldsProps) {
+/** Codex 官方连接展示原生账号摘要；OAuth 与内部账号目录仍由 Codex/Trowel 管理。 */
+function CodexOfficialFields({
+  editor,
+  savedProxyStatus,
+  onDraftChange,
+  onWriteSecret,
+  onDeleteSecret,
+  onFetchModels,
+  onStartLogin,
+  onOpenLogin,
+  onRefreshAccount,
+}: OfficialFieldsProps) {
+  const accountState = editor.officialAccount;
+  const account = accountState.account;
+  const login = accountState.login;
   return (
     <>
       <section className="settings-form-block">
-        <h3>原生登录</h3>
-        <p>Trowel 只保存目录引用，OAuth 仍由 Codex 自己管理。</p>
-        <label className="settings-field">
-          <span>登录目录</span>
-          <input value={editor.draft.login_directory ?? ""} onChange={(event) => onDraftChange({ login_directory: nullable(event.target.value) })} placeholder="/Users/name/.codex" />
-        </label>
+        <h3>ChatGPT 登录账号</h3>
+        <p>每个供应商保存一套独立的 Codex 原生登录状态。账号目录和令牌不会显示在设置中。</p>
+        {!editor.connectionId ? (
+          <div className="settings-account-card is-empty">
+            <div><strong>保存供应商后登录</strong><small>保存只创建独立账号槽，不会复用或覆盖其他账号。</small></div>
+          </div>
+        ) : accountState.status === "loading" && !account ? (
+          <div className="settings-account-card is-empty" role="status">正在读取 Codex 登录状态…</div>
+        ) : account?.status === "logged_in" ? (
+          <div className="settings-account-card">
+            <div>
+              <strong>{account.email ?? "已登录 ChatGPT"}</strong>
+              <small>{planLabel(account.plan_type)}{account.auth_mode ? ` · ${account.auth_mode}` : ""}</small>
+            </div>
+            <StatusPill status="available" label="已登录" />
+            <button type="button" className="settings-button" disabled={accountState.loginStarting} onClick={onStartLogin}>{accountState.loginStarting ? "正在启动…" : "更换账号"}</button>
+            <button type="button" className="settings-button is-quiet" onClick={onRefreshAccount}>刷新状态</button>
+          </div>
+        ) : (
+          <div className="settings-account-card">
+            <div>
+              <strong>尚未登录 ChatGPT</strong>
+              <small>使用 Codex 原生设备授权，不需要手填 API key 或目录。</small>
+            </div>
+            <StatusPill status="unknown" label="待登录" />
+            <button type="button" className="settings-button is-primary" disabled={accountState.loginStarting} onClick={onStartLogin}>{accountState.loginStarting ? "正在启动…" : "使用 ChatGPT 登录"}</button>
+            <button type="button" className="settings-button is-quiet" onClick={onRefreshAccount}>刷新状态</button>
+          </div>
+        )}
+        {login && (
+          <div className="settings-login-code" role="status">
+            <span>浏览器打开后输入验证码</span>
+            <code>{login.user_code}</code>
+            <button type="button" className="settings-button" onClick={() => onOpenLogin(login.verification_url)}>打开登录页面</button>
+          </div>
+        )}
+        {accountState.error && <p className="settings-error" role="alert">{accountState.error}</p>}
       </section>
       <section className="settings-form-block">
         <h3>可选连接代理</h3>
@@ -358,6 +413,7 @@ function CodexOfficialFields({ editor, savedProxyStatus, onDraftChange, onWriteS
           onDelete={onDeleteSecret}
         />
       </section>
+      <CodexCatalogFields editor={editor} onDraftChange={onDraftChange} onFetch={onFetchModels} />
     </>
   );
 }
@@ -465,7 +521,7 @@ function SecretField({ label, kind, status, enabled, onWrite, onDelete }: Secret
       />
       <label className="settings-field">
         <span>{label}</span>
-        <input name="secret-value" type="password" disabled={!enabled} placeholder={enabled ? "输入新值后立即保存" : "先保存基础信息"} autoComplete="new-password" />
+        <input name="secret-value" type="password" disabled={!enabled} placeholder={enabled ? "输入新值后立即保存" : "先保存供应商"} autoComplete="new-password" />
       </label>
       <StatusPill status={status === "configured" ? "available" : "unknown"} label={status === "configured" ? "已配置" : "未配置"} />
       <button type="submit" className="settings-button" disabled={!enabled}>保存新值</button>
@@ -496,7 +552,8 @@ function ModelFetchBlock({ editor, onFetch }: { readonly editor: ConnectionEdito
 function CodexCatalogFields({ editor, onDraftChange, onFetch }: Pick<RuntimeFieldsProps, "editor" | "onDraftChange"> & { readonly onFetch: () => void }) {
   const selectModel = (index: number, model: string) => {
     const current = editor.draft.codex_catalog[index];
-    const entry: CodexCatalogEntry = {
+    const nativeEntry = editor.modelFetch.codexCatalog.find((item) => item.id === model);
+    const entry: CodexCatalogEntry = nativeEntry ?? {
       id: model,
       display_name: current?.display_name ?? null,
       default_effort: current?.default_effort ?? "high",
@@ -524,7 +581,7 @@ function CodexCatalogFields({ editor, onDraftChange, onFetch }: Pick<RuntimeFiel
   return (
     <section className="settings-form-block settings-codex-catalog">
       <h3>Codex 模型 catalog</h3>
-      <p>先点击最右侧按钮读取上游模型；模型大框与思考强度分别保存，候选可见不代表 capability 已验证。</p>
+      <p>获取只刷新候选模型，不会自动全选；新会话按这里保存的模型及顺序展示。</p>
       <div className="settings-codex-catalog-list">
         {rows.map((entry, index) => (
           <div className="settings-codex-catalog-row" key={entry?.id ?? "empty-catalog-row"}>
@@ -619,12 +676,24 @@ function connectionDetail(connection: Connection): string {
     return mapped ? `${mapped} 项 Claude 角色已映射` : "Claude 角色模型尚未映射";
   }
   if (connection.kind === "codex_official") {
-    return connection.login_directory_exists ? "原生登录目录存在" : "原生登录目录待确认";
+    return connection.auth.status === "referenced" ? "ChatGPT 账号已登录" : "ChatGPT 账号待登录";
   }
   if (connection.kind === "codex_custom") {
     return connection.codex_catalog.length ? `${connection.codex_catalog.length} 个 catalog 模型` : "模型 catalog 尚未配置";
   }
   return "与普通 Agent 模型连接隔离";
+}
+
+/** 连接列表只展示用户能理解的供应商入口，不泄露 Official 内部目录。 */
+function connectionProviderLabel(connection: Connection): string {
+  if (connection.kind === "codex_official") return "OpenAI ChatGPT";
+  return connection.upstream_host ?? "尚未填写地址";
+}
+
+/** 把 Codex 返回的套餐标识改成设置页展示文本。 */
+function planLabel(planType: string | null): string {
+  if (!planType) return "ChatGPT 套餐未知";
+  return planType.charAt(0).toUpperCase() + planType.slice(1);
 }
 
 /** 翻译连接类型。 */
@@ -649,7 +718,7 @@ function modelFetchDetail(status: ConnectionEditorState["modelFetch"]["status"],
   if (status === "ready") return count ? `已获取 ${count} 个上游可见模型；能力资格仍以会话配置的真实 Gate 为准。` : "上游返回了空模型列表。";
   if (status === "error") return error ?? "模型列表获取失败，可以修正地址或凭据后重试。";
   if (status === "stale") return "地址、协议或凭据身份已变化，旧候选已经失效。";
-  return "保存基础信息和凭据后获取模型列表。";
+  return "保存供应商和凭据后获取模型列表。";
 }
 
 function PlusIcon() {

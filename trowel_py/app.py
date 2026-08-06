@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
@@ -22,6 +23,7 @@ from trowel_py.agent_host.workspaces import (
 from trowel_py.quota.routes import router as quota_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
+    ClaudeConnectionProxyRegistry,
     TUI_SYSTEM_IDENTITY,
     load_settings_env,
     router as proxy_router,
@@ -46,6 +48,29 @@ from trowel_py.telemetry.http_middleware import RuntimeTelemetryMiddleware
 from trowel_py.telemetry.routes import router as telemetry_router
 
 logger = logging.getLogger(__name__)
+
+
+def _migrate_official_account_slots() -> int:
+    """启动 runtime 前把历史 Official 配置迁入 Trowel 托管的独立账号槽。"""
+
+    from trowel_py.configuration.repository import ConfigurationRepository
+    from trowel_py.configuration.service import ConfigurationService
+    from trowel_py.db.connection import create_db
+    from trowel_py.db.migrate import run_migrations
+
+    connection = create_db()
+    try:
+        run_migrations(connection)
+        migrated = ConfigurationService(
+            ConfigurationRepository(connection)
+        ).migrate_official_account_slots()
+        connection.commit()
+        return migrated
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 @asynccontextmanager
@@ -191,6 +216,7 @@ async def lifespan(app: FastAPI):
     app.state.cc_real_base_url = real_base_url
     app.state.proxy_base_url = f"http://127.0.0.1:{port}"
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+    app.state.cc_connection_proxy_registry = ClaudeConnectionProxyRegistry()
     app.state.recent_workspace_store = RecentWorkspaceStore(
         resolve_recent_workspaces_path()
     )
@@ -286,12 +312,31 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
         app.state.tidy_scheduler = None
-    # manager 延迟拉起 app-server；未使用 Codex 时不创建子进程。
+    # 先迁移账号目录，再允许后台任务或 API 直接创建 Official 会话。
     try:
-        from trowel_py.codex_host import CodexHostManager
+        migrated_official_accounts = _migrate_official_account_slots()
+        if migrated_official_accounts:
+            logger.info(
+                "[codex] migrated %d official account slots",
+                migrated_official_accounts,
+            )
+    except Exception:
+        logger.warning("[codex] official account slot migration failed", exc_info=True)
 
-        app.state.codex_host_manager = CodexHostManager(
-            resource_registry=resource_registry
+    # manager pool 延迟拉起 app-server；未使用 Codex 时不创建子进程。
+    try:
+        from trowel_py.application_paths import resolve_application_data_root
+        from trowel_py.codex_host import CodexHostManager
+        from trowel_py.codex_host.pool import CodexManagerPool
+
+        legacy_codex_manager = CodexHostManager(
+            resource_registry=resource_registry,
+            resource_namespace="legacy",
+        )
+        app.state.codex_host_manager = CodexManagerPool(
+            shared_state_root=resolve_application_data_root() / "codex-runtime",
+            legacy_manager=legacy_codex_manager,
+            resource_registry=resource_registry,
         )
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
@@ -347,6 +392,87 @@ async def lifespan(app: FastAPI):
         from trowel_py.cc_host.routes import get_registry
         from trowel_py.memory.paths import resolve_memory_root
         from trowel_py.statistics.agent.repository import FileAgentObservationReader
+        from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
+        from trowel_py.configuration.repository import ConfigurationRepository
+        from trowel_py.configuration.service import ConfigurationService
+        from trowel_py.db.connection import create_db
+        from trowel_py.db.migrate import run_migrations
+
+        def resolve_connection_launch(
+            connection_id: str,
+            model: str,
+            effort: str | None,
+        ) -> RuntimeLaunchConfiguration:
+            """用短连接读取一次秘密启动配置，确保 secret 不进入应用状态。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                launch = service.resolve_runtime_launch(
+                    connection_id,
+                    model=model,
+                    effort=effort,
+                )
+                connection.commit()
+                return launch
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def record_connection_choice(launch: RuntimeLaunchConfiguration) -> None:
+            """只在连接 identity 未变化时写回原生会话已确认的最近选择。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                current = service.get_connection(launch.connection_id)
+                if current.identity_version != launch.connection_identity_version:
+                    return
+                service.record_last_session_choice(
+                    launch.connection_id,
+                    expected_version=current.version,
+                    model=launch.model,
+                    effort=launch.effort,
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def resolve_agent_defaults(
+            fallback: Mapping[str, Any] | None,
+        ) -> dict[str, Any] | None:
+            """从设置域读取新建 Agent 默认条件，并保留最近有效选择作为回退。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                resolved = service.resolve_agent_session_defaults(fallback)
+                connection.commit()
+                return resolved
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def has_agent_runtime_connections() -> bool:
+            """判断设置域是否已经接管普通 Agent 的 runtime 连接选择。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return bool(service.list_agent_connection_options())
+            finally:
+                connection.close()
 
         cc_registry = get_registry()
         binding_store = BindingStore(resolve_bindings_path())
@@ -413,6 +539,11 @@ async def lifespan(app: FastAPI):
             codex_history_root=codex_history_root,
             resource_registry=resource_registry,
             runtime_availability=detect_runtime_availability(),
+            configuration_resolver=resolve_connection_launch,
+            last_choice_recorder=record_connection_choice,
+            agent_defaults_resolver=resolve_agent_defaults,
+            cc_connection_proxy_registry=app.state.cc_connection_proxy_registry,
+            require_configured_connections=has_agent_runtime_connections,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

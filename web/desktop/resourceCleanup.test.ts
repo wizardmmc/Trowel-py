@@ -2,14 +2,12 @@
 
 // @vitest-environment node
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import {
-  countLiveSnapshotResources,
-  writeExitMarker,
-} from "./resourceCleanup";
+import { countLiveSnapshotResources, writeExitMarker } from "./resourceCleanup";
 
 const OPTIONS = {
   command: {
@@ -29,8 +27,9 @@ const OPTIONS = {
 it("counts a live process group after its recorded root PID exits", async () => {
   const dependencies = {
     readSnapshot: vi.fn().mockResolvedValue({
-      version: 1,
+      version: 2,
       app_instance_id: "instance-hash",
+      data_root_identity: "data-root-hash",
       resources: [
         {
           resource_kind: "codex_app_server_process_group",
@@ -60,6 +59,54 @@ it("rejects an unavailable snapshot instead of reporting zero", async () => {
   await expect(
     countLiveSnapshotResources(OPTIONS, dependencies),
   ).rejects.toThrow(/snapshot unavailable/);
+});
+
+it("accepts a current v2 empty snapshot as fully reconciled", async () => {
+  const dataDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "trowel-current-snapshot-"),
+  );
+  try {
+    await writeFile(
+      path.join(dataDirectory, "resource-lifecycle.json"),
+      JSON.stringify({
+        version: 2,
+        app_instance_id: redactIdentity(OPTIONS.instanceId),
+        data_root_identity: redactIdentity(path.resolve(dataDirectory)),
+        resources: [],
+      }),
+      "utf8",
+    );
+
+    await expect(
+      countLiveSnapshotResources({ ...OPTIONS, dataDirectory }),
+    ).resolves.toBe(0);
+  } finally {
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
+it("rejects a resource snapshot copied from another data root", async () => {
+  const dataDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "trowel-foreign-snapshot-"),
+  );
+  try {
+    await writeFile(
+      path.join(dataDirectory, "resource-lifecycle.json"),
+      JSON.stringify({
+        version: 2,
+        app_instance_id: redactIdentity(OPTIONS.instanceId),
+        data_root_identity: redactIdentity("/original/formal/data-root"),
+        resources: [],
+      }),
+      "utf8",
+    );
+
+    await expect(
+      countLiveSnapshotResources({ ...OPTIONS, dataDirectory }),
+    ).rejects.toThrow(/snapshot unavailable/);
+  } finally {
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
 });
 
 it("atomically writes a versioned exit marker without raw instance identity", async () => {
@@ -98,3 +145,7 @@ it("atomically writes a versioned exit marker without raw instance identity", as
     await rm(dataDirectory, { recursive: true, force: true });
   }
 });
+
+function redactIdentity(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 20);
+}

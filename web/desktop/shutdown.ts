@@ -28,6 +28,8 @@ export interface SidecarShutdownResult {
   readonly exitMarkerRecorded: boolean;
 }
 
+export type SidecarShutdownReason = ExitMarkerInput["exitReason"];
+
 export interface SidecarShutdownDependencies {
   readonly requestDrain: (
     running: StartedSidecar,
@@ -59,6 +61,7 @@ const DEFAULT_DEPENDENCIES: SidecarShutdownDependencies = {
 export async function shutdownSidecar(
   running: StartedSidecar,
   options: SidecarStartOptions,
+  reason: SidecarShutdownReason = "app_exit",
   dependencies: SidecarShutdownDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<SidecarShutdownResult> {
   /** cooperative 阶段失败也继续按快照收敛，不能把 HTTP 失败当作退出完成。 */
@@ -85,7 +88,10 @@ export async function shutdownSidecar(
   let exited = processExited;
   let resourceCount = await countResources(options, dependencies);
   const forced =
-    !cooperative || !exited || !resourceCount.verified || resourceCount.remaining > 0;
+    !cooperative ||
+    !exited ||
+    !resourceCount.verified ||
+    resourceCount.remaining > 0;
 
   if (!exited || !resourceCount.verified || resourceCount.remaining > 0) {
     if (!exited) running.process.signal("SIGKILL");
@@ -96,10 +102,12 @@ export async function shutdownSidecar(
   }
 
   const remainingResourceCount =
-    resourceCount.remaining + (resourceCount.verified ? 0 : 1) + (exited ? 0 : 1);
+    resourceCount.remaining +
+    (resourceCount.verified ? 0 : 1) +
+    (exited ? 0 : 1);
   const status = remainingResourceCount === 0 ? "closed" : "needs_reconcile";
   await dependencies.recordExit(options, {
-    exitReason: "app_exit",
+    exitReason: reason,
     requestedAt: requestedAt.toISOString(),
     completedAt: dependencies.now().toISOString(),
     exitMode: forced ? "forced" : "cooperative",
@@ -133,11 +141,14 @@ async function requestDrain(
   running: StartedSidecar,
   timeoutMs: number,
 ): Promise<DrainResponse> {
-  const response = await fetch(`${running.transport.baseUrl}/api/desktop/drain`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${running.transport.credential}` },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const response = await fetch(
+    `${running.transport.baseUrl}/api/desktop/drain`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${running.transport.credential}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    },
+  );
   if (!response.ok) throw new Error(`drain returned ${response.status}`);
   const envelope = (await response.json()) as {
     readonly success?: boolean;

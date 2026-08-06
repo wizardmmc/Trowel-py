@@ -7,16 +7,22 @@ const exitCode = document.querySelector("#exit-code");
 const actionError = document.querySelector("#action-error");
 const retry = document.querySelector("#retry");
 let sidecarReady = false;
+let restartRequired = false;
 
 async function refreshDiagnostic() {
   const state = await bridge.getDiagnostics();
   sidecarReady = state.status === "ready";
+  restartRequired = state.category === "reconcile_required";
   message.textContent = sidecarReady
     ? "后台服务仍在运行。界面异常退出时，可以直接重新打开 Trowel。"
     : (state.message ?? "后台服务暂时不可用。");
   category.textContent = state.category ?? "-";
   exitCode.textContent = state.exitCode === null ? "-" : String(state.exitCode);
-  retry.textContent = sidecarReady ? "重新打开 Trowel" : "重试";
+  retry.textContent = sidecarReady
+    ? "重新打开 Trowel"
+    : restartRequired
+      ? "退出 Trowel"
+      : "重试";
 }
 
 async function runAction(action) {
@@ -30,7 +36,11 @@ async function runAction(action) {
 
 retry.addEventListener("click", () => {
   retry.disabled = true;
-  const action = sidecarReady ? bridge.openTrowel : bridge.retrySidecar;
+  const action = sidecarReady
+    ? bridge.openTrowel
+    : restartRequired
+      ? bridge.requestQuit
+      : bridge.retrySidecar;
   void runAction(() => action()).finally(() => {
     retry.disabled = false;
   });

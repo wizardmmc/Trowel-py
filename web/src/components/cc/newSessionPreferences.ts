@@ -47,6 +47,8 @@ function parseConfig(value: unknown): NewSessionConfig | null {
     return null;
   }
   const preset = value.permission_preset;
+  const connectionId = value.connection_id;
+  if (connectionId !== undefined && typeof connectionId !== "string") return null;
   if (
     preset !== undefined &&
     (typeof preset !== "string" || !CODEX_PERMISSIONS.has(preset))
@@ -55,10 +57,13 @@ function parseConfig(value: unknown): NewSessionConfig | null {
   }
   return {
     runtime: value.runtime,
+    ...(connectionId !== undefined ? { connection_id: connectionId } : {}),
     model: value.model,
     effort: value.effort,
     permission_mode: value.permission_mode,
-    permission_preset: preset as NewSessionConfig["permission_preset"],
+    ...(preset !== undefined
+      ? { permission_preset: preset as NewSessionConfig["permission_preset"] }
+      : {}),
     memory_enabled: value.memory_enabled,
     profile_enabled: value.profile_enabled,
   };

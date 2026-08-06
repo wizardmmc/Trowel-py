@@ -20,6 +20,7 @@ from trowel_py.resource_lifecycle import (
     ResourceState,
     list_descendant_processes,
 )
+from trowel_py.resource_lifecycle.registry import redact_identity
 
 
 class FakeProcessController:
@@ -112,7 +113,8 @@ def test_snapshot_redacts_owner_and_resource_ids(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "resource-lifecycle.json").read_text())
     encoded = json.dumps(payload)
 
-    assert payload["version"] == 1
+    assert payload["version"] == 2
+    assert payload["data_root_identity"] == redact_identity(str(tmp_path.absolute()))
     assert payload["app_instance_id"] != "app-private-id"
     assert "session-private-id" not in encoded
     assert "cc-resource-private-id" not in encoded
@@ -136,10 +138,13 @@ def test_closed_requires_the_owner_to_have_no_live_resources(tmp_path: Path) -> 
         agent_session_id="session-private-id",
     )
     assert registry.get(record.resource_id).state is ResourceState.CLOSING
-    assert registry.owner_summary(
-        OwnerScope.SESSION,
-        agent_session_id="session-private-id",
-    ).live_resource_count == 1
+    assert (
+        registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id="session-private-id",
+        ).live_resource_count
+        == 1
+    )
 
     registry.mark_closed(record.resource_id)
 

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import shutil
 import sqlite3
 import uuid
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from trowel_py.configuration.capabilities import (
     CAPABILITY_REGISTRY_VERSION,
@@ -45,6 +48,25 @@ from trowel_py.configuration.models import (
     TaskId,
 )
 from trowel_py.configuration.repository import ConfigurationRepository
+from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
+from trowel_py.application_paths import resolve_application_data_root
+
+_CLAUDE_MAIN_ROLE_ORDER = ("opus", "sonnet", "fable", "haiku")
+_CODEX_CUSTOM_EFFORTS = ("low", "medium", "high", "xhigh")
+_log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AccountSlotDeletion:
+    """记录 Official 账号槽移入墓碑后的补偿信息。
+
+    Attributes:
+        slot: 数据库仍处于活动状态时应恢复到的托管槽路径。
+        tombstone: 数据库确认软删除后才能永久清理的临时路径。
+    """
+
+    slot: Path
+    tombstone: Path
 
 
 def _now() -> str:
@@ -98,6 +120,24 @@ def _normalized_url(value: str | None, *, field_name: str) -> str | None:
     )
 
 
+def _proxy_url_with_credentials(
+    proxy_url: str | None,
+    username: str | None,
+    password: str | None,
+) -> str | None:
+    """只在 runtime 内存中把独立代理认证字段合成标准 URL。"""
+
+    if not proxy_url or not username:
+        return proxy_url
+    parsed = urlsplit(proxy_url)
+    userinfo = quote(username, safe="")
+    if password:
+        userinfo += f":{quote(password, safe='')}"
+    return urlunsplit(
+        (parsed.scheme, f"{userinfo}@{parsed.netloc}", parsed.path, "", "")
+    )
+
+
 def _codex_catalog_wire(entries: tuple[CodexCatalogEntry, ...]) -> list[dict[str, Any]]:
     """把 Codex catalog 值对象转换成持久化结构。"""
 
@@ -146,6 +186,67 @@ def _decode_codex_catalog(raw: str) -> tuple[CodexCatalogEntry, ...]:
     return tuple(result)
 
 
+def merge_codex_catalog(
+    model_ids: Sequence[str],
+    *,
+    saved_entries: Sequence[CodexCatalogEntry] = (),
+    native_models: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[CodexCatalogEntry, ...]:
+    """按 Codex 原生顺序合并上游可见模型与已保存自定义模型。
+
+    原生 ``model/list`` 负责 GPT 交互模型的顺序、默认 effort 和支持集合；只要存在
+    原生交集，就排除 image/auto-review 等额外端点条目。非空原生目录完全不认识当前
+    上游时按上游顺序回退，保证 DeepSeek 等自定义模型第一次获取后即可选择；原生目录
+    缺失或为空时不猜测候选。
+
+    Args:
+        model_ids: 当前连接上游模型端点返回的真实 ID。
+        saved_entries: 连接已经保存的 Codex 自定义模型元数据。
+        native_models: Codex app-server ``model/list`` 的内部标准化结果。
+
+    Returns:
+        可供 Codex 交互会话使用的有序模型元数据。
+    """
+
+    if not native_models:
+        return ()
+    upstream = set(model_ids)
+    entries: list[CodexCatalogEntry] = []
+    seen: set[str] = set()
+    for row in native_models or ():
+        model_id = row.get("id")
+        if not isinstance(model_id, str) or model_id not in upstream:
+            continue
+        efforts = tuple(
+            value
+            for item in row.get("supported_efforts", ())
+            if isinstance(item, Mapping)
+            and isinstance((value := item.get("value")), str)
+        )
+        default_effort = row.get("default_effort")
+        entries.append(
+            CodexCatalogEntry(
+                id=model_id,
+                display_name=None,
+                default_effort=(
+                    default_effort if isinstance(default_effort, str) else None
+                ),
+                supported_efforts=efforts,
+            )
+        )
+        seen.add(model_id)
+    if not entries:
+        saved_by_id = {entry.id: entry for entry in saved_entries}
+        entries.extend(
+            saved_by_id.get(model_id)
+            or CodexCatalogEntry(
+                id=model_id,
+                default_effort="high",
+                supported_efforts=_CODEX_CUSTOM_EFFORTS,
+            )
+            for model_id in dict.fromkeys(model_ids)
+        )
+    return tuple(entries)
 class ConfigurationService:
     """执行配置领域校验并保持跨表更新的一致性。
 
@@ -159,20 +260,67 @@ class ConfigurationService:
         repository: ConfigurationRepository,
         *,
         catalog_fetcher: Any | None = None,
+        official_account_root: Path | None = None,
     ) -> None:
-        """保存仓储并使用默认 HTTP 模型列表客户端。"""
+        """保存仓储、模型客户端和 Trowel 托管的 Official 账号槽位根。"""
 
         self.repository = repository
         self.catalog_fetcher = catalog_fetcher or HttpModelCatalogFetcher()
+        self.official_account_root = (
+            official_account_root
+            if official_account_root is not None
+            else resolve_application_data_root() / "codex-accounts"
+        )
+
+    def restrict_codex_catalog_candidates(
+        self,
+        connection_id: str,
+        *,
+        catalog: CatalogView,
+        candidates: Sequence[CodexCatalogEntry],
+    ) -> CatalogView:
+        """把 Codex 上游快照收窄为 runtime 可交互候选。
+
+        设置页仍通过响应取得候选元数据；持久快照只保留最终候选，使旧的不兼容选择
+        在刷新后无法继续进入 Agent 或会话配置。
+        """
+
+        if not catalog.request_identity or not catalog.source_endpoint or not catalog.fetched_at:
+            raise ConfigurationError("CATALOG_STALE", "Codex 模型列表缺少请求身份")
+        snapshot = self.repository.get_model_catalog(catalog.request_identity)
+        if snapshot is None or snapshot["connection_id"] != connection_id:
+            raise ConfigurationError("CATALOG_STALE", "Codex 模型列表已经过期")
+        model_ids = tuple(dict.fromkeys(entry.id for entry in candidates))
+        self.repository.put_model_catalog(
+            request_identity=catalog.request_identity,
+            connection_id=connection_id,
+            models=model_ids,
+            source_endpoint=catalog.source_endpoint,
+            fetched_at=catalog.fetched_at,
+        )
+        return replace(catalog, models=model_ids)
 
     def create_connection(self, draft: ConnectionDraft) -> ConnectionView:
         """校验并创建一条缺省为未验证状态的连接。"""
 
-        normalized = self._validate_draft(draft)
         connection_id = str(uuid.uuid4())
+        if draft.kind is ConnectionKind.CODEX_OFFICIAL and draft.login_directory:
+            raise ConfigurationError(
+                "CONNECTION_SHAPE_INVALID",
+                "Codex Official 账号目录由 Trowel 自动管理",
+            )
+        slot = self._official_account_slot_path(connection_id)
+        prepared = (
+            replace(draft, login_directory=str(slot))
+            if draft.kind is ConnectionKind.CODEX_OFFICIAL
+            else draft
+        )
+        normalized = self._validate_draft(prepared)
+        if draft.kind is ConnectionKind.CODEX_OFFICIAL:
+            slot.mkdir(parents=True, exist_ok=True, mode=0o700)
+            slot.chmod(0o700)
         now = _now()
-        self.repository.insert_connection(
-            {
+        values = {
                 "id": connection_id,
                 "version": 1,
                 "identity_version": 1,
@@ -198,8 +346,57 @@ class ConfigurationService:
                 "created_at": now,
                 "updated_at": now,
             }
-        )
+        try:
+            self.repository.insert_connection(values)
+        except BaseException:
+            if draft.kind is ConnectionKind.CODEX_OFFICIAL and slot.is_dir():
+                slot.rmdir()
+            raise
         return self.get_connection(connection_id)
+
+    def migrate_official_account_slots(self) -> int:
+        """把历史 Official 目录引用改成当前数据根下的独立空账号槽。
+
+        迁移只重写引用并创建私有目录，不复制或删除旧 OAuth 凭据；历史配置因此需要
+        各自重新登录，避免多个供应商继续共享 ``~/.codex`` 或正式版账号。
+        """
+
+        self.official_account_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.official_account_root.chmod(0o700)
+        self._recover_official_account_tombstones()
+        migrated = 0
+        for row in self.repository.list_connections():
+            if row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
+                continue
+            expected = self._official_account_slot_path(str(row["id"]))
+            current = (
+                Path(str(row["login_directory"])).expanduser().absolute()
+                if row["login_directory"]
+                else None
+            )
+            created_slot = not expected.exists()
+            expected.mkdir(parents=True, exist_ok=True, mode=0o700)
+            expected.chmod(0o700)
+            if current == expected:
+                continue
+            try:
+                self.repository.update_connection(
+                    str(row["id"]),
+                    expected_version=int(row["version"]),
+                    values={
+                        "version": int(row["version"]) + 1,
+                        "identity_version": int(row["identity_version"]) + 1,
+                        "login_directory": str(expected),
+                        "validation_status": "stale",
+                        "updated_at": _now(),
+                    },
+                )
+            except BaseException:
+                if created_slot:
+                    expected.rmdir()
+                raise
+            migrated += 1
+        return migrated
 
     def get_connection(self, connection_id: str) -> ConnectionView:
         """读取一条未删除连接的脱敏状态。"""
@@ -216,6 +413,92 @@ class ConfigurationService:
             self._connection_view(row) for row in self.repository.list_connections()
         )
 
+    def list_agent_connection_options(
+        self,
+    ) -> list[dict[str, Any]]:
+        """返回普通 Agent 可选供应商及其已保存模型。
+
+        Claude 只暴露已配置的主会话角色别名；Codex 只暴露设置页已经保存的有序
+        catalog。原生 ``model/list`` 只在用户显式刷新候选时读取，组装新会话选项不得
+        启动所有 Codex manager。
+        """
+
+        options: list[dict[str, Any]] = []
+        for connection in self.list_connections():
+            if connection.runtime is RuntimeKind.DIRECT_API:
+                continue
+            if connection.runtime is RuntimeKind.CLAUDE_CODE:
+                models = self._claude_agent_models(connection)
+                catalog_ready = connection.catalog.status == "ready"
+            else:
+                compatible_models = set(connection.catalog.models)
+                models = [
+                    self._codex_agent_model(
+                        entry,
+                        available=entry.id in compatible_models,
+                    )
+                    for entry in connection.codex_catalog
+                ]
+                catalog_ready = connection.catalog.status == "ready"
+            auth_ready = connection.auth.status in {"configured", "referenced"}
+            if not auth_ready:
+                disabled_reason = "auth_missing"
+            elif not catalog_ready:
+                disabled_reason = "catalog_not_ready"
+            elif not models:
+                disabled_reason = "model_not_selected"
+            elif not any(model["available"] for model in models):
+                disabled_reason = "model_selection_stale"
+            else:
+                disabled_reason = None
+            options.append(
+                {
+                    "id": connection.id,
+                    "name": connection.name,
+                    "runtime": connection.runtime.value,
+                    "kind": connection.kind.value,
+                    "identity_version": connection.identity_version,
+                    "available": disabled_reason is None,
+                    "disabled_reason": disabled_reason,
+                    "last_session_choice": connection.last_session_choice,
+                    "models": models,
+                }
+            )
+        return options
+
+    @staticmethod
+    def _claude_agent_models(connection: ConnectionView) -> list[dict[str, Any]]:
+        """把 Claude 角色映射转换成主会话别名，不暴露真实上游 model ID。"""
+
+        available_models = set(connection.catalog.models)
+        return [
+            {
+                "id": role,
+                "display_name": role,
+                "available": True,
+                "disabled_reason": None,
+                "efforts": [],
+                "default_effort": None,
+            }
+            for role in _CLAUDE_MAIN_ROLE_ORDER
+            if connection.claude_role_models.get(role) in available_models
+        ]
+
+    @staticmethod
+    def _codex_agent_model(
+        entry: CodexCatalogEntry, *, available: bool
+    ) -> dict[str, Any]:
+        """把一项 Codex 原生目录记录转换成 Agent 选择项。"""
+
+        return {
+            "id": entry.id,
+            "display_name": None,
+            "available": available,
+            "disabled_reason": None if available else "model_not_in_catalog",
+            "efforts": list(entry.supported_efforts),
+            "default_effort": entry.default_effort,
+        }
+
     def update_connection(
         self,
         connection_id: str,
@@ -230,7 +513,13 @@ class ConfigurationService:
             raise not_found("连接")
         if int(row["version"]) != expected_version:
             raise version_conflict()
-        normalized = self._validate_draft(draft)
+        effective_draft = (
+            replace(draft, login_directory=str(row["login_directory"]))
+            if draft.kind is ConnectionKind.CODEX_OFFICIAL
+            and row["kind"] == ConnectionKind.CODEX_OFFICIAL.value
+            else draft
+        )
+        normalized = self._validate_draft(effective_draft)
         proposed_identity = self._request_identity_for_draft(
             connection_id,
             normalized,
@@ -270,8 +559,11 @@ class ConfigurationService:
             normalized.login_directory,
             normalized.proxy_url,
             normalized.proxy_username,
-            _json(normalized.claude_role_models),
-            _json(_codex_catalog_wire(normalized.codex_catalog)),
+            (
+                _json(normalized.claude_role_models)
+                if normalized.runtime is RuntimeKind.CLAUDE_CODE
+                else None
+            ),
         )
         previous_launch_fields = (
             row["runtime"],
@@ -281,8 +573,11 @@ class ConfigurationService:
             row["login_directory"],
             row["proxy_url"],
             row["proxy_username"],
-            row["claude_role_models"],
-            row["codex_catalog"],
+            (
+                row["claude_role_models"]
+                if row["runtime"] == RuntimeKind.CLAUDE_CODE.value
+                else None
+            ),
         )
         identity_changed = launch_fields != previous_launch_fields
         catalog_identity = proposed_identity if has_current_catalog else None
@@ -379,15 +674,24 @@ class ConfigurationService:
         *,
         expected_version: int,
         draft: ConnectionDraft | None = None,
+        codex_native_models: Sequence[Mapping[str, Any]] | None = None,
     ) -> CatalogView:
-        """使用内部 secret 获取模型列表，并拒绝晚到的旧身份结果。"""
+        """获取上游列表，必要时先按 Codex 原生目录过滤，再原子保存最终候选。"""
 
         row = self.repository.get_connection(connection_id)
         if row is None:
             raise not_found("连接")
         if int(row["version"]) != expected_version:
             raise version_conflict()
-        effective = self._validate_draft(draft) if draft is not None else self._draft(row)
+        if draft is not None:
+            effective_draft = (
+                replace(draft, login_directory=str(row["login_directory"]))
+                if draft.kind is ConnectionKind.CODEX_OFFICIAL
+                else draft
+            )
+            effective = self._validate_draft(effective_draft)
+        else:
+            effective = self._draft(row)
         secret = self.repository.read_secret(connection_id, SecretKind.API_KEY)
         if secret is None:
             raise ConfigurationError("SECRET_MISSING", "连接尚未配置 API key")
@@ -436,7 +740,18 @@ class ConfigurationService:
                 "模型列表请求身份已经变化，旧结果已丢弃",
                 status_code=409,
             )
-        model_ids = tuple(dict.fromkeys(model.id for model in fetched.models if model.id))
+        model_ids = tuple(
+            dict.fromkeys(model.id for model in fetched.models if model.id)
+        )
+        if codex_native_models is not None:
+            model_ids = tuple(
+                entry.id
+                for entry in merge_codex_catalog(
+                    model_ids,
+                    saved_entries=effective.codex_catalog,
+                    native_models=codex_native_models,
+                )
+            )
         if not model_ids:
             raise ConfigurationError("EMPTY_CATALOG", "模型服务返回了空列表")
         fetched_at = _now()
@@ -471,17 +786,262 @@ class ConfigurationService:
             connection_version=expected_version + 1,
         )
 
-    def delete_connection(self, connection_id: str, *, expected_version: int) -> None:
-        """软删除连接并永久移除其 secret，保留历史引用。"""
+    def record_native_codex_catalog(
+        self,
+        connection_id: str,
+        *,
+        expected_version: int,
+        native_models: Sequence[Mapping[str, Any]],
+    ) -> CatalogView:
+        """保存 Official app-server 已返回的原生模型 ID 快照。
 
+        Args:
+            connection_id: Official 供应商的稳定 ID。
+            expected_version: 读取供应商时的乐观版本。
+            native_models: 已由 Codex 协议解析器校验的 ``model/list`` 记录。
+
+        Returns:
+            写入当前连接后的目录事实。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if int(row["version"]) != expected_version:
+            raise version_conflict()
+        draft = self._draft(row)
+        if draft.kind is not ConnectionKind.CODEX_OFFICIAL:
+            raise ConfigurationError(
+                "CONNECTION_SHAPE_INVALID", "只有 Codex Official 使用原生账号目录"
+            )
+        model_ids = tuple(
+            dict.fromkeys(
+                str(model["id"])
+                for model in native_models
+                if isinstance(model.get("id"), str) and str(model["id"]).strip()
+            )
+        )
+        if not model_ids:
+            raise ConfigurationError("EMPTY_CATALOG", "Codex 返回了空模型列表")
+        identity = self._request_identity_for_draft(
+            connection_id,
+            draft,
+            self.repository.secret_versions(connection_id),
+        )
+        fetched_at = _now()
+        source_endpoint = "codex://model/list"
         with self.repository.atomic():
-            self._delete_connection(
-                connection_id, expected_version=expected_version
+            self.repository.put_model_catalog(
+                request_identity=identity,
+                connection_id=connection_id,
+                models=model_ids,
+                source_endpoint=source_endpoint,
+                fetched_at=fetched_at,
+            )
+            self.repository.update_connection(
+                connection_id,
+                expected_version=expected_version,
+                values={
+                    "version": expected_version + 1,
+                    "catalog_request_identity": identity,
+                    "catalog_status": "ready",
+                    "catalog_error_code": None,
+                    "updated_at": fetched_at,
+                },
+            )
+        return CatalogView(
+            status="ready",
+            models=model_ids,
+            source_endpoint=source_endpoint,
+            fetched_at=fetched_at,
+            request_identity=identity,
+            connection_version=expected_version + 1,
+        )
+
+    def delete_connection(
+        self, connection_id: str, *, expected_version: int
+    ) -> AccountSlotDeletion | None:
+        """软删除连接与 secret，并暂存 Official 账号槽等待事务提交。"""
+
+        row = self.repository.get_connection(connection_id)
+        owned_account_slot = self._owned_official_account_slot(row)
+        tombstone: Path | None = None
+        if owned_account_slot is not None:
+            tombstone = owned_account_slot.with_name(
+                f".deleted-{owned_account_slot.name}-{uuid.uuid4().hex}"
+            )
+            owned_account_slot.rename(tombstone)
+        try:
+            with self.repository.atomic():
+                self._delete_connection(connection_id, expected_version=expected_version)
+        except BaseException:
+            if (
+                tombstone is not None
+                and tombstone.exists()
+                and owned_account_slot is not None
+                and not owned_account_slot.exists()
+            ):
+                tombstone.rename(owned_account_slot)
+            raise
+        return (
+            AccountSlotDeletion(slot=owned_account_slot, tombstone=tombstone)
+            if tombstone is not None and owned_account_slot is not None
+            else None
+        )
+
+    def finalize_account_slot_deletion(
+        self, deletion: AccountSlotDeletion | None
+    ) -> None:
+        """数据库软删除提交后尽力永久清理账号槽墓碑。"""
+
+        if deletion is None or not deletion.tombstone.exists():
+            return
+        try:
+            shutil.rmtree(deletion.tombstone)
+        except OSError:
+            _log.exception(
+                "Official 账号槽延迟清理失败：%s", deletion.tombstone.name
             )
 
-    def _delete_connection(
-        self, connection_id: str, *, expected_version: int
-    ) -> None:
+    @staticmethod
+    def restore_account_slot_deletion(deletion: AccountSlotDeletion | None) -> None:
+        """数据库提交失败时把仍存在的墓碑恢复到原账号槽。"""
+
+        if (
+            deletion is not None
+            and deletion.tombstone.exists()
+            and not deletion.slot.exists()
+        ):
+            deletion.tombstone.rename(deletion.slot)
+
+    def _recover_official_account_tombstones(self) -> None:
+        """按数据库软删除状态恢复未提交墓碑，或清理已提交墓碑。"""
+
+        for tombstone in self.official_account_root.glob(".deleted-*"):
+            if not tombstone.is_dir() or tombstone.is_symlink():
+                continue
+            connection_id = self._connection_id_from_tombstone(tombstone)
+            if connection_id is None:
+                _log.error("无法识别 Official 账号槽墓碑：%s", tombstone.name)
+                continue
+            row = self.repository.get_connection(connection_id, include_deleted=True)
+            active_official = (
+                row is not None
+                and row["deleted_at"] is None
+                and row["kind"] == ConnectionKind.CODEX_OFFICIAL.value
+            )
+            if active_official:
+                slot = self._official_account_slot_path(connection_id)
+                if slot.exists():
+                    _log.error(
+                        "Official 账号槽与待恢复墓碑同时存在：%s", tombstone.name
+                    )
+                    continue
+                tombstone.rename(slot)
+                continue
+            try:
+                shutil.rmtree(tombstone)
+            except OSError:
+                _log.exception(
+                    "Official 账号槽墓碑仍无法清理：%s", tombstone.name
+                )
+
+    @staticmethod
+    def _connection_id_from_tombstone(tombstone: Path) -> str | None:
+        """从当前版本墓碑名称解析并规范化连接 UUID。"""
+
+        payload = tombstone.name.removeprefix(".deleted-")
+        if len(payload) < 38 or payload[36] != "-":
+            return None
+        try:
+            connection_id = str(uuid.UUID(payload[:36]))
+        except ValueError:
+            return None
+        return connection_id if payload.startswith(f"{connection_id}-") else None
+
+    def _owned_official_account_slot(self, row: sqlite3.Row | None) -> Path | None:
+        """只返回当前连接在托管根中的精确账号槽，拒绝任意历史外部路径。"""
+
+        if row is None or row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
+            return None
+        expected = self._official_account_slot_path(str(row["id"]))
+        current = (
+            Path(str(row["login_directory"])).expanduser().absolute()
+            if row["login_directory"]
+            else None
+        )
+        return expected if current == expected and expected.is_dir() else None
+
+    def _official_account_slot_path(self, connection_id: str) -> Path:
+        """返回不会跟随槽位符号链接的托管路径。"""
+
+        try:
+            parsed_id = uuid.UUID(connection_id)
+        except ValueError as exc:
+            raise ConfigurationError(
+                "OFFICIAL_ACCOUNT_SLOT_INVALID", "Official 账号槽标识无效"
+            ) from exc
+        root = self.official_account_root.expanduser().resolve()
+        slot = root / str(parsed_id)
+        if slot.is_symlink():
+            raise ConfigurationError(
+                "OFFICIAL_ACCOUNT_SLOT_INVALID",
+                "Official 账号槽不能是符号链接",
+                status_code=409,
+            )
+        return slot
+
+    def resolve_agent_session_defaults(
+        self, fallback: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """把设置页默认条件叠加到最近一次有效会话选择。"""
+
+        defaults = self.get_agent_defaults()
+        if defaults.version == 0:
+            return dict(fallback) if fallback is not None else None
+        resolved = dict(fallback or {})
+        if defaults.session_configuration_id is not None:
+            configuration = self.get_session_configuration(
+                defaults.session_configuration_id
+            )
+            if configuration.availability == "available":
+                resolved.update(
+                    runtime=configuration.runtime.value,
+                    connection_id=configuration.connection_id,
+                    model=configuration.model,
+                    effort=configuration.effort or "",
+                )
+        if "runtime" not in resolved:
+            first = next(
+                (
+                    option
+                    for option in self.list_agent_connection_options()
+                    if option["available"]
+                ),
+                None,
+            )
+            resolved["runtime"] = first["runtime"] if first else "claude_code"
+            if first:
+                resolved["connection_id"] = first["id"]
+                resolved["model"] = first["models"][0]["id"]
+                resolved["effort"] = first["models"][0]["default_effort"] or ""
+        runtime = resolved["runtime"]
+        resolved["permission_mode"] = (
+            defaults.permission or "" if runtime == RuntimeKind.CLAUDE_CODE.value else ""
+        )
+        if runtime == RuntimeKind.CODEX.value:
+            if defaults.permission:
+                resolved["permission_preset"] = defaults.permission
+        else:
+            resolved.pop("permission_preset", None)
+        resolved["memory_enabled"] = defaults.memory_enabled
+        resolved["profile_enabled"] = defaults.profile_enabled
+        resolved["self_enabled"] = defaults.self_enabled
+        resolved.setdefault("model", "")
+        resolved.setdefault("effort", "")
+        return resolved
+
+    def _delete_connection(self, connection_id: str, *, expected_version: int) -> None:
         """在调用方保存点内删除 secret 并软删除连接。"""
 
         row = self.repository.get_connection(connection_id)
@@ -755,13 +1315,189 @@ class ConfigurationService:
         )
         return self.get_connection(connection_id)
 
+    def resolve_runtime_launch(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> RuntimeLaunchConfiguration:
+        """把已验证连接解析成只在后端内存中存在的冻结启动配置。
+
+        Args:
+            connection_id: Agent 表单选择的稳定连接 ID。
+            model: Codex 真实模型 ID，或 Claude Code 的主会话角色别名。
+            effort: 本次会话选择的思考强度；Claude 可为 None。
+
+        Returns:
+            同时包含脱敏身份和秘密启动材料的内部值对象。
+
+        Raises:
+            ConfigurationError: 连接、catalog、认证或模型不可用。
+        """
+
+        connection = self.repository.get_connection(connection_id)
+        expected_version = int(connection["version"]) if connection is not None else -1
+        row, selected_model, capability = self._validate_session_draft(
+            SessionConfigurationDraft(
+                name="Agent runtime launch",
+                connection_id=connection_id,
+                model=model,
+                effort=effort,
+            ),
+            expected_connection_version=expected_version,
+        )
+        return self._build_runtime_launch(
+            row,
+            draft=self._draft(row),
+            model=selected_model,
+            effort=effort,
+            capability_version=capability.version,
+            capability_source=capability.source,
+        )
+
+    def resolve_codex_catalog_launch(
+        self,
+        connection_id: str,
+        *,
+        draft: ConnectionDraft | None = None,
+        model_ids: Sequence[str] = (),
+    ) -> RuntimeLaunchConfiguration:
+        """为某一条 Codex 连接构造只用于读取原生模型目录的启动配置。
+
+        目录发现不依赖已保存的模型可用性，否则 Codex official 无法在第一次
+        打开时发现模型。传入未保存草稿时，返回值冻结该草稿的 provider 和代理
+        边界，不会污染其他连接的 app-server。
+
+        Args:
+            connection_id: 提供凭据和身份版本的已保存连接 ID。
+            draft: 设置页当前未保存的非 secret 字段；为 None 时使用已保存值。
+            model_ids: 本次上游列表候选，仅用于填充内部占位模型字段。
+
+        Returns:
+            只供 Codex manager pool 启动连接专属 app-server 的内部值对象。
+
+        Raises:
+            ConfigurationError: 连接不存在、不是 Codex，或认证材料不可用。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if draft is None:
+            effective = self._draft(row)
+        else:
+            effective_draft = (
+                replace(draft, login_directory=str(row["login_directory"]))
+                if draft.kind is ConnectionKind.CODEX_OFFICIAL
+                and row["kind"] == ConnectionKind.CODEX_OFFICIAL.value
+                else draft
+            )
+            effective = self._validate_draft(effective_draft)
+        if effective.runtime is not RuntimeKind.CODEX:
+            raise ConfigurationError(
+                "AGENT_RUNTIME_REQUIRED",
+                "模型目录只能由 Codex 连接读取",
+                status_code=422,
+            )
+        model = next(
+            (
+                candidate.strip()
+                for candidate in model_ids
+                if isinstance(candidate, str) and candidate.strip()
+            ),
+            None,
+        )
+        if model is None and effective.codex_catalog:
+            model = effective.codex_catalog[0].id
+        return self._build_runtime_launch(
+            row,
+            draft=effective,
+            model=model or "codex-catalog-discovery",
+            effort=None,
+            capability_version=CAPABILITY_REGISTRY_VERSION,
+            capability_source="Codex native model/list discovery",
+        )
+
+    def _build_runtime_launch(
+        self,
+        row: sqlite3.Row,
+        *,
+        draft: ConnectionDraft,
+        model: str,
+        effort: str | None,
+        capability_version: str,
+        capability_source: str | None,
+    ) -> RuntimeLaunchConfiguration:
+        """用已保存凭据和指定非 secret 配置构造冻结的 runtime 启动对象。
+
+        Args:
+            row: 提供连接 ID、版本和 secret 查询键的持久化行。
+            draft: 本次启动应使用的已校验非 secret 字段。
+            model: 会话模型，或仅目录发现时的内部占位值。
+            effort: 会话思考强度；目录发现时为 None。
+            capability_version: 放行本次启动的能力表版本。
+            capability_source: 放行本次启动的证据说明。
+
+        Returns:
+            不会被 API 序列化的 runtime 内部启动配置。
+
+        Raises:
+            ConfigurationError: 应用凭据或 Codex official 登录目录不可用。
+        """
+
+        connection_id = str(row["id"])
+        api_key = self.repository.read_secret(connection_id, SecretKind.API_KEY)
+        if draft.kind is not ConnectionKind.CODEX_OFFICIAL and not api_key:
+            raise ConfigurationError(
+                "AUTH_MISSING", "连接凭据尚未配置", status_code=422
+            )
+        if draft.kind is ConnectionKind.CODEX_OFFICIAL:
+            expected_slot = self._official_account_slot_path(connection_id)
+            configured_slot = (
+                Path(draft.login_directory).expanduser().absolute()
+                if draft.login_directory
+                else None
+            )
+            if configured_slot != expected_slot or not expected_slot.is_dir():
+                raise ConfigurationError(
+                    "LOGIN_DIRECTORY_MISSING",
+                    "Codex Official 账号槽尚未完成安全迁移",
+                    status_code=422,
+                )
+            api_key = None
+        proxy_url = _proxy_url_with_credentials(
+            draft.proxy_url,
+            draft.proxy_username,
+            self.repository.read_secret(connection_id, SecretKind.PROXY_PASSWORD),
+        )
+        return RuntimeLaunchConfiguration(
+            connection_id=connection_id,
+            connection_version=int(row["version"]),
+            connection_identity_version=int(row["identity_version"]),
+            connection_name=draft.name,
+            runtime=draft.runtime,
+            kind=draft.kind,
+            protocol=draft.protocol,
+            model=model,
+            effort=effort,
+            capability_version=capability_version,
+            base_url=draft.base_url,
+            login_directory=draft.login_directory,
+            proxy_url=proxy_url,
+            claude_role_models=dict(draft.claude_role_models),
+            codex_catalog=draft.codex_catalog,
+            api_key=api_key,
+            capability_source=capability_source,
+        )
+
     def _validate_session_draft(
         self,
         draft: SessionConfigurationDraft,
         *,
         expected_connection_version: int,
     ) -> tuple[sqlite3.Row, str, CapabilityView]:
-        """返回通过当前 catalog 和 capability 门禁的连接、模型与能力。"""
+        """返回通过当前 catalog 的连接、交互模型与后台任务能力。"""
 
         row = self.repository.get_connection(draft.connection_id)
         if row is None:
@@ -782,15 +1518,23 @@ class ConfigurationService:
             raise ConfigurationError("NAME_REQUIRED", "会话配置名称不能为空")
         if len(draft.name.strip()) > 120:
             raise ConfigurationError("NAME_INVALID", "会话配置名称过长")
-        if model not in catalog.models:
+        runtime = RuntimeKind(row["runtime"])
+        catalog_model = model
+        if runtime is RuntimeKind.CLAUDE_CODE:
+            role_models = _load_json(row["claude_role_models"], {})
+            if isinstance(role_models, dict) and isinstance(
+                role_models.get(model), str
+            ):
+                catalog_model = str(role_models[model])
+        if catalog_model not in catalog.models:
             raise ConfigurationError(
                 "MODEL_NOT_IN_CATALOG", "所选模型不在当前模型列表中", status_code=422
             )
         capability = capability_for(
-            RuntimeKind(row["runtime"]),
+            runtime,
             ConnectionKind(row["kind"]),
             ProtocolKind(row["protocol"]),
-            model,
+            catalog_model,
             draft.effort,
         )
         if capability.status != "verified":
@@ -806,9 +1550,9 @@ class ConfigurationService:
 
         name = draft.name.strip()
         if not name:
-            raise ConfigurationError("NAME_REQUIRED", "连接名称不能为空")
+            raise ConfigurationError("NAME_REQUIRED", "供应商名称不能为空")
         if len(name) > 120:
-            raise ConfigurationError("NAME_INVALID", "连接名称过长")
+            raise ConfigurationError("NAME_INVALID", "供应商名称过长")
         expected: dict[ConnectionKind, tuple[RuntimeKind, ProtocolKind]] = {
             ConnectionKind.CLAUDE_COMPATIBLE: (
                 RuntimeKind.CLAUDE_CODE,
@@ -844,10 +1588,14 @@ class ConfigurationService:
             else None
         )
         if draft.kind == ConnectionKind.CODEX_OFFICIAL:
-            if base_url is not None or models_url is not None or login_directory is None:
+            if (
+                base_url is not None
+                or models_url is not None
+                or login_directory is None
+            ):
                 raise ConfigurationError(
                     "CONNECTION_SHAPE_INVALID",
-                    "Codex official 只接受原生登录目录引用，不接受模型服务地址",
+                    "Codex Official 不接受模型服务地址，账号槽由 Trowel 管理",
                 )
         elif base_url is None or login_directory is not None:
             raise ConfigurationError(
@@ -858,16 +1606,16 @@ class ConfigurationService:
             raise ConfigurationError(
                 "CLAUDE_ROLE_UNKNOWN", "Claude 角色映射包含未知角色"
             )
-        if (
-            draft.kind != ConnectionKind.CLAUDE_COMPATIBLE
-            and draft.claude_role_models
-        ):
+        if draft.kind != ConnectionKind.CLAUDE_COMPATIBLE and draft.claude_role_models:
             raise ConfigurationError(
                 "CONNECTION_SHAPE_INVALID", "只有 Claude Code 连接可以保存角色映射"
             )
-        if draft.kind != ConnectionKind.CODEX_CUSTOM and draft.codex_catalog:
+        if draft.kind not in {
+            ConnectionKind.CODEX_CUSTOM,
+            ConnectionKind.CODEX_OFFICIAL,
+        } and draft.codex_catalog:
             raise ConfigurationError(
-                "CONNECTION_SHAPE_INVALID", "只有 Codex 第三方连接可以保存模型目录"
+                "CONNECTION_SHAPE_INVALID", "只有 Codex 供应商可以保存模型目录"
             )
         if any(
             not model.strip() or len(model.strip()) > 512
@@ -996,8 +1744,14 @@ class ConfigurationService:
         connection_id = str(row["id"])
         secret_versions = self.repository.secret_versions(connection_id)
         configured_secrets = self.repository.configured_secret_kinds(connection_id)
+        login_directory = row["login_directory"]
         auth_status = (
-            "referenced"
+            (
+                "referenced"
+                if login_directory
+                and (Path(str(login_directory)).expanduser() / "auth.json").is_file()
+                else "missing"
+            )
             if row["auth_kind"] == "oauth_reference"
             else (
                 "configured"
@@ -1007,7 +1761,6 @@ class ConfigurationService:
         )
         base_url = row["base_url"]
         upstream_host = urlsplit(base_url).hostname if base_url else None
-        login_directory = row["login_directory"]
         catalog = self._catalog_view(row)
         role_models = _load_json(row["claude_role_models"], {})
         if not isinstance(role_models, dict):
@@ -1027,7 +1780,7 @@ class ConfigurationService:
             ),
             upstream_host=upstream_host,
             auth=AuthView(str(row["auth_kind"]), auth_status),
-            login_directory=str(login_directory) if login_directory else None,
+            login_directory=None,
             login_directory_exists=(
                 Path(login_directory).expanduser().exists() if login_directory else None
             ),
@@ -1071,8 +1824,8 @@ class ConfigurationService:
                 "format": "toml",
                 "body": {
                     "provider": "openai",
-                    "login_directory": row["login_directory"],
-                    "oauth": "<native reference>",
+                    "account": f"<{auth_status}>",
+                    "oauth": "<Codex managed>",
                 },
             }
         return {
@@ -1104,11 +1857,19 @@ class ConfigurationService:
             availability = "stale"
             reason = "connection_missing"
         else:
+            stored_model = str(row["model"])
+            catalog_model = stored_model
+            if runtime is RuntimeKind.CLAUDE_CODE:
+                role_models = _load_json(connection["claude_role_models"], {})
+                if isinstance(role_models, dict) and isinstance(
+                    role_models.get(stored_model), str
+                ):
+                    catalog_model = str(role_models[stored_model])
             capability = capability_for(
                 runtime,
                 ConnectionKind(connection["kind"]),
                 ProtocolKind(connection["protocol"]),
-                str(row["model"]),
+                catalog_model,
                 row["effort"],
             )
             catalog = self._catalog_view(connection)
@@ -1124,7 +1885,7 @@ class ConfigurationService:
                 availability, reason = "stale", "capability_unavailable"
             elif catalog.status != "ready":
                 availability, reason = "stale", "catalog_not_ready"
-            elif str(row["model"]) not in catalog.models:
+            elif catalog_model not in catalog.models:
                 availability, reason = "stale", "model_not_in_catalog"
             else:
                 availability, reason = "available", None

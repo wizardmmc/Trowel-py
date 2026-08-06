@@ -102,6 +102,43 @@ base_url = "http://127.0.0.1:1"
     monkeypatch.delenv("TROWEL_AGENT_SESSIONS_PATH", raising=False)
     monkeypatch.delenv("TROWEL_WORKSPACES_PATH", raising=False)
 
+    from trowel_py.configuration.models import (
+        ConnectionDraft,
+        ConnectionKind,
+        ProtocolKind,
+        RuntimeKind,
+    )
+    from trowel_py.configuration.repository import ConfigurationRepository
+    from trowel_py.configuration.service import ConfigurationService
+    from trowel_py.db.connection import create_db
+    from trowel_py.db.migrate import run_migrations
+
+    connection = create_db()
+    run_migrations(connection)
+    repository = ConfigurationRepository(connection)
+    service = ConfigurationService(repository)
+    official = service.create_connection(
+        ConnectionDraft(
+            name="历史 Official",
+            runtime=RuntimeKind.CODEX,
+            kind=ConnectionKind.CODEX_OFFICIAL,
+            protocol=ProtocolKind.CODEX_OFFICIAL,
+        )
+    )
+    legacy_slot = data_root / "legacy-shared-codex"
+    legacy_slot.mkdir()
+    (legacy_slot / "auth.json").write_text("oauth-canary", encoding="utf-8")
+    repository.update_connection(
+        official.id,
+        expected_version=official.version,
+        values={
+            "version": official.version + 1,
+            "login_directory": str(legacy_slot),
+        },
+    )
+    connection.commit()
+    connection.close()
+
     async def skip_tidy_catchup(self: TidyScheduler) -> None:
         """测试只核对装配路径，不执行真实模型补跑。"""
 
@@ -115,6 +152,15 @@ base_url = "http://127.0.0.1:1"
         assert app.state.tidy_scheduler._memory_root == expected_memory
         assert app.state.agent_hub.store.path == data_root / "agent_sessions.json"
         assert app.state.recent_workspace_store.path == data_root / "workspaces.db"
+        connection = create_db()
+        migrated = ConfigurationRepository(connection).get_connection(official.id)
+        expected_slot = data_root / "codex-accounts" / official.id
+        assert migrated is not None
+        assert migrated["login_directory"] == str(expected_slot)
+        connection.close()
+        assert expected_slot.is_dir()
+        assert not (expected_slot / "auth.json").exists()
+        assert (legacy_slot / "auth.json").read_text(encoding="utf-8") == "oauth-canary"
 
 
 def test_browser_defaults_still_use_home_without_desktop_override(

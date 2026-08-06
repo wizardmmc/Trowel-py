@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import Iterator, Mapping
 from functools import wraps
 from typing import Any
 
@@ -16,14 +18,23 @@ from fastapi.responses import JSONResponse
 from trowel_py.configuration.diagnostics import build_diagnostics
 from trowel_py.configuration.errors import ConfigurationError
 from trowel_py.configuration.migration import migrate_legacy_llm_config
-from trowel_py.configuration.models import SecretKind, TaskId
+from trowel_py.configuration.models import (
+    ConnectionKind,
+    RuntimeKind,
+    SecretKind,
+    TaskId,
+)
 from trowel_py.configuration.paths import build_path_status
 from trowel_py.configuration.repository import ConfigurationRepository
+from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
 from trowel_py.configuration.response_schemas import (
+    AgentConnectionOptionResponse,
     AgentDefaultsResponse,
     ConfigurationCatalogResponse,
     ConfigurationEnvelope,
     ConnectionResponse,
+    CodexOfficialAccountResponse,
+    CodexOfficialLoginResponse,
     DiagnosticsResponse,
     ErrorEnvelope,
     FetchModelsResponse,
@@ -41,7 +52,7 @@ from trowel_py.configuration.schemas import (
     UpdateConnectionRequest,
     UpdateSessionConfigurationRequest,
 )
-from trowel_py.configuration.service import ConfigurationService
+from trowel_py.configuration.service import ConfigurationService, merge_codex_catalog
 from trowel_py.db.connection import create_db
 from trowel_py.db.migrate import run_migrations
 from trowel_py.memory.paths import find_config_path
@@ -68,6 +79,7 @@ class ConfigurationRoute(APIRoute):
                         status_code=422,
                     )
                 )
+
         return safe_handler
 
 
@@ -77,6 +89,8 @@ _ERROR_RESPONSES = {
 }
 _MAX_SECRET_BODY_BYTES = 65_536
 _MAX_SECRET_VALUE_CHARS = 16_384
+_CODEX_CATALOG_TIMEOUT_SECONDS = 25.0
+_log = logging.getLogger(__name__)
 
 router = APIRouter(
     route_class=ConfigurationRoute,
@@ -89,7 +103,7 @@ def get_configuration_service() -> Iterator[ConfigurationService]:
     """打开主库、应用 migration 并提供请求级事务边界。
 
     route 和集成测试必须通过 ``dependency_overrides`` 注入临时仓储；正式装配按
-    当前应用数据根打开主库。旧配置导入失败只保留可见的未迁移状态，不阻断设置读取。
+    当前应用数据根打开主库。Official 账号槽迁移由应用 lifespan 在并发请求前完成。
     """
 
     connection = create_db()
@@ -97,7 +111,8 @@ def get_configuration_service() -> Iterator[ConfigurationService]:
         run_migrations(connection)
         repository = ConfigurationRepository(connection)
         migrate_legacy_llm_config(repository, find_config_path())
-        yield ConfigurationService(repository)
+        service = ConfigurationService(repository)
+        yield service
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -169,6 +184,42 @@ def _finish_domain_error(
 
 
 @router.get(
+    "/agent-options",
+    response_model=ConfigurationEnvelope[list[AgentConnectionOptionResponse]],
+)
+@_transactional
+async def list_agent_connection_options(
+    service: ConfigurationService = Depends(get_configuration_service),
+) -> dict[str, Any]:
+    """返回 Agent 表单使用的已保存模型，不启动任何 runtime。"""
+
+    return _success(service.list_agent_connection_options())
+
+
+async def _read_native_codex_models(
+    request: Request,
+    launch: RuntimeLaunchConfiguration,
+) -> list[Mapping[str, Any]] | None:
+    """尽力读取指定 Codex 连接的原生目录。"""
+
+    hub = getattr(request.app.state, "agent_hub", None)
+    if hub is None:
+        return None
+    try:
+        async with asyncio.timeout(_CODEX_CATALOG_TIMEOUT_SECONDS):
+            reader = getattr(hub, "list_codex_models_for_launch", None)
+            models = (
+                await reader(launch)
+                if reader is not None
+                else await hub.list_codex_models()
+            )
+    except Exception:  # noqa: BLE001 - 连接页仍可退回已保存的自定义 catalog。
+        _log.warning("Codex native model catalog unavailable", exc_info=True)
+        return None
+    return [model for model in models if isinstance(model, Mapping)]
+
+
+@router.get(
     "/connections",
     response_model=ConfigurationEnvelope[list[ConnectionResponse]],
 )
@@ -194,6 +245,74 @@ def create_connection(
     """创建一条不含 secret 的连接。"""
 
     return _success(service.create_connection(request.to_domain()).to_wire())
+
+
+@router.get(
+    "/connections/{connection_id}/official-account",
+    response_model=ConfigurationEnvelope[CodexOfficialAccountResponse],
+)
+@_transactional
+async def read_codex_official_account(
+    connection_id: str,
+    request: Request,
+    service: ConfigurationService = Depends(get_configuration_service),
+) -> dict[str, Any]:
+    """读取一项 Official 供应商的邮箱、套餐和登录状态。"""
+
+    launch = service.resolve_codex_catalog_launch(connection_id)
+    hub = getattr(request.app.state, "agent_hub", None)
+    reader = getattr(hub, "read_codex_account_for_launch", None)
+    if reader is None:
+        raise ConfigurationError(
+            "CODEX_ACCOUNT_UNAVAILABLE",
+            "Codex 原生账号服务当前不可用",
+            status_code=502,
+        )
+    try:
+        async with asyncio.timeout(_CODEX_CATALOG_TIMEOUT_SECONDS):
+            account = await reader(launch)
+    except Exception as exc:
+        _log.warning("Codex official account read failed", exc_info=True)
+        raise ConfigurationError(
+            "CODEX_ACCOUNT_UNAVAILABLE",
+            "Codex 原生账号状态读取失败",
+            status_code=502,
+        ) from exc
+    return _success(account)
+
+
+@router.post(
+    "/connections/{connection_id}/official-account/login",
+    response_model=ConfigurationEnvelope[CodexOfficialLoginResponse],
+)
+@_transactional
+async def start_codex_official_login(
+    connection_id: str,
+    request: Request,
+    service: ConfigurationService = Depends(get_configuration_service),
+) -> dict[str, Any]:
+    """在该供应商的隔离账号槽位启动 Codex 原生 device-code 登录。"""
+
+    launch = service.resolve_codex_catalog_launch(connection_id)
+    hub = getattr(request.app.state, "agent_hub", None)
+    starter = getattr(hub, "start_codex_account_login_for_launch", None)
+    if starter is None:
+        raise ConfigurationError(
+            "CODEX_ACCOUNT_UNAVAILABLE",
+            "Codex 原生账号服务当前不可用",
+            status_code=502,
+        )
+    try:
+        async with asyncio.timeout(_CODEX_CATALOG_TIMEOUT_SECONDS):
+            login = await starter(launch)
+    except Exception as exc:
+        _log.warning("Codex official login start failed", exc_info=True)
+        raise ConfigurationError(
+            "CODEX_LOGIN_FAILED",
+            "Codex 原生登录未能启动",
+            status_code=502,
+        ) from exc
+    return _success(login)
 
 
 @router.get(
@@ -235,14 +354,35 @@ def update_connection(
     "/connections/{connection_id}", response_model=ConfigurationEnvelope[None]
 )
 @_transactional
-def delete_connection(
+async def delete_connection(
     connection_id: str,
+    request: Request,
     expected_version: int = Query(ge=1),
     service: ConfigurationService = Depends(get_configuration_service),
 ) -> dict[str, Any]:
     """软删除连接并删除所有 secret。"""
 
-    service.delete_connection(connection_id, expected_version=expected_version)
+    connection = service.get_connection(connection_id)
+    if connection.kind is ConnectionKind.CODEX_OFFICIAL:
+        launch = service.resolve_codex_catalog_launch(connection_id)
+        hub = getattr(request.app.state, "agent_hub", None)
+        releaser = getattr(hub, "release_codex_launch", None)
+        if releaser is not None and not await releaser(launch):
+            raise ConfigurationError(
+                "CONNECTION_IN_USE",
+                "仍有会话使用这个 Official 供应商，请先关闭相关会话",
+                status_code=409,
+            )
+    deletion = service.delete_connection(
+        connection_id, expected_version=expected_version
+    )
+    try:
+        service.repository.connection.commit()
+    except BaseException:
+        service.repository.connection.rollback()
+        service.restore_account_slot_deletion(deletion)
+        raise
+    service.finalize_account_slot_deletion(deletion)
     return _success(None)
 
 
@@ -341,16 +481,52 @@ async def _read_secret_command(request: Request) -> dict[str, Any] | None:
 @_transactional
 async def fetch_models(
     connection_id: str,
-    request: FetchModelsRequest,
+    command: FetchModelsRequest,
+    request: Request,
     service: ConfigurationService = Depends(get_configuration_service),
 ) -> dict[str, Any]:
-    """用后端保存的 secret 获取当前或草稿身份的模型列表。"""
+    """获取上游模型，并为 Codex 附带原生排序和 effort 元数据。"""
 
-    result = await service.fetch_models(
-        connection_id,
-        expected_version=request.expected_version,
-        draft=request.draft.to_domain() if request.draft is not None else None,
-    )
+    draft = command.draft.to_domain() if command.draft is not None else None
+    connection = service.get_connection(connection_id)
+    runtime = draft.runtime if draft is not None else connection.runtime
+    kind = draft.kind if draft is not None else connection.kind
+    native_models: list[Mapping[str, Any]] | None = None
+    if runtime is RuntimeKind.CODEX:
+        launch = service.resolve_codex_catalog_launch(
+            connection_id,
+            draft=draft,
+        )
+        native_models = await _read_native_codex_models(request, launch)
+        if not native_models:
+            raise ConfigurationError(
+                "CODEX_CATALOG_UNAVAILABLE",
+                "Codex 原生模型列表读取失败",
+                status_code=502,
+            )
+    if kind is ConnectionKind.CODEX_OFFICIAL:
+        result = service.record_native_codex_catalog(
+            connection_id,
+            expected_version=command.expected_version,
+            native_models=native_models,
+        )
+    else:
+        result = await service.fetch_models(
+            connection_id,
+            expected_version=command.expected_version,
+            draft=draft,
+            codex_native_models=native_models,
+        )
+    codex_catalog = ()
+    if runtime is RuntimeKind.CODEX:
+        assert native_models
+        codex_catalog = merge_codex_catalog(
+            result.models,
+            saved_entries=(
+                draft.codex_catalog if draft is not None else connection.codex_catalog
+            ),
+            native_models=native_models,
+        )
     return _success(
         {
             "status": result.status,
@@ -359,6 +535,15 @@ async def fetch_models(
             "fetched_at": result.fetched_at,
             "request_identity": result.request_identity,
             "connection_version": result.connection_version,
+            "codex_catalog": [
+                {
+                    "id": entry.id,
+                    "display_name": entry.display_name,
+                    "default_effort": entry.default_effort,
+                    "supported_efforts": list(entry.supported_efforts),
+                }
+                for entry in codex_catalog
+            ],
         }
     )
 
@@ -373,9 +558,7 @@ def list_session_configurations(
 ) -> dict[str, Any]:
     """返回设置、Agent 和研讨共用的会话配置 catalog。"""
 
-    return _success(
-        [item.to_wire() for item in service.list_session_configurations()]
-    )
+    return _success([item.to_wire() for item in service.list_session_configurations()])
 
 
 @router.post(
@@ -620,9 +803,7 @@ def get_paths() -> dict[str, Any]:
     )
 
 
-@router.get(
-    "/diagnostics", response_model=ConfigurationEnvelope[DiagnosticsResponse]
-)
+@router.get("/diagnostics", response_model=ConfigurationEnvelope[DiagnosticsResponse])
 @_transactional
 def get_diagnostics(
     service: ConfigurationService = Depends(get_configuration_service),

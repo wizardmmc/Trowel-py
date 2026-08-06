@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from trowel_py.configuration.catalog import FetchedCatalog
 from trowel_py.configuration.repository import ConfigurationRepository
@@ -43,11 +44,16 @@ class FakeCatalogFetcher:
 def build_service(
     *,
     fetcher: FakeCatalogFetcher | None = None,
+    official_account_root: Path | None = None,
 ) -> tuple[ConfigurationService, ConfigurationRepository]:
-    """在内存主库上运行真实 migration 并返回配置服务。"""
+    """在内存主库上运行真实 migration，并把 Official 槽位限制在测试目录。"""
 
     connection = create_db(":memory:")
     run_migrations(connection)
     repository = ConfigurationRepository(connection)
-    service = ConfigurationService(repository, catalog_fetcher=fetcher)
+    service = ConfigurationService(
+        repository,
+        catalog_fetcher=fetcher,
+        official_account_root=official_account_root,
+    )
     return service, repository

@@ -143,3 +143,18 @@ def test_allowed_tools_are_passed_as_one_comma_separated_value() -> None:
         "mcp__trowel_agents__delegate_start,mcp__trowel_agents__delegate_close"
     )
     assert args[index + 2] == "--mcp-config"
+
+
+def test_private_settings_disable_all_other_setting_sources() -> None:
+    """连接级 settings 必须排除用户、项目和插件的隐式 provider 配置。"""
+
+    args = build_args(
+        workdir=WORKDIR,
+        settings_path="/tmp/trowel-claude-settings.json",
+        setting_sources="",
+    )
+
+    settings_index = args.index("--settings")
+    sources_index = args.index("--setting-sources")
+    assert args[settings_index + 1] == "/tmp/trowel-claude-settings.json"
+    assert args[sources_index + 1] == ""

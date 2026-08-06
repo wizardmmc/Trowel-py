@@ -10,7 +10,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class DesktopCredentialMiddleware:
-    """仅在 Host 提供凭据时保护本地 ``/api`` 路径。
+    """仅在 Host 提供凭据时保护 renderer 使用的本地 ``/api`` 路径。
+
+    Claude 子进程访问 ``POST /api/cc-runtime/<lease>/v1/...`` 时使用会话级
+    随机租约令牌，原生 runtime 无法附带 Electron Host 的 Bearer，因此只有这两条
+    内部反代路由租约自身鉴权。
 
     Attributes:
         app: 凭据通过后继续处理请求的下游 ASGI 应用。
@@ -62,12 +66,37 @@ class DesktopCredentialMiddleware:
 
     def _requires_credential(self, scope: Scope) -> bool:
         """判断当前 ASGI 请求是否属于需要实例凭据的桌面 API。"""
+        path = str(scope.get("path", ""))
         return bool(
             self.credential
             and scope.get("type") == "http"
             and scope.get("method") != "OPTIONS"
-            and str(scope.get("path", "")).startswith("/api/")
+            and path.startswith("/api/")
+            and not _is_claude_runtime_lease_request(scope)
         )
+
+
+def _is_claude_runtime_lease_request(scope: Scope) -> bool:
+    """只识别 Claude 原生 runtime 实际使用的 POST 租约反代路由。
+
+    Args:
+        scope: 包含 HTTP 方法和解码后路径的 ASGI 请求范围。
+
+    Returns:
+        路径形如 ``/api/cc-runtime/<lease>/v1/<rest>`` 且方法为 POST 时返回
+        True；空租约、空代理路径或其他方法都返回 False。
+    """
+
+    if scope.get("type") != "http" or scope.get("method") != "POST":
+        return False
+    parts = str(scope.get("path", "")).split("/")
+    return bool(
+        len(parts) >= 6
+        and parts[1:3] == ["api", "cc-runtime"]
+        and parts[3]
+        and parts[4] == "v1"
+        and any(parts[5:])
+    )
 
 
 def _bearer_credential(scope: Scope) -> str | None:

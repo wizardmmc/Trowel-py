@@ -42,6 +42,30 @@ export function SettingsWorkspace({
     }
   }, [active, state.activeSection, store]);
 
+  useEffect(() => {
+    const editor = state.connectionEditor;
+    if (
+      editor?.connectionId &&
+      editor.draft.kind === "codex_official" &&
+      editor.officialAccount.status === "idle"
+    ) {
+      void store.getState().refreshCodexOfficialAccount();
+    }
+  }, [state.connectionEditor, store]);
+
+  useEffect(() => {
+    const editor = state.connectionEditor;
+    if (
+      !editor?.connectionId ||
+      editor.draft.kind !== "codex_official" ||
+      !editor.officialAccount.login
+    ) return;
+    const timer = window.setInterval(() => {
+      void store.getState().refreshCodexOfficialAccount();
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [state.connectionEditor, store]);
+
   const revealPath = async (path: string) => {
     try {
       await platform.revealPath(path, path);
@@ -79,6 +103,18 @@ export function SettingsWorkspace({
     await store.getState().writeConnectionSecret(kind, value);
     const editor = store.getState().connectionEditor;
     addNotification(editor?.error ? "凭据保存失败" : "凭据状态已更新", editor?.error ? "warning" : "success");
+  };
+  const beginCodexOfficialLogin = async () => {
+    const login = await store.getState().beginCodexOfficialLogin();
+    if (!login) {
+      addNotification("Codex 登录未能启动", "warning");
+      return;
+    }
+    try {
+      await platform.openExternal(login.verification_url);
+    } catch {
+      addNotification("登录页面未能自动打开，可使用页面中的地址和验证码", "warning");
+    }
   };
   const activeSectionTitle = SETTINGS_SECTIONS.find(
     (section) => section.id === state.activeSection,
@@ -141,6 +177,9 @@ export function SettingsWorkspace({
                     onFetchModels={() => void state.fetchConnectionModels()}
                     onWriteSecret={writeConnectionSecret}
                     onDeleteSecret={(kind) => void state.deleteConnectionSecret(kind)}
+                    onStartOfficialLogin={() => void beginCodexOfficialLogin()}
+                    onOpenOfficialLogin={(url) => void platform.openExternal(url)}
+                    onRefreshOfficialAccount={() => void state.refreshCodexOfficialAccount()}
                     onReload={() => void reloadConnection()}
                   />
                 )}

@@ -136,6 +136,7 @@ class ReconcileReport:
         remaining: 升级到强制结束后仍存活的已确认进程组数量。
         errors: 读取或发送信号时产生的去敏错误说明。
         skipped_current_instance: 快照属于当前实例，因此没有执行清理。
+        skipped_data_root_mismatch: 快照来自另一数据根，因此拒绝继承其进程终止权限。
     """
 
     terminated: int = 0
@@ -144,3 +145,4 @@ class ReconcileReport:
     remaining: int = 0
     errors: tuple[str, ...] = ()
     skipped_current_instance: bool = False
+    skipped_data_root_mismatch: bool = False

@@ -49,6 +49,7 @@ class SessionBinding:
         effort: 当前思考强度；runtime 未提供时为 None。
         permission: 面向界面展示的有效权限摘要；尚未取得时为 None。
         memory_enabled: 是否向该会话注入 Trowel Memory。
+        memory_mcp_enabled: 是否向该会话挂载 Memory MCP；与正文注入开关分离。
         profile_enabled: 是否向该会话注入用户画像。
         capabilities: 当前 Trowel 已实证并允许界面使用的 runtime 能力 ID。
         name: 多开栏使用的会话临时名称。
@@ -74,6 +75,12 @@ class SessionBinding:
         delegation_depth: 委派树中的层级，用户会话为 0。
         display_title: 用户可见的持久标题；尚未生成时为空字符串。
         title_source: 标题来自新建、原生记录、首条消息、模型生成还是手动修改。
+        connection_id: 创建时冻结的设置域连接 ID；旧会话未知时为 None。
+        connection_identity_version: 创建时冻结的连接启动身份版本。
+        connection_name: 创建时冻结的脱敏连接展示名。
+        connection_kind: 创建时冻结的连接种类。
+        configuration_capability_version: 放行连接组合的设置域能力表版本。
+        configuration_capability_source: 放行连接组合的真实验证证据说明。
     """
 
     session_id: str
@@ -87,6 +94,7 @@ class SessionBinding:
     profile_enabled: bool
     capabilities: tuple[str, ...]
     name: str
+    memory_mcp_enabled: bool = True
     capability_version: int = CURRENT_CAPABILITY_VERSION
     checkpoint_available: bool | None = None
     connected: bool = False
@@ -108,6 +116,12 @@ class SessionBinding:
     delegation_depth: int = 0
     display_title: str = ""
     title_source: TitleSource = "new"
+    connection_id: str | None = None
+    connection_identity_version: int | None = None
+    connection_name: str | None = None
+    connection_kind: str | None = None
+    configuration_capability_version: str | None = None
+    configuration_capability_source: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """转换为可持久化的字典。"""
@@ -121,6 +135,7 @@ class SessionBinding:
             "effort": self.effort,
             "permission": self.permission,
             "memory_enabled": self.memory_enabled,
+            "memory_mcp_enabled": self.memory_mcp_enabled,
             "profile_enabled": self.profile_enabled,
             "capabilities": list(self.capabilities),
             "capability_version": self.capability_version,
@@ -145,6 +160,14 @@ class SessionBinding:
             "delegation_depth": self.delegation_depth,
             "display_title": self.display_title,
             "title_source": self.title_source,
+            "connection_id": self.connection_id,
+            "connection_identity_version": self.connection_identity_version,
+            "connection_name": self.connection_name,
+            "connection_kind": self.connection_kind,
+            "configuration_capability_version": (
+                self.configuration_capability_version
+            ),
+            "configuration_capability_source": self.configuration_capability_source,
         }
 
 
@@ -161,6 +184,7 @@ def make_binding(
     profile_enabled: bool,
     capabilities: Iterable[str],
     name: str,
+    memory_mcp_enabled: bool | None = None,
     capability_version: int = CURRENT_CAPABILITY_VERSION,
     checkpoint_available: bool | None = None,
     connected: bool = False,
@@ -180,6 +204,12 @@ def make_binding(
     delegation_depth: int = 0,
     display_title: str = "",
     title_source: TitleSource = "new",
+    connection_id: str | None = None,
+    connection_identity_version: int | None = None,
+    connection_name: str | None = None,
+    connection_kind: str | None = None,
+    configuration_capability_version: str | None = None,
+    configuration_capability_source: str | None = None,
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。
 
@@ -192,6 +222,7 @@ def make_binding(
         effort: 创建时请求的思考强度；沿用默认值时为 None。
         permission: 面向界面的有效权限摘要；尚未取得时为 None。
         memory_enabled: 是否注入 Trowel Memory。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用 Memory 正文开关。
         profile_enabled: 是否注入用户画像。
         capabilities: 已实证并允许界面使用的 runtime 能力 ID。
         name: 多开栏使用的会话临时名称。
@@ -214,6 +245,12 @@ def make_binding(
         delegation_depth: 委派树层级，用户会话为 0。
         display_title: 当前用户可见标题。
         title_source: 当前标题的来源。
+        connection_id: 设置域稳定连接 ID；旧会话未知时为 None。
+        connection_identity_version: 冻结的连接启动身份版本。
+        connection_name: 冻结的脱敏连接展示名。
+        connection_kind: 冻结的连接种类。
+        configuration_capability_version: 设置域能力表版本。
+        configuration_capability_source: 设置域能力结论的实测来源。
 
     Returns:
         带统一创建时间和更新时间的不可变 binding。
@@ -229,6 +266,9 @@ def make_binding(
         effort=effort,
         permission=permission,
         memory_enabled=memory_enabled,
+        memory_mcp_enabled=(
+            memory_enabled if memory_mcp_enabled is None else memory_mcp_enabled
+        ),
         profile_enabled=profile_enabled,
         capabilities=tuple(capabilities),
         name=name,
@@ -251,6 +291,12 @@ def make_binding(
         delegation_depth=delegation_depth,
         display_title=display_title,
         title_source=title_source,
+        connection_id=connection_id,
+        connection_identity_version=connection_identity_version,
+        connection_name=connection_name,
+        connection_kind=connection_kind,
+        configuration_capability_version=configuration_capability_version,
+        configuration_capability_source=configuration_capability_source,
         created_at=now,
         updated_at=now,
     )
@@ -302,6 +348,8 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         if isinstance(raw_checkpoint_available, bool)
         else None
     )
+    has_connection = data.get("connection_id") is not None
+    memory_enabled = bool(data.get("memory_enabled", True))
     return SessionBinding(
         session_id=str(data["session_id"]),
         runtime=runtime,
@@ -314,7 +362,10 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         permission=(
             str(data["permission"]) if data.get("permission") is not None else None
         ),
-        memory_enabled=bool(data.get("memory_enabled", True)),
+        memory_enabled=memory_enabled,
+        memory_mcp_enabled=bool(
+            data.get("memory_mcp_enabled", memory_enabled and not has_connection)
+        ),
         profile_enabled=bool(data.get("profile_enabled", True)),
         capabilities=tuple(str(c) for c in capabilities)  # type: ignore[arg-type]
         if isinstance(capabilities, (list, tuple))
@@ -371,4 +422,35 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             else ""
         ),
         title_source=title_source,
+        connection_id=(
+            str(data["connection_id"])
+            if data.get("connection_id") is not None
+            else None
+        ),
+        connection_identity_version=(
+            int(data["connection_identity_version"])
+            if isinstance(data.get("connection_identity_version"), int)
+            and not isinstance(data.get("connection_identity_version"), bool)
+            else None
+        ),
+        connection_name=(
+            str(data["connection_name"])
+            if data.get("connection_name") is not None
+            else None
+        ),
+        connection_kind=(
+            str(data["connection_kind"])
+            if data.get("connection_kind") is not None
+            else None
+        ),
+        configuration_capability_version=(
+            str(data["configuration_capability_version"])
+            if data.get("configuration_capability_version") is not None
+            else None
+        ),
+        configuration_capability_source=(
+            str(data["configuration_capability_source"])
+            if data.get("configuration_capability_source") is not None
+            else None
+        ),
     )

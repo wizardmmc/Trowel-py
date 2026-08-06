@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from trowel_py.resource_lifecycle import (
     ProcessIdentity,
     reconcile_previous_snapshot,
 )
-from trowel_py.resource_lifecycle.registry import redact_identity
+from trowel_py.resource_lifecycle.registry import SNAPSHOT_VERSION, redact_identity
 
 
 class FakeProcessController:
@@ -52,8 +53,9 @@ def write_snapshot(path: Path, *, instance_id: str = "old-instance") -> None:
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": SNAPSHOT_VERSION,
                 "app_instance_id": redact_identity(instance_id),
+                "data_root_identity": redact_identity(str(path.parent.resolve())),
                 "updated_at": "2026-08-01T11:59:00",
                 "resources": [
                     {
@@ -79,6 +81,34 @@ def write_snapshot(path: Path, *, instance_id: str = "old-instance") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_reaper_rejects_snapshot_copied_from_another_data_root(
+    tmp_path: Path,
+) -> None:
+    """复制出的隔离数据根不得继承原目录的进程终止权限。"""
+
+    source = tmp_path / "canonical"
+    target = tmp_path / "isolated"
+    source.mkdir()
+    target.mkdir()
+    write_snapshot(source / "resource-lifecycle.json")
+    shutil.copy2(
+        source / "resource-lifecycle.json",
+        target / "resource-lifecycle.json",
+    )
+    controller = FakeProcessController()
+
+    report = reconcile_previous_snapshot(
+        target / "resource-lifecycle.json",
+        current_instance_id="isolated-instance",
+        process_controller=controller,
+        term_wait_seconds=0,
+        poll_interval_seconds=0,
+    )
+
+    assert controller.signals == []
+    assert report.skipped_data_root_mismatch is True
 
 
 def test_reaper_signals_only_matching_old_process_identity(tmp_path: Path) -> None:

@@ -8,9 +8,7 @@ import {
 import { INITIAL_REDUCER_STATE } from "../agent/domain";
 import { SessionBanners } from "../components/cc/SessionBanners";
 
-function session(
-  checkpointAvailable: boolean | null,
-): PerSessionState {
+function session(checkpointAvailable: boolean | null): PerSessionState {
   return {
     ...INITIAL_REDUCER_STATE,
     workdir: "/repo",
@@ -79,7 +77,9 @@ describe("SessionBanners", () => {
     expect(screen.getByText("发送结果尚未确认")).toBeInTheDocument();
     expect(screen.getByText(/请勿重发上一条消息/)).toBeInTheDocument();
     expect(screen.queryByText("Agent 操作失败")).toBeNull();
-    expect(screen.queryByText(/turn_start · turn_acceptance_unknown/)).toBeNull();
+    expect(
+      screen.queryByText(/turn_start · turn_acceptance_unknown/),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "技术详情" }));
 
@@ -200,6 +200,34 @@ describe("SessionBanners", () => {
     expect(screen.queryByText(/prompt text/)).toBeNull();
   });
 
+  it("directs a disconnected sidecar to Desktop diagnostics", () => {
+    render(
+      <SessionBanners
+        active={{
+          ...session(true),
+          connected: false,
+          transportError: "sidecar request failed",
+          transportProblem: {
+            code: "sidecar_unavailable",
+            message: "sidecar request failed",
+            operation: "turn_start",
+            budgetMs: 30_000,
+            status: null,
+            occurredAt: "2026-08-05T00:00:00.000Z",
+          },
+        }}
+        activeSid="s1"
+      />,
+    );
+
+    expect(screen.getByText(/Desktop Host 会转入诊断页/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "技术详情" }));
+    expect(
+      screen.getByText(/按 Desktop 诊断重启 Agent Service/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/等待连接恢复/)).toBeNull();
+  });
+
   it("groups independent session issues instead of stacking banners", () => {
     render(
       <SessionBanners
@@ -216,7 +244,9 @@ describe("SessionBanners", () => {
     expect(screen.getByText(/会话有 3 项状态需要留意/)).toBeInTheDocument();
     expect(screen.getByText("实时连接恢复中")).toBeInTheDocument();
     expect(screen.getByText("回滚可用性尚未确认")).toBeInTheDocument();
-    expect(screen.getByText("Runtime capability 信息不完整")).toBeInTheDocument();
+    expect(
+      screen.getByText("Runtime capability 信息不完整"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "复制会话诊断" })).toHaveClass(
       "ui-copy-button--neutral",
     );

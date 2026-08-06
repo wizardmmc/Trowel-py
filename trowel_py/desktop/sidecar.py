@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -13,6 +12,11 @@ from pathlib import Path
 from typing import cast
 
 from trowel_py.desktop.data_compatibility import DesktopDataMode
+from trowel_py.resource_lifecycle.registry import (
+    SNAPSHOT_VERSION,
+    redact_identity,
+    snapshot_data_root_identity,
+)
 
 
 @dataclass(frozen=True)
@@ -197,9 +201,7 @@ def run_sidecar(settings: DesktopSidecarSettings) -> None:
         if settings.inspection_only:
             if settings.read_data_dir is None:
                 raise RuntimeError("inspection read data directory is unavailable")
-            os.environ["TROWEL_DESKTOP_READ_DATA_DIR"] = str(
-                settings.read_data_dir
-            )
+            os.environ["TROWEL_DESKTOP_READ_DATA_DIR"] = str(settings.read_data_dir)
             _write_empty_resource_snapshot(settings)
             _run_uvicorn(settings, "trowel_py.desktop.inspection:create_inspection_app")
             return
@@ -239,6 +241,7 @@ def _run_uvicorn(settings: DesktopSidecarSettings, factory: str) -> None:
         host="127.0.0.1",
         port=settings.port,
         log_level="info",
+        access_log=False,
     )
 
 
@@ -249,14 +252,14 @@ def _write_empty_resource_snapshot(settings: DesktopSidecarSettings) -> None:
         settings: 提供临时数据目录和本次实例身份的 sidecar 设置。
     """
 
-    identity = hashlib.sha256(settings.instance_id.encode("utf-8")).hexdigest()[:20]
     snapshot_path = settings.data_dir / "resource-lifecycle.json"
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(
         json.dumps(
             {
-                "version": 1,
-                "app_instance_id": identity,
+                "version": SNAPSHOT_VERSION,
+                "app_instance_id": redact_identity(settings.instance_id),
+                "data_root_identity": snapshot_data_root_identity(snapshot_path),
                 "resources": [],
             }
         )

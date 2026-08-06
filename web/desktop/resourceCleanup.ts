@@ -20,6 +20,7 @@ interface SnapshotResource {
 interface ResourceSnapshot {
   readonly version: number;
   readonly app_instance_id: string;
+  readonly data_root_identity: string;
   readonly resources: readonly SnapshotResource[];
 }
 
@@ -67,7 +68,10 @@ export async function signalSnapshotResources(
   if (!snapshot) return;
   const groups = new Set<number>();
   for (const resource of snapshot.resources) {
-    if (resource.state === "closed" || resource.resource_kind === "sidecar_process_group") {
+    if (
+      resource.state === "closed" ||
+      resource.resource_kind === "sidecar_process_group"
+    ) {
       continue;
     }
     const expected = snapshotIdentity(resource);
@@ -78,7 +82,8 @@ export async function signalSnapshotResources(
   }
   const hostIdentity = await inspectProcess(globalThis.process.pid);
   for (const processGroup of groups) {
-    if (processGroup <= 1 || processGroup === hostIdentity?.processGroup) continue;
+    if (processGroup <= 1 || processGroup === hostIdentity?.processGroup)
+      continue;
     try {
       globalThis.process.kill(-processGroup, signal);
     } catch (error) {
@@ -96,7 +101,10 @@ export async function countLiveSnapshotResources(
   if (!snapshot) throw new Error("resource snapshot unavailable");
   let live = 0;
   for (const resource of snapshot.resources) {
-    if (resource.state === "closed" || resource.resource_kind === "sidecar_process_group") {
+    if (
+      resource.state === "closed" ||
+      resource.resource_kind === "sidecar_process_group"
+    ) {
       continue;
     }
     const expected = snapshotIdentity(resource);
@@ -121,7 +129,9 @@ export async function writeExitMarker(
 ): Promise<void> {
   /** 原子记录 Host 最终核验结果，供下次启动和诊断页区分干净退出。 */
   const markerName =
-    marker.exitReason === "app_exit" ? "resource-exit.json" : "sidecar-exit.json";
+    marker.exitReason === "app_exit"
+      ? "resource-exit.json"
+      : "sidecar-exit.json";
   const finalPath = path.join(options.dataDirectory, markerName);
   const temporaryPath = `${finalPath}.tmp`;
   const handle = await open(temporaryPath, "w", 0o600);
@@ -159,8 +169,10 @@ async function readCurrentSnapshot(
     );
     const value = JSON.parse(raw) as Partial<ResourceSnapshot>;
     if (
-      value.version !== 1 ||
+      value.version !== 2 ||
       value.app_instance_id !== redactIdentity(options.instanceId) ||
+      value.data_root_identity !==
+        redactIdentity(path.resolve(options.dataDirectory)) ||
       !Array.isArray(value.resources)
     ) {
       return null;
@@ -206,7 +218,9 @@ async function inspectProcess(pid: number): Promise<ProcessIdentity | null> {
     return {
       pid,
       processGroup,
-      startIdentity: createHash("sha256").update(fields.join(" ")).digest("hex"),
+      startIdentity: createHash("sha256")
+        .update(fields.join(" "))
+        .digest("hex"),
     };
   } catch {
     return null;
@@ -215,7 +229,8 @@ async function inspectProcess(pid: number): Promise<ProcessIdentity | null> {
 
 function processGroupAlive(processGroup: number): boolean {
   /** 信号 0 只探测进程组是否存在，不改变目标状态。 */
-  if (globalThis.process.platform === "win32" || processGroup <= 1) return false;
+  if (globalThis.process.platform === "win32" || processGroup <= 1)
+    return false;
   try {
     globalThis.process.kill(-processGroup, 0);
     return true;
@@ -224,7 +239,10 @@ function processGroupAlive(processGroup: number): boolean {
   }
 }
 
-function sameIdentity(current: ProcessIdentity, expected: ProcessIdentity): boolean {
+function sameIdentity(
+  current: ProcessIdentity,
+  expected: ProcessIdentity,
+): boolean {
   return (
     current.pid === expected.pid &&
     current.processGroup === expected.processGroup &&
@@ -237,6 +255,7 @@ function redactIdentity(value: string): string {
 }
 
 function errorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  if (!error || typeof error !== "object" || !("code" in error))
+    return undefined;
   return typeof error.code === "string" ? error.code : undefined;
 }

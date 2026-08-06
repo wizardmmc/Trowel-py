@@ -53,15 +53,14 @@ function claudePreview(
   return { format: "JSON", text: JSON.stringify({ env }, null, 2) };
 }
 
-/** 生成 Codex 原生登录引用和连接级代理的 TOML 摘要。 */
+/** 生成不暴露账号槽路径的 Codex Official TOML 摘要。 */
 function codexOfficialPreview(
   editor: ConnectionEditorState,
 ): ConnectionPreviewDocument {
   const draft = editor.draft;
   const lines = [
     'model_provider = "openai"',
-    `login_directory = ${tomlString(draft.login_directory)}`,
-    'oauth = "<native reference>"',
+    'oauth = "<managed by Codex>"',
   ];
   if (draft.proxy_url) lines.push(`proxy_url = ${tomlString(safeUrl(draft.proxy_url))}`);
   if (draft.proxy_username) {

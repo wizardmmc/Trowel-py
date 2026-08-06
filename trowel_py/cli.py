@@ -69,6 +69,7 @@ def main() -> None:
             host=args.host,
             port=args.port,
             log_level="info",
+            access_log=False,
         )
     except BaseException:
         if timer is not None:

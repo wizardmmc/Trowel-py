@@ -370,27 +370,12 @@ async function startDesktopApplication(): Promise<void> {
       }
       sidecarReadyCount += 1;
     },
-    onUnexpectedExit: () => {
-      const requestedAt = new Date();
-      void (async () => {
-        const remainingResourceCount = await countLiveSnapshotResources(
-          sidecarOptions,
-        ).catch(() => 1);
-        await writeExitMarker(sidecarOptions, {
-          exitReason: "sidecar_abnormal",
-          requestedAt: requestedAt.toISOString(),
-          completedAt: new Date().toISOString(),
-          exitMode: "forced",
-          processTreeResult:
-            remainingResourceCount === 0 ? "closed" : "needs_reconcile",
-          remainingResourceCount,
-        });
-      })().catch((error) => {
-        logLifecycle(
-          "sidecar_exit_marker_failed",
-          error instanceof Error ? error.name : "unknown",
-        );
-      });
+    onUnexpectedExit: (exit) => {
+      // 资源快照和退出标记由 DesktopHost 的统一 shutdown 链路写入。
+      logLifecycle(
+        "sidecar_unexpected_exit",
+        exit.signal ?? String(exit.code ?? "unknown"),
+      );
     },
   });
   removeIpcHandlers = registerDesktopIpc({

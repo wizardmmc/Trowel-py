@@ -527,7 +527,7 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
 
     return {
         "success": True,
-        "data": hub.latest_session_defaults(),
+        "data": hub.new_session_defaults(),
         "error": None,
     }
 

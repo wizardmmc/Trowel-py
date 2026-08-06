@@ -1,0 +1,300 @@
+"""验证 Codex manager pool 的连接隔离与串行预热。"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from trowel_py.codex_host.pool import CodexManagerPool
+from trowel_py.configuration.models import (
+    ConnectionKind,
+    ProtocolKind,
+    RuntimeKind,
+)
+from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
+
+
+class _FakeClient:
+    """记录预热启动与关闭次数。"""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def start(self) -> None:
+        """记录预热开始。"""
+
+        self.events.append("prewarm-start")
+
+    async def close(self) -> None:
+        """记录预热关闭。"""
+
+        self.events.append("prewarm-close")
+
+
+class _FakeManager:
+    """提供 pool 测试需要的最小 manager 协议。"""
+
+    def __init__(
+        self,
+        name: str,
+        events: list[str],
+        *,
+        thread_rows: list[dict[str, object]] | None = None,
+        fail_history: bool = False,
+    ) -> None:
+        """保存 manager 名称、事件账本和可选历史失败行为。"""
+
+        self.name = name
+        self.events = events
+        self.sessions: dict[str, object] = {}
+        self.thread_rows = thread_rows or []
+        self.fail_history = fail_history
+
+    def register(self, session: object) -> None:
+        """登记测试会话。"""
+
+        self.sessions[session.session_id] = session
+
+    def unregister(self, session_id: str) -> object | None:
+        """注销测试会话。"""
+
+        return self.sessions.pop(session_id, None)
+
+    def get_session(self, session_id: str) -> object | None:
+        """读取测试会话。"""
+
+        return self.sessions.get(session_id)
+
+    async def send(self, session: object, text: str, **_kwargs: object) -> str:
+        """记录所属 manager 并返回测试 turn ID。"""
+
+        self.events.append(f"send:{self.name}:{session.session_id}:{text}")
+        return "turn"
+
+    async def get_goal(self, session: object) -> dict[str, object]:
+        """记录 Goal 被路由到的 manager。"""
+
+        self.events.append(f"goal:{self.name}:{session.session_id}")
+        return {"manager": self.name}
+
+    async def list_models(self) -> list[dict[str, object]]:
+        """返回可识别 manager 归属的模型目录。"""
+
+        self.events.append(f"models:{self.name}")
+        return [{"id": f"model-{self.name}"}]
+
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str],
+    ) -> list[dict[str, object]]:
+        """返回测试历史，或模拟单个连接 app-server 故障。"""
+
+        del cwd
+        if self.fail_history:
+            raise RuntimeError(f"{self.name} history unavailable")
+        return [row for row in self.thread_rows if row.get("id") not in excluded_ids][
+            :limit
+        ]
+
+    async def close(self) -> None:
+        """记录 manager 关闭。"""
+
+        self.events.append(f"close:{self.name}")
+
+
+class _SlowCloseManager(_FakeManager):
+    """在测试放行前停住关闭过程，用于复现释放与新会话并发。"""
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        """保存关闭开始和继续执行所需的同步事件。"""
+
+        super().__init__(name, events)
+        self.close_started = asyncio.Event()
+        self.allow_close = asyncio.Event()
+
+    async def close(self) -> None:
+        """通知测试关闭已经开始，等待测试显式放行。"""
+
+        self.close_started.set()
+        await self.allow_close.wait()
+        await super().close()
+
+
+def _launch(
+    connection_id: str, identity_version: int = 1
+) -> RuntimeLaunchConfiguration:
+    """构造不含真实凭据的 pool identity。"""
+
+    return RuntimeLaunchConfiguration(
+        connection_id=connection_id,
+        connection_version=1,
+        connection_identity_version=identity_version,
+        connection_name=connection_id,
+        runtime=RuntimeKind.CODEX,
+        kind=ConnectionKind.CODEX_CUSTOM,
+        protocol=ProtocolKind.OPENAI_RESPONSES,
+        model="deepseek-v4-flash",
+        effort="high",
+        capability_version="test",
+        base_url=f"https://{connection_id}.example/v1",
+        login_directory=None,
+        proxy_url=None,
+        claude_role_models={},
+        codex_catalog=(),
+        api_key="secret",
+    )
+
+
+@pytest.mark.asyncio
+async def test_pool_routes_sessions_to_connection_manager_after_single_prewarm(
+    tmp_path: Path,
+) -> None:
+    """两个连接必须进入两个 manager，而共享状态预热只运行一次。"""
+
+    events: list[str] = []
+    legacy = _FakeManager("legacy", events)
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=legacy,
+        manager_factory=lambda launch: _FakeManager(launch.connection_id, events),
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    first = SimpleNamespace(session_id="first")
+    second = SimpleNamespace(session_id="second")
+    pool.register(first, launch=_launch("alpha"))
+    pool.register(second, launch=_launch("beta"))
+
+    await asyncio.gather(pool.send(first, "a"), pool.send(second, "b"))
+
+    assert pool.manager_count == 2
+    assert events[:2] == ["prewarm-start", "prewarm-close"]
+    assert "send:alpha:first:a" in events
+    assert "send:beta:second:b" in events
+
+
+@pytest.mark.asyncio
+async def test_pool_reads_each_connection_model_catalog_from_its_own_manager(
+    tmp_path: Path,
+) -> None:
+    """两个 provider 的模型目录必须分别来自各自的 app-server。"""
+
+    events: list[str] = []
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda launch: _FakeManager(launch.connection_id, events),
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+
+    alpha, beta = await asyncio.gather(
+        pool.list_models_for_launch(_launch("alpha")),
+        pool.list_models_for_launch(_launch("beta")),
+    )
+
+    assert alpha == [{"id": "model-alpha"}]
+    assert beta == [{"id": "model-beta"}]
+    assert "models:legacy" not in events
+
+
+@pytest.mark.asyncio
+async def test_pool_routes_goal_and_isolates_history_failure(tmp_path: Path) -> None:
+    """单个连接失败不能拖垮其他历史，重复 thread 只保留最新记录。"""
+
+    events: list[str] = []
+    legacy = _FakeManager(
+        "legacy",
+        events,
+        thread_rows=[{"id": "shared", "updatedAt": "2026-01-01"}],
+    )
+
+    def manager_factory(launch: RuntimeLaunchConfiguration) -> _FakeManager:
+        """让 beta 历史失败，alpha 返回共享 thread 的较新版本。"""
+
+        return _FakeManager(
+            launch.connection_id,
+            events,
+            thread_rows=[{"id": "shared", "updatedAt": "2026-02-01"}],
+            fail_history=launch.connection_id == "beta",
+        )
+
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=legacy,
+        manager_factory=manager_factory,
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    first = SimpleNamespace(session_id="first")
+    second = SimpleNamespace(session_id="second")
+    pool.register(first, launch=_launch("alpha"))
+    pool.register(second, launch=_launch("beta"))
+
+    goal = await pool.get_goal(first)
+    rows = await pool.list_threads(cwd=str(tmp_path), limit=20)
+
+    assert goal == {"manager": "alpha"}
+    assert rows == [{"id": "shared", "updatedAt": "2026-02-01"}]
+    assert "goal:alpha:first" in events
+
+
+def test_pool_key_changes_when_connection_identity_changes() -> None:
+    """同一连接重绑后必须创建新的 manager identity。"""
+
+    assert _launch("alpha", 1).pool_key != _launch("alpha", 2).pool_key
+
+
+@pytest.mark.asyncio
+async def test_release_launch_only_closes_an_unreferenced_manager(tmp_path: Path) -> None:
+    """删除供应商不能关闭仍被冻结会话使用的 manager。"""
+
+    events: list[str] = []
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda launch: _FakeManager(launch.connection_id, events),
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    launch = _launch("alpha")
+    session = SimpleNamespace(session_id="session")
+    pool.register(session, launch=launch)
+
+    assert await pool.release_launch(launch) is False
+    pool.unregister(session.session_id)
+    assert await pool.release_launch(launch) is True
+    assert pool.manager_count == 0
+    assert "close:alpha" in events
+
+
+@pytest.mark.asyncio
+async def test_release_launch_rejects_new_session_until_close_finishes(
+    tmp_path: Path,
+) -> None:
+    """manager 正在关闭时不能接入新会话，避免把会话绑到已关闭进程。"""
+
+    events: list[str] = []
+    manager = _SlowCloseManager("alpha", events)
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda _launch: manager,
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    launch = _launch("alpha")
+    original = SimpleNamespace(session_id="original")
+    pool.register(original, launch=launch)
+    pool.unregister(original.session_id)
+
+    release = asyncio.create_task(pool.release_launch(launch))
+    await manager.close_started.wait()
+
+    with pytest.raises(RuntimeError, match="being released"):
+        pool.register(SimpleNamespace(session_id="late"), launch=launch)
+
+    manager.allow_close.set()
+    assert await release is True
+    assert pool.manager_count == 0
