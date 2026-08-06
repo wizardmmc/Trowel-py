@@ -106,9 +106,7 @@ def test_get_runtimes_reports_missing_cli_with_install_hint(
     response = client.get("/api/agent/runtimes")
 
     codex = next(
-        runtime
-        for runtime in response.json()["data"]
-        if runtime["runtime"] == "codex"
+        runtime for runtime in response.json()["data"] if runtime["runtime"] == "codex"
     )
     assert codex["connected"] is False
     assert codex["install_hint"] == "安装 Codex CLI 后重启 Trowel"

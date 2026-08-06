@@ -81,6 +81,34 @@ def test_put_get_roundtrip(tmp_path):
     assert got.title_source == "generated"
 
 
+def test_owner_ref_roundtrips_and_remains_unique(tmp_path: Path) -> None:
+    """持久 owner 可跨 store 重建认领，同一 owner 不得绑定两个 session。"""
+
+    path = tmp_path / "b.json"
+    owner_ref = "discussion:d1:participant:0:v1"
+    BindingStore(path).put(
+        _binding(
+            session_id="first",
+            session_kind="discussion",
+            owner_ref=owner_ref,
+        )
+    )
+
+    restarted = BindingStore(path)
+    owned = restarted.find_by_owner_ref(owner_ref)
+    assert owned is not None
+    assert owned.session_id == "first"
+    assert owned.owner_ref == owner_ref
+    with pytest.raises(ValueError, match="owner_ref already belongs"):
+        restarted.put(
+            _binding(
+                session_id="second",
+                session_kind="discussion",
+                owner_ref=owner_ref,
+            )
+        )
+
+
 def test_old_binding_defaults_to_new_title_state(tmp_path):
     path = tmp_path / "b.json"
     binding = _binding().to_dict()

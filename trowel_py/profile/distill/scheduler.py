@@ -1,4 +1,5 @@
 """在应用生命周期内调度每日 profile distill。"""
+
 from __future__ import annotations
 
 import asyncio

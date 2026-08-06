@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from trowel_py.profile.distill.gate import DistillError
 from trowel_py.profile.distill.models import EvidenceValidator
 from trowel_py.profile.distill.sources.models import ProfileDistillSource
+
+_DISCUSSION_SOURCE_ID = re.compile(
+    r"^discussion:(?P<discussion_id>[A-Za-z0-9]+):message:(?P<message_id>[A-Za-z0-9]+)$"
+)
 
 
 def _event_user_text(event: dict[str, object]) -> str | None:
@@ -72,6 +77,47 @@ def _read_target_user_texts(source: ProfileDistillSource) -> tuple[str, ...]:
     return tuple(texts)
 
 
+def _read_discussion_user_texts(source: ProfileDistillSource) -> tuple[str, ...]:
+    """严格读取 discussion target JSON，并拒绝参与者或错配来源身份。
+
+    Args:
+        source: runtime=discussion 且每个 target 为单条消息 JSON 的来源。
+
+    Returns:
+        按 target 顺序排列的用户原话。
+
+    Raises:
+        DistillError: 来源 ID、JSON schema、author 或消息身份不匹配。
+    """
+
+    identity = _DISCUSSION_SOURCE_ID.fullmatch(source.source_id)
+    if identity is None or len(source.target) != 1:
+        raise DistillError(f"invalid discussion profile source: {source.source_id}")
+    target = source.target[0]
+    try:
+        payload = json.loads(Path(target.path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DistillError(
+            f"discussion profile target unavailable for {source.source_id}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise DistillError(
+            f"discussion profile target is not an object for {source.source_id}"
+        )
+    valid_identity = (
+        payload.get("schema") == "trowel.discussion.user-message.v1"
+        and payload.get("author_role") == "user"
+        and payload.get("discussion_id") == identity.group("discussion_id")
+        and payload.get("message_id") == identity.group("message_id")
+    )
+    content = payload.get("content")
+    if not valid_identity or not isinstance(content, str) or not content.strip():
+        raise DistillError(
+            f"discussion profile target identity mismatch for {source.source_id}"
+        )
+    return (content,)
+
+
 def build_target_evidence_validator(
     source: ProfileDistillSource,
 ) -> EvidenceValidator | None:
@@ -79,9 +125,12 @@ def build_target_evidence_validator(
 
     Claude Code 保持现有门禁行为，不在 Python 中重复解析其原生 transcript。
     """
-    if source.runtime != "codex":
+    if source.runtime == "discussion":
+        user_texts = _read_discussion_user_texts(source)
+    elif source.runtime == "codex":
+        user_texts = _read_target_user_texts(source)
+    else:
         return None
-    user_texts = _read_target_user_texts(source)
 
     def validate(evidence: str) -> bool:
         """接受真实用户正文中出现的非空证据片段。"""

@@ -79,9 +79,15 @@ def test_review_target_validation_matches_generated_schema(
     sid = create_session(client, codex_payload(workdir))["session_id"]
     url = f"/api/agent/sessions/{sid}/commands/review"
 
-    assert client.post(url, json={"target": {"type": "uncommittedChanges"}}).status_code == 200
+    assert (
+        client.post(url, json={"target": {"type": "uncommittedChanges"}}).status_code
+        == 200
+    )
     assert client.post(url, json={"target": {"type": "baseBranch"}}).status_code == 422
-    assert client.post(url, json={"target": {"type": "commit", "sha": ""}}).status_code == 422
+    assert (
+        client.post(url, json={"target": {"type": "commit", "sha": ""}}).status_code
+        == 422
+    )
     assert client.post(url, json={"target": {"type": "custom"}}).status_code == 422
     assert client.post(url, json={"target": {"type": "unknown"}}).status_code == 422
 

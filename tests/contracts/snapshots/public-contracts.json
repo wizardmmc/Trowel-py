@@ -52,6 +52,36 @@
       },
       {
         "type": "index",
+        "name": "idx_discussion_events_replay",
+        "table": "discussion_events",
+        "sql": "CREATE INDEX idx_discussion_events_replay ON discussion_events(discussion_id, sequence)"
+      },
+      {
+        "type": "index",
+        "name": "idx_discussion_messages_profile",
+        "table": "discussion_user_messages",
+        "sql": "CREATE INDEX idx_discussion_messages_profile ON discussion_user_messages(profile_status, created_at)"
+      },
+      {
+        "type": "index",
+        "name": "idx_discussion_participants_owner",
+        "table": "discussion_participants",
+        "sql": "CREATE INDEX idx_discussion_participants_owner ON discussion_participants(owner_ref)"
+      },
+      {
+        "type": "index",
+        "name": "idx_discussion_rounds_discussion",
+        "table": "discussion_rounds",
+        "sql": "CREATE INDEX idx_discussion_rounds_discussion ON discussion_rounds(discussion_id, number)"
+      },
+      {
+        "type": "index",
+        "name": "idx_discussions_status",
+        "table": "discussions",
+        "sql": "CREATE INDEX idx_discussions_status ON discussions(status, updated_at)"
+      },
+      {
+        "type": "index",
         "name": "idx_event_log_type",
         "table": "event_log",
         "sql": "CREATE INDEX idx_event_log_type on event_log(event_type, triggered_at)"
@@ -145,6 +175,66 @@
         "name": "configuration_task_bindings",
         "table": "configuration_task_bindings",
         "sql": "CREATE TABLE configuration_task_bindings ( task_id TEXT PRIMARY KEY CHECK (task_id IN ('memory_refine', 'profile_distill', 'memory_daily', 'memory_weekly', 'memory_monthly')), version INTEGER NOT NULL CHECK (version >= 1), session_configuration_id TEXT, updated_at TEXT NOT NULL, FOREIGN KEY (session_configuration_id) REFERENCES configuration_session_configs(id) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_attempts",
+        "table": "discussion_attempts",
+        "sql": "CREATE TABLE discussion_attempts ( id TEXT PRIMARY KEY, round_id TEXT NOT NULL, participant_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 1), status TEXT NOT NULL CHECK (status IN ( 'dispatching', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), dispatch_key TEXT NOT NULL UNIQUE, input_hash TEXT NOT NULL, event_artifact TEXT NOT NULL, event_sha256 TEXT, event_bytes INTEGER CHECK (event_bytes IS NULL OR event_bytes >= 0), output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), root_turn_id TEXT, error_code TEXT, error_message TEXT, started_at TEXT NOT NULL, completed_at TEXT, FOREIGN KEY (round_id, participant_id) REFERENCES discussion_round_participants(round_id, participant_id) ON DELETE CASCADE, UNIQUE (round_id, participant_id, ordinal) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_commands",
+        "table": "discussion_commands",
+        "sql": "CREATE TABLE discussion_commands ( discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, command_id TEXT NOT NULL, command_type TEXT NOT NULL, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (discussion_id, command_id) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_events",
+        "table": "discussion_events",
+        "sql": "CREATE TABLE discussion_events ( sequence INTEGER PRIMARY KEY AUTOINCREMENT, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, event_type TEXT NOT NULL, version INTEGER NOT NULL, round_number INTEGER, created_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_integrity_issues",
+        "table": "discussion_integrity_issues",
+        "sql": "CREATE TABLE discussion_integrity_issues ( discussion_id TEXT PRIMARY KEY REFERENCES discussions(id) ON DELETE CASCADE, issue_code TEXT NOT NULL, detected_at TEXT NOT NULL )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_participants",
+        "table": "discussion_participants",
+        "sql": "CREATE TABLE discussion_participants ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, position INTEGER NOT NULL CHECK (position >= 0), name TEXT NOT NULL, runtime TEXT NOT NULL CHECK (runtime IN ('claude_code', 'codex')), connection_id TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, session_configuration_id TEXT, connection_identity_version INTEGER, owner_ref TEXT NOT NULL UNIQUE, agent_session_id TEXT, native_session_id TEXT, status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'needs_reconcile', 'closed')), capability_version TEXT, capability_source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (discussion_id, position), UNIQUE (discussion_id, name) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_promotions",
+        "table": "discussion_promotions",
+        "sql": "CREATE TABLE discussion_promotions ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK (kind IN ('user_marked', 'agent_adopted', 'verified')), source_ref TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (discussion_id, kind, source_ref) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_round_participants",
+        "table": "discussion_round_participants",
+        "sql": "CREATE TABLE discussion_round_participants ( round_id TEXT NOT NULL REFERENCES discussion_rounds(id) ON DELETE CASCADE, participant_id TEXT NOT NULL REFERENCES discussion_participants(id), position INTEGER NOT NULL CHECK (position >= 0), status TEXT NOT NULL CHECK (status IN ( 'pending', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), current_attempt_id TEXT, output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), error_code TEXT, error_message TEXT, usage_json TEXT, started_at TEXT, completed_at TEXT, PRIMARY KEY (round_id, participant_id), UNIQUE (round_id, position) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_rounds",
+        "table": "discussion_rounds",
+        "sql": "CREATE TABLE discussion_rounds ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, number INTEGER NOT NULL CHECK (number >= 1), kind TEXT NOT NULL CHECK (kind IN ('regular', 'final')), status TEXT NOT NULL CHECK (status IN ('sealed', 'running', 'published', 'stopped')), public_context_hash TEXT NOT NULL, input_artifact TEXT NOT NULL, input_bytes INTEGER NOT NULL CHECK (input_bytes >= 0), publication_artifact TEXT, publication_sha256 TEXT, publication_bytes INTEGER CHECK (publication_bytes IS NULL OR publication_bytes >= 0), started_at TEXT NOT NULL, published_at TEXT, stop_reason TEXT, UNIQUE (discussion_id, number) )"
+      },
+      {
+        "type": "table",
+        "name": "discussion_user_messages",
+        "table": "discussion_user_messages",
+        "sql": "CREATE TABLE discussion_user_messages ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, sequence INTEGER NOT NULL CHECK (sequence >= 1), after_round_number INTEGER NOT NULL CHECK (after_round_number >= 0), author_role TEXT NOT NULL CHECK (author_role = 'user'), target_scope TEXT NOT NULL CHECK (target_scope IN ('all', 'participant')), target_participant_id TEXT REFERENCES discussion_participants(id), body TEXT NOT NULL, message_artifact TEXT NOT NULL, message_sha256 TEXT NOT NULL, message_bytes INTEGER NOT NULL CHECK (message_bytes >= 0), profile_status TEXT NOT NULL DEFAULT 'pending' CHECK (profile_status IN ('pending', 'processed', 'ignored')), profile_source_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, UNIQUE (discussion_id, sequence), CHECK ( (target_scope = 'all' AND target_participant_id IS NULL) OR (target_scope = 'participant' AND target_participant_id IS NOT NULL) ) )"
+      },
+      {
+        "type": "table",
+        "name": "discussions",
+        "table": "discussions",
+        "sql": "CREATE TABLE discussions ( id TEXT PRIMARY KEY, create_request_id TEXT NOT NULL UNIQUE, create_request_hash TEXT NOT NULL, topic TEXT NOT NULL, workdir TEXT NOT NULL, progression_mode TEXT NOT NULL CHECK (progression_mode IN ('automatic', 'user_guided')), max_rounds INTEGER, status TEXT NOT NULL CHECK (status IN ( 'draft', 'running', 'waiting_user', 'completed', 'stopped', 'needs_reconcile', 'deleted' )), version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1), active_round_number INTEGER, episode_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, stopped_at TEXT, deleted_at TEXT, CHECK ( (progression_mode = 'automatic' AND max_rounds IS NOT NULL AND max_rounds >= 1) OR (progression_mode = 'user_guided' AND max_rounds IS NULL) ) )"
       },
       {
         "type": "table",
@@ -6735,6 +6825,552 @@
           }
         }
       },
+      "/api/discussions": {
+        "get": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "List Discussions",
+          "description": "返回最近更新且尚未删除的研讨。",
+          "operationId": "list_discussions_api_discussions_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Discussions Api Discussions Get"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Create Discussion",
+          "description": "创建并冻结参与者，但由显式 start 命令开始第一轮。",
+          "operationId": "create_discussion_api_discussions_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateDiscussionRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Create Discussion Api Discussions Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}": {
+        "get": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Get Discussion",
+          "description": "返回一场研讨的当前公开快照。\n\nArgs:\n    discussion_id: 要查询的研讨 ID。\n    service: discussion 命令与查询服务。",
+          "operationId": "get_discussion_api_discussions__discussion_id__get",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Discussion Api Discussions  Discussion Id  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Delete Discussion",
+          "description": "软删除已收口研讨，并保留 Episode provenance tombstone。",
+          "operationId": "delete_discussion_api_discussions__discussion_id__delete",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionedCommand"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Delete Discussion Api Discussions  Discussion Id  Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/start": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Start Discussion",
+          "description": "创建第一轮并让后台协调器开始运行。",
+          "operationId": "start_discussion_api_discussions__discussion_id__start_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionedCommand"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Start Discussion Api Discussions  Discussion Id  Start Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/messages": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Add Discussion Message",
+          "description": "在轮次间向全体或指定 participant 补充用户原话。",
+          "operationId": "add_discussion_message_api_discussions__discussion_id__messages_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddDiscussionMessageRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Add Discussion Message Api Discussions  Discussion Id  Messages Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/continue": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Continue Discussion",
+          "description": "在用户参与模式或自动上限后创建下一普通轮。",
+          "operationId": "continue_discussion_api_discussions__discussion_id__continue_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionedCommand"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Continue Discussion Api Discussions  Discussion Id  Continue Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/finish": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Finish Discussion",
+          "description": "创建要求各方独立说明最终立场的收尾轮。",
+          "operationId": "finish_discussion_api_discussions__discussion_id__finish_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionedCommand"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Finish Discussion Api Discussions  Discussion Id  Finish Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/stop": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Stop Discussion",
+          "description": "提交停止事实并收敛 participant runtime 资源。",
+          "operationId": "stop_discussion_api_discussions__discussion_id__stop_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopDiscussionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Stop Discussion Api Discussions  Discussion Id  Stop Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/resume": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Resume Discussion",
+          "description": "手动重试待对账轮；正常应用重启会自动执行同一操作。",
+          "operationId": "resume_discussion_api_discussions__discussion_id__resume_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionedCommand"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Resume Discussion Api Discussions  Discussion Id  Resume Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/events": {
+        "get": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Stream Discussion Events",
+          "description": "重放持久状态事件，并在 round publish 后才附带公开轮次正文。\n\nArgs:\n    discussion_id: 要订阅的研讨 ID。\n    service: 用于读取持久事件和已发布 DTO 的服务。\n    events: 只唤醒重新查询的进程内总线。\n    after: 客户端已经处理的最大持久 sequence。\n\nReturns:\n    带 heartbeat 的 SSE 流。",
+          "operationId": "stream_discussion_events_api_discussions__discussion_id__events_get",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            },
+            {
+              "name": "after",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "title": "After"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/{full_path}": {
         "get": {
           "summary": " Spa Fallback",
@@ -6778,6 +7414,48 @@
     },
     "components": {
       "schemas": {
+        "AddDiscussionMessageRequest": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 100000,
+              "minLength": 1,
+              "title": "Body"
+            },
+            "target_participant_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Participant Id"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version",
+            "body"
+          ],
+          "title": "AddDiscussionMessageRequest",
+          "description": "在两轮之间保存一条给全体或单方的用户原话。\n\nAttributes:\n    body: 用户补充原话。\n    target_participant_id: None 表示全体，否则只要求指定 participant 回应。"
+        },
         "AgentActivityData": {
           "properties": {
             "session_sum_ms": {
@@ -9474,7 +10152,8 @@
               "enum": [
                 "user",
                 "delegate",
-                "probe"
+                "probe",
+                "discussion"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -9506,6 +10185,19 @@
               "minimum": 0.0,
               "title": "Delegation Depth",
               "default": 0
+            },
+            "owner_ref": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner Ref"
             }
           },
           "type": "object",
@@ -9515,6 +10207,69 @@
           ],
           "title": "CreateAgentSessionRequest",
           "description": "创建一种 runtime 的会话。\n\n``runtime`` 与三个注入开关在恢复同一原生会话时保持不变。CC 使用\n``permission_mode``；Codex 优先使用 ``permission_preset``，并继续接受旧调用方\n直接传入的 ``approval_policy`` 与 ``sandbox``。"
+        },
+        "CreateDiscussionRequest": {
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Request Id"
+            },
+            "topic": {
+              "type": "string",
+              "maxLength": 100000,
+              "minLength": 1,
+              "title": "Topic"
+            },
+            "workdir": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Workdir"
+            },
+            "progression_mode": {
+              "type": "string",
+              "enum": [
+                "automatic",
+                "user_guided"
+              ],
+              "title": "Progression Mode",
+              "default": "automatic"
+            },
+            "max_rounds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100.0,
+                  "minimum": 1.0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Rounds"
+            },
+            "participants": {
+              "items": {
+                "$ref": "#/components/schemas/ParticipantRequest"
+              },
+              "type": "array",
+              "maxItems": 8,
+              "minItems": 2,
+              "title": "Participants"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "request_id",
+            "topic",
+            "workdir",
+            "participants"
+          ],
+          "title": "CreateDiscussionRequest",
+          "description": "创建并冻结一场研讨的初始议题、模式和参与者。\n\nAttributes:\n    request_id: 创建请求的客户端稳定身份。\n    topic: 初始议题原话，同时登记为第一条 Profile 用户来源。\n    workdir: participant 只读工具统一使用的项目目录。\n    progression_mode: automatic 或 user_guided。\n    max_rounds: 自动模式默认 3，可由用户设置；用户参与模式必须为空。\n    participants: 按创建顺序冻结的 2 至 8 位参与者。"
         },
         "CreateSessionConfigurationRequest": {
           "properties": {
@@ -9628,7 +10383,8 @@
               "enum": [
                 "user",
                 "delegate",
-                "probe"
+                "probe",
+                "discussion"
               ],
               "title": "Session Kind",
               "default": "user"
@@ -11006,6 +11762,30 @@
           "title": "OverviewTokenTrendPointData",
           "description": "公开所选时间范围趋势中的一个当地日期。\n\nAttributes:\n    date: 该点代表的调用方当地日期。\n    session_count: 当天可归因的 Trowel 用户 session 数。\n    known_token_session_count: 当天 total token 水位可用的 session 数。\n    token_total: 当天可归因 token；来源不足时为 None，不用 0 代替。\n    quality: 当天 token 水位的证据质量。"
         },
+        "ParticipantRequest": {
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 60,
+              "minLength": 1,
+              "pattern": "^[^\\r\\n]+$",
+              "title": "Name"
+            },
+            "session_configuration_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Session Configuration Id"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "name",
+            "session_configuration_id"
+          ],
+          "title": "ParticipantRequest",
+          "description": "选择一位 participant 的名称和完整会话配置。\n\nAttributes:\n    name: 研讨内唯一的用户可见名称。\n    session_configuration_id: 设置域中已验证的完整会话配置 ID。"
+        },
         "PatchAgentSessionRequest": {
           "properties": {
             "runtime": {
@@ -12296,6 +13076,37 @@
           "title": "StartCodexReviewRequest",
           "description": "携带一次 Codex 代码审查的目标。\n\nAttributes:\n    target: 要审查的内容，可以是未提交改动、与基础分支的差异、指定提交或\n        自定义要求。"
         },
+        "StopDiscussionRequest": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Reason",
+              "default": "用户停止研讨"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version"
+          ],
+          "title": "StopDiscussionRequest",
+          "description": "停止研讨并请求收敛 participant 资源。\n\nAttributes:\n    reason: 可选的人类停止原因；不进入 participant prompt。"
+        },
         "SubmitRequest": {
           "properties": {
             "card_id": {
@@ -12867,6 +13678,30 @@
             "type"
           ],
           "title": "ValidationError"
+        },
+        "VersionedCommand": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version"
+          ],
+          "title": "VersionedCommand",
+          "description": "所有 discussion 写命令共用的幂等身份和乐观版本。"
         }
       }
     }

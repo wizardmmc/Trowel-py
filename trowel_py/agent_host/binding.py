@@ -14,7 +14,7 @@ from trowel_py.agent_host.capabilities import (
 )
 
 TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
-SessionKind = Literal["user", "delegate", "probe"]
+SessionKind = Literal["user", "delegate", "probe", "discussion"]
 _TITLE_SOURCES: frozenset[str] = frozenset(
     {"new", "native", "prompt", "generated", "manual"}
 )
@@ -81,6 +81,10 @@ class SessionBinding:
         connection_kind: 创建时冻结的连接种类。
         configuration_capability_version: 放行连接组合的设置域能力表版本。
         configuration_capability_source: 放行连接组合的真实验证证据说明。
+        owner_ref: 内部会话的持久归属键；discussion participant 用它在应用重启后
+            认领已经创建但尚未回写领域库的原生会话。
+        requested_model: 创建请求冻结的模型选择；``model`` 可被 runtime 回写为有效 ID。
+        requested_effort: 创建请求冻结的思考强度；``effort`` 可被 runtime 补成默认值。
     """
 
     session_id: str
@@ -122,6 +126,9 @@ class SessionBinding:
     connection_kind: str | None = None
     configuration_capability_version: str | None = None
     configuration_capability_source: str | None = None
+    owner_ref: str | None = None
+    requested_model: str | None = None
+    requested_effort: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """转换为可持久化的字典。"""
@@ -164,10 +171,11 @@ class SessionBinding:
             "connection_identity_version": self.connection_identity_version,
             "connection_name": self.connection_name,
             "connection_kind": self.connection_kind,
-            "configuration_capability_version": (
-                self.configuration_capability_version
-            ),
+            "configuration_capability_version": (self.configuration_capability_version),
             "configuration_capability_source": self.configuration_capability_source,
+            "owner_ref": self.owner_ref,
+            "requested_model": self.requested_model,
+            "requested_effort": self.requested_effort,
         }
 
 
@@ -210,6 +218,7 @@ def make_binding(
     connection_kind: str | None = None,
     configuration_capability_version: str | None = None,
     configuration_capability_source: str | None = None,
+    owner_ref: str | None = None,
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。
 
@@ -251,6 +260,7 @@ def make_binding(
         connection_kind: 冻结的连接种类。
         configuration_capability_version: 设置域能力表版本。
         configuration_capability_source: 设置域能力结论的实测来源。
+        owner_ref: 内部会话的稳定归属键；普通用户会话为 None。
 
     Returns:
         带统一创建时间和更新时间的不可变 binding。
@@ -297,6 +307,9 @@ def make_binding(
         connection_kind=connection_kind,
         configuration_capability_version=configuration_capability_version,
         configuration_capability_source=configuration_capability_source,
+        owner_ref=owner_ref,
+        requested_model=model,
+        requested_effort=effort,
         created_at=now,
         updated_at=now,
     )
@@ -317,6 +330,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
     """
 
     runtime = Runtime(str(data["runtime"]))
+    raw_connection_identity_version = data.get("connection_identity_version")
     raw_capability_version = data.get("capability_version")
     if (
         isinstance(raw_capability_version, int)
@@ -344,9 +358,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
     )
     raw_checkpoint_available = data.get("checkpoint_available")
     checkpoint_available = (
-        raw_checkpoint_available
-        if isinstance(raw_checkpoint_available, bool)
-        else None
+        raw_checkpoint_available if isinstance(raw_checkpoint_available, bool) else None
     )
     has_connection = data.get("connection_id") is not None
     memory_enabled = bool(data.get("memory_enabled", True))
@@ -428,9 +440,9 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             else None
         ),
         connection_identity_version=(
-            int(data["connection_identity_version"])
-            if isinstance(data.get("connection_identity_version"), int)
-            and not isinstance(data.get("connection_identity_version"), bool)
+            raw_connection_identity_version
+            if isinstance(raw_connection_identity_version, int)
+            and not isinstance(raw_connection_identity_version, bool)
             else None
         ),
         connection_name=(
@@ -452,5 +464,26 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             str(data["configuration_capability_source"])
             if data.get("configuration_capability_source") is not None
             else None
+        ),
+        owner_ref=(
+            str(data["owner_ref"]) if data.get("owner_ref") is not None else None
+        ),
+        requested_model=(
+            (
+                str(data["requested_model"])
+                if data.get("requested_model") is not None
+                else None
+            )
+            if "requested_model" in data
+            else (str(data["model"]) if data.get("model") is not None else None)
+        ),
+        requested_effort=(
+            (
+                str(data["requested_effort"])
+                if data.get("requested_effort") is not None
+                else None
+            )
+            if "requested_effort" in data
+            else (str(data["effort"]) if data.get("effort") is not None else None)
         ),
     )

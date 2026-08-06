@@ -237,6 +237,39 @@ def append_suggestions(
         _write_queue(root, [*existing, *items], updated=updated)
 
 
+def append_suggestions_once(
+    root: Path, items: Sequence[Suggestion], *, updated: str
+) -> None:
+    """按建议 ID 幂等追加批处理结果。
+
+    已存在 ID 保留原记录和状态；本次输入中重复 ID 只追加第一次。该入口供
+    Profile 自动提炼使用，使“队列已写、来源水位未写”的故障重试不会重复
+    产生建议。手工队列兼容入口 ``append_suggestions`` 仍保留原有允许重复语义。
+
+    Args:
+        root: Memory 根目录。
+        items: 使用稳定 ID 的批处理建议。
+        updated: 本次写入的更新时间。
+    """
+
+    with _suggestions_lock(root):
+        existing, old_updated = _load_queue(root)
+        seen = {item.id for item in existing}
+        appended: list[Suggestion] = []
+        for item in items:
+            if item.id in seen:
+                continue
+            seen.add(item.id)
+            appended.append(item)
+        if not appended:
+            return
+        _write_queue(
+            root,
+            [*existing, *appended],
+            updated=updated or old_updated,
+        )
+
+
 def update_suggestion_status(
     root: Path, suggestion_id: str, status: SuggestionStatus
 ) -> None:

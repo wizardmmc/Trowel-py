@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,9 +28,7 @@ def test_create_codex_with_resume_seeds_thread_binding(
     hub: SessionHub, workdir: Path, codex_mgr: FakeCodexManager
 ):
 
-    binding = hub.create(
-        codex_req(workdir, resume_from="codex-thread-abc")
-    )
+    binding = hub.create(codex_req(workdir, resume_from="codex-thread-abc"))
     session = codex_mgr.get_session(binding.session_id)
     assert session is not None
     assert session.config.initial_thread_id == "codex-thread-abc"
@@ -58,9 +57,7 @@ def test_resume_codex_inherits_frozen_conditions_but_leaves_model_to_native_resu
         )
     )
 
-    resumed = hub.create(
-        codex_req(workdir, resume_from="codex-thread-configured")
-    )
+    resumed = hub.create(codex_req(workdir, resume_from="codex-thread-configured"))
     session = codex_mgr.get_session(resumed.session_id)
 
     assert resumed.model is None
@@ -128,6 +125,60 @@ async def test_prepare_external_cc_resume_reads_native_config_off_event_loop(
     assert resumed.model == "glm-5.2"
     assert resumed.effort == "max"
     assert resumed.permission == "bypassPermissions"
+
+
+@pytest.mark.anyio
+async def test_discussion_resume_compares_requested_alias_not_effective_model(
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """runtime 回写有效模型/默认 effort 后，恢复仍沿用创建请求的角色别名。"""
+
+    original = make_binding(
+        session_id="discussion-alias",
+        runtime=Runtime.CLAUDE_CODE,
+        native_session_id="discussion-native-alias",
+        workdir=str(workdir),
+        model="sonnet",
+        effort=None,
+        permission="dontAsk",
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=False,
+        session_kind="discussion",
+        memory_eligibility=False,
+        agent_mcp_enabled=False,
+        owner_ref="discussion:alias:participant:0:v1",
+        capabilities=("tools",),
+        name="participant",
+    )
+    hub.store.put(
+        replace(
+            original,
+            model="claude-sonnet-4-6-20260501",
+            effort="high",
+        )
+    )
+
+    prepared = await hub.prepare_create_request(
+        cc_req(
+            workdir,
+            resume_from="discussion-native-alias",
+            model="sonnet",
+            effort=None,
+            permission_mode="dontAsk",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            session_kind="discussion",
+            memory_eligibility=False,
+            agent_mcp_enabled=False,
+            owner_ref="discussion:alias:participant:0:v1",
+        )
+    )
+
+    assert prepared.model == "sonnet"
+    assert prepared.effort is None
 
 
 def test_validate_resume_rejects_cross_runtime(hub: SessionHub, workdir: Path):

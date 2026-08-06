@@ -32,6 +32,8 @@ from trowel_py.codex_host.session import CodexSession, ThreadBinding, TurnConfli
 from trowel_py.codex_host.pending_requests import (
     PendingRequest,
     PendingRequestKind,
+    PendingRequestNotFoundError,
+    PendingRequestOwnershipError,
     PendingRequestRegistry,
 )
 from trowel_py.codex_host.translator import CodexTranslator
@@ -176,8 +178,7 @@ def _matches_rpc_error(
     if not isinstance(response_error, Mapping):
         return False
     return (
-        response_error.get("code") == code
-        and response_error.get("message") == message
+        response_error.get("code") == code and response_error.get("message") == message
     )
 
 
@@ -398,10 +399,7 @@ class CodexHostManager:
                     self._resource_registry.reconcile_process_groups,
                     runtime_connection_id=connection_id,
                 )
-                if (
-                    process_report.remaining
-                    or process_report.errors
-                ):
+                if process_report.remaining or process_report.errors:
                     self._mark_connection_needs_reconcile(
                         self._active_generation,
                         "Codex descendant process groups need reconciliation",
@@ -631,7 +629,9 @@ class CodexHostManager:
         )
         cleared = result.get("cleared") if isinstance(result, Mapping) else None
         if not isinstance(cleared, bool):
-            raise ProtocolViolationError("thread/goal/clear result.cleared is not boolean")
+            raise ProtocolViolationError(
+                "thread/goal/clear result.cleared is not boolean"
+            )
         return cleared
 
     async def compact(
@@ -1193,6 +1193,35 @@ class CodexHostManager:
             self._emit_request_event(session, request)
         return request
 
+    def decline_request(self, session_id: str, request_id: str) -> PendingRequest:
+        """为无人交互的内部会话立即自动拒绝待处理审批。
+
+        Args:
+            session_id: 审批所属 Trowel 会话 ID。
+            request_id: 待处理请求 ID。
+
+        Returns:
+            已标记自动拒绝并完成原生响应 Future 的请求。
+
+        Raises:
+            PendingRequestOwnershipError: 请求属于另一会话。
+        """
+
+        request = self._pending_requests.get(request_id)
+        if request is None:
+            raise PendingRequestNotFoundError(request_id)
+        if request.session_id != session_id:
+            raise PendingRequestOwnershipError(request_id)
+        request = self._pending_requests.resolve_automatically(
+            request_id,
+            "decline",
+            reason="internal discussion sessions do not accept approvals",
+        )
+        session = self._sessions.get(session_id)
+        if session is not None:
+            self._emit_request_event(session, request)
+        return request
+
     def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
         """返回指定会话保留的全部待决请求记录。"""
 
@@ -1293,9 +1322,7 @@ class CodexHostManager:
         return session
 
     @staticmethod
-    def _emit_request_event(
-        session: CodexSession, request: PendingRequest
-    ) -> None:
+    def _emit_request_event(session: CodexSession, request: PendingRequest) -> None:
         """将待决请求的当前状态发到所属会话。"""
 
         session.emit_translated(
@@ -1446,9 +1473,7 @@ class CodexHostManager:
             if item.turn_id is not None and not session.has_in_flight_turn:
                 self._mark_turn_resource_closed(session.session_id, item.turn_id)
 
-    def _dispatch_account_level(
-        self, method: str, params: Mapping[str, Any]
-    ) -> None:
+    def _dispatch_account_level(self, method: str, params: Mapping[str, Any]) -> None:
         """翻译无 ``threadId`` 的账户级通知，并广播给全部已注册 session。
 
         此类通知没有唯一归属；协议错误只记录日志，避免污染所有事件队列。
@@ -1652,8 +1677,10 @@ class CodexHostManager:
     def _resource_id(self, kind: str, suffix: str) -> str:
         """返回兼容单 manager 旧 ID、同时支持连接池隔离的资源 ID。"""
 
-        prefix = "codex" if self._resource_namespace == "codex" else (
-            f"codex-{self._resource_namespace}"
+        prefix = (
+            "codex"
+            if self._resource_namespace == "codex"
+            else (f"codex-{self._resource_namespace}")
         )
         return f"{prefix}-{kind}:{suffix}"
 
@@ -1710,9 +1737,7 @@ class CodexHostManager:
         key = (session.session_id, generation)
         if key in self._thread_resource_ids:
             return
-        resource_id = self._resource_id(
-            "thread", f"{session.session_id}:{generation}"
-        )
+        resource_id = self._resource_id("thread", f"{session.session_id}:{generation}")
         registry.register_handle(
             resource_id=resource_id,
             owner_scope=OwnerScope.SESSION,

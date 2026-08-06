@@ -118,7 +118,7 @@ export function AgentDefaultsPanel({
           </div>
           <DefaultToggle label="Memory" detail="向新会话提供长期记忆检索能力。" checked={draft.memory_enabled} onChange={(value) => onChange({ memory_enabled: value })} />
           <DefaultToggle label="Profile" detail="注入已确认的用户画像。" checked={draft.profile_enabled} onChange={(value) => onChange({ profile_enabled: value })} />
-          <DefaultToggle label="Self" detail="注入持续主体说明；这是生产配置比原型多出的真实选项。" checked={draft.self_enabled} onChange={(value) => onChange({ self_enabled: value })} />
+          <DefaultToggle label="Self" detail="注入持续主体说明。" checked={draft.self_enabled} onChange={(value) => onChange({ self_enabled: value })} />
           <div className="settings-row settings-setting-row">
             <div className="settings-row__body">
               <strong>权限</strong>

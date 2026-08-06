@@ -8,10 +8,16 @@ from trowel_py.profile.distill.adapters.codex import (
     CodexDistillCandidate as CodexDistillCandidate,
     build_codex_backlog as build_codex_backlog,
 )
+from trowel_py.profile.distill.adapters.discussion import (
+    DiscussionDistillCandidate as DiscussionDistillCandidate,
+    build_discussion_backlog as build_discussion_backlog,
+)
 
 __all__ = [
     "ClaudeDistillCandidate",
     "CodexDistillCandidate",
+    "DiscussionDistillCandidate",
     "build_claude_backlog",
     "build_codex_backlog",
+    "build_discussion_backlog",
 ]

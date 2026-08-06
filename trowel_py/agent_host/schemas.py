@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from trowel_py.agent_host.binding import SessionKind
 
@@ -58,6 +58,24 @@ class CreateAgentSessionRequest(BaseModel):
     agent_mcp_enabled: bool = Field(default=True, strict=True)
     parent_session_id: str | None = None
     delegation_depth: int = Field(default=0, ge=0, le=1)
+    owner_ref: str | None = Field(default=None, min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def validate_internal_owner(self) -> CreateAgentSessionRequest:
+        """限制 owner_ref 只表达由 discussion 领域持有的内部会话。
+
+        Returns:
+            校验通过的原请求。
+
+        Raises:
+            ValueError: discussion 未带 owner_ref，或其他会话伪造 owner_ref。
+        """
+
+        if self.session_kind == "discussion" and self.owner_ref is None:
+            raise ValueError("discussion session requires owner_ref")
+        if self.session_kind != "discussion" and self.owner_ref is not None:
+            raise ValueError("owner_ref is reserved for discussion sessions")
+        return self
 
 
 class PatchAgentSessionRequest(BaseModel):

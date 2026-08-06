@@ -30,6 +30,7 @@ from trowel_py.cc_host.proxy import (
 )
 from trowel_py.cc_host.routes import router as cc_host_router
 from trowel_py.configuration.routes import router as configuration_router
+from trowel_py.discussion.routes import router as discussion_router
 from trowel_py.desktop.access import (
     DesktopCredentialMiddleware,
     validate_desktop_renderer_origin,
@@ -550,6 +551,9 @@ async def lifespan(app: FastAPI):
         app.state.agent_hub = None
     app.state.agent_delegation_broker = None
     app.state.agent_delegation_wakeup = None
+    app.state.discussion_events = None
+    app.state.discussion_coordinator = None
+    app.state.discussion_service = None
     if app.state.agent_hub is not None:
         from trowel_py.agent_host.delegation_wakeup import (
             DelegationWakeupCoordinator,
@@ -569,9 +573,47 @@ async def lifespan(app: FastAPI):
             headers=internal_headers,
             notifier=app.state.agent_delegation_wakeup.publish,
         )
+        from trowel_py.discussion.artifacts import DiscussionArtifactStore
+        from trowel_py.discussion.coordinator import DiscussionCoordinator
+        from trowel_py.discussion.events import DiscussionEventBus
+        from trowel_py.discussion.episode import DiscussionEpisodeWriter
+        from trowel_py.discussion.participant_sessions import (
+            AgentHostParticipantSessionAdapter,
+        )
+        from trowel_py.discussion.repository import open_discussion_repository
+        from trowel_py.discussion.service import (
+            DiscussionService,
+            SqliteSessionConfigurationCatalog,
+        )
+
+        discussion_events = DiscussionEventBus()
+        discussion_artifacts = DiscussionArtifactStore()
+        discussion_episode_writer = DiscussionEpisodeWriter(discussion_artifacts)
+        discussion_coordinator = DiscussionCoordinator(
+            open_discussion_repository,
+            discussion_artifacts,
+            AgentHostParticipantSessionAdapter(app.state.agent_hub),
+            discussion_events,
+            discussion_episode_writer,
+        )
+        app.state.discussion_events = discussion_events
+        app.state.discussion_coordinator = discussion_coordinator
+        app.state.discussion_service = DiscussionService(
+            open_discussion_repository,
+            discussion_artifacts,
+            discussion_coordinator,
+            discussion_events,
+            SqliteSessionConfigurationCatalog(),
+        )
+        await discussion_coordinator.start()
     app.state.drain_coordinator = DrainCoordinator(
         resource_registry=resource_registry,
         agent_hub=app.state.agent_hub,
+        pre_session_components=tuple(
+            (("discussion_coordinator", app.state.discussion_coordinator),)
+            if app.state.discussion_coordinator is not None
+            else ()
+        ),
         schedulers=tuple(
             (name, component)
             for name, component in (
@@ -710,6 +752,7 @@ def create_app() -> FastAPI:
     app.include_router(telemetry_router, prefix="/api/telemetry")
     app.include_router(statistics_router, prefix="/api/statistics")
     app.include_router(configuration_router, prefix="/api/configuration")
+    app.include_router(discussion_router, prefix="/api/discussions")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

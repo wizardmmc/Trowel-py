@@ -157,9 +157,13 @@ def _aggregate_report(
     body_lens = [len(s.body) for s in staged]
     raw = sum(st.raw for (_s, _a, st, _e) in outcomes)
     gate_drops = {
-        "dropped_empty_body": sum(st.dropped_empty_body for (_s, _a, st, _e) in outcomes),
+        "dropped_empty_body": sum(
+            st.dropped_empty_body for (_s, _a, st, _e) in outcomes
+        ),
         "dropped_too_long": sum(st.dropped_too_long for (_s, _a, st, _e) in outcomes),
-        "dropped_no_evidence": sum(st.dropped_no_evidence for (_s, _a, st, _e) in outcomes),
+        "dropped_no_evidence": sum(
+            st.dropped_no_evidence for (_s, _a, st, _e) in outcomes
+        ),
         "over_limit": sum(st.over_limit for (_s, _a, st, _e) in outcomes),
     }
     return RecalibrationRunResult(

@@ -98,6 +98,76 @@ def test_capacity_gate_counts_connections_across_runtime_ports(tmp_path: Path) -
         pass
 
 
+def test_discussion_uses_independent_eight_connection_pool(tmp_path: Path) -> None:
+    """八位研讨参与者不消耗用户或委派连接池，第九位被独立上限拒绝。"""
+
+    store = BindingStore(tmp_path / "bindings.json")
+    states: dict[str, RuntimeLiveState] = {}
+    for index in range(8):
+        session_id = f"discussion-{index}"
+        states[session_id] = RuntimeLiveState(True, False)
+        store.put(_binding(session_id, Runtime.CLAUDE_CODE, kind="discussion"))
+    gate = SessionCapacityGate(
+        store,
+        {Runtime.CLAUDE_CODE: _RuntimePort(Runtime.CLAUDE_CODE, states)},
+        CapacityLimits(
+            user_connections=1,
+            delegate_connections=1,
+            delegate_running=1,
+            discussion_connections=8,
+            discussion_running=5,
+        ),
+    )
+
+    with pytest.raises(CapacityLimitError, match="研讨参与者数量已满"):
+        with gate.admit_connection("discussion"):
+            raise AssertionError("第九个 discussion connection 不得进入创建窗口")
+    with gate.admit_connection("user"):
+        pass
+    with gate.admit_connection("delegate"):
+        pass
+
+
+def test_discussion_running_pool_stops_at_five_without_blocking_user(
+    tmp_path: Path,
+) -> None:
+    """discussion 的五个运行预留与用户 in-turn 上限彼此隔离。"""
+
+    store = BindingStore(tmp_path / "bindings.json")
+    states: dict[str, RuntimeLiveState] = {}
+    discussions = []
+    for index in range(6):
+        session_id = f"discussion-{index}"
+        states[session_id] = RuntimeLiveState(True, False)
+        binding = _binding(session_id, Runtime.CLAUDE_CODE, kind="discussion")
+        store.put(binding)
+        discussions.append(binding)
+    user = _binding("user", Runtime.CLAUDE_CODE, kind="user")
+    states[user.session_id] = RuntimeLiveState(True, False)
+    store.put(user)
+    gate = SessionCapacityGate(
+        store,
+        {Runtime.CLAUDE_CODE: _RuntimePort(Runtime.CLAUDE_CODE, states)},
+        CapacityLimits(
+            user_connections=1,
+            delegate_connections=1,
+            delegate_running=1,
+            user_running=1,
+            discussion_connections=8,
+            discussion_running=5,
+        ),
+    )
+    reservations = [gate.reserve_turn(item) for item in discussions[:5]]
+
+    with pytest.raises(CapacityLimitError, match="研讨运行数量已满"):
+        gate.reserve_turn(discussions[5])
+    user_reservation = gate.reserve_turn(user)
+
+    gate.release_turn(user_reservation)
+    for reservation in reservations:
+        gate.release_turn(reservation)
+
+
 def test_capacity_gate_rejects_runtime_registered_under_the_wrong_key(
     tmp_path: Path,
 ) -> None:

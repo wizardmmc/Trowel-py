@@ -74,8 +74,8 @@ class SessionConfigurationArchive:
             native_session_id=native_session_id,
             connection_id=binding.connection_id,
             connection_identity_version=binding.connection_identity_version,
-            model=binding.model,
-            effort=binding.effort,
+            model=binding.requested_model,
+            effort=binding.requested_effort,
             permission=binding.permission,
             permission_preset=binding.permission_preset,
             memory_enabled=binding.memory_enabled,
@@ -114,9 +114,7 @@ class SessionConfigurationArchive:
                     else None
                 ),
                 model=str(raw["model"]) if raw.get("model") is not None else None,
-                effort=(
-                    str(raw["effort"]) if raw.get("effort") is not None else None
-                ),
+                effort=(str(raw["effort"]) if raw.get("effort") is not None else None),
                 permission=(
                     str(raw["permission"])
                     if raw.get("permission") is not None
