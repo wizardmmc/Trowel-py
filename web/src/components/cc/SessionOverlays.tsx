@@ -2,6 +2,7 @@
 
 import type { ModelOption } from "../../api/cc";
 import type {
+  AgentConnectionOption,
   AgentModel,
 } from "../../agent/transport";
 import type { Turn } from "../../agent/domain";
@@ -31,6 +32,10 @@ interface SessionOverlaysProps {
     readonly codexModels: readonly AgentModel[];
     readonly codexCatalogError: string | null;
     readonly onRetryCodexCatalog: () => void;
+    readonly connectionOptions: readonly AgentConnectionOption[];
+    readonly connectionOptionsLoading: boolean;
+    readonly connectionOptionsError: string | null;
+    readonly onRetryConnectionOptions: () => void;
     readonly onCreate: (config: NewSessionConfig) => void;
     readonly onCancel: () => void;
   } | null;
@@ -74,6 +79,10 @@ export function SessionOverlays({
           codexModels={newSession.codexModels}
           codexCatalogError={newSession.codexCatalogError}
           onRetryCodexCatalog={newSession.onRetryCodexCatalog}
+          connectionOptions={newSession.connectionOptions}
+          connectionOptionsLoading={newSession.connectionOptionsLoading}
+          connectionOptionsError={newSession.connectionOptionsError}
+          onRetryConnectionOptions={newSession.onRetryConnectionOptions}
           onCreate={newSession.onCreate}
           onCancel={newSession.onCancel}
         />

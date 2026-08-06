@@ -37,9 +37,18 @@ it("renders Codex custom as redacted TOML instead of JSON", () => {
     modelFetch: {
       status: "ready",
       models: ["deepseek-v4-flash"],
+      codexCatalog: [],
       sourceEndpoint: "https://api.deepseek.com/v1/models",
       fetchedAt: "2026-08-04T12:00:00Z",
       requestIdentity: "request-1",
+      error: null,
+    },
+    officialAccount: {
+      status: "idle",
+      account: null,
+      login: null,
+      loginBaselineEmail: null,
+      loginStarting: false,
       error: null,
     },
   };
@@ -50,4 +59,53 @@ it("renders Codex custom as redacted TOML instead of JSON", () => {
   expect(preview.text).toContain('wire_api = "responses"');
   expect(preview.text).toContain('catalog_models = ["deepseek-v4-flash"]');
   expect(preview.text).not.toContain("password");
+});
+
+it("does not expose the managed Official account directory", () => {
+  const editor: ConnectionEditorState = {
+    connectionId: "official-a",
+    version: 1,
+    draft: {
+      name: "OpenAI Pro",
+      runtime: "codex",
+      kind: "codex_official",
+      protocol: "codex_official",
+      base_url: null,
+      models_url: null,
+      login_directory: "/private/trowel/codex-accounts/official-a",
+      proxy_url: null,
+      proxy_username: null,
+      claude_role_models: {},
+      codex_catalog: [],
+      catalog_request_identity: null,
+    },
+    dirty: false,
+    saving: false,
+    deleting: false,
+    error: null,
+    conflict: false,
+    modelFetch: {
+      status: "idle",
+      models: [],
+      codexCatalog: [],
+      sourceEndpoint: null,
+      fetchedAt: null,
+      requestIdentity: null,
+      error: null,
+    },
+    officialAccount: {
+      status: "idle",
+      account: null,
+      login: null,
+      loginBaselineEmail: null,
+      loginStarting: false,
+      error: null,
+    },
+  };
+
+  const preview = buildConnectionPreview(editor, "referenced");
+
+  expect(preview.text).toContain('oauth = "<managed by Codex>"');
+  expect(preview.text).not.toContain("codex-accounts");
+  expect(preview.text).not.toContain("login_directory");
 });

@@ -87,10 +87,7 @@ export function collectSessionIssues(
     });
   }
 
-  if (
-    active.meta.hostDegraded &&
-    presentation.headerStatus.degradedHostLabel
-  ) {
+  if (active.meta.hostDegraded && presentation.headerStatus.degradedHostLabel) {
     issues.push({
       id: "host",
       title: presentation.headerStatus.degradedHostLabel,
@@ -149,7 +146,7 @@ function safeTransportProblemDetail(active: PerSessionState): string {
     return "操作未完成。请先确认当前会话状态，再决定是否重试。";
   }
   if (problem.code === "sidecar_unavailable") {
-    return "Agent Service 暂不可用，请等待连接恢复后再试。";
+    return "Agent Service 已断开。Desktop Host 会转入诊断页；写操作不会自动重发。";
   }
   if (problem.code === "request_timeout") {
     return "操作超过等待时间，结果可能尚未确认。请先检查当前事实。";
@@ -172,6 +169,9 @@ export function safeSessionAction(code: string): string {
   }
   if (code === "live_disconnected" || code === "live_unavailable") {
     return "等待实时连接恢复";
+  }
+  if (code === "sidecar_unavailable") {
+    return "按 Desktop 诊断重启 Agent Service，不要重发上一条写操作";
   }
   return "只读操作可以重试；写操作先确认后端事实";
 }

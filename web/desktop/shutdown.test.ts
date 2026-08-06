@@ -4,10 +4,7 @@
 
 import { expect, it, vi } from "vitest";
 import type { RunningSidecar } from "./sidecar";
-import {
-  shutdownSidecar,
-  type SidecarShutdownDependencies,
-} from "./shutdown";
+import { shutdownSidecar, type SidecarShutdownDependencies } from "./shutdown";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -67,7 +64,12 @@ function fixture(killRequired: boolean) {
 it("uses cooperative drain and TERM for a responsive sidecar", async () => {
   const { running, dependencies, signal } = fixture(false);
 
-  const result = await shutdownSidecar(running, OPTIONS, dependencies);
+  const result = await shutdownSidecar(
+    running,
+    OPTIONS,
+    "app_exit",
+    dependencies,
+  );
 
   expect(result).toEqual({
     status: "closed",
@@ -91,12 +93,28 @@ it("escalates a hung sidecar and snapshot resources to KILL", async () => {
   const { running, dependencies, signal } = fixture(true);
   vi.mocked(dependencies.requestDrain).mockRejectedValue(new Error("timeout"));
 
-  const result = await shutdownSidecar(running, OPTIONS, dependencies);
+  const result = await shutdownSidecar(
+    running,
+    OPTIONS,
+    "app_exit",
+    dependencies,
+  );
 
   expect(result.forced).toBe(true);
-  expect(signal.mock.calls.map(([name]) => name)).toEqual(["SIGTERM", "SIGKILL"]);
-  expect(dependencies.signalResources).toHaveBeenNthCalledWith(1, OPTIONS, "SIGTERM");
-  expect(dependencies.signalResources).toHaveBeenNthCalledWith(2, OPTIONS, "SIGKILL");
+  expect(signal.mock.calls.map(([name]) => name)).toEqual([
+    "SIGTERM",
+    "SIGKILL",
+  ]);
+  expect(dependencies.signalResources).toHaveBeenNthCalledWith(
+    1,
+    OPTIONS,
+    "SIGTERM",
+  );
+  expect(dependencies.signalResources).toHaveBeenNthCalledWith(
+    2,
+    OPTIONS,
+    "SIGKILL",
+  );
 });
 
 it("records needs_reconcile when the final snapshot cannot be verified", async () => {
@@ -105,7 +123,12 @@ it("records needs_reconcile when the final snapshot cannot be verified", async (
     new Error("resource snapshot unavailable"),
   );
 
-  const result = await shutdownSidecar(running, OPTIONS, dependencies);
+  const result = await shutdownSidecar(
+    running,
+    OPTIONS,
+    "app_exit",
+    dependencies,
+  );
 
   expect(result).toEqual({
     status: "needs_reconcile",
@@ -113,15 +136,23 @@ it("records needs_reconcile when the final snapshot cannot be verified", async (
     forced: true,
     exitMarkerRecorded: true,
   });
+  expect(dependencies.recordExit).toHaveBeenCalledWith(OPTIONS, {
+    exitReason: "app_exit",
+    requestedAt: "2026-08-03T01:02:03.000Z",
+    completedAt: "2026-08-03T01:02:04.250Z",
+    exitMode: "forced",
+    processTreeResult: "needs_reconcile",
+    remainingResourceCount: 1,
+  });
+});
+
+it("records readiness-loss cleanup as an abnormal sidecar exit", async () => {
+  const { running, dependencies } = fixture(false);
+
+  await shutdownSidecar(running, OPTIONS, "sidecar_abnormal", dependencies);
+
   expect(dependencies.recordExit).toHaveBeenCalledWith(
     OPTIONS,
-    {
-      exitReason: "app_exit",
-      requestedAt: "2026-08-03T01:02:03.000Z",
-      completedAt: "2026-08-03T01:02:04.250Z",
-      exitMode: "forced",
-      processTreeResult: "needs_reconcile",
-      remainingResourceCount: 1,
-    },
+    expect.objectContaining({ exitReason: "sidecar_abnormal" }),
   );
 });

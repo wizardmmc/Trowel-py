@@ -591,6 +591,53 @@
   margin-bottom: 8px;
 }
 
+.settings-account-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 240, 232, 0.45);
+}
+
+.settings-account-card > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-account-card small {
+  color: var(--text-secondary);
+}
+
+.settings-account-card.is-empty {
+  display: flex;
+  color: var(--text-secondary);
+}
+
+.settings-login-code {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: white;
+  font-size: 11px;
+}
+
+.settings-login-code code {
+  margin-right: auto;
+  color: var(--text-primary);
+  font: 600 15px var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
 .settings-model-fetch {
   display: flex;
   align-items: center;

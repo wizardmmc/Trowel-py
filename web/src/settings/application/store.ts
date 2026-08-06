@@ -6,6 +6,8 @@ import type {
   ConfigurationCatalog,
   Connection,
   ConnectionDraft,
+  CodexOfficialAccount,
+  CodexOfficialLogin,
   ConnectionEditorState,
   ConnectionKind,
   Diagnostics,
@@ -26,9 +28,11 @@ import {
   fetchConfigurationCatalog,
   fetchDiagnostics,
   fetchModels,
+  fetchCodexOfficialAccount,
   fetchPathStatus,
   putAgentDefaults,
   putTaskBinding,
+  startCodexOfficialLogin,
   updateConnection,
   writeSecret,
 } from "../transport/api";
@@ -39,6 +43,7 @@ import {
   editorFromConnection,
   MODEL_IDENTITY_FIELDS,
   newConnectionEditor,
+  refreshSelectedCodexCatalog,
   staleModelFetch,
 } from "./editorState";
 import {
@@ -78,6 +83,8 @@ export interface SettingsApi {
     expectedVersion: number,
     draft: ConnectionDraft,
   ) => Promise<FetchModelsResult>;
+  readonly fetchCodexOfficialAccount: (id: string) => Promise<CodexOfficialAccount>;
+  readonly startCodexOfficialLogin: (id: string) => Promise<CodexOfficialLogin>;
   readonly putTaskBinding: (
     taskId: TaskId,
     configurationId: string,
@@ -128,6 +135,8 @@ export interface SettingsState {
   readonly saveConnection: () => Promise<void>;
   readonly removeConnection: () => Promise<void>;
   readonly fetchConnectionModels: () => Promise<void>;
+  readonly refreshCodexOfficialAccount: () => Promise<void>;
+  readonly beginCodexOfficialLogin: () => Promise<CodexOfficialLogin | null>;
   readonly writeConnectionSecret: (kind: SecretKind, value: string) => Promise<void>;
   readonly deleteConnectionSecret: (kind: SecretKind) => Promise<void>;
   readonly setTaskDraft: (taskId: TaskId, configurationId: string | null) => void;
@@ -149,7 +158,9 @@ const defaultApi: SettingsApi = {
   writeSecret,
   deleteSecret,
   fetchModels,
+  fetchCodexOfficialAccount,
   putTaskBinding,
+  startCodexOfficialLogin,
   deleteTaskBinding,
   putAgentDefaults,
 };
@@ -167,6 +178,7 @@ const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
 export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
   const api = { ...defaultApi, ...apiOverrides };
   let latestModelRequest = 0;
+  let latestOfficialAccountRequest = 0;
 
   return createStore<SettingsState>((set, get) => ({
     activeSection: "paths",
@@ -266,6 +278,7 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
     },
     openConnection: (connectionId) => {
       latestModelRequest += 1;
+      latestOfficialAccountRequest += 1;
       const connection = get().catalog?.connections.find(
         (item) => item.id === connectionId,
       );
@@ -274,12 +287,14 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
     },
     createConnectionDraft: (kind) => {
       latestModelRequest += 1;
+      latestOfficialAccountRequest += 1;
       set({ connectionEditor: newConnectionEditor(kind) });
     },
     changeNewConnectionKind: (kind) => {
       const editor = get().connectionEditor;
       if (!editor || editor.connectionId) return;
       latestModelRequest += 1;
+      latestOfficialAccountRequest += 1;
       const replacement = newConnectionEditor(kind);
       set({
         connectionEditor: {
@@ -292,6 +307,7 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
     setConnectionRuntimeFilter: (connectionRuntimeFilter) => set({ connectionRuntimeFilter }),
     closeConnection: () => {
       latestModelRequest += 1;
+      latestOfficialAccountRequest += 1;
       set({ connectionEditor: null });
     },
     updateConnectionDraft: (patch) => {
@@ -426,6 +442,21 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
           return;
         }
         const catalog = get().catalog;
+        const codexCatalog = result.codex_catalog;
+        const updatesCodexDraft = current.draft.runtime === "codex";
+        const selectedCodexCatalog = updatesCodexDraft
+          ? refreshSelectedCodexCatalog(
+              current.draft.codex_catalog,
+              codexCatalog,
+            )
+          : current.draft.codex_catalog;
+        const selectionMetadataChanged =
+          updatesCodexDraft &&
+          JSON.stringify(selectedCodexCatalog) !==
+            JSON.stringify(current.draft.codex_catalog);
+        const fetchedModels = updatesCodexDraft
+          ? codexCatalog.map((entry) => entry.id)
+          : result.models;
         set({
           catalog: catalog
             ? {
@@ -451,9 +482,18 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
           connectionEditor: {
             ...current,
             version: result.connection_version,
+            draft: updatesCodexDraft
+              ? {
+                  ...current.draft,
+                  codex_catalog: selectedCodexCatalog,
+                  catalog_request_identity: result.request_identity,
+                }
+              : current.draft,
+            dirty: current.dirty || selectionMetadataChanged,
             modelFetch: {
               status: "ready",
-              models: result.models,
+              models: fetchedModels,
+              codexCatalog,
               sourceEndpoint: result.source_endpoint,
               fetchedAt: result.fetched_at,
               requestIdentity: result.request_identity,
@@ -471,11 +511,156 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
               ...current.modelFetch,
               status: "error",
               models: [],
+              codexCatalog: [],
               error: errorMessage(error),
             },
           },
         });
         await syncConnectionVersionAfterFetchFailure(api, set, get, current.connectionId);
+      }
+    },
+    refreshCodexOfficialAccount: async () => {
+      const editor = get().connectionEditor;
+      if (
+        !editor?.connectionId ||
+        editor.draft.kind !== "codex_official" ||
+        editor.officialAccount.status === "loading"
+      ) return;
+      const request = ++latestOfficialAccountRequest;
+      set({
+        connectionEditor: {
+          ...editor,
+          officialAccount: {
+            ...editor.officialAccount,
+            status: "loading",
+            error: null,
+          },
+        },
+      });
+      try {
+        const account = await api.fetchCodexOfficialAccount(editor.connectionId);
+        const current = get().connectionEditor;
+        if (
+          request !== latestOfficialAccountRequest ||
+          current?.connectionId !== editor.connectionId
+        ) return;
+        const loginCompleted = officialLoginCompleted(
+          current.officialAccount,
+          account,
+        );
+        const loginFailed = Boolean(
+          current.officialAccount.login &&
+            account.login_id === current.officialAccount.login.login_id &&
+            account.login_status === "failed",
+        );
+        const catalog = get().catalog;
+        set({
+          catalog: catalog
+            ? {
+                ...catalog,
+                connections: catalog.connections.map((connection) =>
+                  connection.id === editor.connectionId
+                    ? {
+                        ...connection,
+                        auth: {
+                          ...connection.auth,
+                          status: account.status === "logged_in" ? "referenced" : "missing",
+                        },
+                      }
+                    : connection,
+                ),
+              }
+            : null,
+          connectionEditor: {
+            ...current,
+            officialAccount: {
+              status: "ready",
+              account,
+              login: loginCompleted || loginFailed ? null : current.officialAccount.login,
+              loginBaselineEmail: loginCompleted || loginFailed
+                ? null
+                : current.officialAccount.loginBaselineEmail,
+              loginStarting: false,
+              error: loginFailed ? (account.login_error ?? "Codex 登录失败") : null,
+            },
+          },
+        });
+      } catch (error) {
+        const current = get().connectionEditor;
+        if (
+          request !== latestOfficialAccountRequest ||
+          current?.connectionId !== editor.connectionId
+        ) return;
+        set({
+          connectionEditor: {
+            ...current,
+            officialAccount: {
+              ...current.officialAccount,
+              status: "error",
+              loginStarting: false,
+              error: errorMessage(error),
+            },
+          },
+        });
+      }
+    },
+    beginCodexOfficialLogin: async () => {
+      const editor = get().connectionEditor;
+      if (!editor?.connectionId || editor.draft.kind !== "codex_official") {
+        return null;
+      }
+      if (editor.officialAccount.loginStarting) return null;
+      const request = ++latestOfficialAccountRequest;
+      set({
+        connectionEditor: {
+          ...editor,
+          officialAccount: {
+            ...editor.officialAccount,
+            loginStarting: true,
+            error: null,
+          },
+        },
+      });
+      try {
+        const login = await api.startCodexOfficialLogin(editor.connectionId);
+        const current = get().connectionEditor;
+        if (
+          request !== latestOfficialAccountRequest ||
+          current?.connectionId !== editor.connectionId
+        ) return null;
+        set({
+          connectionEditor: {
+            ...current,
+            officialAccount: {
+              ...current.officialAccount,
+              status: "ready",
+              login,
+              loginBaselineEmail: current.officialAccount.account?.email ?? null,
+              loginStarting: false,
+              error: null,
+            },
+          },
+        });
+        return login;
+      } catch (error) {
+        const current = get().connectionEditor;
+        if (
+          request === latestOfficialAccountRequest &&
+          current?.connectionId === editor.connectionId
+        ) {
+          set({
+            connectionEditor: {
+              ...current,
+              officialAccount: {
+                ...current.officialAccount,
+                status: "error",
+                loginStarting: false,
+                error: errorMessage(error),
+              },
+            },
+          });
+        }
+        return null;
       }
     },
     writeConnectionSecret: async (kind, value) => {
@@ -844,6 +1029,19 @@ function replaceTaskBinding(
         : [...catalog.task_bindings, binding],
     },
   });
+}
+
+/** 判断 device-code 登录是否已从未登录或旧账号切换到新账号。 */
+function officialLoginCompleted(
+  state: ConnectionEditorState["officialAccount"],
+  account: CodexOfficialAccount,
+): boolean {
+  if (!state.login || account.status !== "logged_in") return false;
+  if (
+    account.login_id === state.login.login_id &&
+    account.login_status === "completed"
+  ) return true;
+  return state.loginBaselineEmail === null || account.email !== state.loginBaselineEmail;
 }
 
 /** 将未知异常转换为页面可读的脱敏信息。 */

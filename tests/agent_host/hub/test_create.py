@@ -13,6 +13,12 @@ from trowel_py.agent_host.hub import (
     SessionConflictError,
 )
 from trowel_py.agent_host.store import BindingStore
+from trowel_py.configuration.models import (
+    ConnectionKind,
+    ProtocolKind,
+    RuntimeKind,
+)
+from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
 from tests.agent_host.hub._support import (
     FakeCcHost,
     FakeCodexManager,
@@ -152,6 +158,229 @@ def test_create_cc_passes_only_explicit_launch_configuration(tmp_path: Path) -> 
         "settings_path": tmp_path / "settings.json",
         "display_name": "project",
     }
+
+
+def _connection_launch(runtime: RuntimeKind) -> RuntimeLaunchConfiguration:
+    """构造 Agent Hub 测试使用的已验证冻结连接。"""
+
+    is_claude = runtime is RuntimeKind.CLAUDE_CODE
+    return RuntimeLaunchConfiguration(
+        connection_id="connection-a",
+        connection_version=4,
+        connection_identity_version=3,
+        connection_name="Provider A",
+        runtime=runtime,
+        kind=(
+            ConnectionKind.CLAUDE_COMPATIBLE
+            if is_claude
+            else ConnectionKind.CODEX_CUSTOM
+        ),
+        protocol=(
+            ProtocolKind.ANTHROPIC_MESSAGES
+            if is_claude
+            else ProtocolKind.OPENAI_RESPONSES
+        ),
+        model="glm-5.2" if is_claude else "deepseek-v4-flash",
+        effort=None if is_claude else "high",
+        capability_version="provider-runtime-capabilities-v1",
+        base_url="https://provider.example/v1",
+        login_directory=None,
+        proxy_url=None,
+        claude_role_models={"default": "glm-5.2"} if is_claude else {},
+        codex_catalog=(),
+        api_key="private-key",
+    )
+
+
+def test_create_cc_freezes_connection_and_uses_private_proxy_path(
+    tmp_path: Path,
+) -> None:
+    """连接级 Claude 会话只把脱敏身份写入 binding。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    registry: dict[str, FakeCcHost] = {}
+    configured = make_cc_opener(registry, {})
+    seen: dict[str, object] = {}
+
+    class ProxyRegistry:
+        """返回稳定测试租约并记录释放。"""
+
+        released = False
+
+        def acquire(self, upstream: str, proxy_url: str | None = None) -> str:
+            assert upstream == "https://provider.example/v1"
+            assert proxy_url is None
+            return "opaque-lease"
+
+        def release(self, token: str) -> None:
+            assert token == "opaque-lease"
+            self.released = True
+
+    proxy_registry = ProxyRegistry()
+
+    def opener(req, target_registry, **launch_config):
+        seen.update(launch_config)
+        compatible = dict(launch_config)
+        compatible.pop("owned_settings_path")
+        compatible.pop("close_callback")
+        compatible.pop("memory_mcp_enabled")
+        return configured(req, target_registry, **compatible)
+
+    launch = _connection_launch(RuntimeKind.CLAUDE_CODE)
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry=registry,
+        cc_opener=opener,
+        cc_proxy_base_url="http://127.0.0.1:8123",
+        configuration_resolver=lambda *_args: launch,
+        cc_connection_proxy_registry=proxy_registry,
+        codex_config_home=tmp_path,
+    )
+
+    binding = hub.create(
+        cc_req(
+            workdir,
+            connection_id=launch.connection_id,
+            model=launch.model,
+            memory_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    assert binding.connection_id == launch.connection_id
+    assert binding.connection_name == "Provider A"
+    assert seen["proxy_base_url"].endswith("/api/cc-runtime/opaque-lease")
+    settings_path = Path(seen["settings_path"])
+    assert settings_path.is_file()
+    assert "private-key" not in repr(binding)
+    settings_path.unlink()
+    seen["close_callback"]()
+    assert proxy_registry.released is True
+
+
+def test_create_codex_registers_session_in_selected_connection_pool(
+    tmp_path: Path,
+) -> None:
+    """Codex 会话注册时必须把冻结连接传给 manager pool。"""
+
+    class Pool(FakeCodexManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.launches: list[RuntimeLaunchConfiguration] = []
+
+        def register(self, session, *, launch=None) -> None:
+            super().register(session)
+            if launch is not None:
+                self.launches.append(launch)
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    manager = Pool()
+    launch = _connection_launch(RuntimeKind.CODEX)
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        codex_manager=manager,
+        cc_registry={},
+        codex_config_home=tmp_path,
+        configuration_resolver=lambda *_args: launch,
+    )
+
+    binding = hub.create(
+        codex_req(
+            workdir,
+            connection_id=launch.connection_id,
+            model=launch.model,
+            effort=launch.effort,
+            memory_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    assert manager.launches == [launch]
+    assert binding.connection_identity_version == 3
+
+
+def test_connection_session_rejects_unverified_agent_mcp(tmp_path: Path) -> None:
+    """连接级 MCP 未经真实 Gate 时，API 不能绕过前端强行开启。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    launch = _connection_launch(RuntimeKind.CODEX)
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        codex_manager=FakeCodexManager(),
+        cc_registry={},
+        codex_config_home=tmp_path,
+        configuration_resolver=lambda *_args: launch,
+    )
+
+    with pytest.raises(InvalidSessionRequestError, match="MCP is not verified"):
+        hub.create(
+            codex_req(
+                workdir,
+                connection_id=launch.connection_id,
+                model=launch.model,
+                effort=launch.effort,
+                memory_enabled=False,
+                agent_mcp_enabled=True,
+            )
+        )
+
+
+def test_connection_session_keeps_memory_text_but_closes_unverified_mcp(
+    tmp_path: Path,
+) -> None:
+    """连接会话保留 Memory 正文，同时不挂载尚未验证的 Memory MCP。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    launch = _connection_launch(RuntimeKind.CODEX)
+    manager = FakeCodexManager()
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        codex_manager=manager,
+        cc_registry={},
+        codex_config_home=tmp_path,
+        configuration_resolver=lambda *_args: launch,
+    )
+
+    binding = hub.create(
+        codex_req(
+            workdir,
+            connection_id=launch.connection_id,
+            model=launch.model,
+            effort=launch.effort,
+            memory_enabled=True,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    session = manager.get_session(binding.session_id)
+    assert binding.memory_enabled is True
+    assert binding.memory_mcp_enabled is False
+    assert session.config.developer_instructions is not None
+    assert session.config.trowel_memory_mcp is None
+
+
+def test_connection_requirement_is_evaluated_for_each_create(tmp_path: Path) -> None:
+    """应用启动后新增首个连接，也必须立刻关闭无连接创建旁路。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    strict = False
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry={},
+        cc_opener=make_cc_opener({}, {}),
+        codex_config_home=tmp_path,
+        require_configured_connections=lambda: strict,
+    )
+
+    hub.create(cc_req(workdir))
+    strict = True
+    with pytest.raises(InvalidSessionRequestError, match="必须选择"):
+        hub.create(cc_req(workdir))
 
 
 def test_create_missing_workdir_400(hub: SessionHub):

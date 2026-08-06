@@ -47,6 +47,8 @@ export interface AgentSession {
   readonly effective_approval?: string | null;
   readonly network_access?: boolean | null;
   readonly memory_enabled: boolean;
+  /** Memory MCP 的冻结挂载状态；连接会话可保留正文注入而关闭该工具。 */
+  readonly memory_mcp_enabled?: boolean;
   readonly profile_enabled: boolean;
   readonly capabilities: readonly string[];
   readonly capability_version?: number;
@@ -62,10 +64,17 @@ export interface AgentSession {
   readonly current_turn_id?: string | null;
   readonly state_generation?: number;
   readonly last_event_seq?: number | null;
+  readonly connection_id?: string | null;
+  readonly connection_identity_version?: number | null;
+  readonly connection_name?: string | null;
+  readonly connection_kind?: string | null;
+  readonly configuration_capability_version?: string | null;
+  readonly configuration_capability_source?: string | null;
 }
 
 export interface CreateAgentSessionParams {
   readonly runtime: Runtime;
+  readonly connection_id?: string;
   readonly workdir: string;
   readonly resume_from?: string;
   readonly resume_title?: string;
@@ -77,16 +86,44 @@ export interface CreateAgentSessionParams {
   readonly permission_preset?: PermissionPreset;
   readonly memory_enabled?: boolean;
   readonly profile_enabled?: boolean;
+  readonly self_enabled?: boolean;
+  readonly agent_mcp_enabled?: boolean;
 }
 
 export interface AgentSessionDefaults {
   readonly runtime: Runtime;
+  readonly connection_id?: string;
   readonly model: string;
   readonly effort: string;
   readonly permission_mode: string;
   readonly permission_preset?: PermissionPreset;
   readonly memory_enabled: boolean;
   readonly profile_enabled: boolean;
+  readonly self_enabled?: boolean;
+}
+
+export interface AgentConnectionModelOption {
+  readonly id: string;
+  readonly display_name: string | null;
+  readonly available: boolean;
+  readonly disabled_reason: string | null;
+  readonly efforts: readonly string[];
+  readonly default_effort: string | null;
+}
+
+export interface AgentConnectionOption {
+  readonly id: string;
+  readonly name: string;
+  readonly runtime: Runtime;
+  readonly kind: string;
+  readonly identity_version: number;
+  readonly available: boolean;
+  readonly disabled_reason: string | null;
+  readonly last_session_choice: {
+    readonly model: string;
+    readonly effort: string | null;
+  } | null;
+  readonly models: readonly AgentConnectionModelOption[];
 }
 
 export interface AgentHistoryRow {
@@ -420,6 +457,14 @@ export async function listAgentRuntimes(): Promise<
   readonly AgentRuntimeInfo[]
 > {
   return request<readonly AgentRuntimeInfo[]>(`${AGENT_API_BASE}/runtimes`);
+}
+
+export async function listAgentConnectionOptions(): Promise<
+  readonly AgentConnectionOption[]
+> {
+  return request<readonly AgentConnectionOption[]>(
+    "/api/configuration/agent-options",
+  );
 }
 
 /** 读取可选模型目录，并在 sidecar 未响应时结束等待以免阻塞桌面启动。 */

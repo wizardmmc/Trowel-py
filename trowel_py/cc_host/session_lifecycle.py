@@ -67,6 +67,9 @@ def open_session(
     display_name: str | None = None,
     process_controller: ProcessController | None = None,
     resource_registry: ResourceRegistry | None = None,
+    owned_settings_path: bool = False,
+    close_callback: Any | None = None,
+    memory_mcp_enabled: bool | None = None,
 ) -> tuple[str, CCHost, str]:
     """按会话类别检查连接池后，创建主机并写入调用方状态。
 
@@ -83,6 +86,9 @@ def open_session(
         display_name: 上层已经分配的显示名称。
         process_controller: 核验并终止独立进程组的实现。
         resource_registry: 登记会话临时资源的应用账本。
+        owned_settings_path: 是否由新 host 清理传入的私有 settings。
+        close_callback: host 关闭或创建回滚后执行的一次性清理函数。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
     """
 
     if not Path(req.workdir).is_dir():
@@ -111,7 +117,11 @@ def open_session(
             runtime="claude_code",
             workdir=req.workdir,
             permission=req.permission_mode,
-            memory_enabled=req.memory_enabled,
+            memory_enabled=(
+                req.memory_enabled
+                if memory_mcp_enabled is None
+                else memory_mcp_enabled
+            ),
             agent_mcp_enabled=req.agent_mcp_enabled,
             memory_root=str(resolve_memory_root()),
             base_url=f"http://127.0.0.1:{port}",
@@ -135,6 +145,8 @@ def open_session(
             resume_from=req.resume_from,
             proxy_base_url=proxy_base_url,
             settings_path=settings_path,
+            owned_settings_path=owned_settings_path,
+            close_callback=close_callback,
             mcp_config=mcp_config,
             owned_mcp_config=True,
             session_kind=req.session_kind,

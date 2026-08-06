@@ -40,6 +40,7 @@ class CreateAgentSessionRequest(BaseModel):
     """
 
     runtime: RuntimeWire
+    connection_id: str | None = None
     workdir: str = Field(min_length=1)
     resume_from: str | None = None
     resume_title: ResumeTitleText | None = None

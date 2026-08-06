@@ -31,7 +31,7 @@ from trowel_py.resource_lifecycle.processes import (
     list_descendant_processes,
 )
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
 RECENT_CLOSED_LIMIT = 256
 RECENT_CLOSED_OWNER_LIMIT = 256
 NowFn = Callable[[], datetime]
@@ -79,6 +79,19 @@ def redact_identity(value: str) -> str:
     """
 
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+
+
+def snapshot_data_root_identity(snapshot_path: Path) -> str:
+    """返回资源快照当前所在数据根的去敏身份。
+
+    Args:
+        snapshot_path: 数据根下的 ``resource-lifecycle.json`` 路径。
+
+    Returns:
+        根据绝对路径生成的稳定不可逆摘要；复制到其他根后会变化。
+    """
+
+    return redact_identity(str(snapshot_path.parent.absolute()))
 
 
 class ResourceRegistry:
@@ -1293,6 +1306,7 @@ class ResourceRegistry:
         payload = {
             "version": SNAPSHOT_VERSION,
             "app_instance_id": redact_identity(self._app_instance_id),
+            "data_root_identity": snapshot_data_root_identity(path),
             "updated_at": self._stamp(),
             "resources": [
                 self._snapshot_record(record) for record in self._records.values()

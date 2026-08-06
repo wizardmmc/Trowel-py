@@ -163,11 +163,122 @@ describe("settings store", () => {
       fetched_at: "2026-08-04T12:00:00Z",
       request_identity: "old-request",
       connection_version: 4,
+      codex_catalog: [],
     });
     await pending;
 
     expect(store.getState().connectionEditor?.modelFetch.status).toBe("stale");
     expect(store.getState().connectionEditor?.modelFetch.models).toEqual([]);
+  });
+
+  it("Codex 获取模型只刷新候选和元数据，不自动增加或重排已选模型", async () => {
+    const codexConnection = {
+      ...catalog.connections[0],
+      runtime: "codex" as const,
+      kind: "codex_custom" as const,
+      protocol: "openai_responses" as const,
+      name: "Codex Lab",
+      codex_catalog: [
+        {
+          id: "gpt-5.6-terra",
+          display_name: null,
+          default_effort: "high",
+          supported_efforts: ["high"],
+        },
+        {
+          id: "gpt-5.6-sol",
+          display_name: null,
+          default_effort: "high",
+          supported_efforts: ["high"],
+        },
+      ],
+      catalog: {
+        ...catalog.connections[0].catalog,
+        status: "ready",
+        models: ["codex-auto-review", "gpt-5.6-sol", "gpt-image-1"],
+      },
+    };
+    const store = createSettingsStore({
+      fetchModels: vi.fn().mockResolvedValue({
+        status: "ready",
+        models: ["gpt-image-1", "gpt-5.6-terra", "gpt-5.6-sol"],
+        source_endpoint: "https://lab.example/v1/models",
+        fetched_at: "2026-08-06T12:00:00Z",
+        request_identity: "codex-request",
+        connection_version: 4,
+        codex_catalog: [
+          { id: "gpt-5.6-sol", display_name: null, default_effort: "low", supported_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+          { id: "gpt-5.6-terra", display_name: null, default_effort: "medium", supported_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        ],
+      }),
+    });
+    store.setState({ catalog: { ...catalog, connections: [codexConnection] } });
+    store.getState().openConnection("connection-1");
+    expect(store.getState().connectionEditor?.modelFetch.models).toEqual([
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+    ]);
+
+    await store.getState().fetchConnectionModels();
+
+    const editor = store.getState().connectionEditor;
+    expect(editor?.modelFetch.models).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
+    expect(editor?.draft.codex_catalog.map((entry) => entry.id)).toEqual([
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+    ]);
+    expect(editor?.draft.codex_catalog[1]).toMatchObject({
+      id: "gpt-5.6-sol",
+      default_effort: "high",
+      supported_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    });
+    expect(editor?.dirty).toBe(true);
+  });
+
+  it("Codex 原生目录为空时保留已选模型，等待用户明确处理", async () => {
+    const codexConnection = {
+      ...catalog.connections[0],
+      runtime: "codex" as const,
+      kind: "codex_custom" as const,
+      protocol: "openai_responses" as const,
+      name: "Codex Lab",
+      codex_catalog: [
+        {
+          id: "gpt-5.6-sol",
+          display_name: null,
+          default_effort: "high",
+          supported_efforts: ["high"],
+        },
+      ],
+      catalog: {
+        ...catalog.connections[0].catalog,
+        status: "ready",
+        models: ["gpt-5.6-sol"],
+      },
+    };
+    const store = createSettingsStore({
+      fetchModels: vi.fn().mockResolvedValue({
+        status: "ready",
+        models: ["provider-custom-model"],
+        source_endpoint: "https://lab.example/v1/models",
+        fetched_at: "2026-08-06T12:00:00Z",
+        request_identity: "empty-native-request",
+        connection_version: 4,
+        codex_catalog: [],
+      }),
+    });
+    store.setState({ catalog: { ...catalog, connections: [codexConnection] } });
+    store.getState().openConnection("connection-1");
+
+    await store.getState().fetchConnectionModels();
+
+    const editor = store.getState().connectionEditor;
+    expect(editor?.draft.codex_catalog.map((entry) => entry.id)).toEqual([
+      "gpt-5.6-sol",
+    ]);
+    expect(editor?.draft.catalog_request_identity).toBe("empty-native-request");
+    expect(editor?.modelFetch.models).toEqual([]);
+    expect(editor?.dirty).toBe(false);
   });
 
   it("只写凭据不会进入可序列化前端状态", async () => {
@@ -243,6 +354,188 @@ describe("settings store", () => {
     expect(store.getState().connectionEditor?.draft.name).toBe("等待期间的新修改");
     expect(store.getState().connectionEditor?.dirty).toBe(true);
     expect(store.getState().connectionEditor?.saving).toBe(false);
+  });
+
+  it("Official 账号状态与登录引导保存在当前供应商编辑器中", async () => {
+    const official = {
+      ...catalog.connections[0],
+      id: "official-1",
+      name: "OpenAI Pro",
+      runtime: "codex" as const,
+      kind: "codex_official" as const,
+      protocol: "codex_official" as const,
+      base_url: null,
+      upstream_host: null,
+      auth: { kind: "oauth_reference", status: "missing" },
+      codex_catalog: [],
+    };
+    const store = createSettingsStore({
+      fetchCodexOfficialAccount: vi.fn().mockResolvedValue({
+        status: "not_logged_in",
+        email: null,
+        plan_type: null,
+        auth_mode: null,
+      }),
+      startCodexOfficialLogin: vi.fn().mockResolvedValue({
+        login_id: "login-1",
+        verification_url: "https://auth.openai.com/codex/device",
+        user_code: "ABCD-1234",
+      }),
+    });
+    store.setState({ catalog: { ...catalog, connections: [official] } });
+    store.getState().openConnection(official.id);
+
+    await store.getState().refreshCodexOfficialAccount();
+    const login = await store.getState().beginCodexOfficialLogin();
+
+    expect(login?.user_code).toBe("ABCD-1234");
+    expect(store.getState().connectionEditor?.officialAccount.account?.status).toBe(
+      "not_logged_in",
+    );
+    expect(store.getState().connectionEditor?.officialAccount.login?.login_id).toBe(
+      "login-1",
+    );
+  });
+
+  it("Official 账号晚到响应不会覆盖后来打开的供应商", async () => {
+    const firstAccount = deferred<{
+      status: "logged_in";
+      email: string;
+      plan_type: string;
+      auth_mode: string;
+    }>();
+    const first = {
+      ...catalog.connections[0],
+      id: "official-1",
+      runtime: "codex" as const,
+      kind: "codex_official" as const,
+      protocol: "codex_official" as const,
+      base_url: null,
+      upstream_host: null,
+      codex_catalog: [],
+    };
+    const second = { ...first, id: "official-2", name: "第二个账号" };
+    const store = createSettingsStore({
+      fetchCodexOfficialAccount: vi.fn().mockReturnValue(firstAccount.promise),
+    });
+    store.setState({ catalog: { ...catalog, connections: [first, second] } });
+    store.getState().openConnection(first.id);
+
+    const pending = store.getState().refreshCodexOfficialAccount();
+    store.getState().openConnection(second.id);
+    firstAccount.resolve({
+      status: "logged_in",
+      email: "first@example.com",
+      plan_type: "pro",
+      auth_mode: "chatgpt",
+    });
+    await pending;
+
+    expect(store.getState().connectionEditor?.connectionId).toBe(second.id);
+    expect(store.getState().connectionEditor?.officialAccount.account).toBeNull();
+  });
+
+  it("Official 更换账号时不会把旧账号误判为本次登录完成", async () => {
+    const official = {
+      ...catalog.connections[0],
+      id: "official-1",
+      runtime: "codex" as const,
+      kind: "codex_official" as const,
+      protocol: "codex_official" as const,
+      base_url: null,
+      upstream_host: null,
+      codex_catalog: [],
+    };
+    const fetchAccount = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "logged_in",
+        email: "old@example.com",
+        plan_type: "pro",
+        auth_mode: "chatgpt",
+      })
+      .mockResolvedValueOnce({
+        status: "logged_in",
+        email: "old@example.com",
+        plan_type: "pro",
+        auth_mode: "chatgpt",
+      })
+      .mockResolvedValueOnce({
+        status: "logged_in",
+        email: "new@example.com",
+        plan_type: "pro",
+        auth_mode: "chatgpt",
+      });
+    const store = createSettingsStore({
+      fetchCodexOfficialAccount: fetchAccount,
+      startCodexOfficialLogin: vi.fn().mockResolvedValue({
+        login_id: "login-1",
+        verification_url: "https://auth.openai.com/codex/device",
+        user_code: "ABCD-1234",
+      }),
+    });
+    store.setState({ catalog: { ...catalog, connections: [official] } });
+    store.getState().openConnection(official.id);
+    await store.getState().refreshCodexOfficialAccount();
+    expect(store.getState().catalog?.connections[0]?.auth.status).toBe("referenced");
+
+    await store.getState().beginCodexOfficialLogin();
+    await store.getState().refreshCodexOfficialAccount();
+    expect(store.getState().connectionEditor?.officialAccount.login).not.toBeNull();
+
+    await store.getState().refreshCodexOfficialAccount();
+    expect(store.getState().connectionEditor?.officialAccount.login).toBeNull();
+    expect(store.getState().connectionEditor?.officialAccount.account?.email).toBe(
+      "new@example.com",
+    );
+  });
+
+  it("Official 原生完成通知可识别同一邮箱重新登录", async () => {
+    const official = {
+      ...catalog.connections[0],
+      id: "official-1",
+      runtime: "codex" as const,
+      kind: "codex_official" as const,
+      protocol: "codex_official" as const,
+      base_url: null,
+      upstream_host: null,
+      codex_catalog: [],
+    };
+    const fetchAccount = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "logged_in",
+        email: "same@example.com",
+        plan_type: "pro",
+        auth_mode: "chatgpt",
+      })
+      .mockResolvedValueOnce({
+        status: "logged_in",
+        email: "same@example.com",
+        plan_type: "pro",
+        auth_mode: "chatgpt",
+        login_id: "login-1",
+        login_status: "completed",
+        login_error: null,
+      });
+    const startLogin = vi.fn().mockResolvedValue({
+      login_id: "login-1",
+      verification_url: "https://auth.openai.com/codex/device",
+      user_code: "ABCD-1234",
+    });
+    const store = createSettingsStore({
+      fetchCodexOfficialAccount: fetchAccount,
+      startCodexOfficialLogin: startLogin,
+    });
+    store.setState({ catalog: { ...catalog, connections: [official] } });
+    store.getState().openConnection(official.id);
+    await store.getState().refreshCodexOfficialAccount();
+    await store.getState().beginCodexOfficialLogin();
+
+    await store.getState().refreshCodexOfficialAccount();
+
+    expect(store.getState().connectionEditor?.officialAccount.login).toBeNull();
+    expect(startLogin).toHaveBeenCalledOnce();
   });
 
   it("五项任务按行保存，失败不会清除该行脏状态", async () => {

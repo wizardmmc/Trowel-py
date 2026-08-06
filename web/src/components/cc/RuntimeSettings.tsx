@@ -3,6 +3,8 @@
 interface SettingOption {
   readonly value: string;
   readonly label: string;
+  readonly disabled?: boolean;
+  readonly disabledReason?: string | null;
 }
 
 interface RuntimeSettingsProps {
@@ -139,25 +141,39 @@ function OptionRow({
   readonly dangerValue?: string;
   readonly onSelect: (value: string) => void;
 }) {
+  const disabledOptions = options.filter(
+    (option) => option.disabled && option.disabledReason,
+  );
   return (
-    <div className="cc-dialog__option-row">
-      {options.map((option) => (
-        <button
-          key={option.label}
-          type="button"
-          className={
-            "cc-dialog__option" +
-            (selected === option.value ? " cc-dialog__option--selected" : "") +
-            (option.value === dangerValue
-              ? " cc-dialog__option--danger"
-              : "")
-          }
-          disabled={creating}
-          onClick={() => onSelect(option.value)}
+    <>
+      <div className="cc-dialog__option-row">
+        {options.map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            className={
+              "cc-dialog__option" +
+              (selected === option.value ? " cc-dialog__option--selected" : "") +
+              (option.value === dangerValue
+                ? " cc-dialog__option--danger"
+                : "")
+            }
+            disabled={creating || option.disabled}
+            onClick={() => onSelect(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {disabledOptions.map((option) => (
+        <div
+          key={`${option.value}-disabled`}
+          className="cc-dialog__diag"
+          role="status"
         >
-          {option.label}
-        </button>
+          {option.label}：{option.disabledReason}
+        </div>
       ))}
-    </div>
+    </>
   );
 }

@@ -1,4 +1,4 @@
-"""保存经过真实运行验证的只读模型连接能力表。"""
+"""保存后台任务实测资格，并声明交互模型由原生 runtime 裁决。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from trowel_py.configuration.models import (
     TaskId,
 )
 
-CAPABILITY_REGISTRY_VERSION = "provider-runtime-capabilities-v1"
+CAPABILITY_REGISTRY_VERSION = "provider-runtime-capabilities-v3"
 
 _AGENT_TASKS = (
     TaskId.MEMORY_REFINE,
@@ -32,7 +32,7 @@ class _Rule:
         kind: 真实实验使用的连接种类。
         protocol: 真实实验使用的上游协议。
         model: 实验实际执行的 model ID。
-        efforts: 已验证或由 runtime 原生接受的思考强度；空元组表示不单独限制。
+        efforts: 这项后台任务 Gate 实测覆盖的思考强度；空元组表示不单独限制。
         tasks: 可以使用这项组合的后台任务。
         source: 产生能力结论的实验说明。
     """
@@ -75,6 +75,15 @@ _RULES = (
         "Codex + DeepSeek 工具调用与会话恢复实测",
     ),
     _Rule(
+        RuntimeKind.CODEX,
+        ConnectionKind.CODEX_CUSTOM,
+        ProtocolKind.OPENAI_RESPONSES,
+        "gpt-5.6-sol",
+        ("high",),
+        (),
+        "Codex 第三方 Responses 双连接隔离、工具调用、usage 与终态实测",
+    ),
+    _Rule(
         RuntimeKind.DIRECT_API,
         ConnectionKind.DIRECT_API,
         ProtocolKind.ANTHROPIC_MESSAGES,
@@ -93,7 +102,12 @@ def capability_for(
     model: str,
     effort: str | None,
 ) -> CapabilityView:
-    """返回精确组合的能力结论，不从厂商名或协议成功外推。"""
+    """返回会话可用性和后台任务资格。
+
+    Claude Code 与 Codex 自己拥有交互模型兼容层。Trowel 只要求模型存在于当前连接
+    catalog，不再用少量 smoke 结果重复维护逐模型白名单；实测规则只决定后台任务
+    能否绑定。Direct API 没有 runtime 兼容层，仍保持精确门禁。
+    """
 
     for rule in _RULES:
         if (
@@ -102,18 +116,23 @@ def capability_for(
             and rule.protocol == protocol
             and rule.model == model
         ):
-            if effort is not None and rule.efforts and effort not in rule.efforts:
-                return CapabilityView(
-                    status="unsupported",
-                    version=CAPABILITY_REGISTRY_VERSION,
-                    source=rule.source,
-                )
+            eligible_tasks = (
+                rule.tasks
+                if not rule.efforts or effort in rule.efforts
+                else ()
+            )
             return CapabilityView(
                 status="verified",
                 version=CAPABILITY_REGISTRY_VERSION,
                 source=rule.source,
-                eligible_tasks=rule.tasks,
+                eligible_tasks=eligible_tasks,
             )
+    if runtime in {RuntimeKind.CLAUDE_CODE, RuntimeKind.CODEX}:
+        return CapabilityView(
+            status="verified",
+            version=CAPABILITY_REGISTRY_VERSION,
+            source="交互模型与思考强度由原生 runtime catalog 和创建响应裁决",
+        )
     return CapabilityView(
         status="unknown",
         version=CAPABILITY_REGISTRY_VERSION,

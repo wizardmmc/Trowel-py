@@ -47,6 +47,9 @@ export interface PerSessionState extends ReducerState {
   readonly memoryEnabled: boolean;
   readonly profileEnabled: boolean;
   readonly runtime: Runtime;
+  readonly connectionId?: string | null;
+  readonly connectionName?: string | null;
+  readonly connectionKind?: string | null;
   readonly nativeSessionId: string | null;
   readonly permission: string | null;
   readonly permissionPreset?: string | null;
@@ -84,6 +87,7 @@ export function transportIssueFromProblem(problem: AgentTransportProblem) {
 export interface StartSessionParams {
   readonly workdir: string;
   readonly runtime?: Runtime;
+  readonly connection_id?: string;
   readonly resume_from?: string;
   readonly resume_title?: string;
   readonly model?: string;
@@ -94,6 +98,8 @@ export interface StartSessionParams {
   readonly permission_preset?: PermissionPreset;
   readonly memory_enabled?: boolean;
   readonly profile_enabled?: boolean;
+  /** 配置连接尚未通过 MCP 真实 Gate，生产新建流程固定关闭。 */
+  readonly agent_mcp_enabled?: boolean;
 }
 
 /** 把新建接口返回值映射为尚未连接的前端会话。 */
@@ -157,6 +163,9 @@ function createSessionState(
     memoryEnabled: session.memory_enabled,
     profileEnabled: session.profile_enabled,
     runtime: session.runtime,
+    connectionId: session.connection_id ?? null,
+    connectionName: session.connection_name ?? null,
+    connectionKind: session.connection_kind ?? null,
     nativeSessionId: session.native_session_id,
     permission: session.permission,
     permissionPreset: session.permission_preset,

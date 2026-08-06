@@ -63,7 +63,7 @@ class CodexCatalogEntry:
         id: 上游模型列表返回的真实 model ID。
         display_name: UI 展示名称；None 表示直接显示 ID。
         default_effort: 新会话默认使用的思考强度；None 表示由 runtime 决定。
-        supported_efforts: 已验证可用的思考强度；空元组表示当前没有单独声明。
+        supported_efforts: Codex 原生目录声明的思考强度；空元组表示未单独声明。
     """
 
     id: str

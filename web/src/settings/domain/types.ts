@@ -52,6 +52,31 @@ export interface CodexCatalogEntry {
   readonly supported_efforts: readonly string[];
 }
 
+export interface CodexOfficialAccount {
+  readonly status: "logged_in" | "not_logged_in" | "unsupported";
+  readonly email: string | null;
+  readonly plan_type: string | null;
+  readonly auth_mode: string | null;
+  readonly login_id?: string | null;
+  readonly login_status?: "pending" | "completed" | "failed" | null;
+  readonly login_error?: string | null;
+}
+
+export interface CodexOfficialLogin {
+  readonly login_id: string;
+  readonly verification_url: string;
+  readonly user_code: string;
+}
+
+export interface CodexOfficialAccountState {
+  readonly status: "idle" | "loading" | "ready" | "error";
+  readonly account: CodexOfficialAccount | null;
+  readonly login: CodexOfficialLogin | null;
+  readonly loginBaselineEmail: string | null;
+  readonly loginStarting: boolean;
+  readonly error: string | null;
+}
+
 export interface Connection {
   readonly id: string;
   readonly version: number;
@@ -176,6 +201,7 @@ export interface FetchModelsResult {
   readonly fetched_at: string | null;
   readonly request_identity: string | null;
   readonly connection_version: number;
+  readonly codex_catalog: readonly CodexCatalogEntry[];
 }
 
 export interface SecretStatusResult {
@@ -187,6 +213,7 @@ export interface SecretStatusResult {
 export interface ModelFetchState {
   readonly status: "idle" | "loading" | "ready" | "error" | "stale";
   readonly models: readonly string[];
+  readonly codexCatalog: readonly CodexCatalogEntry[];
   readonly sourceEndpoint: string | null;
   readonly fetchedAt: string | null;
   readonly requestIdentity: string | null;
@@ -203,6 +230,7 @@ export interface ConnectionEditorState {
   readonly error: string | null;
   readonly conflict: boolean;
   readonly modelFetch: ModelFetchState;
+  readonly officialAccount: CodexOfficialAccountState;
 }
 
 export interface ConfigurationErrorBody {

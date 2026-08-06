@@ -232,3 +232,62 @@ it("renders the Codex custom catalog as anchored model, effort, and fetch contro
   expect(screen.getByRole("combobox", { name: "Codex 模型 1思考强度" })).toHaveClass("settings-codex-effort-select");
   expect(screen.getByRole("button", { name: "获取可用模型" })).toHaveClass("settings-fetch-models");
 });
+
+it("shows an Official account instead of asking for an internal login directory", async () => {
+  const store = createSettingsStore({
+    fetchCodexOfficialAccount: async () => ({
+      status: "logged_in",
+      email: "user@example.com",
+      plan_type: "pro",
+      auth_mode: "chatgpt",
+    }),
+  });
+  store.setState({
+    initialized: true,
+    activeSection: "connections",
+    catalog: {
+      ...emptyCatalog,
+      connections: [{
+        id: "official-1",
+        version: 1,
+        identity_version: 1,
+        name: "OpenAI Pro x20",
+        runtime: "codex",
+        kind: "codex_official",
+        protocol: "codex_official",
+        base_url: null,
+        models_url: null,
+        upstream_host: null,
+        auth: { kind: "oauth_reference", status: "referenced" },
+        login_directory: null,
+        login_directory_exists: true,
+        proxy: { url: null, username: null, password_status: "missing" },
+        claude_role_models: {},
+        codex_catalog: [],
+        catalog: {
+          status: "idle",
+          models: [],
+          source_endpoint: null,
+          fetched_at: null,
+          request_identity: null,
+          error_code: null,
+        },
+        validation_status: "unknown",
+        capability_version: "m13-l01-v1",
+        last_session_choice: null,
+        secret_versions: {},
+        preview: {},
+      }],
+    },
+  });
+  render(<SettingsWorkspace store={store} active={false} />);
+
+  await userEvent.click(screen.getByRole("button", { name: /Codex · 1/ }));
+  await userEvent.click(screen.getByRole("button", { name: /OpenAI Pro x20/ }));
+
+  expect(await screen.findByText("user@example.com")).toBeInTheDocument();
+  expect(screen.getByText(/^Pro · chatgpt$/)).toBeInTheDocument();
+  expect(screen.queryByText("登录目录")).not.toBeInTheDocument();
+  expect(screen.getByText("供应商名称")).toBeInTheDocument();
+  expect(screen.getByText("Codex 模型 catalog")).toBeInTheDocument();
+});

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -149,6 +149,9 @@ def open_cc_session_configured(
     display_name: str | None = None,
     process_controller: ProcessController | None = None,
     resource_registry: ResourceRegistry | None = None,
+    owned_settings_path: bool = False,
+    close_callback: Any | None = None,
+    memory_mcp_enabled: bool | None = None,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -163,12 +166,23 @@ def open_cc_session_configured(
             时只根据旧版 CC 路由当前已登记的用户会话分配。
         process_controller: 核验并终止 CC 独立进程组的实现。
         resource_registry: 登记 CC 会话临时资源的当前应用账本。
+        owned_settings_path: 是否由会话 host 删除传入的私有 settings。
+        close_callback: 会话清理后执行的一次性代理租约释放函数。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
     """
 
     target_registry = _REGISTRY if registry is None else registry
+    owned_resource_config: dict[str, Any] = {}
+    if owned_settings_path or close_callback is not None:
+        owned_resource_config = {
+            "owned_settings_path": owned_settings_path,
+            "close_callback": close_callback,
+        }
+    if memory_mcp_enabled is not None:
+        owned_resource_config["memory_mcp_enabled"] = memory_mcp_enabled
     sid, host, name = session_lifecycle.open_session(
         req,
         target_registry,
@@ -182,6 +196,7 @@ def open_cc_session_configured(
         display_name=display_name,
         process_controller=process_controller,
         resource_registry=resource_registry,
+        **owned_resource_config,
     )
     if req.session_kind == "user":
         set_active_session_id(sid)

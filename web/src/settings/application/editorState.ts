@@ -2,11 +2,34 @@
 
 import type {
   AgentDefaults,
+  CodexCatalogEntry,
   Connection,
   ConnectionDraft,
   ConnectionEditorState,
   ConnectionKind,
 } from "../domain/types";
+
+/** 用新候选刷新已选模型元数据，同时保持用户选择和顺序。 */
+export function refreshSelectedCodexCatalog(
+  selected: readonly CodexCatalogEntry[],
+  candidates: readonly CodexCatalogEntry[],
+): CodexCatalogEntry[] {
+  const byId = new Map(candidates.map((entry) => [entry.id, entry]));
+  return selected.map((entry) => {
+    const candidate = byId.get(entry.id);
+    if (!candidate) return entry;
+    const keepsEffort = Boolean(
+      entry.default_effort &&
+        candidate.supported_efforts.includes(entry.default_effort),
+    );
+    return {
+      ...candidate,
+      default_effort: keepsEffort
+        ? entry.default_effort
+        : candidate.default_effort,
+    };
+  });
+}
 
 /** 修改这些字段后，上一次模型目录身份立即失效。 */
 export const MODEL_IDENTITY_FIELDS = new Set<keyof ConnectionDraft>([
@@ -33,12 +56,17 @@ export function editorFromConnection(
     conflict: false,
     modelFetch: {
       status: normalizeCatalogStatus(connection.catalog.status),
-      models: connection.catalog.models,
+      models:
+        connection.runtime === "codex" && connection.codex_catalog.length > 0
+          ? connection.codex_catalog.map((entry) => entry.id)
+          : connection.catalog.models,
+      codexCatalog: connection.codex_catalog,
       sourceEndpoint: connection.catalog.source_endpoint,
       fetchedAt: connection.catalog.fetched_at,
       requestIdentity: connection.catalog.request_identity,
       error: connection.catalog.error_code,
     },
+    officialAccount: idleOfficialAccount(),
   };
 }
 
@@ -81,6 +109,7 @@ export function newConnectionEditor(
     error: null,
     conflict: false,
     modelFetch: idleModelFetch(),
+    officialAccount: idleOfficialAccount(),
   };
 }
 
@@ -93,6 +122,7 @@ export function staleModelFetch(
     ...current,
     status: "stale",
     models: [],
+    codexCatalog: [],
     requestIdentity: null,
     error: null,
   };
@@ -164,9 +194,22 @@ function idleModelFetch(): ConnectionEditorState["modelFetch"] {
   return {
     status: "idle",
     models: [],
+    codexCatalog: [],
     sourceEndpoint: null,
     fetchedAt: null,
     requestIdentity: null,
+    error: null,
+  };
+}
+
+/** 创建尚未读取的 Official 账号状态。 */
+function idleOfficialAccount(): ConnectionEditorState["officialAccount"] {
+  return {
+    status: "idle",
+    account: null,
+    login: null,
+    loginBaselineEmail: null,
+    loginStarting: false,
     error: null,
   };
 }

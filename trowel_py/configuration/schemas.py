@@ -46,13 +46,13 @@ class ConnectionRequest(BaseModel):
     """接收连接的全部非 secret 可编辑字段。
 
     Attributes:
-        name: 设置页展示名称。
+        name: 设置页展示的供应商名称。
         runtime: 消费连接的 runtime 或 direct API。
         kind: 选择字段结构和认证规则的连接种类。
         protocol: 上游请求协议。
         base_url: 自定义连接的模型服务地址。
         models_url: 可选的模型列表端点覆盖。
-        login_directory: Codex official 原生登录目录引用。
+        login_directory: 兼容旧请求的保留字段；Official 新建时必须为空。
         proxy_url: 不含 userinfo 的连接级代理地址。
         proxy_username: 连接级代理用户名。
         claude_role_models: Claude 角色到 model ID 的映射。

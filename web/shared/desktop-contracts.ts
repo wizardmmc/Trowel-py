@@ -20,6 +20,8 @@ export type SidecarErrorCategory =
   | "port_or_permission"
   | "version_mismatch"
   | "readiness_timeout"
+  | "readiness_lost"
+  | "reconcile_required"
   | "early_exit";
 
 export interface DesktopTransportConfig {

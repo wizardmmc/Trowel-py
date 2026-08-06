@@ -370,6 +370,18 @@ class CodexSession:
         self._binding = binding
         return binding
 
+    def restore_thread_binding_after_failed_attach(
+        self,
+        previous: ThreadBinding | None,
+    ) -> None:
+        """在原生挂载补偿成功后恢复挂载前的 thread 占位状态。
+
+        Args:
+            previous: 挂载前的绑定；新 thread 为 None，恢复 thread 为仅含 ID 的占位。
+        """
+
+        self._binding = previous
+
     def emit_session_started_if_first(self) -> CodexEvent | None:
         """首次取得 thread 绑定后发出一次 ``SESSION_STARTED``。
 

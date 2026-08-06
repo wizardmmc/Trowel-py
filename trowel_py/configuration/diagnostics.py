@@ -61,11 +61,8 @@ def _runtime_status(
 
 
 def _proxy_status(connection: ConnectionView) -> dict[str, str | None]:
-    """明确 Claude 多连接反向代理当前尚未实现。"""
+    """报告 Claude 连接级流式反向代理的生产能力。"""
 
     if connection.kind == ConnectionKind.CLAUDE_COMPATIBLE:
-        return {
-            "status": "unsupported",
-            "code": "CONNECTION_PROXY_NOT_IMPLEMENTED",
-        }
+        return {"status": "available", "code": None}
     return {"status": "not_applicable", "code": None}

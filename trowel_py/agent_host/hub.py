@@ -76,6 +76,11 @@ from trowel_py.agent_host.runtimes import (
     RuntimeSessionPort,
 )
 from trowel_py.agent_host.store import BindingStore, next_session_display_name
+from trowel_py.agent_host.configuration_archive import (
+    FrozenSessionConfiguration,
+    SessionConfigurationArchive,
+    resolve_configuration_archive_path,
+)
 from trowel_py.agent_host.title_store import (
     SessionTitleRecord,
     SessionTitleStore,
@@ -95,6 +100,11 @@ from trowel_py.codex_host.pending_requests import (
 )
 from trowel_py.codex_host.session import TurnConflictError
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
+from trowel_py.configuration.runtime_launch import (
+    RuntimeLaunchConfiguration,
+    cleanup_private_claude_settings,
+    write_private_claude_settings,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -187,6 +197,9 @@ class ConditionMismatchError(SessionConflictError):
 # 生产 opener 与测试替身共享调用协议但具体类型不同，因此保持宽松 Callable。
 CcOpener = Callable[..., Any]
 SessionReviewRequester = Callable[[SessionBinding], None]
+ConfigurationResolver = Callable[[str, str, str | None], RuntimeLaunchConfiguration]
+LastChoiceRecorder = Callable[[RuntimeLaunchConfiguration], None]
+AgentDefaultsResolver = Callable[[Mapping[str, Any] | None], dict[str, Any] | None]
 
 
 def _default_cc_registry() -> dict[str, Any]:
@@ -229,6 +242,13 @@ class SessionHub:
         codex_history_root: str | Path | None = None,
         resource_registry: ResourceRegistry | None = None,
         runtime_availability: Mapping[Runtime, bool] | None = None,
+        configuration_resolver: ConfigurationResolver | None = None,
+        last_choice_recorder: LastChoiceRecorder | None = None,
+        agent_defaults_resolver: AgentDefaultsResolver | None = None,
+        cc_connection_proxy_registry: Any | None = None,
+        configuration_archive: SessionConfigurationArchive | None = None,
+        require_configured_connections: bool | Callable[[], bool] = False,
+        private_claude_settings_directory: str | Path | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -262,6 +282,16 @@ class SessionHub:
                 行为，不执行跨 runtime 资源归零复核。
             runtime_availability: 两种 runtime CLI 在当前系统中的安装状态；未提供时
                 保持测试与旧调用方的既有可用性判断。
+            configuration_resolver: 把连接、模型和 effort 解析成秘密启动配置的端口。
+            last_choice_recorder: 原生会话建立后写回连接最近选择的端口。
+            agent_defaults_resolver: 把设置页默认条件合并到最近会话选择的同步端口。
+            cc_connection_proxy_registry: Claude 会话租约到冻结上游的进程内 registry。
+            configuration_archive: binding 删除后继续保存原生会话冻结条件的档案。
+            require_configured_connections: 是否拒绝没有设置域连接的用户会话；也可
+                传入实时判断函数，让应用启动后新增的首个连接立即接管普通 Agent。
+                旧测试和内部临时调用默认保持兼容。
+            private_claude_settings_directory: Claude 连接级私有 settings 的应用自有
+                目录；未提供时使用 binding 文件旁的运行时私有目录。
         """
 
         self._store = store
@@ -288,6 +318,21 @@ class SessionHub:
         self._cc_opener = cc_opener if cc_opener is not None else _default_cc_opener()
         self._cc_proxy_base_url = cc_proxy_base_url
         self._cc_settings_path = cc_settings_path
+        self._configuration_resolver = configuration_resolver
+        self._last_choice_recorder = last_choice_recorder
+        self._agent_defaults_resolver = agent_defaults_resolver
+        self._cc_connection_proxy_registry = cc_connection_proxy_registry
+        self._pending_last_choices: dict[str, RuntimeLaunchConfiguration] = {}
+        self._configuration_archive = configuration_archive or (
+            SessionConfigurationArchive(resolve_configuration_archive_path(store.path))
+        )
+        self._require_configured_connections = require_configured_connections
+        self._private_claude_settings_directory = (
+            Path(private_claude_settings_directory)
+            if private_claude_settings_directory is not None
+            else store.path.parent / "runtime-private" / "claude-settings"
+        )
+        cleanup_private_claude_settings(self._private_claude_settings_directory)
         self._codex_config_home = (
             Path(codex_config_home) if codex_config_home is not None else None
         )
@@ -589,12 +634,14 @@ class SessionHub:
         req = self._inherit_resume_config(req)
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
+        launch = self._resolve_launch(req)
+        memory_mcp_enabled = self._resolve_memory_mcp(req, launch)
         try:
             with self._capacity.admit_connection(req.session_kind):
                 if req.runtime == "claude_code":
-                    binding = self._create_cc(req)
+                    binding = self._create_cc(req, launch, memory_mcp_enabled)
                 else:
-                    binding = self._create_codex(req)
+                    binding = self._create_codex(req, launch, memory_mcp_enabled)
                 self._touch_session_state(binding.session_id)
                 return binding
         except CapacityLimitError as exc:
@@ -617,29 +664,137 @@ class SessionHub:
 
         if req.resume_from is None:
             return req
-        previous = self._latest_binding(
-            runtime=Runtime(req.runtime), native_session_id=req.resume_from
+        previous = self._frozen_resume_configuration(
+            Runtime(req.runtime), req.resume_from
         )
         if previous is None:
             return req
         explicit = req.model_fields_set
         updates: dict[str, Any] = {}
-        if req.runtime == "claude_code":
+        if "connection_id" in explicit:
+            if (
+                previous.connection_id is not None
+                and req.connection_id != previous.connection_id
+            ):
+                raise ConditionMismatchError(
+                    "resumed session is frozen to its original connection"
+                )
+        else:
+            updates["connection_id"] = previous.connection_id
+        # 旧 Codex binding 依赖 native thread 自己恢复有效模型；只有设置域连接
+        # 创建的 Codex thread 才把用户选择的模型与 effort 当作冻结条件。
+        freeze_model_selection = (
+            req.runtime == "claude_code" or previous.connection_id is not None
+        )
+        if freeze_model_selection:
             for field in ("model", "effort"):
-                if field not in explicit:
-                    updates[field] = getattr(previous, field)
-            if "permission_mode" not in explicit:
-                updates["permission_mode"] = previous.permission
-        elif "permission_preset" not in explicit:
-            updates["permission_preset"] = previous.permission_preset
+                frozen_value = getattr(previous, field)
+                if field in explicit:
+                    if frozen_value is not None and getattr(req, field) != frozen_value:
+                        raise ConditionMismatchError(
+                            f"resumed session is frozen to its original {field}"
+                        )
+                else:
+                    updates[field] = frozen_value
+        permission_field = (
+            "permission_mode" if req.runtime == "claude_code" else "permission_preset"
+        )
+        frozen_permission = (
+            previous.permission
+            if req.runtime == "claude_code"
+            else previous.permission_preset
+        )
+        if permission_field in explicit:
+            if (
+                frozen_permission is not None
+                and getattr(req, permission_field) != frozen_permission
+            ):
+                raise ConditionMismatchError(
+                    "resumed session is frozen to its original permission"
+                )
+        else:
+            updates[permission_field] = frozen_permission
         for request_field, binding_field in (
             ("memory_enabled", "memory_enabled"),
             ("profile_enabled", "profile_enabled"),
             ("self_enabled", "self_enabled"),
+            ("agent_mcp_enabled", "agent_mcp_enabled"),
         ):
             if request_field not in explicit:
                 updates[request_field] = getattr(previous, binding_field)
         return req.model_copy(update=updates)
+
+    def _resolve_launch(
+        self, req: CreateAgentSessionRequest
+    ) -> RuntimeLaunchConfiguration | None:
+        """解析显式连接，并拒绝 runtime 不一致或无法验证的启动配置。"""
+
+        if req.connection_id is None:
+            configured_connections_required = self._require_configured_connections
+            if callable(configured_connections_required):
+                configured_connections_required = configured_connections_required()
+            if configured_connections_required and req.session_kind == "user":
+                if req.resume_from is not None:
+                    raise InvalidSessionRequestError(
+                        "该历史会话没有可用的冻结连接，暂时无法直接恢复；"
+                        "当前可先新建会话"
+                    )
+                raise InvalidSessionRequestError("必须选择一项已验证的 Runtime 连接")
+            return None
+        if self._configuration_resolver is None:
+            raise RuntimeUnavailableError("connection configuration is unavailable")
+        if not req.model:
+            raise InvalidSessionRequestError("connection-backed session requires model")
+        try:
+            launch = self._configuration_resolver(
+                req.connection_id, req.model, req.effort
+            )
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 设置域错误统一映射到创建边界。
+            raise InvalidSessionRequestError(str(exc)) from exc
+        if launch.runtime.value != req.runtime:
+            raise InvalidSessionRequestError(
+                "selected connection does not belong to the requested runtime"
+            )
+        if req.agent_mcp_enabled:
+            raise InvalidSessionRequestError(
+                "agent MCP is not verified for connection-backed sessions"
+            )
+        if req.resume_from is not None:
+            frozen = self._frozen_resume_configuration(
+                Runtime(req.runtime), req.resume_from
+            )
+            if (
+                frozen is not None
+                and frozen.connection_identity_version is not None
+                and launch.connection_identity_version
+                != frozen.connection_identity_version
+            ):
+                raise ConditionMismatchError(
+                    "saved connection identity changed; manual rebind is required"
+                )
+        return launch
+
+    def _resolve_memory_mcp(
+        self,
+        req: CreateAgentSessionRequest,
+        launch: RuntimeLaunchConfiguration | None,
+    ) -> bool:
+        """计算并冻结 Memory MCP 开关，不改变 Memory 正文注入语义。
+
+        传统本机配置继续沿用 ``memory_enabled``。设置域连接尚未逐一验证 MCP
+        透传，因此新会话一律关闭；恢复时沿用原会话已经冻结的内部值。
+        """
+
+        if launch is None:
+            return req.memory_enabled
+        if req.resume_from is None:
+            return False
+        previous = self._frozen_resume_configuration(
+            Runtime(req.runtime), req.resume_from
+        )
+        return previous.memory_mcp_enabled if previous is not None else False
 
     async def prepare_create_request(
         self, req: CreateAgentSessionRequest
@@ -712,6 +867,24 @@ class SessionHub:
             ),
         )[1]
 
+    def _frozen_resume_configuration(
+        self,
+        runtime: Runtime,
+        native_session_id: str,
+    ) -> SessionBinding | FrozenSessionConfiguration | None:
+        """按统一优先级读取恢复条件，避免 binding 与档案校验分叉。
+
+        仍存在的 binding 是最新事实源；binding 已清理时才读取脱敏档案。
+        """
+
+        binding = self._latest_binding(
+            runtime=runtime,
+            native_session_id=native_session_id,
+        )
+        if binding is not None:
+            return binding
+        return self._configuration_archive.get(runtime, native_session_id)
+
     def latest_session_defaults(self) -> dict[str, Any] | None:
         """读取最近创建或使用的会话配置，作为新建会话的默认值。
 
@@ -740,9 +913,19 @@ class SessionHub:
             "memory_enabled": binding.memory_enabled,
             "profile_enabled": binding.profile_enabled,
         }
+        if binding.connection_id is not None:
+            defaults["connection_id"] = binding.connection_id
         if binding.runtime is Runtime.CODEX and binding.permission_preset is not None:
             defaults["permission_preset"] = binding.permission_preset
         return defaults
+
+    def new_session_defaults(self) -> dict[str, Any] | None:
+        """返回设置页默认条件与最近有效会话选择合并后的新建值。"""
+
+        fallback = self.latest_session_defaults()
+        if self._agent_defaults_resolver is None:
+            return fallback
+        return self._agent_defaults_resolver(fallback)
 
     async def hydrate_resume(self, session_id: str) -> SessionBinding:
         """将要继续的 Codex thread 加载到当前 Codex 进程，并更新 Trowel 会话记录。
@@ -772,8 +955,12 @@ class SessionHub:
         if session is None:
             raise SessionNotFoundError(f"codex session {session_id} not live")
         try:
-            await self._codex.attach(session)
-            self._writeback_codex_native(session_id, session)
+            await self._codex.attach(
+                session,
+                before_commit=lambda attached: self._writeback_codex_native(
+                    session_id, attached
+                ),
+            )
         except TurnConflictError as exc:
             raise SessionConflictError(str(exc)) from exc
         except SessionHubError:
@@ -782,7 +969,12 @@ class SessionHub:
             raise RuntimeTurnError(f"codex resume failed: {exc}") from exc
         return self._require(session_id)
 
-    def _create_cc(self, req: CreateAgentSessionRequest) -> SessionBinding:
+    def _create_cc(
+        self,
+        req: CreateAgentSessionRequest,
+        launch: RuntimeLaunchConfiguration | None,
+        memory_mcp_enabled: bool,
+    ) -> SessionBinding:
         """登记 Claude Code 会话并保存初始的 Trowel 会话记录。
 
         未指定权限模式时使用 bypassPermissions。此时只创建会话对象，不启动
@@ -825,19 +1017,65 @@ class SessionHub:
                 "process_controller": self._resource_registry.process_controller,
                 "resource_registry": self._resource_registry,
             }
+        proxy_base_url = self._cc_proxy_base_url
+        settings_path = self._cc_settings_path
+        owned_settings_path = False
+        close_callback: Callable[[], None] | None = None
+        connection_host_config: dict[str, object] = {}
+        if launch is not None:
+            registry = self._cc_connection_proxy_registry
+            if registry is None or not self._cc_proxy_base_url or not launch.base_url:
+                raise RuntimeUnavailableError("Claude connection proxy is unavailable")
+            lease_token = registry.acquire(launch.base_url, launch.proxy_url)
+            proxy_base_url = (
+                f"{self._cc_proxy_base_url.rstrip('/')}/api/cc-runtime/{lease_token}"
+            )
+            try:
+                settings_path = write_private_claude_settings(
+                    launch.claude_settings(proxy_base_url=proxy_base_url),
+                    directory=self._private_claude_settings_directory,
+                )
+            except BaseException:
+                registry.release(lease_token)
+                raise
+            owned_settings_path = True
+
+            def release_connection_lease() -> None:
+                """在 Claude host 收口时释放当前会话的不透明上游租约。"""
+
+                registry.release(lease_token)
+
+            close_callback = release_connection_lease
+            connection_host_config = {
+                "owned_settings_path": True,
+                "close_callback": close_callback,
+                "memory_mcp_enabled": memory_mcp_enabled,
+            }
         try:
             opened = self._cc_opener(
                 cc_req,
                 self._cc_registry,
-                proxy_base_url=self._cc_proxy_base_url,
-                settings_path=self._cc_settings_path,
+                proxy_base_url=proxy_base_url,
+                settings_path=settings_path,
                 display_name=display_name,
                 **resource_launch_config,
+                **connection_host_config,
             )
         except CcWorkdirNotFoundError as exc:
+            self._rollback_claude_connection_settings(
+                settings_path, owned_settings_path, close_callback
+            )
             raise InvalidSessionRequestError(str(exc)) from exc
         except CcCapacityError as exc:
+            self._rollback_claude_connection_settings(
+                settings_path, owned_settings_path, close_callback
+            )
             raise SessionConflictError(str(exc)) from exc
+        except BaseException:
+            self._rollback_claude_connection_settings(
+                settings_path, owned_settings_path, close_callback
+            )
+            raise
         try:
             binding = make_binding(
                 session_id=opened.sid,
@@ -848,6 +1086,7 @@ class SessionHub:
                 effort=req.effort,
                 permission=cc_req.permission_mode,
                 memory_enabled=req.memory_enabled,
+                memory_mcp_enabled=memory_mcp_enabled,
                 profile_enabled=req.profile_enabled,
                 self_enabled=req.self_enabled,
                 session_kind=req.session_kind,
@@ -862,17 +1101,49 @@ class SessionHub:
                 name=opened.name,
                 display_title=display_title,
                 title_source=title_source,
+                connection_id=launch.connection_id if launch else None,
+                connection_identity_version=(
+                    launch.connection_identity_version if launch else None
+                ),
+                connection_name=launch.connection_name if launch else None,
+                connection_kind=launch.kind.value if launch else None,
+                configuration_capability_version=(
+                    launch.capability_version if launch else None
+                ),
+                configuration_capability_source=(
+                    launch.capability_source if launch else None
+                ),
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CLAUDE_CODE, opened.sid, exc)
             raise
         self._lifecycle.commit_created(binding)
+        if launch is not None:
+            self._pending_last_choices[binding.session_id] = launch
         self._persist_native_title(binding)
         if req.session_kind == "user":
             self._active_id = opened.sid
         return binding
 
-    def _create_codex(self, req: CreateAgentSessionRequest) -> SessionBinding:
+    @staticmethod
+    def _rollback_claude_connection_settings(
+        settings_path: str | Path | None,
+        owned: bool,
+        close_callback: Callable[[], None] | None,
+    ) -> None:
+        """回滚尚未交给 CCHost 持有的私有 settings 和代理租约。"""
+
+        if owned and settings_path is not None:
+            Path(settings_path).unlink(missing_ok=True)
+        if close_callback is not None:
+            close_callback()
+
+    def _create_codex(
+        self,
+        req: CreateAgentSessionRequest,
+        launch: RuntimeLaunchConfiguration | None,
+        memory_mcp_enabled: bool,
+    ) -> SessionBinding:
         """``resume_from`` 只登记原生 thread，首次 turn 才执行恢复。"""
 
         if not self.runtime_available(Runtime.CODEX):
@@ -884,11 +1155,15 @@ class SessionHub:
             permission_presets=_CODEX_PERMISSION_PRESETS,
             fingerprint=_injection_fingerprint,
             resource_registry=self._resource_registry,
+            memory_mcp_enabled=memory_mcp_enabled,
         )
         sid = prepared.session_id
         display_title, title_source = self._initial_title(req)
         if self._codex is not None:
-            self._codex.register(prepared.session)
+            if launch is None:
+                self._codex.register(prepared.session)
+            else:
+                self._codex.register(prepared.session, launch=launch)
         try:
             binding = make_binding(
                 session_id=sid,
@@ -899,6 +1174,7 @@ class SessionHub:
                 effort=req.effort,
                 permission=None,
                 memory_enabled=req.memory_enabled,
+                memory_mcp_enabled=memory_mcp_enabled,
                 profile_enabled=req.profile_enabled,
                 self_enabled=req.self_enabled,
                 session_kind=req.session_kind,
@@ -914,11 +1190,25 @@ class SessionHub:
                 declared_mcp_roster=prepared.declared_mcp_roster,
                 display_title=display_title,
                 title_source=title_source,
+                connection_id=launch.connection_id if launch else None,
+                connection_identity_version=(
+                    launch.connection_identity_version if launch else None
+                ),
+                connection_name=launch.connection_name if launch else None,
+                connection_kind=launch.kind.value if launch else None,
+                configuration_capability_version=(
+                    launch.capability_version if launch else None
+                ),
+                configuration_capability_source=(
+                    launch.capability_source if launch else None
+                ),
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CODEX, sid, exc)
             raise
         self._lifecycle.commit_created(binding)
+        if launch is not None:
+            self._pending_last_choices[binding.session_id] = launch
         self._persist_native_title(binding)
         if req.session_kind == "user":
             self._active_id = sid
@@ -979,6 +1269,62 @@ class SessionHub:
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
         return await self._codex.list_models()
+
+    async def list_codex_models_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> list[dict[str, Any]]:
+        """从某条冻结 Codex 连接的独立 app-server 读取模型目录。
+
+        Args:
+            launch: 含 provider 和认证边界的连接专属启动配置。
+
+        Returns:
+            该连接可见的原生模型顺序、默认强度和完整强度集合。
+
+        Raises:
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+        """
+
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        reader = getattr(self._codex, "list_models_for_launch", None)
+        if reader is None:
+            return await self._codex.list_models()
+        return await reader(launch)
+
+    async def read_codex_account_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> dict[str, str | None]:
+        """读取一项 Official 供应商的 Codex 原生账号摘要。"""
+
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        reader = getattr(self._codex, "read_account_for_launch", None)
+        if reader is None:
+            raise RuntimeUnavailableError("codex account API unavailable")
+        return await reader(launch)
+
+    async def start_codex_account_login_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> dict[str, str]:
+        """为一项 Official 供应商启动 Codex 原生 device-code 登录。"""
+
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        starter = getattr(self._codex, "start_account_login_for_launch", None)
+        if starter is None:
+            raise RuntimeUnavailableError("codex account API unavailable")
+        return await starter(launch)
+
+    async def release_codex_launch(self, launch: RuntimeLaunchConfiguration) -> bool:
+        """删除供应商前释放没有会话引用的连接 manager。"""
+
+        if self._codex is None:
+            return True
+        releaser = getattr(self._codex, "release_launch", None)
+        if releaser is None:
+            return True
+        return bool(await releaser(launch))
 
     async def list_history(
         self,
@@ -1768,8 +2114,12 @@ class SessionHub:
             session: Codex 会话管理器中登记的会话对象。
         """
 
-        await self._require_codex_runtime().attach(session)
-        self._writeback_codex_before_turn(session_id, session)
+        await self._require_codex_runtime().attach(
+            session,
+            before_commit=lambda attached: self._writeback_codex_before_turn(
+                session_id, attached
+            ),
+        )
 
     def validate_resume(
         self,
@@ -1787,34 +2137,43 @@ class SessionHub:
 
         if native_session_id is None:
             return
-        for binding in self._store.list_all():
-            if binding.native_session_id != native_session_id:
-                continue
-            if binding.runtime is not runtime:
+        frozen_conditions: list[SessionBinding | FrozenSessionConfiguration] = [
+            binding
+            for binding in self._store.list_all()
+            if binding.native_session_id == native_session_id
+        ]
+        for candidate_runtime in Runtime:
+            archived = self._configuration_archive.get(
+                candidate_runtime, native_session_id
+            )
+            if archived is not None:
+                frozen_conditions.append(archived)
+        for frozen in frozen_conditions:
+            if frozen.runtime is not runtime:
                 raise CrossRuntimeResumeError(
                     f"native session {native_session_id!r} is bound to "
-                    f"{binding.runtime.value}; cannot resume as "
+                    f"{frozen.runtime.value}; cannot resume as "
                     f"{runtime.value} (C-2)"
                 )
-            if memory_enabled is not None and binding.memory_enabled != memory_enabled:
+            if memory_enabled is not None and frozen.memory_enabled != memory_enabled:
                 raise ConditionMismatchError(
                     f"native session {native_session_id!r} is frozen with "
-                    f"memory_enabled={binding.memory_enabled}; cannot resume "
+                    f"memory_enabled={frozen.memory_enabled}; cannot resume "
                     f"as memory_enabled={memory_enabled} (C-2)"
                 )
             if (
                 profile_enabled is not None
-                and binding.profile_enabled != profile_enabled
+                and frozen.profile_enabled != profile_enabled
             ):
                 raise ConditionMismatchError(
                     f"native session {native_session_id!r} is frozen with "
-                    f"profile_enabled={binding.profile_enabled}; cannot "
+                    f"profile_enabled={frozen.profile_enabled}; cannot "
                     f"resume as profile_enabled={profile_enabled} (C-2)"
                 )
-            if self_enabled is not None and binding.self_enabled != self_enabled:
+            if self_enabled is not None and frozen.self_enabled != self_enabled:
                 raise ConditionMismatchError(
                     f"native session {native_session_id!r} is frozen with "
-                    f"self_enabled={binding.self_enabled}; cannot resume as "
+                    f"self_enabled={frozen.self_enabled}; cannot resume as "
                     f"self_enabled={self_enabled} (C-2)"
                 )
 
@@ -2010,6 +2369,7 @@ class SessionHub:
             self._active_id = None
         if delete_binding:
             self._closed_session_results[session_id] = result
+            self._pending_last_choices.pop(session_id, None)
             self._session_state_generations.pop(session_id, None)
             self._current_root_turn_ids.pop(session_id, None)
             self._last_root_turn_states.pop(session_id, None)
@@ -2257,8 +2617,8 @@ class SessionHub:
         turn_id: str | None = None
         try:
             send_options: dict[str, Any] = {
-                "before_turn_start": lambda attached: (
-                    self._writeback_codex_before_turn(session_id, attached)
+                "before_turn_start": lambda attached: self._writeback_codex_before_turn(
+                    session_id, attached
                 )
             }
             if autonomous:
@@ -2647,9 +3007,7 @@ class SessionHub:
 
         return self._application_events.subscribe(queue_capacity)
 
-    def _publish_agent_event(
-        self, session_id: str, payload: dict[str, Any]
-    ) -> None:
+    def _publish_agent_event(self, session_id: str, payload: dict[str, Any]) -> None:
         """把一条统一事件复制给当前会话的全部常驻订阅者。
 
         Args:
@@ -2664,9 +3022,7 @@ class SessionHub:
         for queue in tuple(self._agent_event_subscribers.get(session_id, ())):
             queue.put_nowait(payload)
 
-    def _observe_live_event(
-        self, session_id: str, payload: Mapping[str, Any]
-    ) -> None:
+    def _observe_live_event(self, session_id: str, payload: Mapping[str, Any]) -> None:
         """把已发布事件折叠为 session snapshot 使用的根 turn 事实。
 
         Args:
@@ -2681,12 +3037,9 @@ class SessionHub:
         if binding is None:
             return
         thread_id = payload.get("thread_id")
-        root_event = (
-            binding.runtime is Runtime.CLAUDE_CODE
-            or (
-                binding.native_session_id is not None
-                and thread_id == binding.native_session_id
-            )
+        root_event = binding.runtime is Runtime.CLAUDE_CODE or (
+            binding.native_session_id is not None
+            and thread_id == binding.native_session_id
         )
         if root_event:
             event_type = payload.get("type")
@@ -2942,6 +3295,22 @@ class SessionHub:
             return
         self._lifecycle.remember_non_user_identity(binding, cc_session_id)
         try:
+            candidate_changes = {
+                "native_session_id": cc_session_id,
+                "model": model,
+                "effort": getattr(host, "effort", None),
+                "permission": getattr(host, "permission_mode", None),
+            }
+            candidate = replace(
+                binding,
+                **{
+                    key: value
+                    for key, value in candidate_changes.items()
+                    if value is not None
+                },
+            )
+            # 先落脱敏恢复条件；档案失败时不能让 binding 进入不可安全恢复的半状态。
+            self._configuration_archive.put(candidate)
             updated = self._store.update_native(
                 session_id,
                 native_session_id=cc_session_id,
@@ -2950,6 +3319,8 @@ class SessionHub:
                 permission=getattr(host, "permission_mode", None),
             )
             self._persist_native_title(updated)
+            if updated.native_session_id:
+                self._record_last_choice_once(session_id)
         except KeyError:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
 
@@ -2975,6 +3346,27 @@ class SessionHub:
         try:
             sandbox = getattr(thread_binding, "effective_sandbox", None)
             approval = getattr(thread_binding, "effective_approval", None)
+            candidate_changes = {
+                "native_session_id": thread_binding.thread_id,
+                "model": thread_binding.model,
+                "effort": getattr(thread_binding, "reasoning_effort", None),
+                "permission": _permission_label(sandbox, approval),
+                "effective_permission_profile": getattr(
+                    thread_binding, "permission_profile", None
+                ),
+                "effective_sandbox": sandbox,
+                "effective_approval": approval,
+                "network_access": getattr(thread_binding, "network_access", None),
+            }
+            candidate = replace(
+                binding,
+                **{
+                    key: value
+                    for key, value in candidate_changes.items()
+                    if value is not None
+                },
+            )
+            self._configuration_archive.put(candidate)
             updated = self._store.update_native(
                 session_id,
                 native_session_id=thread_binding.thread_id,
@@ -2989,8 +3381,27 @@ class SessionHub:
                 network_access=getattr(thread_binding, "network_access", None),
             )
             self._persist_native_title(updated)
+            if updated.native_session_id:
+                self._record_last_choice_once(session_id)
         except KeyError:
             _log.debug("codex writeback skipped, binding %s gone", session_id)
+
+    def _record_last_choice_once(self, session_id: str) -> None:
+        """原生会话和 binding 都存在后，尽力写回连接最近成功选择。"""
+
+        launch = self._pending_last_choices.get(session_id)
+        recorder = self._last_choice_recorder
+        if launch is None or recorder is None:
+            return
+        try:
+            recorder(launch)
+            self._pending_last_choices.pop(session_id, None)
+        except Exception:  # noqa: BLE001 - 最近选择不能反向破坏已创建的会话。
+            _log.warning(
+                "failed to record last session choice for connection %s",
+                launch.connection_id,
+                exc_info=True,
+            )
 
     def _writeback_codex_before_turn(self, session_id: str, session: Any) -> None:
         """在 Codex 开始新一轮处理前保存线程信息，并确认线程 ID 已正确写入会话记录。

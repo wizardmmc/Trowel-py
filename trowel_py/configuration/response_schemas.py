@@ -61,7 +61,7 @@ class AuthResponse(BaseModel):
     """返回认证种类和配置状态，不含原值。
 
     Attributes:
-        kind: API key 或 OAuth 登录目录引用。
+        kind: API key 或 Codex 原生 OAuth。
         status: configured、missing 或 referenced。
     """
 
@@ -110,13 +110,49 @@ class CodexCatalogEntryResponse(BaseModel):
         id: 上游真实 model ID。
         display_name: 可选展示名称。
         default_effort: 默认思考强度。
-        supported_efforts: 已验证支持的思考强度。
+        supported_efforts: Codex 原生目录声明支持的思考强度。
     """
 
     id: str
     display_name: str | None
     default_effort: str | None
     supported_efforts: list[str]
+
+
+class CodexOfficialAccountResponse(BaseModel):
+    """返回 Official 账号槽位的脱敏原生状态。
+
+    Attributes:
+        status: logged_in、not_logged_in 或 unsupported。
+        email: Codex 原生接口返回的账号邮箱。
+        plan_type: plus、pro 等原生套餐标识。
+        auth_mode: chatgpt 等原生认证模式。
+        login_id: 当前 manager 最近一次设备登录尝试 ID。
+        login_status: pending、completed 或 failed。
+        login_error: 原生登录失败的脱敏说明。
+    """
+
+    status: str
+    email: str | None
+    plan_type: str | None
+    auth_mode: str | None
+    login_id: str | None = None
+    login_status: str | None = None
+    login_error: str | None = None
+
+
+class CodexOfficialLoginResponse(BaseModel):
+    """返回 Codex 原生 device-code 登录引导，不含任何 token。
+
+    Attributes:
+        login_id: 本次 app-server 登录尝试 ID。
+        verification_url: 用户完成授权的 OpenAI 页面。
+        user_code: 页面要求输入的一次性用户码。
+    """
+
+    login_id: str
+    verification_url: str
+    user_code: str
 
 
 class ConnectionResponse(BaseModel):
@@ -126,7 +162,7 @@ class ConnectionResponse(BaseModel):
         id: Trowel 稳定本地 ID。
         version: 乐观并发版本。
         identity_version: runtime 启动身份版本。
-        name: 用户设置的展示名称。
+        name: 用户设置的供应商名称。
         runtime: 消费连接的执行引擎。
         kind: 连接字段和认证种类。
         protocol: 上游请求协议。
@@ -134,8 +170,8 @@ class ConnectionResponse(BaseModel):
         models_url: 可选模型列表端点覆盖。
         upstream_host: 从服务地址解析的主机名。
         auth: 脱敏认证状态。
-        login_directory: Codex official 登录目录引用。
-        login_directory_exists: 登录目录当前是否存在。
+        login_directory: 保留兼容字段；Official 始终返回 None。
+        login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。
         proxy: 脱敏连接代理字段。
         claude_role_models: Claude 角色到 model ID 的映射。
         codex_catalog: Codex 模型和 effort 元数据。
@@ -171,6 +207,64 @@ class ConnectionResponse(BaseModel):
     preview: dict[str, Any]
 
 
+class AgentConnectionModelResponse(BaseModel):
+    """返回普通 Agent 可以选择的一项连接内模型。
+
+    Attributes:
+        id: Codex 上游真实模型 ID，或 Claude 主会话角色别名。
+        display_name: 可选展示名称。
+        available: 当前连接与 runtime 目录是否允许选择该模型。
+        disabled_reason: 不可选时的稳定原因。
+        efforts: runtime 原生目录声明支持的思考强度。
+        default_effort: 连接 catalog 声明的默认思考强度。
+    """
+
+    id: str
+    display_name: str | None
+    available: bool
+    disabled_reason: str | None
+    efforts: list[str]
+    default_effort: str | None
+
+
+class AgentLastChoiceResponse(BaseModel):
+    """返回连接最近一次真正建成原生会话的模型选择。
+
+    Attributes:
+        model: 最近成功使用的 Codex 模型 ID 或 Claude 角色别名。
+        effort: 最近成功使用的思考强度。
+    """
+
+    model: str
+    effort: str | None
+
+
+class AgentConnectionOptionResponse(BaseModel):
+    """返回 Agent 新建会话使用的一条完整脱敏连接选项。
+
+    Attributes:
+        id: 设置域稳定连接 ID。
+        name: 用户设置的连接展示名。
+        runtime: 消费该连接的原生 runtime。
+        kind: 连接字段和认证种类。
+        identity_version: runtime 身份变化时递增的版本。
+        available: 连接是否至少有一个 runtime 可见模型可供创建会话。
+        disabled_reason: 连接整体不可用时的稳定原因。
+        last_session_choice: 最近一次原生会话成功后的模型选择。
+        models: runtime 原生交互模型列表。
+    """
+
+    id: str
+    name: str
+    runtime: RuntimeKind
+    kind: ConnectionKind
+    identity_version: int
+    available: bool
+    disabled_reason: str | None
+    last_session_choice: AgentLastChoiceResponse | None
+    models: list[AgentConnectionModelResponse]
+
+
 class FetchModelsResponse(BaseModel):
     """返回一次模型列表获取结果。
 
@@ -181,6 +275,7 @@ class FetchModelsResponse(BaseModel):
         fetched_at: 获取成功的 UTC 时间。
         request_identity: 本次请求身份哈希。
         connection_version: 保存结果后的连接版本。
+        codex_catalog: Codex 原生顺序、默认 effort 和支持集合。
     """
 
     status: str
@@ -189,6 +284,7 @@ class FetchModelsResponse(BaseModel):
     fetched_at: str | None
     request_identity: str | None
     connection_version: int
+    codex_catalog: list[CodexCatalogEntryResponse]
 
 
 class CapabilityResponse(BaseModel):

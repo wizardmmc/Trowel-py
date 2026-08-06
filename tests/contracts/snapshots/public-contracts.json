@@ -1720,6 +1720,91 @@
           }
         }
       },
+      "/api/cc-runtime/{lease_token}/v1/messages": {
+        "post": {
+          "summary": "Proxy Connection Messages",
+          "description": "按会话租约把 Claude Messages 请求流式转发到冻结上游。",
+          "operationId": "proxy_connection_messages_api_cc_runtime__lease_token__v1_messages_post",
+          "parameters": [
+            {
+              "name": "lease_token",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Lease Token"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/cc-runtime/{lease_token}/v1/{rest}": {
+        "post": {
+          "summary": "Proxy Connection Passthrough",
+          "description": "按会话租约转发 Claude 的其他 ``/v1`` 请求。",
+          "operationId": "proxy_connection_passthrough_api_cc_runtime__lease_token__v1__rest__post",
+          "parameters": [
+            {
+              "name": "lease_token",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Lease Token"
+              }
+            },
+            {
+              "name": "rest",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Rest"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/v1/messages": {
         "post": {
           "summary": "Proxy Messages",
@@ -4210,6 +4295,98 @@
           }
         }
       },
+      "/api/configuration/agent-options": {
+        "get": {
+          "tags": [
+            "configuration"
+          ],
+          "summary": "List Agent Connection Options",
+          "description": "返回 Agent 表单使用的已保存模型，不启动任何 runtime。",
+          "operationId": "list_agent_connection_options_api_configuration_agent_options_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigurationEnvelope_list_AgentConnectionOptionResponse__"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad Request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Unauthorized",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Not Found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "409": {
+              "description": "Conflict",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Unprocessable Content",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "502": {
+              "description": "Bad Gateway",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            },
+            "504": {
+              "description": "Gateway Timeout",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/configuration/connections": {
         "get": {
           "tags": [
@@ -4398,6 +4575,212 @@
                   }
                 }
               }
+            }
+          }
+        }
+      },
+      "/api/configuration/connections/{connection_id}/official-account": {
+        "get": {
+          "tags": [
+            "configuration"
+          ],
+          "summary": "Read Codex Official Account",
+          "description": "读取一项 Official 供应商的邮箱、套餐和登录状态。",
+          "operationId": "read_codex_official_account_api_configuration_connections__connection_id__official_account_get",
+          "parameters": [
+            {
+              "name": "connection_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Connection Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigurationEnvelope_CodexOfficialAccountResponse_"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "401": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unauthorized"
+            },
+            "404": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Not Found"
+            },
+            "409": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Conflict"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unprocessable Content"
+            },
+            "502": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Gateway"
+            },
+            "504": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Gateway Timeout"
+            }
+          }
+        }
+      },
+      "/api/configuration/connections/{connection_id}/official-account/login": {
+        "post": {
+          "tags": [
+            "configuration"
+          ],
+          "summary": "Start Codex Official Login",
+          "description": "在该供应商的隔离账号槽位启动 Codex 原生 device-code 登录。",
+          "operationId": "start_codex_official_login_api_configuration_connections__connection_id__official_account_login_post",
+          "parameters": [
+            {
+              "name": "connection_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Connection Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigurationEnvelope_CodexOfficialLoginResponse_"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "401": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unauthorized"
+            },
+            "404": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Not Found"
+            },
+            "409": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Conflict"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unprocessable Content"
+            },
+            "502": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Gateway"
+            },
+            "504": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Gateway Timeout"
             }
           }
         }
@@ -4844,7 +5227,7 @@
             "configuration"
           ],
           "summary": "Fetch Models",
-          "description": "用后端保存的 secret 获取当前或草稿身份的模型列表。",
+          "description": "获取上游模型，并为 Codex 附带原生排序和 effort 元数据。",
           "operationId": "fetch_models_api_configuration_connections__connection_id__models_fetch_post",
           "parameters": [
             {
@@ -6424,6 +6807,137 @@
           "title": "AgentActivityData",
           "description": "公开 session 活动时长之和与跨 session 并集。\n\nAttributes:\n    session_sum_ms: 各 session 内合并活动区间后的毫秒数之和。\n    concurrent_union_ms: 所有 session 区间合并后的毫秒数，不重复计算并发。\n    quality: 所有活动区间中最低的终点质量。"
         },
+        "AgentConnectionModelResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "display_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Display Name"
+            },
+            "available": {
+              "type": "boolean",
+              "title": "Available"
+            },
+            "disabled_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disabled Reason"
+            },
+            "efforts": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Efforts"
+            },
+            "default_effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Default Effort"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "display_name",
+            "available",
+            "disabled_reason",
+            "efforts",
+            "default_effort"
+          ],
+          "title": "AgentConnectionModelResponse",
+          "description": "返回普通 Agent 可以选择的一项连接内模型。\n\nAttributes:\n    id: Codex 上游真实模型 ID，或 Claude 主会话角色别名。\n    display_name: 可选展示名称。\n    available: 当前连接与 runtime 目录是否允许选择该模型。\n    disabled_reason: 不可选时的稳定原因。\n    efforts: runtime 原生目录声明支持的思考强度。\n    default_effort: 连接 catalog 声明的默认思考强度。"
+        },
+        "AgentConnectionOptionResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "name": {
+              "type": "string",
+              "title": "Name"
+            },
+            "runtime": {
+              "$ref": "#/components/schemas/RuntimeKind"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ConnectionKind"
+            },
+            "identity_version": {
+              "type": "integer",
+              "title": "Identity Version"
+            },
+            "available": {
+              "type": "boolean",
+              "title": "Available"
+            },
+            "disabled_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disabled Reason"
+            },
+            "last_session_choice": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentLastChoiceResponse"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "models": {
+              "items": {
+                "$ref": "#/components/schemas/AgentConnectionModelResponse"
+              },
+              "type": "array",
+              "title": "Models"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "name",
+            "runtime",
+            "kind",
+            "identity_version",
+            "available",
+            "disabled_reason",
+            "last_session_choice",
+            "models"
+          ],
+          "title": "AgentConnectionOptionResponse",
+          "description": "返回 Agent 新建会话使用的一条完整脱敏连接选项。\n\nAttributes:\n    id: 设置域稳定连接 ID。\n    name: 用户设置的连接展示名。\n    runtime: 消费该连接的原生 runtime。\n    kind: 连接字段和认证种类。\n    identity_version: runtime 身份变化时递增的版本。\n    available: 连接是否至少有一个 runtime 可见模型可供创建会话。\n    disabled_reason: 连接整体不可用时的稳定原因。\n    last_session_choice: 最近一次原生会话成功后的模型选择。\n    models: runtime 原生交互模型列表。"
+        },
         "AgentDefaultsResponse": {
           "properties": {
             "version": {
@@ -6476,6 +6990,32 @@
           ],
           "title": "AgentDefaultsResponse",
           "description": "返回之后新建 Agent 使用的默认条件。\n\nAttributes:\n    version: 乐观并发版本；未保存时为 0。\n    session_configuration_id: 可选默认会话配置。\n    permission: 可选默认权限条件。\n    memory_enabled: 是否默认注入 Memory。\n    profile_enabled: 是否默认注入 Profile。\n    self_enabled: 是否默认注入 Self。"
+        },
+        "AgentLastChoiceResponse": {
+          "properties": {
+            "model": {
+              "type": "string",
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            }
+          },
+          "type": "object",
+          "required": [
+            "model",
+            "effort"
+          ],
+          "title": "AgentLastChoiceResponse",
+          "description": "返回连接最近一次真正建成原生会话的模型选择。\n\nAttributes:\n    model: 最近成功使用的 Codex 模型 ID 或 Claude 角色别名。\n    effort: 最近成功使用的思考强度。"
         },
         "AgentLatencyDistributionData": {
           "properties": {
@@ -7309,7 +7849,7 @@
             "status"
           ],
           "title": "AuthResponse",
-          "description": "返回认证种类和配置状态，不含原值。\n\nAttributes:\n    kind: API key 或 OAuth 登录目录引用。\n    status: configured、missing 或 referenced。"
+          "description": "返回认证种类和配置状态，不含原值。\n\nAttributes:\n    kind: API key 或 Codex 原生 OAuth。\n    status: configured、missing 或 referenced。"
         },
         "BaseBranchReviewTarget": {
           "properties": {
@@ -7840,7 +8380,114 @@
             "supported_efforts"
           ],
           "title": "CodexCatalogEntryResponse",
-          "description": "返回 Codex 启动配置需要的一项模型元数据。\n\nAttributes:\n    id: 上游真实 model ID。\n    display_name: 可选展示名称。\n    default_effort: 默认思考强度。\n    supported_efforts: 已验证支持的思考强度。"
+          "description": "返回 Codex 启动配置需要的一项模型元数据。\n\nAttributes:\n    id: 上游真实 model ID。\n    display_name: 可选展示名称。\n    default_effort: 默认思考强度。\n    supported_efforts: Codex 原生目录声明支持的思考强度。"
+        },
+        "CodexOfficialAccountResponse": {
+          "properties": {
+            "status": {
+              "type": "string",
+              "title": "Status"
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Email"
+            },
+            "plan_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Plan Type"
+            },
+            "auth_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Auth Mode"
+            },
+            "login_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Login Id"
+            },
+            "login_status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Login Status"
+            },
+            "login_error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Login Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "status",
+            "email",
+            "plan_type",
+            "auth_mode"
+          ],
+          "title": "CodexOfficialAccountResponse",
+          "description": "返回 Official 账号槽位的脱敏原生状态。\n\nAttributes:\n    status: logged_in、not_logged_in 或 unsupported。\n    email: Codex 原生接口返回的账号邮箱。\n    plan_type: plus、pro 等原生套餐标识。\n    auth_mode: chatgpt 等原生认证模式。\n    login_id: 当前 manager 最近一次设备登录尝试 ID。\n    login_status: pending、completed 或 failed。\n    login_error: 原生登录失败的脱敏说明。"
+        },
+        "CodexOfficialLoginResponse": {
+          "properties": {
+            "login_id": {
+              "type": "string",
+              "title": "Login Id"
+            },
+            "verification_url": {
+              "type": "string",
+              "title": "Verification Url"
+            },
+            "user_code": {
+              "type": "string",
+              "title": "User Code"
+            }
+          },
+          "type": "object",
+          "required": [
+            "login_id",
+            "verification_url",
+            "user_code"
+          ],
+          "title": "CodexOfficialLoginResponse",
+          "description": "返回 Codex 原生 device-code 登录引导，不含任何 token。\n\nAttributes:\n    login_id: 本次 app-server 登录尝试 ID。\n    verification_url: 用户完成授权的 OpenAI 页面。\n    user_code: 页面要求输入的一次性用户码。"
         },
         "CollectorStatistics": {
           "properties": {
@@ -7986,6 +8633,52 @@
             "error"
           ],
           "title": "ConfigurationEnvelope[AgentDefaultsResponse]"
+        },
+        "ConfigurationEnvelope_CodexOfficialAccountResponse_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "const": true,
+              "title": "Success"
+            },
+            "data": {
+              "$ref": "#/components/schemas/CodexOfficialAccountResponse"
+            },
+            "error": {
+              "type": "null",
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ConfigurationEnvelope[CodexOfficialAccountResponse]"
+        },
+        "ConfigurationEnvelope_CodexOfficialLoginResponse_": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "const": true,
+              "title": "Success"
+            },
+            "data": {
+              "$ref": "#/components/schemas/CodexOfficialLoginResponse"
+            },
+            "error": {
+              "type": "null",
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ConfigurationEnvelope[CodexOfficialLoginResponse]"
         },
         "ConfigurationEnvelope_ConfigurationCatalogResponse_": {
           "properties": {
@@ -8194,6 +8887,33 @@
             "error"
           ],
           "title": "ConfigurationEnvelope[TaskBindingResponse]"
+        },
+        "ConfigurationEnvelope_list_AgentConnectionOptionResponse__": {
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "const": true,
+              "title": "Success"
+            },
+            "data": {
+              "items": {
+                "$ref": "#/components/schemas/AgentConnectionOptionResponse"
+              },
+              "type": "array",
+              "title": "Data"
+            },
+            "error": {
+              "type": "null",
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "success",
+            "data",
+            "error"
+          ],
+          "title": "ConfigurationEnvelope[list[AgentConnectionOptionResponse]]"
         },
         "ConfigurationEnvelope_list_ConnectionResponse__": {
           "properties": {
@@ -8432,7 +9152,7 @@
             "protocol"
           ],
           "title": "ConnectionRequest",
-          "description": "接收连接的全部非 secret 可编辑字段。\n\nAttributes:\n    name: 设置页展示名称。\n    runtime: 消费连接的 runtime 或 direct API。\n    kind: 选择字段结构和认证规则的连接种类。\n    protocol: 上游请求协议。\n    base_url: 自定义连接的模型服务地址。\n    models_url: 可选的模型列表端点覆盖。\n    login_directory: Codex official 原生登录目录引用。\n    proxy_url: 不含 userinfo 的连接级代理地址。\n    proxy_username: 连接级代理用户名。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex app-server 使用的模型目录。\n    catalog_request_identity: 模型映射引用的已获取列表身份。"
+          "description": "接收连接的全部非 secret 可编辑字段。\n\nAttributes:\n    name: 设置页展示的供应商名称。\n    runtime: 消费连接的 runtime 或 direct API。\n    kind: 选择字段结构和认证规则的连接种类。\n    protocol: 上游请求协议。\n    base_url: 自定义连接的模型服务地址。\n    models_url: 可选的模型列表端点覆盖。\n    login_directory: 兼容旧请求的保留字段；Official 新建时必须为空。\n    proxy_url: 不含 userinfo 的连接级代理地址。\n    proxy_username: 连接级代理用户名。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex app-server 使用的模型目录。\n    catalog_request_identity: 模型映射引用的已获取列表身份。"
         },
         "ConnectionResponse": {
           "properties": {
@@ -8610,7 +9330,7 @@
             "preview"
           ],
           "title": "ConnectionResponse",
-          "description": "返回连接的完整脱敏读模型。\n\nAttributes:\n    id: Trowel 稳定本地 ID。\n    version: 乐观并发版本。\n    identity_version: runtime 启动身份版本。\n    name: 用户设置的展示名称。\n    runtime: 消费连接的执行引擎。\n    kind: 连接字段和认证种类。\n    protocol: 上游请求协议。\n    base_url: 不含 userinfo 的服务地址。\n    models_url: 可选模型列表端点覆盖。\n    upstream_host: 从服务地址解析的主机名。\n    auth: 脱敏认证状态。\n    login_directory: Codex official 登录目录引用。\n    login_directory_exists: 登录目录当前是否存在。\n    proxy: 脱敏连接代理字段。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex 模型和 effort 元数据。\n    catalog: 当前模型列表状态。\n    validation_status: 当前组合验证状态。\n    capability_version: 只读能力表版本。\n    last_session_choice: 最近一次成功会话的 model 和 effort。\n    secret_versions: secret 用途到单调版本的映射。\n    preview: 由保存事实生成的脱敏配置预览。"
+          "description": "返回连接的完整脱敏读模型。\n\nAttributes:\n    id: Trowel 稳定本地 ID。\n    version: 乐观并发版本。\n    identity_version: runtime 启动身份版本。\n    name: 用户设置的供应商名称。\n    runtime: 消费连接的执行引擎。\n    kind: 连接字段和认证种类。\n    protocol: 上游请求协议。\n    base_url: 不含 userinfo 的服务地址。\n    models_url: 可选模型列表端点覆盖。\n    upstream_host: 从服务地址解析的主机名。\n    auth: 脱敏认证状态。\n    login_directory: 保留兼容字段；Official 始终返回 None。\n    login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。\n    proxy: 脱敏连接代理字段。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex 模型和 effort 元数据。\n    catalog: 当前模型列表状态。\n    validation_status: 当前组合验证状态。\n    capability_version: 只读能力表版本。\n    last_session_choice: 最近一次成功会话的 model 和 effort。\n    secret_versions: secret 用途到单调版本的映射。\n    preview: 由保存事实生成的脱敏配置预览。"
         },
         "CreateAgentSessionRequest": {
           "properties": {
@@ -8621,6 +9341,17 @@
                 "codex"
               ],
               "title": "Runtime"
+            },
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
             },
             "workdir": {
               "type": "string",
@@ -9225,6 +9956,13 @@
             "connection_version": {
               "type": "integer",
               "title": "Connection Version"
+            },
+            "codex_catalog": {
+              "items": {
+                "$ref": "#/components/schemas/CodexCatalogEntryResponse"
+              },
+              "type": "array",
+              "title": "Codex Catalog"
             }
           },
           "type": "object",
@@ -9234,10 +9972,11 @@
             "source_endpoint",
             "fetched_at",
             "request_identity",
-            "connection_version"
+            "connection_version",
+            "codex_catalog"
           ],
           "title": "FetchModelsResponse",
-          "description": "返回一次模型列表获取结果。\n\nAttributes:\n    status: 成功时固定为 ready。\n    models: 去重后的真实 model ID。\n    source_endpoint: 实际成功的脱敏端点。\n    fetched_at: 获取成功的 UTC 时间。\n    request_identity: 本次请求身份哈希。\n    connection_version: 保存结果后的连接版本。"
+          "description": "返回一次模型列表获取结果。\n\nAttributes:\n    status: 成功时固定为 ready。\n    models: 去重后的真实 model ID。\n    source_endpoint: 实际成功的脱敏端点。\n    fetched_at: 获取成功的 UTC 时间。\n    request_identity: 本次请求身份哈希。\n    connection_version: 保存结果后的连接版本。\n    codex_catalog: Codex 原生顺序、默认 effort 和支持集合。"
         },
         "GenerateAgentSessionTitleRequest": {
           "properties": {

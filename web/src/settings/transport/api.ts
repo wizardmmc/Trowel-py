@@ -7,6 +7,8 @@ import type {
   ConfigurationErrorBody,
   Connection,
   ConnectionDraft,
+  CodexOfficialAccount,
+  CodexOfficialLogin,
   Diagnostics,
   FetchModelsResult,
   PathStatus,
@@ -132,6 +134,25 @@ export function fetchModels(
       method: "POST",
       body: JSON.stringify({ expected_version: expectedVersion, draft }),
     },
+  );
+}
+
+/** 读取一项 Official 供应商的 Codex 原生账号摘要。 */
+export function fetchCodexOfficialAccount(
+  id: string,
+): Promise<CodexOfficialAccount> {
+  return requestConfiguration(
+    `/api/configuration/connections/${encodeURIComponent(id)}/official-account`,
+  );
+}
+
+/** 在供应商自己的账号槽位启动 Codex 原生 device-code 登录。 */
+export function startCodexOfficialLogin(
+  id: string,
+): Promise<CodexOfficialLogin> {
+  return requestConfiguration(
+    `/api/configuration/connections/${encodeURIComponent(id)}/official-account/login`,
+    { method: "POST" },
   );
 }
 

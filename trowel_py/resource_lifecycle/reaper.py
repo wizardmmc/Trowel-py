@@ -12,7 +12,11 @@ from trowel_py.resource_lifecycle.processes import (
     LocalProcessController,
     ProcessController,
 )
-from trowel_py.resource_lifecycle.registry import SNAPSHOT_VERSION, redact_identity
+from trowel_py.resource_lifecycle.registry import (
+    SNAPSHOT_VERSION,
+    redact_identity,
+    snapshot_data_root_identity,
+)
 
 
 def reconcile_previous_snapshot(
@@ -41,6 +45,8 @@ def reconcile_previous_snapshot(
     payload = _read_snapshot(snapshot_path)
     if payload is None:
         return ReconcileReport()
+    if payload.get("data_root_identity") != snapshot_data_root_identity(snapshot_path):
+        return ReconcileReport(skipped_data_root_mismatch=True)
     if payload.get("app_instance_id") == redact_identity(current_instance_id):
         return ReconcileReport(skipped_current_instance=True)
     controller = process_controller or LocalProcessController()
