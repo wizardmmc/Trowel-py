@@ -1,6 +1,7 @@
-/** 复用普通 Agent 配置语义并提交后端确定性研讨交接。 */
+/** 接收给 Agent 的指令、工作区和会话条件，把研讨现场作为系统背景提交后端确定性交接。 */
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ConnectionSessionEditor,
   defaultConnectionSessionConfig,
@@ -40,20 +41,25 @@ export function HandoffDialog({
     (round) => round.status === "published",
   );
 
-  return (
-    <div className="discussion-modal-backdrop" onMouseDown={onCancel}>
+  return createPortal(
+    <div className="cc-dialog__backdrop" onMouseDown={onCancel} role="presentation">
       <section
-        className="discussion-modal discussion-handoff-modal"
+        className="cc-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="在 Agent 中继续"
         onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onCancel();
+        }}
       >
-        <header>
-          <h2>在 Agent 中继续</h2>
-          <button type="button" onClick={onCancel} aria-label="关闭">×</button>
-        </header>
-        <div className="discussion-modal__body">
+        <div className="cc-dialog__head">
+          <p className="cc-dialog__title">在 Agent 中继续</p>
+          <span className="cc-dialog__workdir" title={discussion.topic}>
+            {discussion.topic}
+          </span>
+        </div>
+        <div className="cc-dialog__body">
           <div className="discussion-handoff-preview">
             <strong>交接现场</strong>
             <ul>
@@ -65,7 +71,7 @@ export function HandoffDialog({
               <li>完整记录由后端附加应用只读链接</li>
             </ul>
           </div>
-          <label className="discussion-field discussion-handoff-instruction">
+          <label className="discussion-field">
             <span>给 Agent 的指令</span>
             <textarea
               value={instruction}
@@ -99,11 +105,13 @@ export function HandoffDialog({
             onChange={setSession}
           />
         </div>
-        <footer>
-          <button type="button" onClick={onCancel}>取消</button>
+        <div className="cc-dialog__foot">
+          <button type="button" className="cc-dialog__btn" onClick={onCancel}>
+            取消
+          </button>
           <button
             type="button"
-            className="discussion-primary-button"
+            className="cc-dialog__btn cc-dialog__btn--primary"
             disabled={
               pending ||
               !instruction.trim() ||
@@ -114,9 +122,10 @@ export function HandoffDialog({
           >
             {pending ? "正在创建…" : "创建并发送指令"}
           </button>
-        </footer>
+        </div>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

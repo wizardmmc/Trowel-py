@@ -3417,10 +3417,6 @@
   gap: 6px;
   margin-bottom: 12px;
 }
-.cc-dialog__option-row--connection {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
 .cc-dialog__option {
   border: 1px solid var(--color-border);
   border-radius: 999px;
@@ -3430,11 +3426,6 @@
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.64rem;
-}
-.cc-dialog__option--connection {
-  min-height: 49px;
-  border-radius: 6px;
-  text-align: left;
 }
 .cc-dialog__option--selected {
   border-color: var(--garden-green);

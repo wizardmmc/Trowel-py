@@ -1277,6 +1277,7 @@
   gap: 9px;
   min-height: 50px;
   padding: 8px 10px;
+  border: 1px solid var(--color-border);
   border-radius: 5px !important;
   text-align: left;
 }
