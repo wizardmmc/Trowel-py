@@ -33,6 +33,10 @@ export function SettingsWorkspace({
   const addNotification = useNotificationStore((item) => item.addNotification);
   const platform = getPlatform();
   const [connectionToDelete, setConnectionToDelete] = useState<string | null>(null);
+  const [connectionToInherit, setConnectionToInherit] = useState<{
+    readonly name: string;
+    readonly runtime: "claude_code" | "codex";
+  } | null>(null);
 
   useEffect(() => {
     if (active) void store.getState().initialize();
@@ -92,6 +96,14 @@ export function SettingsWorkspace({
     const name = store.getState().connectionEditor?.draft.name || "这条连接";
     setConnectionToDelete(name);
   };
+  const inheritCurrentRuntimeConfig = () => {
+    const editor = store.getState().connectionEditor;
+    if (!editor || editor.draft.runtime === "direct_api") return;
+    setConnectionToInherit({
+      name: editor.draft.name || "这条连接",
+      runtime: editor.draft.runtime,
+    });
+  };
   const reloadTask = async (taskId: Parameters<SettingsState["reloadTask"]>[0]) => {
     const reloaded = await store.getState().reloadCatalog();
     if (reloaded) store.getState().reloadTask(taskId);
@@ -138,7 +150,7 @@ export function SettingsWorkspace({
         <section className="settings-main-surface">
           <header className="settings-surface-topbar">
             <strong>{activeSectionTitle}</strong>
-            <span>更改只影响之后创建的会话和任务</span>
+            <span>每项 Agent 连接拥有独立配置家；已有会话继续使用创建时冻结的配置</span>
           </header>
           <main className="settings-detail">
             {state.loading && !state.catalog ? (
@@ -175,6 +187,7 @@ export function SettingsWorkspace({
                     onRoleChange={state.updateClaudeRole}
                     onSave={() => void state.saveConnection()}
                     onDelete={deleteCurrentConnection}
+                    onInheritRuntimeConfig={inheritCurrentRuntimeConfig}
                     onFetchModels={() => void state.fetchConnectionModels()}
                     onWriteSecret={writeConnectionSecret}
                     onDeleteSecret={(kind) => void state.deleteConnectionSecret(kind)}
@@ -251,6 +264,30 @@ export function SettingsWorkspace({
             void store.getState().removeConnection();
           }}
           onCancel={() => setConnectionToDelete(null)}
+        />
+      )}
+      {connectionToInherit && (
+        <ConfirmDialog
+          title={`复制全局配置到“${connectionToInherit.name}”？`}
+          description={
+            connectionToInherit.runtime === "codex"
+              ? "将覆盖该连接上次复制的 config.toml、AGENTS.md、rules 和两处 skills。不会复制登录态、会话、SQLite、日志或插件缓存。正在使用该连接的会话需要先关闭；复制完成后是独立副本。"
+              : "将覆盖该连接上次复制的 skills、commands、agents、rules、输出样式、CLAUDE.md 和 settings。settings.env 不会复制；同连接的在跑会话可能热加载变化。"
+          }
+          confirmLabel="确认复制"
+          onConfirm={() => {
+            const runtime = connectionToInherit.runtime;
+            setConnectionToInherit(null);
+            void store.getState().inheritRuntimeConfig().then((succeeded) => {
+              addNotification(
+                succeeded
+                  ? `${runtime === "codex" ? "Codex" : "Claude"} 配置已复制`
+                  : `${runtime === "codex" ? "Codex" : "Claude"} 配置复制失败`,
+                succeeded ? "success" : "warning",
+              );
+            });
+          }}
+          onCancel={() => setConnectionToInherit(null)}
         />
       )}
     </div>

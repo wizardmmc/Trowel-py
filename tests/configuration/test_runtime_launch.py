@@ -78,6 +78,49 @@ def test_codex_pool_key_ignores_session_model_catalog() -> None:
     assert launch.pool_key == changed_catalog.pool_key
 
 
+def test_new_codex_home_isolates_discovery_but_restores_shell_home(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """新版连接把 app-server HOME 隔离到连接家，shell 工具仍看到真实用户家。"""
+
+    real_home = tmp_path / "real-home"
+    connection_home = tmp_path / "connection-home"
+    monkeypatch.setenv("HOME", str(real_home))
+    launch = replace(_launch_with_proxy(None), codex_config_dir=str(connection_home))
+
+    environment = launch.codex_environment(shared_state_root=tmp_path / "shared")
+    overrides = launch.codex_overrides()
+
+    assert environment["CODEX_HOME"] == str(connection_home)
+    assert environment["HOME"] == str(connection_home)
+    assert environment["CODEX_SQLITE_HOME"] == str(tmp_path / "shared")
+    assert overrides["shell_environment_policy"] == {
+        "set": {"HOME": str(real_home)}
+    }
+
+
+def test_legacy_custom_launch_keeps_shared_codex_home(tmp_path: Path) -> None:
+    """没有冻结配置家字段的旧 Custom 会话继续沿用旧共享根。"""
+
+    launch = _launch_with_proxy(None)
+
+    environment = launch.codex_environment(shared_state_root=tmp_path / "shared")
+
+    assert environment["CODEX_HOME"] == str(tmp_path / "shared")
+    assert "HOME" not in environment
+    assert "shell_environment_policy" not in launch.codex_overrides()
+
+
+def test_codex_pool_key_includes_frozen_connection_home(tmp_path: Path) -> None:
+    """相同 provider 迁移到新配置家后不能复用仍持有旧 HOME 的 manager。"""
+
+    legacy = _launch_with_proxy(None)
+    isolated = replace(legacy, codex_config_dir=str(tmp_path / "connection-home"))
+
+    assert isolated.pool_key != legacy.pool_key
+
+
 def test_private_claude_settings_uses_restricted_owned_directory(
     tmp_path: Path,
 ) -> None:

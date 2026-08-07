@@ -45,7 +45,11 @@ class _ConnectionPool(FakeCodexManager):
             self.launches.append(launch)
 
 
-def _launch(identity_version: int = 7) -> RuntimeLaunchConfiguration:
+def _launch(
+    identity_version: int = 7,
+    *,
+    codex_config_dir: str | None = None,
+) -> RuntimeLaunchConfiguration:
     """构造不输出真实凭据的已验证 Codex 连接。"""
 
     return RuntimeLaunchConfiguration(
@@ -64,6 +68,7 @@ def _launch(identity_version: int = 7) -> RuntimeLaunchConfiguration:
         proxy_url=None,
         claude_role_models={},
         codex_catalog=(),
+        codex_config_dir=codex_config_dir,
         api_key="must-not-be-persisted",
     )
 
@@ -161,6 +166,39 @@ def test_closed_session_resumes_with_archived_connection_conditions(
     assert resumed.agent_mcp_enabled is False
 
 
+def test_closed_codex_session_resumes_with_its_archived_config_home(
+    tmp_path: Path,
+) -> None:
+    """恢复旧 thread 时使用创建时配置家，不切到连接当前的新目录。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    archived_home = tmp_path / "accounts" / "archived"
+    current_home = tmp_path / "accounts" / "current"
+    store = BindingStore(tmp_path / "agent-sessions.json")
+    archive = SessionConfigurationArchive(
+        tmp_path / "agent-sessions-native-configurations.json"
+    )
+    archive.put(_frozen_binding(workdir), codex_config_dir=archived_home)
+    pool = _ConnectionPool()
+    hub = SessionHub(
+        store,
+        codex_manager=pool,
+        cc_registry={},
+        codex_config_home=tmp_path,
+        configuration_resolver=lambda *_args: _launch(
+            codex_config_dir=str(current_home)
+        ),
+        configuration_archive=archive,
+        require_configured_connections=True,
+    )
+
+    hub.create(codex_req(workdir, resume_from="thread-frozen-connection"))
+
+    assert len(pool.launches) == 1
+    assert pool.launches[0].codex_config_dir == str(archived_home.resolve())
+
+
 def test_resume_rejects_connection_identity_changed_since_creation(
     tmp_path: Path,
 ) -> None:
@@ -235,7 +273,7 @@ def test_archive_failure_prevents_native_binding_writeback(tmp_path: Path) -> No
         }
     )
 
-    def fail_archive(_binding) -> None:
+    def fail_archive(_binding, **_kwargs) -> None:
         raise OSError("archive unavailable")
 
     hub._configuration_archive.put = fail_archive

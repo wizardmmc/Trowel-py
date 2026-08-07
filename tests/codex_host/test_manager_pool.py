@@ -86,6 +86,12 @@ class _FakeManager:
         self.events.append(f"models:{self.name}")
         return [{"id": f"model-{self.name}"}]
 
+    async def list_skills(self, *, cwd: str) -> dict[str, object]:
+        """返回可识别 manager 和工作目录的技能目录。"""
+
+        self.events.append(f"skills:{self.name}:{cwd}")
+        return {"skills": [{"name": self.name}], "errors": []}
+
     async def list_threads(
         self,
         *,
@@ -123,6 +129,25 @@ class _SlowCloseManager(_FakeManager):
 
         self.close_started.set()
         await self.allow_close.wait()
+        await super().close()
+
+
+class _RetryCloseManager(_FakeManager):
+    """第一次关闭失败、第二次成功，用于验证维护隔离与显式恢复。"""
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        """保存尚未发生的单次关闭失败。"""
+
+        super().__init__(name, events)
+        self.failures_remaining = 1
+
+    async def close(self) -> None:
+        """首次抛错但不假定进程已退出，之后按正常关闭记录。"""
+
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            self.events.append(f"close-failed:{self.name}")
+            raise RuntimeError("simulated close failure")
         await super().close()
 
 
@@ -170,11 +195,15 @@ async def test_pool_routes_sessions_to_connection_manager_after_single_prewarm(
     pool.register(first, launch=_launch("alpha"))
     pool.register(second, launch=_launch("beta"))
 
-    await asyncio.gather(pool.send(first, "a"), pool.send(second, "b"))
+    first_skills, _ = await asyncio.gather(
+        pool.list_skills(first, cwd="/workspace/alpha"),
+        pool.send(second, "b"),
+    )
 
     assert pool.manager_count == 2
+    assert first_skills == {"skills": [{"name": "alpha"}], "errors": []}
     assert events[:2] == ["prewarm-start", "prewarm-close"]
-    assert "send:alpha:first:a" in events
+    assert "skills:alpha:/workspace/alpha" in events
     assert "send:beta:second:b" in events
 
 
@@ -298,3 +327,70 @@ async def test_release_launch_rejects_new_session_until_close_finishes(
     manager.allow_close.set()
     assert await release is True
     assert pool.manager_count == 0
+
+
+@pytest.mark.asyncio
+async def test_connection_maintenance_covers_every_frozen_identity(
+    tmp_path: Path,
+) -> None:
+    """当前连接更新后，旧 identity 的活动会话仍必须阻止配置删除或覆盖。"""
+
+    events: list[str] = []
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda launch: _FakeManager(
+            f"{launch.connection_id}-v{launch.connection_identity_version}",
+            events,
+        ),
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    old_launch = _launch("alpha", 1)
+    current_launch = _launch("alpha", 2)
+    old_session = SimpleNamespace(session_id="old-session")
+    pool.register(old_session, launch=old_launch)
+    await pool.list_models_for_launch(current_launch)
+
+    assert await pool.begin_connection_maintenance("alpha") is False
+    assert pool.manager_count == 2
+
+    pool.unregister(old_session.session_id)
+    assert await pool.begin_connection_maintenance("alpha") is True
+    assert pool.manager_count == 0
+    with pytest.raises(RuntimeError, match="being released"):
+        pool.register(SimpleNamespace(session_id="late"), launch=current_launch)
+    pool.end_connection_maintenance("alpha")
+
+    pool.register(SimpleNamespace(session_id="fresh"), launch=current_launch)
+    assert pool.manager_count == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_maintenance_close_keeps_manager_quarantined_for_retry(
+    tmp_path: Path,
+) -> None:
+    """关闭结果未知时不能忘掉旧 manager 或解除连接级创建门禁。"""
+
+    events: list[str] = []
+    manager = _RetryCloseManager("alpha", events)
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda _launch: manager,
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    launch = _launch("alpha")
+    await pool.list_models_for_launch(launch)
+
+    with pytest.raises(ExceptionGroup, match="maintenance close failed"):
+        await pool.begin_connection_maintenance("alpha")
+
+    assert pool.manager_count == 1
+    with pytest.raises(RuntimeError, match="being released"):
+        pool.register(SimpleNamespace(session_id="blocked"), launch=launch)
+
+    assert await pool.begin_connection_maintenance("alpha") is True
+    assert pool.manager_count == 0
+    pool.end_connection_maintenance("alpha")
+    pool.register(SimpleNamespace(session_id="fresh"), launch=launch)
+    assert pool.manager_count == 1

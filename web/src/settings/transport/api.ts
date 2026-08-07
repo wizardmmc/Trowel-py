@@ -87,6 +87,30 @@ export function deleteConnection(id: string, expectedVersion: number): Promise<n
   );
 }
 
+/** 把真实全局 Claude 用户配置的受支持部分覆盖继承到连接家。 */
+export function inheritGlobalClaudeConfig(
+  id: string,
+  expectedVersion: number,
+): Promise<Connection> {
+  const query = new URLSearchParams({ expected_version: String(expectedVersion) });
+  return requestConfiguration(
+    `/api/configuration/connections/${encodeURIComponent(id)}/claude-config/inherit?${query.toString()}`,
+    { method: "POST" },
+  );
+}
+
+/** 把真实全局 Codex 配置的受支持部分覆盖继承到连接家。 */
+export function inheritGlobalCodexConfig(
+  id: string,
+  expectedVersion: number,
+): Promise<Connection> {
+  const query = new URLSearchParams({ expected_version: String(expectedVersion) });
+  return requestConfiguration(
+    `/api/configuration/connections/${encodeURIComponent(id)}/codex-config/inherit?${query.toString()}`,
+    { method: "POST" },
+  );
+}
+
 /** 写入只在本次调用内存在的凭据，不返回原值。 */
 export function writeSecret(
   id: string,

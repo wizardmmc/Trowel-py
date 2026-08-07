@@ -204,6 +204,16 @@ describe("cc REST client", () => {
     expect(url).toContain("workdir=%2Fwd");
   });
 
+  it("listSlashItems binds the catalog to a Claude session", async () => {
+    vi.stubGlobal("fetch", mockFetchEnvelope([]));
+
+    await listSlashItems("/wd", "session-a");
+
+    const url = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(url).toContain("workdir=%2Fwd");
+    expect(url).toContain("session_id=session-a");
+  });
+
   it("listDir sends path query and returns subdirs", async () => {
     vi.stubGlobal(
       "fetch",

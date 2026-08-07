@@ -24,6 +24,15 @@ from trowel_py.configuration.catalog import (
     HttpModelCatalogFetcher,
     sanitize_url,
 )
+from trowel_py.configuration.claude_home import (
+    ClaudeConnectionHomeError,
+    ClaudeConnectionHomeStore,
+    ClaudeHomeTombstone,
+)
+from trowel_py.configuration.codex_home import (
+    CodexConnectionHomeError,
+    CodexConnectionHomeStore,
+)
 from trowel_py.configuration.errors import (
     ConfigurationError,
     not_found,
@@ -57,16 +66,29 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AccountSlotDeletion:
-    """记录 Official 账号槽移入墓碑后的补偿信息。
+class CodexHomeDeletion:
+    """记录 Codex 连接家移入墓碑后的补偿信息。
 
     Attributes:
-        slot: 数据库仍处于活动状态时应恢复到的托管槽路径。
+        home: 数据库仍处于活动状态时应恢复到的托管家路径。
         tombstone: 数据库确认软删除后才能永久清理的临时路径。
     """
 
-    slot: Path
+    home: Path
     tombstone: Path
+
+
+@dataclass(frozen=True)
+class ConnectionStorageDeletion:
+    """记录软删除前暂存的 Codex 与 Claude 连接家。
+
+    Attributes:
+        codex_home: 需要在数据库提交后永久清理的 Codex 连接家。
+        claude_home: 需要长期保留到后续清理 slice 的 Claude 连接家墓碑。
+    """
+
+    codex_home: CodexHomeDeletion | None = None
+    claude_home: ClaudeHomeTombstone | None = None
 
 
 def _now() -> str:
@@ -253,6 +275,8 @@ class ConfigurationService:
     Attributes:
         repository: 当前请求或作业使用的配置仓储。
         catalog_fetcher: 获取第三方模型列表的可替换客户端。
+        claude_homes: 管理 Claude 连接家与继承发布的存储边界。
+        codex_homes: 管理 Codex 连接家与双来源继承发布的存储边界。
     """
 
     def __init__(
@@ -261,16 +285,22 @@ class ConfigurationService:
         *,
         catalog_fetcher: Any | None = None,
         official_account_root: Path | None = None,
+        claude_homes: ClaudeConnectionHomeStore | None = None,
+        codex_homes: CodexConnectionHomeStore | None = None,
     ) -> None:
-        """保存仓储、模型客户端和 Trowel 托管的 Official 账号槽位根。"""
+        """保存仓储、模型客户端与两个 runtime 的私有目录边界。"""
 
         self.repository = repository
         self.catalog_fetcher = catalog_fetcher or HttpModelCatalogFetcher()
-        self.official_account_root = (
-            official_account_root
-            if official_account_root is not None
-            else resolve_application_data_root() / "codex-accounts"
+        self.codex_homes = codex_homes or CodexConnectionHomeStore(
+            root=(
+                official_account_root
+                if official_account_root is not None
+                else resolve_application_data_root() / "codex-accounts"
+            )
         )
+        self.official_account_root = self.codex_homes.root
+        self.claude_homes = claude_homes or ClaudeConnectionHomeStore()
 
     def restrict_codex_catalog_candidates(
         self,
@@ -309,7 +339,7 @@ class ConfigurationService:
                 "CONNECTION_SHAPE_INVALID",
                 "Codex Official 账号目录由 Trowel 自动管理",
             )
-        slot = self._official_account_slot_path(connection_id)
+        slot = self._codex_connection_home_path(connection_id)
         prepared = (
             replace(draft, login_directory=str(slot))
             if draft.kind is ConnectionKind.CODEX_OFFICIAL
@@ -363,12 +393,12 @@ class ConfigurationService:
 
         self.official_account_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.official_account_root.chmod(0o700)
-        self._recover_official_account_tombstones()
+        self._recover_codex_home_tombstones()
         migrated = 0
         for row in self.repository.list_connections():
             if row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
                 continue
-            expected = self._official_account_slot_path(str(row["id"]))
+            expected = self._codex_connection_home_path(str(row["id"]))
             current = (
                 Path(str(row["login_directory"])).expanduser().absolute()
                 if row["login_directory"]
@@ -411,6 +441,103 @@ class ConfigurationService:
 
         return tuple(
             self._connection_view(row) for row in self.repository.list_connections()
+        )
+
+    def inherit_global_claude_config(
+        self,
+        connection_id: str,
+        *,
+        expected_version: int,
+    ) -> ConnectionView:
+        """把真实全局 Claude 用户配置覆盖发布到一项兼容连接家。
+
+        Args:
+            connection_id: 接收配置副本的 Claude 兼容连接 ID。
+            expected_version: 用户确认继承时看到的连接乐观版本。
+
+        Returns:
+            继承完成后的脱敏连接读模型。
+
+        Raises:
+            ConfigurationError: 连接不存在、版本已变化、种类不支持或来源配置损坏。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if int(row["version"]) != expected_version:
+            raise version_conflict()
+        if row["kind"] != ConnectionKind.CLAUDE_COMPATIBLE.value:
+            raise ConfigurationError(
+                "CLAUDE_HOME_UNSUPPORTED",
+                "只有 Claude 兼容供应商可以继承全局 Claude 配置",
+                status_code=422,
+            )
+        try:
+            self.claude_homes.inherit_global(
+                connection_id,
+                forbidden_values=self._known_connection_secrets(),
+            )
+        except ClaudeConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CLAUDE_HOME_INHERIT_FAILED", str(exc), status_code=409
+            ) from exc
+        return self.get_connection(connection_id)
+
+    def inherit_global_codex_config(
+        self,
+        connection_id: str,
+        *,
+        expected_version: int,
+    ) -> ConnectionView:
+        """把两处真实全局 Codex 用户配置覆盖发布到独立连接家。
+
+        Args:
+            connection_id: 接收配置副本的 Codex Official 或 Custom 连接 ID。
+            expected_version: 用户确认继承时看到的连接乐观版本。
+
+        Returns:
+            继承完成后的脱敏连接读模型。
+
+        Raises:
+            ConfigurationError: 连接不存在、版本变化、种类不支持或来源不安全。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if int(row["version"]) != expected_version:
+            raise version_conflict()
+        if row["kind"] not in {
+            ConnectionKind.CODEX_OFFICIAL.value,
+            ConnectionKind.CODEX_CUSTOM.value,
+        }:
+            raise ConfigurationError(
+                "CODEX_HOME_UNSUPPORTED",
+                "只有 Codex 连接可以继承全局 Codex 配置",
+                status_code=422,
+            )
+        try:
+            self.codex_homes.inherit_global(
+                connection_id,
+                forbidden_values=self._known_connection_secrets(),
+            )
+        except CodexConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CODEX_HOME_INHERIT_FAILED", str(exc), status_code=409
+            ) from exc
+        return self.get_connection(connection_id)
+
+    def _known_connection_secrets(self) -> tuple[str, ...]:
+        """返回当前设置库中的全部已知凭据原值，供配置副本 canary 扫描。"""
+
+        return tuple(
+            secret
+            for connection in self.repository.list_connections()
+            for kind in SecretKind
+            if (
+                secret := self.repository.read_secret(str(connection["id"]), kind)
+            )
         )
 
     def list_agent_connection_options(
@@ -860,81 +987,116 @@ class ConfigurationService:
 
     def delete_connection(
         self, connection_id: str, *, expected_version: int
-    ) -> AccountSlotDeletion | None:
-        """软删除连接与 secret，并暂存 Official 账号槽等待事务提交。"""
+    ) -> ConnectionStorageDeletion | None:
+        """软删除连接与 secret，并暂存 runtime 私有目录等待提交裁决。"""
 
         row = self.repository.get_connection(connection_id)
-        owned_account_slot = self._owned_official_account_slot(row)
-        tombstone: Path | None = None
-        if owned_account_slot is not None:
-            tombstone = owned_account_slot.with_name(
-                f".deleted-{owned_account_slot.name}-{uuid.uuid4().hex}"
+        owned_codex_home = self._owned_codex_home(row)
+        codex_tombstone: Path | None = None
+        if owned_codex_home is not None:
+            codex_tombstone = owned_codex_home.with_name(
+                f".deleted-{owned_codex_home.name}-{uuid.uuid4().hex}"
             )
-            owned_account_slot.rename(tombstone)
+            owned_codex_home.rename(codex_tombstone)
+        claude_deletion: ClaudeHomeTombstone | None = None
+        if row is not None and row["kind"] == ConnectionKind.CLAUDE_COMPATIBLE.value:
+            try:
+                claude_deletion = self.claude_homes.stage_deletion(connection_id)
+            except ClaudeConnectionHomeError as exc:
+                if (
+                    codex_tombstone is not None
+                    and codex_tombstone.exists()
+                    and owned_codex_home is not None
+                    and not owned_codex_home.exists()
+                ):
+                    codex_tombstone.rename(owned_codex_home)
+                raise ConfigurationError(
+                    "CLAUDE_HOME_INVALID", str(exc), status_code=409
+                ) from exc
         try:
             with self.repository.atomic():
                 self._delete_connection(connection_id, expected_version=expected_version)
         except BaseException:
             if (
-                tombstone is not None
-                and tombstone.exists()
-                and owned_account_slot is not None
-                and not owned_account_slot.exists()
+                codex_tombstone is not None
+                and codex_tombstone.exists()
+                and owned_codex_home is not None
+                and not owned_codex_home.exists()
             ):
-                tombstone.rename(owned_account_slot)
+                codex_tombstone.rename(owned_codex_home)
+            self.claude_homes.restore_deletion(claude_deletion)
             raise
-        return (
-            AccountSlotDeletion(slot=owned_account_slot, tombstone=tombstone)
-            if tombstone is not None and owned_account_slot is not None
+        codex_deletion = (
+            CodexHomeDeletion(
+                home=owned_codex_home,
+                tombstone=codex_tombstone,
+            )
+            if codex_tombstone is not None and owned_codex_home is not None
             else None
         )
+        if codex_deletion is None and claude_deletion is None:
+            return None
+        return ConnectionStorageDeletion(
+            codex_home=codex_deletion,
+            claude_home=claude_deletion,
+        )
 
-    def finalize_account_slot_deletion(
-        self, deletion: AccountSlotDeletion | None
+    def finalize_connection_storage_deletion(
+        self, deletion: ConnectionStorageDeletion | None
     ) -> None:
-        """数据库软删除提交后尽力永久清理账号槽墓碑。"""
+        """数据库提交后永久清理 Codex 连接家，保留 Claude 历史家。"""
 
-        if deletion is None or not deletion.tombstone.exists():
+        codex_home = deletion.codex_home if deletion is not None else None
+        if codex_home is None or not codex_home.tombstone.exists():
             return
         try:
-            shutil.rmtree(deletion.tombstone)
+            shutil.rmtree(codex_home.tombstone)
         except OSError:
             _log.exception(
-                "Official 账号槽延迟清理失败：%s", deletion.tombstone.name
+                "Codex 连接家延迟清理失败：%s", codex_home.tombstone.name
             )
 
-    @staticmethod
-    def restore_account_slot_deletion(deletion: AccountSlotDeletion | None) -> None:
-        """数据库提交失败时把仍存在的墓碑恢复到原账号槽。"""
+    def restore_connection_storage_deletion(
+        self, deletion: ConnectionStorageDeletion | None
+    ) -> None:
+        """数据库提交失败时恢复 Codex 与 Claude 连接家。"""
 
+        codex_home = deletion.codex_home if deletion is not None else None
         if (
-            deletion is not None
-            and deletion.tombstone.exists()
-            and not deletion.slot.exists()
+            codex_home is not None
+            and codex_home.tombstone.exists()
+            and not codex_home.home.exists()
         ):
-            deletion.tombstone.rename(deletion.slot)
+            codex_home.tombstone.rename(codex_home.home)
+        self.claude_homes.restore_deletion(
+            deletion.claude_home if deletion is not None else None
+        )
 
-    def _recover_official_account_tombstones(self) -> None:
-        """按数据库软删除状态恢复未提交墓碑，或清理已提交墓碑。"""
+    def _recover_codex_home_tombstones(self) -> None:
+        """按数据库软删除状态恢复 Codex 家墓碑，或清理已提交墓碑。"""
 
         for tombstone in self.official_account_root.glob(".deleted-*"):
             if not tombstone.is_dir() or tombstone.is_symlink():
                 continue
             connection_id = self._connection_id_from_tombstone(tombstone)
             if connection_id is None:
-                _log.error("无法识别 Official 账号槽墓碑：%s", tombstone.name)
+                _log.error("无法识别 Codex 连接家墓碑：%s", tombstone.name)
                 continue
             row = self.repository.get_connection(connection_id, include_deleted=True)
-            active_official = (
+            active_codex = (
                 row is not None
                 and row["deleted_at"] is None
-                and row["kind"] == ConnectionKind.CODEX_OFFICIAL.value
+                and row["kind"]
+                in {
+                    ConnectionKind.CODEX_OFFICIAL.value,
+                    ConnectionKind.CODEX_CUSTOM.value,
+                }
             )
-            if active_official:
-                slot = self._official_account_slot_path(connection_id)
+            if active_codex:
+                slot = self._codex_connection_home_path(connection_id)
                 if slot.exists():
                     _log.error(
-                        "Official 账号槽与待恢复墓碑同时存在：%s", tombstone.name
+                        "Codex 连接家与待恢复墓碑同时存在：%s", tombstone.name
                     )
                     continue
                 tombstone.rename(slot)
@@ -943,7 +1105,7 @@ class ConfigurationService:
                 shutil.rmtree(tombstone)
             except OSError:
                 _log.exception(
-                    "Official 账号槽墓碑仍无法清理：%s", tombstone.name
+                    "Codex 连接家墓碑仍无法清理：%s", tombstone.name
                 )
 
     @staticmethod
@@ -959,37 +1121,40 @@ class ConfigurationService:
             return None
         return connection_id if payload.startswith(f"{connection_id}-") else None
 
-    def _owned_official_account_slot(self, row: sqlite3.Row | None) -> Path | None:
-        """只返回当前连接在托管根中的精确账号槽，拒绝任意历史外部路径。"""
+    def _owned_codex_home(self, row: sqlite3.Row | None) -> Path | None:
+        """只返回当前 Codex 连接在托管根中的精确配置家。"""
 
-        if row is None or row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
+        if row is None or row["kind"] not in {
+            ConnectionKind.CODEX_OFFICIAL.value,
+            ConnectionKind.CODEX_CUSTOM.value,
+        }:
             return None
-        expected = self._official_account_slot_path(str(row["id"]))
+        try:
+            expected = self.codex_homes.existing_home(str(row["id"]))
+        except CodexConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CODEX_HOME_INVALID", str(exc), status_code=409
+            ) from exc
+        if expected is None:
+            return None
+        if row["kind"] == ConnectionKind.CODEX_CUSTOM.value:
+            return expected
         current = (
             Path(str(row["login_directory"])).expanduser().absolute()
             if row["login_directory"]
             else None
         )
-        return expected if current == expected and expected.is_dir() else None
+        return expected if current == expected else None
 
-    def _official_account_slot_path(self, connection_id: str) -> Path:
-        """返回不会跟随槽位符号链接的托管路径。"""
+    def _codex_connection_home_path(self, connection_id: str) -> Path:
+        """返回不会跟随符号链接的 Codex 托管连接家路径。"""
 
         try:
-            parsed_id = uuid.UUID(connection_id)
-        except ValueError as exc:
+            return self.codex_homes.home_for(connection_id)
+        except CodexConnectionHomeError as exc:
             raise ConfigurationError(
-                "OFFICIAL_ACCOUNT_SLOT_INVALID", "Official 账号槽标识无效"
+                "OFFICIAL_ACCOUNT_SLOT_INVALID", str(exc)
             ) from exc
-        root = self.official_account_root.expanduser().resolve()
-        slot = root / str(parsed_id)
-        if slot.is_symlink():
-            raise ConfigurationError(
-                "OFFICIAL_ACCOUNT_SLOT_INVALID",
-                "Official 账号槽不能是符号链接",
-                status_code=409,
-            )
-        return slot
 
     def resolve_agent_session_defaults(
         self, fallback: Mapping[str, Any] | None
@@ -1453,7 +1618,7 @@ class ConfigurationService:
                 "AUTH_MISSING", "连接凭据尚未配置", status_code=422
             )
         if draft.kind is ConnectionKind.CODEX_OFFICIAL:
-            expected_slot = self._official_account_slot_path(connection_id)
+            expected_slot = self._codex_connection_home_path(connection_id)
             configured_slot = (
                 Path(draft.login_directory).expanduser().absolute()
                 if draft.login_directory
@@ -1471,6 +1636,24 @@ class ConfigurationService:
             draft.proxy_username,
             self.repository.read_secret(connection_id, SecretKind.PROXY_PASSWORD),
         )
+        claude_config_dir: str | None = None
+        claude_plugin_dir: str | None = None
+        codex_config_dir: str | None = None
+        if draft.kind is ConnectionKind.CLAUDE_COMPATIBLE:
+            try:
+                claude_config_dir = str(self.claude_homes.ensure_home(connection_id))
+                claude_plugin_dir = str(self.claude_homes.shared_plugin_root)
+            except ClaudeConnectionHomeError as exc:
+                raise ConfigurationError(
+                    "CLAUDE_HOME_INVALID", str(exc), status_code=409
+                ) from exc
+        if draft.runtime is RuntimeKind.CODEX:
+            try:
+                codex_config_dir = str(self.codex_homes.ensure_home(connection_id))
+            except CodexConnectionHomeError as exc:
+                raise ConfigurationError(
+                    "CODEX_HOME_INVALID", str(exc), status_code=409
+                ) from exc
         return RuntimeLaunchConfiguration(
             connection_id=connection_id,
             connection_version=int(row["version"]),
@@ -1487,6 +1670,9 @@ class ConfigurationService:
             proxy_url=proxy_url,
             claude_role_models=dict(draft.claude_role_models),
             codex_catalog=draft.codex_catalog,
+            claude_config_dir=claude_config_dir,
+            claude_plugin_dir=claude_plugin_dir,
+            codex_config_dir=codex_config_dir,
             api_key=api_key,
             capability_source=capability_source,
         )
@@ -1784,6 +1970,20 @@ class ConfigurationService:
             login_directory_exists=(
                 Path(login_directory).expanduser().exists() if login_directory else None
             ),
+            claude_config_inherited=(
+                self.claude_homes.is_inherited(connection_id)
+                if row["kind"] == ConnectionKind.CLAUDE_COMPATIBLE.value
+                else None
+            ),
+            codex_config_inherited=(
+                self.codex_homes.is_inherited(connection_id)
+                if row["kind"]
+                in {
+                    ConnectionKind.CODEX_OFFICIAL.value,
+                    ConnectionKind.CODEX_CUSTOM.value,
+                }
+                else None
+            ),
             proxy_url=(
                 sanitize_url(str(row["proxy_url"])) if row["proxy_url"] else None
             ),
@@ -1817,6 +2017,10 @@ class ConfigurationService:
                     "ANTHROPIC_AUTH_TOKEN": f"<{auth_status}>",
                 },
                 "model_roles": _load_json(row["claude_role_models"], {}),
+                "trowel_connection_home": {
+                    "inherited": self.claude_homes.is_inherited(str(row["id"])),
+                    "provider_settings": "per-session override",
+                },
             }
             return {"format": "json", "body": body}
         if row["kind"] == ConnectionKind.CODEX_OFFICIAL.value:
@@ -1826,18 +2030,25 @@ class ConfigurationService:
                     "provider": "openai",
                     "account": f"<{auth_status}>",
                     "oauth": "<Codex managed>",
+                    "trowel_connection_home": {
+                        "inherited": self.codex_homes.is_inherited(str(row["id"])),
+                        "provider_settings": "manager override",
+                    },
                 },
             }
-        return {
-            "format": "toml",
-            "body": {
-                "model_provider": row["id"],
-                "base_url": row["base_url"],
-                "wire_api": row["protocol"],
-                "api_key": f"<{auth_status}>",
-                "models": _load_json(row["codex_catalog"], []),
-            },
+        body = {
+            "model_provider": row["id"],
+            "base_url": row["base_url"],
+            "wire_api": row["protocol"],
+            "api_key": f"<{auth_status}>",
+            "models": _load_json(row["codex_catalog"], []),
         }
+        if row["kind"] == ConnectionKind.CODEX_CUSTOM.value:
+            body["trowel_connection_home"] = {
+                "inherited": self.codex_homes.is_inherited(str(row["id"])),
+                "provider_settings": "manager override",
+            }
+        return {"format": "toml", "body": body}
 
     def _session_view(self, row: sqlite3.Row) -> SessionConfigurationView:
         """把持久会话配置与当前连接和能力表重新核对。"""

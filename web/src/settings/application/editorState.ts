@@ -52,6 +52,7 @@ export function editorFromConnection(
     dirty: false,
     saving: false,
     deleting: false,
+    inheritingRuntimeConfig: false,
     error: null,
     conflict: false,
     modelFetch: {
@@ -106,6 +107,7 @@ export function newConnectionEditor(
     dirty: false,
     saving: false,
     deleting: false,
+    inheritingRuntimeConfig: false,
     error: null,
     conflict: false,
     modelFetch: idleModelFetch(),

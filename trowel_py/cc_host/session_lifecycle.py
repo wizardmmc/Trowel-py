@@ -60,6 +60,8 @@ def open_session(
     *,
     proxy_base_url: str | None,
     settings_path: str | Path | None,
+    claude_config_dir: str | Path | None = None,
+    claude_plugin_dir: str | Path | None = None,
     workdir_index: dict[str, set[str]],
     session_names: dict[str, str],
     max_connections: int,
@@ -82,6 +84,10 @@ def open_session(
         registry: 接收新 host 的实时会话表。
         proxy_base_url: Claude Code 使用的本地代理地址。
         settings_path: 读取模型服务商环境变量的配置路径。
+        claude_config_dir: 该会话冻结使用的 Claude 用户配置目录；
+            None 表示兼容旧会话，继续使用 ``~/.claude``。
+        claude_plugin_dir: 连接共享的 Claude 插件缓存目录；None 表示
+            沿用 Claude Code 默认行为。
         workdir_index: 工作目录到会话 ID 的索引。
         session_names: 会话 ID 到临时显示名称的索引。
         max_connections: 用户会话连接上限。
@@ -156,6 +162,11 @@ def open_session(
             ),
         )
     )
+    claude_home_config: dict[str, str | Path | None] = {}
+    if claude_config_dir is not None:
+        claude_home_config["claude_config_dir"] = claude_config_dir
+    if claude_plugin_dir is not None:
+        claude_home_config["claude_plugin_dir"] = claude_plugin_dir
     try:
         host = host_factory(
             sid,
@@ -166,6 +177,7 @@ def open_session(
             resume_from=req.resume_from,
             proxy_base_url=proxy_base_url,
             settings_path=settings_path,
+            **claude_home_config,
             owned_settings_path=owned_settings_path,
             close_callback=close_callback,
             mcp_config=mcp_config,

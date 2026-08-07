@@ -9,7 +9,7 @@ import asyncio
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -264,6 +264,7 @@ class SessionHub:
         configuration_archive: SessionConfigurationArchive | None = None,
         require_configured_connections: bool | Callable[[], bool] = False,
         private_claude_settings_directory: str | Path | None = None,
+        cc_history_projects_roots: Callable[[], Sequence[Path]] | None = None,
     ) -> None:
         """创建统一管理 Claude Code 与 Codex 会话的 Session Hub。
 
@@ -307,6 +308,8 @@ class SessionHub:
                 旧测试和内部临时调用默认保持兼容。
             private_claude_settings_directory: Claude 连接级私有 settings 的应用自有
                 目录；未提供时使用 binding 文件旁的运行时私有目录。
+            cc_history_projects_roots: 返回所有活动连接家和保留墓碑
+                projects 根的端口；未提供时只扫描真实全局历史。
         """
 
         self._store = store
@@ -347,6 +350,7 @@ class SessionHub:
             if private_claude_settings_directory is not None
             else store.path.parent / "runtime-private" / "claude-settings"
         )
+        self._cc_history_projects_roots = cc_history_projects_roots
         cleanup_private_claude_settings(self._private_claude_settings_directory)
         self._codex_config_home = (
             Path(codex_config_home) if codex_config_home is not None else None
@@ -830,6 +834,20 @@ class SessionHub:
                 raise ConditionMismatchError(
                     "saved connection identity changed; manual rebind is required"
                 )
+            if req.runtime == "claude_code":
+                launch = replace(
+                    launch,
+                    claude_config_dir=self._claude_config_dir_for_native(
+                        req.resume_from
+                    ),
+                )
+            elif req.runtime == "codex":
+                launch = replace(
+                    launch,
+                    codex_config_dir=self._codex_config_dir_for_native(
+                        req.resume_from
+                    ),
+                )
         if frozen_connection is not None:
             if req.session_kind != "discussion":
                 raise InvalidSessionRequestError(
@@ -892,9 +910,22 @@ class SessionHub:
             return prepared
         from trowel_py.cc_host.session_scan import read_session_config
 
-        native = await asyncio.to_thread(
-            read_session_config, req.workdir, req.resume_from
-        )
+        claude_config_dir = self._claude_config_dir_for_native(req.resume_from)
+        if claude_config_dir is None:
+            # 没有归档目录说明这是旧会话，继续调用原有接口，避免把新参数扩散给
+            # 只实现了旧扫描协议的替身或外部适配器。
+            native = await asyncio.to_thread(
+                read_session_config,
+                req.workdir,
+                req.resume_from,
+            )
+        else:
+            native = await asyncio.to_thread(
+                read_session_config,
+                req.workdir,
+                req.resume_from,
+                projects_root=Path(claude_config_dir) / "projects",
+            )
         if native is None:
             return prepared
         explicit = req.model_fields_set
@@ -1010,6 +1041,41 @@ class SessionHub:
         if binding is not None:
             return binding
         return self._configuration_archive.get(runtime, native_session_id)
+
+    def _claude_config_dir_for_native(self, native_session_id: str) -> str | None:
+        """读取 Claude Code 原生会话冻结的配置目录。
+
+        该值只存在脱敏档案，不进入公开 binding，避免把本机路径
+        暴露给前端。旧档案缺少字段时返回 None，以保持 ``~/.claude``
+        语义。
+
+        Args:
+            native_session_id: Claude Code 原生会话 ID。
+
+        Returns:
+            连接级配置目录，或表示全局目录的 None。
+        """
+
+        archived = self._configuration_archive.get(
+            Runtime.CLAUDE_CODE, native_session_id
+        )
+        return archived.claude_config_dir if archived is not None else None
+
+    def _codex_config_dir_for_native(self, native_session_id: str) -> str | None:
+        """读取 Codex 原生 thread 冻结的连接配置家。
+
+        该路径只进入后端私有档案。旧档案没有字段时返回 None，使 Official
+        继续使用既有账号槽、Custom 继续使用修复前的共享根。
+
+        Args:
+            native_session_id: Codex app-server 分配的原生 thread ID。
+
+        Returns:
+            新版连接配置家路径，或表示旧启动语义的 None。
+        """
+
+        archived = self._configuration_archive.get(Runtime.CODEX, native_session_id)
+        return archived.codex_config_dir if archived is not None else None
 
     def latest_session_defaults(self) -> dict[str, Any] | None:
         """读取最近创建或使用的会话配置，作为新建会话的默认值。
@@ -1182,6 +1248,12 @@ class SessionHub:
                 "close_callback": close_callback,
                 "memory_mcp_enabled": memory_mcp_enabled,
             }
+            if launch.claude_config_dir is not None:
+                connection_host_config["claude_config_dir"] = (
+                    launch.claude_config_dir
+                )
+            if launch.claude_plugin_dir is not None:
+                connection_host_config["claude_plugin_dir"] = launch.claude_plugin_dir
         if bootstrap_context:
             connection_host_config["bootstrap_context"] = bootstrap_context
         if not req.memory_eligibility:
@@ -1465,6 +1537,31 @@ class SessionHub:
             return True
         return bool(await releaser(launch))
 
+    async def begin_codex_connection_maintenance(
+        self,
+        connection_id: str,
+    ) -> bool:
+        """为配置覆盖或删除独占一项 Codex 连接的全部 manager identity。"""
+
+        if self._codex is None:
+            return True
+        starter = getattr(self._codex, "begin_connection_maintenance", None)
+        if starter is None:
+            return True
+        return bool(await starter(connection_id))
+
+    def end_codex_connection_maintenance(
+        self,
+        connection_id: str,
+    ) -> None:
+        """解除 Codex 连接维护门禁，允许后续请求创建新 manager。"""
+
+        if self._codex is None:
+            return
+        finisher = getattr(self._codex, "end_connection_maintenance", None)
+        if finisher is not None:
+            finisher(connection_id)
+
     async def list_history(
         self,
         workdir: str,
@@ -1505,11 +1602,20 @@ class SessionHub:
         required = offset + limit + 1
         cc_non_user_ids = self._non_user_identities.ids(Runtime.CLAUDE_CODE)
         codex_non_user_ids = self._non_user_identities.ids(Runtime.CODEX)
+        scan_kwargs: dict[str, Any] = {}
+        if self._cc_history_projects_roots is not None:
+            from trowel_py.cc_host.session_scan import cc_projects_root
+
+            projects_roots = [cc_projects_root()]
+            projects_roots.extend(self._cc_history_projects_roots())
+            # 同一路径可能被多个保守发现入口返回，先去重再交给扫描器。
+            scan_kwargs["projects_roots"] = tuple(dict.fromkeys(projects_roots))
         cc_summaries = await asyncio.to_thread(
             scan_cc_history,
             workdir,
             limit=required,
             excluded_ids=cc_non_user_ids,
+            **scan_kwargs,
         )
         codex_threads: list[dict[str, Any]] = []
         if self._codex is not None:
@@ -1560,10 +1666,39 @@ class SessionHub:
         if not native_session_id:
             return []
         if binding.runtime is Runtime.CLAUDE_CODE:
-            from trowel_py.cc_host.history import parse_history
+            from trowel_py.cc_host.history import (
+                parse_history,
+                parse_history_from_root,
+            )
 
-            events = await asyncio.to_thread(
-                parse_history, binding.workdir, native_session_id
+            live_host = self._cc_registry.get(session_id)
+            projects_root = (
+                getattr(live_host, "projects_root", None)
+                if live_host is not None
+                else None
+            )
+            if projects_root is None:
+                claude_config_dir = self._claude_config_dir_for_native(
+                    native_session_id
+                )
+                projects_root = (
+                    Path(claude_config_dir) / "projects"
+                    if claude_config_dir is not None
+                    else None
+                )
+            events = await (
+                asyncio.to_thread(
+                    parse_history,
+                    binding.workdir,
+                    native_session_id,
+                )
+                if projects_root is None
+                else asyncio.to_thread(
+                    parse_history_from_root,
+                    binding.workdir,
+                    native_session_id,
+                    projects_root=projects_root,
+                )
             )
             cc_adapter = ClaudeCodeEventAdapter(session_id)
             return [
@@ -2091,6 +2226,36 @@ class SessionHub:
             raise
         except Exception as exc:  # noqa: BLE001
             raise RuntimeTurnError(f"codex command roster failed: {exc}") from exc
+
+    async def list_codex_skills(self, session_id: str) -> dict[str, Any]:
+        """列出当前 Codex 会话实际可加载的技能。
+
+        Args:
+            session_id: Trowel 会话 ID；工作目录从持久绑定读取，客户端不能代填。
+
+        Returns:
+            会话所属连接的技能目录与脱敏加载错误。
+
+        Raises:
+            SessionNotFoundError: 找不到 Trowel 会话记录或对应的 Codex 会话。
+            SessionOperationError: 该 Trowel 会话由 Claude Code 运行。
+            RuntimeUnavailableError: 未配置 Codex 会话管理器。
+            RuntimeTurnError: 启动 Codex 或读取技能目录失败。
+        """
+
+        binding = self._require(session_id)
+        session = self._require_codex_session(session_id)
+        try:
+            return await self._require_codex_runtime().list_skills(
+                session,
+                cwd=binding.workdir,
+            )
+        except SessionHubError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # ProtocolViolationError 的原生 message 可能嵌入技能绝对路径；公开
+            # HTTP 边界只说明目录读取失败，详细 payload 保留在后端异常链中。
+            raise RuntimeTurnError("codex skill roster failed") from exc
 
     async def compact_codex(self, session_id: str) -> None:
         """请求 Codex 压缩当前 thread 的上下文。
@@ -3543,7 +3708,10 @@ class SessionHub:
                 },
             )
             # 先落脱敏恢复条件；档案失败时不能让 binding 进入不可安全恢复的半状态。
-            self._configuration_archive.put(candidate)
+            self._configuration_archive.put(
+                candidate,
+                claude_config_dir=getattr(host, "claude_config_dir", None),
+            )
             updated = self._store.update_native(
                 session_id,
                 native_session_id=cc_session_id,
@@ -3599,7 +3767,16 @@ class SessionHub:
                     if value is not None
                 },
             )
-            self._configuration_archive.put(candidate)
+            launch = self._pending_last_choices.get(session_id)
+            codex_config_dir = (
+                launch.codex_config_dir
+                if launch is not None
+                else self._codex_config_dir_for_native(thread_binding.thread_id)
+            )
+            self._configuration_archive.put(
+                candidate,
+                codex_config_dir=codex_config_dir,
+            )
             updated = self._store.update_native(
                 session_id,
                 native_session_id=thread_binding.thread_id,

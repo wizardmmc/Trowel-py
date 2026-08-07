@@ -23,6 +23,8 @@ import {
   ConfigurationApiError,
   createConnection,
   deleteConnection,
+  inheritGlobalClaudeConfig,
+  inheritGlobalCodexConfig,
   deleteSecret,
   deleteTaskBinding,
   fetchConfigurationCatalog,
@@ -67,6 +69,14 @@ export interface SettingsApi {
     draft: ConnectionDraft,
   ) => Promise<Connection>;
   readonly deleteConnection: (id: string, expectedVersion: number) => Promise<null>;
+  readonly inheritGlobalClaudeConfig: (
+    id: string,
+    expectedVersion: number,
+  ) => Promise<Connection>;
+  readonly inheritGlobalCodexConfig: (
+    id: string,
+    expectedVersion: number,
+  ) => Promise<Connection>;
   readonly writeSecret: (
     id: string,
     kind: SecretKind,
@@ -134,6 +144,7 @@ export interface SettingsState {
   readonly updateClaudeRole: (role: string, model: string) => void;
   readonly saveConnection: () => Promise<void>;
   readonly removeConnection: () => Promise<void>;
+  readonly inheritRuntimeConfig: () => Promise<boolean>;
   readonly fetchConnectionModels: () => Promise<void>;
   readonly refreshCodexOfficialAccount: () => Promise<void>;
   readonly beginCodexOfficialLogin: () => Promise<CodexOfficialLogin | null>;
@@ -155,6 +166,8 @@ const defaultApi: SettingsApi = {
   createConnection,
   updateConnection,
   deleteConnection,
+  inheritGlobalClaudeConfig,
+  inheritGlobalCodexConfig,
   writeSecret,
   deleteSecret,
   fetchModels,
@@ -412,6 +425,52 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
         });
       } catch (error) {
         updateEditorError(set, get, error, editor.connectionId, "deleting");
+      }
+    },
+    inheritRuntimeConfig: async () => {
+      const editor = get().connectionEditor;
+      if (
+        !editor?.connectionId ||
+        editor.draft.runtime === "direct_api" ||
+        editor.dirty ||
+        editor.inheritingRuntimeConfig
+      ) return false;
+      set({
+        connectionEditor: {
+          ...editor,
+          inheritingRuntimeConfig: true,
+          error: null,
+          conflict: false,
+        },
+      });
+      try {
+        const inherit = editor.draft.runtime === "codex"
+          ? api.inheritGlobalCodexConfig
+          : api.inheritGlobalClaudeConfig;
+        const connection = await inherit(editor.connectionId, editor.version);
+        replaceConnection(set, get, connection);
+        const current = get().connectionEditor;
+        if (
+          current?.connectionId !== editor.connectionId ||
+          !current.inheritingRuntimeConfig
+        ) return true;
+        set({ connectionEditor: editorFromConnection(connection) });
+        return true;
+      } catch (error) {
+        const current = get().connectionEditor;
+        if (
+          current?.connectionId !== editor.connectionId ||
+          !current.inheritingRuntimeConfig
+        ) return false;
+        set({
+          connectionEditor: {
+            ...current,
+            inheritingRuntimeConfig: false,
+            error: errorMessage(error),
+            conflict: isConflict(error),
+          },
+        });
+        return false;
       }
     },
     fetchConnectionModels: async () => {
@@ -897,7 +956,7 @@ function updateEditorError(
   get: () => SettingsState,
   error: unknown,
   expectedConnectionId: string | null,
-  pendingFlag: "saving" | "deleting",
+  pendingFlag: "saving" | "deleting" | "inheritingRuntimeConfig",
 ): void {
   const editor = get().connectionEditor;
   if (
@@ -912,6 +971,7 @@ function updateEditorError(
       ...editor,
       saving: false,
       deleting: false,
+      inheritingRuntimeConfig: false,
       error: errorMessage(error),
       conflict: isConflict(error),
     },

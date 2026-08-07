@@ -104,7 +104,12 @@ def save(
     return meta
 
 
-def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
+def revert(
+    workdir: str | os.PathLike,
+    turn_id: str,
+    *,
+    projects_root: Path | None = None,
+) -> CheckpointMeta:
     """把 index、工作区和会话日志恢复到指定轮次开始前。
 
     恢复会用 checkpoint 的单一文件树重写 index 和工作区。checkpoint 之后对
@@ -119,6 +124,7 @@ def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
         workdir: 保存 checkpoint 时使用的 Claude Code 工作目录；用于确定 Git
             仓库并重新定位会话日志。
         turn_id: 要恢复到的 Trowel 逻辑轮次 ID。
+        projects_root: 会话所属 Claude 家的 projects 根；None 使用真实全局根。
 
     Returns:
         checkpoint 中读取到的恢复信息。
@@ -137,7 +143,15 @@ def revert(workdir: str | os.PathLike, turn_id: str) -> CheckpointMeta:
 
     meta = _meta_for_commit(root, turn_id, commit_oid)
     checkpoint_git.restore_checkpoint(root, commit_oid)
-    jsonl_path = _derive_jsonl_path(workdir, meta.cc_session_id)
+    jsonl_path = (
+        _derive_jsonl_path(workdir, meta.cc_session_id)
+        if projects_root is None
+        else _derive_jsonl_path(
+            workdir,
+            meta.cc_session_id,
+            projects_root=projects_root,
+        )
+    )
     if jsonl_path is not None and meta.jsonl_offset is not None:
         _truncate_file(str(jsonl_path), meta.jsonl_offset)
     return meta
@@ -230,12 +244,15 @@ def _session_id_from_path(jsonl_path: str | None) -> str | None:
 def _derive_jsonl_path(
     workdir: str | os.PathLike,
     cc_session_id: str | None,
+    *,
+    projects_root: Path | None = None,
 ) -> Path | None:
     """根据工作目录和 Claude Code 会话 ID 得到会话日志路径。
 
     Args:
         workdir: 会话运行所在的工作目录。
         cc_session_id: Claude Code 会话 ID；尚未取得时为 None。
+        projects_root: 会话所属 Claude 家的 projects 根；None 使用真实全局根。
 
     Returns:
         预计的 JSONL 日志路径；会话 ID 为空时为 None。
@@ -243,7 +260,11 @@ def _derive_jsonl_path(
 
     if not cc_session_id:
         return None
-    return cc_projects_root() / workdir_to_slug(workdir) / f"{cc_session_id}.jsonl"
+    return (
+        (projects_root or cc_projects_root())
+        / workdir_to_slug(workdir)
+        / f"{cc_session_id}.jsonl"
+    )
 
 
 def _meta_for_commit(

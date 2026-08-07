@@ -11,6 +11,7 @@ import pytest
 from tests.configuration.support import FakeCatalogFetcher, build_service
 from trowel_py.codex_host.catalog import parse_model_list_page
 from trowel_py.configuration.catalog import FetchedCatalog, FetchedModel
+from trowel_py.configuration.claude_home import ClaudeConnectionHomeStore
 from trowel_py.configuration.errors import ConfigurationError
 from trowel_py.configuration.models import (
     CodexCatalogEntry,
@@ -283,7 +284,7 @@ def test_delete_official_connection_removes_only_its_managed_account_slot(
 
     deletion = service.delete_connection(created.id, expected_version=created.version)
     service.repository.connection.commit()
-    service.finalize_account_slot_deletion(deletion)
+    service.finalize_connection_storage_deletion(deletion)
 
     assert not slot.exists()
 
@@ -309,12 +310,13 @@ def test_startup_restores_account_slot_when_soft_delete_was_rolled_back(
 
     deletion = service.delete_connection(created.id, expected_version=created.version)
     assert deletion is not None
-    assert deletion.tombstone.is_dir()
+    assert deletion.codex_home is not None
+    assert deletion.codex_home.tombstone.is_dir()
     repository.connection.rollback()
 
     assert service.migrate_official_account_slots() == 0
     assert (slot / "auth.json").read_text(encoding="utf-8") == "oauth-canary"
-    assert not deletion.tombstone.exists()
+    assert not deletion.codex_home.tombstone.exists()
 
 
 def test_startup_cleans_account_slot_after_committed_soft_delete(tmp_path: Path) -> None:
@@ -339,7 +341,8 @@ def test_startup_cleans_account_slot_after_committed_soft_delete(tmp_path: Path)
     repository.connection.commit()
 
     assert service.migrate_official_account_slots() == 0
-    assert not deletion.tombstone.exists()
+    assert deletion.codex_home is not None
+    assert not deletion.codex_home.tombstone.exists()
 
 
 def test_delete_official_connection_rejects_symlinked_account_slot(
@@ -480,6 +483,10 @@ async def test_runtime_launch_freezes_claude_connection_without_exposing_secret(
     launch = service.resolve_runtime_launch(ready.id, model="opus", effort=None)
 
     assert launch.connection_identity_version == ready.identity_version
+    assert launch.claude_config_dir is not None
+    assert Path(launch.claude_config_dir).is_dir()
+    assert list(Path(launch.claude_config_dir).iterdir()) == []
+    assert launch.claude_plugin_dir == str(service.claude_homes.shared_plugin_root)
     assert launch.api_key == "runtime-canary-secret"
     assert "runtime-canary-secret" not in repr(launch)
     settings = launch.claude_settings(proxy_base_url="http://127.0.0.1/private")
@@ -497,8 +504,89 @@ async def test_runtime_launch_freezes_claude_connection_without_exposing_secret(
     ]
 
 
+def test_service_inherits_and_retains_claude_connection_home(tmp_path: Path) -> None:
+    """设置域只接受用户主动继承，删除连接后保留原生历史根。"""
+
+    global_home = tmp_path / "global" / ".claude"
+    global_home.mkdir(parents=True)
+    (global_home / "CLAUDE.md").write_text("global rules", encoding="utf-8")
+    homes = ClaudeConnectionHomeStore(
+        tmp_path / "managed",
+        global_home=global_home,
+    )
+    service, repository = build_service(claude_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="Claude Provider",
+            runtime=RuntimeKind.CLAUDE_CODE,
+            kind=ConnectionKind.CLAUDE_COMPATIBLE,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://example.com/anthropic",
+        )
+    )
+
+    assert created.claude_config_inherited is False
+    inherited = service.inherit_global_claude_config(
+        created.id,
+        expected_version=created.version,
+    )
+    home = homes.home_for(created.id)
+    (home / "projects").mkdir()
+
+    assert inherited.claude_config_inherited is True
+    assert (home / "CLAUDE.md").read_text(encoding="utf-8") == "global rules"
+
+    deletion = service.delete_connection(created.id, expected_version=created.version)
+    repository.connection.commit()
+    service.finalize_connection_storage_deletion(deletion)
+
+    assert deletion is not None
+    assert deletion.claude_home is not None
+    assert deletion.claude_home.tombstone.is_file()
+    assert home / "projects" in homes.projects_roots()
+
+
+def test_service_scans_all_saved_secrets_before_claude_inheritance(
+    tmp_path: Path,
+) -> None:
+    """凭据 canary 来自设置域，不依赖全局 settings 的字段名推测。"""
+
+    global_home = tmp_path / "global" / ".claude"
+    global_home.mkdir(parents=True)
+    secret = "saved-provider-secret"
+    (global_home / "CLAUDE.md").write_text(secret, encoding="utf-8")
+    homes = ClaudeConnectionHomeStore(
+        tmp_path / "managed",
+        global_home=global_home,
+    )
+    service, _repository = build_service(claude_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="Claude Provider",
+            runtime=RuntimeKind.CLAUDE_CODE,
+            kind=ConnectionKind.CLAUDE_COMPATIBLE,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://example.com/anthropic",
+        )
+    )
+    with_secret = service.write_secret(
+        created.id,
+        expected_version=created.version,
+        kind=SecretKind.API_KEY,
+        value=secret,
+    )
+
+    with pytest.raises(ConfigurationError, match="已知凭据"):
+        service.inherit_global_claude_config(
+            created.id,
+            expected_version=with_secret.version,
+        )
+
+
 @pytest.mark.asyncio
-async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None:
+async def test_runtime_launch_builds_isolated_codex_provider_overrides(
+    tmp_path: Path,
+) -> None:
     """第三方 Codex 必须通过专属 env_key 启动，不能读取共享 OpenAI 登录。"""
 
     fetcher = FakeCatalogFetcher(
@@ -507,7 +595,11 @@ async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None
             source_endpoint="https://api.deepseek.com/v1/models",
         )
     )
-    service, _repository = build_service(fetcher=fetcher)
+    managed_root = tmp_path / "codex-accounts"
+    service, _repository = build_service(
+        fetcher=fetcher,
+        official_account_root=managed_root,
+    )
     draft = _deepseek_codex()
     created = service.create_connection(draft)
     with_secret = service.write_secret(
@@ -545,6 +637,8 @@ async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None
 
     assert provider["env_key"] == "TROWEL_CODEX_PROVIDER_KEY"
     assert provider["requires_openai_auth"] is False
+    assert launch.codex_config_dir == str(managed_root / ready.id)
+    assert Path(launch.codex_config_dir).is_dir()
     assert "deepseek-canary-secret" not in repr(overrides)
     assert launch.pool_key == launch.pool_key
 

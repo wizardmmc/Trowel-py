@@ -18,8 +18,11 @@
   --sunshine-ring: rgba(232, 184, 75, 0.45);
   --sunshine-ink: #7a5a12;
   --garden-soft: rgba(74, 124, 89, 0.10);
+  --garden-border-soft: rgba(74, 124, 89, 0.24);
+  --garden-ink: #365f42;
   --neutral-soft: rgba(107, 107, 107, 0.12);
   --soil-brown-soft: rgba(139, 115, 85, 0.16);
+  --soil-border-soft: rgba(139, 115, 85, 0.22);
   --error-soft: rgba(196, 91, 74, 0.12);
   --error-soft-strong: rgba(196, 91, 74, 0.25);
   --sunshine-warn-soft: rgba(232, 184, 75, 0.25);
@@ -40,6 +43,14 @@
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
   --font-display: 'LXGW WenKai', 'Songti SC', 'STSong', serif;
+  --font-size-overline: 9px;
+  --font-size-caption: 10px;
+  --font-size-body-sm: 11px;
+  --line-height-compact: 1.35;
+  --line-height-body: 1.5;
+  --line-height-relaxed: 1.55;
+  --tracking-label: 0.08em;
+  --tracking-overline: 0.12em;
 
   --space-xs: 4px;
   --space-sm: 8px;

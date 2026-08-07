@@ -193,6 +193,8 @@ class ConnectionView:
         auth: 脱敏认证状态。
         login_directory: Codex official 登录目录引用。
         login_directory_exists: 登录目录当前是否存在。
+        claude_config_inherited: Claude 连接家是否完成过一次全局配置继承；其他连接为 None。
+        codex_config_inherited: Codex 连接家是否完成过一次全局配置继承；其他连接为 None。
         proxy_url: 不含 userinfo 的连接级代理地址。
         proxy_username: 代理用户名；密码不返回。
         proxy_password_status: 代理密码是否已经配置。
@@ -219,6 +221,8 @@ class ConnectionView:
     auth: AuthView
     login_directory: str | None
     login_directory_exists: bool | None
+    claude_config_inherited: bool | None
+    codex_config_inherited: bool | None
     proxy_url: str | None
     proxy_username: str | None
     proxy_password_status: str
@@ -248,6 +252,8 @@ class ConnectionView:
             "auth": {"kind": self.auth.kind, "status": self.auth.status},
             "login_directory": self.login_directory,
             "login_directory_exists": self.login_directory_exists,
+            "claude_config_inherited": self.claude_config_inherited,
+            "codex_config_inherited": self.codex_config_inherited,
             "proxy": {
                 "url": self.proxy_url,
                 "username": self.proxy_username,

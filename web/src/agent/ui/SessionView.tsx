@@ -26,6 +26,7 @@ import {
   getAgentSessionDefaults,
   isRootTurnInFlight,
   useCodexCommandRoster,
+  useCodexSkillRoster,
   useAgentStore,
   useAgentStoreFrameSelector,
   useSessionLifecycle,
@@ -315,6 +316,9 @@ export function SessionView({
     workdir;
   const {
     slashItems,
+    slashLoading,
+    slashError,
+    retrySlashItems,
     models,
     codexModels,
     codexCatalogError,
@@ -325,13 +329,20 @@ export function SessionView({
     loadRuntimes,
     loadConnectionOptions,
     loadCodexModels,
-  } = useSessionCatalogs(catalogWorkdir);
+  } = useSessionCatalogs(
+    catalogWorkdir,
+    active?.runtime === "claude_code" ? activeSid : null,
+  );
   const activePresentation = active
     ? getRuntimePresentation(active.runtime, active.capabilities)
     : null;
   const commandRoster = useCodexCommandRoster(
     activeSid,
     activePresentation?.composerActions.slashSource === "codex",
+  );
+  const skillRoster = useCodexSkillRoster(
+    activeSid,
+    active?.runtime === "codex",
   );
   const [creating, setCreating] = useState(false);
   const [historyResumeError, setHistoryResumeError] = useState<string | null>(
@@ -725,6 +736,9 @@ export function SessionView({
             activeSid={activeSid}
             streaming={streaming}
             slashItems={slashItems}
+            slashLoading={slashLoading}
+            slashError={slashError}
+            onRetrySlashItems={retrySlashItems}
             ccModels={models}
             codexModels={codexModels}
             codexCatalogError={codexCatalogError}
@@ -732,6 +746,11 @@ export function SessionView({
             codexCommandsLoading={commandRoster.loading}
             codexCommandsError={commandRoster.error}
             onRetryCodexCommands={commandRoster.retry}
+            codexSkills={skillRoster.skills}
+            codexSkillsLoading={skillRoster.loading}
+            codexSkillsError={skillRoster.error}
+            codexSkillWarnings={skillRoster.warnings}
+            onRetryCodexSkills={skillRoster.retry}
             onCodexCommand={handleCodexCommand}
             onRetryCodexCatalog={loadCodexModels}
             onSend={(text) => {

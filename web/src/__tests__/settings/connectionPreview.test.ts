@@ -3,6 +3,18 @@
 import { expect, it } from "vitest";
 import type { ConnectionEditorState } from "../../settings/domain/types";
 import { buildConnectionPreview } from "../../settings/ui/connectionPreview";
+import { newConnectionEditor } from "../../settings/application/editorState";
+
+it("shows the Claude connection-home state without exposing its path", () => {
+  const editor = newConnectionEditor("claude_compatible");
+
+  const preview = buildConnectionPreview(editor, "configured", true);
+
+  expect(preview.format).toBe("JSON");
+  expect(preview.text).toContain('"inherited": true');
+  expect(preview.text).toContain('"provider_settings": "per-session override"');
+  expect(preview.text).not.toContain("claude-connections/");
+});
 
 it("renders Codex custom as redacted TOML instead of JSON", () => {
   const editor: ConnectionEditorState = {
@@ -32,6 +44,7 @@ it("renders Codex custom as redacted TOML instead of JSON", () => {
     dirty: true,
     saving: false,
     deleting: false,
+    inheritingRuntimeConfig: false,
     error: null,
     conflict: false,
     modelFetch: {
@@ -82,6 +95,7 @@ it("does not expose the managed Official account directory", () => {
     dirty: false,
     saving: false,
     deleting: false,
+    inheritingRuntimeConfig: false,
     error: null,
     conflict: false,
     modelFetch: {

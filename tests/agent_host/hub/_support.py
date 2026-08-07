@@ -190,6 +190,21 @@ class FakeCodexManager:
     async def list_commands(self) -> list[dict[str, Any]]:
         return command_roster("0.144.0")
 
+    async def list_skills(self, session: Any, *, cwd: str) -> dict[str, Any]:
+        """返回可辨认连接与工作目录的测试技能目录。"""
+
+        return {
+            "skills": [
+                {
+                    "name": "development-slice-workflow",
+                    "description": f"{session.session_id} @ {cwd}",
+                    "scope": "user",
+                    "enabled": True,
+                }
+            ],
+            "errors": [],
+        }
+
     async def list_threads(
         self,
         *,

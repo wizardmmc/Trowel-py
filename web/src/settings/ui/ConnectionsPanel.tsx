@@ -13,6 +13,7 @@ import type {
 } from "../domain/types";
 import { CLAUDE_ROLES } from "../domain/types";
 import { buildConnectionPreview } from "./connectionPreview";
+import { ConnectionConfigInheritanceCard } from "./ConnectionConfigInheritanceCard";
 import { EmptyState, PanelHeader, StatusPill } from "./SettingsPrimitives";
 
 interface ConnectionsPanelProps {
@@ -28,6 +29,7 @@ interface ConnectionsPanelProps {
   readonly onRoleChange: (role: string, model: string) => void;
   readonly onSave: () => void;
   readonly onDelete: () => void;
+  readonly onInheritRuntimeConfig: () => void;
   readonly onFetchModels: () => void;
   readonly onWriteSecret: (kind: SecretKind, value: string) => Promise<void>;
   readonly onDeleteSecret: (kind: SecretKind) => void;
@@ -137,6 +139,7 @@ function ConnectionEditor({
   onRoleChange,
   onSave,
   onDelete,
+  onInheritRuntimeConfig,
   onFetchModels,
   onWriteSecret,
   onDeleteSecret,
@@ -210,6 +213,21 @@ function ConnectionEditor({
         </div>
       </div>
 
+      {editor.draft.runtime !== "direct_api" && (
+        <ConnectionConfigInheritanceCard
+          runtime={editor.draft.runtime}
+          inherited={
+            editor.draft.runtime === "codex"
+              ? saved?.codex_config_inherited ?? false
+              : saved?.claude_config_inherited ?? false
+          }
+          saved={Boolean(editor.connectionId)}
+          dirty={editor.dirty}
+          inheriting={editor.inheritingRuntimeConfig}
+          onInherit={onInheritRuntimeConfig}
+        />
+      )}
+
       {editor.draft.kind === "claude_compatible" && (
         <ClaudeConnectionFields
           editor={editor}
@@ -255,7 +273,12 @@ function ConnectionEditor({
         />
       )}
 
-      <Preview editor={editor} authStatus={saved?.auth.status ?? "missing"} />
+      <Preview
+        editor={editor}
+        authStatus={saved?.auth.status ?? "missing"}
+        claudeConfigInherited={saved?.claude_config_inherited ?? false}
+        codexConfigInherited={saved?.codex_config_inherited ?? false}
+      />
 
       {editor.error && (
         <div className="settings-error-box" role="alert">
@@ -291,11 +314,18 @@ interface RuntimeFieldsProps {
   readonly onDeleteSecret: (kind: SecretKind) => void;
 }
 
+interface ClaudeConnectionFieldsProps extends RuntimeFieldsProps {
+  readonly onRoleChange: (role: string, model: string) => void;
+}
+
 /** Claude 第三方字段以角色映射为核心。 */
-function ClaudeConnectionFields(props: RuntimeFieldsProps & { readonly onRoleChange: (role: string, model: string) => void }) {
+function ClaudeConnectionFields(props: ClaudeConnectionFieldsProps) {
   return (
     <>
-      <CustomEndpointFields editor={props.editor} onDraftChange={props.onDraftChange} />
+      <CustomEndpointFields
+        editor={props.editor}
+        onDraftChange={props.onDraftChange}
+      />
       <ApiKeyField {...props} />
       <ModelFetchBlock editor={props.editor} onFetch={props.onFetchModels} />
       <section className="settings-form-block">
@@ -643,8 +673,23 @@ function CodexCatalogFields({ editor, onDraftChange, onFetch }: Pick<RuntimeFiel
 }
 
 /** 根据当前草稿即时生成与后端格式一致的脱敏预览。 */
-function Preview({ editor, authStatus }: { readonly editor: ConnectionEditorState; readonly authStatus: string }) {
-  const preview = buildConnectionPreview(editor, authStatus);
+function Preview({
+  editor,
+  authStatus,
+  claudeConfigInherited,
+  codexConfigInherited,
+}: {
+  readonly editor: ConnectionEditorState;
+  readonly authStatus: string;
+  readonly claudeConfigInherited: boolean;
+  readonly codexConfigInherited: boolean;
+}) {
+  const preview = buildConnectionPreview(
+    editor,
+    authStatus,
+    claudeConfigInherited,
+    codexConfigInherited,
+  );
   return (
     <section className="settings-form-block settings-preview">
       <h3>只读脱敏 {preview.format} 预览</h3>

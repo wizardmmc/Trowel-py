@@ -521,6 +521,10 @@ async def lifespan(app: FastAPI):
             if quota_observer is not None:
                 quota_observer(payload)
 
+        from trowel_py.configuration.claude_home import ClaudeConnectionHomeStore
+
+        claude_connection_homes = ClaudeConnectionHomeStore()
+
         app.state.agent_hub = SessionHub(
             binding_store,
             codex_manager=app.state.codex_host_manager,
@@ -545,6 +549,7 @@ async def lifespan(app: FastAPI):
             agent_defaults_resolver=resolve_agent_defaults,
             cc_connection_proxy_registry=app.state.cc_connection_proxy_registry,
             require_configured_connections=has_agent_runtime_connections,
+            cc_history_projects_roots=claude_connection_homes.projects_roots,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)

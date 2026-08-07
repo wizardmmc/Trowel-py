@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.capacity import CapacityLimits
+from trowel_py.agent_host.configuration_archive import SessionConfigurationArchive
 from trowel_py.agent_host.hub import (
     ConditionMismatchError,
     FrozenConnectionExpectation,
@@ -227,9 +229,15 @@ def test_create_cc_freezes_connection_and_uses_private_proxy_path(
         compatible.pop("owned_settings_path")
         compatible.pop("close_callback")
         compatible.pop("memory_mcp_enabled")
+        compatible.pop("claude_config_dir")
+        compatible.pop("claude_plugin_dir")
         return configured(req, target_registry, **compatible)
 
-    launch = _connection_launch(RuntimeKind.CLAUDE_CODE)
+    launch = replace(
+        _connection_launch(RuntimeKind.CLAUDE_CODE),
+        claude_config_dir=str(tmp_path / "connection-home"),
+        claude_plugin_dir=str(tmp_path / "global-plugins"),
+    )
     hub = SessionHub(
         BindingStore(tmp_path / "bindings.json"),
         cc_registry=registry,
@@ -253,12 +261,63 @@ def test_create_cc_freezes_connection_and_uses_private_proxy_path(
     assert binding.connection_id == launch.connection_id
     assert binding.connection_name == "Provider A"
     assert seen["proxy_base_url"].endswith("/api/cc-runtime/opaque-lease")
+    assert seen["claude_config_dir"] == launch.claude_config_dir
+    assert seen["claude_plugin_dir"] == launch.claude_plugin_dir
     settings_path = Path(seen["settings_path"])
     assert settings_path.is_file()
     assert "private-key" not in repr(binding)
     settings_path.unlink()
     seen["close_callback"]()
     assert proxy_registry.released is True
+
+
+def test_resume_cc_keeps_archived_connection_home(tmp_path: Path) -> None:
+    """同一连接后续分配了新目录时，旧原生会话仍必须回到创建时的家。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    archive = SessionConfigurationArchive(tmp_path / "native-configurations.json")
+    frozen = make_binding(
+        session_id="closed-session",
+        runtime=Runtime.CLAUDE_CODE,
+        native_session_id="claude-native-a",
+        workdir=str(workdir),
+        model="glm-5.2",
+        effort="high",
+        permission="bypassPermissions",
+        memory_enabled=False,
+        memory_mcp_enabled=False,
+        profile_enabled=True,
+        capabilities=("streaming",),
+        name="project",
+        connection_id="connection-a",
+        connection_identity_version=3,
+        connection_name="Provider A",
+        connection_kind="claude_compatible",
+        agent_mcp_enabled=False,
+    )
+    original_home = tmp_path / "original-connection-home"
+    archive.put(frozen, claude_config_dir=original_home)
+    current_launch = replace(
+        _connection_launch(RuntimeKind.CLAUDE_CODE),
+        claude_config_dir=str(tmp_path / "newly-allocated-home"),
+        claude_plugin_dir=str(tmp_path / "global-plugins"),
+    )
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry={},
+        configuration_archive=archive,
+        configuration_resolver=lambda *_args: current_launch,
+    )
+
+    prepared = hub._inherit_resume_config(
+        cc_req(workdir, resume_from="claude-native-a")
+    )
+    resolved = hub._resolve_launch(prepared)
+
+    assert resolved is not None
+    assert resolved.claude_config_dir == str(original_home.resolve())
+    assert current_launch.claude_config_dir != resolved.claude_config_dir
 
 
 def test_discussion_frozen_connection_preflight_runs_before_runtime_create(

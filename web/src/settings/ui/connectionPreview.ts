@@ -25,13 +25,16 @@ const CLAUDE_ROLE_ENV: Readonly<Record<string, string>> = {
 export function buildConnectionPreview(
   editor: ConnectionEditorState,
   authStatus: string,
+  claudeConfigInherited = false,
+  codexConfigInherited = false,
 ): ConnectionPreviewDocument {
   const builders: Readonly<
     Record<ConnectionKind, () => ConnectionPreviewDocument>
   > = {
-    claude_compatible: () => claudePreview(editor, authStatus),
-    codex_official: () => codexOfficialPreview(editor),
-    codex_custom: () => codexCustomPreview(editor, authStatus),
+    claude_compatible: () =>
+      claudePreview(editor, authStatus, claudeConfigInherited),
+    codex_official: () => codexOfficialPreview(editor, codexConfigInherited),
+    codex_custom: () => codexCustomPreview(editor, authStatus, codexConfigInherited),
     direct_api: () => directApiPreview(editor, authStatus),
   };
   return builders[editor.draft.kind]();
@@ -41,6 +44,7 @@ export function buildConnectionPreview(
 function claudePreview(
   editor: ConnectionEditorState,
   authStatus: string,
+  inherited: boolean,
 ): ConnectionPreviewDocument {
   const env: Record<string, string | null> = {
     ANTHROPIC_BASE_URL: safeUrl(editor.draft.base_url),
@@ -50,17 +54,32 @@ function claudePreview(
     const envName = CLAUDE_ROLE_ENV[role];
     if (envName) env[envName] = model;
   }
-  return { format: "JSON", text: JSON.stringify({ env }, null, 2) };
+  return {
+    format: "JSON",
+    text: JSON.stringify(
+      {
+        env,
+        trowel_connection_home: {
+          inherited,
+          provider_settings: "per-session override",
+        },
+      },
+      null,
+      2,
+    ),
+  };
 }
 
 /** 生成不暴露账号槽路径的 Codex Official TOML 摘要。 */
 function codexOfficialPreview(
   editor: ConnectionEditorState,
+  inherited: boolean,
 ): ConnectionPreviewDocument {
   const draft = editor.draft;
   const lines = [
     'model_provider = "openai"',
     'oauth = "<managed by Codex>"',
+    `trowel_config_copy = ${tomlString(inherited ? "copied" : "not-copied")}`,
   ];
   if (draft.proxy_url) lines.push(`proxy_url = ${tomlString(safeUrl(draft.proxy_url))}`);
   if (draft.proxy_username) {
@@ -73,6 +92,7 @@ function codexOfficialPreview(
 function codexCustomPreview(
   editor: ConnectionEditorState,
   authStatus: string,
+  inherited: boolean,
 ): ConnectionPreviewDocument {
   const draft = editor.draft;
   const providerId = editor.connectionId ?? "<saved connection id>";
@@ -88,6 +108,7 @@ function codexCustomPreview(
     "requires_openai_auth = false",
     "",
     "[trowel]",
+    `config_copy = ${tomlString(inherited ? "copied" : "not-copied")}`,
     `catalog_models = ${tomlStringArray(selectedModels)}`,
   ];
   return { format: "TOML", text: lines.join("\n") };

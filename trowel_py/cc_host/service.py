@@ -169,6 +169,8 @@ class CCHost:
         resume_from: str | None = None,
         proxy_base_url: str | None = None,
         settings_path: Path | str | None = None,
+        claude_config_dir: Path | str | None = None,
+        claude_plugin_dir: Path | str | None = None,
         owned_settings_path: bool = False,
         close_callback: Callable[[], None] | None = None,
         spawner: Callable[
@@ -211,6 +213,9 @@ class CCHost:
             proxy_base_url: CC 请求使用的本地代理地址；``None`` 表示不设置。
             settings_path: 提供 provider 环境变量的 CC settings 文件；``None``
                 表示不读取。
+            claude_config_dir: 当前连接独占的 Claude 用户配置与原生状态根；None
+                使用真实 `~/.claude` 兼容旧会话。
+            claude_plugin_dir: 多个 Claude 连接共享物理安装的 plugin 根。
             owned_settings_path: 是否由当前 host 在关闭或创建回滚时删除 settings。
             close_callback: host 清理完成后执行的一次性连接租约释放函数。
             spawner: 接收 argv 和启动选项的异步子进程创建器。
@@ -254,6 +259,16 @@ class CCHost:
         self._resume_from = resume_from
         self._proxy_base_url = proxy_base_url
         self._settings_path = settings_path
+        self._claude_config_dir = (
+            Path(claude_config_dir).expanduser().absolute()
+            if claude_config_dir is not None
+            else None
+        )
+        self._claude_plugin_dir = (
+            Path(claude_plugin_dir).expanduser().absolute()
+            if claude_plugin_dir is not None
+            else None
+        )
         self._owned_settings_path = owned_settings_path
         self._close_callback = close_callback
         self._close_callback_called = False
@@ -325,6 +340,34 @@ class CCHost:
         """返回 CC 原生会话 ID；首次初始化前可能为空。"""
 
         return self._cc_session_id
+
+    @property
+    def projects_root(self) -> Path:
+        """返回当前会话冻结使用的 Claude projects 根。"""
+
+        return (
+            cc_projects_root()
+            if self._claude_config_dir is None
+            else cc_projects_root(self._claude_config_dir)
+        )
+
+    @property
+    def claude_config_dir(self) -> Path | None:
+        """返回冻结的连接级配置目录；None 表示全局目录。"""
+
+        return self._claude_config_dir
+
+    @property
+    def claude_plugin_dir(self) -> Path | None:
+        """返回当前连接共享的插件缓存目录。"""
+
+        return self._claude_plugin_dir
+
+    @property
+    def init_roster(self) -> tuple[str, ...]:
+        """返回 Claude Code 首次初始化报告的命令名称。"""
+
+        return tuple(self._init_roster)
 
     @property
     def has_in_flight_turn(self) -> bool:
@@ -445,7 +488,6 @@ class CCHost:
                 _CLAUDE_AGENT_MCP_TOOL_NAMES if self.agent_mcp_enabled else None
             ),
             settings_path=self._settings_path,
-            setting_sources="" if self._settings_path is not None else None,
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -465,6 +507,12 @@ class CCHost:
                 load_settings_env(self._settings_path) if self._settings_path else {}
             )
             env = dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
+        if self._claude_config_dir is not None:
+            env = dict(env) if env is not None else dict(os.environ)
+            env["CLAUDE_CONFIG_DIR"] = str(self._claude_config_dir)
+        if self._claude_plugin_dir is not None:
+            env = dict(env) if env is not None else dict(os.environ)
+            env["CLAUDE_CODE_PLUGIN_CACHE_DIR"] = str(self._claude_plugin_dir)
         # stdio MCP 继承启动环境；只有 resume 能在启动前预先写入原生会话 ID。
         # `CC_SESSION_ID` 仅兼容旧版 CC 身份环境变量。
         if self._mcp_config:
@@ -1019,7 +1067,7 @@ class CCHost:
         """返回指定 CC 会话的主 transcript 路径。"""
 
         return (
-            cc_projects_root()
+            self.projects_root
             / workdir_to_slug(self.workdir)
             / f"{cc_session_id}.jsonl"
         )
@@ -1029,7 +1077,7 @@ class CCHost:
         if not self._cc_session_id:
             return None
         return (
-            cc_projects_root()
+            self.projects_root
             / workdir_to_slug(self.workdir)
             / self._cc_session_id
         )
@@ -1644,7 +1692,10 @@ class CCHost:
         if tev.status == "started":
             return tev
         path = subagent_transcript_path(
-            self.workdir, self._cc_session_id, tev.task_id
+            self.workdir,
+            self._cc_session_id,
+            tev.task_id,
+            projects_root=self.projects_root,
         )
         summed = sum_transcript_usage(path)
         if summed is None:

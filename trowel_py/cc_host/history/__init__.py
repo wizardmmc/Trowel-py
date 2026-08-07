@@ -133,7 +133,25 @@ def _close_pending_turn(
     events[index] = events[index].model_copy(update={"duration_seconds": duration})
 
 
-def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
+def parse_history(
+    workdir: str,
+    cc_session_id: str,
+) -> list[TrowelEvent]:
+    """从真实全局 Claude 根按 JSONL 顺序重建历史事件。"""
+
+    return parse_history_from_root(
+        workdir,
+        cc_session_id,
+        projects_root=cc_projects_root(),
+    )
+
+
+def parse_history_from_root(
+    workdir: str,
+    cc_session_id: str,
+    *,
+    projects_root: Path,
+) -> list[TrowelEvent]:
     """按 JSONL 记录顺序重建指定 Claude Code 会话的历史事件。
 
     无法解析的 JSON 行会被跳过。Workflow 快照按 ``startTime`` 和文件名排序，
@@ -142,6 +160,7 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     Args:
         workdir: 会话运行时的工作目录，用于定位 Claude Code 项目日志目录。
         cc_session_id: 要回放的 Claude Code 会话 ID。
+        projects_root: 会话所属 Claude 家的 projects 根。
 
     Returns:
         重建后的 Trowel 事件；会话 ID 不可用或日志文件不存在时为空列表。
@@ -153,7 +172,7 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     slug = workdir_to_slug(workdir)
     if not _is_safe_session_id(cc_session_id):
         return []
-    path = cc_projects_root() / slug / f"{cc_session_id}.jsonl"
+    path = projects_root / slug / f"{cc_session_id}.jsonl"
     if not path.is_file():
         return []
 

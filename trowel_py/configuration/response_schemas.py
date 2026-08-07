@@ -172,6 +172,8 @@ class ConnectionResponse(BaseModel):
         auth: 脱敏认证状态。
         login_directory: 保留兼容字段；Official 始终返回 None。
         login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。
+        claude_config_inherited: Claude 连接家是否完成过全局配置继承；其他连接为 None。
+        codex_config_inherited: Codex 连接家是否完成过全局配置继承；其他连接为 None。
         proxy: 脱敏连接代理字段。
         claude_role_models: Claude 角色到 model ID 的映射。
         codex_catalog: Codex 模型和 effort 元数据。
@@ -196,6 +198,8 @@ class ConnectionResponse(BaseModel):
     auth: AuthResponse
     login_directory: str | None
     login_directory_exists: bool | None
+    claude_config_inherited: bool | None
+    codex_config_inherited: bool | None
     proxy: ProxyResponse
     claude_role_models: dict[str, str]
     codex_catalog: list[CodexCatalogEntryResponse]

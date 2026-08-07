@@ -91,6 +91,8 @@ export interface Connection {
   readonly auth: AuthStatus;
   readonly login_directory: string | null;
   readonly login_directory_exists: boolean | null;
+  readonly claude_config_inherited: boolean | null;
+  readonly codex_config_inherited: boolean | null;
   readonly proxy: ProxyStatus;
   readonly claude_role_models: Readonly<Record<string, string>>;
   readonly codex_catalog: readonly CodexCatalogEntry[];
@@ -227,6 +229,7 @@ export interface ConnectionEditorState {
   readonly dirty: boolean;
   readonly saving: boolean;
   readonly deleting: boolean;
+  readonly inheritingRuntimeConfig: boolean;
   readonly error: string | null;
   readonly conflict: boolean;
   readonly modelFetch: ModelFetchState;

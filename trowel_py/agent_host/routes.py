@@ -1129,6 +1129,29 @@ async def list_codex_commands(
     return {"success": True, "data": {"commands": commands}, "error": None}
 
 
+@router.get("/sessions/{session_id}/skills")
+async def list_codex_skills(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """列出指定 Codex 会话真实可用的技能。
+
+    Args:
+        session_id: 要查询技能的 Codex 会话 ID。
+        hub: 用于定位冻结连接和读取原生技能目录的 Session Hub。
+
+    Returns:
+        统一响应。data.skills 为脱敏技能元数据，data.errors 为加载错误消息。
+
+    Raises:
+        HTTPException: 找不到会话时返回 404；Claude 会话返回 422；原生目录读取失败
+            返回 502；Codex 当前不可用时返回 503。
+    """
+
+    catalog = await _await_hub(hub.list_codex_skills, session_id)
+    return {"success": True, "data": catalog, "error": None}
+
+
 @router.post("/sessions/{session_id}/commands/compact")
 async def compact_codex_session(
     session_id: str,

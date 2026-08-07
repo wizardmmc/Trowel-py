@@ -2355,7 +2355,7 @@
       "/api/cc/slash-items": {
         "get": {
           "summary": "List Slash Items Endpoint",
-          "description": "返回工作目录可用的 slash command 与 skill，并合并同目录会话的初始化名单。",
+          "description": "返回工作目录可用的 slash command 与 skill。\n\n传入 session_id 时，用户级配置和插件严格从该 Claude Code\n会话的冻结目录读取。旧调用方没有会话身份时保持全局扫描。",
           "operationId": "list_slash_items_endpoint_api_cc_slash_items_get",
           "parameters": [
             {
@@ -2366,6 +2366,23 @@
                 "type": "string",
                 "minLength": 1,
                 "title": "Workdir"
+              }
+            },
+            {
+              "name": "session_id",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Session Id"
               }
             }
           ],
@@ -3332,6 +3349,48 @@
                     "type": "object",
                     "additionalProperties": true,
                     "title": "Response List Codex Commands Api Agent Sessions  Session Id  Commands Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/agent/sessions/{session_id}/skills": {
+        "get": {
+          "summary": "List Codex Skills",
+          "description": "列出指定 Codex 会话真实可用的技能。\n\nArgs:\n    session_id: 要查询技能的 Codex 会话 ID。\n    hub: 用于定位冻结连接和读取原生技能目录的 Session Hub。\n\nReturns:\n    统一响应。data.skills 为脱敏技能元数据，data.errors 为加载错误消息。\n\nRaises:\n    HTTPException: 找不到会话时返回 404；Claude 会话返回 422；原生目录读取失败\n        返回 502；Codex 当前不可用时返回 503。",
+          "operationId": "list_codex_skills_api_agent_sessions__session_id__skills_get",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Codex Skills Api Agent Sessions  Session Id  Skills Get"
                   }
                 }
               }
@@ -5123,6 +5182,232 @@
                 "application/json": {
                   "schema": {
                     "$ref": "#/components/schemas/ConfigurationEnvelope_NoneType_"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "401": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unauthorized"
+            },
+            "404": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Not Found"
+            },
+            "409": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Conflict"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unprocessable Content"
+            },
+            "502": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Gateway"
+            },
+            "504": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Gateway Timeout"
+            }
+          }
+        }
+      },
+      "/api/configuration/connections/{connection_id}/claude-config/inherit": {
+        "post": {
+          "tags": [
+            "configuration"
+          ],
+          "summary": "Inherit Global Claude Config",
+          "description": "覆盖式继承真实全局 Claude 用户配置并返回脱敏连接事实。",
+          "operationId": "inherit_global_claude_config_api_configuration_connections__connection_id__claude_config_inherit_post",
+          "parameters": [
+            {
+              "name": "connection_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Connection Id"
+              }
+            },
+            {
+              "name": "expected_version",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "title": "Expected Version"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigurationEnvelope_ConnectionResponse_"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "401": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unauthorized"
+            },
+            "404": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Not Found"
+            },
+            "409": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Conflict"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Unprocessable Content"
+            },
+            "502": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Bad Gateway"
+            },
+            "504": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorEnvelope"
+                  }
+                }
+              },
+              "description": "Gateway Timeout"
+            }
+          }
+        }
+      },
+      "/api/configuration/connections/{connection_id}/codex-config/inherit": {
+        "post": {
+          "tags": [
+            "configuration"
+          ],
+          "summary": "Inherit Global Codex Config",
+          "description": "覆盖式继承两处全局 Codex 用户配置并返回脱敏连接事实。",
+          "operationId": "inherit_global_codex_config_api_configuration_connections__connection_id__codex_config_inherit_post",
+          "parameters": [
+            {
+              "name": "connection_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Connection Id"
+              }
+            },
+            {
+              "name": "expected_version",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "title": "Expected Version"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigurationEnvelope_ConnectionResponse_"
                   }
                 }
               }
@@ -10068,6 +10353,28 @@
               ],
               "title": "Login Directory Exists"
             },
+            "claude_config_inherited": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Claude Config Inherited"
+            },
+            "codex_config_inherited": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Codex Config Inherited"
+            },
             "proxy": {
               "$ref": "#/components/schemas/ProxyResponse"
             },
@@ -10148,6 +10455,8 @@
             "auth",
             "login_directory",
             "login_directory_exists",
+            "claude_config_inherited",
+            "codex_config_inherited",
             "proxy",
             "claude_role_models",
             "codex_catalog",
@@ -10159,7 +10468,7 @@
             "preview"
           ],
           "title": "ConnectionResponse",
-          "description": "返回连接的完整脱敏读模型。\n\nAttributes:\n    id: Trowel 稳定本地 ID。\n    version: 乐观并发版本。\n    identity_version: runtime 启动身份版本。\n    name: 用户设置的供应商名称。\n    runtime: 消费连接的执行引擎。\n    kind: 连接字段和认证种类。\n    protocol: 上游请求协议。\n    base_url: 不含 userinfo 的服务地址。\n    models_url: 可选模型列表端点覆盖。\n    upstream_host: 从服务地址解析的主机名。\n    auth: 脱敏认证状态。\n    login_directory: 保留兼容字段；Official 始终返回 None。\n    login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。\n    proxy: 脱敏连接代理字段。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex 模型和 effort 元数据。\n    catalog: 当前模型列表状态。\n    validation_status: 当前组合验证状态。\n    capability_version: 只读能力表版本。\n    last_session_choice: 最近一次成功会话的 model 和 effort。\n    secret_versions: secret 用途到单调版本的映射。\n    preview: 由保存事实生成的脱敏配置预览。"
+          "description": "返回连接的完整脱敏读模型。\n\nAttributes:\n    id: Trowel 稳定本地 ID。\n    version: 乐观并发版本。\n    identity_version: runtime 启动身份版本。\n    name: 用户设置的供应商名称。\n    runtime: 消费连接的执行引擎。\n    kind: 连接字段和认证种类。\n    protocol: 上游请求协议。\n    base_url: 不含 userinfo 的服务地址。\n    models_url: 可选模型列表端点覆盖。\n    upstream_host: 从服务地址解析的主机名。\n    auth: 脱敏认证状态。\n    login_directory: 保留兼容字段；Official 始终返回 None。\n    login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。\n    claude_config_inherited: Claude 连接家是否完成过全局配置继承；其他连接为 None。\n    codex_config_inherited: Codex 连接家是否完成过全局配置继承；其他连接为 None。\n    proxy: 脱敏连接代理字段。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex 模型和 effort 元数据。\n    catalog: 当前模型列表状态。\n    validation_status: 当前组合验证状态。\n    capability_version: 只读能力表版本。\n    last_session_choice: 最近一次成功会话的 model 和 effort。\n    secret_versions: secret 用途到单调版本的映射。\n    preview: 由保存事实生成的脱敏配置预览。"
         },
         "ContinueDiscussionRequest": {
           "properties": {

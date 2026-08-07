@@ -113,6 +113,45 @@ class TestSlashItemsEndpoint:
         assert resp.status_code == 200
         assert captured["init_roster"] == []
 
+    def test_session_query_uses_that_connection_home(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        """前端指定会话时，不能再从该目录其他会话或全局家取补全。"""
+
+        import types as _types
+
+        captured: dict = {}
+
+        def fake_list(workdir, **kwargs):
+            captured.update(workdir=workdir, **kwargs)
+            return []
+
+        config_home = tmp_path / "connection-home"
+        plugin_home = tmp_path / "shared-plugins"
+        host = _types.SimpleNamespace(
+            workdir=str(tmp_path),
+            claude_config_dir=config_home,
+            claude_plugin_dir=plugin_home,
+            init_roster=("review",),
+        )
+        monkeypatch.setattr("trowel_py.cc_host.routes.list_slash_items", fake_list)
+        client = _mini_app({"session-a": host})
+
+        response = client.get(
+            f"/api/cc/slash-items?workdir={tmp_path}&session_id=session-a"
+        )
+
+        assert response.status_code == 200
+        assert captured == {
+            "workdir": str(tmp_path),
+            "user_skills_dir": config_home / "skills",
+            "user_commands_dir": config_home / "commands",
+            "plugins_dir": plugin_home,
+            "init_roster": ["review"],
+        }
+
 
 class TestListDirEndpoint:
     def test_lists_immediate_subdirectories_sorted(self, tmp_path: Path):

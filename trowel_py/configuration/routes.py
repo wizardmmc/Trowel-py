@@ -16,7 +16,7 @@ from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
 
 from trowel_py.configuration.diagnostics import build_diagnostics
-from trowel_py.configuration.errors import ConfigurationError
+from trowel_py.configuration.errors import ConfigurationError, version_conflict
 from trowel_py.configuration.migration import migrate_legacy_llm_config
 from trowel_py.configuration.models import (
     ConnectionKind,
@@ -363,27 +363,94 @@ async def delete_connection(
     """软删除连接并删除所有 secret。"""
 
     connection = service.get_connection(connection_id)
-    if connection.kind is ConnectionKind.CODEX_OFFICIAL:
-        launch = service.resolve_codex_catalog_launch(connection_id)
+    if connection.version != expected_version:
+        raise version_conflict()
+    maintenance_connection_id: str | None = None
+    maintenance_hub: Any | None = None
+    if connection.runtime is RuntimeKind.CODEX:
         hub = getattr(request.app.state, "agent_hub", None)
-        releaser = getattr(hub, "release_codex_launch", None)
-        if releaser is not None and not await releaser(launch):
+        starter = getattr(hub, "begin_codex_connection_maintenance", None)
+        if starter is not None and not await starter(connection_id):
             raise ConfigurationError(
                 "CONNECTION_IN_USE",
-                "仍有会话使用这个 Official 供应商，请先关闭相关会话",
+                "仍有会话使用这个 Codex 连接，请先关闭相关会话",
                 status_code=409,
             )
-    deletion = service.delete_connection(
-        connection_id, expected_version=expected_version
-    )
+        if starter is not None:
+            maintenance_connection_id = connection_id
+            maintenance_hub = hub
     try:
-        service.repository.connection.commit()
-    except BaseException:
-        service.repository.connection.rollback()
-        service.restore_account_slot_deletion(deletion)
-        raise
-    service.finalize_account_slot_deletion(deletion)
-    return _success(None)
+        deletion = service.delete_connection(
+            connection_id, expected_version=expected_version
+        )
+        try:
+            service.repository.connection.commit()
+        except BaseException:
+            service.repository.connection.rollback()
+            service.restore_connection_storage_deletion(deletion)
+            raise
+        service.finalize_connection_storage_deletion(deletion)
+        return _success(None)
+    finally:
+        if maintenance_connection_id is not None and maintenance_hub is not None:
+            maintenance_hub.end_codex_connection_maintenance(
+                maintenance_connection_id
+            )
+
+
+@router.post(
+    "/connections/{connection_id}/claude-config/inherit",
+    response_model=ConfigurationEnvelope[ConnectionResponse],
+)
+@_transactional
+async def inherit_global_claude_config(
+    connection_id: str,
+    expected_version: int = Query(ge=1),
+    service: ConfigurationService = Depends(get_configuration_service),
+) -> dict[str, Any]:
+    """覆盖式继承真实全局 Claude 用户配置并返回脱敏连接事实。"""
+
+    connection = service.inherit_global_claude_config(
+        connection_id,
+        expected_version=expected_version,
+    )
+    return _success(connection.to_wire())
+
+
+@router.post(
+    "/connections/{connection_id}/codex-config/inherit",
+    response_model=ConfigurationEnvelope[ConnectionResponse],
+)
+@_transactional
+async def inherit_global_codex_config(
+    connection_id: str,
+    request: Request,
+    expected_version: int = Query(ge=1),
+    service: ConfigurationService = Depends(get_configuration_service),
+) -> dict[str, Any]:
+    """覆盖式继承两处全局 Codex 用户配置并返回脱敏连接事实。"""
+
+    current = service.get_connection(connection_id)
+    if current.version != expected_version:
+        raise version_conflict()
+    hub = getattr(request.app.state, "agent_hub", None)
+    starter = getattr(hub, "begin_codex_connection_maintenance", None)
+    maintenance_started = starter is not None
+    if maintenance_started and not await starter(connection_id):
+        raise ConfigurationError(
+            "CONNECTION_IN_USE",
+            "仍有会话使用这个 Codex 连接，请先关闭相关会话后再复制配置",
+            status_code=409,
+        )
+    try:
+        connection = service.inherit_global_codex_config(
+            connection_id,
+            expected_version=expected_version,
+        )
+        return _success(connection.to_wire())
+    finally:
+        if maintenance_started:
+            hub.end_codex_connection_maintenance(connection_id)
 
 
 @router.put(

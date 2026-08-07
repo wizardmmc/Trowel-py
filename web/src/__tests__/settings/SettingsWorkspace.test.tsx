@@ -198,6 +198,8 @@ it("renders the Codex custom catalog as anchored model, effort, and fetch contro
         auth: { kind: "api_key", status: "configured" },
         login_directory: null,
         login_directory_exists: null,
+        claude_config_inherited: null,
+        codex_config_inherited: false,
         proxy: { url: null, username: null, password_status: "missing" },
         claude_role_models: {},
         codex_catalog: [{
@@ -231,6 +233,10 @@ it("renders the Codex custom catalog as anchored model, effort, and fetch contro
   expect(screen.getByRole("combobox", { name: "Codex 模型 1" })).toHaveClass("settings-codex-model-select");
   expect(screen.getByRole("combobox", { name: "Codex 模型 1思考强度" })).toHaveClass("settings-codex-effort-select");
   expect(screen.getByRole("button", { name: "获取可用模型" })).toHaveClass("settings-fetch-models");
+  expect(screen.getByText("Codex 配置家")).toBeInTheDocument();
+  expect(screen.getByText("~/.codex + ~/.agents/skills")).toBeInTheDocument();
+  expect(screen.getByText("auth.json")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "复制全局配置" })).toBeInTheDocument();
 });
 
 it("shows an Official account instead of asking for an internal login directory", async () => {
@@ -261,6 +267,8 @@ it("shows an Official account instead of asking for an internal login directory"
         auth: { kind: "oauth_reference", status: "referenced" },
         login_directory: null,
         login_directory_exists: true,
+        claude_config_inherited: null,
+        codex_config_inherited: false,
         proxy: { url: null, username: null, password_status: "missing" },
         claude_role_models: {},
         codex_catalog: [],
