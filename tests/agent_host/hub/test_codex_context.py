@@ -203,6 +203,28 @@ def test_create_codex_empty_injection_maps_to_none_developer_instructions(
     assert binding.injection_hash == ""
 
 
+def test_create_codex_appends_internal_bootstrap_as_developer_context(
+    hub: SessionHub,
+    workdir: Path,
+    codex_mgr: FakeCodexManager,
+) -> None:
+    """交接现场走 developer instructions，不合成用户消息。"""
+
+    binding = hub.create(
+        codex_req(
+            workdir,
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+        ),
+        bootstrap_context="SYSTEM_HANDOFF_MARKER",
+    )
+
+    session = codex_mgr.get_session(binding.session_id)
+    assert session.config.developer_instructions == "SYSTEM_HANDOFF_MARKER"
+    assert binding.injection_hash == _injection_fingerprint("SYSTEM_HANDOFF_MARKER")
+
+
 def test_create_codex_includes_self_section_when_enabled(
     hub: SessionHub,
     workdir: Path,

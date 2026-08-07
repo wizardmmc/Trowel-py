@@ -70,4 +70,23 @@ describe("WorkspaceChooser", () => {
 
     expect(onBrowseOther).toHaveBeenCalledOnce();
   });
+
+  it("uses the nested dialog layer outside the caller stacking context", () => {
+    render(
+      <div data-testid="caller">
+        <WorkspaceChooser
+          title="选择工作区"
+          recents={RECENTS}
+          onSelect={() => {}}
+          onBrowseOther={() => {}}
+          onCancel={() => {}}
+        />
+      </div>,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "选择工作区" });
+    const backdrop = dialog.closest(".cc-modal-backdrop");
+    expect(backdrop).toHaveClass("cc-modal-backdrop--nested");
+    expect(screen.getByTestId("caller")).not.toContainElement(dialog);
+  });
 });

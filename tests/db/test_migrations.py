@@ -47,6 +47,35 @@ def test_run_migrations_creates_tracking_table(
     assert "_migrations" in _table_names(db_connection)
 
 
+def test_discussion_participants_freeze_runtime_permission(
+    db_connection: sqlite3.Connection,
+) -> None:
+    """研讨参与者表必须保存两种 runtime 各自的创建权限。"""
+
+    run_migrations(db_connection)
+
+    assert {
+        "permission_mode",
+        "permission_preset",
+    } <= _column_names(db_connection, "discussion_participants")
+
+
+def test_discussion_records_display_identity_and_activity(
+    db_connection: sqlite3.Connection,
+) -> None:
+    """历史研讨必须冻结连接身份，并持久化每轮去敏活动摘要。"""
+
+    run_migrations(db_connection)
+
+    assert {"connection_name", "effective_model"} <= _column_names(
+        db_connection, "discussion_participants"
+    )
+    assert "activity_json" in _column_names(
+        db_connection, "discussion_round_participants"
+    )
+    assert "activity_json" in _column_names(db_connection, "discussion_attempts")
+
+
 def test_run_migrations_is_idempotent(
     db_connection: sqlite3.Connection,
     tmp_path: Path,

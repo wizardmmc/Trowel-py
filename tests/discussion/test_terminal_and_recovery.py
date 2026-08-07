@@ -14,7 +14,11 @@ from trowel_py.discussion.coordinator import DiscussionCoordinator
 from trowel_py.discussion.events import DiscussionEventBus
 from trowel_py.discussion.episode import DiscussionEpisodeWriter
 from trowel_py.discussion.repository import open_discussion_repository
-from trowel_py.discussion.schemas import CreateDiscussionRequest, VersionedCommand
+from trowel_py.discussion.schemas import (
+    ContinueDiscussionRequest,
+    CreateDiscussionRequest,
+    VersionedCommand,
+)
 from trowel_py.discussion.service import DiscussionService
 from tests.discussion.support import (
     FakeConfigurationCatalog,
@@ -74,6 +78,36 @@ class OldTerminalSessions(FakeParticipantSessions):
                 "turn_id": "turn-old",
                 "thread_id": None,
                 "payload": {},
+            }
+
+        return generate()
+
+
+class StartupErrorSessions(FakeParticipantSessions):
+    """让第一位 participant 在根 turn 建立前返回运行时占用错误。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """bad 返回真实 rootless error，其他 participant 正常完成。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送与真实 CCHost turn_in_progress 同形的启动错误。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "seq": 1,
+                "type": "error",
+                "turn_id": None,
+                "thread_id": None,
+                "payload": {"subclass": "turn_in_progress"},
             }
 
         return generate()
@@ -509,6 +543,28 @@ async def test_old_finished_and_silent_eof_cannot_publish_partial_as_success(
     assert slots[0]["error_code"] == "STREAM_ENDED_WITHOUT_TERMINAL"
     assert "partial-must-not-publish" not in str(published)
     assert slots[1]["status"] == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_error_before_turn_start_keeps_real_runtime_reason(
+    tmp_path: Path,
+) -> None:
+    """启动错误不应被丢弃并改写成没有收到终态。"""
+
+    sessions = StartupErrorSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    created = await service.create(_request("startup-error"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+    slot = service.get(created["id"])["rounds"][0]["participants"][0]
+
+    assert slot["status"] == "failed"
+    assert slot["error_code"] == "TURN_IN_PROGRESS"
+    assert slot["error_message"] == "参与者上一轮仍在收尾，本轮输入没有发送"
 
 
 @pytest.mark.anyio
@@ -1044,10 +1100,10 @@ async def test_continue_records_integrity_outbox_when_publication_bytes_drift(
     with pytest.raises(ValueError, match="byte count mismatch"):
         service.continue_round(
             created["id"],
-            VersionedCommand(
-                command_id="continue",
-                expected_version=waiting["version"],
-            ),
+                ContinueDiscussionRequest(
+                    command_id="continue",
+                    expected_version=waiting["version"],
+                ),
         )
 
     with opener() as repository:

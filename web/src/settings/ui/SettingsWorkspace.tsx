@@ -1,9 +1,10 @@
 /** 组装设置二级导航、状态容器、六组纯展示页面和平台操作。 */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import { copyText } from "../../lib/copyText";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { getPlatform } from "../../platform";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { settingsStore, type SettingsState } from "../application/store";
@@ -31,6 +32,7 @@ export function SettingsWorkspace({
   const state = useStore(store);
   const addNotification = useNotificationStore((item) => item.addNotification);
   const platform = getPlatform();
+  const [connectionToDelete, setConnectionToDelete] = useState<string | null>(null);
 
   useEffect(() => {
     if (active) void store.getState().initialize();
@@ -88,8 +90,7 @@ export function SettingsWorkspace({
   };
   const deleteCurrentConnection = () => {
     const name = store.getState().connectionEditor?.draft.name || "这条连接";
-    if (!window.confirm(`删除“${name}”？相关凭据也会一并删除。`)) return;
-    void store.getState().removeConnection();
+    setConnectionToDelete(name);
   };
   const reloadTask = async (taskId: Parameters<SettingsState["reloadTask"]>[0]) => {
     const reloaded = await store.getState().reloadCatalog();
@@ -239,6 +240,19 @@ export function SettingsWorkspace({
           </main>
         </section>
       </div>
+      {connectionToDelete && (
+        <ConfirmDialog
+          title={`删除“${connectionToDelete}”？`}
+          description="相关凭据也会一并删除，此操作无法撤销。"
+          confirmLabel="删除连接"
+          tone="danger"
+          onConfirm={() => {
+            setConnectionToDelete(null);
+            void store.getState().removeConnection();
+          }}
+          onCancel={() => setConnectionToDelete(null)}
+        />
+      )}
     </div>
   );
 }

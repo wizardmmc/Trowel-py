@@ -658,6 +658,7 @@ class SessionHub:
         req: CreateAgentSessionRequest,
         *,
         frozen_connection: FrozenConnectionExpectation | None = None,
+        bootstrap_context: str | None = None,
     ) -> SessionBinding:
         """创建 Claude Code 或 Codex 会话，并保存对应的 Trowel 会话记录。
 
@@ -666,6 +667,7 @@ class SessionHub:
         Args:
             req: 运行工具、工作目录、模型、权限和上下文开关等创建配置。
             frozen_connection: 内部 owner 可传入的创建前连接身份与能力快照。
+            bootstrap_context: 内部 owner 提供的系统级首轮背景。
 
         Returns:
             新创建的 Trowel 会话记录。
@@ -685,9 +687,13 @@ class SessionHub:
         try:
             with self._capacity.admit_connection(req.session_kind):
                 if req.runtime == "claude_code":
-                    binding = self._create_cc(req, launch, memory_mcp_enabled)
+                    binding = self._create_cc(
+                        req, launch, memory_mcp_enabled, bootstrap_context
+                    )
                 else:
-                    binding = self._create_codex(req, launch, memory_mcp_enabled)
+                    binding = self._create_codex(
+                        req, launch, memory_mcp_enabled, bootstrap_context
+                    )
                 self._touch_session_state(binding.session_id)
                 return binding
         except CapacityLimitError as exc:
@@ -905,12 +911,14 @@ class SessionHub:
         req: CreateAgentSessionRequest,
         *,
         frozen_connection: FrozenConnectionExpectation | None = None,
+        bootstrap_context: str | None = None,
     ) -> SessionBinding:
         """执行公开路由和内部 owner 共用的完整创建/恢复事务。
 
         Args:
             req: 原始会话创建请求。
             frozen_connection: discussion participant 创建前必须匹配的连接冻结快照。
+            bootstrap_context: 内部 owner 提供的系统级首轮背景。
 
         Returns:
             已登记并在需要时完成 Codex thread hydrate 的 binding。
@@ -935,7 +943,11 @@ class SessionHub:
                     prepared.self_enabled if "self_enabled" in explicit else None
                 ),
             )
-        binding = self.create(prepared, frozen_connection=frozen_connection)
+        binding = self.create(
+            prepared,
+            frozen_connection=frozen_connection,
+            bootstrap_context=bootstrap_context,
+        )
         if prepared.resume_from is not None and prepared.runtime == "codex":
             try:
                 return await self.hydrate_resume(binding.session_id)
@@ -1092,6 +1104,7 @@ class SessionHub:
         req: CreateAgentSessionRequest,
         launch: RuntimeLaunchConfiguration | None,
         memory_mcp_enabled: bool,
+        bootstrap_context: str | None,
     ) -> SessionBinding:
         """登记 Claude Code 会话并保存初始的 Trowel 会话记录。
 
@@ -1169,6 +1182,10 @@ class SessionHub:
                 "close_callback": close_callback,
                 "memory_mcp_enabled": memory_mcp_enabled,
             }
+        if bootstrap_context:
+            connection_host_config["bootstrap_context"] = bootstrap_context
+        if not req.memory_eligibility:
+            connection_host_config["memory_eligibility"] = False
         try:
             opened = self._cc_opener(
                 cc_req,
@@ -1262,6 +1279,7 @@ class SessionHub:
         req: CreateAgentSessionRequest,
         launch: RuntimeLaunchConfiguration | None,
         memory_mcp_enabled: bool,
+        bootstrap_context: str | None,
     ) -> SessionBinding:
         """``resume_from`` 只登记原生 thread，首次 turn 才执行恢复。"""
 
@@ -1275,6 +1293,7 @@ class SessionHub:
             fingerprint=_injection_fingerprint,
             resource_registry=self._resource_registry,
             memory_mcp_enabled=memory_mcp_enabled,
+            bootstrap_context=bootstrap_context,
         )
         sid = prepared.session_id
         display_title, title_source = self._initial_title(req)
@@ -1758,8 +1777,9 @@ class SessionHub:
     def _live_status(self, binding: SessionBinding) -> tuple[bool, bool]:
         """计算会话列表中的 connected 和 running 状态。
 
-        Claude Code 的 connected 表示子进程存在且尚未退出；Codex 的 connected 表示
-        会话仍登记在 Codex 管理器中。running 表示当前有轮次正在执行。
+        两种 runtime 的 connected 都表示逻辑会话仍登记且可接受下一轮。Claude Code
+        当前子进程在中断后可以退出，下一条消息会按原生会话 ID 恢复，因此不能把进程
+        存活误当成会话连接。running 表示当前有轮次正在执行。
 
         Args:
             binding: 要检查的 Trowel 会话记录。
@@ -2506,6 +2526,7 @@ class SessionHub:
             if (
                 delete_binding
                 and binding.session_kind == "user"
+                and binding.memory_eligibility
                 and binding.memory_enabled
                 and self._session_review_requester is not None
             ):
@@ -2826,7 +2847,14 @@ class SessionHub:
             self._remove_codex_event_subscriber(session_id, queue)
             self._abort_turn_observation(session_id, observation_id)
 
-    async def start_codex_turn(self, session_id: str, text: str) -> str:
+    async def start_codex_turn(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        autonomous: bool = False,
+        memory_eligible: bool = True,
+    ) -> str:
         """向指定 Codex 会话发送一条输入并启动新一轮处理。
 
         函数在 Codex 接受请求后返回，不等待这一轮结束；后续事件由
@@ -2835,6 +2863,8 @@ class SessionHub:
         Args:
             session_id: 接收输入的 Codex 会话 ID。
             text: 要发送给 Codex 的文字内容。
+            autonomous: 是否为应用内部启动，不合成顶层用户事件。
+            memory_eligible: 本轮是否允许进入 Memory 提炼来源。
 
         Returns:
             Codex 为新一轮处理生成的轮次 ID。
@@ -2864,6 +2894,8 @@ class SessionHub:
                     before_turn_start=lambda attached: (
                         self._writeback_codex_before_turn(session_id, attached)
                     ),
+                    autonomous=autonomous,
+                    memory_eligible=memory_eligible,
                 )
                 self._writeback_codex_native(session_id, session)
                 return turn_id
@@ -2883,7 +2915,15 @@ class SessionHub:
         finally:
             self._capacity.release_turn(reservation)
 
-    async def start_turn(self, session_id: str, text: str) -> str:
+    async def start_turn(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        autonomous: bool = False,
+        memory_eligible: bool = True,
+        reserved_turn_id: str | None = None,
+    ) -> str:
         """启动由应用级 SSE 承载结果的普通用户 turn。
 
         Codex 在原生 manager 接受输入后返回真实 turn ID。Claude Code 先预留与
@@ -2893,6 +2933,10 @@ class SessionHub:
         Args:
             session_id: 接收用户输入的 Trowel 会话 ID。
             text: 不会写入日志或错误的用户输入正文。
+            autonomous: 是否为应用内部启动，不把文本当成顶层用户原话。
+            memory_eligible: 本轮是否允许进入 Memory 提炼来源。
+            reserved_turn_id: 内部 owner 为 Claude Code 预先持久化的逻辑 turn ID；
+                Codex 仍使用原生返回的 ID。
 
         Returns:
             已被 runtime 接受的稳定根 turn ID。
@@ -2904,7 +2948,12 @@ class SessionHub:
 
         binding = self._require(session_id)
         if binding.runtime is Runtime.CODEX:
-            return await self.start_codex_turn(session_id, text)
+            return await self.start_codex_turn(
+                session_id,
+                text,
+                autonomous=autonomous,
+                memory_eligible=memory_eligible,
+            )
         existing = self._detached_turn_tasks.get(session_id)
         if existing is not None and not existing.done():
             raise SessionConflictError("session already has an in-flight turn")
@@ -2918,9 +2967,10 @@ class SessionHub:
         turn_id: str | None = None
         try:
             reserve_turn_id = getattr(host, "reserve_turn_id", None)
-            turn_id = (
-                reserve_turn_id() if callable(reserve_turn_id) else uuid.uuid4().hex
-            )
+            if callable(reserve_turn_id):
+                turn_id = reserve_turn_id(reserved_turn_id)
+            else:
+                turn_id = reserved_turn_id or uuid.uuid4().hex
             cc_adapter = self._cc_adapters.get(session_id)
             if cc_adapter is None:
                 cc_adapter = ClaudeCodeEventAdapter(session_id)
@@ -2930,7 +2980,13 @@ class SessionHub:
             self._current_root_turn_ids[session_id] = turn_id
             self._touch_session_state(session_id)
             task = asyncio.create_task(
-                self._consume_detached_turn(binding, text, reservation),
+                self._consume_detached_turn(
+                    binding,
+                    text,
+                    reservation,
+                    autonomous=autonomous,
+                    memory_eligible=memory_eligible,
+                ),
                 name=f"agent-detached-turn:{session_id}",
             )
         except BaseException:
@@ -2953,6 +3009,9 @@ class SessionHub:
         binding: SessionBinding,
         text: str,
         reservation: object,
+        *,
+        autonomous: bool,
+        memory_eligible: bool,
     ) -> None:
         """消费 Claude Code turn 到终态，并把启动异常发布到应用级事件流。
 
@@ -2960,6 +3019,9 @@ class SessionHub:
             binding: 后台 turn 所属的用户会话记录。
             text: 交给 Claude Code 的用户输入正文。
             reservation: `/turns` 返回前取得的用户在跑容量令牌。
+            autonomous: 是否为应用内部启动。
+            memory_eligible: 本轮是否允许进入 Memory 提炼来源；CC 目前按会话级
+                门禁，参数仍保留为跨 runtime 的显式契约。
         """
 
         session_id = binding.session_id
@@ -2971,7 +3033,7 @@ class SessionHub:
             async for event in self._stream_admitted(
                 binding,
                 text,
-                autonomous=False,
+                autonomous=autonomous,
                 accepted_turn_id=self._current_root_turn_ids.get(session_id),
             ):
                 root_started = root_started or event.get("type") == "turn_start"

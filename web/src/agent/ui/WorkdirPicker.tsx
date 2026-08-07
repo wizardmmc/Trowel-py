@@ -1,6 +1,7 @@
 /** 提供可补全和浏览的工作目录输入控件。 */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   listWorkdirEntries,
   type AgentDirectoryEntry,
@@ -193,8 +194,8 @@ export function WorkdirPicker({
     setHighlight(0);
   }
 
-  return (
-    <div className="cc-modal-backdrop" onClick={onCancel}>
+  return createPortal(
+    <div className="cc-modal-backdrop cc-modal-backdrop--nested" onClick={onCancel}>
       <div
         className="cc-modal cc-modal--wide"
         role="dialog"
@@ -294,6 +295,7 @@ export function WorkdirPicker({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

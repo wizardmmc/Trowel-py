@@ -71,6 +71,8 @@ def open_session(
     owned_settings_path: bool = False,
     close_callback: Any | None = None,
     memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
+    memory_eligibility: bool = True,
     max_discussion_connections: int = DISCUSSION_CONNECTION_LIMIT,
 ) -> tuple[str, CCHost, str]:
     """按会话类别检查连接池后，创建主机并写入调用方状态。
@@ -91,6 +93,8 @@ def open_session(
         owned_settings_path: 是否由新 host 清理传入的私有 settings。
         close_callback: host 关闭或创建回滚后执行的一次性清理函数。
         memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
+        memory_eligibility: 是否允许整个原生会话进入 Memory/Profile 来源。
         max_discussion_connections: 研讨 participant 的独立连接上限。
     """
 
@@ -167,10 +171,12 @@ def open_session(
             mcp_config=mcp_config,
             owned_mcp_config=True,
             session_kind=req.session_kind,
+            memory_eligibility=memory_eligibility,
             agent_mcp_enabled=req.agent_mcp_enabled,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            bootstrap_context=bootstrap_context,
             process_controller=process_controller,
             resource_registry=resource_registry,
         )

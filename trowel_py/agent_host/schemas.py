@@ -62,19 +62,17 @@ class CreateAgentSessionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_internal_owner(self) -> CreateAgentSessionRequest:
-        """限制 owner_ref 只表达由 discussion 领域持有的内部会话。
+        """要求 discussion 私有会话带 owner_ref。
 
         Returns:
             校验通过的原请求。
 
         Raises:
-            ValueError: discussion 未带 owner_ref，或其他会话伪造 owner_ref。
+            ValueError: discussion 未带 owner_ref。
         """
 
         if self.session_kind == "discussion" and self.owner_ref is None:
             raise ValueError("discussion session requires owner_ref")
-        if self.session_kind != "discussion" and self.owner_ref is not None:
-            raise ValueError("owner_ref is reserved for discussion sessions")
         return self
 
 

@@ -5,6 +5,7 @@ import os
 from fastapi.testclient import TestClient
 
 from trowel_py.app import create_app
+from trowel_py.desktop.access import build_scoped_discussion_read_token
 
 
 def test_browser_mode_keeps_health_endpoint_open(monkeypatch) -> None:
@@ -57,6 +58,28 @@ def test_desktop_mode_does_not_exempt_other_cc_runtime_paths(monkeypatch) -> Non
 
     assert wrong_method.status_code == 401
     assert management_path.status_code == 401
+
+
+def test_desktop_scoped_token_only_opens_one_transcript_get(monkeypatch) -> None:
+    """交接 Agent 的路径级令牌不能读取或修改其他桌面 API。"""
+
+    credential = "desktop-secret"
+    path = "/api/discussions/discussion-1/transcript"
+    token = build_scoped_discussion_read_token(credential, path)
+    monkeypatch.setenv("TROWEL_DESKTOP_CREDENTIAL", credential)
+    client = TestClient(create_app())
+
+    allowed = client.get(f"{path}?access_token={token}")
+    other = client.get(
+        f"/api/discussions/discussion-2/transcript?access_token={token}"
+    )
+    write = client.post(f"{path}?access_token={token}")
+    health = client.get(f"/api/health?access_token={token}")
+
+    assert allowed.status_code != 401
+    assert other.status_code == 401
+    assert write.status_code == 401
+    assert health.status_code == 401
 
 
 def test_readiness_returns_the_started_instance_contract(monkeypatch) -> None:

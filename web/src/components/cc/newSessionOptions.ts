@@ -1,6 +1,7 @@
 /** 定义新会话对话框使用的 runtime 文案和 effort 选项。 */
 
 import type { Runtime } from "../../agent/transport";
+import { CLAUDE_SESSION_EFFORTS } from "../../agent/ui/connectionSessionConfig";
 
 export interface RuntimeOption {
   readonly value: Runtime;
@@ -21,19 +22,15 @@ export const RUNTIME_OPTIONS: readonly RuntimeOption[] = [
     value: "claude_code",
     native: "原生 claude -p",
     desc: "继续使用现有 Claude Host 配置；保留 Workflow、hook 与 Claude checkpoint。",
-    efforts: [
-      { value: "", label: "跟随" },
-      { value: "low", label: "low" },
-      { value: "medium", label: "medium" },
-      { value: "high", label: "high" },
-      { value: "xhigh", label: "xhigh" },
-      { value: "max", label: "max" },
-      { value: "ultracode", label: "ultracode" },
-    ],
+    efforts: CLAUDE_SESSION_EFFORTS.map((value) => ({
+      value,
+      label: value || "跟随",
+    })),
     permissions: [
       { value: "bypassPermissions", label: "跟随 Claude（bypass）" },
       { value: "default", label: "default" },
       { value: "acceptEdits", label: "acceptEdits" },
+      { value: "dontAsk", label: "dontAsk" },
     ],
   },
   {

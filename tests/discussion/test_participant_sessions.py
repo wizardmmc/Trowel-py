@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +14,13 @@ from trowel_py.discussion.models import DiscussionParticipant
 from trowel_py.discussion.participant_sessions import AgentHostParticipantSessionAdapter
 
 
-def _participant(*, agent_session_id: str | None) -> DiscussionParticipant:
+def _participant(
+    *,
+    agent_session_id: str | None,
+    runtime: Runtime = Runtime.CLAUDE_CODE,
+    permission_mode: str | None = "acceptEdits",
+    permission_preset: str | None = None,
+) -> DiscussionParticipant:
     """构造带 stale SQLite session ID 的最小冻结参与者。"""
 
     return DiscussionParticipant(
@@ -22,11 +28,18 @@ def _participant(*, agent_session_id: str | None) -> DiscussionParticipant:
         discussion_id="discussion-1",
         position=0,
         name="glm",
-        runtime=Runtime.CLAUDE_CODE,
+        runtime=runtime,
         connection_id="connection-1",
+        connection_name="GLM",
         model="sonnet",
+        effective_model="glm-5-test",
         effort=None,
         session_configuration_id="configuration-1",
+        permission_mode=permission_mode,
+        permission_preset=permission_preset,
+        memory_enabled=True,
+        profile_enabled=False,
+        self_enabled=True,
         connection_identity_version=3,
         owner_ref="discussion:1:participant:0:v1",
         agent_session_id=agent_session_id,
@@ -49,10 +62,10 @@ def _binding(session_id: str, owner_ref: str):
         workdir="/tmp",
         model="sonnet",
         effort=None,
-        permission="dontAsk",
-        memory_enabled=False,
+        permission="acceptEdits",
+        memory_enabled=True,
         profile_enabled=False,
-        self_enabled=False,
+        self_enabled=True,
         session_kind="discussion",
         memory_eligibility=False,
         agent_mcp_enabled=False,
@@ -102,11 +115,108 @@ def test_frozen_binding_accepts_effective_model_writeback() -> None:
     AgentHostParticipantSessionAdapter._validate_frozen_binding(participant, binding)
 
 
+@pytest.mark.anyio
+async def test_participant_context_switches_reach_session_hub() -> None:
+    """participant 的三个上下文开关必须按创建草稿传给 Session Hub。"""
+
+    participant = _participant(agent_session_id=None)
+    binding = _binding("binding", participant.owner_ref)
+
+    class CapturingHub:
+        """捕获 participant adapter 交给 Session Hub 的真实创建请求。"""
+
+        def __init__(self) -> None:
+            """创建没有既有 owner binding 的最小 Hub 替身。"""
+
+            self.store = SimpleNamespace(find_by_owner_ref=lambda _owner: None)
+            self.request = None
+
+        async def create_complete_session(self, request, *, frozen_connection):
+            """保存请求并返回与冻结配置一致的 binding。"""
+
+            self.request = request
+            assert frozen_connection.capability_version == "capability-v1"
+            return binding
+
+        async def close_result(self, *_args, **_kwargs):
+            """测试失败清理路径保持可调用。"""
+
+            return SimpleNamespace(status="closed")
+
+    hub = CapturingHub()
+    adapter = AgentHostParticipantSessionAdapter(hub)
+
+    await adapter.ensure_session(participant, workdir="/tmp")
+
+    assert hub.request is not None
+    assert hub.request.memory_enabled is True
+    assert hub.request.profile_enabled is False
+    assert hub.request.self_enabled is True
+    assert hub.request.permission_mode == "acceptEdits"
+    assert hub.request.permission_preset is None
+    assert hub.request.session_kind == "discussion"
+    assert hub.request.memory_eligibility is False
+    assert hub.request.agent_mcp_enabled is False
+
+
+@pytest.mark.anyio
+async def test_codex_participant_permission_reaches_session_hub() -> None:
+    """Codex participant 必须使用创建时冻结的权限预设，不能回退成只读。"""
+
+    participant = _participant(
+        agent_session_id=None,
+        runtime=Runtime.CODEX,
+        permission_mode=None,
+        permission_preset="workspace-write",
+    )
+    binding = replace(
+        _binding("binding", participant.owner_ref),
+        runtime=Runtime.CODEX,
+        permission="Workspace write · on-request",
+        permission_preset="workspace-write",
+    )
+
+    class CapturingHub:
+        """捕获 Codex participant 会话创建请求。"""
+
+        def __init__(self) -> None:
+            """创建没有既有 owner binding 的最小 Hub 替身。"""
+
+            self.store = SimpleNamespace(find_by_owner_ref=lambda _owner: None)
+            self.request = None
+
+        async def create_complete_session(self, request, *, frozen_connection):
+            """保存请求并返回同一冻结权限的 binding。"""
+
+            self.request = request
+            return binding
+
+        async def close_result(self, *_args, **_kwargs):
+            """测试失败清理路径保持可调用。"""
+
+            return SimpleNamespace(status="closed")
+
+    hub = CapturingHub()
+    adapter = AgentHostParticipantSessionAdapter(hub)
+
+    await adapter.ensure_session(participant, workdir="/tmp")
+
+    assert hub.request is not None
+    assert hub.request.permission_mode is None
+    assert hub.request.permission_preset == "workspace-write"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("requested_model", "opus"), ("requested_effort", "high")],
+    [
+        ("requested_model", "opus"),
+        ("requested_effort", "high"),
+        ("memory_enabled", False),
+        ("profile_enabled", True),
+        ("self_enabled", False),
+    ],
 )
-def test_frozen_binding_rejects_changed_requested_model_or_effort(
+def test_frozen_binding_rejects_changed_participant_configuration(
     field: str,
     value: str,
 ) -> None:

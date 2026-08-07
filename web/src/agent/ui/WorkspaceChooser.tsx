@@ -1,5 +1,7 @@
 /** 展示所有平台共用的 Recent 工作区和其他文件夹入口。 */
 
+import { createPortal } from "react-dom";
+
 import type { RecentWorkspace } from "../application";
 
 interface WorkspaceChooserProps {
@@ -21,8 +23,8 @@ export function WorkspaceChooser({
   onBrowseOther,
   onCancel,
 }: WorkspaceChooserProps) {
-  return (
-    <div className="cc-modal-backdrop" onClick={onCancel}>
+  return createPortal(
+    <div className="cc-modal-backdrop cc-modal-backdrop--nested" onClick={onCancel}>
       <section
         className="cc-modal cc-workspace-chooser"
         role="dialog"
@@ -37,7 +39,9 @@ export function WorkspaceChooser({
             onClick={onCancel}
             aria-label="关闭"
           >
-            ×
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 6 12 12M18 6 6 18" />
+            </svg>
           </button>
         </header>
         <div className="cc-modal__body">
@@ -93,6 +97,7 @@ export function WorkspaceChooser({
           </button>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

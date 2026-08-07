@@ -173,6 +173,8 @@ def open_cc_session_configured(
     owned_settings_path: bool = False,
     close_callback: Any | None = None,
     memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
+    memory_eligibility: bool = True,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -190,6 +192,8 @@ def open_cc_session_configured(
         owned_settings_path: 是否由会话 host 删除传入的私有 settings。
         close_callback: 会话清理后执行的一次性代理租约释放函数。
         memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
+        memory_eligibility: 是否允许整个原生会话进入 Memory/Profile 来源。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
@@ -204,6 +208,10 @@ def open_cc_session_configured(
         }
     if memory_mcp_enabled is not None:
         owned_resource_config["memory_mcp_enabled"] = memory_mcp_enabled
+    if bootstrap_context is not None:
+        owned_resource_config["bootstrap_context"] = bootstrap_context
+    if not memory_eligibility:
+        owned_resource_config["memory_eligibility"] = False
     sid, host, name = session_lifecycle.open_session(
         req,
         target_registry,

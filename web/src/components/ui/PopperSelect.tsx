@@ -18,13 +18,14 @@ export interface PopperSelectProps {
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly density?: "default" | "compact";
+  readonly side?: "top" | "bottom";
 }
 
 /**
- * 菜单从触发框下沿留出 6px 后向下展开。
+ * 菜单默认从触发框下沿留出 6px 后展开，贴近窗口底部的调用方可显式改为向上。
  *
- * 关闭 Radix 的翻转碰撞策略，确保窄窗口也不会改成覆盖触发框或从上方展开；可用高度
- * 由滚动视口收口。触发框与菜单处于两棵 DOM 子树，当前选中项不会参与定位。
+ * 关闭 Radix 的自动翻转碰撞策略，展开方向始终由调用方决定；可用高度由滚动视口
+ * 收口。触发框与菜单处于两棵 DOM 子树，当前选中项不会参与定位。
  */
 export function PopperSelect({
   value,
@@ -35,6 +36,7 @@ export function PopperSelect({
   disabled = false,
   placeholder,
   density = "default",
+  side = "bottom",
 }: PopperSelectProps) {
   const densityClass = density === "compact" ? " is-compact" : "";
   return (
@@ -57,7 +59,7 @@ export function PopperSelect({
         <SelectPrimitive.Content
           className={`popper-select__content${densityClass}`}
           position="popper"
-          side="bottom"
+          side={side}
           sideOffset={6}
           align="start"
           avoidCollisions={false}

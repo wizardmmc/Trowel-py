@@ -180,7 +180,7 @@
         "type": "table",
         "name": "discussion_attempts",
         "table": "discussion_attempts",
-        "sql": "CREATE TABLE discussion_attempts ( id TEXT PRIMARY KEY, round_id TEXT NOT NULL, participant_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 1), status TEXT NOT NULL CHECK (status IN ( 'dispatching', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), dispatch_key TEXT NOT NULL UNIQUE, input_hash TEXT NOT NULL, event_artifact TEXT NOT NULL, event_sha256 TEXT, event_bytes INTEGER CHECK (event_bytes IS NULL OR event_bytes >= 0), output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), root_turn_id TEXT, error_code TEXT, error_message TEXT, started_at TEXT NOT NULL, completed_at TEXT, FOREIGN KEY (round_id, participant_id) REFERENCES discussion_round_participants(round_id, participant_id) ON DELETE CASCADE, UNIQUE (round_id, participant_id, ordinal) )"
+        "sql": "CREATE TABLE discussion_attempts ( id TEXT PRIMARY KEY, round_id TEXT NOT NULL, participant_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 1), status TEXT NOT NULL CHECK (status IN ( 'dispatching', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), dispatch_key TEXT NOT NULL UNIQUE, input_hash TEXT NOT NULL, event_artifact TEXT NOT NULL, event_sha256 TEXT, event_bytes INTEGER CHECK (event_bytes IS NULL OR event_bytes >= 0), output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), root_turn_id TEXT, error_code TEXT, error_message TEXT, started_at TEXT NOT NULL, completed_at TEXT, activity_json TEXT, FOREIGN KEY (round_id, participant_id) REFERENCES discussion_round_participants(round_id, participant_id) ON DELETE CASCADE, UNIQUE (round_id, participant_id, ordinal) )"
       },
       {
         "type": "table",
@@ -204,7 +204,7 @@
         "type": "table",
         "name": "discussion_participants",
         "table": "discussion_participants",
-        "sql": "CREATE TABLE discussion_participants ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, position INTEGER NOT NULL CHECK (position >= 0), name TEXT NOT NULL, runtime TEXT NOT NULL CHECK (runtime IN ('claude_code', 'codex')), connection_id TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, session_configuration_id TEXT, connection_identity_version INTEGER, owner_ref TEXT NOT NULL UNIQUE, agent_session_id TEXT, native_session_id TEXT, status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'needs_reconcile', 'closed')), capability_version TEXT, capability_source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (discussion_id, position), UNIQUE (discussion_id, name) )"
+        "sql": "CREATE TABLE discussion_participants ( id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL REFERENCES discussions(id) ON DELETE CASCADE, position INTEGER NOT NULL CHECK (position >= 0), name TEXT NOT NULL, runtime TEXT NOT NULL CHECK (runtime IN ('claude_code', 'codex')), connection_id TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, session_configuration_id TEXT, connection_identity_version INTEGER, owner_ref TEXT NOT NULL UNIQUE, agent_session_id TEXT, native_session_id TEXT, status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'needs_reconcile', 'closed')), capability_version TEXT, capability_source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, memory_enabled INTEGER NOT NULL DEFAULT 0 CHECK (memory_enabled IN (0, 1)), profile_enabled INTEGER NOT NULL DEFAULT 0 CHECK (profile_enabled IN (0, 1)), self_enabled INTEGER NOT NULL DEFAULT 0 CHECK (self_enabled IN (0, 1)), permission_mode TEXT, permission_preset TEXT CHECK ( permission_preset IS NULL OR permission_preset IN ( 'follow', 'read-only', 'workspace-write', 'danger-full-access' ) ), connection_name TEXT, effective_model TEXT, UNIQUE (discussion_id, position), UNIQUE (discussion_id, name) )"
       },
       {
         "type": "table",
@@ -216,7 +216,7 @@
         "type": "table",
         "name": "discussion_round_participants",
         "table": "discussion_round_participants",
-        "sql": "CREATE TABLE discussion_round_participants ( round_id TEXT NOT NULL REFERENCES discussion_rounds(id) ON DELETE CASCADE, participant_id TEXT NOT NULL REFERENCES discussion_participants(id), position INTEGER NOT NULL CHECK (position >= 0), status TEXT NOT NULL CHECK (status IN ( 'pending', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), current_attempt_id TEXT, output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), error_code TEXT, error_message TEXT, usage_json TEXT, started_at TEXT, completed_at TEXT, PRIMARY KEY (round_id, participant_id), UNIQUE (round_id, position) )"
+        "sql": "CREATE TABLE discussion_round_participants ( round_id TEXT NOT NULL REFERENCES discussion_rounds(id) ON DELETE CASCADE, participant_id TEXT NOT NULL REFERENCES discussion_participants(id), position INTEGER NOT NULL CHECK (position >= 0), status TEXT NOT NULL CHECK (status IN ( 'pending', 'running', 'succeeded', 'failed', 'limited', 'timed_out', 'interrupted', 'cancelled', 'host_lost', 'needs_reconcile' )), current_attempt_id TEXT, output_artifact TEXT, output_sha256 TEXT, output_bytes INTEGER CHECK (output_bytes IS NULL OR output_bytes >= 0), error_code TEXT, error_message TEXT, usage_json TEXT, started_at TEXT, completed_at TEXT, activity_json TEXT, PRIMARY KEY (round_id, participant_id), UNIQUE (round_id, position) )"
       },
       {
         "type": "table",
@@ -6989,6 +6989,47 @@
           }
         }
       },
+      "/api/discussions/{discussion_id}/transcript": {
+        "get": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Get Discussion Transcript",
+          "description": "通过只读 HTTP 接口返回完整的已公开研讨记录。",
+          "operationId": "get_discussion_transcript_api_discussions__discussion_id__transcript_get",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/discussions/{discussion_id}/start": {
         "post": {
           "tags": [
@@ -7099,13 +7140,123 @@
           }
         }
       },
+      "/api/discussions/{discussion_id}/marks": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Mark Discussion Result",
+          "description": "把一个已公开参与者结果加入或移出 Agent 交接现场。",
+          "operationId": "mark_discussion_result_api_discussions__discussion_id__marks_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkDiscussionResultRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Mark Discussion Result Api Discussions  Discussion Id  Marks Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/handoffs": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Handoff Discussion To Agent",
+          "description": "创建普通 Agent，把研讨现场作为背景并发送用户首条指令。",
+          "operationId": "handoff_discussion_to_agent_api_discussions__discussion_id__handoffs_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateDiscussionHandoffRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Handoff Discussion To Agent Api Discussions  Discussion Id  Handoffs Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/discussions/{discussion_id}/continue": {
         "post": {
           "tags": [
             "discussions"
           ],
           "summary": "Continue Discussion",
-          "description": "在用户参与模式或自动上限后创建下一普通轮。",
+          "description": "在共同公开边界切换逐轮或自动批次并创建下一普通轮。",
           "operationId": "continue_discussion_api_discussions__discussion_id__continue_post",
           "parameters": [
             {
@@ -7123,7 +7274,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VersionedCommand"
+                  "$ref": "#/components/schemas/ContinueDiscussionRequest"
                 }
               }
             }
@@ -10010,6 +10161,52 @@
           "title": "ConnectionResponse",
           "description": "返回连接的完整脱敏读模型。\n\nAttributes:\n    id: Trowel 稳定本地 ID。\n    version: 乐观并发版本。\n    identity_version: runtime 启动身份版本。\n    name: 用户设置的供应商名称。\n    runtime: 消费连接的执行引擎。\n    kind: 连接字段和认证种类。\n    protocol: 上游请求协议。\n    base_url: 不含 userinfo 的服务地址。\n    models_url: 可选模型列表端点覆盖。\n    upstream_host: 从服务地址解析的主机名。\n    auth: 脱敏认证状态。\n    login_directory: 保留兼容字段；Official 始终返回 None。\n    login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。\n    proxy: 脱敏连接代理字段。\n    claude_role_models: Claude 角色到 model ID 的映射。\n    codex_catalog: Codex 模型和 effort 元数据。\n    catalog: 当前模型列表状态。\n    validation_status: 当前组合验证状态。\n    capability_version: 只读能力表版本。\n    last_session_choice: 最近一次成功会话的 model 和 effort。\n    secret_versions: secret 用途到单调版本的映射。\n    preview: 由保存事实生成的脱敏配置预览。"
         },
+        "ContinueDiscussionRequest": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            },
+            "progression_mode": {
+              "type": "string",
+              "enum": [
+                "automatic",
+                "user_guided"
+              ],
+              "title": "Progression Mode",
+              "default": "user_guided"
+            },
+            "additional_rounds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100.0,
+                  "minimum": 1.0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Additional Rounds"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version"
+          ],
+          "title": "ContinueDiscussionRequest",
+          "description": "在共同公开边界选择继续一轮或一段自动推进。\n\nAttributes:\n    progression_mode: user_guided 只开始下一轮；automatic 在其后继续自动运行。\n    additional_rounds: automatic 模式从当前边界起总共再运行的轮数。"
+        },
         "CreateAgentSessionRequest": {
           "properties": {
             "runtime": {
@@ -10208,6 +10405,41 @@
           "title": "CreateAgentSessionRequest",
           "description": "创建一种 runtime 的会话。\n\n``runtime`` 与三个注入开关在恢复同一原生会话时保持不变。CC 使用\n``permission_mode``；Codex 优先使用 ``permission_preset``，并继续接受旧调用方\n直接传入的 ``approval_policy`` 与 ``sandbox``。"
         },
+        "CreateDiscussionHandoffRequest": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            },
+            "instruction": {
+              "type": "string",
+              "maxLength": 100000,
+              "minLength": 1,
+              "title": "Instruction"
+            },
+            "agent": {
+              "$ref": "#/components/schemas/HandoffAgentRequest"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version",
+            "instruction",
+            "agent"
+          ],
+          "title": "CreateDiscussionHandoffRequest",
+          "description": "携带用户首条指令、普通 Agent 条件和 discussion 乐观并发身份。\n\nAttributes:\n    instruction: 用户在看过交接现场后给新 Agent 的首条原话。\n    agent: 与普通 Agent 新会话一致的运行条件。"
+        },
         "CreateDiscussionRequest": {
           "properties": {
             "request_id": {
@@ -10269,7 +10501,7 @@
             "participants"
           ],
           "title": "CreateDiscussionRequest",
-          "description": "创建并冻结一场研讨的初始议题、模式和参与者。\n\nAttributes:\n    request_id: 创建请求的客户端稳定身份。\n    topic: 初始议题原话，同时登记为第一条 Profile 用户来源。\n    workdir: participant 只读工具统一使用的项目目录。\n    progression_mode: automatic 或 user_guided。\n    max_rounds: 自动模式默认 3，可由用户设置；用户参与模式必须为空。\n    participants: 按创建顺序冻结的 2 至 8 位参与者。"
+          "description": "创建并冻结一场研讨的初始议题、模式和参与者。\n\nAttributes:\n    request_id: 创建请求的客户端稳定身份。\n    topic: 初始议题原话，同时登记为第一条 Profile 用户来源。\n    workdir: participant 原生工具统一使用的项目目录。\n    progression_mode: automatic 或 user_guided。\n    max_rounds: 自动模式默认 3，可由用户设置；用户参与模式必须为空。\n    participants: 按创建顺序冻结的 2 至 8 位参与者。"
         },
         "CreateSessionConfigurationRequest": {
           "properties": {
@@ -10776,6 +11008,138 @@
           },
           "type": "object",
           "title": "HTTPValidationError"
+        },
+        "HandoffAgentRequest": {
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "claude_code",
+                "codex"
+              ],
+              "title": "Runtime"
+            },
+            "connection_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Connection Id"
+            },
+            "workdir": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Workdir"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            },
+            "permission_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Mode"
+            },
+            "permission_preset": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "follow",
+                    "read-only",
+                    "workspace-write",
+                    "danger-full-access"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Preset"
+            },
+            "memory_enabled": {
+              "type": "boolean",
+              "title": "Memory Enabled",
+              "default": true
+            },
+            "profile_enabled": {
+              "type": "boolean",
+              "title": "Profile Enabled",
+              "default": true
+            },
+            "self_enabled": {
+              "type": "boolean",
+              "title": "Self Enabled",
+              "default": true
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "runtime",
+            "connection_id",
+            "workdir",
+            "model"
+          ],
+          "title": "HandoffAgentRequest",
+          "description": "创建普通 Agent 接受研讨现场所需的运行条件。\n\nAttributes:\n    runtime: 普通 Agent 使用 Claude Code 还是 Codex。\n    connection_id: 已验证的 Trowel 连接 ID。\n    workdir: 新 Agent 独立选择的工作目录。\n    model: 连接允许的模型 ID。\n    effort: 连接允许的思考强度；runtime 不使用时为 None。\n    permission_mode: Claude Code 权限模式。\n    permission_preset: Codex 权限预设。\n    memory_enabled: 是否注入 Trowel Memory。\n    profile_enabled: 是否注入已确认的用户画像。\n    self_enabled: 是否注入 Trowel 持续主体说明。"
+        },
+        "MarkDiscussionResultRequest": {
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "title": "Command Id"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Expected Version"
+            },
+            "round_number": {
+              "type": "integer",
+              "minimum": 1.0,
+              "title": "Round Number"
+            },
+            "participant_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Participant Id"
+            },
+            "marked": {
+              "type": "boolean",
+              "title": "Marked"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "command_id",
+            "expected_version",
+            "round_number",
+            "participant_id",
+            "marked"
+          ],
+          "title": "MarkDiscussionResultRequest",
+          "description": "设置一个已公开参与者结果是否进入交接现场。\n\nAttributes:\n    round_number: 已公开结果所属的逻辑轮次。\n    participant_id: 创建时冻结的参与者 ID。\n    marked: True 加入交接现场，False 取消标记。"
         },
         "MemoryAssetsData": {
           "properties": {
@@ -11772,19 +12136,110 @@
               "title": "Name"
             },
             "session_configuration_id": {
-              "type": "string",
-              "minLength": 1,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Session Configuration Id"
+            },
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Effort"
+            },
+            "permission_mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "bypassPermissions",
+                    "default",
+                    "acceptEdits",
+                    "dontAsk"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Mode"
+            },
+            "permission_preset": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "follow",
+                    "read-only",
+                    "workspace-write",
+                    "danger-full-access"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Permission Preset"
+            },
+            "memory_enabled": {
+              "type": "boolean",
+              "title": "Memory Enabled",
+              "default": true
+            },
+            "profile_enabled": {
+              "type": "boolean",
+              "title": "Profile Enabled",
+              "default": true
+            },
+            "self_enabled": {
+              "type": "boolean",
+              "title": "Self Enabled",
+              "default": true
             }
           },
           "additionalProperties": false,
           "type": "object",
           "required": [
-            "name",
-            "session_configuration_id"
+            "name"
           ],
           "title": "ParticipantRequest",
-          "description": "选择一位 participant 的名称和完整会话配置。\n\nAttributes:\n    name: 研讨内唯一的用户可见名称。\n    session_configuration_id: 设置域中已验证的完整会话配置 ID。"
+          "description": "选择一位 participant 的名称和完整会话配置。\n\nAttributes:\n    name: 研讨内唯一的用户可见名称。\n    session_configuration_id: 可选的设置域命名会话配置 ID。\n    connection_id: 未使用命名配置时直接选择的连接 ID。\n    model: 未使用命名配置时直接选择的模型 ID。\n    effort: 未使用命名配置时直接选择的思考强度。\n    permission_mode: Claude Code 创建时冻结的权限模式。\n    permission_preset: Codex 创建时冻结的权限预设。\n    memory_enabled: 是否向参与者注入 Trowel Memory。\n    profile_enabled: 是否向参与者注入已确认的用户画像。\n    self_enabled: 是否向参与者注入 Trowel 持续主体说明。"
         },
         "PatchAgentSessionRequest": {
           "properties": {

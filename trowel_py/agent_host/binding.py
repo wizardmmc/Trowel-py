@@ -81,8 +81,8 @@ class SessionBinding:
         connection_kind: 创建时冻结的连接种类。
         configuration_capability_version: 放行连接组合的设置域能力表版本。
         configuration_capability_source: 放行连接组合的真实验证证据说明。
-        owner_ref: 内部会话的持久归属键；discussion participant 用它在应用重启后
-            认领已经创建但尚未回写领域库的原生会话。
+        owner_ref: 系统创建会话的持久归属键；discussion participant 与 handoff
+            用它在应用重启后认领已经创建的原生会话。
         requested_model: 创建请求冻结的模型选择；``model`` 可被 runtime 回写为有效 ID。
         requested_effort: 创建请求冻结的思考强度；``effort`` 可被 runtime 补成默认值。
     """
@@ -260,7 +260,7 @@ def make_binding(
         connection_kind: 冻结的连接种类。
         configuration_capability_version: 设置域能力表版本。
         configuration_capability_source: 设置域能力结论的实测来源。
-        owner_ref: 内部会话的稳定归属键；普通用户会话为 None。
+        owner_ref: 系统创建会话的稳定归属键；用户手动创建的会话为 None。
 
     Returns:
         带统一创建时间和更新时间的不可变 binding。

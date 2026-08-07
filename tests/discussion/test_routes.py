@@ -72,10 +72,67 @@ def _create_payload() -> dict[str, object]:
         "workdir": "/tmp",
         "progression_mode": "user_guided",
         "participants": [
-            {"name": "glm", "session_configuration_id": "cc-glm"},
-            {"name": "gpt", "session_configuration_id": "codex-gpt"},
+            {
+                "name": "glm",
+                "session_configuration_id": "cc-glm",
+                "permission_mode": "acceptEdits",
+                "memory_enabled": True,
+                "profile_enabled": False,
+                "self_enabled": True,
+            },
+            {
+                "name": "gpt",
+                "session_configuration_id": "codex-gpt",
+                "permission_preset": "workspace-write",
+                "memory_enabled": False,
+                "profile_enabled": True,
+                "self_enabled": False,
+            },
         ],
     }
+
+
+def test_create_persists_and_returns_participant_context_switches(
+    tmp_path: Path,
+) -> None:
+    """刷新页面后仍能看到每位参与者各自冻结的上下文开关。"""
+
+    with _client(tmp_path) as client:
+        response = client.post("/api/discussions", json=_create_payload())
+        discussion = response.json()["data"]
+        reloaded = client.get(
+            f"/api/discussions/{discussion['id']}"
+        ).json()["data"]
+
+    assert response.status_code == 200
+    assert [
+        (
+            item["memory_enabled"],
+            item["profile_enabled"],
+            item["self_enabled"],
+        )
+        for item in reloaded["participants"]
+    ] == [(True, False, True), (False, True, False)]
+    assert [
+        (item["permission_mode"], item["permission_preset"])
+        for item in reloaded["participants"]
+    ] == [("acceptEdits", None), (None, "workspace-write")]
+
+
+def test_create_rejects_permission_from_the_other_runtime(tmp_path: Path) -> None:
+    """不能把 Codex permission preset 静默套到 Claude Code 参与者。"""
+
+    payload = _create_payload()
+    participants = payload["participants"]
+    assert isinstance(participants, list)
+    participants[0].pop("permission_mode")
+    participants[0]["permission_preset"] = "workspace-write"
+
+    with _client(tmp_path) as client:
+        response = client.post("/api/discussions", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "DISCUSSION_PERMISSION_INVALID"
 
 
 def test_start_route_runs_coordinator_on_application_event_loop(
@@ -103,11 +160,17 @@ def test_start_route_runs_coordinator_on_application_event_loop(
                     "discussion route did not finish its background round"
                 )
             time.sleep(0.01)
+        transcript_response = client.get(
+            f"/api/discussions/{created['id']}/transcript"
+        )
 
     assert snapshot["rounds"][0]["status"] == "published"
     assert all(
         item["content"] is not None for item in snapshot["rounds"][0]["participants"]
     )
+    assert transcript_response.status_code == 200
+    assert transcript_response.headers["content-type"].startswith("text/markdown")
+    assert "answer-glm-round-1" in transcript_response.text
 
 
 def test_validation_error_uses_safe_envelope_without_echoing_body(

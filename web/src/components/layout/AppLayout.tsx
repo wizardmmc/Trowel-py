@@ -9,6 +9,7 @@ export type Tool =
   | "extract"
   | "review"
   | "cc"
+  | "discussion"
   | "statistics"
   | "profile"
   | "settings";
@@ -60,6 +61,16 @@ function IconAgent() {
   );
 }
 
+function IconDiscussion() {
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
 function IconStatistics() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -91,6 +102,7 @@ const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
   { id: "cc", icon: <IconAgent />, label: "Agent" },
+  { id: "discussion", icon: <IconDiscussion />, label: "研讨" },
   { id: "statistics", icon: <IconStatistics />, label: "统计" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
@@ -153,9 +165,9 @@ export function AppLayout({
         )}
       </aside>
       <main
-        className={`app-main${activeTool === "cc" || activeTool === "settings" ? " app-main--flush" : ""}${activeTool === "statistics" ? " app-main--statistics" : ""}`}
+        className={`app-main${activeTool === "cc" || activeTool === "discussion" || activeTool === "settings" ? " app-main--flush" : ""}${activeTool === "statistics" ? " app-main--statistics" : ""}`}
       >
-        {activeTool !== "cc" && activeTool !== "settings" && (
+        {activeTool !== "cc" && activeTool !== "discussion" && activeTool !== "settings" && (
           <div className="app-main__drag-region" aria-hidden="true" />
         )}
         <button

@@ -498,7 +498,7 @@ async def create_session(
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
-    if req.session_kind == "discussion":
+    if req.session_kind == "discussion" or req.owner_ref is not None:
         raise HTTPException(status_code=404, detail="session kind not found")
     if req.resume_from is not None and hub.is_non_user_native_id(
         Runtime(req.runtime),

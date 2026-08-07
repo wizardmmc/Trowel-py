@@ -181,12 +181,14 @@ class CCHost:
         stalled_tick: float = 1.0,
         session_registrar: Any = None,
         session_kind: str = "user",
+        memory_eligibility: bool = True,
         agent_mcp_enabled: bool = False,
         mcp_config: str | None = None,
         owned_mcp_config: bool = False,
         memory_enabled: bool = True,
         profile_enabled: bool = True,
         self_enabled: bool = True,
+        bootstrap_context: str | None = None,
         process_controller: ProcessController | None = None,
         resource_registry: ResourceRegistry | None = None,
         close_interrupt_s: float = 2.0,
@@ -220,6 +222,7 @@ class CCHost:
             session_registrar: 保存 Memory 会话记录和水位的注册器；``None`` 使用
                 默认持久化实现。
             session_kind: 写入 Memory 会话记录的会话来源。
+            memory_eligibility: 是否允许整个会话进入 Memory/Profile 来源。
             agent_mcp_enabled: 是否启用跨 Agent 委派工具。
             mcp_config: 候选 MCP 配置文件；启用 Agent MCP 或由本 host 拥有时
                 传给 CC，否则忽略。
@@ -227,6 +230,8 @@ class CCHost:
             memory_enabled: 是否向会话提供 Memory 内容和读取入口。
             profile_enabled: 是否向会话提供用户画像。
             self_enabled: 是否向会话提供 Trowel 的持续身份信息。
+            bootstrap_context: 仅由应用内部注入的首轮背景；作为系统提示词附加，
+                不能伪装成顶层用户原话。
             process_controller: 核验并终止独立进程组的实现；None 保留只操作根进程
                 的兼容路径，生产应用会显式传入本机实现。
             resource_registry: 记录 CC 进程组 owner 和关闭终态的应用资源账本。
@@ -260,11 +265,15 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        self._memory_session_kind = (
+            session_kind if memory_eligibility else "ineligible"
+        )
         self.agent_mcp_enabled = agent_mcp_enabled
         # 三个开关彼此独立，并在整个会话及重启期间保持不变。
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
         self._self_enabled = self_enabled
+        self._bootstrap_context = bootstrap_context
         # 会话独占的 composite roster 即使为空也走 strict mode；旧的共享 memory-only
         # 配置仍在 memory-off 时丢弃，保持独立 review host 的隔离语义。
         self._mcp_config = (
@@ -419,6 +428,10 @@ class CCHost:
                 exc_info=True,
             )
             injection = ""
+        if self._bootstrap_context:
+            injection = "\n\n".join(
+                part for part in (injection, self._bootstrap_context) if part
+            )
         args = build_args(
             self.workdir,
             model=self._model,
@@ -822,19 +835,37 @@ class CCHost:
         """结束当前 CC 子进程，使 revert 后的下一轮从截断的 JSONL 恢复。"""
         await self._kill()
 
-    def reserve_turn_id(self) -> str:
-        """为下一次 ``send`` 预留逻辑 turn ID，供接收响应和首帧共用。"""
+    def reserve_turn_id(self, preferred_turn_id: str | None = None) -> str:
+        """为下一次 ``send`` 预留逻辑 turn ID，供响应、事件和 checkpoint 共用。
+
+        Args:
+            preferred_turn_id: 内部 owner 已确定的稳定 ID；普通用户轮次为 None，
+                仍由本 host 生成。
+
+        Returns:
+            ``send`` 将消费的同一个逻辑 turn ID。
+        """
 
         if self._reserved_turn_id is not None:
             raise RuntimeError("next Claude Code turn already has a reserved ID")
         if (
-            self._turn_count == 0
-            and checkpoint.is_enabled()
-            and checkpoint.is_git_repo(self.workdir)
+            preferred_turn_id is not None
+            and self._turn_count == 0
+            and not self._session_start_saved
         ):
-            turn_id = self._session_start_turn_id
-        else:
-            turn_id = uuid.uuid4().hex
+            # 新会话的首轮 checkpoint 会在原生 init 后落盘。先统一它的身份，
+            # 避免事件、回滚请求和私有 checkpoint ref 使用三个不同的 ID。
+            self._session_start_turn_id = preferred_turn_id
+        turn_id = preferred_turn_id
+        if turn_id is None:
+            if (
+                self._turn_count == 0
+                and checkpoint.is_enabled()
+                and checkpoint.is_git_repo(self.workdir)
+            ):
+                turn_id = self._session_start_turn_id
+            else:
+                turn_id = uuid.uuid4().hex
         self._reserved_turn_id = turn_id
         return turn_id
 
@@ -904,7 +935,7 @@ class CCHost:
                 trowel_session_id=self.session_id,
                 workdir=self.workdir,
                 jsonl_path=jsonl_path,
-                session_kind=self._session_kind,
+                session_kind=self._memory_session_kind,
                 registrar=self._session_registrar,
             )
         except Exception as exc:  # noqa: BLE001 — 注册失败不能中断 CC 会话

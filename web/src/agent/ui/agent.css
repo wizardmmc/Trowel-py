@@ -2615,7 +2615,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--layer-dialog, 1000);
+}
+.cc-modal-backdrop--nested {
+  z-index: var(--layer-nested-dialog, 1100);
 }
 .cc-modal {
   background: var(--bg-card);
@@ -3414,6 +3417,10 @@
   gap: 6px;
   margin-bottom: 12px;
 }
+.cc-dialog__option-row--connection {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
 .cc-dialog__option {
   border: 1px solid var(--color-border);
   border-radius: 999px;
@@ -3423,6 +3430,11 @@
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.64rem;
+}
+.cc-dialog__option--connection {
+  min-height: 49px;
+  border-radius: 6px;
+  text-align: left;
 }
 .cc-dialog__option--selected {
   border-color: var(--garden-green);
@@ -4081,7 +4093,7 @@
   position: fixed; inset: 0;
   background: rgba(45, 40, 30, 0.35);
   display: flex; align-items: center; justify-content: center;
-  z-index: 1000;
+  z-index: var(--layer-dialog, 1000);
 }
 .cc-dialog {
   background: var(--bg-card);
@@ -4930,6 +4942,15 @@
   background: #f4f1eb;
 }
 
+.cc-workspace-chooser__close svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
 .cc-workspace-chooser__label {
   margin: 0 0 8px;
   color: var(--text-tertiary);
@@ -5021,6 +5042,8 @@
   color: var(--garden-green);
   background: transparent;
   cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
   text-align: left;
 }
 

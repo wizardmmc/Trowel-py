@@ -13,9 +13,11 @@ export * from "./store/sessionState";
 export * from "./workdirs";
 export {
   getAgentSessionDefaults,
+  type AgentConnectionOption,
   type AgentHistoryRow,
   type AgentSession,
   type CodexCommand,
   type CodexReviewTarget,
+  type PermissionPreset,
   type Runtime,
 } from "../transport/api";

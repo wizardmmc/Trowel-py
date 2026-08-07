@@ -121,6 +121,19 @@ async def test_runtime_adapters_expose_the_same_live_session_contract() -> None:
     assert codex.session_ids() == ()
 
 
+def test_dead_cc_process_keeps_registered_session_connected() -> None:
+    """中断只结束当前进程；仍在 registry 的会话可由下一条消息原生恢复。"""
+
+    host = _CcHost()
+    host.is_dead = True
+    host.has_in_flight_turn = False
+
+    state = ClaudeCodeRuntimeAdapter({"cc-1": host}).live_state("cc-1")
+
+    assert state.connected is True
+    assert state.has_in_flight_turn is False
+
+
 @pytest.mark.anyio
 async def test_codex_internal_session_stays_archived_on_close() -> None:
     manager = _CodexManager()

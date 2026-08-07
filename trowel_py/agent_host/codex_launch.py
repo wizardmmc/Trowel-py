@@ -53,6 +53,7 @@ def prepare_codex_session(
     fingerprint: Callable[[str], str],
     resource_registry: ResourceRegistry | None = None,
     memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
 ) -> PreparedCodexSession:
     """根据创建请求准备尚未注册的 Codex 会话及其绑定信息。
 
@@ -65,6 +66,7 @@ def prepare_codex_session(
         fingerprint: 计算注入正文内容指纹的函数。
         resource_registry: 桌面实例资源账本；存在时为间接启动的 MCP 签发登记令牌。
         memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
 
     Returns:
         已配置完成、等待 Session Hub 注册的 Codex 会话。
@@ -126,6 +128,10 @@ def prepare_codex_session(
             exc_info=True,
         )
         injection_text = ""
+    if bootstrap_context:
+        injection_text = "\n\n".join(
+            part for part in (injection_text, bootstrap_context) if part
+        )
 
     # 先计算内容指纹；失败时不再构造 MCP，也不会返回可供注册和持久化的会话。
     injection_hash = fingerprint(injection_text)
@@ -203,7 +209,7 @@ def prepare_codex_session(
         workdir=req.workdir,
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,
-        session_kind=req.session_kind,
+        session_kind=(req.session_kind if req.memory_eligibility else "ineligible"),
     )
     session = CodexSession(config, event_sink=journal.record)
     return PreparedCodexSession(

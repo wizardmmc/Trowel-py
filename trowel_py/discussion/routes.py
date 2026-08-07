@@ -18,7 +18,10 @@ from trowel_py.discussion.errors import DiscussionError
 from trowel_py.discussion.events import DiscussionEventBus
 from trowel_py.discussion.schemas import (
     AddDiscussionMessageRequest,
+    ContinueDiscussionRequest,
+    CreateDiscussionHandoffRequest,
     CreateDiscussionRequest,
+    MarkDiscussionResultRequest,
     StopDiscussionRequest,
     VersionedCommand,
 )
@@ -208,6 +211,20 @@ async def get_discussion(
     return _success(service.get(discussion_id))
 
 
+@router.get("/{discussion_id}/transcript")
+async def get_discussion_transcript(
+    discussion_id: str,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> Response:
+    """通过只读 HTTP 接口返回完整的已公开研讨记录。"""
+
+    return Response(
+        service.get_transcript(discussion_id),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/{discussion_id}/start")
 async def start_discussion(
     discussion_id: str,
@@ -230,13 +247,35 @@ async def add_discussion_message(
     return _success(service.add_message(discussion_id, body))
 
 
+@router.post("/{discussion_id}/marks")
+async def mark_discussion_result(
+    discussion_id: str,
+    body: MarkDiscussionResultRequest,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> dict[str, Any]:
+    """把一个已公开参与者结果加入或移出 Agent 交接现场。"""
+
+    return _success(service.mark_result(discussion_id, body))
+
+
+@router.post("/{discussion_id}/handoffs")
+async def handoff_discussion_to_agent(
+    discussion_id: str,
+    body: CreateDiscussionHandoffRequest,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> dict[str, Any]:
+    """创建普通 Agent，把研讨现场作为背景并发送用户首条指令。"""
+
+    return _success(await service.handoff(discussion_id, body))
+
+
 @router.post("/{discussion_id}/continue")
 async def continue_discussion(
     discussion_id: str,
-    body: VersionedCommand,
+    body: ContinueDiscussionRequest,
     service: DiscussionService = Depends(get_discussion_service),
 ) -> dict[str, Any]:
-    """在用户参与模式或自动上限后创建下一普通轮。"""
+    """在共同公开边界切换逐轮或自动批次并创建下一普通轮。"""
 
     return _success(service.continue_round(discussion_id, body))
 

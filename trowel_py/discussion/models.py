@@ -46,9 +46,16 @@ class DiscussionParticipant:
         name: 用户可见的参与者名称。
         runtime: 执行该参与者的原生运行工具。
         connection_id: 创建时冻结的 Trowel 连接 ID。
+        connection_name: 创建时冻结的连接展示名，例如 DeepSeek 或 PRO X20。
         model: 创建时冻结的模型 ID。
+        effective_model: 角色别名解析后的真实模型 ID；无法解析时等于 model。
         effort: 创建时冻结的思考强度。
         session_configuration_id: 创建时选择的完整会话配置 ID；没有时为 None。
+        permission_mode: Claude Code 创建时冻结的权限模式；Codex 为 None。
+        permission_preset: Codex 创建时冻结的权限预设；Claude Code 为 None。
+        memory_enabled: 是否向该参与者注入 Trowel Memory。
+        profile_enabled: 是否向该参与者注入已确认的用户画像。
+        self_enabled: 是否向该参与者注入 Trowel 持续主体说明。
         connection_identity_version: 创建时冻结的连接启动身份版本。
         owner_ref: 用于跨应用重启认领 binding 的持久归属键。
         agent_session_id: 当前 Session Hub 会话 ID；尚未创建时为 None。
@@ -66,9 +73,16 @@ class DiscussionParticipant:
     name: str
     runtime: Runtime
     connection_id: str
+    connection_name: str | None
     model: str
+    effective_model: str
     effort: str | None
     session_configuration_id: str | None
+    permission_mode: str | None
+    permission_preset: str | None
+    memory_enabled: bool
+    profile_enabled: bool
+    self_enabled: bool
     connection_identity_version: int | None
     owner_ref: str
     agent_session_id: str | None
@@ -95,6 +109,7 @@ class ParticipantResult:
         error_code: 稳定失败原因代码。
         error_message: 面向用户的脱敏失败说明。
         usage_json: 运行工具回报的原始用量摘要 JSON；没有时为 None。
+        activity_json: 本轮工具调用与子 Agent 活动的去敏统计 JSON。
         started_at: 当前槽位首次开始时间。
         completed_at: 当前槽位进入终态的时间。
     """
@@ -109,6 +124,7 @@ class ParticipantResult:
     error_code: str | None
     error_message: str | None
     usage_json: str | None
+    activity_json: str | None
     started_at: str | None
     completed_at: str | None
 
@@ -197,8 +213,8 @@ class Discussion:
         create_request_hash: 创建 payload 的规范化指纹，用于拒绝命令身份挪用。
         topic: 创建研讨时的初始议题原话。
         workdir: participant 工具统一使用的工作目录。
-        progression_mode: 自动推进或每轮等待用户参与。
-        max_rounds: 自动模式上限；用户参与模式固定为 None。
+        progression_mode: 当前自动推进或每轮等待用户参与，可在公开边界切换。
+        max_rounds: 当前自动批次的绝对停止轮号；用户参与模式为 None。
         status: 研讨当前生命周期状态。
         version: 所有写命令使用的乐观并发版本。
         active_round_number: 当前运行或最近发布的轮号。

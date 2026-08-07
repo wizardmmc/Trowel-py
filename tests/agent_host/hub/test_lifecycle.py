@@ -94,6 +94,25 @@ def test_list_active_mixes_cc_and_codex(hub: SessionHub, workdir: Path):
     assert active_id == cx.session_id
 
 
+def test_interrupted_cc_process_stays_in_active_session_list(
+    hub: SessionHub,
+    workdir: Path,
+    cc_registry: dict[str, FakeCcHost],
+) -> None:
+    """子进程退出不结束逻辑会话，多开栏快照仍应声明可继续。"""
+
+    binding = hub.create(cc_req(workdir))
+    cc_registry[binding.session_id].is_dead = True
+
+    sessions, _active_id = hub.list_active()
+    snapshot = next(
+        item for item in sessions if item["session_id"] == binding.session_id
+    )
+
+    assert snapshot["connected"] is True
+    assert snapshot["running"] is False
+
+
 @pytest.mark.parametrize(
     ("first_request", "second_request"),
     [
@@ -544,7 +563,7 @@ async def test_delete_user_session_persists_review_before_dropping_binding(
     assert store.get(binding.session_id) is None
 
 
-async def test_delete_internal_or_memory_disabled_session_does_not_request_review(
+async def test_delete_internal_or_memory_ineligible_session_does_not_request_review(
     tmp_path: Path,
     workdir: Path,
     cc_registry: dict[str, FakeCcHost],
@@ -562,9 +581,13 @@ async def test_delete_internal_or_memory_disabled_session_does_not_request_revie
     )
     delegate = hub.create(cc_req(workdir, session_kind="delegate"))
     memory_off = hub.create(codex_req(workdir, memory_enabled=False))
+    memory_ineligible = hub.create(
+        cc_req(workdir, memory_enabled=True, memory_eligibility=False)
+    )
 
     await hub.delete(delegate.session_id)
     await hub.delete(memory_off.session_id)
+    await hub.delete(memory_ineligible.session_id)
 
     assert requested == []
 

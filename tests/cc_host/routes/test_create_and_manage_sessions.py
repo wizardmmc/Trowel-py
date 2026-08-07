@@ -1,11 +1,38 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from trowel_py.cc_host import routes as cc_routes
 from tests.cc_host.routes.support import FakeHost, _mini_app
 
 
 class TestCreateSession:
+    def test_configured_opener_forwards_internal_context(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Agent Hub 的系统背景与来源门禁必须穿过 CC 路由包装层。"""
+
+        captured: dict[str, object] = {}
+
+        def fake_open_session(_req, _registry, **kwargs):
+            """捕获传给 session lifecycle 的完整内部条件。"""
+
+            captured.update(kwargs)
+            return "sid", SimpleNamespace(), "name"
+
+        monkeypatch.setattr(cc_routes.session_lifecycle, "open_session", fake_open_session)
+
+        opened = cc_routes.open_cc_session_configured(
+            cc_routes.CreateSessionRequest(workdir=str(tmp_path)),
+            {},
+            bootstrap_context="系统交接现场",
+            memory_eligibility=False,
+        )
+
+        assert opened.sid == "sid"
+        assert captured["bootstrap_context"] == "系统交接现场"
+        assert captured["memory_eligibility"] is False
+
     def test_creates_session_returns_envelope(self, tmp_path: Path):
         reg: dict = {}
         client = _mini_app(reg)

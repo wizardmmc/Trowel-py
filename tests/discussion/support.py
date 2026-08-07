@@ -14,6 +14,7 @@ from trowel_py.configuration.models import (
 )
 from trowel_py.discussion.models import DiscussionParticipant
 from trowel_py.discussion.participant_sessions import ParticipantSession
+from trowel_py.discussion.service import ParticipantRuntimeIdentity
 
 
 class FakeConfigurationCatalog:
@@ -50,6 +51,75 @@ class FakeConfigurationCatalog:
             ),
             availability="available",
             disabled_reason=None,
+        )
+
+    def resolve(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> SessionConfigurationView:
+        """模拟 Agent 直接组合经过同一能力校验但不产生命名配置。
+
+        Args:
+            connection_id: 测试连接 ID。
+            model: 测试模型 ID。
+            effort: 测试思考强度。
+
+        Returns:
+            id 为空、可直接冻结进 participant 的临时配置。
+        """
+
+        runtime = (
+            RuntimeKind.CLAUDE_CODE
+            if connection_id.startswith("cc-")
+            else RuntimeKind.CODEX
+        )
+        return SessionConfigurationView(
+            id="",
+            version=0,
+            name=connection_id,
+            runtime=runtime,
+            connection_id=connection_id,
+            connection_identity_version=1,
+            model=model,
+            effort=effort,
+            capability=CapabilityView(
+                status="verified",
+                version="test-v1",
+                source="真实测试替身",
+            ),
+            availability="available",
+            disabled_reason=None,
+        )
+
+    def runtime_identity(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> ParticipantRuntimeIdentity:
+        """返回与真实连接解析同形的冻结展示身份。
+
+        Args:
+            connection_id: 测试连接 ID。
+            model: 请求模型或角色别名。
+            effort: 本测试不参与身份计算的思考强度。
+
+        Returns:
+            可用于公开 DTO 断言的连接名和实际模型。
+        """
+
+        del effort
+        effective_model = {
+            "sonnet": "glm-sonnet-test",
+            "opus": "deepseek-opus-test",
+        }.get(model, model)
+        return ParticipantRuntimeIdentity(
+            connection_name=connection_id.removeprefix("connection-"),
+            effective_model=effective_model,
         )
 
 
@@ -99,11 +169,16 @@ class FakeParticipantSessions:
                 workdir=workdir,
                 model=participant.model,
                 effort=participant.effort,
-                permission="dontAsk",
-                memory_enabled=False,
+                permission=(
+                    participant.permission_mode
+                    if participant.runtime is Runtime.CLAUDE_CODE
+                    else participant.permission_preset
+                ),
+                permission_preset=participant.permission_preset,
+                memory_enabled=participant.memory_enabled,
                 memory_mcp_enabled=False,
-                profile_enabled=False,
-                self_enabled=False,
+                profile_enabled=participant.profile_enabled,
+                self_enabled=participant.self_enabled,
                 session_kind="discussion",
                 memory_eligibility=False,
                 agent_mcp_enabled=False,

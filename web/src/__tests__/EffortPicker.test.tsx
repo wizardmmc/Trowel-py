@@ -3,17 +3,19 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { EffortPicker } from "../components/cc/EffortPicker";
 
 describe("EffortPicker", () => {
-  it("lists all 6 fixed effort levels", () => {
+  it("lists every effort accepted by the installed Claude CLI", () => {
     render(<EffortPicker currentEffort="medium" onSelect={() => {}} onCancel={() => {}} />);
-    for (const v of ["low", "medium", "high", "max", "auto", "ultracode"]) {
+    for (const v of ["low", "medium", "high", "xhigh", "max"]) {
       expect(screen.getByText(v)).toBeInTheDocument();
     }
+    expect(screen.queryByText("auto")).toBeNull();
+    expect(screen.queryByText("ultracode")).toBeNull();
   });
 
   it("marks the current effort as the initial active option", () => {
     render(<EffortPicker currentEffort="high" onSelect={() => {}} onCancel={() => {}} />);
     const options = screen.getAllByRole("option");
-    const highIdx = ["low", "medium", "high", "max", "auto", "ultracode"].indexOf("high");
+    const highIdx = ["low", "medium", "high", "xhigh", "max"].indexOf("high");
     expect(options[highIdx]).toHaveAttribute("aria-selected", "true");
   });
 
@@ -29,13 +31,8 @@ describe("EffortPicker", () => {
   it("click an option calls onSelect with the value", () => {
     const onSelect = vi.fn();
     render(<EffortPicker currentEffort="medium" onSelect={onSelect} onCancel={() => {}} />);
-    fireEvent.click(screen.getByText("ultracode"));
-    expect(onSelect).toHaveBeenCalledWith("ultracode");
-  });
-
-  it("flags ultracode as GLM-unverified", () => {
-    render(<EffortPicker currentEffort="medium" onSelect={() => {}} onCancel={() => {}} />);
-    expect(screen.getByText(/GLM/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("xhigh"));
+    expect(onSelect).toHaveBeenCalledWith("xhigh");
   });
 
   it("cancel button calls onCancel", () => {

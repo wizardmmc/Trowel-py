@@ -1,4 +1,4 @@
-/** 组合花园、提取、复习、Agent、统计、画像和设置七个顶层工具。 */
+/** 组合花园、提取、复习、Agent、研讨、统计、画像和设置顶层工具。 */
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AppLayout, type Tool } from "./components/layout/AppLayout";
@@ -7,7 +7,7 @@ import { ReviewModal } from "./components/cards/ReviewModal";
 import { NotificationBanner } from "./components/cards/NotificationBanner";
 import { ReviewSession } from "./components/review/ReviewSession";
 import { GardenView } from "./components/garden/GardenView";
-import { AgentWorkspace } from "./agent";
+import { AgentWorkspace, useAgentStore } from "./agent";
 import { ProfileView } from "./components/profile/ProfileView";
 import { useCardStore } from "./stores/cardStore";
 import { useNotificationStore } from "./stores/notificationStore";
@@ -20,6 +20,10 @@ const StatisticsWorkspace = lazy(async () => {
 const SettingsWorkspace = lazy(async () => {
   const module = await import("./settings");
   return { default: module.SettingsWorkspace };
+});
+const DiscussionWorkspace = lazy(async () => {
+  const module = await import("./discussion");
+  return { default: module.DiscussionWorkspace };
 });
 const READ_ONLY_INSPECTION =
   import.meta.env.VITE_TROWEL_INSPECTION_MODE === "1";
@@ -53,6 +57,9 @@ function App() {
   const [settingsMounted, setSettingsMounted] = useState(
     () => readInitialTool() === "settings",
   );
+  const [discussionMounted, setDiscussionMounted] = useState(
+    () => readInitialTool() === "discussion",
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const currentDraft = drafts[currentDraftIndex] ?? null;
@@ -66,7 +73,11 @@ function App() {
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (activeTool === "statistics" || activeTool === "settings") {
+    if (
+      activeTool === "statistics" ||
+      activeTool === "settings" ||
+      activeTool === "discussion"
+    ) {
       url.searchParams.set("tool", activeTool);
       if (activeTool === "settings") {
         url.searchParams.delete("statistics_tab");
@@ -86,6 +97,7 @@ function App() {
     } else {
       if (tool === "statistics") setStatisticsMounted(true);
       if (tool === "settings") setSettingsMounted(true);
+      if (tool === "discussion") setDiscussionMounted(true);
       setActiveTool(tool);
     }
     setSidebarOpen(false);
@@ -152,6 +164,23 @@ function App() {
           <AgentWorkspace />
         </div>
       )}
+      {discussionMounted && (
+        <div
+          className="discussion-workspace-slot"
+          hidden={activeTool !== "discussion"}
+        >
+          <Suspense fallback={<div role="status">正在打开研讨…</div>}>
+            <DiscussionWorkspace
+              active={activeTool === "discussion"}
+              onAgentHandoff={async (sessionId) => {
+                await useAgentStore.getState().refreshActiveSessions();
+                await useAgentStore.getState().activateSession(sessionId);
+                setActiveTool("cc");
+              }}
+            />
+          </Suspense>
+        </div>
+      )}
       {statisticsMounted && (
         <div
           className="statistics-workspace-slot"
@@ -216,7 +245,11 @@ function App() {
 function readInitialTool(): Tool {
   if (READ_ONLY_INSPECTION) return "statistics";
   const requested = new URLSearchParams(window.location.search).get("tool");
-  return requested === "statistics" || requested === "settings" ? requested : "garden";
+  return requested === "statistics" ||
+    requested === "settings" ||
+    requested === "discussion"
+    ? requested
+    : "garden";
 }
 
 export default App;

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 from urllib.parse import urlsplit
+from urllib.parse import parse_qs
 
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -51,6 +53,9 @@ class DesktopCredentialMiddleware:
 
         supplied = _bearer_credential(scope)
         if supplied is not None and hmac.compare_digest(supplied, self.credential):
+            await self.app(scope, receive, send)
+            return
+        if _has_scoped_discussion_read_access(scope, self.credential):
             await self.app(scope, receive, send)
             return
 
@@ -109,6 +114,47 @@ def _bearer_credential(scope: Scope) -> str | None:
         if value.startswith(prefix) and value[len(prefix) :]:
             return value[len(prefix) :]
     return None
+
+
+def build_scoped_discussion_read_token(credential: str, path: str) -> str:
+    """生成只允许读取一个 transcript 路径的实例级能力令牌。
+
+    Args:
+        credential: Electron Host 为当前 sidecar 生成的随机凭据。
+        path: 形如 ``/api/discussions/<id>/transcript`` 的绝对 API 路径。
+
+    Returns:
+        不暴露 renderer Bearer 的十六进制 HMAC。
+    """
+
+    return hmac.new(
+        credential.encode("utf-8"),
+        f"GET:{path}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _has_scoped_discussion_read_access(scope: Scope, credential: str) -> bool:
+    """只接受绑定到一个 transcript GET 路径的查询令牌。"""
+
+    if scope.get("type") != "http" or scope.get("method") != "GET":
+        return False
+    path = str(scope.get("path", ""))
+    parts = path.split("/")
+    if not (
+        len(parts) == 5
+        and parts[1:3] == ["api", "discussions"]
+        and parts[3]
+        and parts[4] == "transcript"
+    ):
+        return False
+    raw_query = scope.get("query_string", b"")
+    query = parse_qs(raw_query.decode("latin-1"), keep_blank_values=True)
+    supplied = query.get("access_token", [None])
+    if len(supplied) != 1 or supplied[0] is None:
+        return False
+    expected = build_scoped_discussion_read_token(credential, path)
+    return hmac.compare_digest(supplied[0], expected)
 
 
 def validate_desktop_renderer_origin(origin: str) -> str:

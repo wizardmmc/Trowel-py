@@ -6,13 +6,19 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from trowel_py.agent_host.binding import Runtime
+from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.configuration.errors import ConfigurationError
-from trowel_py.configuration.models import SessionConfigurationView
+from trowel_py.configuration.models import (
+    CapabilityView,
+    RuntimeKind,
+    SessionConfigurationView,
+)
 from trowel_py.configuration.repository import ConfigurationRepository
 from trowel_py.configuration.service import ConfigurationService
 from trowel_py.db.connection import create_db
@@ -26,6 +32,11 @@ from trowel_py.discussion.errors import (
     DiscussionVersionConflictError,
 )
 from trowel_py.discussion.events import DiscussionEventBus
+from trowel_py.discussion.handoff import (
+    HandoffSessionPort,
+    build_handoff_prompt,
+    transcript_api_path,
+)
 from trowel_py.discussion.models import (
     Discussion,
     DiscussionParticipant,
@@ -37,12 +48,28 @@ from trowel_py.discussion.models import (
 from trowel_py.discussion.prompts import build_round_prompt
 from trowel_py.discussion.schemas import (
     AddDiscussionMessageRequest,
+    ContinueDiscussionRequest,
+    CreateDiscussionHandoffRequest,
     CreateDiscussionRequest,
+    MarkDiscussionResultRequest,
     StopDiscussionRequest,
     VersionedCommand,
 )
 
 Clock = Callable[[], str]
+
+
+@dataclass(frozen=True)
+class ParticipantRuntimeIdentity:
+    """保存参与者创建时可公开、可长期回看的运行身份。
+
+    Attributes:
+        connection_name: 设置域连接的展示名，例如 DeepSeek 或 PRO X20。
+        effective_model: Claude 角色别名解析后的真实模型，Codex 为所选模型。
+    """
+
+    connection_name: str
+    effective_model: str
 
 
 def _now() -> str:
@@ -56,6 +83,26 @@ class SessionConfigurationCatalog(Protocol):
 
     def get(self, configuration_id: str) -> SessionConfigurationView:
         """返回实时核对 availability 后的完整会话配置。"""
+        ...
+
+    def resolve(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> SessionConfigurationView:
+        """按 Agent 同一入口校验未命名的连接、模型和强度组合。"""
+        ...
+
+    def runtime_identity(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> ParticipantRuntimeIdentity:
+        """解析不含凭据的连接展示名和真实模型。"""
         ...
 
 
@@ -90,6 +137,86 @@ class SqliteSessionConfigurationCatalog:
         finally:
             connection.close()
 
+    def resolve(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> SessionConfigurationView:
+        """复用 Agent runtime launch 校验并返回不持久化的冻结配置。
+
+        Args:
+            connection_id: 设置域连接 ID。
+            model: 用户选择的模型或 Claude 角色别名。
+            effort: 用户选择的思考强度。
+
+        Returns:
+            availability=available、id 为空的临时配置读模型。
+        """
+
+        connection = create_db(self._db_path)
+        try:
+            run_migrations(connection)
+            launch = ConfigurationService(
+                ConfigurationRepository(connection)
+            ).resolve_runtime_launch(connection_id, model=model, effort=effort)
+            return SessionConfigurationView(
+                id="",
+                version=0,
+                name=launch.connection_name,
+                runtime=RuntimeKind(launch.runtime.value),
+                connection_id=launch.connection_id,
+                connection_identity_version=launch.connection_identity_version,
+                model=launch.model,
+                effort=launch.effort,
+                capability=CapabilityView(
+                    status="verified",
+                    version=launch.capability_version,
+                    source=(
+                        launch.capability_source
+                        or "Agent runtime launch validation"
+                    ),
+                ),
+                availability="available",
+                disabled_reason=None,
+            )
+        finally:
+            connection.close()
+
+    def runtime_identity(
+        self,
+        connection_id: str,
+        *,
+        model: str,
+        effort: str | None,
+    ) -> ParticipantRuntimeIdentity:
+        """从同一启动解析结果冻结连接名和角色映射后的真实模型。
+
+        Args:
+            connection_id: 设置域连接 ID。
+            model: 用户选择的真实模型或 Claude 角色别名。
+            effort: 用户选择的思考强度。
+
+        Returns:
+            不含 secret 的参与者运行身份。
+        """
+
+        connection = create_db(self._db_path)
+        try:
+            run_migrations(connection)
+            launch = ConfigurationService(
+                ConfigurationRepository(connection)
+            ).resolve_runtime_launch(connection_id, model=model, effort=effort)
+            return ParticipantRuntimeIdentity(
+                connection_name=launch.connection_name,
+                effective_model=launch.claude_role_models.get(
+                    launch.model, launch.model
+                ),
+            )
+        finally:
+            connection.close()
+
 
 class DiscussionService:
     """协调短事务命令、文件先行写入和后台 worker 唤醒。"""
@@ -102,6 +229,8 @@ class DiscussionService:
         events: DiscussionEventBus,
         configuration_catalog: SessionConfigurationCatalog,
         *,
+        handoff_sessions: HandoffSessionPort | None = None,
+        transcript_access_token_factory: Callable[[str], str | None] | None = None,
         clock: Clock = _now,
     ) -> None:
         """装配 service 需要的五个显式端口。
@@ -112,6 +241,8 @@ class DiscussionService:
             coordinator: participant worker 与恢复协调器。
             events: 持久事件唤醒总线。
             configuration_catalog: 设置域会话配置查询入口。
+            handoff_sessions: 创建普通 Agent 并发送交接现场的端口。
+            transcript_access_token_factory: 按只读 API 路径签发桌面实例级能力令牌。
             clock: 测试可替换的时间函数。
         """
 
@@ -120,6 +251,8 @@ class DiscussionService:
         self._coordinator = coordinator
         self._events = events
         self._configuration_catalog = configuration_catalog
+        self._handoff_sessions = handoff_sessions
+        self._transcript_access_token_factory = transcript_access_token_factory
         self._clock = clock
 
     async def create(self, request: CreateDiscussionRequest) -> dict[str, Any]:
@@ -161,10 +294,18 @@ class DiscussionService:
                 status_code=422,
             )
         configurations: list[SessionConfigurationView] = []
+        runtime_identities: list[ParticipantRuntimeIdentity] = []
+        permissions: list[tuple[str | None, str | None]] = []
         for item in request.participants:
             try:
-                configuration = self._configuration_catalog.get(
-                    item.session_configuration_id
+                configuration = (
+                    self._configuration_catalog.get(item.session_configuration_id)
+                    if item.session_configuration_id is not None
+                    else self._configuration_catalog.resolve(
+                        item.connection_id or "",
+                        model=item.model or "",
+                        effort=item.effort,
+                    )
                 )
             except ConfigurationError as exc:
                 raise DiscussionError(
@@ -178,13 +319,42 @@ class DiscussionService:
                     "参与者会话配置已经过期",
                     status_code=409,
                 )
+            try:
+                runtime_identity = self._configuration_catalog.runtime_identity(
+                    configuration.connection_id,
+                    model=configuration.model,
+                    effort=configuration.effort,
+                )
+            except ConfigurationError as exc:
+                raise DiscussionError(
+                    "DISCUSSION_CONFIGURATION_INVALID",
+                    "参与者连接身份已经不可用",
+                    status_code=422,
+                ) from exc
             if configuration.runtime.value not in {"claude_code", "codex"}:
                 raise DiscussionError(
                     "DISCUSSION_RUNTIME_UNSUPPORTED",
                     "研讨参与者只能使用 Claude Code 或 Codex",
                     status_code=422,
                 )
+            if configuration.runtime.value == "claude_code":
+                if item.permission_preset is not None:
+                    raise DiscussionError(
+                        "DISCUSSION_PERMISSION_INVALID",
+                        "Claude Code 参与者不能使用 Codex 权限预设",
+                        status_code=422,
+                    )
+                permissions.append((item.permission_mode or "dontAsk", None))
+            else:
+                if item.permission_mode is not None:
+                    raise DiscussionError(
+                        "DISCUSSION_PERMISSION_INVALID",
+                        "Codex 参与者不能使用 Claude Code 权限模式",
+                        status_code=422,
+                    )
+                permissions.append((None, item.permission_preset or "read-only"))
             configurations.append(configuration)
+            runtime_identities.append(runtime_identity)
         discussion_id = _stable_id("discussion", request.request_id)
         created_at = self._clock()
         participant_records = tuple(
@@ -195,9 +365,16 @@ class DiscussionService:
                 name=item.name,
                 runtime=Runtime(configuration.runtime.value),
                 connection_id=configuration.connection_id,
+                connection_name=runtime_identity.connection_name,
                 model=configuration.model,
+                effective_model=runtime_identity.effective_model,
                 effort=configuration.effort,
-                session_configuration_id=configuration.id,
+                session_configuration_id=configuration.id or None,
+                permission_mode=permission[0],
+                permission_preset=permission[1],
+                memory_enabled=item.memory_enabled,
+                profile_enabled=item.profile_enabled,
+                self_enabled=item.self_enabled,
                 connection_identity_version=configuration.connection_identity_version,
                 owner_ref=(f"discussion:{discussion_id}:participant:{position}:v1"),
                 agent_session_id=None,
@@ -208,8 +385,14 @@ class DiscussionService:
                 created_at=created_at,
                 updated_at=created_at,
             )
-            for position, (item, configuration) in enumerate(
-                zip(request.participants, configurations, strict=True)
+            for position, (item, configuration, runtime_identity, permission) in enumerate(
+                zip(
+                    request.participants,
+                    configurations,
+                    runtime_identities,
+                    permissions,
+                    strict=True,
+                )
             )
         )
         message_id = _stable_id("message", discussion_id, "initial")
@@ -319,6 +502,25 @@ class DiscussionService:
             self._record_integrity_issue(discussion_id)
             raise
 
+    def get_transcript(self, discussion_id: str) -> str:
+        """重建并读取一场研讨的完整公开记录。
+
+        Args:
+            discussion_id: 要读取的研讨 ID。
+
+        Returns:
+            只含用户原话和已共同发布轮次的 Markdown。
+        """
+
+        with self._open_repository() as repository:
+            discussion = repository.get_discussion(discussion_id)
+        transcript = self._artifacts.rebuild_transcript(discussion)
+        return self._artifacts.read_text(
+            transcript.relative_path,
+            expected_sha256=transcript.sha256,
+            expected_bytes=transcript.byte_count,
+        )
+
     def _record_integrity_issue(self, discussion_id: str) -> None:
         """幂等登记 artifact 读取失败，供启动补偿和人工诊断。
 
@@ -380,24 +582,34 @@ class DiscussionService:
     def continue_round(
         self,
         discussion_id: str,
-        command: VersionedCommand,
+        command: ContinueDiscussionRequest,
     ) -> dict[str, Any]:
-        """在 user-guided 研讨等待状态下开始下一普通轮。
+        """在公开边界按用户本次选择切换推进方式并开始下一轮。
 
         Args:
             discussion_id: 要继续的研讨 ID。
-            command: 幂等命令 ID 和 expected version。
+            command: 幂等身份、版本和后续推进方式。
 
         Returns:
             新普通轮创建后的公开 DTO。
         """
 
+        with self._open_repository() as repository:
+            discussion = repository.get_discussion(discussion_id)
+        next_round = (discussion.active_round_number or 0) + 1
+        max_rounds = (
+            next_round + (command.additional_rounds or 1) - 1
+            if command.progression_mode == "automatic"
+            else None
+        )
         result = self._begin_round(
             discussion_id,
             command,
             kind="regular",
             allowed_statuses={"waiting_user"},
             command_type="continue",
+            progression_mode=command.progression_mode,
+            max_rounds=max_rounds,
         )
         self._coordinator.schedule(discussion_id)
         return result
@@ -519,6 +731,201 @@ class DiscussionService:
                 )
         self._events.publish(discussion_id)
         return self.get(discussion_id)
+
+    def mark_result(
+        self,
+        discussion_id: str,
+        request: MarkDiscussionResultRequest,
+    ) -> dict[str, Any]:
+        """把一个已公开结果加入或移出确定性交接现场。
+
+        Args:
+            discussion_id: 标记所属研讨 ID。
+            request: 轮次、参与者、目标状态和并发身份。
+
+        Returns:
+            标记状态已经持久化的公开研讨 DTO。
+        """
+
+        request_hash = _request_hash("mark", request.model_dump(mode="json"))
+        source_ref = _mark_source(request.round_number, request.participant_id)
+        created_at = self._clock()
+        with self._open_repository() as repository, repository.transaction():
+            prior = repository.get_command_result(
+                discussion_id,
+                request.command_id,
+                command_type="mark",
+                request_hash=request_hash,
+            )
+            if prior is None:
+                discussion = repository.get_discussion(discussion_id)
+                round_record = next(
+                    (
+                        item
+                        for item in discussion.rounds
+                        if item.number == request.round_number
+                    ),
+                    None,
+                )
+                if round_record is None or round_record.status != "published":
+                    raise DiscussionStateError("只有已公开结果可以标记")
+                if request.participant_id not in {
+                    item.participant_id for item in round_record.results
+                }:
+                    raise DiscussionError(
+                        "DISCUSSION_PARTICIPANT_NOT_FOUND",
+                        "找不到要标记的参与者结果",
+                        status_code=422,
+                    )
+                version = repository.advance_version(
+                    discussion_id,
+                    expected_version=request.expected_version,
+                    allowed_statuses=(
+                        "running",
+                        "waiting_user",
+                        "completed",
+                        "stopped",
+                        "needs_reconcile",
+                    ),
+                    updated_at=created_at,
+                )
+                repository.set_user_mark(
+                    discussion_id,
+                    source_ref,
+                    marked=request.marked,
+                    created_at=created_at,
+                )
+                repository.append_event(
+                    discussion_id,
+                    "discussion_mark_changed",
+                    version,
+                    created_at=created_at,
+                    round_number=request.round_number,
+                )
+                repository.record_command_result(
+                    discussion_id,
+                    request.command_id,
+                    command_type="mark",
+                    request_hash=request_hash,
+                    result={"version": version, "marked": request.marked},
+                    created_at=created_at,
+                )
+        self._events.publish(discussion_id)
+        return self.get(discussion_id)
+
+    async def handoff(
+        self,
+        discussion_id: str,
+        request: CreateDiscussionHandoffRequest,
+    ) -> dict[str, Any]:
+        """确定性组装公开现场并创建一个普通 Agent 会话。
+
+        Args:
+            discussion_id: 要交接的研讨 ID。
+            request: 普通 Agent 条件、命令身份和 expected version。
+
+        Returns:
+            新 Agent 会话、首轮 ID 和推进后的 discussion version。
+
+        Raises:
+            DiscussionRuntimeError: 应用未装配 handoff 端口或 Agent 接受失败。
+        """
+
+        if self._handoff_sessions is None:
+            raise DiscussionRuntimeError("普通 Agent 交接服务尚未初始化")
+        request_hash = _request_hash("handoff", request.model_dump(mode="json"))
+        with self._open_repository() as repository:
+            prior = repository.get_command_result(
+                discussion_id,
+                request.command_id,
+                command_type="handoff",
+                request_hash=request_hash,
+            )
+            if prior is not None and prior.get("status") == "started":
+                return prior
+            discussion = repository.get_discussion(discussion_id)
+            marked_sources = repository.list_user_mark_sources(discussion_id)
+        if discussion.status not in {"waiting_user", "completed", "stopped"}:
+            raise DiscussionStateError("只有轮次间或已收口的研讨可以交给 Agent")
+        transcript_path = transcript_api_path(discussion.id)
+        transcript_access_token = (
+            self._transcript_access_token_factory(transcript_path)
+            if self._transcript_access_token_factory is not None
+            else None
+        )
+        prompt = build_handoff_prompt(
+            discussion,
+            self._artifacts,
+            marked_sources,
+            transcript_access_token,
+        )
+        created_at = self._clock()
+        if prior is None:
+            with self._open_repository() as repository, repository.transaction():
+                version = repository.advance_version(
+                    discussion_id,
+                    expected_version=request.expected_version,
+                    allowed_statuses=("waiting_user", "completed", "stopped"),
+                    updated_at=created_at,
+                )
+                repository.record_command_result(
+                    discussion_id,
+                    request.command_id,
+                    command_type="handoff",
+                    request_hash=request_hash,
+                    result={"status": "reserved", "version": version},
+                    created_at=created_at,
+                )
+        else:
+            version = int(prior["version"])
+        agent = request.agent
+        session_request = CreateAgentSessionRequest(
+            runtime=agent.runtime,
+            connection_id=agent.connection_id,
+            workdir=str(Path(agent.workdir).expanduser().resolve()),
+            model=agent.model,
+            effort=agent.effort,
+            permission_mode=agent.permission_mode,
+            permission_preset=agent.permission_preset,
+            memory_enabled=agent.memory_enabled,
+            profile_enabled=agent.profile_enabled,
+            self_enabled=agent.self_enabled,
+            session_kind="user",
+            memory_eligibility=False,
+            agent_mcp_enabled=False,
+            owner_ref=(
+                f"discussion:{discussion_id}:handoff:{request.command_id}:v1"
+            ),
+        )
+        result = await self._handoff_sessions.create_and_start(
+            request_id=f"discussion-handoff:{discussion_id}:{request.command_id}",
+            request=session_request,
+            prompt=prompt,
+            instruction=request.instruction,
+        )
+        response = {
+            "status": "started",
+            "version": version,
+            "discussion_id": discussion_id,
+            "agent_session_id": result.agent_session_id,
+            "turn_id": result.turn_id,
+        }
+        with self._open_repository() as repository, repository.transaction():
+            repository.update_command_result(
+                discussion_id,
+                request.command_id,
+                command_type="handoff",
+                request_hash=request_hash,
+                result=response,
+            )
+            repository.append_event(
+                discussion_id,
+                "discussion_handoff_created",
+                version,
+                created_at=self._clock(),
+            )
+        self._events.publish(discussion_id)
+        return response
 
     async def stop_discussion(
         self,
@@ -689,6 +1096,8 @@ class DiscussionService:
         kind: RoundKind,
         allowed_statuses: set[str],
         command_type: str,
+        progression_mode: str | None = None,
+        max_rounds: int | None = None,
     ) -> dict[str, Any]:
         """文件先行创建公共输入，并在同一事务保存轮次和命令收据。
 
@@ -698,6 +1107,8 @@ class DiscussionService:
             kind: regular 或 final。
             allowed_statuses: 本命令允许的 lifecycle 状态。
             command_type: command ledger 类型。
+            progression_mode: 在本轮开始时切换的新推进方式。
+            max_rounds: 自动模式新的绝对停止轮号；逐轮模式为 None。
 
         Returns:
             新 running round 的公开 DTO。
@@ -772,6 +1183,8 @@ class DiscussionService:
                     [item.id for item in discussion.participants],
                     expected_version=command.expected_version,
                     updated_at=created_at,
+                    progression_mode=progression_mode,
+                    max_rounds=max_rounds,
                 )
                 repository.record_command_result(
                     discussion_id,
@@ -794,14 +1207,24 @@ class DiscussionService:
             API、SSE 后续 GET 和前端都可安全消费的公开 DTO。
         """
 
+        with self._open_repository() as repository:
+            marked_sources = repository.list_user_mark_sources(discussion.id)
+            handoffs = repository.list_handoff_results(discussion.id)
         participants = [
             {
                 "id": item.id,
                 "position": item.position,
                 "name": item.name,
                 "runtime": item.runtime.value,
+                "connection_name": item.connection_name,
                 "model": item.model,
+                "effective_model": item.effective_model,
                 "effort": item.effort,
+                "permission_mode": item.permission_mode,
+                "permission_preset": item.permission_preset,
+                "memory_enabled": item.memory_enabled,
+                "profile_enabled": item.profile_enabled,
+                "self_enabled": item.self_enabled,
                 "status": item.status,
             }
             for item in discussion.participants
@@ -833,6 +1256,11 @@ class DiscussionService:
                     error_code = result.error_code
                     error_message = result.error_message
                     usage = json.loads(result.usage_json) if result.usage_json else None
+                    activity = (
+                        json.loads(result.activity_json)
+                        if result.activity_json
+                        else {"tool_call_count": 0, "tool_names": {}, "subagent_count": 0}
+                    )
                 else:
                     content = None
                     public_status = (
@@ -843,6 +1271,7 @@ class DiscussionService:
                     error_code = None
                     error_message = None
                     usage = None
+                    activity = None
                 slots.append(
                     {
                         "participant_id": result.participant_id,
@@ -853,6 +1282,10 @@ class DiscussionService:
                         "error_code": error_code,
                         "error_message": error_message,
                         "usage": usage,
+                        "activity": activity,
+                        "marked": _mark_source(
+                            round_record.number, result.participant_id
+                        ) in marked_sources,
                         "started_at": result.started_at,
                         "completed_at": result.completed_at if published else None,
                     }
@@ -902,6 +1335,7 @@ class DiscussionService:
                 for item in discussion.messages
             ],
             "rounds": rounds,
+            "handoffs": handoffs,
         }
 
 
@@ -938,3 +1372,9 @@ def _stable_id(kind: str, *parts: str) -> str:
 
     raw = "\x1f".join((kind, *parts)).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _mark_source(round_number: int, participant_id: str) -> str:
+    """生成公开结果在 promotion 表中的稳定来源引用。"""
+
+    return f"round:{round_number}:participant:{participant_id}"

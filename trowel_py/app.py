@@ -576,6 +576,7 @@ async def lifespan(app: FastAPI):
         from trowel_py.discussion.artifacts import DiscussionArtifactStore
         from trowel_py.discussion.coordinator import DiscussionCoordinator
         from trowel_py.discussion.events import DiscussionEventBus
+        from trowel_py.discussion.handoff import AgentHostHandoffSessionAdapter
         from trowel_py.discussion.episode import DiscussionEpisodeWriter
         from trowel_py.discussion.participant_sessions import (
             AgentHostParticipantSessionAdapter,
@@ -585,6 +586,7 @@ async def lifespan(app: FastAPI):
             DiscussionService,
             SqliteSessionConfigurationCatalog,
         )
+        from trowel_py.desktop.access import build_scoped_discussion_read_token
 
         discussion_events = DiscussionEventBus()
         discussion_artifacts = DiscussionArtifactStore()
@@ -604,6 +606,14 @@ async def lifespan(app: FastAPI):
             discussion_coordinator,
             discussion_events,
             SqliteSessionConfigurationCatalog(),
+            handoff_sessions=AgentHostHandoffSessionAdapter(app.state.agent_hub),
+            transcript_access_token_factory=(
+                lambda path: build_scoped_discussion_read_token(
+                    app.state.desktop_credential, path
+                )
+                if app.state.desktop_credential
+                else None
+            ),
         )
         await discussion_coordinator.start()
     app.state.drain_coordinator = DrainCoordinator(

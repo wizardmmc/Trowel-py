@@ -330,6 +330,8 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         process_controller: Any | None = None,
         resource_registry: Any | None = None,
         memory_mcp_enabled: bool | None = None,
+        bootstrap_context: str | None = None,
+        memory_eligibility: bool = True,
     ) -> OpenedCcSession:
         del proxy_base_url, settings_path, process_controller, resource_registry
         sid = "cc-" + uuid.uuid4().hex[:8]
@@ -341,6 +343,8 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         )
         host.session_kind = req.session_kind
         host.agent_mcp_enabled = req.agent_mcp_enabled
+        host.bootstrap_context = bootstrap_context
+        host.memory_eligibility = memory_eligibility
         host.memory_mcp_enabled = (
             req.memory_enabled
             if memory_mcp_enabled is None
