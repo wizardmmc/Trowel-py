@@ -30,14 +30,48 @@ _RESULT_ERROR_SUBCLASSES = frozenset(
     }
 )
 
-# AskUserQuestion 由 control_request 翻译为 elicit_request，不再生成普通 tool_call。
-_ELICIT_TOOL_NAMES = frozenset({"AskUserQuestion"})
+# control_request 负责生成交互项；只有结构化提问不再重复生成普通 tool_call。
+_CONTROL_ELICIT_TOOL_NAMES = frozenset(
+    {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
+)
+_ELICIT_ONLY_TOOL_NAMES = frozenset({"AskUserQuestion"})
+
+_PLAN_MODE_QUESTIONS: dict[str, dict[str, Any]] = {
+    "EnterPlanMode": {
+        "question": "是否允许 Claude 进入计划模式？",
+        "header": "计划模式",
+        "options": [
+            {
+                "label": "允许",
+                "description": "进入后只分析和设计方案，不修改文件或执行命令。",
+            }
+        ],
+        "multiSelect": False,
+    },
+    "ExitPlanMode": {
+        "question": "是否批准当前计划并退出计划模式？",
+        "header": "计划模式",
+        "options": [
+            {
+                "label": "批准并继续",
+                "description": "恢复进入计划模式前的权限模式并继续当前任务。",
+            }
+        ],
+        "multiSelect": False,
+    },
+}
 
 
-def _is_elicit_tool(name: str) -> bool:
-    """判断工具是否只通过 `control_request` 生成交互事件。"""
+def _uses_control_elicitation(name: str) -> bool:
+    """判断工具是否会通过 `control_request` 请求用户输入或确认。"""
 
-    return name in _ELICIT_TOOL_NAMES
+    return name in _CONTROL_ELICIT_TOOL_NAMES
+
+
+def _is_elicit_only_tool(name: str) -> bool:
+    """判断工具是否只展示交互项而不展示普通工具调用。"""
+
+    return name in _ELICIT_ONLY_TOOL_NAMES
 
 
 logger = logging.getLogger(__name__)
@@ -137,8 +171,8 @@ class Translator:
             index: `content_block_stop` 指定的消息内内容块序号。
 
         Returns:
-            单个普通工具调用；块无效、调用 ID 已发布或工具由交互请求处理时返回
-            空列表。
+            单个普通工具调用；块无效、调用 ID 已发布或结构化提问只由交互请求
+            处理时返回空列表。
         """
 
         # 先取得完整调用，再与 assistant envelope 按 ID 去重并分流交互工具。
@@ -147,7 +181,7 @@ class Translator:
             return []
         if result.tool_use_id in self._emitted_tool_ids:
             return []
-        if _is_elicit_tool(result.tool_name):
+        if _is_elicit_only_tool(result.tool_name):
             return []
         self._emitted_tool_ids.add(result.tool_use_id)
         return [
@@ -163,8 +197,8 @@ class Translator:
 
         `message.usage` 先生成 `ContextUsageEvent`，随后按 `content` 顺序生成文本、
         思考和普通工具调用。assistant envelope 提供完整内容；其中工具调用与已闭合
-        的流式块按 ID 去重，文本和思考不做跨来源去重。`AskUserQuestion` 留给
-        `control_request`。
+        的流式块按 ID 去重，文本和思考不做跨来源去重。AskUserQuestion 只留给
+        `control_request`；plan mode 工具同时保留调用项和确认项。
         """
 
         out: list[TrowelEvent] = []
@@ -194,7 +228,7 @@ class Translator:
                 tid = block.get("id", "")
                 if not tid or tid in self._emitted_tool_ids:
                     continue
-                if _is_elicit_tool(block.get("name", "")):
+                if _is_elicit_only_tool(block.get("name", "")):
                     continue
                 self._emitted_tool_ids.add(tid)
                 out.append(
@@ -282,33 +316,41 @@ class Translator:
         ]
 
     def _on_control_request(self, ev: dict[str, Any]) -> list[TrowelEvent]:
-        """把 `AskUserQuestion` 权限请求转换为可回答的交互事件。
+        """把 CC 的提问和 plan mode 确认转换为可回答的交互事件。
 
-        仅处理 `request.subtype == "can_use_tool"` 的 `AskUserQuestion`。缺少非空
-        `tool_use_id` 或 `request_id` 时记录 warning 并丢弃，因为响应无法关联回
-        原请求。`questions` 保持上游字段 shape，并以浅拷贝列表传入事件模型。
+        仅处理 `request.subtype == "can_use_tool"` 且工具属于交互工具集合的请求。
+        AskUserQuestion 沿用上游问题；EnterPlanMode 与 ExitPlanMode 的 input 为空，
+        因此前者生成进入确认，后者生成计划审批。缺少关联 ID 时记录 warning 并丢弃。
         """
 
         req = ev.get("request") or {}
         if req.get("subtype") != "can_use_tool":
             return []
-        if req.get("tool_name") != "AskUserQuestion":
+        tool_name = req.get("tool_name")
+        if not isinstance(tool_name, str) or not _uses_control_elicitation(
+            tool_name
+        ):
             return []
         tool_use_id = req.get("tool_use_id")
         request_id = ev.get("request_id")
         if not tool_use_id or not request_id:
             # 无关联 ID 的事件无法构造 control_response。
             logger.warning(
-                "AskUserQuestion control_request missing tool_use_id or "
-                "request_id; dropping. raw=%s",
+                "%s control_request missing tool_use_id or request_id; "
+                "dropping. raw=%s",
+                tool_name,
                 ev,
             )
             return []
-        questions = (req.get("input") or {}).get("questions") or []
+        if tool_name == "AskUserQuestion":
+            questions = (req.get("input") or {}).get("questions") or []
+        else:
+            questions = [_PLAN_MODE_QUESTIONS[tool_name]]
         return [
             ElicitationRequestEvent(
                 tool_use_id=tool_use_id,
                 request_id=request_id,
+                tool_name=tool_name,
                 questions=list(questions),
             )
         ]

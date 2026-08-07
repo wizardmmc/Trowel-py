@@ -113,10 +113,10 @@ def _control_response_msg(
     updated_input: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> bytes:
-    """编码 `AskUserQuestion` 的 stream-json 回包。
+    """编码 CC `can_use_tool` 请求的 stream-json 回包。
 
-    allow 时 `updated_input` 必须包含 `answers`；deny 可通过 `message`
-    说明取消原因。
+    AskUserQuestion 的 allow 回包要求 `updated_input` 包含 `answers`；plan mode 工具
+    沿用原始输入。deny 可通过 `message` 说明取消原因。
 
     Args:
         request_id: 要回答的 CC `control_request` ID。
@@ -310,7 +310,7 @@ class CCHost:
         self._started = False
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
-        # 锁保证同一 AskUserQuestion 只写入一次 answer 或 cancel。
+        # 锁保证同一提问或 plan mode 确认只写入一次 answer 或 cancel。
         self._pending_elicit: dict[str, Any] | None = None
         self._elicit_lock = asyncio.Lock()
         # routes 读取 init 命令列表，作为 slash-items 的名称下限。
@@ -1355,10 +1355,18 @@ class CCHost:
                 for tev in translator.translate(ev):
                     tev = self._normalize_terminal(tev, execution)
                     if isinstance(tev, ElicitationRequestEvent):
+                        raw_request = ev.get("request")
+                        if not isinstance(raw_request, dict):
+                            raw_request = {}
+                        raw_input = raw_request.get("input")
                         self._pending_elicit = {
                             "request_id": tev.request_id,
                             "tool_use_id": tev.tool_use_id,
                             "questions": tev.questions,
+                            "tool_name": tev.tool_name,
+                            "tool_input": (
+                                dict(raw_input) if isinstance(raw_input, dict) else {}
+                            ),
                         }
                     if (
                         isinstance(tev, ToolCallEvent)
@@ -1454,10 +1462,11 @@ class CCHost:
                 self._sync_kill()
 
     async def answer_elicit(self, answers: dict[str, str]) -> bool:
-        """向待处理 `AskUserQuestion` 写入 allow 回包。
+        """允许待处理的提问或 plan mode 确认。
 
         Args:
-            answers: 按问题文本索引的答案，原样写入 `updatedInput.answers`。
+            answers: AskUserQuestion 按问题文本索引的答案；plan mode 确认只把它
+                作为前端已批准信号，不写入 CC 工具 input。
 
         Returns:
             写入成功时返回 `True` 并清除待回答请求；无待回答请求或写入失败时
@@ -1467,14 +1476,20 @@ class CCHost:
             pending = self._pending_elicit
             if pending is None:
                 return False
-            payload = _control_response_msg(
-                request_id=pending["request_id"],
-                behavior="allow",
-                updated_input={
+            if pending.get("tool_name") in {"EnterPlanMode", "ExitPlanMode"}:
+                updated_input = pending.get("tool_input")
+                if not isinstance(updated_input, dict):
+                    updated_input = {}
+            else:
+                updated_input = {
                     "questions": pending["questions"],
                     "answers": answers,
                     "annotations": {},
-                },
+                }
+            payload = _control_response_msg(
+                request_id=pending["request_id"],
+                behavior="allow",
+                updated_input=updated_input,
             )
             # 先写后清；失败时保留 pending，允许重试和诊断。
             ok = await self._safe_write(payload)
@@ -1483,7 +1498,7 @@ class CCHost:
             return ok
 
     async def cancel_elicit(self) -> bool:
-        """向待处理 AskUserQuestion 写入 deny；无 pending 或写入失败时返回 False。"""
+        """拒绝待处理的提问或确认；无 pending 或写入失败时返回 False。"""
         async with self._elicit_lock:
             pending = self._pending_elicit
             if pending is None:
@@ -1491,7 +1506,7 @@ class CCHost:
             payload = _control_response_msg(
                 request_id=pending["request_id"],
                 behavior="deny",
-                message="User declined to answer questions",
+                message="User declined the interactive request",
             )
             ok = await self._safe_write(payload)
             if ok:

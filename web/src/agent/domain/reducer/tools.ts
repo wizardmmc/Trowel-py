@@ -57,12 +57,10 @@ export function applyToolResult(
     event.tool_use_id,
     event.content,
   );
-  if (withElicitation !== null) {
-    return { ...withElicitation, phase: "tool" };
-  }
+  const base = withElicitation ?? prev;
 
   const afterTask = assignTaskIdFromResult(
-    prev,
+    base,
     event.tool_use_id,
     event.content ?? "",
   );

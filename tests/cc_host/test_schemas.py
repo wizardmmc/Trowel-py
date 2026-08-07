@@ -212,6 +212,7 @@ class TestElicitationRequestSchema:
         e = ElicitationRequestEvent(
             tool_use_id="call_abc",
             request_id="req-1",
+            tool_name="AskUserQuestion",
             questions=[
                 {
                     "question": "A or B?",
@@ -225,6 +226,7 @@ class TestElicitationRequestSchema:
         assert dumped["type"] == "elicit_request"
         assert dumped["tool_use_id"] == "call_abc"
         assert dumped["request_id"] == "req-1"
+        assert dumped["tool_name"] == "AskUserQuestion"
         assert dumped["questions"][0]["header"] == "Pref"
 
 

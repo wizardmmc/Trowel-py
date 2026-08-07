@@ -2200,7 +2200,7 @@
       "/api/cc/sessions/{sid}/answer": {
         "post": {
           "summary": "Answer Elicit",
-          "description": "回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。",
+          "description": "回答或取消待处理的提问或 plan mode 确认；成功后 CC 继续执行。",
           "operationId": "answer_elicit_api_cc_sessions__sid__answer_post",
           "parameters": [
             {
@@ -8632,7 +8632,7 @@
           },
           "type": "object",
           "title": "AnswerElicitRequest",
-          "description": "提交对待处理 `AskUserQuestion` 的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入\n        `control_response.updatedInput.answers`。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
+          "description": "提交对待处理提问或 plan mode 确认的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。AskUserQuestion 允许后写入\n        `control_response.updatedInput.answers`，plan mode 确认只把它作为批准信号。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
         },
         "ApiEnvelope_AgentStatisticsData_": {
           "properties": {

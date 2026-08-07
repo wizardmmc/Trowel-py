@@ -44,11 +44,11 @@ class SendMessageRequest(BaseModel):
 
 
 class AnswerElicitRequest(BaseModel):
-    """提交对待处理 `AskUserQuestion` 的回答，或取消该请求。
+    """提交对待处理提问或 plan mode 确认的回答，或取消该请求。
 
     Attributes:
-        answers: 按问题文本索引的答案；默认为空映射。允许请求时，该映射原样放入
-            `control_response.updatedInput.answers`。
+        answers: 按问题文本索引的答案；默认为空映射。AskUserQuestion 允许后写入
+            `control_response.updatedInput.answers`，plan mode 确认只把它作为批准信号。
         cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送
             deny `control_response`。
     """
@@ -520,23 +520,26 @@ class SubagentProgressEvent(_Event):
 
 
 class ElicitationRequestEvent(_Event):
-    """AskUserQuestion 的 control_request。
+    """需要用户回答或确认的 CC control_request。
 
-    translator 只处理 `can_use_tool` 且 tool_name 为 AskUserQuestion 的请求；回答通过
-    带 `updatedInput` 的 allow control_response 写回 CC stdin，取消则写 deny。
+    translator 处理 AskUserQuestion、EnterPlanMode 与 ExitPlanMode 的
+    `can_use_tool` 请求；回答通过带 `updatedInput` 的 allow control_response 写回
+    CC stdin，取消则写 deny。
 
     Attributes:
         type: 固定为 `elicit_request`。
-        tool_use_id: AskUserQuestion 工具调用 ID。
+        tool_use_id: 交互工具调用 ID。
         request_id: 回写 `control_response` 时使用的 CC 请求 ID。
-        questions: `control_request.input.questions` 的原始问题对象。
+        tool_name: 触发交互的 CC 工具名。
+        questions: AskUserQuestion 的原始问题，或 plan mode 工具的宿主确认问题。
     """
 
     type: Literal["elicit_request"] = "elicit_request"
     tool_use_id: str
     request_id: str
-    # questions 原样来自 control_request.input.questions；宽松 dict 避免与 CC 仍在
-    # 演进的 question/options shape 强耦合。
+    tool_name: str
+    # AskUserQuestion 原样沿用上游 questions，plan mode 由宿主生成同一宽松 shape；
+    # 不收紧为专用模型，避免与 CC 仍在演进的 question/options 强耦合。
     questions: list[dict[str, Any]]
 
 

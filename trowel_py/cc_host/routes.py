@@ -339,7 +339,7 @@ async def answer_elicit(
     body: AnswerElicitRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。"""
+    """回答或取消待处理的提问或 plan mode 确认；成功后 CC 继续执行。"""
     host = _require(sid, registry)
     if body.cancel:
         ok = await host.cancel_elicit()

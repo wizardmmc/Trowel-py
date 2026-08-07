@@ -40,7 +40,12 @@ import {
   type AgentTransportProblem,
 } from "../transport/httpError";
 
-import { nextTurnId, reduceEvent, type Turn } from "../domain/reducer";
+import {
+  declinePendingElicitation,
+  nextTurnId,
+  reduceEvent,
+  type Turn,
+} from "../domain/reducer";
 import {
   CLEARED_TRANSPORT_ISSUE,
   createNewSessionState,
@@ -1361,6 +1366,9 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
         );
         try {
           await apiAnswerElicit(sid, { answers: {}, cancel: true });
+          patchSession(sid, (session) =>
+            declinePendingElicitation(session),
+          );
           clearProblemIfUnchanged(sid, previousProblem);
         } catch (err) {
           patchSession(sid, () =>

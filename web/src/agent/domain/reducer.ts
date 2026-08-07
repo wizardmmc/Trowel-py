@@ -53,6 +53,7 @@ export {
   _resetTurnIdCounterForTests,
   nextTurnId,
 } from "./reducer/turns";
+export { declinePendingElicitation } from "./reducer/requests";
 
 function appendToCurrentTurn(
   prev: ReducerState,

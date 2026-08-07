@@ -1,7 +1,7 @@
 import pytest
 
 from trowel_py.cc_host.translator import Translator
-from trowel_py.schemas.cc_host import ElicitationRequestEvent
+from trowel_py.schemas.cc_host import ElicitationRequestEvent, ToolCallEvent
 from tests.cc_host.translator._support import cc
 
 
@@ -55,6 +55,7 @@ class TestElicitationRequest:
         assert isinstance(e, ElicitationRequestEvent)
         assert e.tool_use_id == "call_abc"
         assert e.request_id == "req-1"
+        assert e.tool_name == "AskUserQuestion"
         assert e.questions[0]["question"] == "A or B?"
         assert e.questions[0]["header"] == "Pref"
         assert e.questions[0]["multiSelect"] is False
@@ -71,6 +72,58 @@ class TestElicitationRequest:
             },
         )
         assert Translator().translate(ev) == []
+
+    @pytest.mark.parametrize(
+        ("tool_name", "question"),
+        [
+            ("EnterPlanMode", "是否允许 Claude 进入计划模式？"),
+            ("ExitPlanMode", "是否批准当前计划并退出计划模式？"),
+        ],
+    )
+    def test_plan_mode_control_request_translates_to_confirmation(
+        self,
+        tool_name,
+        question,
+    ):
+        ev = cc(
+            type="control_request",
+            request_id="req-plan",
+            request={
+                "subtype": "can_use_tool",
+                "tool_name": tool_name,
+                "input": {},
+                "tool_use_id": "call-plan",
+            },
+        )
+
+        out = Translator().translate(ev)
+
+        assert len(out) == 1
+        assert isinstance(out[0], ElicitationRequestEvent)
+        assert out[0].tool_name == tool_name
+        assert out[0].questions[0]["question"] == question
+        assert out[0].questions[0]["multiSelect"] is False
+
+    @pytest.mark.parametrize("tool_name", ["EnterPlanMode", "ExitPlanMode"])
+    def test_plan_mode_tool_use_remains_visible(self, tool_name):
+        ev = cc(
+            type="assistant",
+            message={
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-plan",
+                        "name": tool_name,
+                        "input": {},
+                    }
+                ]
+            },
+        )
+
+        out = Translator().translate(ev)
+        assert len(out) == 1
+        assert isinstance(out[0], ToolCallEvent)
+        assert out[0].tool_name == tool_name
 
     def test_non_can_use_tool_subtype_yields_nothing(self):
         ev = cc(

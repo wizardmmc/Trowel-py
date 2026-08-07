@@ -114,6 +114,7 @@ def test_parse_history_maps_askuserquestion_to_elicit_request(
     events = history.parse_history("/workdir", "abc-123")
     elicit = next(e for e in events if isinstance(e, ElicitationRequestEvent))
     assert elicit.tool_use_id == "call_aq"
+    assert elicit.tool_name == "AskUserQuestion"
     assert elicit.questions[0]["header"] == "Pref"
 
     # control_request 不写入 JSONL；reducer 只需用 tool_use_id 匹配响应。

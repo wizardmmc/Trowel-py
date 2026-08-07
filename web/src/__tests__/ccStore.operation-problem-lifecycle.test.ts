@@ -10,6 +10,37 @@ import {
 import { createAgentStore } from "../agent";
 
 describe("createAgentStore — operation problem lifecycle", () => {
+  it("marks the pending plan request declined after cancel succeeds", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    await store.getState().send("plan");
+    stream.apply!(ev("turn_start", {}, { turn_id: "turn-1" }));
+    stream.apply!(
+      ev("elicit_request", {
+        tool_use_id: "call-plan",
+        request_id: "req-plan",
+        tool_name: "ExitPlanMode",
+        questions: [
+          {
+            question: "是否批准当前计划并退出计划模式？",
+            header: "计划模式",
+            options: [{ label: "批准并继续" }],
+            multiSelect: false,
+          },
+        ],
+      }),
+    );
+    apiAnswerElicit.mockResolvedValueOnce({ ok: true });
+
+    await store.getState().cancelElicit();
+
+    const item = store.getState().sessions.s1.turns[0].items.find(
+      (entry) => entry.kind === "elicit",
+    );
+    expect(item?.kind === "elicit" && item.status).toBe("declined");
+  });
+
   it("clears an elicitation problem after the matching retry succeeds", async () => {
     const store = createAgentStore();
     mockCreate("s1");

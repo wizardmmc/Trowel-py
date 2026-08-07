@@ -3,9 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trowel_py.cc_host.service import CCHost
+import pytest
 
-from tests.cc_host.service._support import FakeProc, FakeSpawner
+from trowel_py.cc_host.service import CCHost
+from trowel_py.schemas.cc_host import ElicitationRequestEvent
+
+from tests.cc_host.service._support import (
+    FakeProc,
+    FakeSpawner,
+    collect,
+    init_event,
+    line,
+    result_ok,
+)
 
 
 # AskUserQuestion 的真实 control_response 要求 updatedInput.answers，即使答案为空也不能省略。
@@ -59,3 +69,64 @@ class TestElicitAnswer:
         host = CCHost("sid", tmp_path, spawner=FakeSpawner([FakeProc([])]))
         ok = await host.answer_elicit({"q": "a"})
         assert ok is False
+
+
+class TestPlanModeControl:
+    @pytest.mark.parametrize("tool_name", ["EnterPlanMode", "ExitPlanMode"])
+    async def test_plan_mode_request_waits_for_frontend_approval(
+        self,
+        tmp_path: Path,
+        tool_name: str,
+    ):
+        # CC 2.1.197 + isolated GLM 的 ExitPlanMode 实录使用空 input 的
+        # can_use_tool；上游源码确认 EnterPlanMode 走同一交互权限通道。
+        proc = FakeProc(
+            [
+                line(init_event()),
+                line(
+                    {
+                        "type": "control_request",
+                        "request_id": "req-plan-mode",
+                        "request": {
+                            "subtype": "can_use_tool",
+                            "tool_name": tool_name,
+                            "input": {},
+                            "tool_use_id": "call_plan_mode",
+                        },
+                    }
+                ),
+                line(result_ok()),
+            ]
+        )
+        host = CCHost("sid", tmp_path, spawner=FakeSpawner([proc]))
+
+        events = await collect(host.send("切换 plan mode"))
+
+        assert any(isinstance(event, ElicitationRequestEvent) for event in events)
+        assert host._pending_elicit is not None
+        assert host._pending_elicit["tool_name"] == tool_name
+        assert not [
+            json.loads(item.decode())
+            for item in proc.stdin.written
+            if json.loads(item.decode()).get("type") == "control_response"
+        ]
+
+        assert await host.answer_elicit({"计划模式": "允许"}) is True
+        responses = [
+            json.loads(item.decode())
+            for item in proc.stdin.written
+            if json.loads(item.decode()).get("type") == "control_response"
+        ]
+        assert responses == [
+            {
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": "req-plan-mode",
+                    "response": {
+                        "behavior": "allow",
+                        "updatedInput": {},
+                    },
+                },
+            }
+        ]
