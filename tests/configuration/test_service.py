@@ -26,7 +26,9 @@ from trowel_py.configuration.models import (
 from trowel_py.configuration.service import merge_codex_catalog
 
 
-def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_match() -> None:
+def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_match() -> (
+    None
+):
     """DeepSeek 等自定义连接首次获取时仍应提供可选模型。"""
 
     fixture = Path(__file__).parents[1] / "codex_host/fixtures/model-list-0.144.0.json"
@@ -45,7 +47,9 @@ def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_matc
     ]
 
 
-def test_merge_codex_catalog_excludes_noninteractive_models_when_native_matches() -> None:
+def test_merge_codex_catalog_excludes_noninteractive_models_when_native_matches() -> (
+    None
+):
     """GPT 连接应以原生交互目录为准，不能把 image 模型加入候选。"""
 
     fixture = Path(__file__).parents[1] / "codex_host/fixtures/model-list-0.144.0.json"
@@ -120,7 +124,9 @@ async def test_selecting_codex_models_does_not_change_runtime_identity() -> None
 
 
 @pytest.mark.asyncio
-async def test_agent_options_exclude_saved_models_missing_from_compatible_catalog() -> None:
+async def test_agent_options_exclude_saved_models_missing_from_compatible_catalog() -> (
+    None
+):
     """旧白名单可留在设置中辨认，但不兼容模型不能进入新会话。"""
 
     fetcher = FakeCatalogFetcher(
@@ -176,7 +182,9 @@ async def test_agent_options_exclude_saved_models_missing_from_compatible_catalo
     assert option["models"][1]["available"] is True
 
 
-def test_official_account_slot_migration_requires_separate_relogin(tmp_path: Path) -> None:
+def test_official_account_slot_migration_requires_separate_relogin(
+    tmp_path: Path,
+) -> None:
     """历史共享目录只改引用，不得把 OAuth 凭据复制进两个托管槽。"""
 
     root = tmp_path / "managed"
@@ -319,7 +327,9 @@ def test_startup_restores_account_slot_when_soft_delete_was_rolled_back(
     assert not deletion.codex_home.tombstone.exists()
 
 
-def test_startup_cleans_account_slot_after_committed_soft_delete(tmp_path: Path) -> None:
+def test_startup_cleans_account_slot_after_committed_soft_delete(
+    tmp_path: Path,
+) -> None:
     """软删除已提交但清理前退出时，重启应删除对应墓碑。"""
 
     root = tmp_path / "managed"
@@ -1087,11 +1097,15 @@ async def test_verified_catalog_can_create_session_configuration_and_binding() -
         session_configuration_id=session.id,
         expected_version=0,
     )
+    launch = service.resolve_task_launch(TaskId.MEMORY_WEEKLY)
 
     assert session.connection_identity_version == current.identity_version
     assert session.capability.status == "verified"
     assert binding.task_id == TaskId.MEMORY_WEEKLY
     assert binding.session_configuration_id == session.id
+    assert launch.connection_id == created.id
+    assert launch.model == "deepseek-v4-flash"
+    assert launch.effort == "high"
 
     renamed = service.update_session_configuration(
         session.id,
@@ -1112,18 +1126,115 @@ async def test_verified_catalog_can_create_session_configuration_and_binding() -
         session_configuration_id=renamed.id,
         expected_version=cleared_binding.version,
     )
+    service.delete_session_configuration(renamed.id, expected_version=renamed.version)
+    with pytest.raises(ConfigurationError) as stale_task:
+        service.resolve_task_launch(TaskId.MEMORY_WEEKLY)
     cleared_again = service.delete_task_binding(
         TaskId.MEMORY_WEEKLY, expected_version=rebound.version
     )
-    service.delete_session_configuration(renamed.id, expected_version=renamed.version)
 
     assert renamed.name == "Codex DeepSeek xhigh"
     assert cleared_binding.version == binding.version + 1
     assert cleared_binding.session_configuration_id is None
     assert rebound.version == cleared_binding.version + 1
+    assert stale_task.value.code == "TASK_CONFIGURATION_STALE"
     assert cleared_again.version == rebound.version + 1
     assert service.list_task_bindings() == (cleared_again,)
     assert service.list_session_configurations() == ()
+
+
+@pytest.mark.asyncio
+async def test_session_configuration_alias_rename_reserves_old_alias() -> None:
+    """修改稳定别名后，旧别名应保留归属且不能分配给另一配置。"""
+
+    fetcher = FakeCatalogFetcher(
+        FetchedCatalog(
+            models=(FetchedModel(id="deepseek-v4-flash"),),
+            source_endpoint="https://api.deepseek.com/v1/models",
+        )
+    )
+    service, _repository = build_service(fetcher=fetcher)
+    created = service.create_connection(_deepseek_codex())
+    with_secret = service.write_secret(
+        created.id,
+        expected_version=created.version,
+        kind=SecretKind.API_KEY,
+        value="key",
+    )
+    fetched = await service.fetch_models(
+        created.id, expected_version=with_secret.version
+    )
+    first = service.create_session_configuration(
+        SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex1",
+            agent_callable=True,
+        ),
+        expected_connection_version=fetched.connection_version,
+    )
+
+    renamed = service.update_session_configuration(
+        first.id,
+        expected_version=first.version,
+        expected_connection_version=fetched.connection_version,
+        draft=SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex-main",
+            agent_callable=True,
+        ),
+    )
+
+    assert renamed.stable_alias == "codex-main"
+    assert renamed.identity_version == first.identity_version
+    assert service.list_agent_callable_configurations() == (renamed,)
+    restored = service.update_session_configuration(
+        first.id,
+        expected_version=renamed.version,
+        expected_connection_version=fetched.connection_version,
+        draft=SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex1",
+            agent_callable=True,
+        ),
+    )
+    assert restored.stable_alias == "codex1"
+    assert restored.identity_version == first.identity_version
+    with pytest.raises(ConfigurationError) as raised:
+        service.create_session_configuration(
+            SessionConfigurationDraft(
+                name="Other",
+                connection_id=created.id,
+                model="deepseek-v4-flash",
+                effort="high",
+                stable_alias="codex1",
+                agent_callable=True,
+            ),
+            expected_connection_version=fetched.connection_version,
+        )
+    assert raised.value.code == "ALIAS_RESERVED"
+
+
+@pytest.mark.asyncio
+async def test_agent_defaults_do_not_fall_back_when_configuration_is_missing() -> None:
+    """未设置默认运行配置时不得采用最近选择或列表第一项。"""
+
+    service, _repository = build_service()
+
+    assert (
+        service.resolve_agent_session_defaults(
+            {"runtime": "claude_code", "model": "opus"}
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1200,10 +1311,8 @@ async def test_codex_runtime_launch_defers_effort_compatibility_to_codex() -> No
     assert launch.effort is None
 
 
-def test_third_party_codex_keeps_task_gate_without_blocking_interactive_effort() -> (
-    None
-):
-    """交互 effort 交给 Codex，后台任务资格仍只来自实测记录。"""
+def test_managed_agent_runtimes_share_background_task_capabilities() -> None:
+    """Claude/Codex 后台任务复用 Agent Host，不按模型重复维护白名单。"""
 
     from trowel_py.configuration.capabilities import capability_for
 
@@ -1216,17 +1325,17 @@ def test_third_party_codex_keeps_task_gate_without_blocking_interactive_effort()
     )
     unknown_effort = capability_for(
         RuntimeKind.CODEX,
-        ConnectionKind.CODEX_CUSTOM,
-        ProtocolKind.OPENAI_RESPONSES,
-        "gpt-5.6-sol",
-        "xhigh",
+        ConnectionKind.CODEX_OFFICIAL,
+        ProtocolKind.CODEX_OFFICIAL,
+        "gpt-5.6-luna",
+        "low",
     )
 
     assert verified.status == "verified"
     assert verified.version == "provider-runtime-capabilities-v3"
-    assert verified.eligible_tasks == ()
+    assert verified.eligible_tasks == tuple(TaskId)
     assert unknown_effort.status == "verified"
-    assert unknown_effort.eligible_tasks == ()
+    assert unknown_effort.eligible_tasks == tuple(TaskId)
 
 
 @pytest.mark.asyncio
@@ -1357,6 +1466,52 @@ async def test_direct_api_configuration_cannot_be_saved_as_agent_default() -> No
             memory_enabled=True,
             profile_enabled=True,
             self_enabled=True,
+        )
+
+    assert raised.value.code == "AGENT_RUNTIME_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_direct_api_configuration_cannot_be_exposed_to_agent_mcp() -> None:
+    """direct API 没有 Agent 会话语义，不能进入父会话调用清单。"""
+
+    fetcher = FakeCatalogFetcher(
+        FetchedCatalog(
+            models=(FetchedModel(id="glm-5.2"),),
+            source_endpoint="https://open.bigmodel.cn/api/anthropic/v1/models",
+        )
+    )
+    service, _repository = build_service(fetcher=fetcher)
+    connection = service.create_connection(
+        ConnectionDraft(
+            name="GLM Weekly direct",
+            runtime=RuntimeKind.DIRECT_API,
+            kind=ConnectionKind.DIRECT_API,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://open.bigmodel.cn/api/anthropic",
+        )
+    )
+    with_secret = service.write_secret(
+        connection.id,
+        expected_version=connection.version,
+        kind=SecretKind.API_KEY,
+        value="test-key",
+    )
+    fetched = await service.fetch_models(
+        connection.id,
+        expected_version=with_secret.version,
+    )
+
+    with pytest.raises(ConfigurationError) as raised:
+        service.create_session_configuration(
+            SessionConfigurationDraft(
+                name="GLM direct Weekly",
+                connection_id=connection.id,
+                model="glm-5.2",
+                stable_alias="glm-weekly",
+                agent_callable=True,
+            ),
+            expected_connection_version=fetched.connection_version,
         )
 
     assert raised.value.code == "AGENT_RUNTIME_REQUIRED"

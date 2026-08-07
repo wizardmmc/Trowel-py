@@ -672,7 +672,7 @@ async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
       "labels" in lastState &&
       Array.isArray(lastState.labels) &&
       lastState.labels.join("|") ===
-        "存储与路径|模型连接|后台任务|Agent 默认|连接诊断|关于" &&
+        "存储与路径|模型连接|运行配置|后台任务|Agent 默认|连接诊断|关于" &&
       "pathRows" in lastState &&
       lastState.pathRows === 7 &&
       "hasEnabledReveal" in lastState &&
@@ -686,6 +686,7 @@ async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
       "horizontalOverflow" in lastState &&
       lastState.horizontalOverflow === false
     ) {
+      await verifyRuntimeConfigurationPopper(window);
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -693,6 +694,85 @@ async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
   throw new Error(
     `settings renderer did not reach the desktop contract: ${JSON.stringify(lastState)}`,
   );
+}
+
+/** 在三种桌面窗口尺寸下核对运行配置下拉始终从触发框下沿展开。 */
+async function verifyRuntimeConfigurationPopper(
+  window: BrowserWindow,
+): Promise<void> {
+  const viewports = [
+    [1440, 900],
+    [1100, 720],
+    [820, 720],
+  ] as const;
+  for (const [width, height] of viewports) {
+    window.setSize(width, height);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const geometry = (await window.webContents.executeJavaScript(
+      `(async () => {
+        const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+        const runtimeButton = Array.from(
+          document.querySelectorAll('.settings-sidebar__item'),
+        ).find((element) => element.querySelector('strong')?.textContent?.trim() === '运行配置');
+        runtimeButton?.click();
+        await sleep(50);
+        const addButton = Array.from(document.querySelectorAll('button')).find(
+          (element) => element.textContent?.includes('添加配置'),
+        );
+        addButton?.click();
+        await sleep(50);
+        const trigger = document.querySelector(
+          '[role="combobox"][aria-label="运行配置模型连接"]',
+        );
+        if (!trigger) return { error: 'runtime configuration trigger missing' };
+        const before = trigger.getBoundingClientRect();
+        trigger.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const menu = document.querySelector('.popper-select__content[data-state="open"]');
+        if (!menu) return { error: 'runtime configuration menu missing' };
+        const after = trigger.getBoundingClientRect();
+        const popup = menu.getBoundingClientRect();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return {
+          before: { left: before.left, top: before.top, right: before.right, bottom: before.bottom },
+          after: { left: after.left, top: after.top, right: after.right, bottom: after.bottom },
+          popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
+          viewport: { width: innerWidth, height: innerHeight },
+        };
+      })()`,
+      true,
+    )) as {
+      error?: string;
+      before?: { left: number; top: number; right: number; bottom: number };
+      after?: { left: number; top: number; right: number; bottom: number };
+      popup?: { left: number; top: number; right: number; bottom: number };
+      viewport?: { width: number; height: number };
+    };
+    if (geometry.error || !geometry.before || !geometry.after || !geometry.popup || !geometry.viewport) {
+      throw new Error(
+        `runtime configuration Popper unavailable at ${width}x${height}: ${JSON.stringify(geometry)}`,
+      );
+    }
+    const triggerMoved = ["left", "top", "right", "bottom"].some(
+      (key) => Math.abs(
+        geometry.before![key as keyof typeof geometry.before]
+          - geometry.after![key as keyof typeof geometry.after],
+      ) > 0.5,
+    );
+    const triggerVisible =
+      geometry.after.left >= 0 &&
+      geometry.after.top >= 0 &&
+      geometry.after.right <= geometry.viewport.width &&
+      geometry.after.bottom <= geometry.viewport.height;
+    const popupBelow = geometry.popup.top > geometry.after.bottom;
+    const popupFitsHorizontally =
+      geometry.popup.left >= 0 && geometry.popup.right <= geometry.viewport.width;
+    if (triggerMoved || !triggerVisible || !popupBelow || !popupFitsHorizontally) {
+      throw new Error(
+        `runtime configuration Popper geometry failed at ${width}x${height}: ${JSON.stringify(geometry)}`,
+      );
+    }
+  }
 }
 
 interface AgentStreamObservation {

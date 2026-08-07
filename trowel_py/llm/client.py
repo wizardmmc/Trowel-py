@@ -22,17 +22,19 @@ class LLMConfig(BaseModel):
     Attributes:
         provider: 选择 OpenAI 或 Anthropic 调用实现。
         model: 传给所选供应商的模型名称。
-        api_key: 创建供应商客户端时使用的 API 密钥。
+        api_key: 创建供应商客户端时使用的 API 密钥；不进入对象 repr。
         max_retries: 预留的重试配置，当前不生效；``LLMService`` 固定总共
             尝试三次。
         base_url: 模型 API 的根地址；默认指向本机 OpenAI 兼容服务。
+        proxy_url: 可选的连接级代理地址，可能含认证信息，不进入对象 repr。
     """
 
     provider: Literal["openai", "anthropic"]
     model: str = Field(min_length=2)
-    api_key: str = Field(min_length=1)
+    api_key: str = Field(min_length=1, repr=False)
     max_retries: int = Field(default=3)
     base_url: str = Field(default="http://localhost:1234/v1")
+    proxy_url: str | None = Field(default=None, repr=False)
 
 
 class CostEntry(BaseModel):
@@ -131,9 +133,16 @@ class AnthropicProvider(LLMProvider):
         Args:
             config: 提供 API 密钥、根地址和模型名称的连接配置。
         """
-        from anthropic import Anthropic
+        from anthropic import Anthropic, DefaultHttpxClient
 
-        self._client = Anthropic(api_key=config.api_key, base_url=config.base_url)
+        http_client = (
+            DefaultHttpxClient(proxy=config.proxy_url) if config.proxy_url else None
+        )
+        self._client = Anthropic(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            http_client=http_client,
+        )
         self._model = config.model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:

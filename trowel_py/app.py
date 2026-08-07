@@ -247,72 +247,10 @@ async def lifespan(app: FastAPI):
         )
     except Exception:
         logger.warning("[memory] statistics reader failed to start", exc_info=True)
-    # 可选后台组件必须隔离启动失败，避免局部配置或依赖问题阻断应用。
-    try:
-        from trowel_py.memory import paths as _mem_paths
-        from trowel_py.memory.daily_review.scheduler import (
-            MemoryReviewScheduler,
-            load_review_config,
-        )
-
-        scheduler = MemoryReviewScheduler(
-            load_review_config(),
-            _mem_paths.resolve_memory_root(),
-            resource_registry=resource_registry,
-        )
-        await scheduler.start()
-        app.state.memory_scheduler = scheduler
-    except Exception:
-        logger.warning("[memory] review scheduler failed to start", exc_info=True)
-        app.state.memory_scheduler = None
-    # 后台提炼启动失败不能阻断应用。
-    try:
-        from trowel_py.memory import paths as _distill_paths
-        from trowel_py.profile.distill.scheduler import (
-            ProfileDistillScheduler,
-            load_distill_config,
-        )
-
-        distill_scheduler = ProfileDistillScheduler(
-            load_distill_config(),
-            _distill_paths.resolve_memory_root(),
-            app.state.proxy_base_url,
-            app.state.cc_settings_path,
-            resource_registry=resource_registry,
-        )
-        await distill_scheduler.start()
-        app.state.distill_scheduler = distill_scheduler
-    except Exception:
-        logger.warning(
-            "[memory] profile distill scheduler failed to start", exc_info=True
-        )
-        app.state.distill_scheduler = None
-    try:
-        from trowel_py.memory import paths as _tidy_paths
-        from trowel_py.memory.tidy_scheduler import TidyScheduler
-        from trowel_py.config import load_llm_config
-        from trowel_py.llm.client import AnthropicProvider
-
-        try:
-            tidy_llm_config = load_llm_config()
-        except FileNotFoundError:
-            logger.info("[memory] tidy scheduler off: no LLM config")
-            app.state.tidy_scheduler = None
-        else:
-
-            def _tidy_provider_factory():
-                """创建 Memory 整理任务调用模型所用的客户端。"""
-
-                return AnthropicProvider(tidy_llm_config)
-
-            tidy_scheduler = TidyScheduler(
-                _tidy_paths.resolve_memory_root(), _tidy_provider_factory
-            )
-            await tidy_scheduler.start()
-            app.state.tidy_scheduler = tidy_scheduler
-    except Exception:
-        logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
-        app.state.tidy_scheduler = None
+    # 后台任务要复用下方 Session Hub；先声明状态，待 runtime 完成装配后再启动。
+    app.state.memory_scheduler = None
+    app.state.distill_scheduler = None
+    app.state.tidy_scheduler = None
     # 先迁移账号目录，再允许后台任务或 API 直接创建 Official 会话。
     try:
         migrated_official_accounts = _migrate_official_account_slots()
@@ -379,6 +317,7 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.agent_host import (
             BindingStore,
+            DelegationTarget,
             Runtime,
             SessionBinding,
             SessionHub,
@@ -394,6 +333,7 @@ async def lifespan(app: FastAPI):
         from trowel_py.memory.paths import resolve_memory_root
         from trowel_py.statistics.agent.repository import FileAgentObservationReader
         from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
+        from trowel_py.configuration.models import TaskId
         from trowel_py.configuration.repository import ConfigurationRepository
         from trowel_py.configuration.service import ConfigurationService
         from trowel_py.db.connection import create_db
@@ -449,7 +389,7 @@ async def lifespan(app: FastAPI):
         def resolve_agent_defaults(
             fallback: Mapping[str, Any] | None,
         ) -> dict[str, Any] | None:
-            """从设置域读取新建 Agent 默认条件，并保留最近有效选择作为回退。"""
+            """从设置域读取新建 Agent 默认配置；显式默认缺失时不猜测回退。"""
 
             connection = create_db()
             try:
@@ -472,6 +412,44 @@ async def lifespan(app: FastAPI):
                 run_migrations(connection)
                 service = ConfigurationService(ConfigurationRepository(connection))
                 return bool(service.list_agent_connection_options())
+            finally:
+                connection.close()
+
+        def resolve_delegation_targets() -> tuple[DelegationTarget, ...]:
+            """用短连接冻结新父会话当前可调用的运行配置清单。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return tuple(
+                    DelegationTarget(
+                        alias=item.stable_alias or "",
+                        configuration_id=item.id,
+                        configuration_identity_version=item.identity_version,
+                        runtime=Runtime(item.runtime.value),
+                        connection_id=item.connection_id,
+                        connection_identity_version=(item.connection_identity_version),
+                        model=item.model,
+                        effort=item.effort,
+                    )
+                    for item in service.list_agent_callable_configurations()
+                )
+            finally:
+                connection.close()
+
+        def resolve_task_launch(task_id: TaskId) -> RuntimeLaunchConfiguration:
+            """用短连接读取一次后台任务绑定并冻结秘密启动配置。
+
+            Args:
+                task_id: 即将开始的一次后台任务。
+            """
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return service.resolve_task_launch(task_id)
             finally:
                 connection.close()
 
@@ -547,6 +525,7 @@ async def lifespan(app: FastAPI):
             configuration_resolver=resolve_connection_launch,
             last_choice_recorder=record_connection_choice,
             agent_defaults_resolver=resolve_agent_defaults,
+            delegation_targets_resolver=resolve_delegation_targets,
             cc_connection_proxy_registry=app.state.cc_connection_proxy_registry,
             require_configured_connections=has_agent_runtime_connections,
             cc_history_projects_roots=claude_connection_homes.projects_roots,
@@ -554,6 +533,37 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
+
+    # 调度器每次执行才解析任务绑定；一次执行拿到的 runtime 快照不再随设置变化。
+    if app.state.agent_hub is not None:
+        try:
+            from trowel_py.configuration.background_runtime import (
+                BackgroundRuntimeManager,
+            )
+            from trowel_py.configuration.background_scheduling import (
+                build_background_schedulers,
+            )
+            from trowel_py.memory import paths as _background_paths
+
+            background_root = _background_paths.resolve_memory_root()
+            background_runtime = BackgroundRuntimeManager(
+                resolve_task_launch,
+                app.state.agent_hub,
+                asyncio.get_running_loop(),
+            )
+            schedulers = build_background_schedulers(
+                background_runtime,
+                background_root,
+                proxy_base_url=app.state.proxy_base_url,
+                settings_path=app.state.cc_settings_path,
+                resource_registry=resource_registry,
+            )
+            await schedulers.start()
+            app.state.memory_scheduler = schedulers.memory
+            app.state.distill_scheduler = schedulers.profile
+            app.state.tidy_scheduler = schedulers.tidy
+        except Exception:
+            logger.warning("[background] schedulers failed to start", exc_info=True)
     app.state.agent_delegation_broker = None
     app.state.agent_delegation_wakeup = None
     app.state.discussion_events = None
@@ -613,11 +623,13 @@ async def lifespan(app: FastAPI):
             SqliteSessionConfigurationCatalog(),
             handoff_sessions=AgentHostHandoffSessionAdapter(app.state.agent_hub),
             transcript_access_token_factory=(
-                lambda path: build_scoped_discussion_read_token(
-                    app.state.desktop_credential, path
+                lambda path: (
+                    build_scoped_discussion_read_token(
+                        app.state.desktop_credential, path
+                    )
+                    if app.state.desktop_credential
+                    else None
                 )
-                if app.state.desktop_credential
-                else None
             ),
         )
         await discussion_coordinator.start()

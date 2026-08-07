@@ -22,6 +22,7 @@ from trowel_py.agent_capacity import (
     USER_RUNNING_LIMIT,
 )
 from trowel_py.agent_host.binding import (
+    DelegationTarget,
     Runtime,
     SessionBinding,
     TitleSource,
@@ -215,6 +216,7 @@ SessionReviewRequester = Callable[[SessionBinding], None]
 ConfigurationResolver = Callable[[str, str, str | None], RuntimeLaunchConfiguration]
 LastChoiceRecorder = Callable[[RuntimeLaunchConfiguration], None]
 AgentDefaultsResolver = Callable[[Mapping[str, Any] | None], dict[str, Any] | None]
+DelegationTargetsResolver = Callable[[], Sequence[DelegationTarget]]
 
 
 def _default_cc_registry() -> dict[str, Any]:
@@ -260,6 +262,7 @@ class SessionHub:
         configuration_resolver: ConfigurationResolver | None = None,
         last_choice_recorder: LastChoiceRecorder | None = None,
         agent_defaults_resolver: AgentDefaultsResolver | None = None,
+        delegation_targets_resolver: DelegationTargetsResolver | None = None,
         cc_connection_proxy_registry: Any | None = None,
         configuration_archive: SessionConfigurationArchive | None = None,
         require_configured_connections: bool | Callable[[], bool] = False,
@@ -301,6 +304,7 @@ class SessionHub:
             configuration_resolver: 把连接、模型和 effort 解析成秘密启动配置的端口。
             last_choice_recorder: 原生会话建立后写回连接最近选择的端口。
             agent_defaults_resolver: 把设置页默认条件合并到最近会话选择的同步端口。
+            delegation_targets_resolver: 读取新父会话可调用运行配置快照的同步端口。
             cc_connection_proxy_registry: Claude 会话租约到冻结上游的进程内 registry。
             configuration_archive: binding 删除后继续保存原生会话冻结条件的档案。
             require_configured_connections: 是否拒绝没有设置域连接的用户会话；也可
@@ -339,6 +343,7 @@ class SessionHub:
         self._configuration_resolver = configuration_resolver
         self._last_choice_recorder = last_choice_recorder
         self._agent_defaults_resolver = agent_defaults_resolver
+        self._delegation_targets_resolver = delegation_targets_resolver
         self._cc_connection_proxy_registry = cc_connection_proxy_registry
         self._pending_last_choices: dict[str, RuntimeLaunchConfiguration] = {}
         self._configuration_archive = configuration_archive or (
@@ -683,7 +688,15 @@ class SessionHub:
         """
 
         self._require_accepting_work()
+        req = self._normalize_delegation_request(req)
         req = self._inherit_resume_config(req)
+        delegation_targets = self._delegation_targets_for_request(req)
+        if (
+            req.session_kind == "user"
+            and req.resume_from is None
+            and self._delegation_targets_resolver is not None
+        ):
+            req = req.model_copy(update={"agent_mcp_enabled": bool(delegation_targets)})
         if not Path(req.workdir).is_dir():
             raise InvalidSessionRequestError("workdir does not exist")
         launch = self._resolve_launch(req, frozen_connection=frozen_connection)
@@ -692,16 +705,115 @@ class SessionHub:
             with self._capacity.admit_connection(req.session_kind):
                 if req.runtime == "claude_code":
                     binding = self._create_cc(
-                        req, launch, memory_mcp_enabled, bootstrap_context
+                        req,
+                        launch,
+                        memory_mcp_enabled,
+                        bootstrap_context,
+                        delegation_targets,
                     )
                 else:
                     binding = self._create_codex(
-                        req, launch, memory_mcp_enabled, bootstrap_context
+                        req,
+                        launch,
+                        memory_mcp_enabled,
+                        bootstrap_context,
+                        delegation_targets,
                     )
                 self._touch_session_state(binding.session_id)
                 return binding
         except CapacityLimitError as exc:
             raise SessionConflictError(str(exc)) from exc
+
+    def _delegation_targets_for_request(
+        self, req: CreateAgentSessionRequest
+    ) -> tuple[DelegationTarget, ...]:
+        """返回新父会话的当前调用清单或恢复会话的历史冻结清单。"""
+
+        if req.session_kind != "user":
+            return ()
+        if req.resume_from is not None:
+            previous = self._frozen_resume_configuration(
+                Runtime(req.runtime), req.resume_from
+            )
+            return previous.delegation_targets if previous is not None else ()
+        if self._delegation_targets_resolver is None:
+            return ()
+        return tuple(self._delegation_targets_resolver())
+
+    def _normalize_delegation_request(
+        self, req: CreateAgentSessionRequest
+    ) -> CreateAgentSessionRequest:
+        """按父会话冻结别名重建 delegate 请求中的全部受保护启动事实。"""
+
+        alias = req.delegation_configuration
+        if req.session_kind != "delegate" or alias is None:
+            return req
+        if req.parent_session_id is None:
+            raise InvalidSessionRequestError("delegation parent is required")
+        parent = self.get(req.parent_session_id)
+        if (
+            parent is None
+            or parent.session_kind != "user"
+            or parent.delegation_depth != 0
+            or not parent.agent_mcp_enabled
+        ):
+            raise InvalidSessionRequestError("delegation parent is unavailable")
+        if not self._parent_allows_full_access_delegation(parent):
+            raise InvalidSessionRequestError(
+                "parent permission does not allow full-access delegation"
+            )
+        target = next(
+            (item for item in parent.delegation_targets if item.alias == alias),
+            None,
+        )
+        if target is None:
+            raise InvalidSessionRequestError(
+                f"delegation configuration {alias!r} is not frozen for this session"
+            )
+        updates: dict[str, Any] = {
+            "runtime": target.runtime.value,
+            "connection_id": target.connection_id,
+            "workdir": parent.workdir,
+            "model": target.model,
+            "effort": target.effort,
+            "memory_enabled": parent.memory_enabled,
+            "profile_enabled": parent.profile_enabled,
+            "self_enabled": parent.self_enabled,
+            "memory_eligibility": False,
+            "agent_mcp_enabled": False,
+            "parent_session_id": parent.session_id,
+            "delegation_depth": 1,
+            "expected_connection_identity_version": (
+                target.connection_identity_version
+            ),
+        }
+        if target.runtime is Runtime.CLAUDE_CODE:
+            updates.update(
+                permission_mode="bypassPermissions",
+                permission_preset=None,
+            )
+        else:
+            updates.update(
+                permission_mode=None,
+                permission_preset="danger-full-access",
+            )
+        return req.model_copy(update=updates)
+
+    @staticmethod
+    def _parent_allows_full_access_delegation(parent: SessionBinding) -> bool:
+        """确认当前仅支持的 full-access 权限映射不会提升父会话权限。
+
+        Args:
+            parent: 发起委派的实时父会话绑定。
+        """
+
+        if parent.runtime is Runtime.CLAUDE_CODE:
+            return parent.permission == "bypassPermissions"
+        return (
+            parent.effective_sandbox == "danger-full-access"
+            and parent.effective_approval == "never"
+            and parent.network_access is True
+        )
 
     def _inherit_resume_config(
         self, req: CreateAgentSessionRequest
@@ -817,9 +929,13 @@ class SessionHub:
             raise InvalidSessionRequestError(
                 "selected connection does not belong to the requested runtime"
             )
-        if req.agent_mcp_enabled:
-            raise InvalidSessionRequestError(
-                "agent MCP is not verified for connection-backed sessions"
+        if (
+            req.expected_connection_identity_version is not None
+            and launch.connection_identity_version
+            != req.expected_connection_identity_version
+        ):
+            raise ConditionMismatchError(
+                "delegation connection identity changed; create a new parent session"
             )
         if req.resume_from is not None:
             frozen = self._frozen_resume_configuration(
@@ -840,13 +956,16 @@ class SessionHub:
                     claude_config_dir=self._claude_config_dir_for_native(
                         req.resume_from
                     ),
+                    claude_auto_memory_disabled=(
+                        frozen.claude_auto_memory_disabled
+                        if frozen is not None
+                        else launch.claude_auto_memory_disabled
+                    ),
                 )
             elif req.runtime == "codex":
                 launch = replace(
                     launch,
-                    codex_config_dir=self._codex_config_dir_for_native(
-                        req.resume_from
-                    ),
+                    codex_config_dir=self._codex_config_dir_for_native(req.resume_from),
                 )
         if frozen_connection is not None:
             if req.session_kind != "discussion":
@@ -873,22 +992,22 @@ class SessionHub:
     def _resolve_memory_mcp(
         self,
         req: CreateAgentSessionRequest,
-        launch: RuntimeLaunchConfiguration | None,
+        _launch: RuntimeLaunchConfiguration | None,
     ) -> bool:
-        """计算并冻结 Memory MCP 开关，不改变 Memory 正文注入语义。
+        """让新会话用 Memory 总开关，恢复会话沿用历史冻结 roster。
 
-        传统本机配置继续沿用 ``memory_enabled``。设置域连接尚未逐一验证 MCP
-        透传，因此新会话一律关闭；恢复时沿用原会话已经冻结的内部值。
+        ``_launch`` 为兼容现有创建流水线保留，不再改变正文和 MCP 同开同关的
+        产品语义。
         """
 
-        if launch is None:
-            return req.memory_enabled
         if req.resume_from is None:
-            return False
+            return req.memory_enabled
         previous = self._frozen_resume_configuration(
             Runtime(req.runtime), req.resume_from
         )
-        return previous.memory_mcp_enabled if previous is not None else False
+        return (
+            previous.memory_mcp_enabled if previous is not None else req.memory_enabled
+        )
 
     async def prepare_create_request(
         self, req: CreateAgentSessionRequest
@@ -1171,6 +1290,7 @@ class SessionHub:
         launch: RuntimeLaunchConfiguration | None,
         memory_mcp_enabled: bool,
         bootstrap_context: str | None,
+        delegation_targets: Sequence[DelegationTarget],
     ) -> SessionBinding:
         """登记 Claude Code 会话并保存初始的 Trowel 会话记录。
 
@@ -1249,9 +1369,7 @@ class SessionHub:
                 "memory_mcp_enabled": memory_mcp_enabled,
             }
             if launch.claude_config_dir is not None:
-                connection_host_config["claude_config_dir"] = (
-                    launch.claude_config_dir
-                )
+                connection_host_config["claude_config_dir"] = launch.claude_config_dir
             if launch.claude_plugin_dir is not None:
                 connection_host_config["claude_plugin_dir"] = launch.claude_plugin_dir
         if bootstrap_context:
@@ -1284,6 +1402,8 @@ class SessionHub:
             )
             raise
         try:
+            from trowel_py.memory.mcp_config import declared_cc_mcp_roster
+
             binding = make_binding(
                 session_id=opened.sid,
                 runtime=Runtime.CLAUDE_CODE,
@@ -1321,6 +1441,11 @@ class SessionHub:
                 configuration_capability_source=(
                     launch.capability_source if launch else None
                 ),
+                declared_mcp_roster=declared_cc_mcp_roster(
+                    memory_enabled=memory_mcp_enabled,
+                    agent_mcp_enabled=req.agent_mcp_enabled,
+                ),
+                delegation_targets=delegation_targets,
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CLAUDE_CODE, opened.sid, exc)
@@ -1352,6 +1477,7 @@ class SessionHub:
         launch: RuntimeLaunchConfiguration | None,
         memory_mcp_enabled: bool,
         bootstrap_context: str | None,
+        delegation_targets: Sequence[DelegationTarget],
     ) -> SessionBinding:
         """``resume_from`` 只登记原生 thread，首次 turn 才执行恢复。"""
 
@@ -1413,6 +1539,7 @@ class SessionHub:
                 configuration_capability_source=(
                     launch.capability_source if launch else None
                 ),
+                delegation_targets=delegation_targets,
             )
         except BaseException as exc:
             self._lifecycle.abort_created(Runtime.CODEX, sid, exc)
@@ -3710,6 +3837,10 @@ class SessionHub:
             # 先落脱敏恢复条件；档案失败时不能让 binding 进入不可安全恢复的半状态。
             self._configuration_archive.put(
                 candidate,
+                claude_auto_memory_disabled=self._claude_auto_memory_for_native(
+                    session_id,
+                    cc_session_id,
+                ),
                 claude_config_dir=getattr(host, "claude_config_dir", None),
             )
             updated = self._store.update_native(
@@ -3724,6 +3855,30 @@ class SessionHub:
                 self._record_last_choice_once(session_id)
         except KeyError:
             _log.debug("cc writeback skipped, binding %s gone", session_id)
+
+    def _claude_auto_memory_for_native(
+        self,
+        session_id: str,
+        native_session_id: str | None,
+    ) -> bool:
+        """返回新启动快照或既有档案中冻结的 Claude 原生记忆条件。
+
+        Args:
+            session_id: 当前 Trowel 会话 ID。
+            native_session_id: Claude Code 已回报的原生会话 ID。
+        """
+
+        launch = self._pending_last_choices.get(session_id)
+        if launch is not None:
+            return launch.claude_auto_memory_disabled
+        if native_session_id:
+            archived = self._configuration_archive.get(
+                Runtime.CLAUDE_CODE,
+                native_session_id,
+            )
+            if archived is not None:
+                return archived.claude_auto_memory_disabled
+        return False
 
     def _writeback_codex_native(self, session_id: str, session: Any) -> None:
         """把 Codex 当前的线程 ID、模型、思考强度、权限和网络设置保存到会话记录。

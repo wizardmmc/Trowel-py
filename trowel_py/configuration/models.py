@@ -89,6 +89,7 @@ class ConnectionDraft:
         claude_role_models: Claude 各角色映射到的上游 model ID。
         codex_catalog: Codex app-server 使用的模型目录元数据。
         catalog_request_identity: 本次模型映射引用的已获取列表身份；不编辑映射时为 None。
+        claude_auto_memory_disabled: 是否关闭该 Claude 连接创建会话时的原生 auto-memory。
     """
 
     name: str
@@ -103,6 +104,7 @@ class ConnectionDraft:
     claude_role_models: dict[str, str] = field(default_factory=dict)
     codex_catalog: tuple[CodexCatalogEntry, ...] = ()
     catalog_request_identity: str | None = None
+    claude_auto_memory_disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,12 +116,16 @@ class SessionConfigurationDraft:
         connection_id: Trowel 连接的稳定本地 ID。
         model: 上游实际执行的 model ID。
         effort: runtime 使用的思考强度；None 表示使用能力表默认值。
+        stable_alias: Agent MCP 调用这项配置的当前别名；None 表示不提供别名。
+        agent_callable: 是否允许父 Agent 通过稳定别名调用这项配置。
     """
 
     name: str
     connection_id: str
     model: str
     effort: str | None = None
+    stable_alias: str | None = None
+    agent_callable: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,7 @@ class ConnectionView:
         last_session_choice: 最近一次成功创建会话的 model 和 effort。
         secret_versions: secret 名称到版本的映射；只用于请求身份，不含原值。
         preview: 根据持久事实生成的脱敏配置预览。
+        claude_auto_memory_disabled: 是否关闭 Claude Code 原生 auto-memory。
     """
 
     id: str
@@ -234,6 +241,7 @@ class ConnectionView:
     last_session_choice: dict[str, str | None] | None
     secret_versions: dict[str, int]
     preview: dict[str, Any]
+    claude_auto_memory_disabled: bool = False
 
     def to_wire(self) -> dict[str, Any]:
         """转换成仅含 JSON 基本类型的脱敏响应。"""
@@ -282,6 +290,7 @@ class ConnectionView:
             "last_session_choice": self.last_session_choice,
             "secret_versions": dict(self.secret_versions),
             "preview": self.preview,
+            "claude_auto_memory_disabled": self.claude_auto_memory_disabled,
         }
 
 
@@ -292,6 +301,7 @@ class SessionConfigurationView:
     Attributes:
         id: 会话配置稳定 ID。
         version: 乐观并发版本。
+        identity_version: runtime、连接、模型或 effort 改变时递增的启动版本。
         name: 三类前端共同展示的名称。
         runtime: 使用的 runtime 或 direct API。
         connection_id: 引用的 Trowel 连接 ID。
@@ -301,6 +311,9 @@ class SessionConfigurationView:
         capability: 当前能力结论和任务资格。
         availability: available 或 stale。
         disabled_reason: 不可用时的稳定原因。
+        connection_name: 当前连接的脱敏展示名称。
+        stable_alias: 当前供 Agent MCP 使用的别名；None 表示未配置。
+        agent_callable: 是否允许父 Agent 调用。
     """
 
     id: str
@@ -314,6 +327,10 @@ class SessionConfigurationView:
     capability: CapabilityView
     availability: str
     disabled_reason: str | None
+    identity_version: int = 1
+    connection_name: str = ""
+    stable_alias: str | None = None
+    agent_callable: bool = False
 
     def to_wire(self) -> dict[str, Any]:
         """转换成配置 catalog 使用的 JSON 字典。"""
@@ -321,6 +338,7 @@ class SessionConfigurationView:
         return {
             "id": self.id,
             "version": self.version,
+            "identity_version": self.identity_version,
             "name": self.name,
             "runtime": self.runtime.value,
             "connection_id": self.connection_id,
@@ -331,10 +349,15 @@ class SessionConfigurationView:
                 "status": self.capability.status,
                 "version": self.capability.version,
                 "source": self.capability.source,
-                "eligible_tasks": [task.value for task in self.capability.eligible_tasks],
+                "eligible_tasks": [
+                    task.value for task in self.capability.eligible_tasks
+                ],
             },
             "availability": self.availability,
             "disabled_reason": self.disabled_reason,
+            "connection_name": self.connection_name,
+            "stable_alias": self.stable_alias,
+            "agent_callable": self.agent_callable,
         }
 
 

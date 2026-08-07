@@ -10,6 +10,7 @@ export const SETTINGS_SECTIONS: readonly {
 }[] = [
   { id: "paths", label: "存储与路径", detail: "真实数据位置", group: "configuration" },
   { id: "connections", label: "模型连接", detail: "连接与凭据", group: "configuration" },
+  { id: "configurations", label: "运行配置", detail: "可复用启动组合", group: "configuration" },
   { id: "tasks", label: "后台任务", detail: "逐项绑定配置", group: "configuration" },
   { id: "agent", label: "Agent 默认", detail: "新会话条件", group: "configuration" },
   { id: "diagnostics", label: "连接诊断", detail: "三层状态", group: "system" },

@@ -1,4 +1,4 @@
-"""保存后台任务实测资格，并声明交互模型由原生 runtime 裁决。"""
+"""声明原生 Agent Host 与 Direct API 的后台任务资格边界。"""
 
 from __future__ import annotations
 
@@ -46,43 +46,7 @@ class _Rule:
     source: str
 
 
-_RULES = (
-    _Rule(
-        RuntimeKind.CLAUDE_CODE,
-        ConnectionKind.CLAUDE_COMPATIBLE,
-        ProtocolKind.ANTHROPIC_MESSAGES,
-        "glm-5.2",
-        (),
-        _AGENT_TASKS,
-        "Claude Code 双 GLM 连接隔离与会话恢复实测",
-    ),
-    _Rule(
-        RuntimeKind.CLAUDE_CODE,
-        ConnectionKind.CLAUDE_COMPATIBLE,
-        ProtocolKind.ANTHROPIC_MESSAGES,
-        "deepseek-v4-flash",
-        (),
-        _AGENT_TASKS,
-        "Claude Code + DeepSeek 工具调用与会话恢复实测",
-    ),
-    _Rule(
-        RuntimeKind.CODEX,
-        ConnectionKind.CODEX_CUSTOM,
-        ProtocolKind.OPENAI_RESPONSES,
-        "deepseek-v4-flash",
-        ("low", "medium", "high", "xhigh"),
-        _AGENT_TASKS,
-        "Codex + DeepSeek 工具调用与会话恢复实测",
-    ),
-    _Rule(
-        RuntimeKind.CODEX,
-        ConnectionKind.CODEX_CUSTOM,
-        ProtocolKind.OPENAI_RESPONSES,
-        "gpt-5.6-sol",
-        ("high",),
-        (),
-        "Codex 第三方 Responses 双连接隔离、工具调用、usage 与终态实测",
-    ),
+_DIRECT_API_RULES = (
     _Rule(
         RuntimeKind.DIRECT_API,
         ConnectionKind.DIRECT_API,
@@ -104,12 +68,18 @@ def capability_for(
 ) -> CapabilityView:
     """返回会话可用性和后台任务资格。
 
-    Claude Code 与 Codex 自己拥有交互模型兼容层。Trowel 只要求模型存在于当前连接
-    catalog，不再用少量 smoke 结果重复维护逐模型白名单；实测规则只决定后台任务
-    能否绑定。Direct API 没有 runtime 兼容层，仍保持精确门禁。
+    Claude Code 与 Codex 后台任务复用同一套原生 Agent Host，因此不再用少量 smoke
+    结果重复维护逐模型任务白名单。Direct API 没有 runtime 兼容层，仍保持精确门禁。
     """
 
-    for rule in _RULES:
+    if runtime in {RuntimeKind.CLAUDE_CODE, RuntimeKind.CODEX}:
+        return CapabilityView(
+            status="verified",
+            version=CAPABILITY_REGISTRY_VERSION,
+            source="后台任务复用已验证的原生 Agent Host；模型与思考强度由 runtime 裁决",
+            eligible_tasks=_AGENT_TASKS,
+        )
+    for rule in _DIRECT_API_RULES:
         if (
             rule.runtime == runtime
             and rule.kind == kind
@@ -127,12 +97,6 @@ def capability_for(
                 source=rule.source,
                 eligible_tasks=eligible_tasks,
             )
-    if runtime in {RuntimeKind.CLAUDE_CODE, RuntimeKind.CODEX}:
-        return CapabilityView(
-            status="verified",
-            version=CAPABILITY_REGISTRY_VERSION,
-            source="交互模型与思考强度由原生 runtime catalog 和创建响应裁决",
-        )
     return CapabilityView(
         status="unknown",
         version=CAPABILITY_REGISTRY_VERSION,

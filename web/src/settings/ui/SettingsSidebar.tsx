@@ -12,6 +12,7 @@ interface SettingsSidebarProps {
 const SECTION_ICON_PATHS: Readonly<Record<SettingsSection, string>> = {
   paths: "M3.5 7.5h6l1.6 2h9.4v8.5a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2V9.5a2 2 0 0 1 2-2Z",
   connections: "M5 5.5h14v5H5zM5 13.5h14v5H5zM8 8h.01M8 16h.01",
+  configurations: "M5 5.5h14v5H5zM5 13.5h14v5H5zM8 8h.01M8 16h.01M11 8h5M11 16h5",
   tasks: "m12 3 1.5 4.2L18 8.5l-3.5 2.7.2 4.5L12 13.2 9.3 15.7l.2-4.5L6 8.5l4.5-1.3Z",
   agent: "M4 7h16M7 7v10M17 7v10M4 17h16M10 11h4",
   diagnostics: "M4 12h3l2-5 4 10 2-5h5",

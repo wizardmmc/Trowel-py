@@ -3,6 +3,7 @@
 import { PopperSelect } from "../../components/ui/PopperSelect";
 import { RUNTIME_OPTIONS } from "../../components/cc/newSessionOptions";
 import { eligibleAgentSessionConfigurations } from "../application/selectors";
+import { compactConfigurationLabel } from "../domain/configurationLabels";
 import type {
   AgentDefaults,
   ConfigurationCatalog,
@@ -43,13 +44,15 @@ export function AgentDefaultsPanel({
   const selected = availableConfigurations.find(
     (item) => item.id === draft.session_configuration_id,
   );
-  const runtime = RUNTIME_OPTIONS.find((item) => item.value === selected?.runtime);
-  const fallbackRuntime = availableConfigurations.find(
-    (configuration) => configuration.runtime !== "direct_api",
-  )?.runtime;
+  const staleDefault = draft.session_configuration_id !== null && !selected;
+  const fallbackRuntime = availableConfigurations[0]?.runtime;
   const selectedRuntime = (selected?.runtime ?? fallbackRuntime) === "codex"
     ? "codex"
     : "claude_code";
+  const runtimeConfigurations = availableConfigurations.filter(
+    (configuration) => configuration.runtime === selectedRuntime,
+  );
+  const runtime = RUNTIME_OPTIONS.find((item) => item.value === selectedRuntime);
   const permissionOptions = [
     { value: FOLLOW_RUNTIME, label: "跟随 Runtime" },
     ...(runtime?.permissions ?? []).map((item) => ({ value: item.value, label: item.label })),
@@ -67,12 +70,12 @@ export function AgentDefaultsPanel({
         <div className="settings-list">
           <div className="settings-row settings-setting-row">
             <div className="settings-row__body">
-              <strong>默认 runtime</strong>
-              <span>新建 Agent 会话的初始选择。</span>
+              <strong>默认 Runtime</strong>
+              <span>决定默认配置下拉框展示 Claude Code 还是 Codex 配置。</span>
             </div>
-            <div className="settings-segment" role="group" aria-label="默认 runtime">
+            <div className="settings-segment" role="group" aria-label="默认 Runtime">
               {(["claude_code", "codex"] as const).map((runtimeKind) => {
-                const runtimeConfigurations = availableConfigurations.filter(
+                const candidates = availableConfigurations.filter(
                   (configuration) => configuration.runtime === runtimeKind,
                 );
                 return (
@@ -80,9 +83,9 @@ export function AgentDefaultsPanel({
                     type="button"
                     key={runtimeKind}
                     aria-pressed={selectedRuntime === runtimeKind}
-                    disabled={!runtimeConfigurations.length}
+                    disabled={candidates.length === 0}
                     onClick={() => onChange({
-                      session_configuration_id: runtimeConfigurations[0]?.id ?? null,
+                      session_configuration_id: candidates[0]?.id ?? null,
                       permission: null,
                     })}
                   >
@@ -95,28 +98,40 @@ export function AgentDefaultsPanel({
           <div className="settings-row settings-setting-row">
             <div className="settings-row__body">
               <strong>默认模型连接</strong>
-              <span>按默认 runtime 过滤当前可用的完整会话配置。</span>
+              <span>只展示所选 Runtime 下的完整运行配置。</span>
             </div>
-          <PopperSelect
-            ariaLabel="Agent 默认会话配置"
-            value={draft.session_configuration_id ?? NO_CONFIGURATION}
-            options={[
-              { value: NO_CONFIGURATION, label: "不指定" },
-              ...availableConfigurations.filter((configuration) => configuration.runtime === selectedRuntime).map((configuration) => ({
-                value: configuration.id,
-                label: `${configuration.name} · ${configuration.model}`,
-              })),
-            ]}
-            onValueChange={(value) =>
-              onChange({
-                session_configuration_id: value === NO_CONFIGURATION ? null : value,
-                permission: null,
-              })
-            }
-            triggerClassName="settings-select is-wide"
-          />
+            <PopperSelect
+              ariaLabel="Agent 默认会话配置"
+              value={draft.session_configuration_id ?? NO_CONFIGURATION}
+              options={[
+                { value: NO_CONFIGURATION, label: "不指定" },
+                ...(staleDefault
+                  ? [{
+                      value: draft.session_configuration_id!,
+                      label: "原默认配置已失效",
+                      disabled: true,
+                    }]
+                  : []),
+                ...runtimeConfigurations.map((configuration) => ({
+                  value: configuration.id,
+                  label: compactConfigurationLabel(configuration, catalog?.connections ?? []),
+                })),
+              ]}
+              onValueChange={(value) =>
+                onChange({
+                  session_configuration_id: value === NO_CONFIGURATION ? null : value,
+                  permission: null,
+                })
+              }
+              triggerClassName="settings-select is-wide"
+            />
           </div>
-          <DefaultToggle label="Memory" detail="向新会话提供长期记忆检索能力。" checked={draft.memory_enabled} onChange={(value) => onChange({ memory_enabled: value })} />
+          {staleDefault && (
+            <div className="settings-error-box" role="status">
+              <span>原默认配置已归档或失效；新建 Agent 不会自动回退到其他配置。</span>
+            </div>
+          )}
+          <DefaultToggle label="Memory" detail="向新会话注入长期记忆，并挂载 Memory MCP 检索工具。" checked={draft.memory_enabled} onChange={(value) => onChange({ memory_enabled: value })} />
           <DefaultToggle label="Profile" detail="注入已确认的用户画像。" checked={draft.profile_enabled} onChange={(value) => onChange({ profile_enabled: value })} />
           <DefaultToggle label="Self" detail="注入持续主体说明。" checked={draft.self_enabled} onChange={(value) => onChange({ self_enabled: value })} />
           <div className="settings-row settings-setting-row">
@@ -124,14 +139,14 @@ export function AgentDefaultsPanel({
               <strong>权限</strong>
               <span>研讨参与者仍由其工作流固定权限，不读取这里的默认值。</span>
             </div>
-          <PopperSelect
-            ariaLabel="Agent 默认权限"
-            value={draft.permission ?? FOLLOW_RUNTIME}
-            options={permissionOptions}
-            onValueChange={(value) => onChange({ permission: value === FOLLOW_RUNTIME ? null : value })}
-            triggerClassName="settings-select is-wide"
-            disabled={!selected}
-          />
+            <PopperSelect
+              ariaLabel="Agent 默认权限"
+              value={draft.permission ?? FOLLOW_RUNTIME}
+              options={permissionOptions}
+              onValueChange={(value) => onChange({ permission: value === FOLLOW_RUNTIME ? null : value })}
+              triggerClassName="settings-select is-wide"
+              disabled={!selected}
+            />
           </div>
         </div>
       </section>

@@ -14,6 +14,7 @@ import type {
 import { CLAUDE_ROLES } from "../domain/types";
 import { buildConnectionPreview } from "./connectionPreview";
 import { ConnectionConfigInheritanceCard } from "./ConnectionConfigInheritanceCard";
+import { SettingsSwitch } from "./SettingsSwitch";
 import { EmptyState, PanelHeader, StatusPill } from "./SettingsPrimitives";
 
 interface ConnectionsPanelProps {
@@ -328,6 +329,21 @@ function ClaudeConnectionFields(props: ClaudeConnectionFieldsProps) {
       />
       <ApiKeyField {...props} />
       <ModelFetchBlock editor={props.editor} onFetch={props.onFetchModels} />
+      <section className="settings-form-block">
+        <div className="settings-row settings-setting-row">
+          <span className="settings-row__body">
+            <strong>禁用 Claude 原生记忆</strong>
+            <span>该连接创建的会话不携带 Claude 自己的 auto-memory；不影响 Trowel 长期记忆。</span>
+          </span>
+          <SettingsSwitch
+            label="禁用 Claude 原生记忆"
+            checked={Boolean(props.editor.draft.claude_auto_memory_disabled)}
+            onCheckedChange={(checked) => props.onDraftChange({
+              claude_auto_memory_disabled: checked,
+            })}
+          />
+        </div>
+      </section>
       <section className="settings-form-block">
         <h3>Claude 角色模型</h3>
         <p>候选来自当前连接刚刚获取的模型列表；“上游可见”不等于已经通过 Trowel 能力验证。</p>

@@ -1,4 +1,4 @@
-/** 验证生产设置工作区使用同一状态容器切换六组真实页面。 */
+/** 验证生产设置工作区使用同一状态容器切换七组真实页面。 */
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,7 +21,7 @@ const emptyCatalog: ConfigurationCatalog = {
   },
 };
 
-it("switches between the six settings groups without leaving the workspace", async () => {
+it("switches between the seven settings groups without leaving the workspace", async () => {
   const store = createSettingsStore();
   store.setState({
     initialized: true,
@@ -36,6 +36,10 @@ it("switches between the six settings groups without leaving the workspace", asy
   await userEvent.click(screen.getByRole("button", { name: /模型连接/ }));
   expect(screen.getByRole("heading", { name: "模型连接" })).toBeInTheDocument();
 
+  await userEvent.click(screen.getByRole("button", { name: /运行配置/ }));
+  expect(screen.getByRole("heading", { name: "运行配置" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /添加配置/ })).toBeInTheDocument();
+
   await userEvent.click(screen.getByRole("button", { name: /后台任务/ }));
   expect(screen.getByRole("heading", { name: "后台任务" })).toBeInTheDocument();
   expect(screen.getAllByRole("combobox")).toHaveLength(5);
@@ -44,7 +48,7 @@ it("switches between the six settings groups without leaving the workspace", asy
 
   await userEvent.click(screen.getByRole("button", { name: /Agent 默认/ }));
   expect(screen.getByRole("heading", { name: "Agent 默认条件" })).toBeInTheDocument();
-  expect(screen.getByText("默认 runtime")).toBeInTheDocument();
+  expect(screen.getByText("默认 Runtime")).toBeInTheDocument();
   expect(screen.getByText("默认模型连接")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /保存默认条件/ })).not.toBeInTheDocument();
 
@@ -176,6 +180,111 @@ it("marks a persisted task binding stale when its configuration lacks that task 
   await userEvent.click(screen.getByRole("button", { name: /后台任务/ }));
 
   expect(screen.getByText("原绑定已失效")).toBeInTheDocument();
+});
+
+it("keeps an archived Agent default visible without choosing a fallback", async () => {
+  const store = createSettingsStore();
+  store.setState({
+    initialized: true,
+    catalog: {
+      ...emptyCatalog,
+      agent_defaults: {
+        ...emptyCatalog.agent_defaults,
+        version: 2,
+        session_configuration_id: "archived-configuration",
+      },
+    },
+    agentDraft: {
+      ...emptyCatalog.agent_defaults,
+      version: 2,
+      session_configuration_id: "archived-configuration",
+    },
+  });
+  render(<SettingsWorkspace store={store} />);
+
+  await userEvent.click(screen.getByRole("button", { name: /Agent 默认/ }));
+
+  expect(screen.getByText(/原默认配置已归档或失效/)).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Agent 默认会话配置" }))
+    .toHaveAttribute("title", "原默认配置已失效");
+});
+
+it("filters Agent default configurations by the selected Runtime", async () => {
+  const allTasks = [
+    "memory_refine",
+    "profile_distill",
+    "memory_daily",
+    "memory_weekly",
+    "memory_monthly",
+  ] as const;
+  const glmConfiguration = {
+    id: "glm-agent",
+    version: 1,
+    name: "GLM Max",
+    runtime: "claude_code" as const,
+    connection_id: "glm-connection",
+    connection_identity_version: 1,
+    connection_name: "glm-1",
+    model: "opus",
+    effort: "max",
+    stable_alias: "glm-agent",
+    agent_callable: true,
+    capability: {
+      status: "verified",
+      version: "provider-runtime-capabilities-v3",
+      source: "原生 Agent Host",
+      eligible_tasks: allTasks,
+    },
+    availability: "available",
+    disabled_reason: null,
+  };
+  const lunaConfiguration = {
+    ...glmConfiguration,
+    id: "luna-agent",
+    name: "Luna Low",
+    runtime: "codex" as const,
+    connection_id: "codex-official",
+    connection_name: "Codex",
+    model: "gpt-5.6-luna",
+    effort: "low",
+    stable_alias: "luna-agent",
+  };
+  const store = createSettingsStore();
+  store.setState({
+    initialized: true,
+    catalog: {
+      ...emptyCatalog,
+      session_configurations: [glmConfiguration, lunaConfiguration],
+      agent_defaults: {
+        ...emptyCatalog.agent_defaults,
+        version: 1,
+        session_configuration_id: glmConfiguration.id,
+      },
+    },
+    agentDraft: {
+      ...emptyCatalog.agent_defaults,
+      version: 1,
+      session_configuration_id: glmConfiguration.id,
+    },
+  });
+  render(<SettingsWorkspace store={store} />);
+
+  await userEvent.click(screen.getByRole("button", { name: /Agent 默认/ }));
+  expect(screen.getByRole("button", { name: "Claude Code" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await userEvent.click(screen.getByRole("combobox", { name: "Agent 默认会话配置" }));
+  expect(screen.getByRole("option", { name: "glm-agent" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "luna-agent" })).not.toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+
+  await userEvent.click(screen.getByRole("button", { name: "Codex" }));
+  expect(store.getState().agentDraft.session_configuration_id).toBe("luna-agent");
+  await userEvent.click(screen.getByRole("combobox", { name: "Agent 默认会话配置" }));
+  expect(screen.getByRole("option", { name: "luna-agent" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "glm-agent" })).not.toBeInTheDocument();
 });
 
 it("renders the Codex custom catalog as anchored model, effort, and fetch controls", async () => {

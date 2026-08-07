@@ -168,11 +168,13 @@ class TestStartStop:
 
 
 class TestLifespanIntegration:
-    def test_startup_skips_tidy_scheduler_without_llm_config(
+    def test_startup_keeps_tidy_scheduler_without_global_llm_config(
         self,
         tmp_path: Path,
         monkeypatch,
     ):
+        """后台任务改由热绑定运行配置驱动，启动时不再依赖全局 LLM 配置。"""
+
         from fastapi.testclient import TestClient
 
         from trowel_py.app import create_app
@@ -185,7 +187,7 @@ class TestLifespanIntegration:
 
         app = create_app()
         with TestClient(app):
-            assert app.state.tidy_scheduler is None
+            assert app.state.tidy_scheduler is not None
 
     def test_startup_starts_tidy_scheduler(self, tmp_path: Path, monkeypatch):
         from fastapi.testclient import TestClient

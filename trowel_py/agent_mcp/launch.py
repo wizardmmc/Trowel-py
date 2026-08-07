@@ -11,6 +11,7 @@ from trowel_py.agent_mcp import AGENT_MCP_TOOL_NAMES
 
 AGENT_MCP_SERVER_NAME = "trowel_agents"
 AGENT_MCP_MODULE_ARGS = ("-m", "trowel_py.agent_mcp.server")
+AGENT_API_CREDENTIAL_ENV = "TROWEL_AGENT_API_CREDENTIAL"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ def build_agent_mcp_launch_spec(
     self_enabled: bool,
     delegation_depth: int,
     native_session_id: str | None = None,
+    agent_api_credential: str = "",
     extra_env: Mapping[str, str] | None = None,
 ) -> AgentMcpLaunchSpec:
     """用父会话上下文构造不依赖具体 runtime 配置格式的启动规格。
@@ -62,6 +64,8 @@ def build_agent_mcp_launch_spec(
         self_enabled: 子任务是否继承 Self 注入开关。
         delegation_depth: 当前父会话的委派深度。
         native_session_id: 父 runtime 已知的原生会话 ID。
+        agent_api_credential: 桌面模式下访问 Agent Host HTTP API 的 Bearer；它与
+            子进程资源登记凭据职责独立。
         extra_env: runtime 需要一并交给 Agent MCP 的其他环境变量。
 
     Returns:
@@ -84,6 +88,8 @@ def build_agent_mcp_launch_spec(
     )
     if native_session_id is not None:
         env["TROWEL_NATIVE_SESSION_ID"] = native_session_id
+    if agent_api_credential:
+        env[AGENT_API_CREDENTIAL_ENV] = agent_api_credential
     return AgentMcpLaunchSpec(
         server_name=AGENT_MCP_SERVER_NAME,
         command=sys.executable,

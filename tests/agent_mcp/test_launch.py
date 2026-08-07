@@ -63,3 +63,31 @@ def test_launch_spec_distinguishes_unknown_from_empty_native_session_id() -> Non
 
     assert fresh_codex.env["TROWEL_NATIVE_SESSION_ID"] == ""
     assert "TROWEL_NATIVE_SESSION_ID" not in cc_before_start.env
+
+
+def test_launch_spec_keeps_api_auth_separate_from_process_registration() -> None:
+    """API Bearer 与资源登记三元组可以同时存在且不互相冒充。"""
+
+    spec = build_agent_mcp_launch_spec(
+        trowel_session_id="parent",
+        runtime="codex",
+        workdir="/tmp/project",
+        permission="danger-full-access",
+        base_url="http://127.0.0.1:8000",
+        memory_enabled=True,
+        profile_enabled=True,
+        self_enabled=True,
+        delegation_depth=0,
+        agent_api_credential="agent-api-secret",
+        extra_env={
+            "TROWEL_RESOURCE_REGISTRATION_URL": "http://127.0.0.1/register",
+            "TROWEL_RESOURCE_REGISTRATION_CREDENTIAL": "registration-secret",
+            "TROWEL_RESOURCE_REGISTRATION_TOKEN": "registration-token",
+        },
+    )
+
+    assert spec.env["TROWEL_AGENT_API_CREDENTIAL"] == "agent-api-secret"
+    assert (
+        spec.env["TROWEL_RESOURCE_REGISTRATION_CREDENTIAL"]
+        == "registration-secret"
+    )

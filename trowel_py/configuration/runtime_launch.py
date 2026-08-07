@@ -47,6 +47,7 @@ class RuntimeLaunchConfiguration:
         claude_role_models: Claude 各角色的真实模型映射。
         codex_catalog: Codex 连接保存的模型元数据。
         api_key: 只供子进程环境使用的连接凭据。
+        claude_auto_memory_disabled: 是否关闭 Claude Code 原生 auto-memory。
     """
 
     connection_id: str
@@ -69,6 +70,7 @@ class RuntimeLaunchConfiguration:
     codex_config_dir: str | None = None
     api_key: str | None = field(default=None, repr=False)
     capability_source: str | None = None
+    claude_auto_memory_disabled: bool = False
 
     @property
     def pool_key(self) -> str:
@@ -128,7 +130,10 @@ class RuntimeLaunchConfiguration:
             configured = self.claude_role_models.get(role)
             if configured:
                 env[variable] = configured
-        return {"env": env, "model": self.model}
+        settings: dict[str, object] = {"env": env, "model": self.model}
+        if self.claude_auto_memory_disabled:
+            settings["autoMemoryEnabled"] = False
+        return settings
 
     def codex_environment(self, *, shared_state_root: Path) -> dict[str, str]:
         """构造不会继承其他连接凭据、用户 skill 或代理的 Codex 环境。"""

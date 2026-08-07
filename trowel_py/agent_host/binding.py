@@ -14,7 +14,7 @@ from trowel_py.agent_host.capabilities import (
 )
 
 TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
-SessionKind = Literal["user", "delegate", "probe", "discussion"]
+SessionKind = Literal["user", "delegate", "probe", "discussion", "background"]
 _TITLE_SOURCES: frozenset[str] = frozenset(
     {"new", "native", "prompt", "generated", "manual"}
 )
@@ -28,6 +28,87 @@ class Runtime(str, Enum):
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
+
+
+@dataclass(frozen=True)
+class DelegationTarget:
+    """保存父会话创建时冻结的一项 Agent MCP 调用目标。
+
+    Attributes:
+        alias: 父模型提交给固定 MCP 工具的稳定调用名。
+        configuration_id: 设置域运行配置的稳定 ID。
+        configuration_identity_version: 运行配置启动事实的冻结版本。
+        runtime: 子会话使用 Claude Code 还是 Codex。
+        connection_id: 子会话使用的 Trowel 模型连接 ID。
+        connection_identity_version: 父会话创建时观察到的连接启动身份版本。
+        model: 子会话冻结使用的模型或 Claude 角色别名。
+        effort: 子会话使用的思考强度；None 表示 runtime 默认值。
+    """
+
+    alias: str
+    configuration_id: str
+    configuration_identity_version: int
+    runtime: Runtime
+    connection_id: str
+    connection_identity_version: int
+    model: str
+    effort: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        """转换成不含凭据的持久化字典。"""
+
+        return {
+            "alias": self.alias,
+            "configuration_id": self.configuration_id,
+            "configuration_identity_version": self.configuration_identity_version,
+            "runtime": self.runtime.value,
+            "connection_id": self.connection_id,
+            "connection_identity_version": self.connection_identity_version,
+            "model": self.model,
+            "effort": self.effort,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> DelegationTarget | None:
+        """兼容读取一项冻结目标；字段缺失或类型错误时保守丢弃。"""
+
+        if not isinstance(raw, dict):
+            return None
+        try:
+            alias = raw["alias"]
+            configuration_id = raw["configuration_id"]
+            configuration_identity_version = raw["configuration_identity_version"]
+            connection_id = raw["connection_id"]
+            connection_identity_version = raw["connection_identity_version"]
+            model = raw["model"]
+            if not all(
+                isinstance(item, str) and item
+                for item in (alias, configuration_id, connection_id, model)
+            ):
+                return None
+            if not all(
+                isinstance(item, int) and not isinstance(item, bool) and item >= 1
+                for item in (
+                    configuration_identity_version,
+                    connection_identity_version,
+                )
+            ):
+                return None
+            effort = raw.get("effort")
+            if effort is not None and not isinstance(effort, str):
+                return None
+            return cls(
+                alias=alias,
+                configuration_id=configuration_id,
+                configuration_identity_version=configuration_identity_version,
+                runtime=Runtime(str(raw["runtime"])),
+                connection_id=connection_id,
+                connection_identity_version=connection_identity_version,
+                model=model,
+                effort=effort,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -85,6 +166,7 @@ class SessionBinding:
             用它在应用重启后认领已经创建的原生会话。
         requested_model: 创建请求冻结的模型选择；``model`` 可被 runtime 回写为有效 ID。
         requested_effort: 创建请求冻结的思考强度；``effort`` 可被 runtime 补成默认值。
+        delegation_targets: 父会话创建时冻结的稳定别名与子会话启动事实。
     """
 
     session_id: str
@@ -129,6 +211,7 @@ class SessionBinding:
     owner_ref: str | None = None
     requested_model: str | None = None
     requested_effort: str | None = None
+    delegation_targets: tuple[DelegationTarget, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """转换为可持久化的字典。"""
@@ -176,6 +259,7 @@ class SessionBinding:
             "owner_ref": self.owner_ref,
             "requested_model": self.requested_model,
             "requested_effort": self.requested_effort,
+            "delegation_targets": [item.to_dict() for item in self.delegation_targets],
         }
 
 
@@ -219,6 +303,7 @@ def make_binding(
     configuration_capability_version: str | None = None,
     configuration_capability_source: str | None = None,
     owner_ref: str | None = None,
+    delegation_targets: Iterable[DelegationTarget] = (),
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。
 
@@ -261,6 +346,7 @@ def make_binding(
         configuration_capability_version: 设置域能力表版本。
         configuration_capability_source: 设置域能力结论的实测来源。
         owner_ref: 系统创建会话的稳定归属键；用户手动创建的会话为 None。
+        delegation_targets: 父会话创建时冻结的 Agent MCP 调用目标。
 
     Returns:
         带统一创建时间和更新时间的不可变 binding。
@@ -310,6 +396,7 @@ def make_binding(
         owner_ref=owner_ref,
         requested_model=model,
         requested_effort=effort,
+        delegation_targets=tuple(delegation_targets),
         created_at=now,
         updated_at=now,
     )
@@ -343,6 +430,16 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         capability_version = CURRENT_CAPABILITY_VERSION
         capabilities = capabilities_for_runtime(runtime.value)
     declared_mcp_roster = data.get("declared_mcp_roster", ())
+    raw_delegation_targets = data.get("delegation_targets", ())
+    delegation_targets = (
+        tuple(
+            target
+            for item in raw_delegation_targets
+            if (target := DelegationTarget.from_dict(item)) is not None
+        )
+        if isinstance(raw_delegation_targets, (list, tuple))
+        else ()
+    )
     raw_delegation_depth = data.get("delegation_depth", 0)
     delegation_depth = (
         raw_delegation_depth
@@ -486,4 +583,5 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             if "requested_effort" in data
             else (str(data["effort"]) if data.get("effort") is not None else None)
         ),
+        delegation_targets=delegation_targets,
     )

@@ -78,6 +78,26 @@ def test_codex_pool_key_ignores_session_model_catalog() -> None:
     assert launch.pool_key == changed_catalog.pool_key
 
 
+def test_claude_auto_memory_switch_is_written_at_settings_top_level() -> None:
+    """Claude 原生记忆开关必须写成 settings 字段，不能误塞进 env。"""
+
+    launch = replace(
+        _launch_with_proxy(None),
+        runtime=RuntimeKind.CLAUDE_CODE,
+        kind=ConnectionKind.CLAUDE_COMPATIBLE,
+        protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+        model="opus",
+        effort=None,
+        base_url="https://provider.example/anthropic",
+        claude_auto_memory_disabled=True,
+    )
+
+    settings = launch.claude_settings(proxy_base_url="http://127.0.0.1/private")
+
+    assert settings["autoMemoryEnabled"] is False
+    assert "autoMemoryEnabled" not in settings["env"]
+
+
 def test_new_codex_home_isolates_discovery_but_restores_shell_home(
     tmp_path: Path,
     monkeypatch,
@@ -95,9 +115,7 @@ def test_new_codex_home_isolates_discovery_but_restores_shell_home(
     assert environment["CODEX_HOME"] == str(connection_home)
     assert environment["HOME"] == str(connection_home)
     assert environment["CODEX_SQLITE_HOME"] == str(tmp_path / "shared")
-    assert overrides["shell_environment_policy"] == {
-        "set": {"HOME": str(real_home)}
-    }
+    assert overrides["shell_environment_policy"] == {"set": {"HOME": str(real_home)}}
 
 
 def test_legacy_custom_launch_keeps_shared_codex_home(tmp_path: Path) -> None:

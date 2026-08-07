@@ -217,6 +217,37 @@ describe("settings store", () => {
     expect(eligibleSessionConfigurations(catalog, "memory_daily")).toEqual([]);
   });
 
+  it("Claude 与 Codex 原生 Agent 配置都能进入后台任务选择器", () => {
+    const managedConfigurations = [
+      {
+        ...catalog.session_configurations[0],
+        id: "glm-agent",
+        runtime: "claude_code" as const,
+        capability: {
+          ...catalog.session_configurations[0].capability,
+          eligible_tasks: ["memory_daily" as const],
+        },
+      },
+      {
+        ...catalog.session_configurations[0],
+        id: "luna-agent",
+        runtime: "codex" as const,
+        model: "gpt-5.6-luna",
+        capability: {
+          ...catalog.session_configurations[0].capability,
+          eligible_tasks: ["memory_daily" as const],
+        },
+      },
+    ];
+
+    expect(
+      eligibleSessionConfigurations(
+        { ...catalog, session_configurations: managedConfigurations },
+        "memory_daily",
+      ).map((configuration) => configuration.id),
+    ).toEqual(["glm-agent", "luna-agent"]);
+  });
+
   it("Agent 默认不提供仅供后台任务使用的 direct API 配置", () => {
     expect(eligibleAgentSessionConfigurations(catalog)).toEqual([]);
   });

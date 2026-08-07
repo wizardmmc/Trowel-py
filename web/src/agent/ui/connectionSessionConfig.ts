@@ -5,6 +5,9 @@ import type {
   PermissionPreset,
   Runtime,
 } from "../application";
+import { CLAUDE_SESSION_EFFORTS } from "../../lib/runtimeEffort";
+
+export { CLAUDE_SESSION_EFFORTS } from "../../lib/runtimeEffort";
 
 export interface ConnectionSessionConfig {
   readonly runtime: Runtime;
@@ -17,16 +20,6 @@ export interface ConnectionSessionConfig {
   readonly profile_enabled: boolean;
   readonly self_enabled: boolean;
 }
-
-/** Claude CLI 2.1.197 公开支持的会话推理强度；空值表示沿用连接默认值。 */
-export const CLAUDE_SESSION_EFFORTS = [
-  "",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
 
 /** 根据可用连接生成不跨 runtime 泄漏选择的默认配置。 */
 export function defaultConnectionSessionConfig(

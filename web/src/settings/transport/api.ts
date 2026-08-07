@@ -14,6 +14,8 @@ import type {
   PathStatus,
   SecretKind,
   SecretStatusResult,
+  SessionConfiguration,
+  SessionConfigurationDraft,
   TaskBinding,
   TaskId,
 } from "../domain/types";
@@ -177,6 +179,52 @@ export function startCodexOfficialLogin(
   return requestConfiguration(
     `/api/configuration/connections/${encodeURIComponent(id)}/official-account/login`,
     { method: "POST" },
+  );
+}
+
+/** 创建一份由多个 Agent 场景复用的运行配置。 */
+export function createSessionConfiguration(
+  draft: SessionConfigurationDraft,
+  expectedConnectionVersion: number,
+): Promise<SessionConfiguration> {
+  return requestConfiguration("/api/configuration/session-configurations", {
+    method: "POST",
+    body: JSON.stringify({
+      ...draft,
+      expected_connection_version: expectedConnectionVersion,
+    }),
+  });
+}
+
+/** 按乐观版本完整替换一份运行配置。 */
+export function updateSessionConfiguration(
+  id: string,
+  expectedVersion: number,
+  expectedConnectionVersion: number,
+  draft: SessionConfigurationDraft,
+): Promise<SessionConfiguration> {
+  return requestConfiguration(
+    `/api/configuration/session-configurations/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        ...draft,
+        expected_version: expectedVersion,
+        expected_connection_version: expectedConnectionVersion,
+      }),
+    },
+  );
+}
+
+/** 归档运行配置并保留 Agent 默认和后台任务中的原始引用。 */
+export function archiveSessionConfiguration(
+  id: string,
+  expectedVersion: number,
+): Promise<null> {
+  const query = new URLSearchParams({ expected_version: String(expectedVersion) });
+  return requestConfiguration(
+    `/api/configuration/session-configurations/${encodeURIComponent(id)}?${query.toString()}`,
+    { method: "DELETE" },
   );
 }
 

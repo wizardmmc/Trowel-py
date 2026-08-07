@@ -182,6 +182,11 @@ def prepare_codex_session(
             self_enabled=req.self_enabled,
             delegation_depth=req.delegation_depth,
             registration_env=agent_registration_env,
+            agent_api_credential=(
+                resource_registry.registration_credential
+                if resource_registry is not None
+                else ""
+            ),
         )
         if req.agent_mcp_enabled
         else None

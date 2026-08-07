@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from trowel_py.agent_host.binding import Runtime, make_binding
+from trowel_py.agent_host.binding import DelegationTarget, Runtime, make_binding
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.configuration_archive import SessionConfigurationArchive
 from trowel_py.agent_host.hub import (
@@ -413,8 +413,10 @@ def test_create_codex_registers_session_in_selected_connection_pool(
     assert binding.connection_identity_version == 3
 
 
-def test_connection_session_rejects_unverified_agent_mcp(tmp_path: Path) -> None:
-    """连接级 MCP 未经真实 Gate 时，API 不能绕过前端强行开启。"""
+def test_connection_session_automatically_mounts_frozen_agent_targets(
+    tmp_path: Path,
+) -> None:
+    """新父会话应忽略旧开关，并按创建时可调用配置自动挂载 Agent MCP。"""
 
     workdir = tmp_path / "project"
     workdir.mkdir()
@@ -425,25 +427,108 @@ def test_connection_session_rejects_unverified_agent_mcp(tmp_path: Path) -> None
         cc_registry={},
         codex_config_home=tmp_path,
         configuration_resolver=lambda *_args: launch,
-    )
-
-    with pytest.raises(InvalidSessionRequestError, match="MCP is not verified"):
-        hub.create(
-            codex_req(
-                workdir,
+        delegation_targets_resolver=lambda: (
+            DelegationTarget(
+                alias="codex1",
+                configuration_id="configuration-1",
+                configuration_identity_version=1,
+                runtime=Runtime.CODEX,
                 connection_id=launch.connection_id,
+                connection_identity_version=launch.connection_identity_version,
                 model=launch.model,
                 effort=launch.effort,
-                memory_enabled=False,
-                agent_mcp_enabled=True,
+            ),
+        ),
+    )
+
+    binding = hub.create(
+        codex_req(
+            workdir,
+            connection_id=launch.connection_id,
+            model=launch.model,
+            effort=launch.effort,
+            memory_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    assert binding.agent_mcp_enabled is True
+    assert [item.alias for item in binding.delegation_targets] == ["codex1"]
+
+
+def test_cc_binding_records_the_roster_written_for_claude(
+    tmp_path: Path,
+) -> None:
+    """Claude binding 的诊断 roster 必须与实际 composite 配置一致。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    target = DelegationTarget(
+        alias="claude1",
+        configuration_id="configuration-1",
+        configuration_identity_version=1,
+        runtime=Runtime.CLAUDE_CODE,
+        connection_id="connection-a",
+        connection_identity_version=1,
+        model="opus",
+        effort="max",
+    )
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry={},
+        cc_opener=make_cc_opener({}, {}),
+        codex_config_home=tmp_path,
+        delegation_targets_resolver=lambda: (target,),
+    )
+
+    binding = hub.create(cc_req(workdir, memory_enabled=True))
+
+    assert binding.memory_mcp_enabled is True
+    assert binding.agent_mcp_enabled is True
+    assert binding.declared_mcp_roster == ("memory", "trowel_agents")
+
+
+def test_delegate_cannot_upgrade_parent_permission(tmp_path: Path) -> None:
+    """直接调用创建边界也不能绕过 MCP 路由把受限父会话升级为 full access。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    launch = _connection_launch(RuntimeKind.CLAUDE_CODE)
+    target = DelegationTarget(
+        alias="claude1",
+        configuration_id="configuration-1",
+        configuration_identity_version=1,
+        runtime=Runtime.CLAUDE_CODE,
+        connection_id=launch.connection_id,
+        connection_identity_version=launch.connection_identity_version,
+        model=launch.model,
+        effort=launch.effort,
+    )
+    hub = SessionHub(
+        BindingStore(tmp_path / "bindings.json"),
+        cc_registry={},
+        cc_opener=make_cc_opener({}, {}),
+        codex_config_home=tmp_path,
+        delegation_targets_resolver=lambda: (target,),
+    )
+    parent = hub.create(cc_req(workdir, permission_mode="acceptEdits"))
+
+    with pytest.raises(InvalidSessionRequestError, match="permission"):
+        hub.create(
+            cc_req(
+                workdir,
+                session_kind="delegate",
+                parent_session_id=parent.session_id,
+                delegation_depth=1,
+                delegation_configuration="claude1",
             )
         )
 
 
-def test_connection_session_keeps_memory_text_but_closes_unverified_mcp(
+def test_connection_session_uses_memory_switch_for_text_and_mcp(
     tmp_path: Path,
 ) -> None:
-    """连接会话保留 Memory 正文，同时不挂载尚未验证的 Memory MCP。"""
+    """连接会话的 Memory 开关应同时控制正文注入和 MCP。"""
 
     workdir = tmp_path / "project"
     workdir.mkdir()
@@ -470,9 +555,9 @@ def test_connection_session_keeps_memory_text_but_closes_unverified_mcp(
 
     session = manager.get_session(binding.session_id)
     assert binding.memory_enabled is True
-    assert binding.memory_mcp_enabled is False
+    assert binding.memory_mcp_enabled is True
     assert session.config.developer_instructions is not None
-    assert session.config.trowel_memory_mcp is None
+    assert session.config.trowel_memory_mcp is not None
 
 
 def test_connection_requirement_is_evaluated_for_each_create(tmp_path: Path) -> None:

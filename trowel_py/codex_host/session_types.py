@@ -90,6 +90,7 @@ class TrowelAgentMcpConfig:
         server_name: 写入 ``mcp_servers`` 的服务名称；默认为 ``trowel_agents``。
         registration_env: 桌面模式下向 sidecar 回报 PID 所需的私有端点、凭据和
             owner 令牌；browser 模式为空映射。
+        agent_api_credential: 桌面模式下访问 Agent Host HTTP API 的独立凭据。
     """
 
     trowel_session_id: str
@@ -104,6 +105,7 @@ class TrowelAgentMcpConfig:
     registration_env: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    agent_api_credential: str = field(default="", repr=False)
 
     def to_thread_config(self, *, native_session_id: str = "") -> dict[str, Any]:
         """构造必需且预先授权委派工具的 Agent MCP server 配置。
@@ -126,6 +128,7 @@ class TrowelAgentMcpConfig:
             self_enabled=self.self_enabled,
             delegation_depth=self.delegation_depth,
             native_session_id=native_session_id,
+            agent_api_credential=self.agent_api_credential,
             extra_env=self.registration_env,
         )
         return {
@@ -152,6 +155,7 @@ def build_default_trowel_agent_mcp(
     self_enabled: bool,
     delegation_depth: int = 0,
     registration_env: Mapping[str, str] | None = None,
+    agent_api_credential: str = "",
 ) -> TrowelAgentMcpConfig:
     """用父会话上下文构造默认的 Agent 委派 MCP 配置。
 
@@ -166,6 +170,7 @@ def build_default_trowel_agent_mcp(
         delegation_depth: 父会话当前的委派深度；默认 ``0``。
         registration_env: 桌面模式下供 Agent MCP 在服务前登记自身进程的环境；
             browser 模式传 None 或空映射。
+        agent_api_credential: 桌面模式下访问 Agent Host HTTP API 的 Bearer。
     """
 
     return TrowelAgentMcpConfig(
@@ -178,6 +183,7 @@ def build_default_trowel_agent_mcp(
         self_enabled=self_enabled,
         delegation_depth=delegation_depth,
         registration_env=MappingProxyType(dict(registration_env or {})),
+        agent_api_credential=agent_api_credential,
     )
 
 

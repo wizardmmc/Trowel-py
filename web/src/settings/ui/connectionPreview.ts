@@ -54,19 +54,19 @@ function claudePreview(
     const envName = CLAUDE_ROLE_ENV[role];
     if (envName) env[envName] = model;
   }
+  const document: Record<string, unknown> = {
+    env,
+    trowel_connection_home: {
+      inherited,
+      provider_settings: "per-session override",
+    },
+  };
+  if (editor.draft.claude_auto_memory_disabled) {
+    document.autoMemoryEnabled = false;
+  }
   return {
     format: "JSON",
-    text: JSON.stringify(
-      {
-        env,
-        trowel_connection_home: {
-          inherited,
-          provider_settings: "per-session override",
-        },
-      },
-      null,
-      2,
-    ),
+    text: JSON.stringify(document, null, 2),
   };
 }
 

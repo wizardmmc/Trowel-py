@@ -35,6 +35,11 @@ from trowel_py.memory.mcp.handlers import (
     parse_memory_uri,
     requires_read,
 )
+from trowel_py.memory.mcp.retriever_factory import (
+    LazyRetriever,
+    MemoryRetrieverFactory,
+    create_default_memory_retriever,
+)
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
 
@@ -250,7 +255,11 @@ _SEARCH_DESC = (
 )
 
 
-def _build_server(root: Path) -> Server:
+def _build_server(
+    root: Path,
+    *,
+    retriever_factory: MemoryRetrieverFactory = create_default_memory_retriever,
+) -> Server:
     """构造保留请求元数据的 Memory MCP server。
 
     Server 复用一个绑定 ``root`` 的 ``MemoryStore``，并公开 search、read、
@@ -260,6 +269,7 @@ def _build_server(root: Path) -> Server:
 
     Args:
         root: Note、Dictionary 和访问日志所在的 Memory 根目录。
+        retriever_factory: 每次真实搜索时创建检索器的可替换工厂。
 
     Returns:
         已注册工具发现与调用处理器的 MCP Server。
@@ -267,6 +277,7 @@ def _build_server(root: Path) -> Server:
     server = Server("memory")
     store = MemoryStore(root)
     dictionary_path = root / _DICT_L0
+    retriever = LazyRetriever(retriever_factory)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -359,6 +370,7 @@ def _build_server(root: Path) -> Server:
                     dictionary_path=dictionary_path,
                     identity=identity,
                     toolUseId=tool_use_id,
+                    retriever=retriever,
                 )
             elif name == _TOOL_READ:
                 result = handle_read(

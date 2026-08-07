@@ -58,6 +58,7 @@ class ConnectionRequest(BaseModel):
         claude_role_models: Claude 角色到 model ID 的映射。
         codex_catalog: Codex app-server 使用的模型目录。
         catalog_request_identity: 模型映射引用的已获取列表身份。
+        claude_auto_memory_disabled: 是否关闭 Claude Code 原生 auto-memory。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,6 +77,7 @@ class ConnectionRequest(BaseModel):
         default_factory=list, max_length=10_000
     )
     catalog_request_identity: str | None = None
+    claude_auto_memory_disabled: bool = Field(default=False, strict=True)
 
     def to_domain(self) -> ConnectionDraft:
         """转换成 service 校验的完整连接草稿。"""
@@ -93,6 +95,7 @@ class ConnectionRequest(BaseModel):
             claude_role_models=dict(self.claude_role_models),
             codex_catalog=tuple(item.to_domain() for item in self.codex_catalog),
             catalog_request_identity=self.catalog_request_identity,
+            claude_auto_memory_disabled=self.claude_auto_memory_disabled,
         )
 
 
@@ -129,6 +132,8 @@ class CreateSessionConfigurationRequest(BaseModel):
         model: 当前有效模型列表中的 model ID。
         effort: 已验证思考强度；None 表示 runtime 默认值。
         expected_connection_version: 创建前读取的连接版本。
+        stable_alias: 可选的 Agent MCP 稳定调用别名。
+        agent_callable: 是否允许父 Agent 调用这项配置。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -137,6 +142,8 @@ class CreateSessionConfigurationRequest(BaseModel):
     connection_id: str = Field(min_length=1)
     model: str = Field(min_length=1)
     effort: str | None = Field(default=None, max_length=32)
+    stable_alias: str | None = Field(default=None, max_length=64)
+    agent_callable: bool = Field(default=False, strict=True)
     expected_connection_version: int = Field(ge=1)
 
     def to_domain(self) -> SessionConfigurationDraft:
@@ -147,6 +154,8 @@ class CreateSessionConfigurationRequest(BaseModel):
             connection_id=self.connection_id,
             model=self.model,
             effort=self.effort,
+            stable_alias=self.stable_alias,
+            agent_callable=self.agent_callable,
         )
 
 

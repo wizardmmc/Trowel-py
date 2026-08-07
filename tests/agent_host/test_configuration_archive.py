@@ -117,6 +117,33 @@ def test_archive_is_private_and_contains_no_connection_secret(
     assert "base_url" not in record
 
 
+def test_archive_round_trips_claude_auto_memory_condition(tmp_path: Path) -> None:
+    """旧 Claude 会话恢复必须沿用创建时冻结的原生记忆条件。"""
+
+    archive = SessionConfigurationArchive(tmp_path / "native-configurations.json")
+    binding = make_binding(
+        session_id="claude-session",
+        runtime=Runtime.CLAUDE_CODE,
+        native_session_id="native-claude-session",
+        workdir=str(tmp_path),
+        model="opus",
+        effort="max",
+        permission="bypassPermissions",
+        memory_enabled=True,
+        memory_mcp_enabled=True,
+        profile_enabled=True,
+        self_enabled=True,
+        capabilities=("tools",),
+        name="project",
+    )
+
+    archive.put(binding, claude_auto_memory_disabled=True)
+    restored = archive.get(Runtime.CLAUDE_CODE, "native-claude-session")
+
+    assert restored is not None
+    assert restored.claude_auto_memory_disabled is True
+
+
 def test_corrupt_archive_is_not_overwritten(tmp_path: Path) -> None:
     """整体 JSON 损坏后写入必须失败并保留原文件，不能静默抹掉其他会话。"""
 

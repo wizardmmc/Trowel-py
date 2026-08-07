@@ -14,6 +14,7 @@ import { AgentDefaultsPanel } from "./AgentDefaultsPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { PathsPanel } from "./PathsPanel";
+import { RuntimeConfigurationsPanel } from "./RuntimeConfigurationsPanel";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { TaskBindingsPanel } from "./TaskBindingsPanel";
 import { SETTINGS_SECTIONS } from "./sectionMetadata";
@@ -33,6 +34,7 @@ export function SettingsWorkspace({
   const addNotification = useNotificationStore((item) => item.addNotification);
   const platform = getPlatform();
   const [connectionToDelete, setConnectionToDelete] = useState<string | null>(null);
+  const [configurationToArchive, setConfigurationToArchive] = useState<string | null>(null);
   const [connectionToInherit, setConnectionToInherit] = useState<{
     readonly name: string;
     readonly runtime: "claude_code" | "codex";
@@ -103,6 +105,10 @@ export function SettingsWorkspace({
       name: editor.draft.name || "这条连接",
       runtime: editor.draft.runtime,
     });
+  };
+  const archiveCurrentRuntimeConfiguration = () => {
+    const name = store.getState().configurationEditor?.draft.name || "这份运行配置";
+    setConfigurationToArchive(name);
   };
   const reloadTask = async (taskId: Parameters<SettingsState["reloadTask"]>[0]) => {
     const reloaded = await store.getState().reloadCatalog();
@@ -218,6 +224,18 @@ export function SettingsWorkspace({
                     onReload={(taskId) => void reloadTask(taskId)}
                   />
                 )}
+                {state.activeSection === "configurations" && (
+                  <RuntimeConfigurationsPanel
+                    catalog={state.catalog}
+                    editor={state.configurationEditor}
+                    onOpen={state.openSessionConfiguration}
+                    onCreate={state.createSessionConfigurationDraft}
+                    onClose={state.closeSessionConfiguration}
+                    onChange={state.updateSessionConfigurationDraft}
+                    onSave={() => void state.saveSessionConfiguration()}
+                    onArchive={archiveCurrentRuntimeConfiguration}
+                  />
+                )}
                 {state.activeSection === "agent" && (
                   <AgentDefaultsPanel
                     catalog={state.catalog}
@@ -264,6 +282,19 @@ export function SettingsWorkspace({
             void store.getState().removeConnection();
           }}
           onCancel={() => setConnectionToDelete(null)}
+        />
+      )}
+      {configurationToArchive && (
+        <ConfirmDialog
+          title={`归档“${configurationToArchive}”？`}
+          description="现有引用会保留为失效状态，新的 Agent、委派和后台任务不会回退到其他配置；已经创建的会话继续使用冻结快照。"
+          confirmLabel="归档配置"
+          tone="danger"
+          onConfirm={() => {
+            setConfigurationToArchive(null);
+            void store.getState().archiveSessionConfiguration();
+          }}
+          onCancel={() => setConfigurationToArchive(null)}
         />
       )}
       {connectionToInherit && (

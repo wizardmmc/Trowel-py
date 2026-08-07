@@ -103,6 +103,7 @@ export function newConnectionEditor(
       claude_role_models: {},
       codex_catalog: [],
       catalog_request_identity: null,
+      claude_auto_memory_disabled: false,
     },
     dirty: false,
     saving: false,
@@ -179,6 +180,8 @@ function connectionDraftFromConnection(connection: Connection): ConnectionDraft 
     claude_role_models: connection.claude_role_models,
     codex_catalog: connection.codex_catalog,
     catalog_request_identity: connection.catalog.request_identity,
+    claude_auto_memory_disabled:
+      connection.claude_auto_memory_disabled ?? false,
   };
 }
 

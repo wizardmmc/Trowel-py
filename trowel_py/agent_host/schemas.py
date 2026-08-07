@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
-
-from trowel_py.agent_host.binding import SessionKind
+from pydantic.json_schema import SkipJsonSchema
 
 RuntimeWire = Literal["claude_code", "codex"]
+PublicSessionKind = Literal["user", "delegate", "probe", "discussion"]
 PermissionPreset = Literal[
     "follow", "read-only", "workspace-write", "danger-full-access"
 ]
@@ -53,12 +53,20 @@ class CreateAgentSessionRequest(BaseModel):
     memory_enabled: bool = Field(default=True, strict=True)
     profile_enabled: bool = Field(default=True, strict=True)
     self_enabled: bool = Field(default=True, strict=True)
-    session_kind: SessionKind = "user"
+    session_kind: PublicSessionKind | SkipJsonSchema[Literal["background"]] = "user"
     memory_eligibility: bool = Field(default=True, strict=True)
-    agent_mcp_enabled: bool = Field(default=True, strict=True)
+    # 仅保留旧内部调用方和档案恢复兼容；新公开 OpenAPI 不再暴露独立产品开关。
+    agent_mcp_enabled: SkipJsonSchema[bool] = Field(default=True, strict=True)
     parent_session_id: str | None = None
     delegation_depth: int = Field(default=0, ge=0, le=1)
     owner_ref: str | None = Field(default=None, min_length=1, max_length=240)
+    delegation_configuration: SkipJsonSchema[str | None] = Field(
+        default=None, min_length=1, max_length=64
+    )
+    expected_connection_identity_version: SkipJsonSchema[int | None] = Field(
+        default=None,
+        ge=1,
+    )
 
     @model_validator(mode="after")
     def validate_internal_owner(self) -> CreateAgentSessionRequest:

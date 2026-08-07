@@ -324,8 +324,52 @@ def _validated_interactive_child_body(
             detail="parent permission no longer allows full-access delegation",
         )
 
+    alias = submitted.get("delegation_configuration")
+    if alias is None and not parent.delegation_targets:
+        expected_legacy: dict[str, Any] = {
+            "runtime": "claude_code",
+            "workdir": str(Path(parent.workdir).expanduser().resolve()),
+            "memory_enabled": parent.memory_enabled,
+            "profile_enabled": parent.profile_enabled,
+            "self_enabled": parent.self_enabled,
+            "session_kind": "delegate",
+            "memory_eligibility": False,
+            "agent_mcp_enabled": False,
+            "parent_session_id": parent.session_id,
+            "delegation_depth": 1,
+            "permission_mode": "bypassPermissions",
+        }
+        for optional in ("model", "effort"):
+            value = submitted.get(optional)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"delegation child has invalid {optional}",
+                    )
+                expected_legacy[optional] = value
+        if submitted != expected_legacy:
+            raise HTTPException(
+                status_code=409,
+                detail="delegation child configuration does not match parent policy",
+            )
+        return expected_legacy
+    target = next(
+        (
+            item
+            for item in parent.delegation_targets
+            if isinstance(alias, str) and item.alias == alias
+        ),
+        None,
+    )
+    if target is None or target.runtime is not Runtime.CLAUDE_CODE:
+        raise HTTPException(
+            status_code=409,
+            detail="interactive delegation configuration is unavailable",
+        )
     expected: dict[str, Any] = {
         "runtime": "claude_code",
+        "connection_id": target.connection_id,
         "workdir": str(Path(parent.workdir).expanduser().resolve()),
         "memory_enabled": parent.memory_enabled,
         "profile_enabled": parent.profile_enabled,
@@ -336,16 +380,12 @@ def _validated_interactive_child_body(
         "parent_session_id": parent.session_id,
         "delegation_depth": 1,
         "permission_mode": "bypassPermissions",
+        "delegation_configuration": target.alias,
+        "expected_connection_identity_version": (target.connection_identity_version),
+        "model": target.model,
     }
-    for optional in ("model", "effort"):
-        value = submitted.get(optional)
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"delegation child has invalid {optional}",
-                )
-            expected[optional] = value
+    if target.effort is not None:
+        expected["effort"] = target.effort
     if submitted != expected:
         raise HTTPException(
             status_code=409,

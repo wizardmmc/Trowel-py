@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trowel_py.agent_host.binding import (
+    DelegationTarget,
     Runtime,
     SessionBinding,
     binding_from_dict,
@@ -26,6 +27,7 @@ __all__ = [
     "CC_CAPABILITIES",
     "CODEX_CAPABILITIES",
     "CrossRuntimeResumeError",
+    "DelegationTarget",
     "MAX_CONNECTIONS",
     "MAX_RUNNING",
     "Runtime",
