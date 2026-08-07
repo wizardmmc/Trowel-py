@@ -643,6 +643,42 @@ async def test_mixed_terminal_failures_keep_slots_and_do_not_block_publication(
 
 
 @pytest.mark.anyio
+async def test_next_round_keeps_failed_slots_as_inline_statuses(
+    tmp_path: Path,
+) -> None:
+    """失败参与者没有正文文件，下一轮仍按原位置给出真实终态。"""
+
+    sessions = MixedTerminalSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    request = _mixed_request().model_copy(
+        update={"progression_mode": "automatic", "max_rounds": 2}
+    )
+    created = await service.create(request)
+    service.start(
+        created["id"],
+        VersionedCommand(
+            command_id="start-mixed-paths",
+            expected_version=created["version"],
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+
+    second_prompts = [items[1] for items in sessions.prompts.values()]
+
+    assert len(set(second_prompts)) == 1
+    prompt_lines = second_prompts[0].splitlines()
+    assert any(
+        line.startswith("success：/") and line.endswith("final.md")
+        for line in prompt_lines
+    )
+    assert any(line.startswith("limited：[limited]") for line in prompt_lines)
+    assert any(
+        line.startswith("runtime-timeout：[timed_out]") for line in prompt_lines
+    )
+    assert any(line.startswith("failed：[failed]") for line in prompt_lines)
+
+
+@pytest.mark.anyio
 async def test_restart_creates_new_attempt_for_same_round_and_hides_old_partial(
     tmp_path: Path,
 ) -> None:
@@ -1104,6 +1140,50 @@ async def test_continue_records_integrity_outbox_when_publication_bytes_drift(
                     command_id="continue",
                     expected_version=waiting["version"],
                 ),
+        )
+
+    with opener() as repository:
+        issue = repository.connection.execute(
+            "SELECT issue_code FROM discussion_integrity_issues WHERE discussion_id=?",
+            (created["id"],),
+        ).fetchone()
+    assert issue["issue_code"] == "ARTIFACT_INTEGRITY"
+
+
+@pytest.mark.anyio
+async def test_continue_rejects_tampered_previous_output_and_records_integrity_issue(
+    tmp_path: Path,
+) -> None:
+    """上一轮正文被同字节篡改后，不能把未验真的路径交给下一轮。"""
+
+    service, coordinator, opener, artifacts = _system(
+        tmp_path,
+        FakeParticipantSessions(),
+    )
+    created = await service.create(_request("tampered-previous-output"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    waiting = service.get(created["id"])
+    with opener() as repository:
+        discussion = repository.get_discussion(created["id"])
+    output_artifact = discussion.rounds[0].results[0].output_artifact
+    assert output_artifact is not None
+    output_path = artifacts.data_root / output_artifact
+    original = output_path.read_bytes()
+    assert original
+    replacement = b"X" if original[:1] != b"X" else b"Y"
+    output_path.write_bytes(replacement + original[1:])
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        service.continue_round(
+            created["id"],
+            ContinueDiscussionRequest(
+                command_id="continue-after-output-tamper",
+                expected_version=waiting["version"],
+            ),
         )
 
     with opener() as repository:

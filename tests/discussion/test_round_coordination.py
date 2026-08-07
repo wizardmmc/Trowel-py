@@ -408,6 +408,8 @@ async def test_round_barrier_keeps_one_prompt_for_all_physical_batches(
     assert len(prompts) == 4
     assert len(set(prompts)) == 1
     assert "answer-" not in prompts[0]
+    assert "上一轮（第" not in prompts[0]
+    assert "final.md" not in prompts[0]
     assert published["rounds"][0]["status"] == "published"
     assert [slot["status"] for slot in published["rounds"][0]["participants"]] == [
         "succeeded",
@@ -420,7 +422,7 @@ async def test_round_barrier_keeps_one_prompt_for_all_physical_batches(
 
 
 @pytest.mark.anyio
-async def test_second_round_reads_all_previous_public_text_without_ai_summary(
+async def test_second_round_references_verified_previous_outputs_by_absolute_path(
     tmp_path: Path,
 ) -> None:
     sessions = FakeParticipantSessions()
@@ -438,8 +440,25 @@ async def test_second_round_reads_all_previous_public_text_without_ai_summary(
     assert finished["status"] == "waiting_user"
     assert len(finished["rounds"]) == 2
     assert len(set(second_prompts)) == 1
+    prompt_lines = second_prompts[0].splitlines()
+    output_paths: list[Path] = []
     for name in ("glm", "gpt", "deepseek", "luna"):
-        assert f"answer-{name}-round-1" in second_prompts[0]
+        prefix = f"{name}："
+        matching_lines = [line for line in prompt_lines if line.startswith(prefix)]
+        assert len(matching_lines) == 1
+        output_path = Path(matching_lines[0].removeprefix(prefix))
+        assert output_path.is_absolute()
+        assert output_path.is_relative_to((tmp_path / "data" / "discussions").resolve())
+        assert output_path.read_text() == f"answer-{name}-round-1"
+        output_paths.append(output_path)
+        assert f"answer-{name}-round-1" not in second_prompts[0]
+    assert [line.split("：", 1)[0] for line in prompt_lines if line.endswith("final.md")] == [
+        "glm",
+        "gpt",
+        "deepseek",
+        "luna",
+    ]
+    assert len(set(output_paths)) == 4
     assert "上一轮（第 1 轮）公开发言" in second_prompts[0]
     assert sessions.peak_active <= 2
 
