@@ -37,7 +37,7 @@ BUNDLED_SKILLS: dict[str, str] = {
 # 这些命令由 input.py 实现，不存在于磁盘。
 BUILTIN_COMMANDS: dict[str, str] = {
     "model": "切换模型（回车弹出选择器，含别名 → 真实模型映射）",
-    "effort": "切换 effort（回车弹出选择器：low/medium/high/max/auto/ultracode）",
+    "effort": "切换 effort（回车弹出选择器：low/medium/high/xhigh/max）",
     "cost": "显示当前会话累计花费",
     "status": "显示当前模型 / effort / 进程状态",
 }

@@ -180,6 +180,20 @@ export interface CodexCommand {
   readonly available_while_running: boolean;
 }
 
+export type CodexSkillScope = "user" | "repo" | "system" | "admin";
+
+export interface CodexSkill {
+  readonly name: string;
+  readonly description: string;
+  readonly scope: CodexSkillScope;
+  readonly enabled: boolean;
+}
+
+export interface CodexSkillCatalog {
+  readonly skills: readonly CodexSkill[];
+  readonly errors: readonly string[];
+}
+
 export type CodexReviewTarget =
   | { readonly type: "uncommittedChanges" }
   | { readonly type: "baseBranch"; readonly branch: string }
@@ -490,6 +504,16 @@ export async function listCodexCommands(
     { signal },
   );
   return data.commands;
+}
+
+export async function listCodexSkills(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<CodexSkillCatalog> {
+  return request<CodexSkillCatalog>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/skills`,
+    { signal },
+  );
 }
 
 export async function compactCodexSession(

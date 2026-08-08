@@ -43,7 +43,7 @@ def test_mcp_config_with_credential_is_private(
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
     data = json.loads(cfg.read_text(encoding="utf-8"))
     assert data["mcpServers"]["trowel_agents"]["env"][
-        "TROWEL_RESOURCE_REGISTRATION_CREDENTIAL"
+        "TROWEL_AGENT_API_CREDENTIAL"
     ] == "desktop-instance-secret"
 
 

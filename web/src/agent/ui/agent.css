@@ -2468,6 +2468,14 @@
   padding: 6px 0;
   border-bottom: 1px solid var(--color-border);
 }
+.cc-ac__context {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--text-secondary);
+  background: linear-gradient(90deg, var(--garden-soft), rgba(255, 255, 255, 0));
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
 .cc-ac__group:last-child {
   border-bottom: none;
 }
@@ -2553,6 +2561,14 @@
   background: var(--sunshine-soft);
   color: var(--sunshine-ink);
 }
+.cc-ac__badge--system {
+  background: var(--sunshine-soft);
+  color: var(--sunshine-ink);
+}
+.cc-ac__badge--admin {
+  background: var(--soil-brown-soft);
+  color: var(--soil-brown);
+}
 .cc-ac__badge--user {
   background: var(--garden-soft);
   color: var(--garden-green);
@@ -2599,6 +2615,10 @@
 .cc-ac__state--error {
   color: var(--color-error);
 }
+.cc-ac__state--empty {
+  justify-content: flex-start;
+  color: var(--text-tertiary);
+}
 .cc-ac__state button {
   padding: 4px 9px;
   border: 1px solid currentColor;
@@ -2615,7 +2635,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--layer-dialog, 1000);
+}
+.cc-modal-backdrop--nested {
+  z-index: var(--layer-nested-dialog, 1100);
 }
 .cc-modal {
   background: var(--bg-card);
@@ -4081,7 +4104,7 @@
   position: fixed; inset: 0;
   background: rgba(45, 40, 30, 0.35);
   display: flex; align-items: center; justify-content: center;
-  z-index: 1000;
+  z-index: var(--layer-dialog, 1000);
 }
 .cc-dialog {
   background: var(--bg-card);
@@ -4930,6 +4953,15 @@
   background: #f4f1eb;
 }
 
+.cc-workspace-chooser__close svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
 .cc-workspace-chooser__label {
   margin: 0 0 8px;
   color: var(--text-tertiary);
@@ -5021,6 +5053,8 @@
   color: var(--garden-green);
   background: transparent;
   cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
   text-align: left;
 }
 

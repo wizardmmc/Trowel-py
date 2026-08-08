@@ -248,6 +248,7 @@ def run_daily_distill_sync(event: Any = None) -> None:
     proxy_base_url = ""
     settings_path = None
     resource_registry = None
+    host_factory = None
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
@@ -256,6 +257,9 @@ def run_daily_distill_sync(event: Any = None) -> None:
         candidate_registry = event.get("_resource_registry")
         if isinstance(candidate_registry, ResourceRegistry):
             resource_registry = candidate_registry
+        candidate_host_factory = event.get("_host_factory")
+        if callable(candidate_host_factory):
+            host_factory = candidate_host_factory
     root_path = Path(root) if root else None
     asyncio.run(
         run_daily_distill(
@@ -264,5 +268,6 @@ def run_daily_distill_sync(event: Any = None) -> None:
             settings_path=settings_path,
             date_str=date_str,
             resource_registry=resource_registry,
+            host_factory=host_factory,
         )
     )

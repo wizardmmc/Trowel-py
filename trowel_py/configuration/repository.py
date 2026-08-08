@@ -33,6 +33,7 @@ _CONNECTION_COLUMNS = frozenset(
         "validation_status",
         "capability_version",
         "last_session_choice",
+        "claude_auto_memory_disabled",
         "deleted_at",
         "updated_at",
     }
@@ -41,6 +42,7 @@ _CONNECTION_COLUMNS = frozenset(
 _SESSION_CONFIGURATION_COLUMNS = frozenset(
     {
         "version",
+        "identity_version",
         "name",
         "runtime",
         "connection_id",
@@ -48,6 +50,8 @@ _SESSION_CONFIGURATION_COLUMNS = frozenset(
         "model",
         "effort",
         "capability_version",
+        "stable_alias",
+        "agent_callable",
         "deleted_at",
         "updated_at",
     }
@@ -116,7 +120,9 @@ class ConfigurationRepository:
             (connection_id,),
         ).fetchone()
 
-    def list_connections(self, *, include_deleted: bool = False) -> tuple[sqlite3.Row, ...]:
+    def list_connections(
+        self, *, include_deleted: bool = False
+    ) -> tuple[sqlite3.Row, ...]:
         """按 runtime、名称和 ID 返回连接，默认排除软删除项。"""
 
         condition = "" if include_deleted else "WHERE deleted_at IS NULL"
@@ -325,6 +331,66 @@ class ConfigurationRepository:
         ).fetchall()
         return tuple(rows)
 
+    def get_session_configuration_alias(self, alias: str) -> sqlite3.Row | None:
+        """读取一个当前或已退役别名的永久归属。"""
+
+        return self.connection.execute(
+            "SELECT * FROM configuration_session_aliases WHERE alias = ?",
+            (alias,),
+        ).fetchone()
+
+    def put_session_configuration_alias(
+        self,
+        *,
+        alias: str,
+        configuration_id: str,
+        created_at: str,
+    ) -> None:
+        """登记当前别名；同一配置可收回旧别名，跨配置仍永久隔离。"""
+
+        existing = self.get_session_configuration_alias(alias)
+        if existing is not None:
+            if str(existing["session_configuration_id"]) != configuration_id:
+                raise ValueError("session configuration alias is reserved")
+            try:
+                self.connection.execute(
+                    "UPDATE configuration_session_aliases "
+                    "SET is_current = 1, retired_at = NULL "
+                    "WHERE alias = ? AND session_configuration_id = ?",
+                    (alias, configuration_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("session configuration already has a current alias") from exc
+            return
+
+        try:
+            self.connection.execute(
+                "INSERT INTO configuration_session_aliases "
+                "(alias, session_configuration_id, is_current, created_at, retired_at) "
+                "VALUES (?, ?, 1, ?, NULL)",
+                (alias, configuration_id, created_at),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("session configuration alias is reserved") from exc
+
+    def retire_session_configuration_alias(
+        self,
+        *,
+        alias: str,
+        configuration_id: str,
+        retired_at: str,
+    ) -> None:
+        """把配置当前别名转成永久保留但不再公开的兼容别名。"""
+
+        cursor = self.connection.execute(
+            "UPDATE configuration_session_aliases "
+            "SET is_current = 0, retired_at = ? "
+            "WHERE alias = ? AND session_configuration_id = ? AND is_current = 1",
+            (retired_at, alias, configuration_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("current session configuration alias is missing")
+
     def update_session_configuration(
         self,
         configuration_id: str,
@@ -347,9 +413,10 @@ class ConfigurationRepository:
         )
         if cursor.rowcount == 1:
             return
-        if self.get_session_configuration(
-            configuration_id, include_deleted=True
-        ) is None:
+        if (
+            self.get_session_configuration(configuration_id, include_deleted=True)
+            is None
+        ):
             raise not_found("会话配置")
         raise version_conflict()
 
@@ -478,9 +545,7 @@ class ConfigurationRepository:
             raise version_conflict()
         return version
 
-    def delete_agent_defaults(
-        self, *, expected_version: int, updated_at: str
-    ) -> int:
+    def delete_agent_defaults(self, *, expected_version: int, updated_at: str) -> int:
         """按乐观版本重置 Agent 默认条件并保留单调版本。"""
 
         version = expected_version + 1

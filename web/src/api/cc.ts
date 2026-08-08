@@ -182,7 +182,7 @@ export async function listModels(): Promise<readonly ModelOption[]> {
 export interface SlashItem {
   readonly name: string;
   readonly description: string;
-  readonly source: "project" | "user" | "bundled" | "builtin" | "plugin" | "codex";
+  readonly source: "project" | "user" | "admin" | "system" | "bundled" | "builtin" | "plugin" | "codex";
   readonly type: "skill" | "command";
   readonly disabled?: boolean;
   readonly disabledReason?: string | null;
@@ -190,9 +190,12 @@ export interface SlashItem {
 
 export async function listSlashItems(
   workdir: string,
+  sessionId?: string | null,
 ): Promise<readonly SlashItem[]> {
+  const query = new URLSearchParams({ workdir });
+  if (sessionId) query.set("session_id", sessionId);
   return request<readonly SlashItem[]>(
-    `${CC_API_BASE}/slash-items?workdir=${encodeURIComponent(workdir)}`,
+    `${CC_API_BASE}/slash-items?${query.toString()}`,
   );
 }
 

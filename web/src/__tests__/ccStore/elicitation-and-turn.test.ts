@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { declinePendingElicitation } from "../../agent/domain";
 import {
   reduceEvent,
   INITIAL_REDUCER_STATE,
@@ -14,6 +15,7 @@ describe("reduceEvent — elicitation", () => {
       type: "elicit_request",
       tool_use_id: "call_1",
       request_id: "req-1",
+      tool_name: "AskUserQuestion",
       questions: [
         {
           question: "A or B?",
@@ -31,6 +33,7 @@ describe("reduceEvent — elicitation", () => {
     expect(elicit.status).toBe("pending");
     expect(elicit.toolUseId).toBe("call_1");
     expect(elicit.requestId).toBe("req-1");
+    expect(elicit.toolName).toBe("AskUserQuestion");
     expect(elicit.questions[0].header).toBe("Pref");
     expect(elicit.resultText).toBeNull();
   });
@@ -41,6 +44,7 @@ describe("reduceEvent — elicitation", () => {
       type: "elicit_request",
       tool_use_id: "call_1",
       request_id: "r",
+      tool_name: "AskUserQuestion",
       questions: [
         {
           question: "A or B?",
@@ -60,6 +64,77 @@ describe("reduceEvent — elicitation", () => {
     if (elicit?.kind !== "elicit") throw new Error("expected elicit item");
     expect(elicit.status).toBe("answered");
     expect(elicit.resultText).toBe("User has answered: A or B?=A");
+  });
+
+  it("decline marks the pending plan request without later treating it as approved", () => {
+    let state = reduceEvent(withOpenTurn(), {
+      type: "tool_call",
+      tool_use_id: "call_plan",
+      tool_name: "ExitPlanMode",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "elicit_request",
+      tool_use_id: "call_plan",
+      request_id: "req-plan",
+      tool_name: "ExitPlanMode",
+      questions: [
+        {
+          question: "是否批准当前计划并退出计划模式？",
+          header: "计划模式",
+          options: [{ label: "批准并继续" }],
+          multiSelect: false,
+        },
+      ],
+    });
+
+    state = declinePendingElicitation(state);
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "call_plan",
+      content: "User rejected plan exit",
+    });
+
+    const item = state.turns[0].items.find((entry) => entry.kind === "elicit");
+    expect(item?.kind === "elicit" && item.status).toBe("declined");
+    const tool = state.turns[0].items.find((entry) => entry.kind === "tool");
+    expect(tool?.kind === "tool" && tool.status).toBe("done");
+  });
+
+  it("approval result completes both the plan request and its tool call", () => {
+    let state = reduceEvent(withOpenTurn(), {
+      type: "tool_call",
+      tool_use_id: "call_plan",
+      tool_name: "ExitPlanMode",
+      input: {},
+    });
+    state = reduceEvent(state, {
+      type: "elicit_request",
+      tool_use_id: "call_plan",
+      request_id: "req-plan",
+      tool_name: "ExitPlanMode",
+      questions: [
+        {
+          question: "是否批准当前计划并退出计划模式？",
+          header: "计划模式",
+          options: [{ label: "批准并继续" }],
+          multiSelect: false,
+        },
+      ],
+    });
+
+    state = reduceEvent(state, {
+      type: "tool_result",
+      tool_use_id: "call_plan",
+      content: "User approved plan exit",
+    });
+
+    const elicit = state.turns[0].items.find(
+      (entry) => entry.kind === "elicit",
+    );
+    expect(elicit?.kind === "elicit" && elicit.status).toBe("answered");
+    const tool = state.turns[0].items.find((entry) => entry.kind === "tool");
+    expect(tool?.kind === "tool" && tool.status).toBe("done");
   });
 
   it("tool_result with unmatched id still routes to the ordinary tool path", () => {

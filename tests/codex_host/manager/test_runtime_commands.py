@@ -7,6 +7,7 @@ import pytest
 from trowel_py.codex_host import CodexEventType, CodexSession, CodexSessionState
 from trowel_py.codex_host.errors import ProtocolViolationError
 from trowel_py.codex_host.session import TurnConflictError
+from trowel_py.codex_host.skills import parse_skill_catalog
 from tests.codex_host._fake import FakeAppServer, Step
 from tests.codex_host.manager.support import (
     _behavior_server,
@@ -32,6 +33,75 @@ async def test_manager_lists_commands_for_connected_validated_version() -> None:
         "agent",
     ]
     await manager.close()
+
+
+async def test_manager_lists_and_redacts_session_scoped_skills() -> None:
+    """技能目录只返回输入框所需字段，不泄露技能文件的绝对路径。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+        msg = yield Step.recv()
+        assert msg["method"] == "skills/list"
+        assert msg["params"] == {"cwds": ["/tmp/x"], "forceReload": False}
+        yield Step.send(
+            {
+                "id": msg["id"],
+                "result": {
+                    "data": [
+                        {
+                            "cwd": "/tmp/x",
+                            "skills": [
+                                {
+                                    "name": "development-slice-workflow",
+                                    "description": "推进开发 slice",
+                                    "path": "/private/codex/skills/workflow/SKILL.md",
+                                    "scope": "user",
+                                    "enabled": True,
+                                }
+                            ],
+                            "errors": [
+                                {
+                                    "path": "/private/broken/SKILL.md",
+                                    "message": "/private/broken/SKILL.md frontmatter 无效",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+        yield Step.recv()
+
+    manager = _manager(FakeAppServer(behavior()))
+
+    catalog = await manager.list_skills(cwd="/tmp/x")
+
+    assert catalog == {
+        "skills": [
+            {
+                "name": "development-slice-workflow",
+                "description": "推进开发 slice",
+                "scope": "user",
+                "enabled": True,
+            }
+        ],
+        "errors": ["技能配置加载失败"],
+    }
+    assert "/private/broken" not in str(catalog)
+    await manager.close()
+
+
+def test_skill_catalog_malformed_result_keeps_protocol_error_type() -> None:
+    """畸形目录必须保留协议错误及原始诊断 payload，不能二次抛 TypeError。"""
+
+    malformed: object = []
+
+    with pytest.raises(ProtocolViolationError) as captured:
+        parse_skill_catalog(malformed, cwd="/tmp/x")
+
+    assert captured.value.payload is malformed
 
 
 async def test_compact_reserves_idle_session_and_sends_native_request() -> None:

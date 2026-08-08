@@ -29,6 +29,7 @@ from trowel_py.codex_host.events import (
 )
 from trowel_py.codex_host import manager_params
 from trowel_py.codex_host.session import CodexSession, ThreadBinding, TurnConflictError
+from trowel_py.codex_host.skills import parse_skill_catalog
 from trowel_py.codex_host.pending_requests import (
     PendingRequest,
     PendingRequestKind,
@@ -483,6 +484,24 @@ class CodexHostManager:
         client = await self.ensure_ready()
         version = str(client.version) if client.version is not None else None
         return command_roster(version)
+
+    async def list_skills(self, *, cwd: str) -> dict[str, Any]:
+        """返回当前 manager 在指定会话工作目录真实发现的技能。
+
+        Args:
+            cwd: 已由上层会话绑定确定的工作目录，决定项目级技能来源。
+
+        Returns:
+            脱敏后的技能目录和加载错误；不暴露技能文件的本机绝对路径。
+        """
+
+        client = await self.ensure_ready()
+        result = await client.request(
+            "skills/list",
+            {"cwds": [cwd], "forceReload": False},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        return parse_skill_catalog(result, cwd=cwd)
 
     async def list_threads(
         self,

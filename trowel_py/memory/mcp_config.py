@@ -11,6 +11,31 @@ from pathlib import Path
 from trowel_py.agent_mcp.launch import build_agent_mcp_launch_spec
 from trowel_py.application_paths import resolve_application_data_root
 
+CLAUDE_MEMORY_MCP_SERVER_NAME = "memory"
+
+
+def declared_cc_mcp_roster(
+    *, memory_enabled: bool, agent_mcp_enabled: bool
+) -> tuple[str, ...]:
+    """返回 Claude composite 配置将声明的 Trowel MCP 服务名。
+
+    Args:
+        memory_enabled: 是否声明 Memory MCP。
+        agent_mcp_enabled: 是否声明 Agent MCP。
+
+    Returns:
+        与配置文件写入顺序一致的服务名元组。
+    """
+
+    roster: list[str] = []
+    if memory_enabled:
+        roster.append(CLAUDE_MEMORY_MCP_SERVER_NAME)
+    if agent_mcp_enabled:
+        from trowel_py.agent_mcp.launch import AGENT_MCP_SERVER_NAME
+
+        roster.append(AGENT_MCP_SERVER_NAME)
+    return tuple(roster)
+
 
 def _config_path(trowel_session_id: str) -> Path:
     """按环境变量优先级确定当前会话的 MCP 配置路径。
@@ -59,6 +84,7 @@ def write_mcp_config(
     memory_enabled: bool = True,
     agent_mcp_enabled: bool = False,
     memory_root: str = "",
+    application_data_root: str = "",
     base_url: str = "",
     profile_enabled: bool = True,
     self_enabled: bool = True,
@@ -75,6 +101,8 @@ def write_mcp_config(
         memory_enabled: 是否挂载 Memory MCP 并允许子会话继承 Memory。
         agent_mcp_enabled: 是否挂载 Agent MCP。
         memory_root: Memory MCP 和子会话使用的记忆根目录。
+        application_data_root: Memory MCP 读取设置数据库的应用数据根；空字符串按
+            当前进程的桌面或浏览器规则解析。
         base_url: Agent MCP 回调 Agent Host 的地址。
         profile_enabled: 子会话是否继承用户画像。
         self_enabled: 子会话是否继承持续身份。
@@ -89,15 +117,20 @@ def write_mcp_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     servers: dict[str, object] = {}
     if memory_enabled:
-        servers["memory"] = {
+        data_root = application_data_root or str(resolve_application_data_root())
+        servers[CLAUDE_MEMORY_MCP_SERVER_NAME] = {
             "type": "stdio",
             "command": sys.executable,
             "args": ["-m", "trowel_py.memory.mcp_server"],
+            "env": {
+                "MEMORY_ROOT": memory_root,
+                "TROWEL_DATA_ROOT": data_root,
+                "TROWEL_SESSION_ID": trowel_session_id,
+                "TROWEL_HOST_KIND": "cc",
+            },
         }
     if agent_mcp_enabled:
         agent_env = {"MEMORY_ROOT": memory_root}
-        if agent_api_credential:
-            agent_env["TROWEL_RESOURCE_REGISTRATION_CREDENTIAL"] = agent_api_credential
         launch = build_agent_mcp_launch_spec(
             trowel_session_id=trowel_session_id,
             runtime=runtime,
@@ -108,6 +141,7 @@ def write_mcp_config(
             profile_enabled=profile_enabled,
             self_enabled=self_enabled,
             delegation_depth=delegation_depth,
+            agent_api_credential=agent_api_credential,
             extra_env=agent_env,
         )
         servers[launch.server_name] = {

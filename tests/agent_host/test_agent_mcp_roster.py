@@ -37,7 +37,17 @@ def test_cc_agent_mcp_is_independent_from_memory(
     assert agent["env"]["TROWEL_PARENT_WORKDIR"] == str(tmp_path)
     assert agent["env"]["TROWEL_PARENT_PERMISSION"] == "bypassPermissions"
     assert agent["env"]["TROWEL_AGENT_BASE_URL"] == "http://127.0.0.1:8123"
-    assert agent["env"]["TROWEL_RESOURCE_REGISTRATION_CREDENTIAL"] == ("desktop-secret")
+    assert agent["env"]["TROWEL_AGENT_API_CREDENTIAL"] == "desktop-secret"
+    assert not any(
+        name.startswith("TROWEL_RESOURCE_REGISTRATION_") for name in agent["env"]
+    )
+
+    memory = servers.get("memory")
+    if memory_enabled:
+        assert memory is not None
+        assert memory["env"]["MEMORY_ROOT"] == str(tmp_path / "memory")
+        assert memory["env"]["TROWEL_SESSION_ID"] == "parent-cc"
+        assert memory["env"]["TROWEL_HOST_KIND"] == "cc"
 
 
 def test_cc_delegate_roster_can_keep_memory_without_recursive_agent(

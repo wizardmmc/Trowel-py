@@ -17,19 +17,26 @@ from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 logger = logging.getLogger(__name__)
 
 
-def subagent_transcript_path(workdir: str, cc_session_id: str, task_id: str) -> Path:
+def subagent_transcript_path(
+    workdir: str,
+    cc_session_id: str,
+    task_id: str,
+    *,
+    projects_root: Path | None = None,
+) -> Path:
     """按 `task_id == agentId` 的录制结果构造子代理 transcript 路径。
 
     Args:
         workdir: 主 CC 会话使用的工作目录。
         cc_session_id: 主会话的原生 CC 会话 ID。
         task_id: task 事件报告的 ID，也是子代理文件名中的 agent ID。
+        projects_root: 主会话所属 Claude 家的 projects 根；None 使用真实全局根。
 
     Returns:
         `<project>/<cc_session_id>/subagents/agent-<task_id>.jsonl` 路径。
     """
     return (
-        cc_projects_root()
+        (projects_root or cc_projects_root())
         / workdir_to_slug(workdir)
         / cc_session_id
         / "subagents"

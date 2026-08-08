@@ -64,13 +64,18 @@ class ClaudeCodeRuntimeAdapter:
         return tuple(self._registry)
 
     def live_state(self, session_id: str) -> RuntimeLiveState:
-        """读取 CCHost 明确公开的连接和未结束轮次状态。"""
+        """读取逻辑会话登记和未结束轮次状态。
+
+        Claude Code 子进程在主动中断后会退出，但 CCHost 仍保留原生会话 ID，下一条
+        消息会按需启动新进程并恢复上下文。因此 ``connected`` 表示逻辑会话仍登记，
+        不能等同于当前子进程是否存活；只有显式关闭移除 registry 才算断开。
+        """
 
         host = self._registry.get(session_id)
         if host is None:
             return RuntimeLiveState.disconnected()
         return RuntimeLiveState(
-            connected=not host.is_dead,
+            connected=True,
             has_in_flight_turn=bool(host.has_in_flight_turn),
         )
 

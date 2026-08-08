@@ -20,7 +20,7 @@ from trowel_py.agent_capacity import (
 )
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host import session_lifecycle
-from trowel_py.cc_host.history import parse_history
+from trowel_py.cc_host.history import parse_history, parse_history_from_root
 from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.session_scan import list_sessions
@@ -167,12 +167,16 @@ def open_cc_session_configured(
     *,
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
+    claude_config_dir: str | Path | None = None,
+    claude_plugin_dir: str | Path | None = None,
     display_name: str | None = None,
     process_controller: ProcessController | None = None,
     resource_registry: ResourceRegistry | None = None,
     owned_settings_path: bool = False,
     close_callback: Any | None = None,
     memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
+    memory_eligibility: bool = True,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -183,6 +187,9 @@ def open_cc_session_configured(
         registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
         proxy_base_url: CC 子进程使用的代理地址；为 `None` 时不配置代理。
         settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
+        claude_config_dir: 该会话使用的 Claude 用户配置目录；`None` 表示
+            兼容旧会话，继续使用全局目录。
+        claude_plugin_dir: 该连接共享的 Claude 插件缓存目录。
         display_name: Agent Hub 已按双 runtime 可见集合分配的临时名称；为 `None`
             时只根据旧版 CC 路由当前已登记的用户会话分配。
         process_controller: 核验并终止 CC 独立进程组的实现。
@@ -190,6 +197,8 @@ def open_cc_session_configured(
         owned_settings_path: 是否由会话 host 删除传入的私有 settings。
         close_callback: 会话清理后执行的一次性代理租约释放函数。
         memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
+        memory_eligibility: 是否允许整个原生会话进入 Memory/Profile 来源。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
@@ -204,6 +213,14 @@ def open_cc_session_configured(
         }
     if memory_mcp_enabled is not None:
         owned_resource_config["memory_mcp_enabled"] = memory_mcp_enabled
+    if bootstrap_context is not None:
+        owned_resource_config["bootstrap_context"] = bootstrap_context
+    if not memory_eligibility:
+        owned_resource_config["memory_eligibility"] = False
+    if claude_config_dir is not None:
+        owned_resource_config["claude_config_dir"] = claude_config_dir
+    if claude_plugin_dir is not None:
+        owned_resource_config["claude_plugin_dir"] = claude_plugin_dir
     sid, host, name = session_lifecycle.open_session(
         req,
         target_registry,
@@ -322,7 +339,7 @@ async def answer_elicit(
     body: AnswerElicitRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。"""
+    """回答或取消待处理的提问或 plan mode 确认；成功后 CC 继续执行。"""
     host = _require(sid, registry)
     if body.cancel:
         ok = await host.cancel_elicit()
@@ -348,7 +365,16 @@ async def revert_turn(
     """
     host = _require(sid, registry)
     try:
-        meta = checkpoint.revert(host.workdir, body.turn_id)
+        projects_root = getattr(host, "projects_root", None)
+        meta = (
+            checkpoint.revert(host.workdir, body.turn_id)
+            if projects_root is None
+            else checkpoint.revert(
+                host.workdir,
+                body.turn_id,
+                projects_root=projects_root,
+            )
+        )
     except checkpoint.NotAGitRepoError:
         raise HTTPException(status_code=400, detail="workdir is not a git repo")
     except checkpoint.UnknownCheckpointError:
@@ -398,7 +424,16 @@ def get_history(
     cc_session_id = host.cc_session_id
     if not cc_session_id:
         return {"success": True, "data": [], "error": None}
-    events = parse_history(host.workdir, cc_session_id)
+    projects_root = getattr(host, "projects_root", None)
+    events = (
+        parse_history(host.workdir, cc_session_id)
+        if projects_root is None
+        else parse_history_from_root(
+            host.workdir,
+            cc_session_id,
+            projects_root=projects_root,
+        )
+    )
     return {"success": True, "data": [e.model_dump() for e in events], "error": None}
 
 
@@ -433,11 +468,32 @@ def _init_roster_for_workdir(workdir: str, registry: dict[str, CCHost]) -> list[
 @router.get("/slash-items")
 def list_slash_items_endpoint(
     workdir: str = Query(..., min_length=1),
+    session_id: str | None = Query(default=None, min_length=1),
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """返回工作目录可用的 slash command 与 skill，并合并同目录会话的初始化名单。"""
-    init_roster = _init_roster_for_workdir(workdir, registry)
-    items = [asdict(i) for i in list_slash_items(workdir, init_roster=init_roster)]
+    """返回工作目录可用的 slash command 与 skill。
+
+    传入 session_id 时，用户级配置和插件严格从该 Claude Code
+    会话的冻结目录读取。旧调用方没有会话身份时保持全局扫描。
+    """
+
+    if session_id is None:
+        init_roster = _init_roster_for_workdir(workdir, registry)
+        items = list_slash_items(workdir, init_roster=init_roster)
+    else:
+        host = _require(session_id, registry)
+        if Path(host.workdir).resolve() != Path(workdir).expanduser().resolve():
+            raise HTTPException(status_code=409, detail="session workdir mismatch")
+        config_home = host.claude_config_dir or (Path.home() / ".claude")
+        plugin_home = host.claude_plugin_dir or (Path.home() / ".claude" / "plugins")
+        items = list_slash_items(
+            workdir,
+            user_skills_dir=config_home / "skills",
+            user_commands_dir=config_home / "commands",
+            plugins_dir=plugin_home,
+            init_roster=list(host.init_roster),
+        )
+    items = [asdict(item) for item in items]
     return {"success": True, "data": items, "error": None}
 
 

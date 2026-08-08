@@ -55,10 +55,15 @@ class SessionConfigSummary:
     permission_mode: str | None
 
 
-def cc_projects_root() -> Path:
-    """返回 CC 保存本地项目会话的根目录。"""
+def cc_projects_root(config_home: str | os.PathLike | None = None) -> Path:
+    """返回指定 Claude 用户家保存本地项目会话的根目录。
 
-    return Path.home() / ".claude" / "projects"
+    Args:
+        config_home: Claude 用户配置根；None 使用真实 `~/.claude` 兼容旧会话。
+    """
+
+    home = Path(config_home) if config_home is not None else Path.home() / ".claude"
+    return home / "projects"
 
 
 def workdir_to_slug(workdir: str | os.PathLike) -> str:
@@ -86,7 +91,11 @@ def _is_valid_uuid_session_id(stem: str) -> bool:
     return True
 
 
-def count_sessions(workdir: str | os.PathLike) -> int:
+def count_sessions(
+    workdir: str | os.PathLike,
+    *,
+    projects_root: Path | None = None,
+) -> int:
     """按恢复列表的过滤规则统计工作目录中的可恢复 CC 会话。
 
     Args:
@@ -95,11 +104,14 @@ def count_sessions(workdir: str | os.PathLike) -> int:
     Returns:
         排除 sidechain、非 UUID 文件和无标题 transcript 后的会话数。
     """
-    return len(list_sessions(workdir))
+    return len(list_sessions(workdir, projects_root=projects_root))
 
 
 def read_session_config(
-    workdir: str | os.PathLike, cc_session_id: str
+    workdir: str | os.PathLike,
+    cc_session_id: str,
+    *,
+    projects_root: Path | None = None,
 ) -> SessionConfigSummary | None:
     """顺序扫描主 transcript，提取最后报告的模型、思考强度和权限。
 
@@ -109,6 +121,7 @@ def read_session_config(
     Args:
         workdir: CC 会话所属的工作目录。
         cc_session_id: 要读取的原生 CC 会话 UUID。
+        projects_root: 会话所属 Claude 家的 projects 根；None 使用真实全局根。
 
     Returns:
         各字段最后一个非空配置值；无法取得任何配置时返回 `None`。
@@ -117,7 +130,7 @@ def read_session_config(
     if not _is_valid_uuid_session_id(cc_session_id):
         return None
     path = (
-        cc_projects_root()
+        (projects_root or cc_projects_root())
         / workdir_to_slug(workdir)
         / f"{cc_session_id}.jsonl"
     )
@@ -189,6 +202,7 @@ def list_sessions(
     *,
     limit: int | None = None,
     excluded_ids: frozenset[str] = frozenset(),
+    projects_root: Path | None = None,
 ) -> list[SessionSummary]:
     """列出工作目录中按文件修改时间倒序排列的可恢复 CC 会话。
 
@@ -200,12 +214,13 @@ def list_sessions(
         limit: 修改时间倒序排序后使用的切片上限；`None` 返回全部，非负数返回前
             `limit` 条，负数按 Python 切片语义移除末尾相应条数。
         excluded_ids: 在标题读取、排序和切片前排除的 Claude Code session ID。
+        projects_root: 要扫描的 Claude 家 projects 根；None 使用真实全局根。
 
     Returns:
         通过过滤的会话摘要；项目目录不存在时返回空列表。
     """
     slug = workdir_to_slug(workdir)
-    proj_dir = cc_projects_root() / slug
+    proj_dir = (projects_root or cc_projects_root()) / slug
     if not proj_dir.is_dir():
         return []
     out: list[SessionSummary] = []

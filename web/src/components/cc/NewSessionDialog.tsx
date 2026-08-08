@@ -27,7 +27,6 @@ export interface NewSessionConfig {
   readonly profile_enabled: boolean;
   readonly self_enabled?: boolean;
   /** 连接级 MCP capability 尚未开放，创建请求必须显式关闭。 */
-  readonly agent_mcp_enabled?: false;
   readonly model: string;
   readonly effort: string;
   readonly permission_mode: string;
@@ -359,7 +358,6 @@ export function NewSessionDialog({
       memory_enabled: memory,
       profile_enabled: profile,
       self_enabled: selfEnabled,
-      agent_mcp_enabled: false,
       model: connectionMode
         ? (selectedConnectionModel?.id ?? "")
         : modelCatalog === "codex"

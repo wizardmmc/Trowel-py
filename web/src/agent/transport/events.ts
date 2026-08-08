@@ -196,6 +196,7 @@ export interface ElicitationRequestEvent {
   readonly type: "elicit_request";
   readonly tool_use_id: string;
   readonly request_id: string;
+  readonly tool_name: string;
   readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
 }
 

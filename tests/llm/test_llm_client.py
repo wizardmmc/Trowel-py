@@ -6,12 +6,52 @@ import json
 
 from trowel_py.llm.filter import filter_secrets
 from trowel_py.llm.client import (
+    AnthropicProvider,
     LLMConfig,
     LLMService,
     _extract_json,
     create_llm_service,
 )
 from trowel_py.schemas.extracted_card import ExtractOutput
+
+
+def test_anthropic_provider_applies_proxy_without_repr_leak(monkeypatch) -> None:
+    """Anthropic transport 使用认证代理，配置 repr 不泄露代理和 API 凭据。"""
+
+    import anthropic
+
+    captured: dict[str, object] = {}
+
+    def build_http_client(**kwargs):
+        """记录 SDK 底层 HTTP 客户端参数。"""
+
+        captured["http"] = kwargs
+        return object()
+
+    def build_anthropic(**kwargs):
+        """记录 Anthropic 客户端收到的传输对象。"""
+
+        captured["anthropic"] = kwargs
+        return MagicMock()
+
+    monkeypatch.setattr(anthropic, "DefaultHttpxClient", build_http_client)
+    monkeypatch.setattr(anthropic, "Anthropic", build_anthropic)
+    config = LLMConfig(
+        provider="anthropic",
+        model="glm-5.2",
+        api_key="api-secret",
+        base_url="https://provider.example/anthropic",
+        proxy_url="http://alice:proxy-secret@proxy.example:8080",
+    )
+
+    AnthropicProvider(config)
+
+    assert captured["http"] == {
+        "proxy": "http://alice:proxy-secret@proxy.example:8080"
+    }
+    assert captured["anthropic"]["http_client"] is not None
+    assert "api-secret" not in repr(config)
+    assert "proxy-secret" not in repr(config)
 
 
 def test_filter_secrets_redacts_aws_key():

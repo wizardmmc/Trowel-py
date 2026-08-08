@@ -18,10 +18,13 @@ from trowel_py.memory.store import MemoryStore
 
 # 日志名属于部署过滤契约，不能跟随 Python 模块路径变化。
 logger = logging.getLogger("trowel_py.memory.review_job")
+NO_LLM_PROVIDER = object()
 
 
 def _resolve_provider(provider: Any) -> Any:
-    """返回调用方提供的 provider，或尝试从配置创建默认 provider。"""
+    """返回调用方提供的 provider，或在兼容入口允许时创建默认 provider。"""
+    if provider is NO_LLM_PROVIDER:
+        return None
     if provider is not None:
         return provider
     try:

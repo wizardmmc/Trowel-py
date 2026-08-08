@@ -44,6 +44,28 @@ export function resolveElicitationResult(
   return { ...prev, turns: [...turns.slice(0, -1), updated] };
 }
 
+/** 将最后一轮仍待处理的交互请求标记为已拒绝。 */
+export function declinePendingElicitation(prev: ReducerState): ReducerState {
+  const turns = prev.turns;
+  if (turns.length === 0) return prev;
+
+  const last = turns[turns.length - 1];
+  let found = false;
+  const items = last.items.map((item) => {
+    if (item.kind !== "elicit" || item.status !== "pending") return item;
+    found = true;
+    return { ...item, status: "declined" as const };
+  });
+  if (!found) return prev;
+
+  const updated: Turn = { ...last, items };
+  return {
+    ...prev,
+    phase: "tool",
+    turns: [...turns.slice(0, -1), updated],
+  };
+}
+
 export function applyElicitationRequest(
   prev: ReducerState,
   event: ElicitationRequestEvent,
@@ -52,6 +74,7 @@ export function applyElicitationRequest(
     kind: "elicit",
     toolUseId: event.tool_use_id,
     requestId: event.request_id,
+    toolName: event.tool_name,
     questions: event.questions,
     status: "pending",
     resultText: null,

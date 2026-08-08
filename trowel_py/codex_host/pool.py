@@ -58,7 +58,10 @@ class CodexManagerPool:
         )
         self._max_managers = max_managers
         self._managers: dict[str, CodexHostManager] = {}
+        self._manager_launches: dict[str, RuntimeLaunchConfiguration] = {}
         self._releasing: set[str] = set()
+        self._maintenance_connections: set[str] = set()
+        self._failed_maintenance_connections: set[str] = set()
         self._session_managers: dict[str, CodexHostManager] = {}
         self._prewarm_lock = asyncio.Lock()
         self._prewarmed = False
@@ -173,34 +176,106 @@ class CodexManagerPool:
         return await self._manager_for_launch(launch).start_account_login()
 
     async def release_launch(self, launch: RuntimeLaunchConfiguration) -> bool:
-        """关闭并移除没有会话引用的连接 manager。
+        """关闭并移除同一连接全部 identity 的空闲 manager。
 
         Returns:
             manager 不存在或已释放时为 True；仍有冻结会话引用时为 False。
         """
 
-        key = launch.pool_key
-        if key in self._releasing:
+        started = await self.begin_connection_maintenance(launch.connection_id)
+        if not started:
             return False
-        manager = self._managers.get(key)
-        if manager is None:
-            return True
-        if manager in self._session_managers.values():
+        self.end_connection_maintenance(launch.connection_id)
+        return True
+
+    async def begin_connection_maintenance(
+        self,
+        connection_id: str,
+    ) -> bool:
+        """阻止连接创建 manager，并关闭其全部无会话引用的旧 identity。
+
+        Args:
+            connection_id: 设置域分配的稳定连接 ID。
+
+        Returns:
+            已进入维护态时为 True；存在活动会话或已有维护操作时为 False。
+        """
+
+        if connection_id in self._maintenance_connections:
+            if connection_id not in self._failed_maintenance_connections:
+                return False
+            # 上一次 close 失败后连接始终处于隔离态。新的显式维护请求可以
+            # 重试关闭留在池中的 manager，但隔离门禁不能在重试前解除。
+            self._failed_maintenance_connections.discard(connection_id)
+        else:
+            self._maintenance_connections.add(connection_id)
+        pairs = [
+            (key, self._managers[key])
+            for key, candidate in self._manager_launches.items()
+            if candidate.connection_id == connection_id and key in self._managers
+        ]
+        keys = [key for key, _manager in pairs]
+        managers = [manager for _key, manager in pairs]
+        if any(manager in self._session_managers.values() for manager in managers):
+            self._maintenance_connections.discard(connection_id)
             return False
-        self._releasing.add(key)
+        self._releasing.update(keys)
         try:
-            await manager.close()
-            if self._managers.get(key) is manager:
-                self._managers.pop(key, None)
+            results = await asyncio.gather(
+                *(manager.close() for manager in managers),
+                return_exceptions=True,
+            )
+            failures = [
+                result for result in results if isinstance(result, BaseException)
+            ]
+            for (key, manager), result in zip(pairs, results, strict=True):
+                if isinstance(result, BaseException):
+                    continue
+                if self._managers.get(key) is manager:
+                    self._managers.pop(key, None)
+                    self._manager_launches.pop(key, None)
+            if failures:
+                raise ExceptionGroup(
+                    "Codex connection maintenance close failed",
+                    failures,
+                )
             return True
+        except BaseException:
+            # close 结果未知的 manager 继续留在池中，连接门禁也继续生效；
+            # 后续维护请求可以重试，应用退出仍会再次统一 close。
+            self._failed_maintenance_connections.add(connection_id)
+            raise
         finally:
-            self._releasing.discard(key)
+            self._releasing.difference_update(keys)
+
+    def end_connection_maintenance(
+        self,
+        connection_id: str,
+    ) -> None:
+        """解除 begin_connection_maintenance 建立的连接创建门禁。"""
+
+        self._failed_maintenance_connections.discard(connection_id)
+        self._maintenance_connections.discard(connection_id)
 
     async def list_commands(self) -> list[dict[str, Any]]:
         """读取当前 Codex CLI 版本对应的已验证命令表。"""
 
         await self._ensure_prewarmed()
         return await self._legacy.list_commands()
+
+    async def list_skills(self, session: Any, *, cwd: str) -> dict[str, Any]:
+        """从会话所属连接读取该工作目录的真实技能目录。
+
+        Args:
+            session: 已登记到连接 manager 的 Codex 会话。
+            cwd: 会话持久绑定的工作目录。
+
+        Returns:
+            该连接私有配置家与项目目录共同产生的技能目录。
+        """
+
+        await self._ensure_prewarmed()
+        return await self._require_manager(session.session_id).list_skills(cwd=cwd)
 
     async def get_goal(self, session: Any) -> dict[str, Any] | None:
         """从 session 所属连接读取 thread Goal。"""
@@ -312,7 +387,10 @@ class CodexManagerPool:
         """读取或惰性创建连接 identity 对应的 manager。"""
 
         key = launch.pool_key
-        if key in self._releasing:
+        if (
+            key in self._releasing
+            or launch.connection_id in self._maintenance_connections
+        ):
             raise RuntimeError("Codex connection manager is being released")
         manager = self._managers.get(key)
         if manager is not None:
@@ -321,6 +399,7 @@ class CodexManagerPool:
             raise RuntimeError("Codex connection manager pool is full")
         manager = self._manager_factory(launch)
         self._managers[key] = manager
+        self._manager_launches[key] = launch
         return manager
 
     def _require_manager(self, session_id: str) -> CodexHostManager:

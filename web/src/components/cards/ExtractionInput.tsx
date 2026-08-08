@@ -117,12 +117,23 @@ export function ExtractionInput({
           <input
             ref={fileInputRef}
             type="file"
+            hidden
             accept=".jsonl,.json,.txt"
             onChange={handleFileUpload}
-            className="extraction-input__file-input"
             disabled={loading}
             data-testid="file-input"
           />
+          <button
+            type="button"
+            className="extraction-input__file-button"
+            disabled={loading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4M7 9l5-5 5 5M5 14v5h14v-5" />
+            </svg>
+            选择文件
+          </button>
           <span className="extraction-input__drop-hint">
             把文件拖到这里，或点击上传（.jsonl / .json / .txt）
           </span>

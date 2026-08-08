@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator, Sequence
@@ -22,6 +23,7 @@ from trowel_py.discussion.models import (
     Discussion,
     DiscussionParticipant,
     DiscussionRound,
+    ParticipantAttemptHistoryRequest,
     ParticipantResult,
     UserMessage,
 )
@@ -104,11 +106,14 @@ class DiscussionRepository:
         self.connection.executemany(
             """
             INSERT INTO discussion_participants(
-                id, discussion_id, position, name, runtime, connection_id, model,
+                id, discussion_id, position, name, runtime, connection_id,
+                connection_name, model, effective_model,
                 effort, session_configuration_id, connection_identity_version,
+                permission_mode, permission_preset,
+                memory_enabled, profile_enabled, self_enabled,
                 owner_ref, agent_session_id, native_session_id, status,
                 capability_version, capability_source, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -118,10 +123,17 @@ class DiscussionRepository:
                     item.name,
                     item.runtime.value,
                     item.connection_id,
+                    item.connection_name,
                     item.model,
+                    item.effective_model,
                     item.effort,
                     item.session_configuration_id,
                     item.connection_identity_version,
+                    item.permission_mode,
+                    item.permission_preset,
+                    int(item.memory_enabled),
+                    int(item.profile_enabled),
+                    int(item.self_enabled),
                     item.owner_ref,
                     item.agent_session_id,
                     item.native_session_id,
@@ -280,6 +292,77 @@ class DiscussionRepository:
         ).fetchone()
         return self._participant_from_row(row) if row is not None else None
 
+    def get_attempt_history_request(
+        self,
+        discussion_id: str,
+        attempt_id: str,
+    ) -> ParticipantAttemptHistoryRequest:
+        """读取原生历史定位需要的 attempt 与 participant 联接事实。
+
+        Args:
+            discussion_id: URL 中已经授权查看的研讨 ID。
+            attempt_id: 要恢复单轮轨迹的 attempt ID。
+
+        Returns:
+            不含 prompt 正文、工具正文和连接凭据的历史定位请求。
+
+        Raises:
+            DiscussionNotFoundError: attempt 不存在或属于另一场研讨。
+        """
+
+        row = self.connection.execute(
+            """
+            SELECT a.id, a.input_hash, a.root_turn_id, a.status,
+                   r.discussion_id, r.number AS round_number,
+                   p.id AS participant_id, p.runtime, p.agent_session_id,
+                   p.native_session_id, d.workdir,
+                   1 + (
+                       SELECT COUNT(*)
+                       FROM discussion_attempts previous
+                       JOIN discussion_rounds previous_round
+                         ON previous_round.id=previous.round_id
+                       WHERE previous.participant_id=a.participant_id
+                         AND previous.input_hash=a.input_hash
+                         AND previous.root_turn_id IS NOT NULL
+                         AND (
+                           previous_round.number < r.number
+                           OR (
+                             previous_round.number = r.number
+                             AND previous.ordinal < a.ordinal
+                           )
+                         )
+                   ) AS input_occurrence
+            FROM discussion_attempts a
+            JOIN discussion_rounds r ON r.id=a.round_id
+            JOIN discussions d ON d.id=r.discussion_id
+            JOIN discussion_participants p ON p.id=a.participant_id
+            WHERE a.id=? AND r.discussion_id=? AND d.status!='deleted'
+            """,
+            (attempt_id, discussion_id),
+        ).fetchone()
+        if row is None:
+            raise DiscussionNotFoundError()
+        return ParticipantAttemptHistoryRequest(
+            id=str(row["id"]),
+            discussion_id=str(row["discussion_id"]),
+            round_number=int(row["round_number"]),
+            participant_id=str(row["participant_id"]),
+            runtime=Runtime(str(row["runtime"])),
+            agent_session_id=(
+                str(row["agent_session_id"]) if row["agent_session_id"] else None
+            ),
+            native_session_id=(
+                str(row["native_session_id"]) if row["native_session_id"] else None
+            ),
+            workdir=str(row["workdir"]),
+            input_hash=str(row["input_hash"]),
+            input_occurrence=int(row["input_occurrence"]),
+            root_turn_id=(
+                str(row["root_turn_id"]) if row["root_turn_id"] else None
+            ),
+            status=str(row["status"]),
+        )
+
     def bind_participant_session(
         self,
         participant_id: str,
@@ -363,22 +446,24 @@ class DiscussionRepository:
         participant_id: str,
         native_session_id: str,
         *,
+        effective_model: str,
         updated_at: str,
     ) -> None:
-        """在原生 host 首次回报身份后补齐 participant 恢复引用。
+        """在原生 host 回报身份后补齐恢复引用和实际模型。
 
         Args:
             participant_id: 所属参与者 ID。
             native_session_id: Claude session ID 或 Codex thread ID。
+            effective_model: runtime 已确认或创建时映射的实际模型 ID。
             updated_at: 本次更新时间。
         """
 
         self.connection.execute(
             """
             UPDATE discussion_participants
-            SET native_session_id=?, updated_at=? WHERE id=?
+            SET native_session_id=?, effective_model=?, updated_at=? WHERE id=?
             """,
-            (native_session_id, updated_at, participant_id),
+            (native_session_id, effective_model, updated_at, participant_id),
         )
 
     def mark_participant_reconcile(
@@ -462,6 +547,8 @@ class DiscussionRepository:
         *,
         expected_version: int | None,
         updated_at: str,
+        progression_mode: str | None = None,
+        max_rounds: int | None = None,
     ) -> int:
         """原子冻结一轮及全部稳定槽位，并把研讨切到 running。
 
@@ -471,6 +558,8 @@ class DiscussionRepository:
             participant_ids: 按冻结 position 排列的完整参与者 ID。
             expected_version: 用户命令版本；自动推进传 None。
             updated_at: 本次状态变化时间。
+            progression_mode: 用户在公开边界选择的新推进方式。
+            max_rounds: 自动模式新的绝对停止轮号；逐轮模式为 None。
 
         Returns:
             新研讨版本。
@@ -487,6 +576,14 @@ class DiscussionRepository:
             status="running",
             active_round_number=round_record.number,
         )
+        if progression_mode is not None:
+            self.connection.execute(
+                """
+                UPDATE discussions SET progression_mode=?, max_rounds=?
+                WHERE id=? AND version=?
+                """,
+                (progression_mode, max_rounds, discussion_id, version),
+            )
         self.connection.execute(
             """
             INSERT INTO discussion_rounds(
@@ -679,6 +776,7 @@ class DiscussionRepository:
         error_code: str | None = None,
         error_message: str | None = None,
         usage_json: str | None = None,
+        activity_json: str | None = None,
     ) -> bool:
         """只允许当前 running attempt 首次决定 participant 槽位终态。
 
@@ -692,6 +790,7 @@ class DiscussionRepository:
             error_code: 稳定失败代码。
             error_message: 脱敏失败说明。
             usage_json: 当前尝试的用量摘要。
+            activity_json: 当前尝试去敏后的工具与子 Agent 活动摘要。
 
         Returns:
             本调用首次完成当前槽位时为 True；迟到或重复终态为 False。
@@ -710,7 +809,8 @@ class DiscussionRepository:
             """
             UPDATE discussion_round_participants
             SET status=?, output_artifact=?, output_sha256=?, output_bytes=?,
-                error_code=?, error_message=?, usage_json=?, completed_at=?
+                error_code=?, error_message=?, usage_json=?, activity_json=?,
+                completed_at=?
             WHERE round_id=? AND participant_id=?
               AND current_attempt_id=? AND status='running'
             """,
@@ -722,6 +822,7 @@ class DiscussionRepository:
                 error_code,
                 error_message,
                 usage_json,
+                activity_json,
                 completed_at,
                 row["round_id"],
                 row["participant_id"],
@@ -734,7 +835,7 @@ class DiscussionRepository:
             """
             UPDATE discussion_attempts
             SET status=?, output_artifact=?, output_sha256=?, output_bytes=?,
-                error_code=?, error_message=?,
+                error_code=?, error_message=?, activity_json=?,
                 completed_at=? WHERE id=? AND status IN ('dispatching', 'running')
             """,
             (
@@ -744,6 +845,7 @@ class DiscussionRepository:
                 output_bytes,
                 error_code,
                 error_message,
+                activity_json,
                 completed_at,
                 attempt_id,
             ),
@@ -1457,6 +1559,119 @@ class DiscussionRepository:
             ),
         )
 
+    def update_command_result(
+        self,
+        discussion_id: str,
+        command_id: str,
+        *,
+        command_type: str,
+        request_hash: str,
+        result: dict[str, Any],
+    ) -> None:
+        """更新已经预留的外部副作用命令收据。
+
+        Args:
+            discussion_id: 命令所属研讨 ID。
+            command_id: 客户端稳定命令 ID。
+            command_type: 必须与预留记录一致的命令类型。
+            request_hash: 必须与预留记录一致的请求指纹。
+            result: 外部操作完成后的安全结果摘要。
+
+        Raises:
+            DiscussionCommandConflictError: 预留记录不存在或身份不一致。
+        """
+
+        changed = self.connection.execute(
+            """
+            UPDATE discussion_commands SET result_json=?
+            WHERE discussion_id=? AND command_id=?
+              AND command_type=? AND request_hash=?
+            """,
+            (
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+                discussion_id,
+                command_id,
+                command_type,
+                request_hash,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise DiscussionCommandConflictError()
+
+    def set_user_mark(
+        self,
+        discussion_id: str,
+        source_ref: str,
+        *,
+        marked: bool,
+        created_at: str,
+    ) -> None:
+        """幂等设置一个公开结果是否由用户标记。
+
+        Args:
+            discussion_id: 标记所属研讨 ID。
+            source_ref: 轮次和参与者组成的稳定结果引用。
+            marked: True 写入 promotion，False 删除 promotion。
+            created_at: 首次标记时间。
+        """
+
+        if marked:
+            self.connection.execute(
+                """
+                INSERT INTO discussion_promotions(
+                    id, discussion_id, kind, source_ref, created_at
+                ) VALUES (?, ?, 'user_marked', ?, ?)
+                ON CONFLICT(discussion_id, kind, source_ref) DO NOTHING
+                """,
+                (
+                    hashlib.sha256(
+                        f"{discussion_id}:user_marked:{source_ref}".encode()
+                    ).hexdigest()[:32],
+                    discussion_id,
+                    source_ref,
+                    created_at,
+                ),
+            )
+            return
+        self.connection.execute(
+            """
+            DELETE FROM discussion_promotions
+            WHERE discussion_id=? AND kind='user_marked' AND source_ref=?
+            """,
+            (discussion_id, source_ref),
+        )
+
+    def list_user_mark_sources(self, discussion_id: str) -> frozenset[str]:
+        """返回一场研讨当前仍有效的用户标记来源。"""
+
+        rows = self.connection.execute(
+            """
+            SELECT source_ref FROM discussion_promotions
+            WHERE discussion_id=? AND kind='user_marked'
+            ORDER BY source_ref
+            """,
+            (discussion_id,),
+        ).fetchall()
+        return frozenset(str(row["source_ref"]) for row in rows)
+
+    def list_handoff_results(self, discussion_id: str) -> tuple[dict[str, Any], ...]:
+        """返回已经创建成功的普通 Agent 交接收据。"""
+
+        rows = self.connection.execute(
+            """
+            SELECT result_json, created_at FROM discussion_commands
+            WHERE discussion_id=? AND command_type='handoff'
+            ORDER BY created_at, command_id
+            """,
+            (discussion_id,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            payload = json.loads(str(row["result_json"]))
+            if isinstance(payload, dict) and payload.get("status") == "started":
+                results.append({**payload, "created_at": str(row["created_at"])})
+        return tuple(results)
+
     def list_events(
         self,
         discussion_id: str,
@@ -1690,13 +1905,38 @@ class DiscussionRepository:
             name=str(row["name"]),
             runtime=Runtime(str(row["runtime"])),
             connection_id=str(row["connection_id"]),
+            connection_name=(
+                str(row["connection_name"]) if row["connection_name"] else None
+            ),
             model=str(row["model"]),
+            effective_model=(
+                str(row["effective_model"])
+                if row["effective_model"]
+                else str(row["model"])
+            ),
             effort=str(row["effort"]) if row["effort"] else None,
             session_configuration_id=(
                 str(row["session_configuration_id"])
                 if row["session_configuration_id"]
                 else None
             ),
+            permission_mode=(
+                str(row["permission_mode"])
+                if row["permission_mode"]
+                else "dontAsk"
+                if str(row["runtime"]) == "claude_code"
+                else None
+            ),
+            permission_preset=(
+                str(row["permission_preset"])
+                if row["permission_preset"]
+                else "read-only"
+                if str(row["runtime"]) == "codex"
+                else None
+            ),
+            memory_enabled=bool(row["memory_enabled"]),
+            profile_enabled=bool(row["profile_enabled"]),
+            self_enabled=bool(row["self_enabled"]),
             connection_identity_version=(
                 int(row["connection_identity_version"])
                 if row["connection_identity_version"] is not None
@@ -1779,6 +2019,9 @@ class DiscussionRepository:
             error_code=str(row["error_code"]) if row["error_code"] else None,
             error_message=(str(row["error_message"]) if row["error_message"] else None),
             usage_json=str(row["usage_json"]) if row["usage_json"] else None,
+            activity_json=(
+                str(row["activity_json"]) if row["activity_json"] else None
+            ),
             started_at=str(row["started_at"]) if row["started_at"] else None,
             completed_at=(str(row["completed_at"]) if row["completed_at"] else None),
         )

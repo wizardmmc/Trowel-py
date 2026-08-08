@@ -11,6 +11,7 @@ import pytest
 from tests.configuration.support import FakeCatalogFetcher, build_service
 from trowel_py.codex_host.catalog import parse_model_list_page
 from trowel_py.configuration.catalog import FetchedCatalog, FetchedModel
+from trowel_py.configuration.claude_home import ClaudeConnectionHomeStore
 from trowel_py.configuration.errors import ConfigurationError
 from trowel_py.configuration.models import (
     CodexCatalogEntry,
@@ -25,7 +26,9 @@ from trowel_py.configuration.models import (
 from trowel_py.configuration.service import merge_codex_catalog
 
 
-def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_match() -> None:
+def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_match() -> (
+    None
+):
     """DeepSeek 等自定义连接首次获取时仍应提供可选模型。"""
 
     fixture = Path(__file__).parents[1] / "codex_host/fixtures/model-list-0.144.0.json"
@@ -44,7 +47,9 @@ def test_merge_codex_catalog_keeps_custom_models_when_native_catalog_has_no_matc
     ]
 
 
-def test_merge_codex_catalog_excludes_noninteractive_models_when_native_matches() -> None:
+def test_merge_codex_catalog_excludes_noninteractive_models_when_native_matches() -> (
+    None
+):
     """GPT 连接应以原生交互目录为准，不能把 image 模型加入候选。"""
 
     fixture = Path(__file__).parents[1] / "codex_host/fixtures/model-list-0.144.0.json"
@@ -119,7 +124,9 @@ async def test_selecting_codex_models_does_not_change_runtime_identity() -> None
 
 
 @pytest.mark.asyncio
-async def test_agent_options_exclude_saved_models_missing_from_compatible_catalog() -> None:
+async def test_agent_options_exclude_saved_models_missing_from_compatible_catalog() -> (
+    None
+):
     """旧白名单可留在设置中辨认，但不兼容模型不能进入新会话。"""
 
     fetcher = FakeCatalogFetcher(
@@ -175,7 +182,9 @@ async def test_agent_options_exclude_saved_models_missing_from_compatible_catalo
     assert option["models"][1]["available"] is True
 
 
-def test_official_account_slot_migration_requires_separate_relogin(tmp_path: Path) -> None:
+def test_official_account_slot_migration_requires_separate_relogin(
+    tmp_path: Path,
+) -> None:
     """历史共享目录只改引用，不得把 OAuth 凭据复制进两个托管槽。"""
 
     root = tmp_path / "managed"
@@ -283,7 +292,7 @@ def test_delete_official_connection_removes_only_its_managed_account_slot(
 
     deletion = service.delete_connection(created.id, expected_version=created.version)
     service.repository.connection.commit()
-    service.finalize_account_slot_deletion(deletion)
+    service.finalize_connection_storage_deletion(deletion)
 
     assert not slot.exists()
 
@@ -309,15 +318,18 @@ def test_startup_restores_account_slot_when_soft_delete_was_rolled_back(
 
     deletion = service.delete_connection(created.id, expected_version=created.version)
     assert deletion is not None
-    assert deletion.tombstone.is_dir()
+    assert deletion.codex_home is not None
+    assert deletion.codex_home.tombstone.is_dir()
     repository.connection.rollback()
 
     assert service.migrate_official_account_slots() == 0
     assert (slot / "auth.json").read_text(encoding="utf-8") == "oauth-canary"
-    assert not deletion.tombstone.exists()
+    assert not deletion.codex_home.tombstone.exists()
 
 
-def test_startup_cleans_account_slot_after_committed_soft_delete(tmp_path: Path) -> None:
+def test_startup_cleans_account_slot_after_committed_soft_delete(
+    tmp_path: Path,
+) -> None:
     """软删除已提交但清理前退出时，重启应删除对应墓碑。"""
 
     root = tmp_path / "managed"
@@ -339,7 +351,8 @@ def test_startup_cleans_account_slot_after_committed_soft_delete(tmp_path: Path)
     repository.connection.commit()
 
     assert service.migrate_official_account_slots() == 0
-    assert not deletion.tombstone.exists()
+    assert deletion.codex_home is not None
+    assert not deletion.codex_home.tombstone.exists()
 
 
 def test_delete_official_connection_rejects_symlinked_account_slot(
@@ -480,6 +493,10 @@ async def test_runtime_launch_freezes_claude_connection_without_exposing_secret(
     launch = service.resolve_runtime_launch(ready.id, model="opus", effort=None)
 
     assert launch.connection_identity_version == ready.identity_version
+    assert launch.claude_config_dir is not None
+    assert Path(launch.claude_config_dir).is_dir()
+    assert list(Path(launch.claude_config_dir).iterdir()) == []
+    assert launch.claude_plugin_dir == str(service.claude_homes.shared_plugin_root)
     assert launch.api_key == "runtime-canary-secret"
     assert "runtime-canary-secret" not in repr(launch)
     settings = launch.claude_settings(proxy_base_url="http://127.0.0.1/private")
@@ -497,8 +514,89 @@ async def test_runtime_launch_freezes_claude_connection_without_exposing_secret(
     ]
 
 
+def test_service_inherits_and_retains_claude_connection_home(tmp_path: Path) -> None:
+    """设置域只接受用户主动继承，删除连接后保留原生历史根。"""
+
+    global_home = tmp_path / "global" / ".claude"
+    global_home.mkdir(parents=True)
+    (global_home / "CLAUDE.md").write_text("global rules", encoding="utf-8")
+    homes = ClaudeConnectionHomeStore(
+        tmp_path / "managed",
+        global_home=global_home,
+    )
+    service, repository = build_service(claude_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="Claude Provider",
+            runtime=RuntimeKind.CLAUDE_CODE,
+            kind=ConnectionKind.CLAUDE_COMPATIBLE,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://example.com/anthropic",
+        )
+    )
+
+    assert created.claude_config_inherited is False
+    inherited = service.inherit_global_claude_config(
+        created.id,
+        expected_version=created.version,
+    )
+    home = homes.home_for(created.id)
+    (home / "projects").mkdir()
+
+    assert inherited.claude_config_inherited is True
+    assert (home / "CLAUDE.md").read_text(encoding="utf-8") == "global rules"
+
+    deletion = service.delete_connection(created.id, expected_version=created.version)
+    repository.connection.commit()
+    service.finalize_connection_storage_deletion(deletion)
+
+    assert deletion is not None
+    assert deletion.claude_home is not None
+    assert deletion.claude_home.tombstone.is_file()
+    assert home / "projects" in homes.projects_roots()
+
+
+def test_service_scans_all_saved_secrets_before_claude_inheritance(
+    tmp_path: Path,
+) -> None:
+    """凭据 canary 来自设置域，不依赖全局 settings 的字段名推测。"""
+
+    global_home = tmp_path / "global" / ".claude"
+    global_home.mkdir(parents=True)
+    secret = "saved-provider-secret"
+    (global_home / "CLAUDE.md").write_text(secret, encoding="utf-8")
+    homes = ClaudeConnectionHomeStore(
+        tmp_path / "managed",
+        global_home=global_home,
+    )
+    service, _repository = build_service(claude_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="Claude Provider",
+            runtime=RuntimeKind.CLAUDE_CODE,
+            kind=ConnectionKind.CLAUDE_COMPATIBLE,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://example.com/anthropic",
+        )
+    )
+    with_secret = service.write_secret(
+        created.id,
+        expected_version=created.version,
+        kind=SecretKind.API_KEY,
+        value=secret,
+    )
+
+    with pytest.raises(ConfigurationError, match="已知凭据"):
+        service.inherit_global_claude_config(
+            created.id,
+            expected_version=with_secret.version,
+        )
+
+
 @pytest.mark.asyncio
-async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None:
+async def test_runtime_launch_builds_isolated_codex_provider_overrides(
+    tmp_path: Path,
+) -> None:
     """第三方 Codex 必须通过专属 env_key 启动，不能读取共享 OpenAI 登录。"""
 
     fetcher = FakeCatalogFetcher(
@@ -507,7 +605,11 @@ async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None
             source_endpoint="https://api.deepseek.com/v1/models",
         )
     )
-    service, _repository = build_service(fetcher=fetcher)
+    managed_root = tmp_path / "codex-accounts"
+    service, _repository = build_service(
+        fetcher=fetcher,
+        official_account_root=managed_root,
+    )
     draft = _deepseek_codex()
     created = service.create_connection(draft)
     with_secret = service.write_secret(
@@ -545,6 +647,8 @@ async def test_runtime_launch_builds_isolated_codex_provider_overrides() -> None
 
     assert provider["env_key"] == "TROWEL_CODEX_PROVIDER_KEY"
     assert provider["requires_openai_auth"] is False
+    assert launch.codex_config_dir == str(managed_root / ready.id)
+    assert Path(launch.codex_config_dir).is_dir()
     assert "deepseek-canary-secret" not in repr(overrides)
     assert launch.pool_key == launch.pool_key
 
@@ -993,11 +1097,15 @@ async def test_verified_catalog_can_create_session_configuration_and_binding() -
         session_configuration_id=session.id,
         expected_version=0,
     )
+    launch = service.resolve_task_launch(TaskId.MEMORY_WEEKLY)
 
     assert session.connection_identity_version == current.identity_version
     assert session.capability.status == "verified"
     assert binding.task_id == TaskId.MEMORY_WEEKLY
     assert binding.session_configuration_id == session.id
+    assert launch.connection_id == created.id
+    assert launch.model == "deepseek-v4-flash"
+    assert launch.effort == "high"
 
     renamed = service.update_session_configuration(
         session.id,
@@ -1018,18 +1126,115 @@ async def test_verified_catalog_can_create_session_configuration_and_binding() -
         session_configuration_id=renamed.id,
         expected_version=cleared_binding.version,
     )
+    service.delete_session_configuration(renamed.id, expected_version=renamed.version)
+    with pytest.raises(ConfigurationError) as stale_task:
+        service.resolve_task_launch(TaskId.MEMORY_WEEKLY)
     cleared_again = service.delete_task_binding(
         TaskId.MEMORY_WEEKLY, expected_version=rebound.version
     )
-    service.delete_session_configuration(renamed.id, expected_version=renamed.version)
 
     assert renamed.name == "Codex DeepSeek xhigh"
     assert cleared_binding.version == binding.version + 1
     assert cleared_binding.session_configuration_id is None
     assert rebound.version == cleared_binding.version + 1
+    assert stale_task.value.code == "TASK_CONFIGURATION_STALE"
     assert cleared_again.version == rebound.version + 1
     assert service.list_task_bindings() == (cleared_again,)
     assert service.list_session_configurations() == ()
+
+
+@pytest.mark.asyncio
+async def test_session_configuration_alias_rename_reserves_old_alias() -> None:
+    """修改稳定别名后，旧别名应保留归属且不能分配给另一配置。"""
+
+    fetcher = FakeCatalogFetcher(
+        FetchedCatalog(
+            models=(FetchedModel(id="deepseek-v4-flash"),),
+            source_endpoint="https://api.deepseek.com/v1/models",
+        )
+    )
+    service, _repository = build_service(fetcher=fetcher)
+    created = service.create_connection(_deepseek_codex())
+    with_secret = service.write_secret(
+        created.id,
+        expected_version=created.version,
+        kind=SecretKind.API_KEY,
+        value="key",
+    )
+    fetched = await service.fetch_models(
+        created.id, expected_version=with_secret.version
+    )
+    first = service.create_session_configuration(
+        SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex1",
+            agent_callable=True,
+        ),
+        expected_connection_version=fetched.connection_version,
+    )
+
+    renamed = service.update_session_configuration(
+        first.id,
+        expected_version=first.version,
+        expected_connection_version=fetched.connection_version,
+        draft=SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex-main",
+            agent_callable=True,
+        ),
+    )
+
+    assert renamed.stable_alias == "codex-main"
+    assert renamed.identity_version == first.identity_version
+    assert service.list_agent_callable_configurations() == (renamed,)
+    restored = service.update_session_configuration(
+        first.id,
+        expected_version=renamed.version,
+        expected_connection_version=fetched.connection_version,
+        draft=SessionConfigurationDraft(
+            name="High",
+            connection_id=created.id,
+            model="deepseek-v4-flash",
+            effort="high",
+            stable_alias="codex1",
+            agent_callable=True,
+        ),
+    )
+    assert restored.stable_alias == "codex1"
+    assert restored.identity_version == first.identity_version
+    with pytest.raises(ConfigurationError) as raised:
+        service.create_session_configuration(
+            SessionConfigurationDraft(
+                name="Other",
+                connection_id=created.id,
+                model="deepseek-v4-flash",
+                effort="high",
+                stable_alias="codex1",
+                agent_callable=True,
+            ),
+            expected_connection_version=fetched.connection_version,
+        )
+    assert raised.value.code == "ALIAS_RESERVED"
+
+
+@pytest.mark.asyncio
+async def test_agent_defaults_do_not_fall_back_when_configuration_is_missing() -> None:
+    """未设置默认运行配置时不得采用最近选择或列表第一项。"""
+
+    service, _repository = build_service()
+
+    assert (
+        service.resolve_agent_session_defaults(
+            {"runtime": "claude_code", "model": "opus"}
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1106,10 +1311,8 @@ async def test_codex_runtime_launch_defers_effort_compatibility_to_codex() -> No
     assert launch.effort is None
 
 
-def test_third_party_codex_keeps_task_gate_without_blocking_interactive_effort() -> (
-    None
-):
-    """交互 effort 交给 Codex，后台任务资格仍只来自实测记录。"""
+def test_managed_agent_runtimes_share_background_task_capabilities() -> None:
+    """Claude/Codex 后台任务复用 Agent Host，不按模型重复维护白名单。"""
 
     from trowel_py.configuration.capabilities import capability_for
 
@@ -1122,17 +1325,17 @@ def test_third_party_codex_keeps_task_gate_without_blocking_interactive_effort()
     )
     unknown_effort = capability_for(
         RuntimeKind.CODEX,
-        ConnectionKind.CODEX_CUSTOM,
-        ProtocolKind.OPENAI_RESPONSES,
-        "gpt-5.6-sol",
-        "xhigh",
+        ConnectionKind.CODEX_OFFICIAL,
+        ProtocolKind.CODEX_OFFICIAL,
+        "gpt-5.6-luna",
+        "low",
     )
 
     assert verified.status == "verified"
     assert verified.version == "provider-runtime-capabilities-v3"
-    assert verified.eligible_tasks == ()
+    assert verified.eligible_tasks == tuple(TaskId)
     assert unknown_effort.status == "verified"
-    assert unknown_effort.eligible_tasks == ()
+    assert unknown_effort.eligible_tasks == tuple(TaskId)
 
 
 @pytest.mark.asyncio
@@ -1263,6 +1466,52 @@ async def test_direct_api_configuration_cannot_be_saved_as_agent_default() -> No
             memory_enabled=True,
             profile_enabled=True,
             self_enabled=True,
+        )
+
+    assert raised.value.code == "AGENT_RUNTIME_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_direct_api_configuration_cannot_be_exposed_to_agent_mcp() -> None:
+    """direct API 没有 Agent 会话语义，不能进入父会话调用清单。"""
+
+    fetcher = FakeCatalogFetcher(
+        FetchedCatalog(
+            models=(FetchedModel(id="glm-5.2"),),
+            source_endpoint="https://open.bigmodel.cn/api/anthropic/v1/models",
+        )
+    )
+    service, _repository = build_service(fetcher=fetcher)
+    connection = service.create_connection(
+        ConnectionDraft(
+            name="GLM Weekly direct",
+            runtime=RuntimeKind.DIRECT_API,
+            kind=ConnectionKind.DIRECT_API,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://open.bigmodel.cn/api/anthropic",
+        )
+    )
+    with_secret = service.write_secret(
+        connection.id,
+        expected_version=connection.version,
+        kind=SecretKind.API_KEY,
+        value="test-key",
+    )
+    fetched = await service.fetch_models(
+        connection.id,
+        expected_version=with_secret.version,
+    )
+
+    with pytest.raises(ConfigurationError) as raised:
+        service.create_session_configuration(
+            SessionConfigurationDraft(
+                name="GLM direct Weekly",
+                connection_id=connection.id,
+                model="glm-5.2",
+                stable_alias="glm-weekly",
+                agent_callable=True,
+            ),
+            expected_connection_version=fetched.connection_version,
         )
 
     assert raised.value.code == "AGENT_RUNTIME_REQUIRED"

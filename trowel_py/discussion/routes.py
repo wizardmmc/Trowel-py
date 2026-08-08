@@ -16,13 +16,19 @@ from fastapi.routing import APIRoute
 
 from trowel_py.discussion.errors import DiscussionError
 from trowel_py.discussion.events import DiscussionEventBus
+from trowel_py.discussion.coordinator import DiscussionCoordinator
 from trowel_py.discussion.schemas import (
     AddDiscussionMessageRequest,
+    AnswerParticipantQuestionRequest,
+    ContinueDiscussionRequest,
+    CreateDiscussionHandoffRequest,
     CreateDiscussionRequest,
+    MarkDiscussionResultRequest,
     StopDiscussionRequest,
     VersionedCommand,
 )
 from trowel_py.discussion.service import DiscussionService
+from trowel_py.discussion.timeline import DiscussionTimelineService
 
 _HEARTBEAT_SECONDS = 15.0
 _logger = logging.getLogger(__name__)
@@ -118,6 +124,32 @@ def get_discussion_events(request: Request) -> DiscussionEventBus:
     return events
 
 
+def get_discussion_coordinator(request: Request) -> DiscussionCoordinator:
+    """从应用 lifespan 取得唯一 participant 协调器。"""
+
+    coordinator = getattr(request.app.state, "discussion_coordinator", None)
+    if coordinator is None:
+        raise DiscussionError(
+            "DISCUSSION_UNAVAILABLE",
+            "研讨服务尚未初始化",
+            status_code=503,
+        )
+    return coordinator
+
+
+def get_discussion_timeline(request: Request) -> DiscussionTimelineService:
+    """从应用 lifespan 取得只读 participant 历史服务。"""
+
+    timeline = getattr(request.app.state, "discussion_timeline", None)
+    if timeline is None:
+        raise DiscussionError(
+            "DISCUSSION_UNAVAILABLE",
+            "研讨服务尚未初始化",
+            status_code=503,
+        )
+    return timeline
+
+
 def _success(data: Any) -> dict[str, Any]:
     """构造全局一致的成功 envelope。
 
@@ -208,6 +240,31 @@ async def get_discussion(
     return _success(service.get(discussion_id))
 
 
+@router.get("/{discussion_id}/transcript")
+async def get_discussion_transcript(
+    discussion_id: str,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> Response:
+    """通过只读 HTTP 接口返回完整的已公开研讨记录。"""
+
+    return Response(
+        service.get_transcript(discussion_id),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/{discussion_id}/attempts/{attempt_id}/events")
+async def get_discussion_attempt_events(
+    discussion_id: str,
+    attempt_id: str,
+    timeline: DiscussionTimelineService = Depends(get_discussion_timeline),
+) -> dict[str, Any]:
+    """从 participant 原生记录恢复一个 attempt 的单轮轨迹。"""
+
+    return _success(await timeline.get_attempt(discussion_id, attempt_id))
+
+
 @router.post("/{discussion_id}/start")
 async def start_discussion(
     discussion_id: str,
@@ -230,13 +287,53 @@ async def add_discussion_message(
     return _success(service.add_message(discussion_id, body))
 
 
+@router.post("/{discussion_id}/marks")
+async def mark_discussion_result(
+    discussion_id: str,
+    body: MarkDiscussionResultRequest,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> dict[str, Any]:
+    """把一个已公开参与者结果加入或移出 Agent 交接现场。"""
+
+    return _success(service.mark_result(discussion_id, body))
+
+
+@router.post("/{discussion_id}/participant-questions/answer")
+async def answer_participant_question(
+    discussion_id: str,
+    body: AnswerParticipantQuestionRequest,
+    coordinator: DiscussionCoordinator = Depends(get_discussion_coordinator),
+) -> dict[str, Any]:
+    """只把用户答案交给发问的当前 attempt。"""
+
+    answered = await coordinator.answer_elicitation(
+        discussion_id=discussion_id,
+        participant_id=body.participant_id,
+        attempt_id=body.attempt_id,
+        request_id=body.request_id,
+        answers=body.answers,
+    )
+    return _success({"answered": answered})
+
+
+@router.post("/{discussion_id}/handoffs")
+async def handoff_discussion_to_agent(
+    discussion_id: str,
+    body: CreateDiscussionHandoffRequest,
+    service: DiscussionService = Depends(get_discussion_service),
+) -> dict[str, Any]:
+    """创建普通 Agent，把研讨现场作为背景并发送用户首条指令。"""
+
+    return _success(await service.handoff(discussion_id, body))
+
+
 @router.post("/{discussion_id}/continue")
 async def continue_discussion(
     discussion_id: str,
-    body: VersionedCommand,
+    body: ContinueDiscussionRequest,
     service: DiscussionService = Depends(get_discussion_service),
 ) -> dict[str, Any]:
-    """在用户参与模式或自动上限后创建下一普通轮。"""
+    """在共同公开边界切换逐轮或自动批次并创建下一普通轮。"""
 
     return _success(service.continue_round(discussion_id, body))
 
@@ -330,9 +427,11 @@ async def stream_discussion_events(
                             )
                         yield _sse(payload)
                     continue
-                woke = await subscription.wait(timeout=_HEARTBEAT_SECONDS)
-                if not woke:
+                delivery = await subscription.receive(timeout=_HEARTBEAT_SECONDS)
+                if delivery is None:
                     yield b": heartbeat\n\n"
+                elif delivery.kind != "state_changed" and delivery.payload is not None:
+                    yield _sse(delivery.payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - StreamingResponse 已建立，必须在流内脱敏。

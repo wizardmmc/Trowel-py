@@ -2,6 +2,7 @@
 
 import { PopperSelect } from "../../components/ui/PopperSelect";
 import { eligibleSessionConfigurations } from "../application/selectors";
+import { compactConfigurationLabel } from "../domain/configurationLabels";
 import type {
   ConfigurationCatalog,
   TaskId,
@@ -41,7 +42,7 @@ export function TaskBindingsPanel({
       <PanelHeader
         id="settings-tasks-title"
         title="后台任务"
-        description="为提炼与整理任务选择模型连接。每项任务独立启停，不会自动回退到其他配置。"
+        description="为提炼与整理任务选择运行配置。每项任务独立启停，不会自动回退到其他配置。"
         aside="额度轮询未启用"
       />
       {TASK_GROUPS.map((group) => (
@@ -143,7 +144,7 @@ function TaskBindingRow({
             ...staleDraftOption,
             ...options.map((configuration) => ({
               value: configuration.id,
-              label: `${configuration.name} · ${configuration.model}`,
+              label: compactConfigurationLabel(configuration, catalog?.connections ?? []),
             })),
           ]}
           onValueChange={(value) => onChange(value === UNBOUND ? null : value)}

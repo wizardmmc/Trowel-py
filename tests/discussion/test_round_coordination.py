@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from trowel_py.agent_host.binding import Runtime
 from trowel_py.discussion.artifacts import DiscussionArtifactStore
 from trowel_py.discussion.coordinator import DiscussionCoordinator
 from trowel_py.discussion.events import DiscussionEventBus
 from trowel_py.discussion.episode import DiscussionEpisodeWriter
 from trowel_py.discussion.repository import open_discussion_repository
-from trowel_py.discussion.schemas import CreateDiscussionRequest, VersionedCommand
+from trowel_py.discussion.schemas import (
+    ContinueDiscussionRequest,
+    CreateDiscussionRequest,
+    VersionedCommand,
+)
 from trowel_py.discussion.service import DiscussionService
 from tests.discussion.support import (
     FakeConfigurationCatalog,
@@ -86,6 +93,291 @@ def _create_request(*, max_rounds: int = 2) -> CreateDiscussionRequest:
     )
 
 
+def _inline_request() -> CreateDiscussionRequest:
+    """创建不依赖设置页命名会话配置的逐轮研讨请求。"""
+
+    return CreateDiscussionRequest(
+        request_id="create-inline",
+        topic="直接配置能否与 Agent 保持一致？",
+        workdir="/tmp",
+        progression_mode="user_guided",
+        participants=[
+            {
+                "name": "claude",
+                "connection_id": "cc-main",
+                "model": "sonnet",
+                "effort": None,
+            },
+            {
+                "name": "codex",
+                "connection_id": "codex-main",
+                "model": "gpt-test",
+                "effort": "high",
+            },
+        ],
+    )
+
+
+class _NaturalEofStream:
+    """模拟只有读到自然 EOF 才释放下一轮发送权的真实会话流。"""
+
+    def __init__(
+        self,
+        events: list[dict[str, Any]],
+        release: Callable[[], None],
+    ) -> None:
+        """保存事件和自然 EOF 才调用的释放函数。"""
+
+        self._events = iter(events)
+        self._release = release
+
+    def __aiter__(self) -> _NaturalEofStream:
+        """返回当前异步迭代器。"""
+
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        """逐项返回事件，并仅在真实耗尽时释放会话。"""
+
+        try:
+            return next(self._events)
+        except StopIteration:
+            self._release()
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        """模拟 SSE 消费者提前关流时后台仍在 drain。"""
+
+
+class NaturalEofSessions(FakeParticipantSessions):
+    """复现 finished 后立刻断流会让下一轮收到 turn_in_progress 的运行时。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.busy: set[str] = set()
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """正常轮在 finished 后还有尾帧；未释放时返回根 turn 前错误。"""
+
+        calls = self.prompts.setdefault(agent_session_id, [])
+        calls.append(prompt)
+        round_number = len(calls)
+        binding = self._bindings[agent_session_id]
+        thread_id = (
+            binding.native_session_id
+            if binding.runtime is Runtime.CODEX
+            else None
+        )
+        if agent_session_id in self.busy:
+            return _NaturalEofStream(
+                [
+                    {
+                        "schema": "agent-event-v1",
+                        "session_id": agent_session_id,
+                        "runtime": binding.runtime.value,
+                        "seq": round_number * 10,
+                        "type": "error",
+                        "turn_id": None,
+                        "thread_id": thread_id,
+                        "payload": {"subclass": "turn_in_progress"},
+                    }
+                ],
+                lambda: None,
+            )
+        self.busy.add(agent_session_id)
+        turn_id = f"turn-{agent_session_id}-{round_number}"
+        events = [
+            {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "seq": round_number * 10 + 1,
+                "type": "turn_start",
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "payload": {},
+            },
+            {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "seq": round_number * 10 + 2,
+                "type": "tool_call",
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "item_id": f"tool-{round_number}",
+                "payload": {"tool_name": "Read"},
+            },
+            {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "seq": round_number * 10 + 3,
+                "type": "text",
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "payload": {"text": f"answer-{round_number}"},
+            },
+            {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "seq": round_number * 10 + 4,
+                "type": "finished",
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "payload": {},
+            },
+            {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "seq": round_number * 10 + 5,
+                "type": "host_status",
+                "turn_id": None,
+                "thread_id": thread_id,
+                "payload": {"status": "ready"},
+            },
+        ]
+        return _NaturalEofStream(
+            events,
+            lambda: self.busy.discard(agent_session_id),
+        )
+
+
+@pytest.mark.anyio
+async def test_create_accepts_agent_inline_connection_model_and_effort(
+    tmp_path: Path,
+) -> None:
+    """Agent 可直接启动的组合无需另存命名配置也能冻结为参与者。"""
+
+    service, _ = _build_system(
+        tmp_path,
+        FakeParticipantSessions(),
+        running_limit=2,
+    )
+
+    created = await service.create(_inline_request())
+
+    assert [item["runtime"] for item in created["participants"]] == [
+        "claude_code",
+        "codex",
+    ]
+    assert [item["model"] for item in created["participants"]] == [
+        "sonnet",
+        "gpt-test",
+    ]
+    assert [item["connection_name"] for item in created["participants"]] == [
+        "cc-main",
+        "codex-main",
+    ]
+    assert [item["effective_model"] for item in created["participants"]] == [
+        "glm-sonnet-test",
+        "gpt-test",
+    ]
+
+
+@pytest.mark.anyio
+async def test_finished_stream_is_drained_before_automatic_next_round(
+    tmp_path: Path,
+) -> None:
+    """根 finished 不是可提前关流的信号，下一轮必须等自然 EOF 释放会话。"""
+
+    sessions = NaturalEofSessions()
+    service, coordinator = _build_system(tmp_path, sessions, running_limit=2)
+    created = await service.create(_inline_request())
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start-drain", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    first = service.get(created["id"])
+    service.continue_round(
+        created["id"],
+        ContinueDiscussionRequest(
+            command_id="continue-drain",
+            expected_version=first["version"],
+            progression_mode="automatic",
+            additional_rounds=1,
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+
+    published = service.get(created["id"])
+
+    assert [round_["status"] for round_ in published["rounds"]] == [
+        "published",
+        "published",
+    ]
+    assert all(
+        slot["status"] == "succeeded"
+        for round_ in published["rounds"]
+        for slot in round_["participants"]
+    )
+    assert published["rounds"][0]["participants"][0]["activity"] == {
+        "tool_call_count": 1,
+        "tool_names": {"Read": 1},
+        "subagent_count": 0,
+    }
+
+
+@pytest.mark.anyio
+async def test_progression_mode_can_alternate_at_published_round_boundaries(
+    tmp_path: Path,
+) -> None:
+    """逐轮、自动批次、再逐轮可以在共同公开边界依次切换。"""
+
+    sessions = FakeParticipantSessions()
+    service, coordinator = _build_system(tmp_path, sessions, running_limit=4)
+    created = await service.create(_inline_request())
+    service.start(
+        created["id"],
+        VersionedCommand(
+            command_id="start-alternating",
+            expected_version=created["version"],
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    first = service.get(created["id"])
+
+    service.continue_round(
+        created["id"],
+        ContinueDiscussionRequest(
+            command_id="automatic-two",
+            expected_version=first["version"],
+            progression_mode="automatic",
+            additional_rounds=2,
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    automatic = service.get(created["id"])
+
+    assert automatic["status"] == "waiting_user"
+    assert automatic["progression_mode"] == "automatic"
+    assert automatic["max_rounds"] == 3
+    assert [item["number"] for item in automatic["rounds"]] == [1, 2, 3]
+
+    service.continue_round(
+        created["id"],
+        ContinueDiscussionRequest(
+            command_id="guided-again",
+            expected_version=automatic["version"],
+            progression_mode="user_guided",
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    guided = service.get(created["id"])
+
+    assert guided["status"] == "waiting_user"
+    assert guided["progression_mode"] == "user_guided"
+    assert guided["max_rounds"] is None
+    assert [item["number"] for item in guided["rounds"]] == [1, 2, 3, 4]
+
+
 @pytest.mark.anyio
 async def test_round_barrier_keeps_one_prompt_for_all_physical_batches(
     tmp_path: Path,
@@ -116,6 +408,8 @@ async def test_round_barrier_keeps_one_prompt_for_all_physical_batches(
     assert len(prompts) == 4
     assert len(set(prompts)) == 1
     assert "answer-" not in prompts[0]
+    assert "上一轮（第" not in prompts[0]
+    assert "final.md" not in prompts[0]
     assert published["rounds"][0]["status"] == "published"
     assert [slot["status"] for slot in published["rounds"][0]["participants"]] == [
         "succeeded",
@@ -128,7 +422,7 @@ async def test_round_barrier_keeps_one_prompt_for_all_physical_batches(
 
 
 @pytest.mark.anyio
-async def test_second_round_reads_all_previous_public_text_without_ai_summary(
+async def test_second_round_references_verified_previous_outputs_by_absolute_path(
     tmp_path: Path,
 ) -> None:
     sessions = FakeParticipantSessions()
@@ -146,8 +440,25 @@ async def test_second_round_reads_all_previous_public_text_without_ai_summary(
     assert finished["status"] == "waiting_user"
     assert len(finished["rounds"]) == 2
     assert len(set(second_prompts)) == 1
+    prompt_lines = second_prompts[0].splitlines()
+    output_paths: list[Path] = []
     for name in ("glm", "gpt", "deepseek", "luna"):
-        assert f"answer-{name}-round-1" in second_prompts[0]
+        prefix = f"{name}："
+        matching_lines = [line for line in prompt_lines if line.startswith(prefix)]
+        assert len(matching_lines) == 1
+        output_path = Path(matching_lines[0].removeprefix(prefix))
+        assert output_path.is_absolute()
+        assert output_path.is_relative_to((tmp_path / "data" / "discussions").resolve())
+        assert output_path.read_text() == f"answer-{name}-round-1"
+        output_paths.append(output_path)
+        assert f"answer-{name}-round-1" not in second_prompts[0]
+    assert [line.split("：", 1)[0] for line in prompt_lines if line.endswith("final.md")] == [
+        "glm",
+        "gpt",
+        "deepseek",
+        "luna",
+    ]
+    assert len(set(output_paths)) == 4
     assert "上一轮（第 1 轮）公开发言" in second_prompts[0]
     assert sessions.peak_active <= 2
 

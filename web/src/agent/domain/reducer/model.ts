@@ -114,6 +114,7 @@ export interface ElicitationItem {
   readonly kind: "elicit";
   readonly toolUseId: string;
   readonly requestId: string;
+  readonly toolName: string;
   readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
   readonly status: "pending" | "answered" | "declined";
   readonly resultText: string | null;

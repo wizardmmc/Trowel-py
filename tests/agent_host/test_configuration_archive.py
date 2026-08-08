@@ -45,7 +45,11 @@ class _ConnectionPool(FakeCodexManager):
             self.launches.append(launch)
 
 
-def _launch(identity_version: int = 7) -> RuntimeLaunchConfiguration:
+def _launch(
+    identity_version: int = 7,
+    *,
+    codex_config_dir: str | None = None,
+) -> RuntimeLaunchConfiguration:
     """构造不输出真实凭据的已验证 Codex 连接。"""
 
     return RuntimeLaunchConfiguration(
@@ -64,6 +68,7 @@ def _launch(identity_version: int = 7) -> RuntimeLaunchConfiguration:
         proxy_url=None,
         claude_role_models={},
         codex_catalog=(),
+        codex_config_dir=codex_config_dir,
         api_key="must-not-be-persisted",
     )
 
@@ -110,6 +115,33 @@ def test_archive_is_private_and_contains_no_connection_secret(
     record = payload["codex:thread-frozen-connection"]
     assert "api_key" not in record
     assert "base_url" not in record
+
+
+def test_archive_round_trips_claude_auto_memory_condition(tmp_path: Path) -> None:
+    """旧 Claude 会话恢复必须沿用创建时冻结的原生记忆条件。"""
+
+    archive = SessionConfigurationArchive(tmp_path / "native-configurations.json")
+    binding = make_binding(
+        session_id="claude-session",
+        runtime=Runtime.CLAUDE_CODE,
+        native_session_id="native-claude-session",
+        workdir=str(tmp_path),
+        model="opus",
+        effort="max",
+        permission="bypassPermissions",
+        memory_enabled=True,
+        memory_mcp_enabled=True,
+        profile_enabled=True,
+        self_enabled=True,
+        capabilities=("tools",),
+        name="project",
+    )
+
+    archive.put(binding, claude_auto_memory_disabled=True)
+    restored = archive.get(Runtime.CLAUDE_CODE, "native-claude-session")
+
+    assert restored is not None
+    assert restored.claude_auto_memory_disabled is True
 
 
 def test_corrupt_archive_is_not_overwritten(tmp_path: Path) -> None:
@@ -159,6 +191,39 @@ def test_closed_session_resumes_with_archived_connection_conditions(
     assert resumed.memory_enabled is False
     assert resumed.memory_mcp_enabled is False
     assert resumed.agent_mcp_enabled is False
+
+
+def test_closed_codex_session_resumes_with_its_archived_config_home(
+    tmp_path: Path,
+) -> None:
+    """恢复旧 thread 时使用创建时配置家，不切到连接当前的新目录。"""
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    archived_home = tmp_path / "accounts" / "archived"
+    current_home = tmp_path / "accounts" / "current"
+    store = BindingStore(tmp_path / "agent-sessions.json")
+    archive = SessionConfigurationArchive(
+        tmp_path / "agent-sessions-native-configurations.json"
+    )
+    archive.put(_frozen_binding(workdir), codex_config_dir=archived_home)
+    pool = _ConnectionPool()
+    hub = SessionHub(
+        store,
+        codex_manager=pool,
+        cc_registry={},
+        codex_config_home=tmp_path,
+        configuration_resolver=lambda *_args: _launch(
+            codex_config_dir=str(current_home)
+        ),
+        configuration_archive=archive,
+        require_configured_connections=True,
+    )
+
+    hub.create(codex_req(workdir, resume_from="thread-frozen-connection"))
+
+    assert len(pool.launches) == 1
+    assert pool.launches[0].codex_config_dir == str(archived_home.resolve())
 
 
 def test_resume_rejects_connection_identity_changed_since_creation(
@@ -235,7 +300,7 @@ def test_archive_failure_prevents_native_binding_writeback(tmp_path: Path) -> No
         }
     )
 
-    def fail_archive(_binding) -> None:
+    def fail_archive(_binding, **_kwargs) -> None:
         raise OSError("archive unavailable")
 
     hub._configuration_archive.put = fail_archive

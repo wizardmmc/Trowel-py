@@ -137,7 +137,6 @@ describe("NewSessionDialog settings", () => {
       connection_id: "claude-a",
       model: "opus",
       memory_enabled: true,
-      agent_mcp_enabled: false,
     });
   });
 
@@ -241,7 +240,6 @@ describe("NewSessionDialog settings", () => {
       memory_enabled: false,
       profile_enabled: true,
       self_enabled: true,
-      agent_mcp_enabled: false,
       model: "gpt-5.6-sol",
       effort: "ultra",
       permission_mode: "",

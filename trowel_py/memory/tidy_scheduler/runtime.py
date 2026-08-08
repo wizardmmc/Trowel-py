@@ -52,6 +52,7 @@ class TidyScheduler:
         memory_root: Path,
         provider_factory: ProviderFactory,
         *,
+        monthly_provider_factory: ProviderFactory | None = None,
         weekly_time: time = DEFAULT_WEEKLY_TIME,
         monthly_time: time = DEFAULT_MONTHLY_TIME,
         now_fn: NowFn | None = None,
@@ -65,6 +66,8 @@ class TidyScheduler:
             memory_root: 记忆目录。
             provider_factory: 默认周月 Tidy 每次调用时使用的提供者工厂；注入
                 ``weekly_fn`` 或 ``monthly_fn`` 后，对应路径不使用该工厂。
+            monthly_provider_factory: 月整理单独使用的提供者工厂；省略时沿用
+                ``provider_factory``，保持原有调用方兼容。
             weekly_time: 每周一触发周补跑的本机时间。
             monthly_time: 每月一日触发月补跑的本机时间。
             now_fn: 当前时间来源；省略时使用 ``datetime.now``。
@@ -74,6 +77,7 @@ class TidyScheduler:
         """
         self._memory_root = memory_root
         self._provider_factory = provider_factory
+        self._monthly_provider_factory = monthly_provider_factory or provider_factory
         self._weekly_time = weekly_time
         self._monthly_time = monthly_time
         self._now: NowFn = now_fn or datetime.now
@@ -116,7 +120,7 @@ class TidyScheduler:
         return run_monthly_tidy(
             self._memory_root,
             month,
-            self._provider_factory(),
+            self._monthly_provider_factory(),
         )
 
     @property

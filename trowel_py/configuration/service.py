@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import uuid
@@ -23,6 +24,15 @@ from trowel_py.configuration.catalog import (
     FetchedCatalog,
     HttpModelCatalogFetcher,
     sanitize_url,
+)
+from trowel_py.configuration.claude_home import (
+    ClaudeConnectionHomeError,
+    ClaudeConnectionHomeStore,
+    ClaudeHomeTombstone,
+)
+from trowel_py.configuration.codex_home import (
+    CodexConnectionHomeError,
+    CodexConnectionHomeStore,
 )
 from trowel_py.configuration.errors import (
     ConfigurationError,
@@ -53,20 +63,34 @@ from trowel_py.application_paths import resolve_application_data_root
 
 _CLAUDE_MAIN_ROLE_ORDER = ("opus", "sonnet", "fable", "haiku")
 _CODEX_CUSTOM_EFFORTS = ("low", "medium", "high", "xhigh")
+_STABLE_ALIAS_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AccountSlotDeletion:
-    """记录 Official 账号槽移入墓碑后的补偿信息。
+class CodexHomeDeletion:
+    """记录 Codex 连接家移入墓碑后的补偿信息。
 
     Attributes:
-        slot: 数据库仍处于活动状态时应恢复到的托管槽路径。
+        home: 数据库仍处于活动状态时应恢复到的托管家路径。
         tombstone: 数据库确认软删除后才能永久清理的临时路径。
     """
 
-    slot: Path
+    home: Path
     tombstone: Path
+
+
+@dataclass(frozen=True)
+class ConnectionStorageDeletion:
+    """记录软删除前暂存的 Codex 与 Claude 连接家。
+
+    Attributes:
+        codex_home: 需要在数据库提交后永久清理的 Codex 连接家。
+        claude_home: 需要长期保留到后续清理 slice 的 Claude 连接家墓碑。
+    """
+
+    codex_home: CodexHomeDeletion | None = None
+    claude_home: ClaudeHomeTombstone | None = None
 
 
 def _now() -> str:
@@ -247,12 +271,16 @@ def merge_codex_catalog(
             for model_id in dict.fromkeys(model_ids)
         )
     return tuple(entries)
+
+
 class ConfigurationService:
     """执行配置领域校验并保持跨表更新的一致性。
 
     Attributes:
         repository: 当前请求或作业使用的配置仓储。
         catalog_fetcher: 获取第三方模型列表的可替换客户端。
+        claude_homes: 管理 Claude 连接家与继承发布的存储边界。
+        codex_homes: 管理 Codex 连接家与双来源继承发布的存储边界。
     """
 
     def __init__(
@@ -261,16 +289,22 @@ class ConfigurationService:
         *,
         catalog_fetcher: Any | None = None,
         official_account_root: Path | None = None,
+        claude_homes: ClaudeConnectionHomeStore | None = None,
+        codex_homes: CodexConnectionHomeStore | None = None,
     ) -> None:
-        """保存仓储、模型客户端和 Trowel 托管的 Official 账号槽位根。"""
+        """保存仓储、模型客户端与两个 runtime 的私有目录边界。"""
 
         self.repository = repository
         self.catalog_fetcher = catalog_fetcher or HttpModelCatalogFetcher()
-        self.official_account_root = (
-            official_account_root
-            if official_account_root is not None
-            else resolve_application_data_root() / "codex-accounts"
+        self.codex_homes = codex_homes or CodexConnectionHomeStore(
+            root=(
+                official_account_root
+                if official_account_root is not None
+                else resolve_application_data_root() / "codex-accounts"
+            )
         )
+        self.official_account_root = self.codex_homes.root
+        self.claude_homes = claude_homes or ClaudeConnectionHomeStore()
 
     def restrict_codex_catalog_candidates(
         self,
@@ -285,7 +319,11 @@ class ConfigurationService:
         在刷新后无法继续进入 Agent 或会话配置。
         """
 
-        if not catalog.request_identity or not catalog.source_endpoint or not catalog.fetched_at:
+        if (
+            not catalog.request_identity
+            or not catalog.source_endpoint
+            or not catalog.fetched_at
+        ):
             raise ConfigurationError("CATALOG_STALE", "Codex 模型列表缺少请求身份")
         snapshot = self.repository.get_model_catalog(catalog.request_identity)
         if snapshot is None or snapshot["connection_id"] != connection_id:
@@ -309,7 +347,7 @@ class ConfigurationService:
                 "CONNECTION_SHAPE_INVALID",
                 "Codex Official 账号目录由 Trowel 自动管理",
             )
-        slot = self._official_account_slot_path(connection_id)
+        slot = self._codex_connection_home_path(connection_id)
         prepared = (
             replace(draft, login_directory=str(slot))
             if draft.kind is ConnectionKind.CODEX_OFFICIAL
@@ -321,31 +359,32 @@ class ConfigurationService:
             slot.chmod(0o700)
         now = _now()
         values = {
-                "id": connection_id,
-                "version": 1,
-                "identity_version": 1,
-                "name": normalized.name,
-                "runtime": normalized.runtime.value,
-                "kind": normalized.kind.value,
-                "protocol": normalized.protocol.value,
-                "base_url": normalized.base_url,
-                "models_url": normalized.models_url,
-                "auth_kind": self._auth_kind(normalized),
-                "login_directory": normalized.login_directory,
-                "proxy_url": normalized.proxy_url,
-                "proxy_username": normalized.proxy_username,
-                "claude_role_models": _json(normalized.claude_role_models),
-                "codex_catalog": _json(_codex_catalog_wire(normalized.codex_catalog)),
-                "catalog_request_identity": None,
-                "catalog_status": "idle",
-                "catalog_error_code": None,
-                "validation_status": "unknown",
-                "capability_version": CAPABILITY_REGISTRY_VERSION,
-                "last_session_choice": None,
-                "deleted_at": None,
-                "created_at": now,
-                "updated_at": now,
-            }
+            "id": connection_id,
+            "version": 1,
+            "identity_version": 1,
+            "name": normalized.name,
+            "runtime": normalized.runtime.value,
+            "kind": normalized.kind.value,
+            "protocol": normalized.protocol.value,
+            "base_url": normalized.base_url,
+            "models_url": normalized.models_url,
+            "auth_kind": self._auth_kind(normalized),
+            "login_directory": normalized.login_directory,
+            "proxy_url": normalized.proxy_url,
+            "proxy_username": normalized.proxy_username,
+            "claude_role_models": _json(normalized.claude_role_models),
+            "codex_catalog": _json(_codex_catalog_wire(normalized.codex_catalog)),
+            "catalog_request_identity": None,
+            "catalog_status": "idle",
+            "catalog_error_code": None,
+            "validation_status": "unknown",
+            "capability_version": CAPABILITY_REGISTRY_VERSION,
+            "last_session_choice": None,
+            "claude_auto_memory_disabled": int(normalized.claude_auto_memory_disabled),
+            "deleted_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
         try:
             self.repository.insert_connection(values)
         except BaseException:
@@ -363,12 +402,12 @@ class ConfigurationService:
 
         self.official_account_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.official_account_root.chmod(0o700)
-        self._recover_official_account_tombstones()
+        self._recover_codex_home_tombstones()
         migrated = 0
         for row in self.repository.list_connections():
             if row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
                 continue
-            expected = self._official_account_slot_path(str(row["id"]))
+            expected = self._codex_connection_home_path(str(row["id"]))
             current = (
                 Path(str(row["login_directory"])).expanduser().absolute()
                 if row["login_directory"]
@@ -411,6 +450,101 @@ class ConfigurationService:
 
         return tuple(
             self._connection_view(row) for row in self.repository.list_connections()
+        )
+
+    def inherit_global_claude_config(
+        self,
+        connection_id: str,
+        *,
+        expected_version: int,
+    ) -> ConnectionView:
+        """把真实全局 Claude 用户配置覆盖发布到一项兼容连接家。
+
+        Args:
+            connection_id: 接收配置副本的 Claude 兼容连接 ID。
+            expected_version: 用户确认继承时看到的连接乐观版本。
+
+        Returns:
+            继承完成后的脱敏连接读模型。
+
+        Raises:
+            ConfigurationError: 连接不存在、版本已变化、种类不支持或来源配置损坏。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if int(row["version"]) != expected_version:
+            raise version_conflict()
+        if row["kind"] != ConnectionKind.CLAUDE_COMPATIBLE.value:
+            raise ConfigurationError(
+                "CLAUDE_HOME_UNSUPPORTED",
+                "只有 Claude 兼容供应商可以继承全局 Claude 配置",
+                status_code=422,
+            )
+        try:
+            self.claude_homes.inherit_global(
+                connection_id,
+                forbidden_values=self._known_connection_secrets(),
+            )
+        except ClaudeConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CLAUDE_HOME_INHERIT_FAILED", str(exc), status_code=409
+            ) from exc
+        return self.get_connection(connection_id)
+
+    def inherit_global_codex_config(
+        self,
+        connection_id: str,
+        *,
+        expected_version: int,
+    ) -> ConnectionView:
+        """把两处真实全局 Codex 用户配置覆盖发布到独立连接家。
+
+        Args:
+            connection_id: 接收配置副本的 Codex Official 或 Custom 连接 ID。
+            expected_version: 用户确认继承时看到的连接乐观版本。
+
+        Returns:
+            继承完成后的脱敏连接读模型。
+
+        Raises:
+            ConfigurationError: 连接不存在、版本变化、种类不支持或来源不安全。
+        """
+
+        row = self.repository.get_connection(connection_id)
+        if row is None:
+            raise not_found("连接")
+        if int(row["version"]) != expected_version:
+            raise version_conflict()
+        if row["kind"] not in {
+            ConnectionKind.CODEX_OFFICIAL.value,
+            ConnectionKind.CODEX_CUSTOM.value,
+        }:
+            raise ConfigurationError(
+                "CODEX_HOME_UNSUPPORTED",
+                "只有 Codex 连接可以继承全局 Codex 配置",
+                status_code=422,
+            )
+        try:
+            self.codex_homes.inherit_global(
+                connection_id,
+                forbidden_values=self._known_connection_secrets(),
+            )
+        except CodexConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CODEX_HOME_INHERIT_FAILED", str(exc), status_code=409
+            ) from exc
+        return self.get_connection(connection_id)
+
+    def _known_connection_secrets(self) -> tuple[str, ...]:
+        """返回当前设置库中的全部已知凭据原值，供配置副本 canary 扫描。"""
+
+        return tuple(
+            secret
+            for connection in self.repository.list_connections()
+            for kind in SecretKind
+            if (secret := self.repository.read_secret(str(connection["id"]), kind))
         )
 
     def list_agent_connection_options(
@@ -605,6 +739,9 @@ class ConfigurationService:
                 "catalog_error_code": None,
                 "validation_status": "unknown",
                 "capability_version": CAPABILITY_REGISTRY_VERSION,
+                "claude_auto_memory_disabled": int(
+                    normalized.claude_auto_memory_disabled
+                ),
                 "updated_at": _now(),
             },
         )
@@ -860,91 +997,122 @@ class ConfigurationService:
 
     def delete_connection(
         self, connection_id: str, *, expected_version: int
-    ) -> AccountSlotDeletion | None:
-        """软删除连接与 secret，并暂存 Official 账号槽等待事务提交。"""
+    ) -> ConnectionStorageDeletion | None:
+        """软删除连接与 secret，并暂存 runtime 私有目录等待提交裁决。"""
 
         row = self.repository.get_connection(connection_id)
-        owned_account_slot = self._owned_official_account_slot(row)
-        tombstone: Path | None = None
-        if owned_account_slot is not None:
-            tombstone = owned_account_slot.with_name(
-                f".deleted-{owned_account_slot.name}-{uuid.uuid4().hex}"
+        owned_codex_home = self._owned_codex_home(row)
+        codex_tombstone: Path | None = None
+        if owned_codex_home is not None:
+            codex_tombstone = owned_codex_home.with_name(
+                f".deleted-{owned_codex_home.name}-{uuid.uuid4().hex}"
             )
-            owned_account_slot.rename(tombstone)
+            owned_codex_home.rename(codex_tombstone)
+        claude_deletion: ClaudeHomeTombstone | None = None
+        if row is not None and row["kind"] == ConnectionKind.CLAUDE_COMPATIBLE.value:
+            try:
+                claude_deletion = self.claude_homes.stage_deletion(connection_id)
+            except ClaudeConnectionHomeError as exc:
+                if (
+                    codex_tombstone is not None
+                    and codex_tombstone.exists()
+                    and owned_codex_home is not None
+                    and not owned_codex_home.exists()
+                ):
+                    codex_tombstone.rename(owned_codex_home)
+                raise ConfigurationError(
+                    "CLAUDE_HOME_INVALID", str(exc), status_code=409
+                ) from exc
         try:
             with self.repository.atomic():
-                self._delete_connection(connection_id, expected_version=expected_version)
+                self._delete_connection(
+                    connection_id, expected_version=expected_version
+                )
         except BaseException:
             if (
-                tombstone is not None
-                and tombstone.exists()
-                and owned_account_slot is not None
-                and not owned_account_slot.exists()
+                codex_tombstone is not None
+                and codex_tombstone.exists()
+                and owned_codex_home is not None
+                and not owned_codex_home.exists()
             ):
-                tombstone.rename(owned_account_slot)
+                codex_tombstone.rename(owned_codex_home)
+            self.claude_homes.restore_deletion(claude_deletion)
             raise
-        return (
-            AccountSlotDeletion(slot=owned_account_slot, tombstone=tombstone)
-            if tombstone is not None and owned_account_slot is not None
+        codex_deletion = (
+            CodexHomeDeletion(
+                home=owned_codex_home,
+                tombstone=codex_tombstone,
+            )
+            if codex_tombstone is not None and owned_codex_home is not None
             else None
         )
+        if codex_deletion is None and claude_deletion is None:
+            return None
+        return ConnectionStorageDeletion(
+            codex_home=codex_deletion,
+            claude_home=claude_deletion,
+        )
 
-    def finalize_account_slot_deletion(
-        self, deletion: AccountSlotDeletion | None
+    def finalize_connection_storage_deletion(
+        self, deletion: ConnectionStorageDeletion | None
     ) -> None:
-        """数据库软删除提交后尽力永久清理账号槽墓碑。"""
+        """数据库提交后永久清理 Codex 连接家，保留 Claude 历史家。"""
 
-        if deletion is None or not deletion.tombstone.exists():
+        codex_home = deletion.codex_home if deletion is not None else None
+        if codex_home is None or not codex_home.tombstone.exists():
             return
         try:
-            shutil.rmtree(deletion.tombstone)
+            shutil.rmtree(codex_home.tombstone)
         except OSError:
-            _log.exception(
-                "Official 账号槽延迟清理失败：%s", deletion.tombstone.name
-            )
+            _log.exception("Codex 连接家延迟清理失败：%s", codex_home.tombstone.name)
 
-    @staticmethod
-    def restore_account_slot_deletion(deletion: AccountSlotDeletion | None) -> None:
-        """数据库提交失败时把仍存在的墓碑恢复到原账号槽。"""
+    def restore_connection_storage_deletion(
+        self, deletion: ConnectionStorageDeletion | None
+    ) -> None:
+        """数据库提交失败时恢复 Codex 与 Claude 连接家。"""
 
+        codex_home = deletion.codex_home if deletion is not None else None
         if (
-            deletion is not None
-            and deletion.tombstone.exists()
-            and not deletion.slot.exists()
+            codex_home is not None
+            and codex_home.tombstone.exists()
+            and not codex_home.home.exists()
         ):
-            deletion.tombstone.rename(deletion.slot)
+            codex_home.tombstone.rename(codex_home.home)
+        self.claude_homes.restore_deletion(
+            deletion.claude_home if deletion is not None else None
+        )
 
-    def _recover_official_account_tombstones(self) -> None:
-        """按数据库软删除状态恢复未提交墓碑，或清理已提交墓碑。"""
+    def _recover_codex_home_tombstones(self) -> None:
+        """按数据库软删除状态恢复 Codex 家墓碑，或清理已提交墓碑。"""
 
         for tombstone in self.official_account_root.glob(".deleted-*"):
             if not tombstone.is_dir() or tombstone.is_symlink():
                 continue
             connection_id = self._connection_id_from_tombstone(tombstone)
             if connection_id is None:
-                _log.error("无法识别 Official 账号槽墓碑：%s", tombstone.name)
+                _log.error("无法识别 Codex 连接家墓碑：%s", tombstone.name)
                 continue
             row = self.repository.get_connection(connection_id, include_deleted=True)
-            active_official = (
+            active_codex = (
                 row is not None
                 and row["deleted_at"] is None
-                and row["kind"] == ConnectionKind.CODEX_OFFICIAL.value
+                and row["kind"]
+                in {
+                    ConnectionKind.CODEX_OFFICIAL.value,
+                    ConnectionKind.CODEX_CUSTOM.value,
+                }
             )
-            if active_official:
-                slot = self._official_account_slot_path(connection_id)
+            if active_codex:
+                slot = self._codex_connection_home_path(connection_id)
                 if slot.exists():
-                    _log.error(
-                        "Official 账号槽与待恢复墓碑同时存在：%s", tombstone.name
-                    )
+                    _log.error("Codex 连接家与待恢复墓碑同时存在：%s", tombstone.name)
                     continue
                 tombstone.rename(slot)
                 continue
             try:
                 shutil.rmtree(tombstone)
             except OSError:
-                _log.exception(
-                    "Official 账号槽墓碑仍无法清理：%s", tombstone.name
-                )
+                _log.exception("Codex 连接家墓碑仍无法清理：%s", tombstone.name)
 
     @staticmethod
     def _connection_id_from_tombstone(tombstone: Path) -> str | None:
@@ -959,75 +1127,69 @@ class ConfigurationService:
             return None
         return connection_id if payload.startswith(f"{connection_id}-") else None
 
-    def _owned_official_account_slot(self, row: sqlite3.Row | None) -> Path | None:
-        """只返回当前连接在托管根中的精确账号槽，拒绝任意历史外部路径。"""
+    def _owned_codex_home(self, row: sqlite3.Row | None) -> Path | None:
+        """只返回当前 Codex 连接在托管根中的精确配置家。"""
 
-        if row is None or row["kind"] != ConnectionKind.CODEX_OFFICIAL.value:
+        if row is None or row["kind"] not in {
+            ConnectionKind.CODEX_OFFICIAL.value,
+            ConnectionKind.CODEX_CUSTOM.value,
+        }:
             return None
-        expected = self._official_account_slot_path(str(row["id"]))
+        try:
+            expected = self.codex_homes.existing_home(str(row["id"]))
+        except CodexConnectionHomeError as exc:
+            raise ConfigurationError(
+                "CODEX_HOME_INVALID", str(exc), status_code=409
+            ) from exc
+        if expected is None:
+            return None
+        if row["kind"] == ConnectionKind.CODEX_CUSTOM.value:
+            return expected
         current = (
             Path(str(row["login_directory"])).expanduser().absolute()
             if row["login_directory"]
             else None
         )
-        return expected if current == expected and expected.is_dir() else None
+        return expected if current == expected else None
 
-    def _official_account_slot_path(self, connection_id: str) -> Path:
-        """返回不会跟随槽位符号链接的托管路径。"""
+    def _codex_connection_home_path(self, connection_id: str) -> Path:
+        """返回不会跟随符号链接的 Codex 托管连接家路径。"""
 
         try:
-            parsed_id = uuid.UUID(connection_id)
-        except ValueError as exc:
-            raise ConfigurationError(
-                "OFFICIAL_ACCOUNT_SLOT_INVALID", "Official 账号槽标识无效"
-            ) from exc
-        root = self.official_account_root.expanduser().resolve()
-        slot = root / str(parsed_id)
-        if slot.is_symlink():
-            raise ConfigurationError(
-                "OFFICIAL_ACCOUNT_SLOT_INVALID",
-                "Official 账号槽不能是符号链接",
-                status_code=409,
-            )
-        return slot
+            return self.codex_homes.home_for(connection_id)
+        except CodexConnectionHomeError as exc:
+            raise ConfigurationError("OFFICIAL_ACCOUNT_SLOT_INVALID", str(exc)) from exc
 
     def resolve_agent_session_defaults(
         self, fallback: Mapping[str, Any] | None
     ) -> dict[str, Any] | None:
-        """把设置页默认条件叠加到最近一次有效会话选择。"""
+        """解析显式 Agent 默认配置；缺失或失效时不采用任何隐式回退。"""
 
         defaults = self.get_agent_defaults()
-        if defaults.version == 0:
-            return dict(fallback) if fallback is not None else None
-        resolved = dict(fallback or {})
-        if defaults.session_configuration_id is not None:
+        if defaults.session_configuration_id is None:
+            return None
+        try:
             configuration = self.get_session_configuration(
                 defaults.session_configuration_id
             )
-            if configuration.availability == "available":
-                resolved.update(
-                    runtime=configuration.runtime.value,
-                    connection_id=configuration.connection_id,
-                    model=configuration.model,
-                    effort=configuration.effort or "",
-                )
-        if "runtime" not in resolved:
-            first = next(
-                (
-                    option
-                    for option in self.list_agent_connection_options()
-                    if option["available"]
-                ),
-                None,
-            )
-            resolved["runtime"] = first["runtime"] if first else "claude_code"
-            if first:
-                resolved["connection_id"] = first["id"]
-                resolved["model"] = first["models"][0]["id"]
-                resolved["effort"] = first["models"][0]["default_effort"] or ""
+        except ConfigurationError:
+            return None
+        if (
+            configuration.availability != "available"
+            or configuration.runtime is RuntimeKind.DIRECT_API
+        ):
+            return None
+        resolved: dict[str, Any] = {
+            "runtime": configuration.runtime.value,
+            "connection_id": configuration.connection_id,
+            "model": configuration.model,
+            "effort": configuration.effort or "",
+        }
         runtime = resolved["runtime"]
         resolved["permission_mode"] = (
-            defaults.permission or "" if runtime == RuntimeKind.CLAUDE_CODE.value else ""
+            defaults.permission or ""
+            if runtime == RuntimeKind.CLAUDE_CODE.value
+            else ""
         )
         if runtime == RuntimeKind.CODEX.value:
             if defaults.permission:
@@ -1077,24 +1239,32 @@ class ConfigurationService:
             draft, expected_connection_version=expected_connection_version
         )
         runtime = RuntimeKind(row["runtime"])
+        alias = self._validate_session_alias(draft)
+        self._validate_agent_callable(runtime, draft)
         configuration_id = str(uuid.uuid4())
         now = _now()
-        self.repository.insert_session_configuration(
-            {
-                "id": configuration_id,
-                "version": 1,
-                "name": draft.name.strip(),
-                "runtime": runtime.value,
-                "connection_id": draft.connection_id,
-                "connection_identity_version": int(row["identity_version"]),
-                "model": model,
-                "effort": draft.effort,
-                "capability_version": capability.version,
-                "deleted_at": None,
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
+        with self.repository.atomic():
+            self.repository.insert_session_configuration(
+                {
+                    "id": configuration_id,
+                    "version": 1,
+                    "identity_version": 1,
+                    "name": draft.name.strip(),
+                    "runtime": runtime.value,
+                    "connection_id": draft.connection_id,
+                    "connection_identity_version": int(row["identity_version"]),
+                    "model": model,
+                    "effort": draft.effort,
+                    "capability_version": capability.version,
+                    "stable_alias": alias,
+                    "agent_callable": int(draft.agent_callable),
+                    "deleted_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            if alias is not None:
+                self._reserve_session_alias(alias, configuration_id, now)
         return self.get_session_configuration(configuration_id)
 
     def update_session_configuration(
@@ -1115,22 +1285,54 @@ class ConfigurationService:
         connection, model, capability = self._validate_session_draft(
             draft, expected_connection_version=expected_connection_version
         )
-        now = _now()
-        self.repository.update_session_configuration(
-            configuration_id,
-            expected_version=expected_version,
-            values={
-                "version": expected_version + 1,
-                "name": draft.name.strip(),
-                "runtime": str(connection["runtime"]),
-                "connection_id": draft.connection_id,
-                "connection_identity_version": int(connection["identity_version"]),
-                "model": model,
-                "effort": draft.effort,
-                "capability_version": capability.version,
-                "updated_at": now,
-            },
+        alias = self._validate_session_alias(draft)
+        self._validate_agent_callable(RuntimeKind(connection["runtime"]), draft)
+        previous_alias = (
+            str(current["stable_alias"])
+            if current["stable_alias"] is not None
+            else None
         )
+        identity_changed = (
+            str(current["runtime"]),
+            str(current["connection_id"]),
+            str(current["model"]),
+            str(current["effort"]) if current["effort"] is not None else None,
+        ) != (
+            str(connection["runtime"]),
+            draft.connection_id,
+            model,
+            draft.effort,
+        )
+        now = _now()
+        with self.repository.atomic():
+            if alias != previous_alias:
+                if previous_alias is not None:
+                    self.repository.retire_session_configuration_alias(
+                        alias=previous_alias,
+                        configuration_id=configuration_id,
+                        retired_at=now,
+                    )
+                if alias is not None:
+                    self._reserve_session_alias(alias, configuration_id, now)
+            self.repository.update_session_configuration(
+                configuration_id,
+                expected_version=expected_version,
+                values={
+                    "version": expected_version + 1,
+                    "identity_version": int(current["identity_version"])
+                    + int(identity_changed),
+                    "name": draft.name.strip(),
+                    "runtime": str(connection["runtime"]),
+                    "connection_id": draft.connection_id,
+                    "connection_identity_version": int(connection["identity_version"]),
+                    "model": model,
+                    "effort": draft.effort,
+                    "capability_version": capability.version,
+                    "stable_alias": alias,
+                    "agent_callable": int(draft.agent_callable),
+                    "updated_at": now,
+                },
+            )
         return self.get_session_configuration(configuration_id)
 
     def delete_session_configuration(
@@ -1165,6 +1367,76 @@ class ConfigurationService:
             self._session_view(row)
             for row in self.repository.list_session_configurations()
         )
+
+    def list_agent_callable_configurations(
+        self,
+    ) -> tuple[SessionConfigurationView, ...]:
+        """返回当前可由父 Agent 通过主别名调用的运行配置。"""
+
+        return tuple(
+            item
+            for item in self.list_session_configurations()
+            if item.agent_callable
+            and item.stable_alias is not None
+            and item.runtime is not RuntimeKind.DIRECT_API
+            and item.availability == "available"
+        )
+
+    @staticmethod
+    def _validate_session_alias(draft: SessionConfigurationDraft) -> str | None:
+        """规范化稳定别名，并校验 Agent 调用所需的显式别名。"""
+
+        alias = (draft.stable_alias or "").strip() or None
+        if alias is not None and _STABLE_ALIAS_PATTERN.fullmatch(alias) is None:
+            raise ConfigurationError(
+                "ALIAS_INVALID",
+                "稳定别名必须以小写字母开头，且只能包含小写字母、数字、短横线和下划线",
+                status_code=422,
+            )
+        if draft.agent_callable and alias is None:
+            raise ConfigurationError(
+                "ALIAS_REQUIRED",
+                "允许 Agent 调用时必须填写稳定别名",
+                status_code=422,
+            )
+        return alias
+
+    def _reserve_session_alias(
+        self, alias: str, configuration_id: str, created_at: str
+    ) -> None:
+        """登记或收回本配置别名，并把跨配置冲突映射成领域错误。"""
+
+        try:
+            self.repository.put_session_configuration_alias(
+                alias=alias,
+                configuration_id=configuration_id,
+                created_at=created_at,
+            )
+        except ValueError as exc:
+            raise ConfigurationError(
+                "ALIAS_RESERVED",
+                "这个稳定别名已经被另一个当前或历史运行配置使用",
+                status_code=409,
+            ) from exc
+
+    @staticmethod
+    def _validate_agent_callable(
+        runtime: RuntimeKind,
+        draft: SessionConfigurationDraft,
+    ) -> None:
+        """拒绝把没有 Agent 会话语义的 direct API 开放给 MCP Agent。
+
+        Args:
+            runtime: 草稿引用连接对应的执行方式。
+            draft: 包含 Agent 调用策略的运行配置草稿。
+        """
+
+        if runtime is RuntimeKind.DIRECT_API and draft.agent_callable:
+            raise ConfigurationError(
+                "AGENT_RUNTIME_REQUIRED",
+                "Direct API 运行配置只能用于后台任务",
+                status_code=422,
+            )
 
     def put_task_binding(
         self,
@@ -1210,6 +1482,58 @@ class ConfigurationService:
                 ),
             )
             for row in self.repository.list_task_bindings()
+        )
+
+    def resolve_task_launch(self, task_id: TaskId) -> RuntimeLaunchConfiguration:
+        """为一次后台任务读取并冻结当前绑定的启动配置。
+
+        Args:
+            task_id: 即将开始执行的后台任务。
+
+        Returns:
+            已重新核对连接身份、模型目录和能力资格的秘密启动配置。
+
+        Raises:
+            ConfigurationError: 任务未绑定、运行配置已归档或已过期，或该组合不再
+                具备任务资格。
+        """
+
+        binding = next(
+            (item for item in self.list_task_bindings() if item.task_id is task_id),
+            None,
+        )
+        if binding is None or binding.session_configuration_id is None:
+            raise ConfigurationError(
+                "TASK_CONFIGURATION_REQUIRED",
+                "后台任务尚未绑定运行配置",
+                status_code=409,
+            )
+        row = self.repository.get_session_configuration(
+            binding.session_configuration_id
+        )
+        if row is None:
+            raise ConfigurationError(
+                "TASK_CONFIGURATION_STALE",
+                "后台任务绑定的运行配置已归档",
+                status_code=409,
+            )
+        configuration = self._session_view(row)
+        if configuration.availability != "available":
+            raise ConfigurationError(
+                "TASK_CONFIGURATION_STALE",
+                "后台任务绑定的运行配置已经过期",
+                status_code=409,
+            )
+        if task_id not in configuration.capability.eligible_tasks:
+            raise ConfigurationError(
+                "TASK_UNSUPPORTED",
+                "后台任务绑定的运行配置不再具备这项任务资格",
+                status_code=409,
+            )
+        return self.resolve_runtime_launch(
+            configuration.connection_id,
+            model=configuration.model,
+            effort=configuration.effort,
         )
 
     def delete_task_binding(
@@ -1453,7 +1777,7 @@ class ConfigurationService:
                 "AUTH_MISSING", "连接凭据尚未配置", status_code=422
             )
         if draft.kind is ConnectionKind.CODEX_OFFICIAL:
-            expected_slot = self._official_account_slot_path(connection_id)
+            expected_slot = self._codex_connection_home_path(connection_id)
             configured_slot = (
                 Path(draft.login_directory).expanduser().absolute()
                 if draft.login_directory
@@ -1471,6 +1795,24 @@ class ConfigurationService:
             draft.proxy_username,
             self.repository.read_secret(connection_id, SecretKind.PROXY_PASSWORD),
         )
+        claude_config_dir: str | None = None
+        claude_plugin_dir: str | None = None
+        codex_config_dir: str | None = None
+        if draft.kind is ConnectionKind.CLAUDE_COMPATIBLE:
+            try:
+                claude_config_dir = str(self.claude_homes.ensure_home(connection_id))
+                claude_plugin_dir = str(self.claude_homes.shared_plugin_root)
+            except ClaudeConnectionHomeError as exc:
+                raise ConfigurationError(
+                    "CLAUDE_HOME_INVALID", str(exc), status_code=409
+                ) from exc
+        if draft.runtime is RuntimeKind.CODEX:
+            try:
+                codex_config_dir = str(self.codex_homes.ensure_home(connection_id))
+            except CodexConnectionHomeError as exc:
+                raise ConfigurationError(
+                    "CODEX_HOME_INVALID", str(exc), status_code=409
+                ) from exc
         return RuntimeLaunchConfiguration(
             connection_id=connection_id,
             connection_version=int(row["version"]),
@@ -1487,8 +1829,12 @@ class ConfigurationService:
             proxy_url=proxy_url,
             claude_role_models=dict(draft.claude_role_models),
             codex_catalog=draft.codex_catalog,
+            claude_config_dir=claude_config_dir,
+            claude_plugin_dir=claude_plugin_dir,
+            codex_config_dir=codex_config_dir,
             api_key=api_key,
             capability_source=capability_source,
+            claude_auto_memory_disabled=draft.claude_auto_memory_disabled,
         )
 
     def _validate_session_draft(
@@ -1610,10 +1956,14 @@ class ConfigurationService:
             raise ConfigurationError(
                 "CONNECTION_SHAPE_INVALID", "只有 Claude Code 连接可以保存角色映射"
             )
-        if draft.kind not in {
-            ConnectionKind.CODEX_CUSTOM,
-            ConnectionKind.CODEX_OFFICIAL,
-        } and draft.codex_catalog:
+        if (
+            draft.kind
+            not in {
+                ConnectionKind.CODEX_CUSTOM,
+                ConnectionKind.CODEX_OFFICIAL,
+            }
+            and draft.codex_catalog
+        ):
             raise ConfigurationError(
                 "CONNECTION_SHAPE_INVALID", "只有 Codex 供应商可以保存模型目录"
             )
@@ -1715,6 +2065,7 @@ class ConfigurationService:
             claude_role_models=_load_json(row["claude_role_models"], {}),
             codex_catalog=_decode_codex_catalog(row["codex_catalog"]),
             catalog_request_identity=row["catalog_request_identity"],
+            claude_auto_memory_disabled=bool(row["claude_auto_memory_disabled"]),
         )
 
     def _catalog_view(self, row: sqlite3.Row) -> CatalogView:
@@ -1784,6 +2135,20 @@ class ConfigurationService:
             login_directory_exists=(
                 Path(login_directory).expanduser().exists() if login_directory else None
             ),
+            claude_config_inherited=(
+                self.claude_homes.is_inherited(connection_id)
+                if row["kind"] == ConnectionKind.CLAUDE_COMPATIBLE.value
+                else None
+            ),
+            codex_config_inherited=(
+                self.codex_homes.is_inherited(connection_id)
+                if row["kind"]
+                in {
+                    ConnectionKind.CODEX_OFFICIAL.value,
+                    ConnectionKind.CODEX_CUSTOM.value,
+                }
+                else None
+            ),
             proxy_url=(
                 sanitize_url(str(row["proxy_url"])) if row["proxy_url"] else None
             ),
@@ -1805,6 +2170,7 @@ class ConfigurationService:
             ),
             secret_versions=secret_versions,
             preview=self._preview(row, auth_status),
+            claude_auto_memory_disabled=bool(row["claude_auto_memory_disabled"]),
         )
 
     def _preview(self, row: sqlite3.Row, auth_status: str) -> dict[str, Any]:
@@ -1817,7 +2183,13 @@ class ConfigurationService:
                     "ANTHROPIC_AUTH_TOKEN": f"<{auth_status}>",
                 },
                 "model_roles": _load_json(row["claude_role_models"], {}),
+                "trowel_connection_home": {
+                    "inherited": self.claude_homes.is_inherited(str(row["id"])),
+                    "provider_settings": "per-session override",
+                },
             }
+            if bool(row["claude_auto_memory_disabled"]):
+                body["autoMemoryEnabled"] = False
             return {"format": "json", "body": body}
         if row["kind"] == ConnectionKind.CODEX_OFFICIAL.value:
             return {
@@ -1826,18 +2198,25 @@ class ConfigurationService:
                     "provider": "openai",
                     "account": f"<{auth_status}>",
                     "oauth": "<Codex managed>",
+                    "trowel_connection_home": {
+                        "inherited": self.codex_homes.is_inherited(str(row["id"])),
+                        "provider_settings": "manager override",
+                    },
                 },
             }
-        return {
-            "format": "toml",
-            "body": {
-                "model_provider": row["id"],
-                "base_url": row["base_url"],
-                "wire_api": row["protocol"],
-                "api_key": f"<{auth_status}>",
-                "models": _load_json(row["codex_catalog"], []),
-            },
+        body = {
+            "model_provider": row["id"],
+            "base_url": row["base_url"],
+            "wire_api": row["protocol"],
+            "api_key": f"<{auth_status}>",
+            "models": _load_json(row["codex_catalog"], []),
         }
+        if row["kind"] == ConnectionKind.CODEX_CUSTOM.value:
+            body["trowel_connection_home"] = {
+                "inherited": self.codex_homes.is_inherited(str(row["id"])),
+                "provider_settings": "manager override",
+            }
+        return {"format": "toml", "body": body}
 
     def _session_view(self, row: sqlite3.Row) -> SessionConfigurationView:
         """把持久会话配置与当前连接和能力表重新核对。"""
@@ -1892,6 +2271,7 @@ class ConfigurationService:
         return SessionConfigurationView(
             id=str(row["id"]),
             version=int(row["version"]),
+            identity_version=int(row["identity_version"]),
             name=str(row["name"]),
             runtime=runtime,
             connection_id=str(row["connection_id"]),
@@ -1901,4 +2281,11 @@ class ConfigurationService:
             capability=capability,
             availability=availability,
             disabled_reason=reason,
+            connection_name=(
+                str(connection["name"]) if connection is not None else "连接已删除"
+            ),
+            stable_alias=(
+                str(row["stable_alias"]) if row["stable_alias"] is not None else None
+            ),
+            agent_callable=bool(row["agent_callable"]),
         )

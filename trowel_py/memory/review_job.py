@@ -75,6 +75,7 @@ async def run_daily_review(
     eligible_before: str | None = None,
     review_session_id: str | None = None,
     resource_registry: ResourceRegistry | None = None,
+    allow_default_provider: bool = True,
 ) -> None:
     """提炼所有已完成但尚未推进 extracted 水位的增量 segment。
 
@@ -104,6 +105,10 @@ async def run_daily_review(
         from trowel_py.memory.daily_review.agent import resource_aware_host_factory
 
         host_factory = resource_aware_host_factory(resource_registry)
+    if not allow_default_provider and provider is None:
+        from trowel_py.memory.daily_review.batch import NO_LLM_PROVIDER
+
+        provider = NO_LLM_PROVIDER
     try:
         with _review_lock(root):
             await _run_daily_review_locked(
@@ -127,6 +132,9 @@ def run_daily_review_sync(event: Any = None) -> None:
     eligible_before = None
     review_session_id = None
     resource_registry = None
+    host_factory = None
+    provider = None
+    allow_default_provider = True
     if event and isinstance(event, dict):
         root = event.get("root")
         date_str = event.get("date")
@@ -135,6 +143,12 @@ def run_daily_review_sync(event: Any = None) -> None:
         candidate_registry = event.get("_resource_registry")
         if isinstance(candidate_registry, ResourceRegistry):
             resource_registry = candidate_registry
+        candidate_host_factory = event.get("_host_factory")
+        if callable(candidate_host_factory):
+            host_factory = candidate_host_factory
+        if event.get("_provider_resolved") is True:
+            provider = event.get("_provider")
+            allow_default_provider = False
     root_path = Path(root) if root else None
     asyncio.run(
         run_daily_review(
@@ -144,5 +158,8 @@ def run_daily_review_sync(event: Any = None) -> None:
             eligible_before=eligible_before,
             review_session_id=review_session_id,
             resource_registry=resource_registry,
+            host_factory=host_factory,
+            provider=provider,
+            allow_default_provider=allow_default_provider,
         )
     )

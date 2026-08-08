@@ -30,6 +30,8 @@ const catalog: ConfigurationCatalog = {
       auth: { kind: "api_key", status: "configured" },
       login_directory: null,
       login_directory_exists: null,
+      claude_config_inherited: false,
+      codex_config_inherited: null,
       proxy: { url: null, username: null, password_status: "missing" },
       claude_role_models: {},
       codex_catalog: [],
@@ -107,6 +109,85 @@ function deferred<T>() {
 }
 
 describe("settings store", () => {
+  it("只在已保存且无脏修改时继承 Claude 全局配置", async () => {
+    const inherit = vi.fn().mockResolvedValue({
+      ...catalog.connections[0],
+      claude_config_inherited: true,
+    });
+    const store = createSettingsStore({ inheritGlobalClaudeConfig: inherit });
+    store.setState({ catalog });
+    store.getState().openConnection("connection-1");
+
+    await store.getState().inheritRuntimeConfig();
+
+    expect(inherit).toHaveBeenCalledWith("connection-1", 3);
+    expect(
+      store.getState().catalog?.connections[0].claude_config_inherited,
+    ).toBe(true);
+    expect(store.getState().connectionEditor?.inheritingRuntimeConfig).toBe(false);
+
+    store.getState().updateConnectionDraft({ name: "尚未保存" });
+    await store.getState().inheritRuntimeConfig();
+    expect(inherit).toHaveBeenCalledTimes(1);
+  });
+
+  it("Codex 连接使用自己的全局复制端点", async () => {
+    const codexConnection = {
+      ...catalog.connections[0],
+      runtime: "codex" as const,
+      kind: "codex_custom" as const,
+      protocol: "openai_responses" as const,
+      claude_config_inherited: null,
+      codex_config_inherited: false,
+    };
+    const codexCatalog = { ...catalog, connections: [codexConnection] };
+    const inheritCodex = vi.fn().mockResolvedValue({
+      ...codexConnection,
+      codex_config_inherited: true,
+    });
+    const inheritClaude = vi.fn();
+    const store = createSettingsStore({
+      inheritGlobalCodexConfig: inheritCodex,
+      inheritGlobalClaudeConfig: inheritClaude,
+    });
+    store.setState({ catalog: codexCatalog });
+    store.getState().openConnection("connection-1");
+
+    await store.getState().inheritRuntimeConfig();
+
+    expect(inheritCodex).toHaveBeenCalledWith("connection-1", 3);
+    expect(inheritClaude).not.toHaveBeenCalled();
+    expect(store.getState().catalog?.connections[0].codex_config_inherited).toBe(true);
+  });
+
+  it("复制期间切换连接时仍按原请求结果返回失败", async () => {
+    let rejectInheritance!: (error: Error) => void;
+    const inherit = vi.fn(
+      () =>
+        new Promise<(typeof catalog.connections)[number]>((_resolve, reject) => {
+          rejectInheritance = reject;
+        }),
+    );
+    const second = {
+      ...catalog.connections[0],
+      id: "connection-2",
+      name: "另一个连接",
+    };
+    const store = createSettingsStore({ inheritGlobalClaudeConfig: inherit });
+    store.setState({
+      catalog: { ...catalog, connections: [catalog.connections[0], second] },
+    });
+    store.getState().openConnection("connection-1");
+
+    const pending = store.getState().inheritRuntimeConfig();
+    store.getState().openConnection("connection-2");
+    rejectInheritance(new Error("复制失败"));
+
+    await expect(pending).resolves.toBe(false);
+    expect(store.getState().connectionEditor?.connectionId).toBe("connection-2");
+    expect(store.getState().connectionEditor?.error).toBeNull();
+  });
+
   it("诊断失败时仍保留已经成功的配置与路径", async () => {
     const store = createSettingsStore({
       fetchCatalog: vi.fn().mockResolvedValue(catalog),
@@ -134,6 +215,37 @@ describe("settings store", () => {
       ),
     ).toEqual(["weekly-only"]);
     expect(eligibleSessionConfigurations(catalog, "memory_daily")).toEqual([]);
+  });
+
+  it("Claude 与 Codex 原生 Agent 配置都能进入后台任务选择器", () => {
+    const managedConfigurations = [
+      {
+        ...catalog.session_configurations[0],
+        id: "glm-agent",
+        runtime: "claude_code" as const,
+        capability: {
+          ...catalog.session_configurations[0].capability,
+          eligible_tasks: ["memory_daily" as const],
+        },
+      },
+      {
+        ...catalog.session_configurations[0],
+        id: "luna-agent",
+        runtime: "codex" as const,
+        model: "gpt-5.6-luna",
+        capability: {
+          ...catalog.session_configurations[0].capability,
+          eligible_tasks: ["memory_daily" as const],
+        },
+      },
+    ];
+
+    expect(
+      eligibleSessionConfigurations(
+        { ...catalog, session_configurations: managedConfigurations },
+        "memory_daily",
+      ).map((configuration) => configuration.id),
+    ).toEqual(["glm-agent", "luna-agent"]);
   });
 
   it("Agent 默认不提供仅供后台任务使用的 direct API 配置", () => {

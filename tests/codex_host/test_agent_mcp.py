@@ -77,9 +77,11 @@ def test_codex_agent_mcp_carries_process_registration_env() -> None:
         profile_enabled=False,
         self_enabled=True,
         registration_env={"TROWEL_RESOURCE_REGISTRATION_TOKEN": "private-token"},
+        agent_api_credential="agent-api-secret",
     )
 
     env = cfg.to_thread_config()["trowel_agents"]["env"]
 
     assert env["TROWEL_RESOURCE_REGISTRATION_TOKEN"] == "private-token"
+    assert env["TROWEL_AGENT_API_CREDENTIAL"] == "agent-api-secret"
     assert env["TROWEL_PARENT_SESSION_ID"] == "parent-codex"

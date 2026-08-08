@@ -76,21 +76,28 @@ def build_round_prompt(
     else:
         artifacts.verify_publication(discussion, previous)
         participant_by_id = {item.id: item for item in discussion.participants}
-        lines.extend(["", f"【上一轮（第 {previous.number} 轮）公开发言】"])
+        lines.extend(
+            [
+                "",
+                f"【上一轮（第 {previous.number} 轮）公开发言】",
+                "下面每个绝对路径都指向该讨论者上一轮的完整发言。",
+                "请使用读文件工具按需读取需要核对的发言，再完成本轮任务。",
+            ]
+        )
         for result in previous.results:
             participant = participant_by_id[result.participant_id]
-            lines.extend(["", f"{participant.name}："])
             if result.status == "succeeded" and result.output_artifact:
-                lines.append(
-                    artifacts.read_text(
-                        result.output_artifact,
-                        expected_sha256=result.output_sha256,
-                        expected_bytes=result.output_bytes,
-                    )
+                if result.output_sha256 is None:
+                    raise ValueError("discussion output hash is missing")
+                output_path = artifacts.verified_path(
+                    result.output_artifact,
+                    expected_sha256=result.output_sha256,
+                    expected_bytes=result.output_bytes,
                 )
+                lines.append(f"{participant.name}：{output_path}")
             else:
                 reason = result.error_message or result.status
-                lines.append(f"[{result.status}] {reason}")
+                lines.append(f"{participant.name}：[{result.status}] {reason}")
         supplements = [
             message
             for message in discussion.messages

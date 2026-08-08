@@ -82,6 +82,7 @@ vi.mock("../agent/transport/api", () => ({
   ]),
   listAgentModels: vi.fn().mockResolvedValue([]),
   listCodexCommands: vi.fn().mockResolvedValue([]),
+  listCodexSkills: vi.fn().mockResolvedValue({ skills: [], errors: [] }),
   compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
   startCodexReview: vi.fn().mockResolvedValue({
     reviewThreadId: "thread-1",

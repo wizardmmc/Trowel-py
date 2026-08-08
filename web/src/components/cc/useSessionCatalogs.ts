@@ -13,15 +13,28 @@ import {
 } from "../../agent/transport";
 import type { RuntimesState } from "./NewSessionDialog";
 
-export function useSessionCatalogs(workdir: string) {
+export function useSessionCatalogs(
+  workdir: string,
+  claudeSessionId: string | null = null,
+) {
   const [slashCatalog, setSlashCatalog] = useState<{
     readonly workdir: string;
+    readonly sessionId: string | null;
     readonly items: readonly SlashItem[];
-  }>({ workdir: "", items: [] });
+    readonly loading: boolean;
+    readonly error: string | null;
+  }>({ workdir: "", sessionId: null, items: [], loading: false, error: null });
+  const [slashGeneration, setSlashGeneration] = useState(0);
   const slashItems =
-    workdir.trim() && slashCatalog.workdir === workdir
+    workdir.trim() &&
+    slashCatalog.workdir === workdir &&
+    slashCatalog.sessionId === claudeSessionId
       ? slashCatalog.items
       : [];
+  const slashRequestMatches =
+    slashCatalog.workdir === workdir && slashCatalog.sessionId === claudeSessionId;
+  const slashLoading = Boolean(claudeSessionId) && (!slashRequestMatches || slashCatalog.loading);
+  const slashError = slashRequestMatches ? slashCatalog.error : null;
   const [models, setModels] = useState<readonly ModelOption[]>([]);
   const [codexModels, setCodexModels] = useState<readonly AgentModel[]>([]);
   const [codexCatalogError, setCodexCatalogError] = useState<string | null>(
@@ -97,26 +110,47 @@ export function useSessionCatalogs(workdir: string) {
   }, []);
 
   useEffect(() => {
-    if (!workdir.trim()) {
+    if (!workdir.trim() || !claudeSessionId) {
       return;
     }
     let cancelled = false;
-    listSlashItems(workdir)
+    setSlashCatalog({
+      workdir,
+      sessionId: claudeSessionId,
+      items: [],
+      loading: true,
+      error: null,
+    });
+    listSlashItems(workdir, claudeSessionId)
       .then((items) => {
         if (cancelled) return;
-        setSlashCatalog({ workdir, items });
+        setSlashCatalog({ workdir, sessionId: claudeSessionId, items, loading: false, error: null });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
-        setSlashCatalog({ workdir, items: [] });
+        setSlashCatalog({
+          workdir,
+          sessionId: claudeSessionId,
+          items: [],
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [workdir]);
+  }, [claudeSessionId, slashGeneration, workdir]);
+
+  const retrySlashItems = useCallback(
+    () => setSlashGeneration((value) => value + 1),
+    [],
+  );
 
   return {
     slashItems,
+    slashLoading,
+    slashError,
+    retrySlashItems,
     models,
     codexModels,
     codexCatalogError,

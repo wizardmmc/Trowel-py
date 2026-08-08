@@ -7,6 +7,7 @@ import pytest
 
 from trowel_py.cc_host import history
 from trowel_py.schemas.cc_host import (
+    ContextUsageEvent,
     ElicitationRequestEvent,
     TextEvent,
     ThinkingEvent,
@@ -48,6 +49,49 @@ def test_parse_history_renders_user_then_assistant_text(fake_projects: Path) -> 
     assert text_ev.text == "hi there"
 
     assert kinds.index("UserEvent") < kinds.index("TextEvent")
+
+
+def test_parse_history_keeps_assistant_usage_before_content(
+    fake_projects: Path,
+) -> None:
+    """历史回放必须保留 transcript 的真实 usage，供断线恢复与讨论对账。"""
+
+    assistant = _assistant([{"type": "text", "text": "answer"}])
+    assistant["message"].update(
+        {
+            "id": "msg-real-usage",
+            "model": "glm-5.2",
+            "usage": {
+                "input_tokens": 12061,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 22144,
+                "output_tokens": 4413,
+            },
+        }
+    )
+    _write_jsonl(
+        fake_projects / "abc-123.jsonl",
+        [_user_text("measure"), assistant],
+    )
+
+    events = history.parse_history("/workdir", "abc-123")
+
+    usage_index = next(
+        index for index, event in enumerate(events) if isinstance(event, ContextUsageEvent)
+    )
+    text_index = next(
+        index for index, event in enumerate(events) if isinstance(event, TextEvent)
+    )
+    usage = events[usage_index]
+    assert usage_index < text_index
+    assert usage.message_id == "msg-real-usage"
+    assert usage.model == "glm-5.2"
+    assert usage.usage == {
+        "input_tokens": 12061,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 22144,
+        "output_tokens": 4413,
+    }
 
 
 def test_parse_history_maps_tool_use_and_result(fake_projects: Path) -> None:
@@ -114,6 +158,7 @@ def test_parse_history_maps_askuserquestion_to_elicit_request(
     events = history.parse_history("/workdir", "abc-123")
     elicit = next(e for e in events if isinstance(e, ElicitationRequestEvent))
     assert elicit.tool_use_id == "call_aq"
+    assert elicit.tool_name == "AskUserQuestion"
     assert elicit.questions[0]["header"] == "Pref"
 
     # control_request 不写入 JSONL；reducer 只需用 tool_use_id 匹配响应。

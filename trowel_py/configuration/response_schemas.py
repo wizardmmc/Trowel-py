@@ -172,6 +172,8 @@ class ConnectionResponse(BaseModel):
         auth: 脱敏认证状态。
         login_directory: 保留兼容字段；Official 始终返回 None。
         login_directory_exists: Trowel 内部账号槽当前是否存在，不返回路径。
+        claude_config_inherited: Claude 连接家是否完成过全局配置继承；其他连接为 None。
+        codex_config_inherited: Codex 连接家是否完成过全局配置继承；其他连接为 None。
         proxy: 脱敏连接代理字段。
         claude_role_models: Claude 角色到 model ID 的映射。
         codex_catalog: Codex 模型和 effort 元数据。
@@ -181,6 +183,7 @@ class ConnectionResponse(BaseModel):
         last_session_choice: 最近一次成功会话的 model 和 effort。
         secret_versions: secret 用途到单调版本的映射。
         preview: 由保存事实生成的脱敏配置预览。
+        claude_auto_memory_disabled: 是否关闭 Claude Code 原生 auto-memory。
     """
 
     id: str
@@ -196,6 +199,8 @@ class ConnectionResponse(BaseModel):
     auth: AuthResponse
     login_directory: str | None
     login_directory_exists: bool | None
+    claude_config_inherited: bool | None
+    codex_config_inherited: bool | None
     proxy: ProxyResponse
     claude_role_models: dict[str, str]
     codex_catalog: list[CodexCatalogEntryResponse]
@@ -205,6 +210,7 @@ class ConnectionResponse(BaseModel):
     last_session_choice: dict[str, str | None] | None
     secret_versions: dict[SecretKind, int]
     preview: dict[str, Any]
+    claude_auto_memory_disabled: bool
 
 
 class AgentConnectionModelResponse(BaseModel):
@@ -309,6 +315,7 @@ class SessionConfigurationResponse(BaseModel):
     Attributes:
         id: 稳定会话配置 ID。
         version: 乐观并发版本。
+        identity_version: 启动事实变化时递增的版本。
         name: 设置、Agent 和研讨共用的展示名称。
         runtime: 消费配置的执行方式。
         connection_id: 引用的连接 ID。
@@ -318,10 +325,14 @@ class SessionConfigurationResponse(BaseModel):
         capability: 当前能力结论。
         availability: available 或 stale。
         disabled_reason: 不可用时的稳定原因。
+        connection_name: 当前模型连接名称。
+        stable_alias: 当前 Agent MCP 调用别名。
+        agent_callable: 是否允许父 Agent 调用。
     """
 
     id: str
     version: int
+    identity_version: int
     name: str
     runtime: RuntimeKind
     connection_id: str
@@ -331,6 +342,9 @@ class SessionConfigurationResponse(BaseModel):
     capability: CapabilityResponse
     availability: str
     disabled_reason: str | None
+    connection_name: str
+    stable_alias: str | None
+    agent_callable: bool
 
 
 class TaskBindingResponse(BaseModel):

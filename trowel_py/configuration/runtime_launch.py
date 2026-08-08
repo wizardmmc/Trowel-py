@@ -40,10 +40,14 @@ class RuntimeLaunchConfiguration:
         capability_source: 放行该组合的真实验证证据说明。
         base_url: 自定义上游根地址；official Codex 为 None。
         login_directory: Codex official 原生登录目录引用。
+        claude_config_dir: Claude 兼容连接独占的用户配置与原生状态根。
+        claude_plugin_dir: Claude 连接共享物理安装的 plugin 根。
+        codex_config_dir: 新版 Codex 会话冻结的连接配置家；None 保留旧会话启动语义。
         proxy_url: 已补齐可选认证信息的连接级代理地址。
         claude_role_models: Claude 各角色的真实模型映射。
         codex_catalog: Codex 连接保存的模型元数据。
         api_key: 只供子进程环境使用的连接凭据。
+        claude_auto_memory_disabled: 是否关闭 Claude Code 原生 auto-memory。
     """
 
     connection_id: str
@@ -61,8 +65,12 @@ class RuntimeLaunchConfiguration:
     proxy_url: str | None = field(repr=False)
     claude_role_models: Mapping[str, str]
     codex_catalog: tuple[CodexCatalogEntry, ...]
+    claude_config_dir: str | None = None
+    claude_plugin_dir: str | None = None
+    codex_config_dir: str | None = None
     api_key: str | None = field(default=None, repr=False)
     capability_source: str | None = None
+    claude_auto_memory_disabled: bool = False
 
     @property
     def pool_key(self) -> str:
@@ -89,6 +97,7 @@ class RuntimeLaunchConfiguration:
             "protocol": self.protocol.value,
             "base_url": self.base_url,
             "login_directory": self.login_directory,
+            "codex_config_dir": self.codex_config_dir,
             "proxy_endpoint": proxy_endpoint,
             "proxy_username": proxy_username,
         }
@@ -121,16 +130,24 @@ class RuntimeLaunchConfiguration:
             configured = self.claude_role_models.get(role)
             if configured:
                 env[variable] = configured
-        return {"env": env, "model": self.model}
+        settings: dict[str, object] = {"env": env, "model": self.model}
+        if self.claude_auto_memory_disabled:
+            settings["autoMemoryEnabled"] = False
+        return settings
 
     def codex_environment(self, *, shared_state_root: Path) -> dict[str, str]:
-        """构造不会继承其他连接凭据或代理的 Codex 子进程环境。"""
+        """构造不会继承其他连接凭据、用户 skill 或代理的 Codex 环境。"""
 
-        codex_home = (
-            Path(self.login_directory).expanduser()
-            if self.kind is ConnectionKind.CODEX_OFFICIAL and self.login_directory
-            else shared_state_root
-        )
+        if self.codex_config_dir is not None:
+            codex_home = Path(self.codex_config_dir).expanduser()
+        else:
+            # 旧冻结档案没有 codex_config_dir：Official 继续使用原账号槽，
+            # Custom 继续使用旧共享根，避免恢复时悄悄换配置身份。
+            codex_home = (
+                Path(self.login_directory).expanduser()
+                if self.kind is ConnectionKind.CODEX_OFFICIAL and self.login_directory
+                else shared_state_root
+            )
         env = {
             "CODEX_HOME": str(codex_home),
             "CODEX_SQLITE_HOME": str(shared_state_root),
@@ -138,6 +155,12 @@ class RuntimeLaunchConfiguration:
             "CODEX_API_KEY": "",
             "TROWEL_CODEX_PROVIDER_KEY": self.api_key or "",
         }
+        if self.codex_config_dir is not None:
+            # Codex 原生始终扫描 $HOME/.agents/skills。把 app-server 的 HOME
+            # 限定到连接家，shell 工具再由 codex_overrides 恢复真实 HOME。
+            env["HOME"] = str(codex_home)
+            if os.name == "nt":
+                env["USERPROFILE"] = str(codex_home)
         for name in (
             "ALL_PROXY",
             "HTTP_PROXY",
@@ -157,8 +180,16 @@ class RuntimeLaunchConfiguration:
     def codex_overrides(self) -> dict[str, object]:
         """构造固定 provider 的 app-server ``-c`` 覆盖项。"""
 
+        shell_environment = {"HOME": str(Path.home())}
+        if os.name == "nt":
+            shell_environment["USERPROFILE"] = str(Path.home())
+        shell_policy = (
+            {"shell_environment_policy": {"set": shell_environment}}
+            if self.codex_config_dir is not None
+            else {}
+        )
         if self.kind is ConnectionKind.CODEX_OFFICIAL:
-            return {"model_provider": "openai"}
+            return {"model_provider": "openai", **shell_policy}
         if self.kind is not ConnectionKind.CODEX_CUSTOM or not self.base_url:
             raise ValueError("Codex overrides require a usable Codex connection")
         provider_id = f"trowel_{self.connection_id.replace('-', '_')}"
@@ -176,6 +207,7 @@ class RuntimeLaunchConfiguration:
                     "stream_max_retries": 1,
                 }
             },
+            **shell_policy,
         }
 
 

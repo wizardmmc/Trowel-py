@@ -16,6 +16,12 @@ body {
   color: var(--text-primary);
 }
 
+button,
+input,
+textarea {
+  font: inherit;
+}
+
 
 .btn {
   display: inline-flex;
@@ -141,13 +147,39 @@ body {
   gap: var(--space-sm);
 }
 
-.extraction-input__file-input {
-  font-size: 0.8rem;
+.extraction-input__file-button {
+  display: inline-flex;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--garden-green);
+  background: var(--bg-card);
+  cursor: pointer;
+  font-size: 0.78rem;
 }
 
-.extraction-input__file-input:disabled {
-  opacity: 0.6;
+.extraction-input__file-button:hover:not(:disabled) {
+  border-color: var(--garden-green);
+  background: var(--garden-soft);
+}
+
+.extraction-input__file-button:disabled {
   cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.extraction-input__file-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .extraction-input__drop-hint {

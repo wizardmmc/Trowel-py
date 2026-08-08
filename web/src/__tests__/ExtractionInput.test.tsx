@@ -27,7 +27,8 @@ describe("ExtractionInput", () => {
     );
     expect(screen.getByTestId("extraction-textarea")).toBeInTheDocument();
     expect(screen.getByTestId("extract-button")).toBeInTheDocument();
-    expect(screen.getByTestId("file-input")).toBeInTheDocument();
+    expect(screen.getByTestId("file-input")).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "选择文件" })).toBeVisible();
   });
 
   it("disables extract button when content is empty", () => {

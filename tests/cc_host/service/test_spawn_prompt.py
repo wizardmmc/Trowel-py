@@ -196,6 +196,27 @@ async def test_spawn_argv_memory_off_profile_off(memory_root: Path) -> None:
     assert "--mcp-config" not in args
 
 
+async def test_bootstrap_context_remains_system_prompt_when_other_context_is_off(
+    memory_root: Path,
+) -> None:
+    """内部交接现场只能进入系统提示词，不能依赖 Memory/Self 正文。"""
+
+    spawner = FakeSpawner([FakeProc([])])
+    host = CCHost(
+        "session-id",
+        memory_root,
+        spawner=spawner,
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=False,
+        bootstrap_context="SYSTEM_HANDOFF_MARKER",
+    )
+
+    await host._spawn(None)
+
+    assert _prompt_of(spawner.spawned[0][0]) == "SYSTEM_HANDOFF_MARKER"
+
+
 async def test_spawn_includes_self_section_when_enabled(
     memory_root: Path,
     monkeypatch: pytest.MonkeyPatch,

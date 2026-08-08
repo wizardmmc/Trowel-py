@@ -127,7 +127,7 @@ def translate_assistant(
             返回估算思考秒数的函数。
         text_event_type: 根据 ``text`` 构造文本事件的类型或函数。
         thinking_event_type: 根据文本和估算时长构造思考事件的类型或函数。
-        elicitation_event_type: 根据工具 ID 和问题列表构造交互请求的类型或函数。
+        elicitation_event_type: 根据工具 ID、工具名和问题列表构造交互请求的类型或函数。
         tool_call_event_type: 根据工具 ID、名称和参数构造普通工具调用的类型或函数。
 
     Returns:
@@ -163,6 +163,7 @@ def translate_assistant(
                     elicitation_event_type(
                         tool_use_id=str(block.get("id", "")),
                         request_id="",
+                        tool_name=tool_name,
                         questions=list(
                             (block.get("input") or {}).get("questions") or []
                         ),

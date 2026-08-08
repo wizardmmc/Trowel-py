@@ -190,6 +190,21 @@ class FakeCodexManager:
     async def list_commands(self) -> list[dict[str, Any]]:
         return command_roster("0.144.0")
 
+    async def list_skills(self, session: Any, *, cwd: str) -> dict[str, Any]:
+        """返回可辨认连接与工作目录的测试技能目录。"""
+
+        return {
+            "skills": [
+                {
+                    "name": "development-slice-workflow",
+                    "description": f"{session.session_id} @ {cwd}",
+                    "scope": "user",
+                    "enabled": True,
+                }
+            ],
+            "errors": [],
+        }
+
     async def list_threads(
         self,
         *,
@@ -330,6 +345,8 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         process_controller: Any | None = None,
         resource_registry: Any | None = None,
         memory_mcp_enabled: bool | None = None,
+        bootstrap_context: str | None = None,
+        memory_eligibility: bool = True,
     ) -> OpenedCcSession:
         del proxy_base_url, settings_path, process_controller, resource_registry
         sid = "cc-" + uuid.uuid4().hex[:8]
@@ -341,6 +358,8 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         )
         host.session_kind = req.session_kind
         host.agent_mcp_enabled = req.agent_mcp_enabled
+        host.bootstrap_context = bootstrap_context
+        host.memory_eligibility = memory_eligibility
         host.memory_mcp_enabled = (
             req.memory_enabled
             if memory_mcp_enabled is None

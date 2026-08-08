@@ -15,14 +15,21 @@ import type {
   PathStatus,
   SecretKind,
   SecretStatusResult,
+  SessionConfiguration,
+  SessionConfigurationDraft,
+  SessionConfigurationEditorState,
   SettingsSection,
   TaskBinding,
   TaskId,
 } from "../domain/types";
 import {
   ConfigurationApiError,
+  archiveSessionConfiguration,
   createConnection,
+  createSessionConfiguration,
   deleteConnection,
+  inheritGlobalClaudeConfig,
+  inheritGlobalCodexConfig,
   deleteSecret,
   deleteTaskBinding,
   fetchConfigurationCatalog,
@@ -34,6 +41,7 @@ import {
   putTaskBinding,
   startCodexOfficialLogin,
   updateConnection,
+  updateSessionConfiguration,
   writeSecret,
 } from "../transport/api";
 import {
@@ -67,6 +75,14 @@ export interface SettingsApi {
     draft: ConnectionDraft,
   ) => Promise<Connection>;
   readonly deleteConnection: (id: string, expectedVersion: number) => Promise<null>;
+  readonly inheritGlobalClaudeConfig: (
+    id: string,
+    expectedVersion: number,
+  ) => Promise<Connection>;
+  readonly inheritGlobalCodexConfig: (
+    id: string,
+    expectedVersion: number,
+  ) => Promise<Connection>;
   readonly writeSecret: (
     id: string,
     kind: SecretKind,
@@ -85,6 +101,20 @@ export interface SettingsApi {
   ) => Promise<FetchModelsResult>;
   readonly fetchCodexOfficialAccount: (id: string) => Promise<CodexOfficialAccount>;
   readonly startCodexOfficialLogin: (id: string) => Promise<CodexOfficialLogin>;
+  readonly createSessionConfiguration: (
+    draft: SessionConfigurationDraft,
+    expectedConnectionVersion: number,
+  ) => Promise<SessionConfiguration>;
+  readonly updateSessionConfiguration: (
+    id: string,
+    expectedVersion: number,
+    expectedConnectionVersion: number,
+    draft: SessionConfigurationDraft,
+  ) => Promise<SessionConfiguration>;
+  readonly archiveSessionConfiguration: (
+    id: string,
+    expectedVersion: number,
+  ) => Promise<null>;
   readonly putTaskBinding: (
     taskId: TaskId,
     configurationId: string,
@@ -109,6 +139,7 @@ export interface SettingsState {
   readonly diagnosticsError: string | null;
   readonly diagnosticsFetchedAt: string | null;
   readonly connectionEditor: ConnectionEditorState | null;
+  readonly configurationEditor: SessionConfigurationEditorState | null;
   readonly connectionRuntimeFilter: "claude_code" | "codex";
   readonly taskDrafts: TaskValues;
   readonly taskEnabled: TaskFlags;
@@ -134,11 +165,20 @@ export interface SettingsState {
   readonly updateClaudeRole: (role: string, model: string) => void;
   readonly saveConnection: () => Promise<void>;
   readonly removeConnection: () => Promise<void>;
+  readonly inheritRuntimeConfig: () => Promise<boolean>;
   readonly fetchConnectionModels: () => Promise<void>;
   readonly refreshCodexOfficialAccount: () => Promise<void>;
   readonly beginCodexOfficialLogin: () => Promise<CodexOfficialLogin | null>;
   readonly writeConnectionSecret: (kind: SecretKind, value: string) => Promise<void>;
   readonly deleteConnectionSecret: (kind: SecretKind) => Promise<void>;
+  readonly openSessionConfiguration: (configurationId: string) => void;
+  readonly createSessionConfigurationDraft: () => void;
+  readonly closeSessionConfiguration: () => void;
+  readonly updateSessionConfigurationDraft: (
+    patch: Partial<SessionConfigurationDraft>,
+  ) => void;
+  readonly saveSessionConfiguration: () => Promise<void>;
+  readonly archiveSessionConfiguration: () => Promise<void>;
   readonly setTaskDraft: (taskId: TaskId, configurationId: string | null) => void;
   readonly setTaskEnabled: (taskId: TaskId, enabled: boolean) => void;
   readonly saveTask: (taskId: TaskId) => Promise<void>;
@@ -155,12 +195,17 @@ const defaultApi: SettingsApi = {
   createConnection,
   updateConnection,
   deleteConnection,
+  inheritGlobalClaudeConfig,
+  inheritGlobalCodexConfig,
   writeSecret,
   deleteSecret,
   fetchModels,
   fetchCodexOfficialAccount,
   putTaskBinding,
   startCodexOfficialLogin,
+  createSessionConfiguration,
+  updateSessionConfiguration,
+  archiveSessionConfiguration,
   deleteTaskBinding,
   putAgentDefaults,
 };
@@ -192,6 +237,7 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
     diagnosticsError: null,
     diagnosticsFetchedAt: null,
     connectionEditor: null,
+    configurationEditor: null,
     connectionRuntimeFilter: "claude_code",
     taskDrafts: emptyTaskValues(),
     taskEnabled: emptyTaskFlags(false),
@@ -249,7 +295,8 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
     reloadCatalog: async () => {
       try {
         const catalog = await api.fetchCatalog();
-        set({ catalog, error: null });
+        setCatalogFacts(set, catalog);
+        set({ error: null });
         return true;
       } catch (error) {
         set({ error: errorMessage(error) });
@@ -412,6 +459,52 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
         });
       } catch (error) {
         updateEditorError(set, get, error, editor.connectionId, "deleting");
+      }
+    },
+    inheritRuntimeConfig: async () => {
+      const editor = get().connectionEditor;
+      if (
+        !editor?.connectionId ||
+        editor.draft.runtime === "direct_api" ||
+        editor.dirty ||
+        editor.inheritingRuntimeConfig
+      ) return false;
+      set({
+        connectionEditor: {
+          ...editor,
+          inheritingRuntimeConfig: true,
+          error: null,
+          conflict: false,
+        },
+      });
+      try {
+        const inherit = editor.draft.runtime === "codex"
+          ? api.inheritGlobalCodexConfig
+          : api.inheritGlobalClaudeConfig;
+        const connection = await inherit(editor.connectionId, editor.version);
+        replaceConnection(set, get, connection);
+        const current = get().connectionEditor;
+        if (
+          current?.connectionId !== editor.connectionId ||
+          !current.inheritingRuntimeConfig
+        ) return true;
+        set({ connectionEditor: editorFromConnection(connection) });
+        return true;
+      } catch (error) {
+        const current = get().connectionEditor;
+        if (
+          current?.connectionId !== editor.connectionId ||
+          !current.inheritingRuntimeConfig
+        ) return false;
+        set({
+          connectionEditor: {
+            ...current,
+            inheritingRuntimeConfig: false,
+            error: errorMessage(error),
+            conflict: isConflict(error),
+          },
+        });
+        return false;
       }
     },
     fetchConnectionModels: async () => {
@@ -698,6 +791,97 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
         updateEditorErrorForConnection(set, get, error, editor.connectionId);
       }
     },
+    openSessionConfiguration: (configurationId) => {
+      const configuration = get().catalog?.session_configurations.find(
+        (item) => item.id === configurationId,
+      );
+      if (!configuration) return;
+      set({ configurationEditor: sessionConfigurationEditor(configuration) });
+    },
+    createSessionConfigurationDraft: () => {
+      set({ configurationEditor: emptySessionConfigurationEditor() });
+    },
+    closeSessionConfiguration: () => set({ configurationEditor: null }),
+    updateSessionConfigurationDraft: (patch) => {
+      const editor = get().configurationEditor;
+      if (!editor) return;
+      set({
+        configurationEditor: {
+          ...editor,
+          draft: { ...editor.draft, ...patch },
+          dirty: true,
+          error: null,
+          conflict: false,
+        },
+      });
+    },
+    saveSessionConfiguration: async () => {
+      const editor = get().configurationEditor;
+      const catalog = get().catalog;
+      if (!editor || !catalog || editor.saving) return;
+      const connection = catalog.connections.find(
+        (item) => item.id === editor.draft.connection_id,
+      );
+      if (!connection) {
+        set({ configurationEditor: { ...editor, error: "必须选择模型连接" } });
+        return;
+      }
+      set({ configurationEditor: { ...editor, saving: true, error: null } });
+      try {
+        const saved = editor.configurationId
+          ? await api.updateSessionConfiguration(
+              editor.configurationId,
+              editor.version,
+              connection.version,
+              editor.draft,
+            )
+          : await api.createSessionConfiguration(editor.draft, connection.version);
+        replaceSessionConfiguration(set, get, saved);
+        set({ configurationEditor: sessionConfigurationEditor(saved) });
+      } catch (error) {
+        const current = get().configurationEditor;
+        if (current?.configurationId !== editor.configurationId) return;
+        set({
+          configurationEditor: {
+            ...current,
+            saving: false,
+            error: errorMessage(error),
+            conflict: isConflict(error),
+          },
+        });
+      }
+    },
+    archiveSessionConfiguration: async () => {
+      const editor = get().configurationEditor;
+      if (!editor?.configurationId || editor.archiving) return;
+      set({ configurationEditor: { ...editor, archiving: true, error: null } });
+      try {
+        await api.archiveSessionConfiguration(editor.configurationId, editor.version);
+        const catalog = get().catalog;
+        set({
+          catalog: catalog
+            ? {
+                ...catalog,
+                session_configurations: catalog.session_configurations.filter(
+                  (item) => item.id !== editor.configurationId,
+                ),
+              }
+            : null,
+          configurationEditor: null,
+        });
+      } catch (error) {
+        const current = get().configurationEditor;
+        if (current?.configurationId !== editor.configurationId) return;
+        set({
+          configurationEditor: {
+            ...current,
+            archiving: false,
+            error: errorMessage(error),
+            conflict: isConflict(error),
+          },
+        });
+      }
+    },
     setTaskDraft: (taskId, configurationId) => {
       const binding = findTaskBinding(get().catalog, taskId);
       const enabled = get().taskEnabled[taskId];
@@ -836,7 +1020,6 @@ export function createSettingsStore(apiOverrides: Partial<SettingsApi> = {}) {
 
 export const settingsStore = createSettingsStore();
 
-/** 返回后端明确允许该任务且当前仍可用的会话配置。 */
 /** 把一次 catalog 读取同步到绑定草稿和 Agent 默认草稿。 */
 function setCatalogFacts(
   set: (patch: Partial<SettingsState>) => void,
@@ -891,13 +1074,80 @@ function replaceConnection(
   });
 }
 
+/** 创建尚未选择连接和模型的运行配置编辑器。 */
+function emptySessionConfigurationEditor(): SessionConfigurationEditorState {
+  return {
+    configurationId: null,
+    version: 0,
+    draft: {
+      name: "",
+      connection_id: "",
+      model: "",
+      effort: null,
+      stable_alias: null,
+      agent_callable: false,
+    },
+    dirty: false,
+    saving: false,
+    archiving: false,
+    error: null,
+    conflict: false,
+  };
+}
+
+/** 把后端运行配置读模型转换为完整替换草稿。 */
+function sessionConfigurationEditor(
+  configuration: SessionConfiguration,
+): SessionConfigurationEditorState {
+  return {
+    configurationId: configuration.id,
+    version: configuration.version,
+    draft: {
+      name: configuration.name,
+      connection_id: configuration.connection_id,
+      model: configuration.model,
+      effort: configuration.effort,
+      stable_alias: configuration.stable_alias ?? null,
+      agent_callable: configuration.agent_callable ?? false,
+    },
+    dirty: false,
+    saving: false,
+    archiving: false,
+    error: null,
+    conflict: false,
+  };
+}
+
+/** 替换 catalog 中一份运行配置，兼容新建与编辑。 */
+function replaceSessionConfiguration(
+  set: (patch: Partial<SettingsState>) => void,
+  get: () => SettingsState,
+  configuration: SessionConfiguration,
+): void {
+  const catalog = get().catalog;
+  if (!catalog) return;
+  const exists = catalog.session_configurations.some(
+    (item) => item.id === configuration.id,
+  );
+  set({
+    catalog: {
+      ...catalog,
+      session_configurations: exists
+        ? catalog.session_configurations.map((item) =>
+            item.id === configuration.id ? configuration : item,
+          )
+        : [...catalog.session_configurations, configuration],
+    },
+  });
+}
+
 /** 在编辑器上记录脱敏错误和冲突状态。 */
 function updateEditorError(
   set: (patch: Partial<SettingsState>) => void,
   get: () => SettingsState,
   error: unknown,
   expectedConnectionId: string | null,
-  pendingFlag: "saving" | "deleting",
+  pendingFlag: "saving" | "deleting" | "inheritingRuntimeConfig",
 ): void {
   const editor = get().connectionEditor;
   if (
@@ -912,6 +1162,7 @@ function updateEditorError(
       ...editor,
       saving: false,
       deleting: false,
+      inheritingRuntimeConfig: false,
       error: errorMessage(error),
       conflict: isConflict(error),
     },

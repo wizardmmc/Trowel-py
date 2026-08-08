@@ -8,6 +8,7 @@
   "scripts": {
     "check:agent-boundaries": "bun scripts/check-agent-boundaries.mjs",
     "check:module-comments": "bun scripts/check-module-comments.mjs",
+    "check:ui-contracts": "bun scripts/check-ui-contracts.mjs",
     "brand:build": "node scripts/generate-brand-assets.mjs",
     "dev": "vite",
     "dev:agent-statistics": "vite --open /agent-statistics-preview.html",
@@ -46,7 +47,7 @@
     "build": "tsc -b && vite build && bun run desktop:build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "bun run check:agent-boundaries && bun run check:module-comments && vitest run",
+    "test": "bun run check:agent-boundaries && bun run check:module-comments && bun run check:ui-contracts && vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -b"
   },

@@ -1,9 +1,10 @@
 /** 组装设置二级导航、状态容器、六组纯展示页面和平台操作。 */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import { copyText } from "../../lib/copyText";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { getPlatform } from "../../platform";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { settingsStore, type SettingsState } from "../application/store";
@@ -13,6 +14,7 @@ import { AgentDefaultsPanel } from "./AgentDefaultsPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { PathsPanel } from "./PathsPanel";
+import { RuntimeConfigurationsPanel } from "./RuntimeConfigurationsPanel";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { TaskBindingsPanel } from "./TaskBindingsPanel";
 import { SETTINGS_SECTIONS } from "./sectionMetadata";
@@ -31,6 +33,12 @@ export function SettingsWorkspace({
   const state = useStore(store);
   const addNotification = useNotificationStore((item) => item.addNotification);
   const platform = getPlatform();
+  const [connectionToDelete, setConnectionToDelete] = useState<string | null>(null);
+  const [configurationToArchive, setConfigurationToArchive] = useState<string | null>(null);
+  const [connectionToInherit, setConnectionToInherit] = useState<{
+    readonly name: string;
+    readonly runtime: "claude_code" | "codex";
+  } | null>(null);
 
   useEffect(() => {
     if (active) void store.getState().initialize();
@@ -88,8 +96,19 @@ export function SettingsWorkspace({
   };
   const deleteCurrentConnection = () => {
     const name = store.getState().connectionEditor?.draft.name || "这条连接";
-    if (!window.confirm(`删除“${name}”？相关凭据也会一并删除。`)) return;
-    void store.getState().removeConnection();
+    setConnectionToDelete(name);
+  };
+  const inheritCurrentRuntimeConfig = () => {
+    const editor = store.getState().connectionEditor;
+    if (!editor || editor.draft.runtime === "direct_api") return;
+    setConnectionToInherit({
+      name: editor.draft.name || "这条连接",
+      runtime: editor.draft.runtime,
+    });
+  };
+  const archiveCurrentRuntimeConfiguration = () => {
+    const name = store.getState().configurationEditor?.draft.name || "这份运行配置";
+    setConfigurationToArchive(name);
   };
   const reloadTask = async (taskId: Parameters<SettingsState["reloadTask"]>[0]) => {
     const reloaded = await store.getState().reloadCatalog();
@@ -137,7 +156,7 @@ export function SettingsWorkspace({
         <section className="settings-main-surface">
           <header className="settings-surface-topbar">
             <strong>{activeSectionTitle}</strong>
-            <span>更改只影响之后创建的会话和任务</span>
+            <span>每项 Agent 连接拥有独立配置家；已有会话继续使用创建时冻结的配置</span>
           </header>
           <main className="settings-detail">
             {state.loading && !state.catalog ? (
@@ -174,6 +193,7 @@ export function SettingsWorkspace({
                     onRoleChange={state.updateClaudeRole}
                     onSave={() => void state.saveConnection()}
                     onDelete={deleteCurrentConnection}
+                    onInheritRuntimeConfig={inheritCurrentRuntimeConfig}
                     onFetchModels={() => void state.fetchConnectionModels()}
                     onWriteSecret={writeConnectionSecret}
                     onDeleteSecret={(kind) => void state.deleteConnectionSecret(kind)}
@@ -202,6 +222,18 @@ export function SettingsWorkspace({
                     }}
                     onRetry={(taskId) => void store.getState().saveTask(taskId)}
                     onReload={(taskId) => void reloadTask(taskId)}
+                  />
+                )}
+                {state.activeSection === "configurations" && (
+                  <RuntimeConfigurationsPanel
+                    catalog={state.catalog}
+                    editor={state.configurationEditor}
+                    onOpen={state.openSessionConfiguration}
+                    onCreate={state.createSessionConfigurationDraft}
+                    onClose={state.closeSessionConfiguration}
+                    onChange={state.updateSessionConfigurationDraft}
+                    onSave={() => void state.saveSessionConfiguration()}
+                    onArchive={archiveCurrentRuntimeConfiguration}
                   />
                 )}
                 {state.activeSection === "agent" && (
@@ -239,6 +271,56 @@ export function SettingsWorkspace({
           </main>
         </section>
       </div>
+      {connectionToDelete && (
+        <ConfirmDialog
+          title={`删除“${connectionToDelete}”？`}
+          description="相关凭据也会一并删除，此操作无法撤销。"
+          confirmLabel="删除连接"
+          tone="danger"
+          onConfirm={() => {
+            setConnectionToDelete(null);
+            void store.getState().removeConnection();
+          }}
+          onCancel={() => setConnectionToDelete(null)}
+        />
+      )}
+      {configurationToArchive && (
+        <ConfirmDialog
+          title={`归档“${configurationToArchive}”？`}
+          description="现有引用会保留为失效状态，新的 Agent、委派和后台任务不会回退到其他配置；已经创建的会话继续使用冻结快照。"
+          confirmLabel="归档配置"
+          tone="danger"
+          onConfirm={() => {
+            setConfigurationToArchive(null);
+            void store.getState().archiveSessionConfiguration();
+          }}
+          onCancel={() => setConfigurationToArchive(null)}
+        />
+      )}
+      {connectionToInherit && (
+        <ConfirmDialog
+          title={`复制全局配置到“${connectionToInherit.name}”？`}
+          description={
+            connectionToInherit.runtime === "codex"
+              ? "将覆盖该连接上次复制的 config.toml、AGENTS.md、rules 和两处 skills。不会复制登录态、会话、SQLite、日志或插件缓存。正在使用该连接的会话需要先关闭；复制完成后是独立副本。"
+              : "将覆盖该连接上次复制的 skills、commands、agents、rules、输出样式、CLAUDE.md 和 settings。settings.env 不会复制；同连接的在跑会话可能热加载变化。"
+          }
+          confirmLabel="确认复制"
+          onConfirm={() => {
+            const runtime = connectionToInherit.runtime;
+            setConnectionToInherit(null);
+            void store.getState().inheritRuntimeConfig().then((succeeded) => {
+              addNotification(
+                succeeded
+                  ? `${runtime === "codex" ? "Codex" : "Claude"} 配置已复制`
+                  : `${runtime === "codex" ? "Codex" : "Claude"} 配置复制失败`,
+                succeeded ? "success" : "warning",
+              );
+            });
+          }}
+          onCancel={() => setConnectionToInherit(null)}
+        />
+      )}
     </div>
   );
 }

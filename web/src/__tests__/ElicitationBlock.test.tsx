@@ -7,6 +7,7 @@ const singlePending: ElicitationItem = {
   kind: "elicit",
   toolUseId: "call_1",
   requestId: "r1",
+  toolName: "AskUserQuestion",
   status: "pending",
   resultText: null,
   answers: null,
@@ -24,6 +25,39 @@ const singlePending: ElicitationItem = {
 };
 
 describe("ElicitationBlock", () => {
+  it("plan mode confirmation has explicit approve and reject actions", () => {
+    const onAnswer = vi.fn();
+    const onCancel = vi.fn();
+    const planItem: ElicitationItem = {
+      ...singlePending,
+      toolName: "ExitPlanMode",
+      questions: [
+        {
+          question: "是否批准当前计划并退出计划模式？",
+          header: "计划模式",
+          multiSelect: false,
+          options: [{ label: "批准并继续", description: "恢复原权限模式。" }],
+        },
+      ],
+    };
+
+    render(
+      <ElicitationBlock
+        item={planItem}
+        onAnswer={onAnswer}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(screen.queryByText("Other")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "批准并继续" }));
+    expect(onAnswer).toHaveBeenCalledWith({
+      "是否批准当前计划并退出计划模式？": "批准并继续",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the question title and numbered options when pending", () => {
     render(<ElicitationBlock item={singlePending} />);
     expect(screen.getByText("A or B?")).toBeTruthy();

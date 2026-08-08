@@ -43,6 +43,8 @@ describe("groupSlashItems", () => {
     expect(SLASH_SOURCE_ORDER).toEqual([
       "codex",
       "builtin",
+      "system",
+      "admin",
       "bundled",
       "user",
       "project",

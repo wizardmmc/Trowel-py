@@ -11,10 +11,16 @@ import pytest
 
 from trowel_py.discussion.artifacts import DiscussionArtifactStore
 from trowel_py.discussion.coordinator import DiscussionCoordinator
-from trowel_py.discussion.events import DiscussionEventBus
+from trowel_py.discussion.events import AttemptLiveEventPublisher, DiscussionEventBus
 from trowel_py.discussion.episode import DiscussionEpisodeWriter
+from trowel_py.discussion.errors import DiscussionRuntimeError, DiscussionStateError
+from trowel_py.discussion.models import ParticipantAttemptHistoryRequest
 from trowel_py.discussion.repository import open_discussion_repository
-from trowel_py.discussion.schemas import CreateDiscussionRequest, VersionedCommand
+from trowel_py.discussion.schemas import (
+    ContinueDiscussionRequest,
+    CreateDiscussionRequest,
+    VersionedCommand,
+)
 from trowel_py.discussion.service import DiscussionService
 from tests.discussion.support import (
     FakeConfigurationCatalog,
@@ -79,6 +85,36 @@ class OldTerminalSessions(FakeParticipantSessions):
         return generate()
 
 
+class StartupErrorSessions(FakeParticipantSessions):
+    """让第一位 participant 在根 turn 建立前返回运行时占用错误。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """bad 返回真实 rootless error，其他 participant 正常完成。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送与真实 CCHost turn_in_progress 同形的启动错误。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "seq": 1,
+                "type": "error",
+                "turn_id": None,
+                "thread_id": None,
+                "payload": {"subclass": "turn_in_progress"},
+            }
+
+        return generate()
+
+
 class HangingSessions(FakeParticipantSessions):
     """让 bad 在 root text 后等待，good 正常成功后再模拟应用退出。"""
 
@@ -131,6 +167,72 @@ class HangingSessions(FakeParticipantSessions):
                 "payload": {"text": "old-partial-must-never-publish"},
             }
             await asyncio.Event().wait()
+
+        return generate()
+
+
+class OneDoneSessions(FakeParticipantSessions):
+    """让 good 确定性完成，同时让 bad 等待测试释放。"""
+
+    def __init__(self) -> None:
+        """创建快槽完成信号和慢槽释放屏障。"""
+
+        super().__init__()
+        self.good_finished = asyncio.Event()
+        self.bad_started = asyncio.Event()
+        self.bad_release = asyncio.Event()
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """按参与者名称返回快完成或可释放的慢事件流。
+
+        Args:
+            agent_session_id: 当前测试会话 ID。
+            prompt: 协调器实际发送的公共输入。
+
+        Returns:
+            good 立即结束、bad 等待 ``bad_release`` 的真实事件形状。
+        """
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """生成不依赖任务调度先后顺序的两种事件流。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            name = self.names[agent_session_id]
+            binding = self._bindings[agent_session_id]
+            turn_id = f"turn-one-done-{name}"
+            common = {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "turn_id": turn_id,
+                "thread_id": (
+                    binding.native_session_id
+                    if binding.runtime.value == "codex"
+                    else None
+                ),
+            }
+            yield {**common, "seq": 1, "type": "turn_start", "payload": {}}
+            if name == "bad":
+                self.bad_started.set()
+                await self.bad_release.wait()
+            yield {
+                **common,
+                "seq": 2,
+                "type": "text",
+                "payload": {"text": f"answer-{name}"},
+            }
+            yield {
+                **common,
+                "seq": 3,
+                "type": "finished",
+                "payload": {"duration_ms": 1},
+            }
+            if name == "good":
+                self.good_finished.set()
 
         return generate()
 
@@ -276,6 +378,208 @@ class ElicitingSessions(FakeParticipantSessions):
         return generate()
 
 
+class UserAnsweredSessions(FakeParticipantSessions):
+    """让 bad 发出真实 AskUserQuestion，并等待 discussion 专用回答。"""
+
+    def __init__(self) -> None:
+        """创建提问已发出、回答已送达两个同步点。"""
+
+        super().__init__()
+        self.question_ready = asyncio.Event()
+        self.answer_ready = asyncio.Event()
+        self.received_answers: dict[str, str] | None = None
+
+    async def answer_elicitation(
+        self,
+        agent_session_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """只接受 bad 的回答并释放其原生事件流。"""
+
+        assert self.names[agent_session_id] == "bad"
+        self.received_answers = dict(answers)
+        self.answer_ready.set()
+        return True
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """bad 等待答案，good 沿用普通成功流。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发出 AskUserQuestion，收到回答后给出最终结论。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "type": "turn_start",
+                "turn_id": "turn-user-answer",
+                "thread_id": None,
+                "payload": {},
+            }
+            self.question_ready.set()
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "type": "elicit_request",
+                "turn_id": "turn-user-answer",
+                "thread_id": None,
+                "payload": {
+                    "request_id": "question-user-1",
+                    "tool_name": "AskUserQuestion",
+                    "questions": [{"question": "采用哪种口径？"}],
+                },
+            }
+            await self.answer_ready.wait()
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "type": "text",
+                "turn_id": "turn-user-answer",
+                "thread_id": None,
+                "payload": {"text": "采用用户选择的口径"},
+            }
+            yield {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "type": "finished",
+                "turn_id": "turn-user-answer",
+                "thread_id": None,
+                "payload": {},
+            }
+
+        return generate()
+
+
+class IntermediateTextSessions(FakeParticipantSessions):
+    """让 bad 在工具前后都输出文字，用于验证最终后缀。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """bad 产生中间解释、工具活动和最终总结。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送一条可区分工作文字与最终文字的事件流。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            common = {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "turn_id": "turn-final-suffix",
+                "thread_id": None,
+            }
+            yield {**common, "type": "turn_start", "payload": {}}
+            yield {**common, "type": "text", "payload": {"text": "我先检查。"}}
+            yield {
+                **common,
+                "type": "tool_call",
+                "item_id": "tool-1",
+                "payload": {"tool_name": "Read", "input": {}},
+            }
+            yield {
+                **common,
+                "type": "tool_result",
+                "item_id": "tool-1",
+                "payload": {"tool_use_id": "tool-1", "content": "ok"},
+            }
+            yield {**common, "type": "text", "payload": {"text": "最终结论"}}
+            yield {**common, "type": "finished", "payload": {}}
+
+        return generate()
+
+
+class NoTrailingFinalTextSessions(FakeParticipantSessions):
+    """让 bad 以工具结果收尾，用于钉死空最终回答边界。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """bad 只有工具前解释，不在最后工作事件后提供最终文字。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送 text→tool→finished，确保中间文字不会冒充最终回答。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            common = {
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "turn_id": "turn-no-final-text",
+                "thread_id": None,
+            }
+            yield {**common, "type": "turn_start", "payload": {}}
+            yield {**common, "type": "text", "payload": {"text": "我先检查。"}}
+            yield {
+                **common,
+                "type": "tool_call",
+                "item_id": "tool-no-final",
+                "payload": {"tool_name": "Read", "input": {}},
+            }
+            yield {
+                **common,
+                "type": "tool_result",
+                "item_id": "tool-no-final",
+                "payload": {"tool_use_id": "tool-no-final", "content": "ok"},
+            }
+            yield {**common, "type": "finished", "payload": {}}
+
+        return generate()
+
+
+class PostTerminalRuntimeErrorSessions(FakeParticipantSessions):
+    """让 bad 在完整成功终态之后模拟 drain 阶段断链。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """终态前正常产出，终态后才抛出运行时连接错误。"""
+
+        if self.names[agent_session_id] != "bad":
+            return super().run_turn(agent_session_id, prompt)
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送完整回答和 finished 后模拟 drain 断链。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            common = {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": "claude_code",
+                "turn_id": "turn-post-terminal-error",
+                "thread_id": None,
+                "item_id": None,
+            }
+            yield {**common, "seq": 1, "type": "turn_start", "payload": {}}
+            yield {
+                **common,
+                "seq": 2,
+                "type": "text",
+                "payload": {"text": "已经形成的完整回答"},
+            }
+            yield {**common, "seq": 3, "type": "finished", "payload": {}}
+            raise DiscussionRuntimeError("终态后的 drain 连接断开")
+
+        return generate()
+
+
 class FailAndHangSessions(FakeParticipantSessions):
     """一方本地失败时让另一方保持活动，用来验证 sibling 收敛。"""
 
@@ -405,6 +709,115 @@ class ApprovingSessions(FakeParticipantSessions):
         return generate()
 
 
+class UsageReportingSessions(FakeParticipantSessions):
+    """模拟 Claude 实时 usage 为零、原生历史保留真实用量的差异。"""
+
+    async def read_attempt_history(
+        self,
+        request: ParticipantAttemptHistoryRequest,
+    ) -> list[dict[str, Any]]:
+        """为 Claude 返回 transcript 回放中的真实 message usage。"""
+
+        events = await super().read_attempt_history(request)
+        if request.runtime.value != "claude_code":
+            return events
+        return [
+            *events,
+            {
+                "schema": "agent-event-v1",
+                "session_id": request.agent_session_id,
+                "runtime": "claude_code",
+                "seq": 3,
+                "type": "context_usage",
+                "turn_id": request.root_turn_id,
+                "item_id": None,
+                "payload": {
+                    "message_id": "msg-real-shape",
+                    "model": "glm-5.2",
+                    "usage": {
+                        "input_tokens": 11086,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 23104,
+                        "output_tokens": 3186,
+                    },
+                },
+            },
+        ]
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """依 participant runtime 发送 Claude 或 Codex 用量事件。"""
+
+        async def generate() -> AsyncIterator[dict[str, Any]]:
+            """发送可成功发布且带真实 usage shape 的单轮事件。"""
+
+            self.prompts.setdefault(agent_session_id, []).append(prompt)
+            binding = self._bindings[agent_session_id]
+            turn_id = f"turn-{agent_session_id}-usage"
+            common = {
+                "schema": "agent-event-v1",
+                "session_id": agent_session_id,
+                "runtime": binding.runtime.value,
+                "turn_id": turn_id,
+                "thread_id": (
+                    binding.native_session_id
+                    if binding.runtime.value == "codex"
+                    else None
+                ),
+                "item_id": None,
+            }
+            yield {**common, "seq": 1, "type": "turn_start", "payload": {}}
+            yield {
+                **common,
+                "seq": 2,
+                "type": "text",
+                "payload": {"text": f"usage-{binding.runtime.value}"},
+            }
+            if binding.runtime.value == "claude_code":
+                yield {
+                    **common,
+                    "seq": 3,
+                    "type": "context_usage",
+                    "payload": {
+                        "message_id": "msg-real-shape",
+                        "model": "glm-5.2",
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                        },
+                    },
+                }
+            else:
+                yield {
+                    **common,
+                    "seq": 3,
+                    "type": "usage_updated",
+                    "payload": {
+                        "total": {
+                            "totalTokens": 52817,
+                            "inputTokens": 50311,
+                            "cachedInputTokens": 40192,
+                            "outputTokens": 2506,
+                            "reasoningOutputTokens": 1536,
+                        },
+                        "last": {
+                            "totalTokens": 16707,
+                            "inputTokens": 15791,
+                            "cachedInputTokens": 12416,
+                            "outputTokens": 916,
+                            "reasoningOutputTokens": 512,
+                        },
+                        "model_context_window": 258400,
+                    },
+                }
+            yield {**common, "seq": 4, "type": "finished", "payload": {}}
+
+        return generate()
+
+
 def _system(
     tmp_path: Path,
     sessions: FakeParticipantSessions,
@@ -512,6 +925,28 @@ async def test_old_finished_and_silent_eof_cannot_publish_partial_as_success(
 
 
 @pytest.mark.anyio
+async def test_error_before_turn_start_keeps_real_runtime_reason(
+    tmp_path: Path,
+) -> None:
+    """启动错误不应被丢弃并改写成没有收到终态。"""
+
+    sessions = StartupErrorSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    created = await service.create(_request("startup-error"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+    slot = service.get(created["id"])["rounds"][0]["participants"][0]
+
+    assert slot["status"] == "failed"
+    assert slot["error_code"] == "TURN_IN_PROGRESS"
+    assert slot["error_message"] == "参与者上一轮仍在收尾，本轮输入没有发送"
+
+
+@pytest.mark.anyio
 async def test_elicitation_is_denied_internally_and_round_does_not_hang(
     tmp_path: Path,
 ) -> None:
@@ -536,6 +971,210 @@ async def test_elicitation_is_denied_internally_and_round_does_not_hang(
 
 
 @pytest.mark.anyio
+async def test_ask_user_question_waits_for_scoped_user_answer(
+    tmp_path: Path,
+) -> None:
+    """AskUserQuestion 只暂停发问方，相同回答重复提交保持幂等。"""
+
+    sessions = UserAnsweredSessions()
+    service, coordinator, opener, _ = _system(tmp_path, sessions)
+    created = await service.create(_request("user-answer"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(sessions.question_ready.wait(), timeout=1)
+    while True:
+        with opener() as repository:
+            row = repository.connection.execute(
+                """
+                SELECT a.id, p.id AS participant_id
+                FROM discussion_attempts a
+                JOIN discussion_participants p ON p.id=a.participant_id
+                WHERE p.name='bad' AND a.status='running'
+                """
+            ).fetchone()
+        if row is not None:
+            break
+        await asyncio.sleep(0)
+    answers = {"采用哪种口径？": "保守口径"}
+    request = dict(
+        discussion_id=created["id"],
+        participant_id=str(row["participant_id"]),
+        attempt_id=str(row["id"]),
+        request_id="question-user-1",
+        answers=answers,
+    )
+
+    assert await coordinator.answer_elicitation(**request) is True
+    assert await coordinator.answer_elicitation(**request) is True
+    with pytest.raises(DiscussionStateError, match="另一份答案"):
+        await coordinator.answer_elicitation(
+            **{**request, "answers": {"采用哪种口径？": "激进口径"}}
+        )
+    with opener() as repository:
+        other_participant_id = repository.connection.execute(
+            "SELECT id FROM discussion_participants WHERE id != ? LIMIT 1",
+            (str(row["participant_id"]),),
+        ).fetchone()["id"]
+    with pytest.raises(DiscussionStateError):
+        await coordinator.answer_elicitation(
+            **{**request, "participant_id": str(other_participant_id)}
+        )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+
+    assert sessions.received_answers == answers
+    assert service.get(created["id"])["rounds"][0]["participants"][0]["content"] == (
+        "采用用户选择的口径"
+    )
+
+
+@pytest.mark.anyio
+async def test_only_trailing_text_after_last_work_event_is_published(
+    tmp_path: Path,
+) -> None:
+    """工具前的中间解释留在轨迹，不重复写进共同公开正文。"""
+
+    sessions = IntermediateTextSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    created = await service.create(_request("final-suffix"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+
+    content = service.get(created["id"])["rounds"][0]["participants"][0]["content"]
+    assert content == "最终结论"
+
+
+@pytest.mark.anyio
+async def test_one_finished_participant_wakes_observer_before_round_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一路成功、一路仍运行时也要通知前端进入单卡 Worked 终态。"""
+
+    sessions = OneDoneSessions()
+    service, coordinator, opener, _ = _system(tmp_path, sessions)
+    created = await service.create(_request("one-done-wakeup"))
+    original_publish = coordinator._events.publish
+    published_discussion_ids: list[str] = []
+
+    def record_publish(discussion_id: str) -> None:
+        """记录持久状态唤醒，不在 repository 事务回调里重入数据库。"""
+
+        published_discussion_ids.append(discussion_id)
+        original_publish(discussion_id)
+
+    monkeypatch.setattr(coordinator._events, "publish", record_publish)
+    try:
+        service.start(
+            created["id"],
+            VersionedCommand(
+                command_id="start-one-done",
+                expected_version=created["version"],
+            ),
+        )
+        assert published_discussion_ids == [created["id"]]
+        await asyncio.wait_for(sessions.bad_started.wait(), timeout=1)
+        await asyncio.wait_for(sessions.good_finished.wait(), timeout=1)
+
+        async def wait_for_terminal_wakeup() -> None:
+            """等待 good 持久终态触发第二次状态唤醒。"""
+
+            while len(published_discussion_ids) < 2:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(wait_for_terminal_wakeup(), timeout=1)
+        snapshot = service.get(created["id"])
+        status_by_name = {
+            item["name"]: item["status"]
+            for item in snapshot["rounds"][0]["participants"]
+        }
+        assert snapshot["rounds"][0]["status"] == "running"
+        assert snapshot["rounds"][0]["terminal_participants"] == 1
+        assert status_by_name == {"bad": "running", "good": "sealed"}
+        assert snapshot["rounds"][0]["participants"][1]["completed_at"] is not None
+        with opener() as repository:
+            events = repository.list_events(created["id"], after_sequence=0)
+        assert events[-1]["type"] == "participant_completed"
+    finally:
+        sessions.bad_release.set()
+        await coordinator.stop()
+
+
+@pytest.mark.anyio
+async def test_success_terminal_without_trailing_text_becomes_empty_answer_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空最终回答的实时终态和持久终态必须都收敛为失败。"""
+
+    sessions = NoTrailingFinalTextSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    live_events: list[dict[str, Any]] = []
+    original_publish = AttemptLiveEventPublisher.publish
+
+    def record_live_event(
+        publisher: AttemptLiveEventPublisher,
+        event: dict[str, Any],
+    ) -> None:
+        """记录 bad attempt 的外发事件，同时保留真实 publisher 行为。"""
+
+        session_id = event.get("session_id")
+        if isinstance(session_id, str) and sessions.names.get(session_id) == "bad":
+            live_events.append(event)
+        original_publish(publisher, event)
+
+    monkeypatch.setattr(AttemptLiveEventPublisher, "publish", record_live_event)
+    created = await service.create(_request("no-final-text"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+
+    bad = next(
+        item
+        for item in service.get(created["id"])["rounds"][0]["participants"]
+        if item["name"] == "bad"
+    )
+    assert bad["status"] == "failed"
+    assert bad["error_code"] == "EMPTY_ANSWER"
+    assert bad["content"] is None
+    assert [event["type"] for event in live_events][-2:] == ["finished", "error"]
+    assert live_events[-1]["payload"]["subclass"] == "EMPTY_ANSWER"
+
+
+@pytest.mark.anyio
+async def test_runtime_disconnect_after_terminal_keeps_completed_answer(
+    tmp_path: Path,
+) -> None:
+    """根终态已成立后，drain 断链不能覆盖成功结果或丢掉回答。"""
+
+    service, coordinator, _, _ = _system(
+        tmp_path,
+        PostTerminalRuntimeErrorSessions(),
+    )
+    created = await service.create(_request("post-terminal-runtime-error"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+
+    bad = next(
+        item
+        for item in service.get(created["id"])["rounds"][0]["participants"]
+        if item["name"] == "bad"
+    )
+    assert bad["status"] == "succeeded"
+    assert bad["content"] == "已经形成的完整回答"
+    assert bad["error_code"] is None
+
+
+@pytest.mark.anyio
 async def test_codex_approval_is_declined_internally_without_timeout(
     tmp_path: Path,
 ) -> None:
@@ -556,6 +1195,44 @@ async def test_codex_approval_is_declined_internally_without_timeout(
     assert published["rounds"][0]["participants"][1]["content"] == (
         "审批被拒绝后仍可给出只读分析"
     )
+
+
+@pytest.mark.anyio
+async def test_runtime_usage_is_normalized_before_result_persistence(
+    tmp_path: Path,
+) -> None:
+    """实时零值必须由原生历史纠正后再持久化为右栏统一结构。"""
+
+    service, coordinator, _, _ = _system(tmp_path, UsageReportingSessions())
+    created = await service.create(_request("normalized-usage"))
+    service.start(
+        created["id"],
+        VersionedCommand(
+            command_id="start-normalized-usage",
+            expected_version=created["version"],
+        ),
+    )
+
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=1)
+    participants = {
+        participant["name"]: participant
+        for participant in service.get(created["id"])["rounds"][0]["participants"]
+    }
+
+    assert participants["bad"]["usage"] == {
+        "input_tokens": 11086,
+        "output_tokens": 3186,
+        "cache_read_input_tokens": 23104,
+        "cache_creation_input_tokens": 0,
+        "total_tokens": 37376,
+    }
+    assert participants["good"]["usage"] == {
+        "input_tokens": 15791,
+        "output_tokens": 916,
+        "cache_read_input_tokens": 12416,
+        "reasoning_output_tokens": 512,
+        "total_tokens": 16707,
+    }
 
 
 @pytest.mark.anyio
@@ -584,6 +1261,42 @@ async def test_mixed_terminal_failures_keep_slots_and_do_not_block_publication(
         "runtime-timeout": "timed_out",
         "failed": "failed",
     }
+
+
+@pytest.mark.anyio
+async def test_next_round_keeps_failed_slots_as_inline_statuses(
+    tmp_path: Path,
+) -> None:
+    """失败参与者没有正文文件，下一轮仍按原位置给出真实终态。"""
+
+    sessions = MixedTerminalSessions()
+    service, coordinator, _, _ = _system(tmp_path, sessions)
+    request = _mixed_request().model_copy(
+        update={"progression_mode": "automatic", "max_rounds": 2}
+    )
+    created = await service.create(request)
+    service.start(
+        created["id"],
+        VersionedCommand(
+            command_id="start-mixed-paths",
+            expected_version=created["version"],
+        ),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+
+    second_prompts = [items[1] for items in sessions.prompts.values()]
+
+    assert len(set(second_prompts)) == 1
+    prompt_lines = second_prompts[0].splitlines()
+    assert any(
+        line.startswith("success：/") and line.endswith("final.md")
+        for line in prompt_lines
+    )
+    assert any(line.startswith("limited：[limited]") for line in prompt_lines)
+    assert any(
+        line.startswith("runtime-timeout：[timed_out]") for line in prompt_lines
+    )
+    assert any(line.startswith("failed：[failed]") for line in prompt_lines)
 
 
 @pytest.mark.anyio
@@ -1044,8 +1757,52 @@ async def test_continue_records_integrity_outbox_when_publication_bytes_drift(
     with pytest.raises(ValueError, match="byte count mismatch"):
         service.continue_round(
             created["id"],
-            VersionedCommand(
-                command_id="continue",
+                ContinueDiscussionRequest(
+                    command_id="continue",
+                    expected_version=waiting["version"],
+                ),
+        )
+
+    with opener() as repository:
+        issue = repository.connection.execute(
+            "SELECT issue_code FROM discussion_integrity_issues WHERE discussion_id=?",
+            (created["id"],),
+        ).fetchone()
+    assert issue["issue_code"] == "ARTIFACT_INTEGRITY"
+
+
+@pytest.mark.anyio
+async def test_continue_rejects_tampered_previous_output_and_records_integrity_issue(
+    tmp_path: Path,
+) -> None:
+    """上一轮正文被同字节篡改后，不能把未验真的路径交给下一轮。"""
+
+    service, coordinator, opener, artifacts = _system(
+        tmp_path,
+        FakeParticipantSessions(),
+    )
+    created = await service.create(_request("tampered-previous-output"))
+    service.start(
+        created["id"],
+        VersionedCommand(command_id="start", expected_version=created["version"]),
+    )
+    await asyncio.wait_for(coordinator.wait_idle(created["id"]), timeout=2)
+    waiting = service.get(created["id"])
+    with opener() as repository:
+        discussion = repository.get_discussion(created["id"])
+    output_artifact = discussion.rounds[0].results[0].output_artifact
+    assert output_artifact is not None
+    output_path = artifacts.data_root / output_artifact
+    original = output_path.read_bytes()
+    assert original
+    replacement = b"X" if original[:1] != b"X" else b"Y"
+    output_path.write_bytes(replacement + original[1:])
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        service.continue_round(
+            created["id"],
+            ContinueDiscussionRequest(
+                command_id="continue-after-output-tamper",
                 expected_version=waiting["version"],
             ),
         )

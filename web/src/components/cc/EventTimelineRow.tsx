@@ -148,7 +148,7 @@ function EventTimelineRowView({
           item={item}
           onAnswer={onAnswer}
           onCancel={onCancel}
-          disabled={isReplay}
+          disabled={Boolean(isReplay) || (!onAnswer && !onCancel)}
         />
       );
     case "approval":
@@ -160,6 +160,7 @@ function EventTimelineRowView({
         <ApprovalBlock
           item={item}
           onDecision={onApprovalDecision}
+          disabled={Boolean(isReplay) || !onApprovalDecision}
         />
       );
     case "workflow":

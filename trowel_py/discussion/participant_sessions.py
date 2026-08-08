@@ -15,7 +15,10 @@ from trowel_py.agent_host.hub import (
 )
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.discussion.errors import DiscussionRuntimeError
-from trowel_py.discussion.models import DiscussionParticipant
+from trowel_py.discussion.models import (
+    DiscussionParticipant,
+    ParticipantAttemptHistoryRequest,
+)
 
 
 @dataclass(frozen=True)
@@ -35,8 +38,8 @@ class ParticipantSession:
     capability_source: str | None
 
 
-class ParticipantSessionPort(Protocol):
-    """约束协调器可执行的 participant 会话操作。"""
+class ParticipantLifecyclePort(Protocol):
+    """约束 participant binding 的创建、定位和关闭操作。"""
 
     async def ensure_session(
         self,
@@ -45,14 +48,6 @@ class ParticipantSessionPort(Protocol):
         workdir: str,
     ) -> ParticipantSession:
         """创建、认领或恢复一个 discussion participant 会话。"""
-        ...
-
-    def run_turn(
-        self,
-        agent_session_id: str,
-        prompt: str,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """启动一轮普通输入并持续产出统一事件到流结束。"""
         ...
 
     def binding(self, agent_session_id: str) -> SessionBinding | None:
@@ -66,6 +61,26 @@ class ParticipantSessionPort(Protocol):
         """按领域记录或 owner_ref 找到 participant 当前 binding。"""
         ...
 
+    async def close(self, agent_session_id: str) -> bool:
+        """关闭并删除 participant 的当前 Trowel binding。"""
+        ...
+
+
+class ParticipantTurnPort(Protocol):
+    """约束协调器唯一消费 participant turn 的数据流入口。"""
+
+    def run_turn(
+        self,
+        agent_session_id: str,
+        prompt: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """启动一轮普通输入并持续产出统一事件到流结束。"""
+        ...
+
+
+class ParticipantInteractionPort(Protocol):
+    """约束等待中的 participant turn 可以接受的最小控制操作。"""
+
     async def interrupt(self, agent_session_id: str) -> None:
         """请求中断当前 participant turn。"""
         ...
@@ -74,13 +89,39 @@ class ParticipantSessionPort(Protocol):
         """拒绝 discussion 内无人能够回答的交互提问。"""
         ...
 
+    async def answer_elicitation(
+        self,
+        agent_session_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """回答 discussion 内明确允许的 AskUserQuestion。"""
+        ...
+
     def decline_approval(self, agent_session_id: str, request_id: str) -> None:
         """拒绝 discussion 内无人能够批准的 Codex 请求。"""
         ...
 
-    async def close(self, agent_session_id: str) -> bool:
-        """关闭并删除 participant 的当前 Trowel binding。"""
+
+class ParticipantHistoryPort(Protocol):
+    """约束从原生记录读取一个 participant attempt 的只读操作。"""
+
+    async def read_attempt_history(
+        self,
+        request: ParticipantAttemptHistoryRequest,
+    ) -> list[dict[str, Any]]:
+        """返回一个 attempt 对应的统一 AgentEvent 序列。"""
         ...
+
+
+
+class ParticipantSessionPort(
+    ParticipantLifecyclePort,
+    ParticipantTurnPort,
+    ParticipantInteractionPort,
+    ParticipantHistoryPort,
+    Protocol,
+):
+    """组合协调器当前需要的四个窄端口，便于替身按职责实现。"""
 
 
 class AgentHostParticipantSessionAdapter:
@@ -140,15 +181,11 @@ class AgentHostParticipantSessionAdapter:
             resume_from=resume_from,
             model=participant.model,
             effort=participant.effort,
-            permission_mode=(
-                "dontAsk" if participant.runtime is Runtime.CLAUDE_CODE else None
-            ),
-            permission_preset=(
-                "read-only" if participant.runtime is Runtime.CODEX else None
-            ),
-            memory_enabled=False,
-            profile_enabled=False,
-            self_enabled=False,
+            permission_mode=participant.permission_mode,
+            permission_preset=participant.permission_preset,
+            memory_enabled=participant.memory_enabled,
+            profile_enabled=participant.profile_enabled,
+            self_enabled=participant.self_enabled,
             session_kind="discussion",
             memory_eligibility=False,
             agent_mcp_enabled=False,
@@ -174,6 +211,38 @@ class AgentHostParticipantSessionAdapter:
             await self._hub.close_result(binding.session_id, delete_binding=True)
             raise
         return self._from_binding(binding)
+
+    async def read_attempt_history(
+        self,
+        request: ParticipantAttemptHistoryRequest,
+    ) -> list[dict[str, Any]]:
+        """按持久原生身份读取一轮，不要求 participant binding 仍存在。
+
+        Args:
+            request: repository 验证归属后生成的历史定位事实。
+
+        Returns:
+            只含该 attempt 的统一 AgentEvent 序列。
+
+        Raises:
+            DiscussionRuntimeError: 原生历史不可用或读取失败。
+        """
+
+        if request.native_session_id is None:
+            return []
+        session_id = request.agent_session_id or f"discussion-attempt-{request.id}"
+        try:
+            return await self._hub.history_by_native(
+                session_id=session_id,
+                runtime=request.runtime,
+                native_session_id=request.native_session_id,
+                workdir=request.workdir,
+                root_turn_id=request.root_turn_id,
+                input_hash=request.input_hash,
+                input_occurrence=request.input_occurrence,
+            )
+        except SessionHubError as exc:
+            raise DiscussionRuntimeError("参与者原生历史暂时不可用") from exc
 
     def run_turn(
         self,
@@ -271,6 +340,29 @@ class AgentHostParticipantSessionAdapter:
         except SessionHubError as exc:
             raise DiscussionRuntimeError("参与者交互提问无法取消") from exc
 
+    async def answer_elicitation(
+        self,
+        agent_session_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """把用户答案交回 participant 当前 AskUserQuestion。
+
+        Args:
+            agent_session_id: 当前 participant 的 Trowel 会话 ID。
+            answers: 问题正文到用户答案的对应表。
+
+        Returns:
+            回答控制消息已经写入时为 True。
+
+        Raises:
+            DiscussionRuntimeError: 会话、提问或控制写入已经不可用。
+        """
+
+        try:
+            return await self._hub.answer_elicitation(agent_session_id, answers)
+        except SessionHubError as exc:
+            raise DiscussionRuntimeError("参与者交互提问无法回答") from exc
+
     def decline_approval(self, agent_session_id: str, request_id: str) -> None:
         """立即拒绝 Codex 审批，避免等待通用界面的十分钟超时。
 
@@ -344,6 +436,11 @@ class AgentHostParticipantSessionAdapter:
             binding.connection_id,
             binding.requested_model,
             binding.requested_effort,
+            binding.permission if participant.runtime is Runtime.CLAUDE_CODE else None,
+            binding.permission_preset if participant.runtime is Runtime.CODEX else None,
+            binding.memory_enabled,
+            binding.profile_enabled,
+            binding.self_enabled,
             binding.connection_identity_version,
             binding.configuration_capability_version,
             binding.configuration_capability_source,
@@ -353,6 +450,11 @@ class AgentHostParticipantSessionAdapter:
             participant.connection_id,
             participant.model,
             participant.effort,
+            participant.permission_mode,
+            participant.permission_preset,
+            participant.memory_enabled,
+            participant.profile_enabled,
+            participant.self_enabled,
             participant.connection_identity_version,
             participant.capability_version,
             participant.capability_source,

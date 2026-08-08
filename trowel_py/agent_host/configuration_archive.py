@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from trowel_py.agent_host.binding import Runtime, SessionBinding
+from trowel_py.agent_host.binding import DelegationTarget, Runtime, SessionBinding
 
 
 class ConfigurationArchiveCorruptError(RuntimeError):
@@ -18,7 +18,16 @@ class ConfigurationArchiveCorruptError(RuntimeError):
 
 @dataclass(frozen=True)
 class FrozenSessionConfiguration:
-    """保存恢复原生会话所需且不含凭据的创建条件。"""
+    """保存恢复原生会话所需且不含凭据的创建条件。
+
+    Attributes:
+        claude_config_dir: Claude Code 会话创建时冻结的用户配置目录。
+            旧档案缺失时为 None，表示继续使用 ``~/.claude``。
+        codex_config_dir: Codex 会话创建时冻结的连接配置家。旧档案缺失时
+            为 None，表示继续使用修复前的 Official 槽或 Custom 共享根。
+        claude_auto_memory_disabled: Claude 会话创建时是否关闭原生 auto-memory；
+            旧档案缺失时保持原生默认。
+    """
 
     runtime: Runtime
     native_session_id: str
@@ -33,6 +42,10 @@ class FrozenSessionConfiguration:
     profile_enabled: bool
     self_enabled: bool
     agent_mcp_enabled: bool
+    claude_auto_memory_disabled: bool = False
+    claude_config_dir: str | None = None
+    codex_config_dir: str | None = None
+    delegation_targets: tuple[DelegationTarget, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """转换为稳定 JSON 基本类型。"""
@@ -51,6 +64,10 @@ class FrozenSessionConfiguration:
             "profile_enabled": self.profile_enabled,
             "self_enabled": self.self_enabled,
             "agent_mcp_enabled": self.agent_mcp_enabled,
+            "claude_auto_memory_disabled": self.claude_auto_memory_disabled,
+            "claude_config_dir": self.claude_config_dir,
+            "codex_config_dir": self.codex_config_dir,
+            "delegation_targets": [item.to_dict() for item in self.delegation_targets],
         }
 
 
@@ -63,8 +80,24 @@ class SessionConfigurationArchive:
         self.path = path
         self._lock = threading.Lock()
 
-    def put(self, binding: SessionBinding) -> None:
-        """在 binding 已取得原生 ID 后保存或覆盖冻结条件。"""
+    def put(
+        self,
+        binding: SessionBinding,
+        *,
+        claude_auto_memory_disabled: bool = False,
+        claude_config_dir: str | Path | None = None,
+        codex_config_dir: str | Path | None = None,
+    ) -> None:
+        """在 binding 已取得原生 ID 后保存或覆盖冻结条件。
+
+        Args:
+            binding: 已取得原生会话 ID 的会话绑定。
+            claude_auto_memory_disabled: 本会话冻结的 Claude 原生记忆条件。
+            claude_config_dir: Claude Code 的连接级配置目录。None
+                也是有意义的冻结值，代表全局 ``~/.claude``。
+            codex_config_dir: Codex 的连接级配置目录。None 代表沿用旧会话
+                在修复前使用的启动目录规则。
+        """
 
         native_session_id = binding.native_session_id
         if not native_session_id:
@@ -83,6 +116,18 @@ class SessionConfigurationArchive:
             profile_enabled=binding.profile_enabled,
             self_enabled=binding.self_enabled,
             agent_mcp_enabled=binding.agent_mcp_enabled,
+            claude_auto_memory_disabled=claude_auto_memory_disabled,
+            delegation_targets=binding.delegation_targets,
+            claude_config_dir=(
+                str(Path(claude_config_dir).expanduser().resolve())
+                if claude_config_dir is not None
+                else None
+            ),
+            codex_config_dir=(
+                str(Path(codex_config_dir).expanduser().resolve())
+                if codex_config_dir is not None
+                else None
+            ),
         )
         with self._lock:
             data = self._read_all()
@@ -137,6 +182,26 @@ class SessionConfigurationArchive:
                 self_enabled=bool(raw.get("self_enabled", True)),
                 # 旧档案没有该字段时按 capability-closed 处理，不能猜测开启。
                 agent_mcp_enabled=bool(raw.get("agent_mcp_enabled", False)),
+                claude_auto_memory_disabled=bool(
+                    raw.get("claude_auto_memory_disabled", False)
+                ),
+                claude_config_dir=(
+                    str(raw["claude_config_dir"])
+                    if raw.get("claude_config_dir") is not None
+                    else None
+                ),
+                codex_config_dir=(
+                    str(raw["codex_config_dir"])
+                    if raw.get("codex_config_dir") is not None
+                    else None
+                ),
+                delegation_targets=tuple(
+                    target
+                    for item in raw.get("delegation_targets", ())
+                    if (target := DelegationTarget.from_dict(item)) is not None
+                )
+                if isinstance(raw.get("delegation_targets", ()), (list, tuple))
+                else (),
             )
         except (KeyError, TypeError, ValueError):
             return None

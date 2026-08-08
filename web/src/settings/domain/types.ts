@@ -20,6 +20,7 @@ export type TaskId =
 export type SettingsSection =
   | "paths"
   | "connections"
+  | "configurations"
   | "tasks"
   | "agent"
   | "diagnostics"
@@ -91,6 +92,8 @@ export interface Connection {
   readonly auth: AuthStatus;
   readonly login_directory: string | null;
   readonly login_directory_exists: boolean | null;
+  readonly claude_config_inherited: boolean | null;
+  readonly codex_config_inherited: boolean | null;
   readonly proxy: ProxyStatus;
   readonly claude_role_models: Readonly<Record<string, string>>;
   readonly codex_catalog: readonly CodexCatalogEntry[];
@@ -100,6 +103,7 @@ export interface Connection {
   readonly last_session_choice: Readonly<Record<string, string | null>> | null;
   readonly secret_versions: Readonly<Record<string, number>>;
   readonly preview: Readonly<Record<string, unknown>>;
+  readonly claude_auto_memory_disabled?: boolean;
 }
 
 export interface Capability {
@@ -112,6 +116,7 @@ export interface Capability {
 export interface SessionConfiguration {
   readonly id: string;
   readonly version: number;
+  readonly identity_version?: number;
   readonly name: string;
   readonly runtime: RuntimeKind;
   readonly connection_id: string;
@@ -121,6 +126,29 @@ export interface SessionConfiguration {
   readonly capability: Capability;
   readonly availability: string;
   readonly disabled_reason: string | null;
+  readonly connection_name?: string;
+  readonly stable_alias?: string | null;
+  readonly agent_callable?: boolean;
+}
+
+export interface SessionConfigurationDraft {
+  readonly name: string;
+  readonly connection_id: string;
+  readonly model: string;
+  readonly effort: string | null;
+  readonly stable_alias: string | null;
+  readonly agent_callable: boolean;
+}
+
+export interface SessionConfigurationEditorState {
+  readonly configurationId: string | null;
+  readonly version: number;
+  readonly draft: SessionConfigurationDraft;
+  readonly dirty: boolean;
+  readonly saving: boolean;
+  readonly archiving: boolean;
+  readonly error: string | null;
+  readonly conflict: boolean;
 }
 
 export interface TaskBinding {
@@ -192,6 +220,7 @@ export interface ConnectionDraft {
   readonly claude_role_models: Readonly<Record<string, string>>;
   readonly codex_catalog: readonly CodexCatalogEntry[];
   readonly catalog_request_identity: string | null;
+  readonly claude_auto_memory_disabled?: boolean;
 }
 
 export interface FetchModelsResult {
@@ -227,6 +256,7 @@ export interface ConnectionEditorState {
   readonly dirty: boolean;
   readonly saving: boolean;
   readonly deleting: boolean;
+  readonly inheritingRuntimeConfig: boolean;
   readonly error: string | null;
   readonly conflict: boolean;
   readonly modelFetch: ModelFetchState;

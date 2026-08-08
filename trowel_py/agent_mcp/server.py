@@ -8,7 +8,7 @@ import logging
 import os
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar
@@ -30,6 +30,7 @@ _TOOL_DELEGATE_RESPOND = "delegate_respond"
 _TOOL_DELEGATE_STATUS = "delegate_status"
 _TOOL_DELEGATE_CLOSE = "delegate_close"
 _CLAUDE_ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+_TOOL_DISCOVERY_TIMEOUT_SECONDS = 3.0
 _SUCCESS_TERMINALS = frozenset({"finished"})
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
 _ALL_TERMINALS = _SUCCESS_TERMINALS | _ERROR_TERMINALS
@@ -65,6 +66,7 @@ class ParentContext:
         profile_enabled: 是否向子会话提供父会话可用的用户画像。
         self_enabled: 是否向子会话提供父会话可用的 Trowel 持续身份信息。
         delegation_depth: 父会话的委派深度；只有 0 允许继续委派。
+        delegation_targets: 父会话创建时冻结的稳定别名与启动事实。
     """
 
     session_id: str
@@ -75,6 +77,28 @@ class ParentContext:
     profile_enabled: bool
     self_enabled: bool
     delegation_depth: int
+    delegation_targets: tuple[DelegationTargetContext, ...] = ()
+
+
+@dataclass(frozen=True)
+class DelegationTargetContext:
+    """保存 MCP 进程从父 binding 读取的一项冻结调用目标。
+
+    Attributes:
+        alias: 父模型使用的稳定调用别名。
+        runtime: 子会话使用 Claude Code 还是 Codex。
+        connection_id: Trowel 设置域模型连接 ID。
+        connection_identity_version: 父会话冻结的连接启动身份版本。
+        model: 子会话模型或 Claude 角色别名。
+        effort: 子会话思考强度；None 表示 runtime 默认值。
+    """
+
+    alias: str
+    runtime: str
+    connection_id: str
+    connection_identity_version: int
+    model: str
+    effort: str | None
 
 
 @dataclass(frozen=True)
@@ -215,31 +239,53 @@ def _server_base_url() -> str:
 
 
 def _agent_host_headers() -> dict[str, str] | None:
-    """读取桌面模式下 Agent MCP 访问 Agent Host 所需的实例凭据。"""
+    """读取桌面模式下 Agent MCP 访问 Agent Host 所需的实例凭据。
 
-    credential = os.environ.get("TROWEL_RESOURCE_REGISTRATION_CREDENTIAL", "").strip()
+    新启动配置使用职责单一的 API 凭据变量。资源登记凭据仅作为旧 Codex
+    配置的兼容回退，避免恢复中的历史会话失去 Agent Host 访问能力。
+    """
+
+    credential = os.environ.get("TROWEL_AGENT_API_CREDENTIAL", "").strip()
+    if not credential:
+        credential = os.environ.get(
+            "TROWEL_RESOURCE_REGISTRATION_CREDENTIAL", ""
+        ).strip()
     return {"Authorization": f"Bearer {credential}"} if credential else None
+
+
+def _agent_host_client() -> httpx.AsyncClient:
+    """创建带完整桌面认证的 Agent Host 客户端。
+
+    所有委派操作都必须经同一入口访问 Agent Host，避免阻塞委派、交互委派和
+    broker 各自拼装客户端时漏掉实例凭据。
+
+    Returns:
+        关闭超时并携带当前 sidecar Bearer 的异步 HTTP 客户端。
+    """
+
+    return httpx.AsyncClient(
+        base_url=_server_base_url(),
+        headers=_agent_host_headers(),
+        timeout=httpx.Timeout(None),
+    )
 
 
 def _create_body(
     context: ParentContext,
     *,
-    runtime: str,
-    model: str | None,
-    effort: str | None,
+    target: DelegationTargetContext,
 ) -> dict[str, Any]:
     """构建不会递归委派、不会进入自动记忆提炼的子会话请求。
 
     Args:
         context: 已复核的父会话事实和功能开关。
-        runtime: 子会话使用的 runtime，为 "claude_code" 或 "codex"。
-        model: 请求子会话使用的模型；为 None 时不指定。
-        effort: 请求子会话使用的思考强度；为 None 时不指定。
+        target: 父会话创建时冻结的别名解析结果。
 
     Returns:
         可发送给 Agent API 的子会话创建请求体。
     """
 
+    runtime = target.runtime
     if runtime not in {"claude_code", "codex"}:
         raise ValueError(f"unsupported runtime: {runtime}")
     body: dict[str, Any] = {
@@ -253,16 +299,90 @@ def _create_body(
         "agent_mcp_enabled": False,
         "parent_session_id": context.session_id,
         "delegation_depth": 1,
+        "delegation_configuration": target.alias,
+        "connection_id": target.connection_id,
+        "expected_connection_identity_version": (target.connection_identity_version),
+        "model": target.model,
     }
     if runtime == "codex":
         body["permission_preset"] = "danger-full-access"
     else:
         body["permission_mode"] = "bypassPermissions"
-    if model:
-        body["model"] = model
-    if effort:
-        body["effort"] = effort
+    if target.effort:
+        body["effort"] = target.effort
     return body
+
+
+def _delegation_target(
+    context: ParentContext,
+    configuration: str,
+    *,
+    interactive: bool = False,
+) -> DelegationTargetContext:
+    """按父会话冻结清单解析稳定别名，并执行交互 capability 门禁。"""
+
+    alias = configuration.strip()
+    target = next(
+        (item for item in context.delegation_targets if item.alias == alias),
+        None,
+    )
+    if target is None:
+        available = ", ".join(repr(item.alias) for item in context.delegation_targets)
+        raise DelegationError(
+            f"configuration {alias!r} is unavailable in this parent session; "
+            f"available configurations: {available or 'none'}"
+        )
+    if interactive and target.runtime != "claude_code":
+        raise DelegationError(
+            "interactive delegation currently supports Claude Code configurations only"
+        )
+    return target
+
+
+def _binding_delegation_targets(
+    data: dict[str, Any],
+) -> tuple[DelegationTargetContext, ...]:
+    """从父 binding 解析完整有效的冻结调用目标，损坏项保守丢弃。"""
+
+    raw_targets = data.get("delegation_targets")
+    if not isinstance(raw_targets, list):
+        return ()
+    targets: list[DelegationTargetContext] = []
+    for raw in raw_targets:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            alias = raw["alias"]
+            runtime = raw["runtime"]
+            connection_id = raw["connection_id"]
+            connection_identity_version = raw["connection_identity_version"]
+            model = raw["model"]
+            effort = raw.get("effort")
+            if (
+                not all(
+                    isinstance(item, str) and item
+                    for item in (alias, runtime, connection_id, model)
+                )
+                or runtime not in {"claude_code", "codex"}
+                or not isinstance(connection_identity_version, int)
+                or isinstance(connection_identity_version, bool)
+                or connection_identity_version < 1
+                or (effort is not None and not isinstance(effort, str))
+            ):
+                continue
+            targets.append(
+                DelegationTargetContext(
+                    alias=alias,
+                    runtime=runtime,
+                    connection_id=connection_id,
+                    connection_identity_version=connection_identity_version,
+                    model=model,
+                    effort=effort,
+                )
+            )
+        except KeyError:
+            continue
+    return tuple(targets)
 
 
 def _binding_bool(data: dict[str, Any], field: str) -> bool:
@@ -344,6 +464,7 @@ async def _verified_parent_context(
         profile_enabled=_binding_bool(data, "profile_enabled"),
         self_enabled=_binding_bool(data, "self_enabled"),
         delegation_depth=0,
+        delegation_targets=_binding_delegation_targets(data),
     )
 
 
@@ -440,10 +561,8 @@ async def delegate_agent(
     client: httpx.AsyncClient,
     *,
     context: ParentContext,
-    runtime: str,
     task: str,
-    model: str | None = None,
-    effort: str | None = None,
+    configuration: str,
 ) -> DelegationResult:
     """执行一次阻塞委派，等待子会话终态，并在返回或抛错前尝试清理。
 
@@ -456,10 +575,8 @@ async def delegate_agent(
     Args:
         client: 用于复核父会话并管理子会话的 Agent API 客户端。
         context: MCP 进程启动时从环境变量取得的父会话配置快照。
-        runtime: 子会话使用的 runtime，为 "claude_code" 或 "codex"。
+        configuration: 父会话创建时冻结的稳定调用别名。
         task: 交给子会话执行的任务。
-        model: 请求子会话使用的模型；为 None 时不指定。
-        effort: 请求子会话使用的思考强度；为 None 时不指定。
 
     Returns:
         子会话的成功回答、观察事实、最终绑定和清理结果。
@@ -483,14 +600,11 @@ async def delegate_agent(
     result: DelegationResult | None = None
     try:
         verified_context = await _verified_parent_context(client, context)
+        target = _delegation_target(verified_context, configuration)
+        create_body = _create_body(verified_context, target=target)
         create_response = await client.post(
             "/api/agent/sessions",
-            json=_create_body(
-                verified_context,
-                runtime=runtime,
-                model=model,
-                effort=effort,
-            ),
+            json=create_body,
         )
         create_error = agent_api_error_detail(create_response)
         if create_error is not None:
@@ -537,7 +651,7 @@ async def delegate_agent(
             delegation_id=delegation_id,
             parent_session_id=verified_context.session_id,
             child_session_id=session_id,
-            runtime=runtime,
+            runtime=target.runtime,
             answer="".join(answer_chunks),
             terminal_event=terminal_event,
             event_counts=dict(event_counts),
@@ -581,38 +695,80 @@ async def delegate_agent(
     return result
 
 
-def _tool() -> types.Tool:
-    """定义一次性阻塞委派工具及其输入格式。"""
+def _configuration_property(
+    targets: Sequence[DelegationTargetContext],
+) -> dict[str, Any]:
+    """把父会话冻结别名转换成模型可直接选择的 JSON Schema。
+
+    Args:
+        targets: 当前工具允许使用的父会话冻结调用目标。
+
+    Returns:
+        有目标时带有动态 ``enum``；启动期无法读取父 binding 时保留非空字符串
+        兼容 schema，避免 Agent MCP 整体不可用。
+    """
+
+    aliases = list(dict.fromkeys(target.alias for target in targets))
+    if aliases:
+        return {"type": "string", "enum": aliases}
+    return {"type": "string", "minLength": 1}
+
+
+def _configuration_note(
+    targets: Sequence[DelegationTargetContext],
+) -> str:
+    """生成人类和模型都能直接读取的动态别名说明。"""
+
+    if not targets:
+        return ""
+    aliases = ", ".join(f"`{target.alias}`" for target in targets)
+    return f" Available configurations for this parent session: {aliases}."
+
+
+def _tool(
+    targets: Sequence[DelegationTargetContext] = (),
+) -> types.Tool:
+    """定义一次性阻塞委派工具及其动态输入格式。
+
+    Args:
+        targets: 父会话创建时冻结的全部可调用配置。
+    """
 
     return types.Tool(
         name=_TOOL_DELEGATE,
         _meta=_CLAUDE_ALWAYS_LOAD_META,
         description=(
-            "Delegate one bounded task to a Trowel-hosted Claude Code or Codex "
-            "session. Workdir, permissions and parent identity are inherited "
-            "from the current Trowel session and cannot be supplied by the model. "
+            "Delegate one bounded task through a named Trowel runtime configuration. "
+            "Runtime, connection, model, effort, workdir and permissions are frozen "
+            "by the parent session and cannot be supplied by the model. "
             "Use delegate_start instead when a Claude task may need guidance or "
             "run for several minutes."
+            f"{_configuration_note(targets)}"
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "target_runtime": {
-                    "type": "string",
-                    "enum": ["claude_code", "codex"],
-                },
+                "configuration": _configuration_property(targets),
                 "task": {"type": "string", "minLength": 1},
-                "model": {"type": "string"},
-                "effort": {"type": "string"},
             },
-            "required": ["target_runtime", "task"],
+            "required": ["configuration", "task"],
             "additionalProperties": False,
         },
     )
 
 
-def _interactive_tools() -> list[types.Tool]:
-    """定义启动、回答、查询和关闭交互委派的四个工具。"""
+def _interactive_tools(
+    targets: Sequence[DelegationTargetContext] = (),
+) -> list[types.Tool]:
+    """定义启动、回答、查询和关闭交互委派的四个工具。
+
+    Args:
+        targets: 父会话冻结目标；交互入口只展示已验证的 Claude 配置。
+    """
+
+    interactive_targets = tuple(
+        target for target in targets if target.runtime == "claude_code"
+    )
 
     return [
         types.Tool(
@@ -624,19 +780,15 @@ def _interactive_tools() -> list[types.Tool]:
                 "parent work without polling. When the child asks or finishes, Agent "
                 "Host automatically starts a parent turn after the current turn is "
                 "idle. The child remains live until delegate_close."
+                f"{_configuration_note(interactive_targets)}"
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "target_runtime": {
-                        "type": "string",
-                        "enum": ["claude_code"],
-                    },
+                    "configuration": _configuration_property(interactive_targets),
                     "task": {"type": "string", "minLength": 1},
-                    "model": {"type": "string"},
-                    "effort": {"type": "string"},
                 },
-                "required": ["target_runtime", "task"],
+                "required": ["configuration", "task"],
                 "additionalProperties": False,
             },
         ),
@@ -697,12 +849,32 @@ def _interactive_tools() -> list[types.Tool]:
     ]
 
 
-def _tools() -> list[types.Tool]:
-    """按固定顺序组装并校验 Agent MCP 的全部工具。"""
+def _tools(
+    targets: Sequence[DelegationTargetContext] = (),
+) -> list[types.Tool]:
+    """按固定顺序组装并校验 Agent MCP 的全部工具。
 
-    tools = [_tool(), *_interactive_tools()]
+    Args:
+        targets: 父会话冻结目标；为空时生成启动故障下的兼容契约。
+    """
+
+    tools = [_tool(targets), *_interactive_tools(targets)]
     assert tuple(tool.name for tool in tools) == AGENT_MCP_TOOL_NAMES
     return tools
+
+
+async def _published_tools(client: httpx.AsyncClient) -> list[types.Tool]:
+    """从 Agent Host 读取父会话事实并渲染动态工具契约。
+
+    Args:
+        client: 已配置实例认证的 Agent Host 客户端。
+
+    Returns:
+        ``configuration`` schema 和说明均来自当前父 binding 冻结目标的工具列表。
+    """
+
+    context = await _verified_parent_context(client, _parent_context())
+    return _tools(context.delegation_targets)
 
 
 def _text(payload: dict[str, Any]) -> list[types.TextContent]:
@@ -729,7 +901,17 @@ def _build_server(broker: InteractiveBrokerClient) -> Server:
     async def list_tools() -> list[types.Tool]:
         """返回当前 MCP 服务发布的全部委派工具。"""
 
-        return _tools()
+        try:
+            async with asyncio.timeout(_TOOL_DISCOVERY_TIMEOUT_SECONDS):
+                async with _agent_host_client() as client:
+                    return await _published_tools(client)
+        except Exception:
+            logger.warning(
+                "failed to publish parent-specific Agent MCP aliases; "
+                "falling back to the compatibility schema",
+                exc_info=True,
+            )
+            return _tools()
 
     @server.call_tool()
     async def call_tool(
@@ -749,54 +931,32 @@ def _build_server(broker: InteractiveBrokerClient) -> Server:
         """
 
         if name == _TOOL_DELEGATE:
-            async with httpx.AsyncClient(
-                base_url=_server_base_url(), timeout=httpx.Timeout(None)
-            ) as client:
+            async with _agent_host_client() as client:
                 result = await delegate_agent(
                     client,
                     context=_parent_context(),
-                    runtime=str(arguments.get("target_runtime", "")),
+                    configuration=str(arguments.get("configuration", "")),
                     task=str(arguments.get("task", "")),
-                    model=(str(arguments["model"]) if arguments.get("model") else None),
-                    effort=(
-                        str(arguments["effort"]) if arguments.get("effort") else None
-                    ),
                 )
             return _text(result.to_dict())
 
         delegation_id = str(arguments.get("delegation_id", ""))
         if name == _TOOL_DELEGATE_START:
-            runtime = str(arguments.get("target_runtime", ""))
-            if runtime != "claude_code":
-                raise ValueError("interactive delegation only supports claude_code")
+            configuration = str(arguments.get("configuration", ""))
             context = _parent_context()
-            async with httpx.AsyncClient(
-                base_url=_server_base_url(), timeout=httpx.Timeout(None)
-            ) as client:
+            async with _agent_host_client() as client:
                 context = await _verified_parent_context(client, context)
+            target = _delegation_target(context, configuration, interactive=True)
             return _text(
                 await broker.start(
                     parent_session_id=context.session_id,
                     task=str(arguments.get("task", "")),
-                    create_body=_create_body(
-                        context,
-                        runtime=runtime,
-                        model=(
-                            str(arguments["model"]) if arguments.get("model") else None
-                        ),
-                        effort=(
-                            str(arguments["effort"])
-                            if arguments.get("effort")
-                            else None
-                        ),
-                    ),
+                    create_body=_create_body(context, target=target),
                 )
             )
         if name == _TOOL_DELEGATE_RESPOND:
             context = _parent_context()
-            async with httpx.AsyncClient(
-                base_url=_server_base_url(), timeout=httpx.Timeout(None)
-            ) as client:
+            async with _agent_host_client() as client:
                 await _verified_parent_context(client, context)
             raw_answers = arguments.get("answers")
             if not isinstance(raw_answers, dict) or not all(

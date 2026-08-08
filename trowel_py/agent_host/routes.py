@@ -324,8 +324,52 @@ def _validated_interactive_child_body(
             detail="parent permission no longer allows full-access delegation",
         )
 
+    alias = submitted.get("delegation_configuration")
+    if alias is None and not parent.delegation_targets:
+        expected_legacy: dict[str, Any] = {
+            "runtime": "claude_code",
+            "workdir": str(Path(parent.workdir).expanduser().resolve()),
+            "memory_enabled": parent.memory_enabled,
+            "profile_enabled": parent.profile_enabled,
+            "self_enabled": parent.self_enabled,
+            "session_kind": "delegate",
+            "memory_eligibility": False,
+            "agent_mcp_enabled": False,
+            "parent_session_id": parent.session_id,
+            "delegation_depth": 1,
+            "permission_mode": "bypassPermissions",
+        }
+        for optional in ("model", "effort"):
+            value = submitted.get(optional)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"delegation child has invalid {optional}",
+                    )
+                expected_legacy[optional] = value
+        if submitted != expected_legacy:
+            raise HTTPException(
+                status_code=409,
+                detail="delegation child configuration does not match parent policy",
+            )
+        return expected_legacy
+    target = next(
+        (
+            item
+            for item in parent.delegation_targets
+            if isinstance(alias, str) and item.alias == alias
+        ),
+        None,
+    )
+    if target is None or target.runtime is not Runtime.CLAUDE_CODE:
+        raise HTTPException(
+            status_code=409,
+            detail="interactive delegation configuration is unavailable",
+        )
     expected: dict[str, Any] = {
         "runtime": "claude_code",
+        "connection_id": target.connection_id,
         "workdir": str(Path(parent.workdir).expanduser().resolve()),
         "memory_enabled": parent.memory_enabled,
         "profile_enabled": parent.profile_enabled,
@@ -336,16 +380,12 @@ def _validated_interactive_child_body(
         "parent_session_id": parent.session_id,
         "delegation_depth": 1,
         "permission_mode": "bypassPermissions",
+        "delegation_configuration": target.alias,
+        "expected_connection_identity_version": (target.connection_identity_version),
+        "model": target.model,
     }
-    for optional in ("model", "effort"):
-        value = submitted.get(optional)
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"delegation child has invalid {optional}",
-                )
-            expected[optional] = value
+    if target.effort is not None:
+        expected["effort"] = target.effort
     if submitted != expected:
         raise HTTPException(
             status_code=409,
@@ -498,7 +538,7 @@ async def create_session(
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
-    if req.session_kind == "discussion":
+    if req.session_kind == "discussion" or req.owner_ref is not None:
         raise HTTPException(status_code=404, detail="session kind not found")
     if req.resume_from is not None and hub.is_non_user_native_id(
         Runtime(req.runtime),
@@ -1127,6 +1167,29 @@ async def list_codex_commands(
 
     commands = await _await_hub(hub.list_codex_commands, session_id)
     return {"success": True, "data": {"commands": commands}, "error": None}
+
+
+@router.get("/sessions/{session_id}/skills")
+async def list_codex_skills(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """列出指定 Codex 会话真实可用的技能。
+
+    Args:
+        session_id: 要查询技能的 Codex 会话 ID。
+        hub: 用于定位冻结连接和读取原生技能目录的 Session Hub。
+
+    Returns:
+        统一响应。data.skills 为脱敏技能元数据，data.errors 为加载错误消息。
+
+    Raises:
+        HTTPException: 找不到会话时返回 404；Claude 会话返回 422；原生目录读取失败
+            返回 502；Codex 当前不可用时返回 503。
+    """
+
+    catalog = await _await_hub(hub.list_codex_skills, session_id)
+    return {"success": True, "data": catalog, "error": None}
 
 
 @router.post("/sessions/{session_id}/commands/compact")

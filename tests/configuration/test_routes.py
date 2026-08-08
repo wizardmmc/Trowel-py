@@ -14,6 +14,8 @@ from tests.configuration.support import build_service
 from trowel_py.configuration import routes
 from trowel_py.codex_host.catalog import parse_model_list_page
 from trowel_py.configuration.catalog import FetchedCatalog, FetchedModel
+from trowel_py.configuration.claude_home import ClaudeConnectionHomeStore
+from trowel_py.configuration.codex_home import CodexConnectionHomeStore
 from trowel_py.configuration.errors import ConfigurationError, version_conflict
 from trowel_py.configuration.models import (
     CodexCatalogEntry,
@@ -161,6 +163,28 @@ class _OfficialAccountHub:
 
         self.catalog_launches.append(launch)
         return _NativeCodexCatalogHub().models
+
+
+class _CodexMaintenanceHub:
+    """模拟按 connection ID 独占全部 Codex manager identity 的维护门禁。"""
+
+    def __init__(self, *, available: bool) -> None:
+        """保存是否允许进入维护态及调用账本。"""
+
+        self.available = available
+        self.started: list[str] = []
+        self.ended: list[str] = []
+
+    async def begin_codex_connection_maintenance(self, connection_id: str) -> bool:
+        """记录维护请求，并模拟活动会话拒绝。"""
+
+        self.started.append(connection_id)
+        return self.available
+
+    def end_codex_connection_maintenance(self, connection_id: str) -> None:
+        """记录成功进入维护态后的解除动作。"""
+
+        self.ended.append(connection_id)
 
 
 @pytest.mark.asyncio
@@ -877,6 +901,129 @@ def test_version_conflict_uses_stable_error_code() -> None:
 
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_inherit_claude_config_route_returns_only_redacted_state(
+    tmp_path: Path,
+) -> None:
+    """继承动作只返回是否已继承，不暴露连接家路径或内容。"""
+
+    global_home = tmp_path / "global" / ".claude"
+    global_home.mkdir(parents=True)
+    (global_home / "CLAUDE.md").write_text("global rules", encoding="utf-8")
+    homes = ClaudeConnectionHomeStore(
+        tmp_path / "managed",
+        global_home=global_home,
+    )
+    service, _repository = build_service(claude_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="Claude Provider",
+            runtime=RuntimeKind.CLAUDE_CODE,
+            kind=ConnectionKind.CLAUDE_COMPATIBLE,
+            protocol=ProtocolKind.ANTHROPIC_MESSAGES,
+            base_url="https://example.com/anthropic",
+        )
+    )
+
+    with _client(service) as client:
+        response = client.post(
+            f"/api/configuration/connections/{created.id}/claude-config/inherit",
+            params={"expected_version": created.version},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["claude_config_inherited"] is True
+    assert str(homes.root) not in response.text
+    assert "global rules" not in response.text
+
+
+def test_inherit_codex_config_route_copies_two_roots_without_exposing_paths(
+    tmp_path: Path,
+) -> None:
+    """Codex 继承同时覆盖两处技能来源，但响应只返回状态。"""
+
+    codex_source = tmp_path / "global" / ".codex"
+    agents_source = tmp_path / "global" / ".agents"
+    (codex_source / "skills" / "legacy").mkdir(parents=True)
+    (agents_source / "skills" / "development-slice-workflow").mkdir(
+        parents=True
+    )
+    (codex_source / "config.toml").write_text("model = 'gpt'", encoding="utf-8")
+    (agents_source / "skills" / "development-slice-workflow" / "SKILL.md").write_text(
+        "workflow body", encoding="utf-8"
+    )
+    homes = CodexConnectionHomeStore(
+        tmp_path / "managed",
+        global_codex_home=codex_source,
+        global_agents_home=agents_source,
+    )
+    service, repository = build_service(codex_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="DeepSeek",
+            runtime=RuntimeKind.CODEX,
+            kind=ConnectionKind.CODEX_CUSTOM,
+            protocol=ProtocolKind.OPENAI_RESPONSES,
+            base_url="https://api.deepseek.com/v1",
+        )
+    )
+
+    with _client(service) as client:
+        response = client.post(
+            f"/api/configuration/connections/{created.id}/codex-config/inherit",
+            params={"expected_version": created.version},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["codex_config_inherited"] is True
+    assert str(homes.root) not in response.text
+    assert "workflow body" not in response.text
+    home = homes.ensure_home(created.id)
+    repository.connection.commit()
+    assert (home / "config.toml").is_file()
+    assert (
+        home / ".agents" / "skills" / "development-slice-workflow" / "SKILL.md"
+    ).is_file()
+
+
+def test_delete_custom_codex_connection_rejects_active_session(
+    tmp_path: Path,
+) -> None:
+    """Custom 与 Official 一样，活动会话存在时不能删除其连接配置家。"""
+
+    homes = CodexConnectionHomeStore(
+        tmp_path / "managed",
+        global_codex_home=tmp_path / "global-codex",
+        global_agents_home=tmp_path / "global-agents",
+    )
+    service, repository = build_service(codex_homes=homes)
+    created = service.create_connection(
+        ConnectionDraft(
+            name="DeepSeek",
+            runtime=RuntimeKind.CODEX,
+            kind=ConnectionKind.CODEX_CUSTOM,
+            protocol=ProtocolKind.OPENAI_RESPONSES,
+            base_url="https://api.deepseek.com/v1",
+        )
+    )
+    home = homes.ensure_home(created.id)
+    repository.connection.commit()
+    assert home.is_dir()
+    hub = _CodexMaintenanceHub(available=False)
+
+    with _client(service, agent_hub=hub) as client:
+        response = client.delete(
+            f"/api/configuration/connections/{created.id}",
+            params={"expected_version": created.version},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONNECTION_IN_USE"
+    assert home.is_dir()
+    assert service.get_connection(created.id).id == created.id
+    assert hub.started == [created.id]
+    assert hub.ended == []
 
 
 def test_framework_validation_error_does_not_echo_mistaken_secret_field() -> None:
