@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isAcceptedPackagedAppExit } from "./smoke-packaged-exit.mjs";
 import { resolvePackagedSmokeDataDirectory } from "./smoke-packaged-paths.mjs";
+import { createHoldingClaudePath } from "./fake-claude-smoke.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const executable = process.env.TROWEL_PACKAGED_APP_EXECUTABLE
@@ -22,9 +23,15 @@ const executable = process.env.TROWEL_PACKAGED_APP_EXECUTABLE
     );
 const residencySmoke = process.argv.includes("--residency");
 const rendererCrashSmoke = process.argv.includes("--renderer-crash");
+const settingsSmoke = process.argv.includes("--settings");
 const defaultPathsSmoke = process.argv.includes("--default-paths");
+const agentTransportSmoke = process.argv.includes("--agent-transport");
 const preserveSmokeRoot = process.env.TROWEL_PACKAGED_SMOKE_PRESERVE === "1";
-if (residencySmoke && rendererCrashSmoke) {
+if (
+  [residencySmoke, rendererCrashSmoke, settingsSmoke, agentTransportSmoke].filter(
+    Boolean,
+  ).length > 1
+) {
   throw new Error("packaged smoke accepts only one runtime scenario");
 }
 if (defaultPathsSmoke && process.env.CI !== "true") {
@@ -51,6 +58,9 @@ const initialDirectories = defaultPathsSmoke
 for (const directory of initialDirectories) {
   await mkdir(directory, { recursive: true });
 }
+const packagedPath = agentTransportSmoke
+  ? await createHoldingClaudePath(smokeRoot, "/usr/bin:/bin:/usr/sbin:/sbin")
+  : "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /** 运行带 60 秒上限的安装包主进程并收集有界输出。 */
 function runPackagedApp() {
@@ -59,13 +69,17 @@ function runPackagedApp() {
       cwd: smokeRoot,
       env: {
         HOME: homeDirectory,
-        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        PATH: packagedPath,
         TROWEL_RUNTIME_DISCOVERY_DISABLED: "1",
         ...(residencySmoke
           ? { TROWEL_DESKTOP_RESIDENCY_SMOKE: "1" }
           : rendererCrashSmoke
             ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
-            : { TROWEL_DESKTOP_SMOKE: "1" }),
+            : settingsSmoke
+              ? { TROWEL_DESKTOP_SETTINGS_SMOKE: "1" }
+              : agentTransportSmoke
+                ? { TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE: "1" }
+                : { TROWEL_DESKTOP_SMOKE: "1" }),
         ...(defaultPathsSmoke
           ? {}
           : {
@@ -106,7 +120,11 @@ try {
     ? "TROWEL_DESKTOP_RESIDENCY_SMOKE_OK"
     : rendererCrashSmoke
       ? "TROWEL_DESKTOP_RENDERER_CRASHED_SIDECAR_ALIVE"
-      : "TROWEL_DESKTOP_SMOKE_OK";
+      : settingsSmoke
+        ? "TROWEL_DESKTOP_SETTINGS_SMOKE_OK"
+        : agentTransportSmoke
+          ? "TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE_OK"
+          : "TROWEL_DESKTOP_SMOKE_OK";
   if (!isAcceptedPackagedAppExit(result) || !result.stdout.includes(expectedMarker)) {
     throw new Error(
       `packaged smoke failed code=${result.code} signal=${result.signal}\n${result.stdout}\n${result.stderr}`,
@@ -147,7 +165,11 @@ try {
       ? "TROWEL_PACKAGED_RESIDENCY_SMOKE_OK"
       : rendererCrashSmoke
         ? "TROWEL_PACKAGED_RENDERER_CRASH_SMOKE_OK"
-        : "TROWEL_PACKAGED_APP_SMOKE_OK",
+        : settingsSmoke
+          ? "TROWEL_PACKAGED_SETTINGS_SMOKE_OK"
+          : agentTransportSmoke
+            ? "TROWEL_PACKAGED_AGENT_TRANSPORT_SMOKE_OK"
+            : "TROWEL_PACKAGED_APP_SMOKE_OK",
   );
 } finally {
   if (passed && !preserveSmokeRoot) {

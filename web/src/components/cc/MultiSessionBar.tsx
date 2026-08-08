@@ -7,6 +7,8 @@ import { useAgentStoreFrameSelector } from "../../agent/application";
 import {
   MAX_RUNNING,
   MAX_CONNECTIONS,
+  copySessionDiagnostic,
+  isRootTurnInFlight,
   type PerSessionState,
 } from "../../agent/application";
 import { getRuntimePresentation } from "../../agent/runtimes";
@@ -15,19 +17,30 @@ interface MultiSessionBarProps {
   readonly onNewSameWorkdir: () => void;
   readonly onChangeWorkdir: () => void;
   readonly onActivateWorkdir?: (workdir: string) => void;
+  readonly newSessionPreparing?: boolean;
 }
 
 const selectSessions = (state: ReturnType<typeof useAgentStore.getState>) =>
   state.sessions;
 
 function dotClass(s: PerSessionState): string {
-  if (s.abort !== null) return "cc-multibar__dot--running";
+  if (isRootTurnInFlight(s)) return "cc-multibar__dot--running";
   return "cc-multibar__dot--idle";
 }
 
 function statusText(s: PerSessionState, closing: boolean): string {
-  if (closing) return `${s.meta.model ?? "model"} · 关闭中`;
-  if (s.abort !== null) {
+  if (closing) return "关闭中";
+  if (s.resourceState === "needs_reconcile") {
+    const turnLabel = isRootTurnInFlight(s) ? "状态待对账" : "已停止";
+    return `${turnLabel} · 清理失败`;
+  }
+  if (s.liveState === "reconnecting") {
+    return "实时连接恢复中";
+  }
+  if (s.liveState === "gapped" || s.turnState === "unknown") {
+    return "状态待对账";
+  }
+  if (isRootTurnInFlight(s)) {
     const phase =
       s.phase === "thinking"
         ? "思考中"
@@ -36,9 +49,9 @@ function statusText(s: PerSessionState, closing: boolean): string {
           : s.phase === "background_waiting"
             ? "等后台任务"
           : "生成中";
-    return `${s.meta.model ?? "model"} · ${phase}`;
+    return phase;
   }
-  return `${s.meta.model ?? "model"} · 空闲`;
+  return "空闲";
 }
 
 function workdirName(workdir: string): string {
@@ -54,6 +67,7 @@ export function MultiSessionBar({
   onNewSameWorkdir,
   onChangeWorkdir,
   onActivateWorkdir,
+  newSessionPreparing = false,
 }: MultiSessionBarProps) {
   const sessions = useAgentStoreFrameSelector(selectSessions);
   const closingSessionIds = useAgentStore((s) => s.closingSessionIds);
@@ -68,7 +82,7 @@ export function MultiSessionBar({
     ([, s]) =>
       (s.sessionKind ?? "user") === "user" && s.connected && !s.meta.exited,
   );
-  const running = connected.filter(([, s]) => s.abort !== null).length;
+  const running = connected.filter(([, s]) => isRootTurnInFlight(s)).length;
   const connections = connected.length;
   const connectionFull = connections >= MAX_CONNECTIONS;
 
@@ -105,6 +119,7 @@ export function MultiSessionBar({
           type="button"
           className="cc-multibar__btn cc-multibar__btn--primary"
           onClick={onNewSameWorkdir}
+          disabled={newSessionPreparing}
           title="同目录新开"
           aria-label="同目录新开"
         >
@@ -216,7 +231,13 @@ export function MultiSessionBar({
                             </span>
                           </span>
                           <span className="cc-multibar__row2">
-                            {statusText(s, isClosing)}
+                            {[
+                              s.connectionName,
+                              s.meta.model,
+                              statusText(s, isClosing),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
                           </span>
                           <span
                             className="cc-multibar__cond"
@@ -252,6 +273,17 @@ export function MultiSessionBar({
                           </span>
                         </button>
                         <div className="cc-multibar__actions">
+                          {s.resourceState === "needs_reconcile" && (
+                            <button
+                              type="button"
+                              className="cc-multibar__action"
+                              onClick={() => void copySessionDiagnostic(s)}
+                              title="复制脱敏诊断"
+                              aria-label={`复制 ${title} 的脱敏诊断`}
+                            >
+                              ⧉
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="cc-multibar__action"
@@ -268,8 +300,20 @@ export function MultiSessionBar({
                             onClick={() => void close(sid)}
                             disabled={isClosing}
                             aria-busy={isClosing}
-                            title={isClosing ? "关闭中" : "关闭"}
-                            aria-label={isClosing ? `正在关闭 ${title}` : `关闭 ${title}`}
+                            title={
+                              isClosing
+                                ? "关闭中"
+                                : s.resourceState === "needs_reconcile"
+                                  ? "重试关闭"
+                                  : "关闭"
+                            }
+                            aria-label={
+                              isClosing
+                                ? `正在关闭 ${title}`
+                                : s.resourceState === "needs_reconcile"
+                                  ? `重试关闭 ${title}`
+                                  : `关闭 ${title}`
+                            }
                           >
                             ×
                           </button>

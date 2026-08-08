@@ -2,6 +2,7 @@ import { beforeEach, vi } from "vitest";
 import { getExpectedRuntimePresentation } from "../agent/runtimes";
 import type { AgentSession } from "../agent/transport";
 import type { AgentEvent } from "../agent/transport";
+import type { AgentStreamControl } from "../agent/transport/stream";
 
 vi.mock("../agent/transport/api", () => ({
   createAgentSession: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("../agent/transport/api", () => ({
   setCodexGoal: vi.fn(),
   clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
   startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
+  startAgentTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
   startCodexReview: vi.fn().mockResolvedValue({
     reviewThreadId: "thread-1",
@@ -33,7 +35,7 @@ vi.mock("../agent/transport/api", () => ({
   generateAgentSessionTitle: vi.fn(),
   renameAgentSessionTitle: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
-  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+  agentEventsUrl: () => "/api/agent/events",
 }));
 
 vi.mock("../api/cc", () => ({
@@ -45,6 +47,8 @@ export const stream = {
   apply: null as ((event: AgentEvent) => void) | null,
   messageApply: null as ((event: AgentEvent) => void) | null,
   eventApply: null as ((event: AgentEvent) => void) | null,
+  eventOpen: null as ((generation: string | null) => void) | null,
+  eventControl: null as ((control: AgentStreamControl) => void) | null,
   messageResolvers: [] as Array<() => void>,
   eventResolvers: [] as Array<() => void>,
 };
@@ -62,13 +66,19 @@ vi.mock("../agent/transport/stream", () => ({
     (
       _url: string,
       apply: (event: AgentEvent) => void,
-      options?: { onOpen?: () => void },
+      options?: {
+        onOpen?: (generation: string | null) => void;
+        onControl?: (control: AgentStreamControl) => void;
+      },
     ) =>
       new Promise<void>((resolve) => {
         stream.apply = apply;
         stream.eventApply = apply;
+        stream.messageApply = apply;
+        stream.eventOpen = options?.onOpen ?? null;
+        stream.eventControl = options?.onControl ?? null;
         stream.eventResolvers.push(resolve);
-        options?.onOpen?.();
+        options?.onOpen?.("generation-1");
       }),
   ),
 }));
@@ -86,6 +96,7 @@ import {
   setCodexGoal,
   clearCodexGoal,
   startCodexTurn,
+  startAgentTurn,
   compactCodexSession,
   startCodexReview,
   updateAgentSessionSettings,
@@ -93,6 +104,7 @@ import {
   renameAgentSessionTitle,
 } from "../agent/transport";
 import { getEventStream } from "../agent/transport";
+import { answerElicit, revertSession } from "../api/cc";
 
 export const apiAnswerAgentRequest = vi.mocked(answerAgentRequest);
 export const apiActivateAgentSession = vi.mocked(activateAgentSession);
@@ -106,12 +118,15 @@ export const apiGetCodexGoal = vi.mocked(getCodexGoal);
 export const apiSetCodexGoal = vi.mocked(setCodexGoal);
 export const apiClearCodexGoal = vi.mocked(clearCodexGoal);
 export const apiStartCodexTurn = vi.mocked(startCodexTurn);
+export const apiStartAgentTurn = vi.mocked(startAgentTurn);
 export const apiCompactCodexSession = vi.mocked(compactCodexSession);
 export const apiStartCodexReview = vi.mocked(startCodexReview);
 export const apiUpdateSessionSettings = vi.mocked(updateAgentSessionSettings);
 export const apiGenerateSessionTitle = vi.mocked(generateAgentSessionTitle);
 export const apiRenameSessionTitle = vi.mocked(renameAgentSessionTitle);
 export const apiGetEventStream = vi.mocked(getEventStream);
+export const apiAnswerElicit = vi.mocked(answerElicit);
+export const apiRevertSession = vi.mocked(revertSession);
 
 let seqCounter = 0;
 
@@ -188,6 +203,8 @@ beforeEach(() => {
   stream.apply = null;
   stream.messageApply = null;
   stream.eventApply = null;
+  stream.eventOpen = null;
+  stream.eventControl = null;
   stream.messageResolvers = [];
   stream.eventResolvers = [];
   seqCounter = 0;

@@ -3,7 +3,10 @@
 import path from "node:path";
 import { BrowserWindow, shell } from "electron";
 import { DESKTOP_LAYOUT_PX } from "../shared/desktop-layout";
-import { assertAllowedExternalUrl } from "./ipcValidation";
+import {
+  assertAllowedExternalUrl,
+  isTrustedRendererLocation,
+} from "./ipcValidation";
 export { focusDesktopWindow } from "./windowFocus";
 
 export interface DesktopWindowOptions {
@@ -56,15 +59,7 @@ export function createDesktopWindow(options: DesktopWindowOptions): BrowserWindo
 }
 
 function isAllowedNavigation(candidate: string, trustedRendererUrl: string): boolean {
-  try {
-    const target = new URL(candidate);
-    const trusted = new URL(trustedRendererUrl);
-    return trusted.protocol === "file:"
-      ? target.href === trusted.href
-      : target.origin === trusted.origin;
-  } catch {
-    return false;
-  }
+  return isTrustedRendererLocation(candidate, trustedRendererUrl);
 }
 
 async function openExternalIfAllowed(rawUrl: string): Promise<void> {

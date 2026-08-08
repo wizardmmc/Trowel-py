@@ -8,11 +8,29 @@ export function isTrustedRendererUrl(
   diagnosticUrl: string,
 ): boolean {
   if (senderUrl === diagnosticUrl) return true;
+  return isTrustedRendererLocation(senderUrl, rendererUrl);
+}
+
+/**
+ * 判断地址是否仍属于配置好的 renderer 页面。
+ * 本地安装包只允许同一个 HTML 文件，但允许查询参数和页内锚点承载界面状态。
+ */
+export function isTrustedRendererLocation(
+  candidateUrl: string,
+  rendererUrl: string,
+): boolean {
   try {
-    const sender = new URL(senderUrl);
+    const candidate = new URL(candidateUrl);
     const renderer = new URL(rendererUrl);
-    if (renderer.protocol === "file:") return sender.href === renderer.href;
-    return sender.origin === renderer.origin;
+    if (renderer.protocol === "file:") {
+      if (candidate.protocol !== "file:") return false;
+      candidate.search = "";
+      candidate.hash = "";
+      renderer.search = "";
+      renderer.hash = "";
+      return candidate.href === renderer.href;
+    }
+    return candidate.origin === renderer.origin;
   } catch {
     return false;
   }

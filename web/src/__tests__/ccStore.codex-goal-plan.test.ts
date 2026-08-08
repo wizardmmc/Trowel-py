@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  apiActivateAgentSession,
   apiClearCodexGoal,
   apiGetCodexGoal,
   apiGetEventStream,
   apiSetCodexGoal,
-  apiStartCodexTurn,
+  apiStartAgentTurn,
   ev,
   listActiveSessions,
   mockCreate,
@@ -107,6 +108,25 @@ describe("createAgentStore - Codex Goal and Plan", () => {
     });
   });
 
+  it("clears a Goal refresh problem after the matching retry succeeds", async () => {
+    const store = createAgentStore();
+    apiGetCodexGoal.mockRejectedValueOnce(new Error("goal unavailable"));
+    mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
+
+    await store.getState().startSession({ workdir: "/a", runtime: "codex" });
+
+    expect(store.getState().sessions.c1.transportProblem?.operation).toBe(
+      "goal_get",
+    );
+    apiGetCodexGoal.mockResolvedValueOnce(GOAL);
+    apiActivateAgentSession.mockResolvedValueOnce({ activeId: "c1" });
+
+    await store.getState().activateSession("c1");
+
+    expect(store.getState().sessions.c1.goal).toEqual(GOAL);
+    expect(store.getState().sessions.c1.transportProblem).toBeNull();
+  });
+
   it("uses the permanent watcher for autonomous turns and explicit sends", async () => {
     const store = createAgentStore();
     mockCreate("c1", { runtime: "codex", native_session_id: "thread-1" });
@@ -114,14 +134,19 @@ describe("createAgentStore - Codex Goal and Plan", () => {
 
     const sending = store.getState().send("continue");
     await sending;
-    expect(apiStartCodexTurn).toHaveBeenCalledWith("c1", "continue");
+    expect(apiStartAgentTurn).toHaveBeenCalledWith("c1", "continue");
     expect(store.getState().sessions.c1.abort).not.toBeNull();
 
     stream.apply!(
       ev(
         "finished",
         {},
-        { runtime: "codex", session_id: "c1", turn_id: "turn-1" },
+        {
+          runtime: "codex",
+          session_id: "c1",
+          thread_id: "thread-1",
+          turn_id: "turn-1",
+        },
       ),
     );
     expect(store.getState().sessions.c1.abort).toBeNull();
@@ -135,6 +160,7 @@ describe("createAgentStore - Codex Goal and Plan", () => {
     );
     expect(store.getState().sessions.c1.turns.at(-1)?.turnId).toBe("turn-auto");
     expect(store.getState().sessions.c1.abort).not.toBeNull();
+    expect(apiGetEventStream).toHaveBeenCalledTimes(1);
   });
 
   it("writes pause and clear through native Goal APIs", async () => {

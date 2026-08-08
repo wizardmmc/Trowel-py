@@ -24,6 +24,13 @@ interface ComposerProps {
   readonly slashLoading?: boolean;
   readonly slashError?: string | null;
   readonly onRetrySlashItems?: () => void;
+  readonly slashContext?: string | null;
+  readonly skillItems?: readonly SlashItem[];
+  readonly skillLoading?: boolean;
+  readonly skillError?: string | null;
+  readonly onRetrySkillItems?: () => void;
+  readonly skillContext?: string | null;
+  readonly skillTriggerEnabled?: boolean;
   readonly onRequestModelPicker?: () => void;
   readonly onRequestEffortPicker?: () => void;
   readonly models?: readonly ModelOption[];
@@ -76,6 +83,13 @@ export function Composer({
   slashLoading = false,
   slashError = null,
   onRetrySlashItems,
+  slashContext = null,
+  skillItems,
+  skillLoading = false,
+  skillError = null,
+  onRetrySkillItems,
+  skillContext = null,
+  skillTriggerEnabled,
   onRequestModelPicker,
   onRequestEffortPicker,
   models,
@@ -102,17 +116,31 @@ export function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const autocompleteId = useId();
 
+  const hasSkillTrigger = skillTriggerEnabled ?? skillItems !== undefined;
+  const isEditingTriggerToken = !/\s/.test(text);
+  const acTrigger = !isEditingTriggerToken
+    ? null
+    : text.startsWith("/")
+      ? "/"
+      : hasSkillTrigger && text.startsWith("$")
+        ? "$"
+        : null;
+  const acItems = acTrigger === "$" ? skillItems : slashItems;
+  const acLoading = acTrigger === "$" ? skillLoading : slashLoading;
+  const acError = acTrigger === "$" ? skillError : slashError;
+  const acContext = acTrigger === "$" ? skillContext : slashContext;
+  const acRetry = acTrigger === "$" ? onRetrySkillItems : onRetrySlashItems;
   const acOpen =
-    text.startsWith("/") &&
-    ((slashItems?.length ?? 0) > 0 || slashLoading || slashError !== null) &&
+    acTrigger !== null &&
+    ((acItems?.length ?? 0) > 0 || acLoading || acError !== null || acContext !== null) &&
     !dismissed;
   const query = acOpen ? text.slice(1) : "";
   const searching = query.trim() !== "";
 
   // 键盘索引与菜单必须共享同一筛选和排序结果。
   const acGroups = useMemo(
-    () => groupSlashItems(slashItems ?? [], query),
-    [slashItems, query],
+    () => groupSlashItems(acItems ?? [], query),
+    [acItems, query],
   );
   const acFlat = useMemo(
     () => flatVisible(acGroups, searching, collapsedSources),
@@ -153,6 +181,11 @@ export function Composer({
 
   function pickItem(item: SlashItem, rawText = `/${item.name}`) {
     if (item.disabled) return;
+    if (acTrigger === "$") {
+      setText(`$${item.name} `);
+      setDismissed(true);
+      return;
+    }
     if (item.source === "codex") {
       onLocalCommand?.(item, rawText);
       setText("");
@@ -273,9 +306,12 @@ export function Composer({
           onHighlight={setAcIndex}
           onToggleGroup={toggleGroup}
           id={autocompleteId}
-          loading={slashLoading}
-          error={slashError}
-          onRetry={onRetrySlashItems}
+          loading={acLoading}
+          error={acError}
+          onRetry={acRetry}
+          trigger={acTrigger ?? "/"}
+          context={acContext}
+          emptyLabel={query.trim() ? "没有匹配的可用项" : "当前没有可用项"}
         />
       )}
       <div className="cc-composer__shell">
@@ -286,8 +322,8 @@ export function Composer({
             awaitingInput
               ? "等你回答上方问题（Enter 发送）"
               : onInterrupt
-                ? "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 触发命令补全）"
-                : "发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 清空，/ 触发命令补全）"
+                ? `发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 中断/清空，/ 命令${hasSkillTrigger ? "，$ 技能" : ""}）`
+                : `发消息给 Agent（Enter 发送，Shift+Enter 换行，Esc 清空，/ 命令${hasSkillTrigger ? "，$ 技能" : ""}）`
           }
           value={text}
           onChange={(e) => {

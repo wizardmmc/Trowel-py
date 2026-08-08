@@ -158,15 +158,11 @@ async def drive_and_gate(
             await close()
 
     if not finished:
-        raise DistillError(
-            f"distill agent did not finish cleanly for {source_id}"
-        )
+        raise DistillError(f"distill agent did not finish cleanly for {source_id}")
 
     draft_path = workdir / _DRAFT_FILE
     if not draft_path.exists():
-        raise DistillError(
-            f"distill agent produced no {_DRAFT_FILE} for {source_id}"
-        )
+        raise DistillError(f"distill agent produced no {_DRAFT_FILE} for {source_id}")
     return parse_and_gate_draft(
         draft_path.read_text(encoding="utf-8"),
         source_id=source_id,

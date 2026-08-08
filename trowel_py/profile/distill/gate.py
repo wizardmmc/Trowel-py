@@ -204,9 +204,7 @@ def parse_and_gate_draft(
             continue
         dim = item.get("dimension")
         if dim not in _VALID_DIMS:
-            raise DistillError(
-                f"unknown dimension {dim!r} in suggestions-draft.json"
-            )
+            raise DistillError(f"unknown dimension {dim!r} in suggestions-draft.json")
         body = str(item.get("body") or "")
         if not body.strip():
             dropped_empty_body += 1
@@ -225,9 +223,23 @@ def parse_and_gate_draft(
             continue
         # 维度已通过 _VALID_DIMS 门禁，但类型检查器不会据此收窄 Literal。
         # pending 是 SuggestionStatus 的合法常量；两处忽略都只弥合静态类型。
+        suggestion_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            json.dumps(
+                {
+                    "source_id": source_id,
+                    "dimension": dim,
+                    "body": body,
+                    "sources": sources,
+                    "policy_version": policy_version,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        ).hex
         accepted.append(
             Suggestion(
-                id=uuid.uuid4().hex,
+                id=suggestion_id,
                 dimension=dim,  # type: ignore[arg-type]
                 body=body,
                 sources=sources,
@@ -240,9 +252,7 @@ def parse_and_gate_draft(
     over_limit = max(0, len(accepted) - _PROFILE_SUGGESTIONS_MAX_PER_SEGMENT)
     kept = tuple(accepted[:_PROFILE_SUGGESTIONS_MAX_PER_SEGMENT])
     # raw 排除非对象项；未知维度会让整份草稿失败，因而没有可返回的统计。
-    raw = (
-        dropped_empty_body + dropped_too_long + dropped_no_evidence + len(accepted)
-    )
+    raw = dropped_empty_body + dropped_too_long + dropped_no_evidence + len(accepted)
     stats = GateStats(
         raw=raw,
         accepted=len(kept),

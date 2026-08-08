@@ -58,6 +58,7 @@ def client_factory() -> Callable[[SessionHub], TestClient]:
 
         app = FastAPI()
         app.include_router(router, prefix="/api/agent")
+        app.state.agent_hub = hub
         app.dependency_overrides[get_hub] = lambda: hub
         return TestClient(app)
 

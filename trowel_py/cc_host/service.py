@@ -113,10 +113,10 @@ def _control_response_msg(
     updated_input: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> bytes:
-    """编码 `AskUserQuestion` 的 stream-json 回包。
+    """编码 CC `can_use_tool` 请求的 stream-json 回包。
 
-    allow 时 `updated_input` 必须包含 `answers`；deny 可通过 `message`
-    说明取消原因。
+    AskUserQuestion 的 allow 回包要求 `updated_input` 包含 `answers`；plan mode 工具
+    沿用原始输入。deny 可通过 `message` 说明取消原因。
 
     Args:
         request_id: 要回答的 CC `control_request` ID。
@@ -169,6 +169,10 @@ class CCHost:
         resume_from: str | None = None,
         proxy_base_url: str | None = None,
         settings_path: Path | str | None = None,
+        claude_config_dir: Path | str | None = None,
+        claude_plugin_dir: Path | str | None = None,
+        owned_settings_path: bool = False,
+        close_callback: Callable[[], None] | None = None,
         spawner: Callable[
             [list[str], dict[str, Any]], Awaitable[Any]
         ] = _default_spawner,
@@ -179,12 +183,14 @@ class CCHost:
         stalled_tick: float = 1.0,
         session_registrar: Any = None,
         session_kind: str = "user",
+        memory_eligibility: bool = True,
         agent_mcp_enabled: bool = False,
         mcp_config: str | None = None,
         owned_mcp_config: bool = False,
         memory_enabled: bool = True,
         profile_enabled: bool = True,
         self_enabled: bool = True,
+        bootstrap_context: str | None = None,
         process_controller: ProcessController | None = None,
         resource_registry: ResourceRegistry | None = None,
         close_interrupt_s: float = 2.0,
@@ -207,6 +213,11 @@ class CCHost:
             proxy_base_url: CC 请求使用的本地代理地址；``None`` 表示不设置。
             settings_path: 提供 provider 环境变量的 CC settings 文件；``None``
                 表示不读取。
+            claude_config_dir: 当前连接独占的 Claude 用户配置与原生状态根；None
+                使用真实 `~/.claude` 兼容旧会话。
+            claude_plugin_dir: 多个 Claude 连接共享物理安装的 plugin 根。
+            owned_settings_path: 是否由当前 host 在关闭或创建回滚时删除 settings。
+            close_callback: host 清理完成后执行的一次性连接租约释放函数。
             spawner: 接收 argv 和启动选项的异步子进程创建器。
             now: 返回单调时间的函数，用于检测 stdout 静默。
             stalled_threshold_mild: 发布轻度静默警告前的秒数。
@@ -216,6 +227,7 @@ class CCHost:
             session_registrar: 保存 Memory 会话记录和水位的注册器；``None`` 使用
                 默认持久化实现。
             session_kind: 写入 Memory 会话记录的会话来源。
+            memory_eligibility: 是否允许整个会话进入 Memory/Profile 来源。
             agent_mcp_enabled: 是否启用跨 Agent 委派工具。
             mcp_config: 候选 MCP 配置文件；启用 Agent MCP 或由本 host 拥有时
                 传给 CC，否则忽略。
@@ -223,6 +235,8 @@ class CCHost:
             memory_enabled: 是否向会话提供 Memory 内容和读取入口。
             profile_enabled: 是否向会话提供用户画像。
             self_enabled: 是否向会话提供 Trowel 的持续身份信息。
+            bootstrap_context: 仅由应用内部注入的首轮背景；作为系统提示词附加，
+                不能伪装成顶层用户原话。
             process_controller: 核验并终止独立进程组的实现；None 保留只操作根进程
                 的兼容路径，生产应用会显式传入本机实现。
             resource_registry: 记录 CC 进程组 owner 和关闭终态的应用资源账本。
@@ -245,6 +259,19 @@ class CCHost:
         self._resume_from = resume_from
         self._proxy_base_url = proxy_base_url
         self._settings_path = settings_path
+        self._claude_config_dir = (
+            Path(claude_config_dir).expanduser().absolute()
+            if claude_config_dir is not None
+            else None
+        )
+        self._claude_plugin_dir = (
+            Path(claude_plugin_dir).expanduser().absolute()
+            if claude_plugin_dir is not None
+            else None
+        )
+        self._owned_settings_path = owned_settings_path
+        self._close_callback = close_callback
+        self._close_callback_called = False
         self._spawner = spawner
         self._now = now
         self.stalled_threshold_mild = stalled_threshold_mild
@@ -253,11 +280,15 @@ class CCHost:
         self.stalled_tick = stalled_tick
         self._session_registrar = session_registrar
         self._session_kind = session_kind
+        self._memory_session_kind = (
+            session_kind if memory_eligibility else "ineligible"
+        )
         self.agent_mcp_enabled = agent_mcp_enabled
         # 三个开关彼此独立，并在整个会话及重启期间保持不变。
         self._memory_enabled = memory_enabled
         self._profile_enabled = profile_enabled
         self._self_enabled = self_enabled
+        self._bootstrap_context = bootstrap_context
         # 会话独占的 composite roster 即使为空也走 strict mode；旧的共享 memory-only
         # 配置仍在 memory-off 时丢弃，保持独立 review host 的隔离语义。
         self._mcp_config = (
@@ -279,7 +310,7 @@ class CCHost:
         self._started = False
         self._cc_session_id: str | None = resume_from
         self._last_finished: FinishedEvent | None = None
-        # 锁保证同一 AskUserQuestion 只写入一次 answer 或 cancel。
+        # 锁保证同一提问或 plan mode 确认只写入一次 answer 或 cancel。
         self._pending_elicit: dict[str, Any] | None = None
         self._elicit_lock = asyncio.Lock()
         # routes 读取 init 命令列表，作为 slash-items 的名称下限。
@@ -289,6 +320,7 @@ class CCHost:
         self._session_start_turn_id = uuid.uuid4().hex
         self._session_start_saved = False
         self._turn_count = 0
+        self._reserved_turn_id: str | None = None
         # Workflow 不写 stdout 且可能跨 turn，watcher 必须跨轮读取磁盘状态。
         self._workflow_watcher = WorkflowWatcher(self._workflow_transcript_dir())
         self._bg_tracker = BackgroundActivityTracker()
@@ -308,6 +340,34 @@ class CCHost:
         """返回 CC 原生会话 ID；首次初始化前可能为空。"""
 
         return self._cc_session_id
+
+    @property
+    def projects_root(self) -> Path:
+        """返回当前会话冻结使用的 Claude projects 根。"""
+
+        return (
+            cc_projects_root()
+            if self._claude_config_dir is None
+            else cc_projects_root(self._claude_config_dir)
+        )
+
+    @property
+    def claude_config_dir(self) -> Path | None:
+        """返回冻结的连接级配置目录；None 表示全局目录。"""
+
+        return self._claude_config_dir
+
+    @property
+    def claude_plugin_dir(self) -> Path | None:
+        """返回当前连接共享的插件缓存目录。"""
+
+        return self._claude_plugin_dir
+
+    @property
+    def init_roster(self) -> tuple[str, ...]:
+        """返回 Claude Code 首次初始化报告的命令名称。"""
+
+        return tuple(self._init_roster)
 
     @property
     def has_in_flight_turn(self) -> bool:
@@ -411,6 +471,10 @@ class CCHost:
                 exc_info=True,
             )
             injection = ""
+        if self._bootstrap_context:
+            injection = "\n\n".join(
+                part for part in (injection, self._bootstrap_context) if part
+            )
         args = build_args(
             self.workdir,
             model=self._model,
@@ -423,6 +487,7 @@ class CCHost:
             allowed_tools=(
                 _CLAUDE_AGENT_MCP_TOOL_NAMES if self.agent_mcp_enabled else None
             ),
+            settings_path=self._settings_path,
         )
         kwargs = build_subprocess_kwargs(
             self.workdir, env=self._build_spawn_env()
@@ -442,6 +507,12 @@ class CCHost:
                 load_settings_env(self._settings_path) if self._settings_path else {}
             )
             env = dict(os.environ) | build_proxy_env(settings_env, self._proxy_base_url)
+        if self._claude_config_dir is not None:
+            env = dict(env) if env is not None else dict(os.environ)
+            env["CLAUDE_CONFIG_DIR"] = str(self._claude_config_dir)
+        if self._claude_plugin_dir is not None:
+            env = dict(env) if env is not None else dict(os.environ)
+            env["CLAUDE_CODE_PLUGIN_CACHE_DIR"] = str(self._claude_plugin_dir)
         # stdio MCP 继承启动环境；只有 resume 能在启动前预先写入原生会话 ID。
         # `CC_SESSION_ID` 仅兼容旧版 CC 身份环境变量。
         if self._mcp_config:
@@ -460,6 +531,16 @@ class CCHost:
             env["MCP_CONNECTION_NONBLOCKING"] = "false"
             env["MCP_CONNECT_TIMEOUT_MS"] = "5000"
             env["MCP_TIMEOUT"] = "10000"
+        if self.session_kind == "discussion":
+            env = dict(env) if env is not None else dict(os.environ)
+            for private_name in (
+                "TROWEL_DATA_ROOT",
+                "TROWEL_DESKTOP_DATA_DIR",
+                "TROWEL_AGENT_SESSIONS_PATH",
+                "MEMORY_ROOT",
+                "TROWEL_MEMORY_ROOT",
+            ):
+                env.pop(private_name, None)
         return env
 
     async def _ensure_process(self) -> None:
@@ -773,6 +854,7 @@ class CCHost:
         await self._close_process(active=active)
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
+        self._cleanup_connection_files()
 
     def discard_unstarted(self) -> None:
         """清理尚未启动的 host 及其自有 MCP 配置。
@@ -786,19 +868,71 @@ class CCHost:
         self._workflow_watcher.close()
         if self._owned_mcp_config and self._mcp_config:
             Path(self._mcp_config).unlink(missing_ok=True)
+        self._cleanup_connection_files()
+
+    def _cleanup_connection_files(self) -> None:
+        """幂等删除私有 settings，并释放会话代理租约。"""
+
+        if self._owned_settings_path and self._settings_path:
+            Path(self._settings_path).unlink(missing_ok=True)
+        if self._close_callback is not None and not self._close_callback_called:
+            self._close_callback_called = True
+            self._close_callback()
 
     async def reload(self) -> None:
         """结束当前 CC 子进程，使 revert 后的下一轮从截断的 JSONL 恢复。"""
         await self._kill()
 
-    async def _prepare_checkpoint(self) -> tuple[str, bool]:
+    def reserve_turn_id(self, preferred_turn_id: str | None = None) -> str:
+        """为下一次 ``send`` 预留逻辑 turn ID，供响应、事件和 checkpoint 共用。
+
+        Args:
+            preferred_turn_id: 内部 owner 已确定的稳定 ID；普通用户轮次为 None，
+                仍由本 host 生成。
+
+        Returns:
+            ``send`` 将消费的同一个逻辑 turn ID。
+        """
+
+        if self._reserved_turn_id is not None:
+            raise RuntimeError("next Claude Code turn already has a reserved ID")
+        if (
+            preferred_turn_id is not None
+            and self._turn_count == 0
+            and not self._session_start_saved
+        ):
+            # 新会话的首轮 checkpoint 会在原生 init 后落盘。先统一它的身份，
+            # 避免事件、回滚请求和私有 checkpoint ref 使用三个不同的 ID。
+            self._session_start_turn_id = preferred_turn_id
+        turn_id = preferred_turn_id
+        if turn_id is None:
+            if (
+                self._turn_count == 0
+                and checkpoint.is_enabled()
+                and checkpoint.is_git_repo(self.workdir)
+            ):
+                turn_id = self._session_start_turn_id
+            else:
+                turn_id = uuid.uuid4().hex
+        self._reserved_turn_id = turn_id
+        return turn_id
+
+    def cancel_reserved_turn(self, turn_id: str) -> None:
+        """撤销尚未交给 ``send`` 的预留 ID。"""
+
+        if self._reserved_turn_id == turn_id:
+            self._reserved_turn_id = None
+
+    async def _prepare_checkpoint(
+        self, reserved_turn_id: str | None = None
+    ) -> tuple[str, bool]:
         """Git 工作区首轮复用启动 checkpoint，后续轮次在线程池中保存新快照。"""
         self._turn_count += 1
         if not checkpoint.is_enabled() or not checkpoint.is_git_repo(self.workdir):
-            return uuid.uuid4().hex, False
+            return reserved_turn_id or uuid.uuid4().hex, False
         if self._turn_count == 1:
-            return self._session_start_turn_id, True
-        turn_id = uuid.uuid4().hex
+            return reserved_turn_id or self._session_start_turn_id, True
+        turn_id = reserved_turn_id or uuid.uuid4().hex
         cc_sid = self._cc_session_id
         if not cc_sid:
             return turn_id, False
@@ -849,7 +983,7 @@ class CCHost:
                 trowel_session_id=self.session_id,
                 workdir=self.workdir,
                 jsonl_path=jsonl_path,
-                session_kind=self._session_kind,
+                session_kind=self._memory_session_kind,
                 registrar=self._session_registrar,
             )
         except Exception as exc:  # noqa: BLE001 — 注册失败不能中断 CC 会话
@@ -933,7 +1067,7 @@ class CCHost:
         """返回指定 CC 会话的主 transcript 路径。"""
 
         return (
-            cc_projects_root()
+            self.projects_root
             / workdir_to_slug(self.workdir)
             / f"{cc_session_id}.jsonl"
         )
@@ -943,7 +1077,7 @@ class CCHost:
         if not self._cc_session_id:
             return None
         return (
-            cc_projects_root()
+            self.projects_root
             / workdir_to_slug(self.workdir)
             / self._cc_session_id
         )
@@ -979,6 +1113,8 @@ class CCHost:
 
     async def send(self, text: str) -> AsyncIterator[TrowelEvent]:
         """处理会话输入；SendText 独占 stdout 直到逻辑 turn 结束。"""
+        reserved_turn_id = self._reserved_turn_id
+        self._reserved_turn_id = None
         action = classify_input(text, self.workdir)
         # 每个子进程只能有一个 stdout reader；控制命令不写用户消息，因此不受此门禁。
         if self.running and isinstance(action, SendText):
@@ -1029,7 +1165,7 @@ class CCHost:
 
         self.running = True
         payload = _user_msg(action.text)
-        turn_id, revertible = await self._prepare_checkpoint()
+        turn_id, revertible = await self._prepare_checkpoint(reserved_turn_id)
         execution = _TurnExecution(turn_id=turn_id)
         self._active_turn = execution
         yield TurnStartEvent(
@@ -1219,10 +1355,18 @@ class CCHost:
                 for tev in translator.translate(ev):
                     tev = self._normalize_terminal(tev, execution)
                     if isinstance(tev, ElicitationRequestEvent):
+                        raw_request = ev.get("request")
+                        if not isinstance(raw_request, dict):
+                            raw_request = {}
+                        raw_input = raw_request.get("input")
                         self._pending_elicit = {
                             "request_id": tev.request_id,
                             "tool_use_id": tev.tool_use_id,
                             "questions": tev.questions,
+                            "tool_name": tev.tool_name,
+                            "tool_input": (
+                                dict(raw_input) if isinstance(raw_input, dict) else {}
+                            ),
                         }
                     if (
                         isinstance(tev, ToolCallEvent)
@@ -1318,10 +1462,11 @@ class CCHost:
                 self._sync_kill()
 
     async def answer_elicit(self, answers: dict[str, str]) -> bool:
-        """向待处理 `AskUserQuestion` 写入 allow 回包。
+        """允许待处理的提问或 plan mode 确认。
 
         Args:
-            answers: 按问题文本索引的答案，原样写入 `updatedInput.answers`。
+            answers: AskUserQuestion 按问题文本索引的答案；plan mode 确认只把它
+                作为前端已批准信号，不写入 CC 工具 input。
 
         Returns:
             写入成功时返回 `True` 并清除待回答请求；无待回答请求或写入失败时
@@ -1331,14 +1476,20 @@ class CCHost:
             pending = self._pending_elicit
             if pending is None:
                 return False
-            payload = _control_response_msg(
-                request_id=pending["request_id"],
-                behavior="allow",
-                updated_input={
+            if pending.get("tool_name") in {"EnterPlanMode", "ExitPlanMode"}:
+                updated_input = pending.get("tool_input")
+                if not isinstance(updated_input, dict):
+                    updated_input = {}
+            else:
+                updated_input = {
                     "questions": pending["questions"],
                     "answers": answers,
                     "annotations": {},
-                },
+                }
+            payload = _control_response_msg(
+                request_id=pending["request_id"],
+                behavior="allow",
+                updated_input=updated_input,
             )
             # 先写后清；失败时保留 pending，允许重试和诊断。
             ok = await self._safe_write(payload)
@@ -1347,7 +1498,7 @@ class CCHost:
             return ok
 
     async def cancel_elicit(self) -> bool:
-        """向待处理 AskUserQuestion 写入 deny；无 pending 或写入失败时返回 False。"""
+        """拒绝待处理的提问或确认；无 pending 或写入失败时返回 False。"""
         async with self._elicit_lock:
             pending = self._pending_elicit
             if pending is None:
@@ -1355,7 +1506,7 @@ class CCHost:
             payload = _control_response_msg(
                 request_id=pending["request_id"],
                 behavior="deny",
-                message="User declined to answer questions",
+                message="User declined the interactive request",
             )
             ok = await self._safe_write(payload)
             if ok:
@@ -1556,7 +1707,10 @@ class CCHost:
         if tev.status == "started":
             return tev
         path = subagent_transcript_path(
-            self.workdir, self._cc_session_id, tev.task_id
+            self.workdir,
+            self._cc_session_id,
+            tev.task_id,
+            projects_root=self.projects_root,
         )
         summed = sum_transcript_usage(path)
         if summed is None:

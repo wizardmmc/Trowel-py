@@ -1,13 +1,20 @@
 """验证 Python sidecar 只从受控环境读取启动身份和数据目录。"""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from trowel_py.desktop.sidecar import (
+    _write_empty_resource_snapshot,
     configure_desktop_data_environment,
     configure_desktop_runtime_path,
     load_sidecar_settings,
+)
+from trowel_py.resource_lifecycle.registry import (
+    SNAPSHOT_VERSION,
+    redact_identity,
+    snapshot_data_root_identity,
 )
 
 
@@ -67,6 +74,35 @@ def test_load_sidecar_settings_requires_explicit_read_root_for_inspection(
     assert settings.inspection_only is True
     assert settings.read_data_dir == read_root
     assert settings.data_dir != settings.read_data_dir
+
+
+def test_inspection_snapshot_uses_current_data_root_contract(tmp_path: Path) -> None:
+    """只读 sidecar 的空快照也必须可由 Electron v2 核验。"""
+
+    settings = load_sidecar_settings(
+        {
+            "TROWEL_APP_INSTANCE_ID": "inspection-instance",
+            "TROWEL_DESKTOP_CREDENTIAL": "desktop-secret",
+            "TROWEL_SERVER_PORT": "43123",
+            "TROWEL_DESKTOP_DATA_DIR": str(tmp_path / "temporary-data"),
+            "TROWEL_DESKTOP_LOG_DIR": str(tmp_path / "logs"),
+            "TROWEL_DESKTOP_RENDERER_ORIGIN": "http://127.0.0.1:43124",
+            "TROWEL_DESKTOP_DATA_MODE": "isolated-dev",
+            "TROWEL_DESKTOP_INSPECTION_ONLY": "1",
+            "TROWEL_DESKTOP_READ_DATA_DIR": str(tmp_path / "canonical-data"),
+        }
+    )
+
+    _write_empty_resource_snapshot(settings)
+
+    snapshot_path = settings.data_dir / "resource-lifecycle.json"
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert payload == {
+        "version": SNAPSHOT_VERSION,
+        "app_instance_id": redact_identity(settings.instance_id),
+        "data_root_identity": snapshot_data_root_identity(snapshot_path),
+        "resources": [],
+    }
 
 
 @pytest.mark.parametrize(

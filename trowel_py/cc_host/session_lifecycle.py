@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from trowel_py.agent_capacity import DISCUSSION_CONNECTION_LIMIT
 from trowel_py.agent_host.store import next_session_display_name
 from trowel_py.cc_host.service import CCHost
 from trowel_py.cc_host.schemas import CreateSessionRequest
@@ -59,6 +60,8 @@ def open_session(
     *,
     proxy_base_url: str | None,
     settings_path: str | Path | None,
+    claude_config_dir: str | Path | None = None,
+    claude_plugin_dir: str | Path | None = None,
     workdir_index: dict[str, set[str]],
     session_names: dict[str, str],
     max_connections: int,
@@ -67,6 +70,12 @@ def open_session(
     display_name: str | None = None,
     process_controller: ProcessController | None = None,
     resource_registry: ResourceRegistry | None = None,
+    owned_settings_path: bool = False,
+    close_callback: Any | None = None,
+    memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
+    memory_eligibility: bool = True,
+    max_discussion_connections: int = DISCUSSION_CONNECTION_LIMIT,
 ) -> tuple[str, CCHost, str]:
     """按会话类别检查连接池后，创建主机并写入调用方状态。
 
@@ -75,6 +84,10 @@ def open_session(
         registry: 接收新 host 的实时会话表。
         proxy_base_url: Claude Code 使用的本地代理地址。
         settings_path: 读取模型服务商环境变量的配置路径。
+        claude_config_dir: 该会话冻结使用的 Claude 用户配置目录；
+            None 表示兼容旧会话，继续使用 ``~/.claude``。
+        claude_plugin_dir: 连接共享的 Claude 插件缓存目录；None 表示
+            沿用 Claude Code 默认行为。
         workdir_index: 工作目录到会话 ID 的索引。
         session_names: 会话 ID 到临时显示名称的索引。
         max_connections: 用户会话连接上限。
@@ -83,19 +96,41 @@ def open_session(
         display_name: 上层已经分配的显示名称。
         process_controller: 核验并终止独立进程组的实现。
         resource_registry: 登记会话临时资源的应用账本。
+        owned_settings_path: 是否由新 host 清理传入的私有 settings。
+        close_callback: host 关闭或创建回滚后执行的一次性清理函数。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
+        memory_eligibility: 是否允许整个原生会话进入 Memory/Profile 来源。
+        max_discussion_connections: 研讨 participant 的独立连接上限。
     """
 
     if not Path(req.workdir).is_dir():
         raise CcWorkdirNotFoundError("workdir does not exist")
-    internal_session = req.session_kind != "user"
-    limit = max_delegate_connections if internal_session else max_connections
+    if req.session_kind == "user":
+        pool = "user"
+        limit = max_connections
+    elif req.session_kind == "discussion":
+        pool = "discussion"
+        limit = max_discussion_connections
+    else:
+        pool = "internal"
+        limit = max_delegate_connections
     same_kind_connections = sum(
         1
         for host in registry.values()
-        if (host.session_kind != "user") == internal_session
+        if (
+            "user"
+            if host.session_kind == "user"
+            else "discussion"
+            if host.session_kind == "discussion"
+            else "internal"
+        )
+        == pool
     )
     if same_kind_connections >= limit:
-        if internal_session:
+        if pool == "discussion":
+            raise CcCapacityError(f"当前研讨参与者数量已满：连接上限为 {limit}")
+        if pool == "internal":
             raise CcCapacityError(f"当前委派数量已满：连接上限为 {limit}")
         raise CcCapacityError(f"连接数已达上限（{limit}），请先关闭一些 session")
     sid = uuid.uuid4().hex
@@ -111,7 +146,9 @@ def open_session(
             runtime="claude_code",
             workdir=req.workdir,
             permission=req.permission_mode,
-            memory_enabled=req.memory_enabled,
+            memory_enabled=(
+                req.memory_enabled if memory_mcp_enabled is None else memory_mcp_enabled
+            ),
             agent_mcp_enabled=req.agent_mcp_enabled,
             memory_root=str(resolve_memory_root()),
             base_url=f"http://127.0.0.1:{port}",
@@ -125,6 +162,11 @@ def open_session(
             ),
         )
     )
+    claude_home_config: dict[str, str | Path | None] = {}
+    if claude_config_dir is not None:
+        claude_home_config["claude_config_dir"] = claude_config_dir
+    if claude_plugin_dir is not None:
+        claude_home_config["claude_plugin_dir"] = claude_plugin_dir
     try:
         host = host_factory(
             sid,
@@ -135,13 +177,18 @@ def open_session(
             resume_from=req.resume_from,
             proxy_base_url=proxy_base_url,
             settings_path=settings_path,
+            **claude_home_config,
+            owned_settings_path=owned_settings_path,
+            close_callback=close_callback,
             mcp_config=mcp_config,
             owned_mcp_config=True,
             session_kind=req.session_kind,
+            memory_eligibility=memory_eligibility,
             agent_mcp_enabled=req.agent_mcp_enabled,
             memory_enabled=req.memory_enabled,
             profile_enabled=req.profile_enabled,
             self_enabled=req.self_enabled,
+            bootstrap_context=bootstrap_context,
             process_controller=process_controller,
             resource_registry=resource_registry,
         )
@@ -215,7 +262,10 @@ def init_roster_for_workdir(
         sid for sid in sids if sid != active_session_id
     ]
     for sid in ordered:
-        roster = getattr(registry.get(sid), "_init_roster", None)
+        host = registry.get(sid)
+        if host is None or getattr(host, "session_kind", "user") != "user":
+            continue
+        roster = getattr(host, "_init_roster", None)
         if roster:
             return roster
     return []

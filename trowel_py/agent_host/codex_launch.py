@@ -52,6 +52,8 @@ def prepare_codex_session(
     permission_presets: Mapping[str, tuple[str | None, str | None]],
     fingerprint: Callable[[str], str],
     resource_registry: ResourceRegistry | None = None,
+    memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
 ) -> PreparedCodexSession:
     """根据创建请求准备尚未注册的 Codex 会话及其绑定信息。
 
@@ -63,6 +65,8 @@ def prepare_codex_session(
         permission_presets: 权限模式到操作确认策略和沙箱模式的对应关系。
         fingerprint: 计算注入正文内容指纹的函数。
         resource_registry: 桌面实例资源账本；存在时为间接启动的 MCP 签发登记令牌。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
 
     Returns:
         已配置完成、等待 Session Hub 注册的 Codex 会话。
@@ -89,6 +93,9 @@ def prepare_codex_session(
         sandbox = req.sandbox
 
     memory_root = resolve_memory_root()
+    effective_memory_mcp = (
+        req.memory_enabled if memory_mcp_enabled is None else memory_mcp_enabled
+    )
     # Memory 内容生成失败时不阻止会话创建，改为空内容继续。
     try:
         memory_text = build_memory_injection(
@@ -121,6 +128,10 @@ def prepare_codex_session(
             exc_info=True,
         )
         injection_text = ""
+    if bootstrap_context:
+        injection_text = "\n\n".join(
+            part for part in (injection_text, bootstrap_context) if part
+        )
 
     # 先计算内容指纹；失败时不再构造 MCP，也不会返回可供注册和持久化的会话。
     injection_hash = fingerprint(injection_text)
@@ -134,7 +145,7 @@ def prepare_codex_session(
             runtime="codex",
             agent_session_id=session_id,
         )
-        if resource_registry is not None and req.memory_enabled
+        if resource_registry is not None and effective_memory_mcp
         else {}
     )
     agent_registration_env = (
@@ -156,7 +167,7 @@ def prepare_codex_session(
             application_data_root=str(resolve_application_data_root()),
             registration_env=memory_registration_env,
         )
-        if req.memory_enabled
+        if effective_memory_mcp
         else None
     )
     port = os.environ.get("TROWEL_SERVER_PORT", "8000")
@@ -171,6 +182,11 @@ def prepare_codex_session(
             self_enabled=req.self_enabled,
             delegation_depth=req.delegation_depth,
             registration_env=agent_registration_env,
+            agent_api_credential=(
+                resource_registry.registration_credential
+                if resource_registry is not None
+                else ""
+            ),
         )
         if req.agent_mcp_enabled
         else None
@@ -198,7 +214,7 @@ def prepare_codex_session(
         workdir=req.workdir,
         memory_enabled=req.memory_enabled,
         profile_enabled=req.profile_enabled,
-        session_kind=req.session_kind,
+        session_kind=(req.session_kind if req.memory_eligibility else "ineligible"),
     )
     session = CodexSession(config, event_sink=journal.record)
     return PreparedCodexSession(

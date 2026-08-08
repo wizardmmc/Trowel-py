@@ -5,6 +5,201 @@ import { NewSessionDialog } from "../components/cc/NewSessionDialog";
 import { CODEX_MODELS, createButton } from "./newSessionDialogFixtures";
 
 describe("NewSessionDialog settings", () => {
+  it("distinguishes a ready catalog with no saved model from an unfetched catalog", () => {
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={() => {}}
+        onCancel={() => {}}
+        connectionOptions={[
+          {
+            id: "official-empty",
+            name: "Codex",
+            runtime: "codex",
+            kind: "codex_official",
+            identity_version: 1,
+            available: false,
+            disabled_reason: "model_not_selected",
+            last_session_choice: null,
+            models: [],
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: /Codex/ }));
+    expect(screen.getByText("Codex：尚未在设置中选择模型")).toBeInTheDocument();
+    expect(screen.queryByText(/模型目录尚未就绪/)).not.toBeInTheDocument();
+  });
+
+  it("directs a stale saved model back to settings", () => {
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={() => {}}
+        onCancel={() => {}}
+        connectionOptions={[
+          {
+            id: "official-stale",
+            name: "Codex",
+            runtime: "codex",
+            kind: "codex_official",
+            identity_version: 2,
+            available: false,
+            disabled_reason: "model_selection_stale",
+            last_session_choice: null,
+            models: [
+              {
+                id: "gpt-old",
+                display_name: null,
+                available: false,
+                disabled_reason: "model_not_in_catalog",
+                efforts: ["high"],
+                default_effort: "high",
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: /Codex/ }));
+    expect(
+      screen.getByText("Codex：已选模型不在当前目录，请到设置中重新选择"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows Claude role names and never renders model-level verification warnings", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={onCreate}
+        onCancel={() => {}}
+        connectionOptions={[
+          {
+            id: "claude-a",
+            name: "Claude A",
+            runtime: "claude_code",
+            kind: "claude_compatible",
+            identity_version: 3,
+            available: true,
+            disabled_reason: null,
+            last_session_choice: { model: "opus", effort: null },
+            models: [
+              {
+                id: "opus",
+                display_name: "opus",
+                available: true,
+                disabled_reason: null,
+                efforts: [],
+                default_effort: null,
+              },
+              {
+                id: "sonnet",
+                display_name: "sonnet",
+                available: true,
+                disabled_reason: null,
+                efforts: [],
+                default_effort: null,
+              },
+              {
+                id: "legacy-raw-model",
+                display_name: "不应展示",
+                available: false,
+                disabled_reason: "capability_unknown",
+                efforts: [],
+                default_effort: null,
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Claude A" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    expect(screen.getByRole("button", { name: "opus" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    expect(screen.getByRole("button", { name: "sonnet" })).toBeEnabled();
+    expect(screen.queryByText("不应展示")).not.toBeInTheDocument();
+    expect(screen.queryByText(/真实运行验证/)).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Memory 开关" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Memory 开关" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(createButton());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      runtime: "claude_code",
+      connection_id: "claude-a",
+      model: "opus",
+      memory_enabled: true,
+    });
+  });
+
+  it("keeps Codex native model order and exposes every native effort", () => {
+    const onCreate = vi.fn();
+    render(
+      <NewSessionDialog
+        workdir="/wd"
+        onCreate={onCreate}
+        onCancel={() => {}}
+        connectionOptions={[
+          {
+            id: "claude-a",
+            name: "Claude A",
+            runtime: "claude_code",
+            kind: "claude_compatible",
+            identity_version: 1,
+            available: true,
+            disabled_reason: null,
+            last_session_choice: null,
+            models: [{ id: "opus", display_name: "opus", available: true, disabled_reason: null, efforts: [], default_effort: null }],
+          },
+          {
+            id: "codex-lab",
+            name: "Codex Lab",
+            runtime: "codex",
+            kind: "codex_custom",
+            identity_version: 2,
+            available: true,
+            disabled_reason: null,
+            last_session_choice: null,
+            models: [
+              { id: "gpt-5.6-sol", display_name: null, available: true, disabled_reason: null, efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], default_effort: "low" },
+              { id: "gpt-5.6-terra", display_name: null, available: true, disabled_reason: null, efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], default_effort: "medium" },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+    const modelButtons = screen.getAllByRole("button").filter((button) =>
+      ["gpt-5.6-sol", "gpt-5.6-terra"].includes(button.textContent ?? ""),
+    );
+    expect(modelButtons.map((button) => button.textContent)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    ]);
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
+      expect(screen.getByRole("button", { name: effort })).toBeEnabled();
+    }
+    expect(screen.getByRole("button", { name: "low" })).toHaveClass(
+      "cc-dialog__option--selected",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "ultra" }));
+    fireEvent.click(createButton());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      connection_id: "codex-lab",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+    });
+  });
+
   it("defaults to Claude + both switches ON + visible bypass permission", () => {
     render(
       <NewSessionDialog
@@ -44,6 +239,7 @@ describe("NewSessionDialog settings", () => {
       runtime: "codex",
       memory_enabled: false,
       profile_enabled: true,
+      self_enabled: true,
       model: "gpt-5.6-sol",
       effort: "ultra",
       permission_mode: "",

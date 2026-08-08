@@ -18,23 +18,28 @@ import {
   buildDevelopmentDesktopEnvironment,
   resolveDevelopmentDataMode,
 } from "./devEnvironment.mjs";
+import { createHoldingClaudePath } from "../scripts/fake-claude-smoke.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const projectRoot = path.resolve(webRoot, "..");
 const rendererSmoke = process.argv.includes("--smoke");
+const settingsSmoke = process.argv.includes("--settings-smoke");
 const diagnosticSmoke = process.argv.includes("--diagnostic-smoke");
 const singleInstanceSmoke = process.argv.includes("--single-instance-smoke");
 const sidecarHangSmoke = process.argv.includes("--sidecar-hang-smoke");
 const rendererCrashSmoke = process.argv.includes("--renderer-crash-smoke");
 const sharedServiceSmoke = process.argv.includes("--shared-service-smoke");
+const agentTransportSmoke = process.argv.includes("--agent-transport-smoke");
 const readOnlyInspection = process.argv.includes("--observe");
 const smoke =
   rendererSmoke ||
+  settingsSmoke ||
   diagnosticSmoke ||
   singleInstanceSmoke ||
   sidecarHangSmoke ||
   rendererCrashSmoke ||
-  sharedServiceSmoke;
+  sharedServiceSmoke ||
+  agentTransportSmoke;
 const developmentDataMode = resolveDevelopmentDataMode(process.argv, {
   usesTemporaryDataRoot: smoke,
 });
@@ -45,8 +50,11 @@ const runtimeRoot =
   tempRoot ?? await mkdtemp(path.join(os.tmpdir(), "trowel-desktop-dev-"));
 const privateDataRoot = tempRoot ?? (readOnlyInspection ? runtimeRoot : null);
 const serviceDescriptorPath = path.join(runtimeRoot, "agent-service.json");
+const smokePath = agentTransportSmoke
+  ? await createHoldingClaudePath(runtimeRoot, process.env.PATH ?? "/usr/bin:/bin")
+  : process.env.PATH;
 const rendererPort = await reservePort();
-const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : ""}`;
+const rendererUrl = `http://127.0.0.1:${rendererPort}${readOnlyInspection ? "/?tool=statistics" : settingsSmoke ? "/?tool=settings" : ""}`;
 
 if (privateDataRoot) {
   const dataDirectory = path.join(privateDataRoot, "data");
@@ -104,6 +112,7 @@ try {
         }
       : {}),
     ...(rendererSmoke ? { TROWEL_DESKTOP_SMOKE: "1" } : {}),
+    ...(settingsSmoke ? { TROWEL_DESKTOP_SETTINGS_SMOKE: "1" } : {}),
     ...(diagnosticSmoke
       ? {
           TROWEL_DESKTOP_DIAGNOSTIC_SMOKE: "1",
@@ -115,6 +124,13 @@ try {
       : {}),
     ...(rendererCrashSmoke
       ? { TROWEL_DESKTOP_RENDERER_CRASH_SMOKE: "1" }
+      : {}),
+    ...(agentTransportSmoke
+      ? {
+          TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE: "1",
+          TROWEL_RUNTIME_DISCOVERY_DISABLED: "1",
+          PATH: smokePath,
+        }
       : {}),
     ...(privateDataRoot
       ? {
@@ -192,6 +208,17 @@ try {
       );
     }
   }
+  if (settingsSmoke) {
+    if (exitCode !== 0) throw new Error("Electron settings smoke did not exit cleanly.");
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(
+        `Settings smoke did not end with a clean resource marker: ${JSON.stringify(marker)}`,
+      );
+    }
+  }
   if (sidecarHangSmoke) {
     if (exitCode !== 0) throw new Error("Primary Electron instance did not exit cleanly.");
     if (stoppedSidecarPid !== null && processAlive(stoppedSidecarPid)) {
@@ -216,6 +243,19 @@ try {
       );
     }
     console.log("TROWEL_DESKTOP_RENDERER_CRASH_SMOKE_OK");
+  }
+  if (agentTransportSmoke) {
+    if (exitCode !== 0) {
+      throw new Error("Electron Agent transport smoke did not exit cleanly.");
+    }
+    const marker = await waitForJson(
+      path.join(tempRoot, "data", "resource-exit.json"),
+    );
+    if (marker.status !== "closed" || marker.remaining_resource_count !== 0) {
+      throw new Error(
+        `Agent transport smoke did not close all resources: ${JSON.stringify(marker)}`,
+      );
+    }
   }
   process.exitCode = interrupted || expectedDesktopStop ? 0 : exitCode;
   smokeFailed = smoke && process.exitCode !== 0;

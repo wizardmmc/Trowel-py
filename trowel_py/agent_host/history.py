@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from trowel_py.cc_host.session_scan import SessionSummary, list_sessions
@@ -20,6 +22,7 @@ def scan_cc_history(
     *,
     limit: int,
     excluded_ids: frozenset[str] = frozenset(),
+    projects_roots: Sequence[Path] | None = None,
 ) -> list[SessionSummary]:
     """读取最近的 Claude Code 历史，并在截断前排除指定原生会话。
 
@@ -27,9 +30,30 @@ def scan_cc_history(
         workdir: 要扫描历史会话的工作目录。
         limit: 最多返回的非排除会话数。
         excluded_ids: 已确认属于 Trowel 委派子会话的 Claude Code session ID。
+        projects_roots: 需要合并的 Claude projects 根。None 使用
+            真实全局 Claude 根，供旧调用方兼容。
+
+    Returns:
+        按更新时间倒序排列且已按原生会话 ID 去重的摘要。
     """
 
-    return list_sessions(workdir, limit=limit, excluded_ids=excluded_ids)
+    if projects_roots is None:
+        return list_sessions(workdir, limit=limit, excluded_ids=excluded_ids)
+    newest_by_id: dict[str, SessionSummary] = {}
+    for projects_root in projects_roots:
+        for summary in list_sessions(
+            workdir,
+            limit=limit,
+            excluded_ids=excluded_ids,
+            projects_root=projects_root,
+        ):
+            current = newest_by_id.get(summary.cc_session_id)
+            if current is None or summary.updated_at > current.updated_at:
+                newest_by_id[summary.cc_session_id] = summary
+    return sorted(
+        newest_by_id.values(),
+        key=lambda summary: (-summary.updated_at, summary.cc_session_id),
+    )[:limit]
 
 
 def encode_history_cursor(offset: int) -> str:

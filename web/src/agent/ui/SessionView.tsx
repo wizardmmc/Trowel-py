@@ -24,7 +24,9 @@ import type {
 } from "../application";
 import {
   getAgentSessionDefaults,
+  isRootTurnInFlight,
   useCodexCommandRoster,
+  useCodexSkillRoster,
   useAgentStore,
   useAgentStoreFrameSelector,
   useSessionLifecycle,
@@ -61,15 +63,6 @@ interface SessionViewProps {
   readonly onWorkdirActivated?: (workdir: string) => void;
   readonly emptyWorkspaceContent?: ReactNode;
 }
-
-const ACTIVE_PHASES = new Set([
-  "awaiting_first",
-  "thinking",
-  "generating",
-  "tool",
-  "retrying",
-  "compacting",
-]);
 
 const EMPTY_TURNS: readonly Turn[] = [];
 
@@ -123,7 +116,7 @@ function SessionTranscriptPane({
     : null;
   const viewPhase = openedSubagent?.state.phase ?? phase;
   const viewTurns = openedSubagent?.state.turns ?? turns;
-  const streaming = ACTIVE_PHASES.has(phase);
+  const streaming = active ? isRootTurnInFlight(active) : false;
   const viewStreaming = openedSubagent
     ? openedSubagent.status === "started" || openedSubagent.status === "progress"
     : streaming;
@@ -269,6 +262,7 @@ export function SessionView({
     (s) => s.loadCodexSubagentHistory,
   );
   const send = useAgentStore((s) => s.send);
+  const closeSession = useAgentStore((s) => s.closeSession);
   const interrupt = useAgentStore((s) => s.interrupt);
   const answerElicit = useAgentStore((s) => s.answerElicit);
   const cancelElicit = useAgentStore((s) => s.cancelElicit);
@@ -303,6 +297,11 @@ export function SessionView({
   const [reviewError, setReviewError] = useState<string | null>(null);
   const reviewRequestRef = useRef<symbol | null>(null);
   const handledNewSessionRequestRef = useRef<number | null>(null);
+  const newSessionPreparationGenerationRef = useRef(0);
+  const pendingNewSessionPreparationRef = useRef<{
+    readonly workdir: string;
+    readonly promise: Promise<void>;
+  } | null>(null);
   const [commandNotice, setCommandNotice] = useState<{
     readonly sessionId: string;
     readonly level: "loading" | "success" | "error";
@@ -317,13 +316,23 @@ export function SessionView({
     workdir;
   const {
     slashItems,
+    slashLoading,
+    slashError,
+    retrySlashItems,
     models,
     codexModels,
     codexCatalogError,
     runtimesState,
+    connectionOptions,
+    connectionOptionsLoading,
+    connectionOptionsError,
     loadRuntimes,
+    loadConnectionOptions,
     loadCodexModels,
-  } = useSessionCatalogs(catalogWorkdir);
+  } = useSessionCatalogs(
+    catalogWorkdir,
+    active?.runtime === "claude_code" ? activeSid : null,
+  );
   const activePresentation = active
     ? getRuntimePresentation(active.runtime, active.capabilities)
     : null;
@@ -331,7 +340,15 @@ export function SessionView({
     activeSid,
     activePresentation?.composerActions.slashSource === "codex",
   );
+  const skillRoster = useCodexSkillRoster(
+    activeSid,
+    active?.runtime === "codex",
+  );
   const [creating, setCreating] = useState(false);
+  const [historyResumeError, setHistoryResumeError] = useState<string | null>(
+    null,
+  );
+  const [preparingNewSession, setPreparingNewSession] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [composerRef, composerH] = useElementHeight<HTMLDivElement>();
   const jumpToBottomRef = useRef<(() => void) | null>(null);
@@ -342,7 +359,7 @@ export function SessionView({
     : null;
   const meta = active?.meta ?? null;
   const effort = active?.effort ?? null;
-  const streaming = ACTIVE_PHASES.has(phase);
+  const streaming = active ? isRootTurnInFlight(active) : false;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRevertTarget(null);
@@ -384,20 +401,45 @@ export function SessionView({
     activeWorkdir: active?.workdir ?? null,
     activeConnected: active?.connected ?? false,
     activeTurnCount,
-    activeHasAbort: Boolean(active?.abort),
+    activeRunning: active ? isRootTurnInFlight(active) : false,
     activeSid,
     refreshHistory,
     loadHistoryIntoView,
   });
 
   /** 读取最近配置并打开指定目录的新会话对话框。 */
-  const prepareNewSession = useCallback(async (targetWorkdir: string) => {
+  const prepareNewSession = useCallback((targetWorkdir: string) => {
+    const existing = pendingNewSessionPreparationRef.current;
+    if (existing?.workdir === targetWorkdir) return existing.promise;
+
+    const generation = ++newSessionPreparationGenerationRef.current;
     setCreateError(null);
-    const latest = await getAgentSessionDefaults().catch(() => null);
-    setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
-    setNewSessionWorkdir(targetWorkdir);
-    setShowNewDialog(true);
-  }, []);
+    setPreparingNewSession(true);
+    const promise = (async () => {
+      const [latest] = await Promise.all([
+        getAgentSessionDefaults().catch(() => null),
+        loadConnectionOptions(),
+      ]);
+      if (newSessionPreparationGenerationRef.current !== generation) return;
+      setNewSessionInitialConfig(latest ?? loadNewSessionPreferences());
+      setNewSessionWorkdir(targetWorkdir);
+      setShowNewDialog(true);
+    })().finally(() => {
+      if (newSessionPreparationGenerationRef.current !== generation) return;
+      pendingNewSessionPreparationRef.current = null;
+      setPreparingNewSession(false);
+    });
+    pendingNewSessionPreparationRef.current = { workdir: targetWorkdir, promise };
+    return promise;
+  }, [loadConnectionOptions]);
+
+  useEffect(
+    () => () => {
+      newSessionPreparationGenerationRef.current += 1;
+      pendingNewSessionPreparationRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     const request = newSessionWorkdirRequest;
@@ -415,6 +457,7 @@ export function SessionView({
     if (!row.native_session_id) return;
     const targetWorkdir = active?.workdir ?? workdir;
     if (!targetWorkdir.trim()) return;
+    setHistoryResumeError(null);
     try {
       await startSession({
         workdir: targetWorkdir,
@@ -423,8 +466,10 @@ export function SessionView({
         resume_title: row.title,
       });
       await loadHistoryIntoView();
-    } catch {
-      return;
+    } catch (error) {
+      setHistoryResumeError(
+        error instanceof Error ? error.message : "历史会话恢复失败",
+      );
     }
   }
 
@@ -597,6 +642,7 @@ export function SessionView({
     <div className="cc-3col">
       <MultiSessionBar
         onNewSameWorkdir={() => void handleNewSameWorkdir()}
+        newSessionPreparing={preparingNewSession}
         onChangeWorkdir={() =>
           (onRequestNewWorkdir ?? onRequestChangeWorkdir)?.()
         }
@@ -630,7 +676,18 @@ export function SessionView({
           onNew={() => void handleNewSameWorkdir()}
           onRequestChangeWorkdir={onRequestChangeWorkdir}
         />
-        <SessionBanners active={active} activeSid={activeSid} />
+        {historyResumeError && (
+          <div className="cc-settings-notice" role="alert">
+            历史会话无法直接恢复：{historyResumeError}
+          </div>
+        )}
+        <SessionBanners
+          active={active}
+          activeSid={activeSid}
+          onRetryClose={
+            activeSid ? () => void closeSession(activeSid) : undefined
+          }
+        />
         <SessionTranscriptPane
           activeSid={activeSid}
           openedSubagentId={openedSubagentId}
@@ -679,6 +736,9 @@ export function SessionView({
             activeSid={activeSid}
             streaming={streaming}
             slashItems={slashItems}
+            slashLoading={slashLoading}
+            slashError={slashError}
+            onRetrySlashItems={retrySlashItems}
             ccModels={models}
             codexModels={codexModels}
             codexCatalogError={codexCatalogError}
@@ -686,6 +746,11 @@ export function SessionView({
             codexCommandsLoading={commandRoster.loading}
             codexCommandsError={commandRoster.error}
             onRetryCodexCommands={commandRoster.retry}
+            codexSkills={skillRoster.skills}
+            codexSkillsLoading={skillRoster.loading}
+            codexSkillsError={skillRoster.error}
+            codexSkillWarnings={skillRoster.warnings}
+            onRetryCodexSkills={skillRoster.retry}
             onCodexCommand={handleCodexCommand}
             onRetryCodexCatalog={loadCodexModels}
             onSend={(text) => {
@@ -728,6 +793,10 @@ export function SessionView({
                   codexModels,
                   codexCatalogError,
                   onRetryCodexCatalog: loadCodexModels,
+                  connectionOptions,
+                  connectionOptionsLoading,
+                  connectionOptionsError,
+                  onRetryConnectionOptions: loadConnectionOptions,
                   onCreate: (config) => void handleCreate(config),
                   onCancel: () => {
                     setShowNewDialog(false);

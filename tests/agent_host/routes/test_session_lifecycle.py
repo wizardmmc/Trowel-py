@@ -1,5 +1,6 @@
 from dataclasses import replace
 from collections.abc import Callable
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from trowel_py.agent_host.hub import SessionHub
 from trowel_py.agent_host.capacity import CapacityLimits
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.lifecycle import SessionCloseResult
+from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 
 from tests.agent_host.routes.support import (
     cc_payload,
@@ -31,6 +33,43 @@ def test_post_sessions_creates_codex(client: TestClient, workdir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["runtime"] == "codex"
+
+
+def test_post_sessions_reuses_same_idempotent_create(
+    client: TestClient, hub: SessionHub, workdir: Path
+) -> None:
+    """renderer 未确认首次响应时，用同一请求 ID 重试不会创建幽灵会话。"""
+
+    headers = {"X-Trowel-Request-Id": "create-request-1"}
+    first = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+    second = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["data"]["session_id"] == second.json()["data"]["session_id"]
+    assert len(hub.store.list_all()) == 1
+
+
+def test_post_sessions_rejects_idempotency_key_reuse_with_other_params(
+    client: TestClient, workdir: Path
+) -> None:
+    """同一创建请求 ID 不能绑定两套参数。"""
+
+    headers = {"X-Trowel-Request-Id": "create-request-2"}
+    first = client.post(
+        "/api/agent/sessions", json=cc_payload(workdir), headers=headers
+    )
+    second = client.post(
+        "/api/agent/sessions",
+        json=cc_payload(workdir, memory_enabled=False),
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 400
 
 
 def test_post_sessions_missing_workdir_400(
@@ -58,6 +97,112 @@ def test_post_sessions_invalid_runtime_422(
     assert response.status_code == 422
 
 
+def test_public_agent_routes_hide_internal_discussion_session(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """participant binding 不得通过普通 Agent 查询、历史或活动列表泄漏。"""
+
+    binding = hub.create(
+        CreateAgentSessionRequest(
+            runtime="claude_code",
+            workdir=str(workdir),
+            session_kind="discussion",
+            owner_ref="discussion:test:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    assert client.get(f"/api/agent/sessions/{binding.session_id}").status_code == 404
+    assert (
+        client.get(f"/api/agent/sessions/{binding.session_id}/history").status_code
+        == 404
+    )
+    active = client.get("/api/agent/sessions/active").json()["data"]["sessions"]
+    assert all(item["session_id"] != binding.session_id for item in active)
+
+
+def test_public_create_rejects_reserved_discussion_kind(
+    client: TestClient,
+    workdir: Path,
+) -> None:
+    """renderer 即使伪造 owner_ref 也不能创建内部 participant session。"""
+
+    response = client.post(
+        "/api/agent/sessions",
+        json={
+            "runtime": "claude_code",
+            "workdir": str(workdir),
+            "session_kind": "discussion",
+            "owner_ref": "discussion:test:participant:0:v1",
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_public_create_cannot_resume_discussion_native_session(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """renderer 不能把已登记的 participant 原生历史重绑为用户会话。"""
+
+    hub.create(
+        CreateAgentSessionRequest(
+            runtime="claude_code",
+            workdir=str(workdir),
+            resume_from="private-native-session",
+            session_kind="discussion",
+            owner_ref="discussion:resume:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    response = client.post(
+        "/api/agent/sessions",
+        json=cc_payload(workdir, resume_from="private-native-session"),
+    )
+
+    assert response.status_code == 404
+
+
+def test_discussion_binding_does_not_replace_user_session_defaults(
+    hub: SessionHub,
+    workdir: Path,
+) -> None:
+    """内部 participant 的连接与关闭注入开关不能污染新建用户会话默认值。"""
+
+    hub.create(CreateAgentSessionRequest(**cc_payload(workdir, model="user-model")))
+    hub.create(
+        CreateAgentSessionRequest(
+            runtime="codex",
+            workdir=str(workdir),
+            model="private-model",
+            session_kind="discussion",
+            owner_ref="discussion:defaults:participant:0:v1",
+            memory_enabled=False,
+            profile_enabled=False,
+            self_enabled=False,
+            agent_mcp_enabled=False,
+        )
+    )
+
+    defaults = hub.latest_session_defaults()
+
+    assert defaults is not None
+    assert defaults["runtime"] == "claude_code"
+    assert defaults["model"] == "user-model"
+    assert defaults["memory_enabled"] is True
+
+
 def test_delegate_connection_capacity_returns_stable_409(
     hub_factory: Callable[[CapacityLimits | None], SessionHub],
     client_factory: Callable[[SessionHub], TestClient],
@@ -81,9 +226,60 @@ def test_delegate_connection_capacity_returns_stable_409(
         )
 
     assert response.status_code == 409
-    assert response.json() == {
-        "detail": "当前委派数量已满：连接上限为 1"
-    }
+    assert response.json() == {"detail": "当前委派数量已满：连接上限为 1"}
+
+
+def test_twenty_session_runtime_pressure_gate(
+    client: TestClient, hub: SessionHub, workdir: Path
+) -> None:
+    """进程内 ASGI 边界在 20 连接/5 在跑时仍可读、可中断并可关闭。"""
+
+    sessions = [create_session(client, cc_payload(workdir)) for _ in range(20)]
+
+    async def hold_turn(_text: str):
+        """保持可控 runtime 在跑，直到 close 取消 detached owner。"""
+
+        yield {"type": "turn_start", "turn_id": "held-turn"}
+        await asyncio.Event().wait()
+
+    for session in sessions[:5]:
+        hub._cc_registry[session["session_id"]].send = hold_turn
+        response = client.post(
+            f"/api/agent/sessions/{session['session_id']}/turns",
+            json={"text": "hold"},
+        )
+        assert response.status_code == 200
+
+    connection_overflow = client.post("/api/agent/sessions", json=cc_payload(workdir))
+    running_overflow = client.post(
+        f"/api/agent/sessions/{sessions[5]['session_id']}/turns",
+        json={"text": "sixth"},
+    )
+    assert connection_overflow.status_code == 409
+    assert running_overflow.status_code == 409
+
+    for session in sessions:
+        assert client.get("/api/agent/session-defaults").status_code == 200
+        assert (
+            client.get(
+                f"/api/agent/sessions/{session['session_id']}/history"
+            ).status_code
+            == 200
+        )
+    for session in sessions[:5]:
+        assert (
+            client.post(
+                f"/api/agent/sessions/{session['session_id']}/interrupt"
+            ).status_code
+            == 200
+        )
+    for session in sessions:
+        assert (
+            client.delete(f"/api/agent/sessions/{session['session_id']}").status_code
+            == 200
+        )
+
+    assert hub.list_active()[0] == []
 
 
 def test_get_active_lists_mixed(
@@ -146,9 +342,7 @@ def test_activate_delegate_is_rejected(
         codex_payload(workdir, session_kind="delegate"),
     )
 
-    response = client.post(
-        f"/api/agent/sessions/{delegate['session_id']}/activate"
-    )
+    response = client.post(f"/api/agent/sessions/{delegate['session_id']}/activate")
 
     assert response.status_code == 422
 

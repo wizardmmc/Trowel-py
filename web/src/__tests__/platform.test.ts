@@ -19,6 +19,9 @@ it("uses browser capabilities when no preload bridge exists", async () => {
 
   expect(getPlatform().environment).toBe("browser");
   expect(await getPlatform().selectWorkdir("/repo")).toBeNull();
+  await expect(getPlatform().revealPath("/repo", "/repo")).rejects.toThrow(
+    "browser mode cannot reveal",
+  );
 });
 
 it("loads desktop context and verifies renderer-to-sidecar transport", async () => {
@@ -42,6 +45,7 @@ it("loads desktop context and verifies renderer-to-sidecar transport", async () 
     selectWorkdir: vi.fn().mockResolvedValue("/repo"),
     openExternal: vi.fn(),
     openPath: vi.fn(),
+    revealPath: vi.fn(),
     requestQuit: vi.fn(),
     getDiagnostics: vi.fn(),
     retrySidecar: vi.fn(),
@@ -54,6 +58,8 @@ it("loads desktop context and verifies renderer-to-sidecar transport", async () 
 
   expect(getPlatform().environment).toBe("desktop");
   expect(await getPlatform().selectWorkdir("/old")).toBe("/repo");
+  await getPlatform().revealPath("/repo/readme.md", "/repo");
+  expect(bridge.revealPath).toHaveBeenCalledWith("/repo/readme.md", "/repo");
   const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
   expect(url).toBe("http://127.0.0.1:43123/api/health");
   expect(new Headers(options.headers).get("Authorization")).toBe(

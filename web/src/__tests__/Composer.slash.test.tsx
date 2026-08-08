@@ -280,4 +280,82 @@ describe("Composer slash autocomplete", () => {
     expect(onLocalCommand).toHaveBeenCalledWith(command, "/review focus on auth");
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("uses $ to select a Codex skill and keeps the invocation editable", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={onSend}
+        skillItems={[
+          {
+            name: "development-slice-workflow",
+            description: "推进开发 slice",
+            source: "user",
+            type: "skill",
+          },
+        ]}
+        skillContext="当前连接已加载 1 个用户技能。"
+      />,
+    );
+    const input = screen.getByLabelText("Agent 消息输入") as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: "$dev" } });
+    expect(screen.getByText("$development-slice-workflow")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(input.value).toBe("$development-slice-workflow ");
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.change(input, {
+      target: { value: "$development-slice-workflow explain" },
+    });
+    expect(
+      screen.queryByText("$development-slice-workflow"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("only advertises the dollar skill trigger for runtimes that support it", () => {
+    const { unmount } = render(
+      <Composer streaming={false} disabled={false} onSend={() => {}} />,
+    );
+
+    expect(
+      screen.getByLabelText("Agent 消息输入").getAttribute("placeholder"),
+    ).not.toContain("$ 技能");
+    unmount();
+
+    render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={() => {}}
+        skillItems={[]}
+        skillTriggerEnabled
+      />,
+    );
+    expect(
+      screen.getByLabelText("Agent 消息输入").getAttribute("placeholder"),
+    ).toContain("$ 技能");
+  });
+
+  it("states that user skills are absent without hiding system skills", () => {
+    render(
+      <Composer
+        streaming={false}
+        disabled={false}
+        onSend={() => {}}
+        skillItems={[]}
+        skillContext="当前连接没有用户技能；系统技能和项目技能仍可使用。"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Agent 消息输入"), {
+      target: { value: "$" },
+    });
+
+    expect(screen.getByText(/当前连接没有用户技能/)).toBeInTheDocument();
+    expect(screen.getByText("当前没有可用项")).toBeInTheDocument();
+  });
 });

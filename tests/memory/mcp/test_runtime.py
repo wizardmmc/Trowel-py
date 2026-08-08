@@ -12,6 +12,7 @@ from tests.memory.mcp.support import IDENTITY
 import trowel_py.memory.mcp_server as mcp_server
 from trowel_py.memory.access_log import read_access_log
 from trowel_py.memory.store import MemoryStore
+from tests.memory.mcp.support import FakeRetriever
 
 
 def _request(
@@ -117,3 +118,35 @@ async def test_dispatch_wraps_handler_exception(
 
     assert _payload(result) == {"error": "internal error: RuntimeError('boom')"}
     assert result.root.isError is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_injects_composition_root_retriever(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """协议层只注入检索依赖，不让业务处理器自行读取全局配置。"""
+
+    retriever = FakeRetriever(["note-a"])
+    received: dict[str, object] = {}
+
+    def fake_search(**kwargs):
+        received.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setattr(mcp_server, "handle_search", fake_search)
+    handler = mcp_server._build_server(
+        tmp_path,
+        retriever_factory=lambda: retriever,
+    ).request_handlers[types.CallToolRequest]
+
+    result = await handler(_request("search", {"query": "q"}))
+
+    injected = received["retriever"]
+    assert callable(injected)
+    assert injected(
+        "q",
+        corpus_dir=str(tmp_path / "notes"),
+        dictionary_path=str(tmp_path / "dictionary-L0.md"),
+    ) == ["note-a"]
+    assert _payload(result) == {"results": []}

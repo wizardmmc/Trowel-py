@@ -69,6 +69,12 @@ async def test_stream_cc_writes_back_effective_effort_and_permission(
     assert persisted.model == "opus"
     assert persisted.effort == "max"
     assert persisted.permission == "acceptEdits"
+    archived = hub._configuration_archive.get(
+        persisted.runtime, "native-cc-config"
+    )
+    assert archived is not None
+    assert archived.model == "opus"
+    assert archived.permission == "acceptEdits"
 
 
 async def test_stream_cc_writes_back_native_before_consumer_closes(

@@ -52,6 +52,50 @@ async def test_spawn_args_include_mcp_config(tmp_path: Path) -> None:
     ]
 
 
+async def test_private_settings_do_not_disable_connection_user_config(
+    tmp_path: Path,
+) -> None:
+    """会话私有 settings 只做 provider 覆盖，不能再清空用户配置源。"""
+
+    process = FakeProc([line(init_event()), line(result_ok())])
+    spawner = FakeSpawner([process])
+    settings_path = tmp_path / "provider-settings.json"
+    settings_path.write_text("{}", encoding="utf-8")
+    host = CCHost(
+        "session-id",
+        tmp_path,
+        spawner=spawner,
+        settings_path=settings_path,
+    )
+
+    await collect(host.send("hi"))
+
+    args = spawner.spawned[0][0]
+    assert args[args.index("--settings") + 1] == str(settings_path)
+    assert "--setting-sources" not in args
+
+
+def test_build_spawn_env_points_to_frozen_connection_home(tmp_path: Path) -> None:
+    """Claude 用户状态按连接隔离，插件仍可共享同一份物理安装。"""
+
+    config_home = tmp_path / "connection-home"
+    plugin_home = tmp_path / "global-plugins"
+    host = CCHost(
+        "session-id",
+        tmp_path,
+        proxy_base_url=None,
+        claude_config_dir=config_home,
+        claude_plugin_dir=plugin_home,
+    )
+
+    env = host._build_spawn_env()
+
+    assert env is not None
+    assert env["CLAUDE_CONFIG_DIR"] == str(config_home)
+    assert env["CLAUDE_CODE_PLUGIN_CACHE_DIR"] == str(plugin_home)
+    assert host.projects_root == config_home / "projects"
+
+
 async def test_agent_mcp_tools_are_preapproved_for_claude(tmp_path: Path) -> None:
     process = FakeProc([line(init_event()), line(result_ok())])
     spawner = FakeSpawner([process])
@@ -117,6 +161,46 @@ def test_build_spawn_env_no_identity_without_mcp_config(tmp_path: Path) -> None:
     host = CCHost("session-id", tmp_path, proxy_base_url=None)
 
     assert host._build_spawn_env() is None
+
+
+def test_discussion_spawn_env_removes_trowel_private_root_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """participant 子进程不继承可直接定位 discussion/Memory 私有数据的变量。"""
+
+    for name in (
+        "TROWEL_DATA_ROOT",
+        "TROWEL_DESKTOP_DATA_DIR",
+        "TROWEL_AGENT_SESSIONS_PATH",
+        "MEMORY_ROOT",
+        "TROWEL_MEMORY_ROOT",
+    ):
+        monkeypatch.setenv(name, f"/private/{name}")
+    host = CCHost(
+        "discussion-session",
+        tmp_path,
+        proxy_base_url=None,
+        session_kind="discussion",
+        memory_enabled=False,
+        profile_enabled=False,
+        self_enabled=False,
+        agent_mcp_enabled=False,
+    )
+
+    env = host._build_spawn_env()
+
+    assert env is not None
+    assert all(
+        name not in env
+        for name in (
+            "TROWEL_DATA_ROOT",
+            "TROWEL_DESKTOP_DATA_DIR",
+            "TROWEL_AGENT_SESSIONS_PATH",
+            "MEMORY_ROOT",
+            "TROWEL_MEMORY_ROOT",
+        )
+    )
 
 
 def test_agent_mcp_startup_timeouts_are_bounded(

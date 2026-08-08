@@ -9,8 +9,10 @@ export type Tool =
   | "extract"
   | "review"
   | "cc"
+  | "discussion"
   | "statistics"
-  | "profile";
+  | "profile"
+  | "settings";
 
 interface AppLayoutProps {
   readonly children: ReactNode;
@@ -59,6 +61,16 @@ function IconAgent() {
   );
 }
 
+function IconDiscussion() {
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
 function IconStatistics() {
   return (
     <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -76,14 +88,26 @@ function IconProfile() {
   );
 }
 
+function IconSettings() {
+  return (
+    <svg className="sidebar-nav__svg" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" />
+    </svg>
+  );
+}
+
 const TOOLS: { id: Tool; icon: ReactNode; label: string }[] = [
   { id: "garden", icon: <IconGarden />, label: "花园" },
   { id: "extract", icon: <IconExtract />, label: "提取" },
   { id: "review", icon: <IconReview />, label: "复习" },
   { id: "cc", icon: <IconAgent />, label: "Agent" },
+  { id: "discussion", icon: <IconDiscussion />, label: "研讨" },
   { id: "statistics", icon: <IconStatistics />, label: "统计" },
   { id: "profile", icon: <IconProfile />, label: "画像" },
 ];
+
+const SETTINGS_TOOL = { id: "settings" as const, icon: <IconSettings />, label: "设置" };
 
 export function AppLayout({
   children,
@@ -126,11 +150,24 @@ export function AppLayout({
             </button>
           ))}
         </nav>
+        {!inspectionOnly && (
+          <nav className="sidebar-nav sidebar-nav--utility" aria-label="应用设置">
+            <button
+              className={`sidebar-nav__item ${activeTool === SETTINGS_TOOL.id ? "sidebar-nav__item--active" : ""}`}
+              onClick={() => onToolChange(SETTINGS_TOOL.id)}
+              aria-label={SETTINGS_TOOL.label}
+              title={SETTINGS_TOOL.label}
+            >
+              <span className="sidebar-nav__icon">{SETTINGS_TOOL.icon}</span>
+              <span className="sidebar-nav__label">{SETTINGS_TOOL.label}</span>
+            </button>
+          </nav>
+        )}
       </aside>
       <main
-        className={`app-main${activeTool === "cc" ? " app-main--flush" : ""}${activeTool === "statistics" ? " app-main--statistics" : ""}`}
+        className={`app-main${activeTool === "cc" || activeTool === "discussion" || activeTool === "settings" ? " app-main--flush" : ""}${activeTool === "statistics" ? " app-main--statistics" : ""}`}
       >
-        {activeTool !== "cc" && (
+        {activeTool !== "cc" && activeTool !== "discussion" && activeTool !== "settings" && (
           <div className="app-main__drag-region" aria-hidden="true" />
         )}
         <button

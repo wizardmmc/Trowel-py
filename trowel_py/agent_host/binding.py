@@ -14,7 +14,7 @@ from trowel_py.agent_host.capabilities import (
 )
 
 TitleSource = Literal["new", "native", "prompt", "generated", "manual"]
-SessionKind = Literal["user", "delegate", "probe"]
+SessionKind = Literal["user", "delegate", "probe", "discussion", "background"]
 _TITLE_SOURCES: frozenset[str] = frozenset(
     {"new", "native", "prompt", "generated", "manual"}
 )
@@ -28,6 +28,87 @@ class Runtime(str, Enum):
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
+
+
+@dataclass(frozen=True)
+class DelegationTarget:
+    """保存父会话创建时冻结的一项 Agent MCP 调用目标。
+
+    Attributes:
+        alias: 父模型提交给固定 MCP 工具的稳定调用名。
+        configuration_id: 设置域运行配置的稳定 ID。
+        configuration_identity_version: 运行配置启动事实的冻结版本。
+        runtime: 子会话使用 Claude Code 还是 Codex。
+        connection_id: 子会话使用的 Trowel 模型连接 ID。
+        connection_identity_version: 父会话创建时观察到的连接启动身份版本。
+        model: 子会话冻结使用的模型或 Claude 角色别名。
+        effort: 子会话使用的思考强度；None 表示 runtime 默认值。
+    """
+
+    alias: str
+    configuration_id: str
+    configuration_identity_version: int
+    runtime: Runtime
+    connection_id: str
+    connection_identity_version: int
+    model: str
+    effort: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        """转换成不含凭据的持久化字典。"""
+
+        return {
+            "alias": self.alias,
+            "configuration_id": self.configuration_id,
+            "configuration_identity_version": self.configuration_identity_version,
+            "runtime": self.runtime.value,
+            "connection_id": self.connection_id,
+            "connection_identity_version": self.connection_identity_version,
+            "model": self.model,
+            "effort": self.effort,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> DelegationTarget | None:
+        """兼容读取一项冻结目标；字段缺失或类型错误时保守丢弃。"""
+
+        if not isinstance(raw, dict):
+            return None
+        try:
+            alias = raw["alias"]
+            configuration_id = raw["configuration_id"]
+            configuration_identity_version = raw["configuration_identity_version"]
+            connection_id = raw["connection_id"]
+            connection_identity_version = raw["connection_identity_version"]
+            model = raw["model"]
+            if not all(
+                isinstance(item, str) and item
+                for item in (alias, configuration_id, connection_id, model)
+            ):
+                return None
+            if not all(
+                isinstance(item, int) and not isinstance(item, bool) and item >= 1
+                for item in (
+                    configuration_identity_version,
+                    connection_identity_version,
+                )
+            ):
+                return None
+            effort = raw.get("effort")
+            if effort is not None and not isinstance(effort, str):
+                return None
+            return cls(
+                alias=alias,
+                configuration_id=configuration_id,
+                configuration_identity_version=configuration_identity_version,
+                runtime=Runtime(str(raw["runtime"])),
+                connection_id=connection_id,
+                connection_identity_version=connection_identity_version,
+                model=model,
+                effort=effort,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -49,6 +130,7 @@ class SessionBinding:
         effort: 当前思考强度；runtime 未提供时为 None。
         permission: 面向界面展示的有效权限摘要；尚未取得时为 None。
         memory_enabled: 是否向该会话注入 Trowel Memory。
+        memory_mcp_enabled: 是否向该会话挂载 Memory MCP；与正文注入开关分离。
         profile_enabled: 是否向该会话注入用户画像。
         capabilities: 当前 Trowel 已实证并允许界面使用的 runtime 能力 ID。
         name: 多开栏使用的会话临时名称。
@@ -74,6 +156,17 @@ class SessionBinding:
         delegation_depth: 委派树中的层级，用户会话为 0。
         display_title: 用户可见的持久标题；尚未生成时为空字符串。
         title_source: 标题来自新建、原生记录、首条消息、模型生成还是手动修改。
+        connection_id: 创建时冻结的设置域连接 ID；旧会话未知时为 None。
+        connection_identity_version: 创建时冻结的连接启动身份版本。
+        connection_name: 创建时冻结的脱敏连接展示名。
+        connection_kind: 创建时冻结的连接种类。
+        configuration_capability_version: 放行连接组合的设置域能力表版本。
+        configuration_capability_source: 放行连接组合的真实验证证据说明。
+        owner_ref: 系统创建会话的持久归属键；discussion participant 与 handoff
+            用它在应用重启后认领已经创建的原生会话。
+        requested_model: 创建请求冻结的模型选择；``model`` 可被 runtime 回写为有效 ID。
+        requested_effort: 创建请求冻结的思考强度；``effort`` 可被 runtime 补成默认值。
+        delegation_targets: 父会话创建时冻结的稳定别名与子会话启动事实。
     """
 
     session_id: str
@@ -87,6 +180,7 @@ class SessionBinding:
     profile_enabled: bool
     capabilities: tuple[str, ...]
     name: str
+    memory_mcp_enabled: bool = True
     capability_version: int = CURRENT_CAPABILITY_VERSION
     checkpoint_available: bool | None = None
     connected: bool = False
@@ -108,6 +202,16 @@ class SessionBinding:
     delegation_depth: int = 0
     display_title: str = ""
     title_source: TitleSource = "new"
+    connection_id: str | None = None
+    connection_identity_version: int | None = None
+    connection_name: str | None = None
+    connection_kind: str | None = None
+    configuration_capability_version: str | None = None
+    configuration_capability_source: str | None = None
+    owner_ref: str | None = None
+    requested_model: str | None = None
+    requested_effort: str | None = None
+    delegation_targets: tuple[DelegationTarget, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """转换为可持久化的字典。"""
@@ -121,6 +225,7 @@ class SessionBinding:
             "effort": self.effort,
             "permission": self.permission,
             "memory_enabled": self.memory_enabled,
+            "memory_mcp_enabled": self.memory_mcp_enabled,
             "profile_enabled": self.profile_enabled,
             "capabilities": list(self.capabilities),
             "capability_version": self.capability_version,
@@ -145,6 +250,16 @@ class SessionBinding:
             "delegation_depth": self.delegation_depth,
             "display_title": self.display_title,
             "title_source": self.title_source,
+            "connection_id": self.connection_id,
+            "connection_identity_version": self.connection_identity_version,
+            "connection_name": self.connection_name,
+            "connection_kind": self.connection_kind,
+            "configuration_capability_version": (self.configuration_capability_version),
+            "configuration_capability_source": self.configuration_capability_source,
+            "owner_ref": self.owner_ref,
+            "requested_model": self.requested_model,
+            "requested_effort": self.requested_effort,
+            "delegation_targets": [item.to_dict() for item in self.delegation_targets],
         }
 
 
@@ -161,6 +276,7 @@ def make_binding(
     profile_enabled: bool,
     capabilities: Iterable[str],
     name: str,
+    memory_mcp_enabled: bool | None = None,
     capability_version: int = CURRENT_CAPABILITY_VERSION,
     checkpoint_available: bool | None = None,
     connected: bool = False,
@@ -180,6 +296,14 @@ def make_binding(
     delegation_depth: int = 0,
     display_title: str = "",
     title_source: TitleSource = "new",
+    connection_id: str | None = None,
+    connection_identity_version: int | None = None,
+    connection_name: str | None = None,
+    connection_kind: str | None = None,
+    configuration_capability_version: str | None = None,
+    configuration_capability_source: str | None = None,
+    owner_ref: str | None = None,
+    delegation_targets: Iterable[DelegationTarget] = (),
 ) -> SessionBinding:
     """创建 binding，并在同一时刻设置创建与更新时间。
 
@@ -192,6 +316,7 @@ def make_binding(
         effort: 创建时请求的思考强度；沿用默认值时为 None。
         permission: 面向界面的有效权限摘要；尚未取得时为 None。
         memory_enabled: 是否注入 Trowel Memory。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用 Memory 正文开关。
         profile_enabled: 是否注入用户画像。
         capabilities: 已实证并允许界面使用的 runtime 能力 ID。
         name: 多开栏使用的会话临时名称。
@@ -214,6 +339,14 @@ def make_binding(
         delegation_depth: 委派树层级，用户会话为 0。
         display_title: 当前用户可见标题。
         title_source: 当前标题的来源。
+        connection_id: 设置域稳定连接 ID；旧会话未知时为 None。
+        connection_identity_version: 冻结的连接启动身份版本。
+        connection_name: 冻结的脱敏连接展示名。
+        connection_kind: 冻结的连接种类。
+        configuration_capability_version: 设置域能力表版本。
+        configuration_capability_source: 设置域能力结论的实测来源。
+        owner_ref: 系统创建会话的稳定归属键；用户手动创建的会话为 None。
+        delegation_targets: 父会话创建时冻结的 Agent MCP 调用目标。
 
     Returns:
         带统一创建时间和更新时间的不可变 binding。
@@ -229,6 +362,9 @@ def make_binding(
         effort=effort,
         permission=permission,
         memory_enabled=memory_enabled,
+        memory_mcp_enabled=(
+            memory_enabled if memory_mcp_enabled is None else memory_mcp_enabled
+        ),
         profile_enabled=profile_enabled,
         capabilities=tuple(capabilities),
         name=name,
@@ -251,6 +387,16 @@ def make_binding(
         delegation_depth=delegation_depth,
         display_title=display_title,
         title_source=title_source,
+        connection_id=connection_id,
+        connection_identity_version=connection_identity_version,
+        connection_name=connection_name,
+        connection_kind=connection_kind,
+        configuration_capability_version=configuration_capability_version,
+        configuration_capability_source=configuration_capability_source,
+        owner_ref=owner_ref,
+        requested_model=model,
+        requested_effort=effort,
+        delegation_targets=tuple(delegation_targets),
         created_at=now,
         updated_at=now,
     )
@@ -271,6 +417,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
     """
 
     runtime = Runtime(str(data["runtime"]))
+    raw_connection_identity_version = data.get("connection_identity_version")
     raw_capability_version = data.get("capability_version")
     if (
         isinstance(raw_capability_version, int)
@@ -283,6 +430,16 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         capability_version = CURRENT_CAPABILITY_VERSION
         capabilities = capabilities_for_runtime(runtime.value)
     declared_mcp_roster = data.get("declared_mcp_roster", ())
+    raw_delegation_targets = data.get("delegation_targets", ())
+    delegation_targets = (
+        tuple(
+            target
+            for item in raw_delegation_targets
+            if (target := DelegationTarget.from_dict(item)) is not None
+        )
+        if isinstance(raw_delegation_targets, (list, tuple))
+        else ()
+    )
     raw_delegation_depth = data.get("delegation_depth", 0)
     delegation_depth = (
         raw_delegation_depth
@@ -298,10 +455,10 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
     )
     raw_checkpoint_available = data.get("checkpoint_available")
     checkpoint_available = (
-        raw_checkpoint_available
-        if isinstance(raw_checkpoint_available, bool)
-        else None
+        raw_checkpoint_available if isinstance(raw_checkpoint_available, bool) else None
     )
+    has_connection = data.get("connection_id") is not None
+    memory_enabled = bool(data.get("memory_enabled", True))
     return SessionBinding(
         session_id=str(data["session_id"]),
         runtime=runtime,
@@ -314,7 +471,10 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
         permission=(
             str(data["permission"]) if data.get("permission") is not None else None
         ),
-        memory_enabled=bool(data.get("memory_enabled", True)),
+        memory_enabled=memory_enabled,
+        memory_mcp_enabled=bool(
+            data.get("memory_mcp_enabled", memory_enabled and not has_connection)
+        ),
         profile_enabled=bool(data.get("profile_enabled", True)),
         capabilities=tuple(str(c) for c in capabilities)  # type: ignore[arg-type]
         if isinstance(capabilities, (list, tuple))
@@ -371,4 +531,57 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             else ""
         ),
         title_source=title_source,
+        connection_id=(
+            str(data["connection_id"])
+            if data.get("connection_id") is not None
+            else None
+        ),
+        connection_identity_version=(
+            raw_connection_identity_version
+            if isinstance(raw_connection_identity_version, int)
+            and not isinstance(raw_connection_identity_version, bool)
+            else None
+        ),
+        connection_name=(
+            str(data["connection_name"])
+            if data.get("connection_name") is not None
+            else None
+        ),
+        connection_kind=(
+            str(data["connection_kind"])
+            if data.get("connection_kind") is not None
+            else None
+        ),
+        configuration_capability_version=(
+            str(data["configuration_capability_version"])
+            if data.get("configuration_capability_version") is not None
+            else None
+        ),
+        configuration_capability_source=(
+            str(data["configuration_capability_source"])
+            if data.get("configuration_capability_source") is not None
+            else None
+        ),
+        owner_ref=(
+            str(data["owner_ref"]) if data.get("owner_ref") is not None else None
+        ),
+        requested_model=(
+            (
+                str(data["requested_model"])
+                if data.get("requested_model") is not None
+                else None
+            )
+            if "requested_model" in data
+            else (str(data["model"]) if data.get("model") is not None else None)
+        ),
+        requested_effort=(
+            (
+                str(data["requested_effort"])
+                if data.get("requested_effort") is not None
+                else None
+            )
+            if "requested_effort" in data
+            else (str(data["effort"]) if data.get("effort") is not None else None)
+        ),
+        delegation_targets=delegation_targets,
     )

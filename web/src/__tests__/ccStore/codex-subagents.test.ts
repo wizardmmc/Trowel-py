@@ -23,6 +23,8 @@ function session(): PerSessionState {
     name: "repo",
     connected: true,
     running: true,
+    turn_state: "running",
+    current_turn_id: "parent-turn-1",
   });
 }
 
@@ -139,6 +141,8 @@ describe("Codex child-thread routing", () => {
     expect(current.turns[0].userText).toBe("delegate");
     expect(current.turns[0].items).toHaveLength(1);
     expect(current.turns[0].status).toBe("active");
+    expect(current.turnState).toBe("running");
+    expect(current.currentTurnId).toBe("parent-turn-1");
     expect(current.codexSubagents["child-thread-1"].status).toBe("completed");
     expect(current.codexSubagents["child-thread-1"].state.turns[0].items).toEqual([
       { kind: "text", text: "child result" },
@@ -197,5 +201,16 @@ describe("Codex child-thread routing", () => {
       kind: "subagent",
       subagent: { status: "cancelled" },
     });
+  });
+
+  it("marks an event from an unknown child thread for reconciliation", () => {
+    const current = apply(
+      session(),
+      event(1, "finished", "unknown-child-thread"),
+    );
+
+    expect(current.needsReplay).toBe(true);
+    expect(current.liveState).toBe("gapped");
+    expect(current.turnState).toBe("unknown");
   });
 });

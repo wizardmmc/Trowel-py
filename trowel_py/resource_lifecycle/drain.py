@@ -52,6 +52,7 @@ class DrainCoordinator:
         *,
         resource_registry: ResourceRegistry,
         agent_hub: Any | None,
+        pre_session_components: tuple[tuple[str, Any], ...] = (),
         schedulers: tuple[tuple[str, Any], ...] = (),
         codex_manager: Any | None = None,
     ) -> None:
@@ -60,12 +61,14 @@ class DrainCoordinator:
         Args:
             resource_registry: 当前应用实例的临时资源账本。
             agent_hub: 统一关闭实时 Agent 会话的 Hub；未初始化时为 None。
+            pre_session_components: 必须先禁止调度、再由 Hub 关会话的 owner 组件。
             schedulers: `(诊断名称, 组件)` 元组；组件须提供异步 `stop()`。
             codex_manager: 会话归零后关闭的共享 Codex app-server 管理器。
         """
 
         self._resource_registry = resource_registry
         self._agent_hub = agent_hub
+        self._pre_session_components = pre_session_components
         self._schedulers = schedulers
         self._codex_manager = codex_manager
         self._drain_task: asyncio.Task[DrainReport] | None = None
@@ -87,11 +90,18 @@ class DrainCoordinator:
         return await asyncio.shield(self._drain_task)
 
     async def _run(self) -> DrainReport:
-        """按会话、调度器、共享 runtime 的顺序执行一次关闭。"""
+        """按 owner、会话、调度器、共享 runtime 的顺序执行一次关闭。"""
 
         self._resource_registry.mark_owner_closing(OwnerScope.APP)
         session_results: dict[str, Any] = {}
         errors: list[str] = []
+        owner_outcomes = await asyncio.gather(
+            *(
+                self._stop_component(name, component)
+                for name, component in self._pre_session_components
+            )
+        )
+        errors.extend(error for error in owner_outcomes if error is not None)
         if self._agent_hub is not None:
             try:
                 session_results = await self._agent_hub.close_all()

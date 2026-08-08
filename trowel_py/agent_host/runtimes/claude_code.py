@@ -13,6 +13,9 @@ CcCloser = Callable[[str, dict[str, Any]], Awaitable[None]]
 CcCreateAborter = Callable[[str, dict[str, Any]], None]
 
 _ITEM_ID_FIELDS: tuple[str, ...] = ("tool_use_id",)
+_TURN_TERMINAL_TYPES: frozenset[str] = frozenset(
+    {"finished", "interrupted", "error"}
+)
 
 
 async def _default_closer(session_id: str, registry: dict[str, Any]) -> None:
@@ -61,13 +64,18 @@ class ClaudeCodeRuntimeAdapter:
         return tuple(self._registry)
 
     def live_state(self, session_id: str) -> RuntimeLiveState:
-        """读取 CCHost 明确公开的连接和未结束轮次状态。"""
+        """读取逻辑会话登记和未结束轮次状态。
+
+        Claude Code 子进程在主动中断后会退出，但 CCHost 仍保留原生会话 ID，下一条
+        消息会按需启动新进程并恢复上下文。因此 ``connected`` 表示逻辑会话仍登记，
+        不能等同于当前子进程是否存活；只有显式关闭移除 registry 才算断开。
+        """
 
         host = self._registry.get(session_id)
         if host is None:
             return RuntimeLiveState.disconnected()
         return RuntimeLiveState(
-            connected=not host.is_dead,
+            connected=True,
             has_in_flight_turn=bool(host.has_in_flight_turn),
         )
 
@@ -114,6 +122,7 @@ class ClaudeCodeEventAdapter:
 
         self._session_id = session_id
         self._seq = 0
+        self._current_turn_id: str | None = None
 
     @property
     def session_id(self) -> str:
@@ -121,32 +130,47 @@ class ClaudeCodeEventAdapter:
 
         return self._session_id
 
+    def begin_turn(self, turn_id: str) -> None:
+        """在原生首帧到达前绑定 Agent Host 已接受的逻辑 turn。"""
+
+        self._current_turn_id = turn_id
+
     def wrap(self, event: dict[str, Any]) -> AgentEvent:
         """把 Claude Code 翻译层生成的事件包装为 AgentEvent。"""
 
         self._seq += 1
         event_type = event["type"]
-        return AgentEvent(
+        explicit_turn_id = _coerce_optional_str(event.get("turn_id"))
+        if event_type == "turn_start" and self._current_turn_id is None:
+            self._current_turn_id = explicit_turn_id
+        turn_id = self._current_turn_id or explicit_turn_id
+        envelope = AgentEvent(
             session_id=self._session_id,
             runtime="claude_code",
             seq=self._seq,
             type=event_type,
-            turn_id=_coerce_optional_str(event.get("turn_id")),
+            turn_id=turn_id,
             item_id=_item_id_from_event(event),
             payload=_shallow_copy_minus_type(event),
         )
+        if event_type in _TURN_TERMINAL_TYPES:
+            self._current_turn_id = None
+        return envelope
 
     def error_event(self, detail: Any) -> AgentEvent:
         """生成与普通事件共用连续序号的 host 错误事件。"""
 
         self._seq += 1
-        return AgentEvent(
+        envelope = AgentEvent(
             session_id=self._session_id,
             runtime="claude_code",
             seq=self._seq,
             type="error",
+            turn_id=self._current_turn_id,
             payload={"subclass": "host_error", "errors": [str(detail)]},
         )
+        self._current_turn_id = None
+        return envelope
 
 
 def _item_id_from_event(event: dict[str, Any]) -> str | None:

@@ -7,6 +7,7 @@ import type {
   UsageUpdatedEvent,
 } from "../../transport/events";
 import type { ReducerState, Turn } from "./model";
+import { finalizeRunningTools } from "./terminal";
 import { codexTurnTokens } from "./usage";
 
 export function applyUsageUpdated(
@@ -43,7 +44,11 @@ export function applyHostStatus(
     }
 
     const last = turns[turns.length - 1];
-    const updated: Turn = { ...last, status: "error" };
+    const updated: Turn = {
+      ...last,
+      status: "error",
+      items: finalizeRunningTools(last.items),
+    };
     return {
       ...prev,
       phase: "error",

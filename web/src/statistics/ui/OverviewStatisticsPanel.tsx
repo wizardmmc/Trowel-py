@@ -6,6 +6,7 @@ import type {
   OverviewStatistics,
 } from "../domain/overview";
 import type { StatisticsQuality } from "../domain/types";
+import { CopyButton } from "../../components/ui/CopyButton";
 import { TokenTrendChart } from "./charts/TokenTrendChart";
 import "./overview-statistics.css";
 
@@ -236,15 +237,12 @@ export function OverviewStatisticsPanel({
                     </time>
                   </span>
                 </div>
-                <button
-                  type="button"
+                <CopyButton
+                  tone="brand"
+                  copied={copiedProblemId === problem.trowel_session_id}
                   onClick={() => onCopyProblem(problem)}
-                  aria-label="复制问题与会话信息"
-                >
-                  {copiedProblemId === problem.trowel_session_id
-                    ? "已复制"
-                    : "复制"}
-                </button>
+                  ariaLabel="复制问题与会话信息"
+                />
               </li>
             ))}
           </ol>

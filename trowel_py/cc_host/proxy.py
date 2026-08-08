@@ -6,9 +6,13 @@ import copy
 import json
 import os
 import time
+import secrets
+import threading
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
@@ -30,6 +34,59 @@ _REPLACE_HOSTS: tuple[str, ...] = ("bigmodel.cn",)
 # PROXY_DEBUG 默认关闭；诊断仍可能含请求摘要和响应正文，不得提交或外传。
 _DUMP_DIR = Path("/tmp/cc-proxy-dump")
 _DUMP_RESP_HEAD_BYTES = 3000
+
+
+@dataclass(frozen=True)
+class _ClaudeConnectionLease:
+    """保存会话冻结的上游与可选出站代理，避免秘密出现在对象展示中。"""
+
+    upstream_base_url: str
+    proxy_url: str | None = field(default=None, repr=False)
+
+
+class ClaudeConnectionProxyRegistry:
+    """把不透明会话租约映射到冻结的 Claude 上游地址。
+
+    registry 不持有 API key。Claude Code 自己发送的认证 header 仍由本地代理原样
+    转发，因此路径租约泄露也不能单独访问第三方账号。
+    """
+
+    def __init__(self) -> None:
+        """创建空 registry，并用互斥锁保护同步会话创建和异步请求读取。"""
+
+        self._leases: dict[str, _ClaudeConnectionLease] = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, upstream_base_url: str, proxy_url: str | None = None) -> str:
+        """为冻结上游及其出站代理分配随机路径租约并返回令牌。"""
+
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._leases[token] = _ClaudeConnectionLease(
+                upstream_base_url=upstream_base_url.rstrip("/"),
+                proxy_url=proxy_url,
+            )
+        return token
+
+    def release(self, token: str) -> None:
+        """幂等释放会话租约。"""
+
+        with self._lock:
+            self._leases.pop(token, None)
+
+    def resolve(self, token: str) -> str | None:
+        """读取租约对应的冻结上游；未知或已释放时返回 None。"""
+
+        with self._lock:
+            lease = self._leases.get(token)
+            return lease.upstream_base_url if lease is not None else None
+
+    def outbound_proxy(self, token: str) -> str | None:
+        """读取租约的出站代理；未知租约与未配置代理都返回 None。"""
+
+        with self._lock:
+            lease = self._leases.get(token)
+            return lease.proxy_url if lease is not None else None
 
 
 def _proxy_debug() -> bool:
@@ -205,7 +262,13 @@ def _maybe_rewrite_system(raw: bytes, real_base_url: str) -> bytes:
     return json.dumps(new_body, ensure_ascii=False, separators=(",", ":")).encode()
 
 
-async def _forward(request: Request, path: str) -> StreamingResponse:
+async def _forward(
+    request: Request,
+    path: str,
+    *,
+    real_base_url: str | None = None,
+    outbound_proxy: str | None = None,
+) -> StreamingResponse:
     """以 POST 流式转发请求，并在响应消费结束或断开时关闭上游连接。
 
     请求和响应都会过滤不能透传的 header。开启诊断时旁路收集响应前 3000 字节；
@@ -215,8 +278,20 @@ async def _forward(request: Request, path: str) -> StreamingResponse:
         request: 当前 FastAPI 请求；应用状态需提供共享 HTTP 客户端和真实上游地址。
         path: 拼接到真实上游地址后的相对路径。
     """
-    client = request.app.state.cc_http_client
-    real_base_url = request.app.state.cc_real_base_url
+    owned_client = None
+    if outbound_proxy:
+        factory = getattr(
+            request.app.state,
+            "cc_proxy_client_factory",
+            httpx.AsyncClient,
+        )
+        owned_client = factory(
+            proxy=outbound_proxy,
+            timeout=httpx.Timeout(None),
+            trust_env=False,
+        )
+    client = owned_client or request.app.state.cc_http_client
+    real_base_url = real_base_url or request.app.state.cc_real_base_url
 
     raw = await request.body()
     content = _maybe_rewrite_system(raw, real_base_url)
@@ -239,7 +314,12 @@ async def _forward(request: Request, path: str) -> StreamingResponse:
     url = f"{real_base_url.rstrip('/')}/{path}"
 
     upstream_req = client.build_request("POST", url, headers=headers, content=content)
-    upstream_resp = await client.send(upstream_req, stream=True)
+    try:
+        upstream_resp = await client.send(upstream_req, stream=True)
+    except BaseException:
+        if owned_client is not None:
+            await owned_client.aclose()
+        raise
 
     if dump_rec is not None:
         dump_rec["response_status"] = upstream_resp.status_code
@@ -261,6 +341,8 @@ async def _forward(request: Request, path: str) -> StreamingResponse:
                 yield chunk
         finally:
             await upstream_resp.aclose()
+            if owned_client is not None:
+                await owned_client.aclose()
             if dump_rec is not None and dump_buf is not None:
                 dump_rec["response_body_head"] = bytes(dump_buf).decode(
                     "utf-8", "replace"
@@ -286,6 +368,53 @@ async def _forward(request: Request, path: str) -> StreamingResponse:
 
 
 router = APIRouter()
+
+
+@router.post("/api/cc-runtime/{lease_token}/v1/messages")
+async def proxy_connection_messages(
+    request: Request,
+    lease_token: str,
+) -> StreamingResponse:
+    """按会话租约把 Claude Messages 请求流式转发到冻结上游。"""
+
+    registry: ClaudeConnectionProxyRegistry = (
+        request.app.state.cc_connection_proxy_registry
+    )
+    upstream = registry.resolve(lease_token)
+    if upstream is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Claude connection lease not found")
+    return await _forward(
+        request,
+        "v1/messages",
+        real_base_url=upstream,
+        outbound_proxy=registry.outbound_proxy(lease_token),
+    )
+
+
+@router.post("/api/cc-runtime/{lease_token}/v1/{rest:path}")
+async def proxy_connection_passthrough(
+    request: Request,
+    lease_token: str,
+    rest: str,
+) -> StreamingResponse:
+    """按会话租约转发 Claude 的其他 ``/v1`` 请求。"""
+
+    registry: ClaudeConnectionProxyRegistry = (
+        request.app.state.cc_connection_proxy_registry
+    )
+    upstream = registry.resolve(lease_token)
+    if upstream is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Claude connection lease not found")
+    return await _forward(
+        request,
+        f"v1/{rest}",
+        real_base_url=upstream,
+        outbound_proxy=registry.outbound_proxy(lease_token),
+    )
 
 
 @router.post("/v1/messages")

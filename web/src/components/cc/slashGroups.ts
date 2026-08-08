@@ -2,11 +2,13 @@
 
 import type { SlashItem } from "../../api/cc";
 
-export type SlashSource = "codex" | "builtin" | "bundled" | "user" | "project" | "plugin";
+export type SlashSource = "codex" | "builtin" | "system" | "admin" | "bundled" | "user" | "project" | "plugin";
 
 export const SLASH_SOURCE_ORDER: readonly SlashSource[] = [
   "codex",
   "builtin",
+  "system",
+  "admin",
   "bundled",
   "user",
   "project",

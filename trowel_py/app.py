@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
@@ -22,11 +23,14 @@ from trowel_py.agent_host.workspaces import (
 from trowel_py.quota.routes import router as quota_router
 from trowel_py.cards.routes import router as card_router
 from trowel_py.cc_host.proxy import (
+    ClaudeConnectionProxyRegistry,
     TUI_SYSTEM_IDENTITY,
     load_settings_env,
     router as proxy_router,
 )
 from trowel_py.cc_host.routes import router as cc_host_router
+from trowel_py.configuration.routes import router as configuration_router
+from trowel_py.discussion.routes import router as discussion_router
 from trowel_py.desktop.access import (
     DesktopCredentialMiddleware,
     validate_desktop_renderer_origin,
@@ -45,6 +49,29 @@ from trowel_py.telemetry.http_middleware import RuntimeTelemetryMiddleware
 from trowel_py.telemetry.routes import router as telemetry_router
 
 logger = logging.getLogger(__name__)
+
+
+def _migrate_official_account_slots() -> int:
+    """启动 runtime 前把历史 Official 配置迁入 Trowel 托管的独立账号槽。"""
+
+    from trowel_py.configuration.repository import ConfigurationRepository
+    from trowel_py.configuration.service import ConfigurationService
+    from trowel_py.db.connection import create_db
+    from trowel_py.db.migrate import run_migrations
+
+    connection = create_db()
+    try:
+        run_migrations(connection)
+        migrated = ConfigurationService(
+            ConfigurationRepository(connection)
+        ).migrate_official_account_slots()
+        connection.commit()
+        return migrated
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 @asynccontextmanager
@@ -190,6 +217,7 @@ async def lifespan(app: FastAPI):
     app.state.cc_real_base_url = real_base_url
     app.state.proxy_base_url = f"http://127.0.0.1:{port}"
     app.state.cc_http_client = httpx.AsyncClient(timeout=httpx.Timeout(None))
+    app.state.cc_connection_proxy_registry = ClaudeConnectionProxyRegistry()
     app.state.recent_workspace_store = RecentWorkspaceStore(
         resolve_recent_workspaces_path()
     )
@@ -219,78 +247,35 @@ async def lifespan(app: FastAPI):
         )
     except Exception:
         logger.warning("[memory] statistics reader failed to start", exc_info=True)
-    # 可选后台组件必须隔离启动失败，避免局部配置或依赖问题阻断应用。
+    # 后台任务要复用下方 Session Hub；先声明状态，待 runtime 完成装配后再启动。
+    app.state.memory_scheduler = None
+    app.state.distill_scheduler = None
+    app.state.tidy_scheduler = None
+    # 先迁移账号目录，再允许后台任务或 API 直接创建 Official 会话。
     try:
-        from trowel_py.memory import paths as _mem_paths
-        from trowel_py.memory.daily_review.scheduler import (
-            MemoryReviewScheduler,
-            load_review_config,
-        )
-
-        scheduler = MemoryReviewScheduler(
-            load_review_config(),
-            _mem_paths.resolve_memory_root(),
-            resource_registry=resource_registry,
-        )
-        await scheduler.start()
-        app.state.memory_scheduler = scheduler
-    except Exception:
-        logger.warning("[memory] review scheduler failed to start", exc_info=True)
-        app.state.memory_scheduler = None
-    # 后台提炼启动失败不能阻断应用。
-    try:
-        from trowel_py.memory import paths as _distill_paths
-        from trowel_py.profile.distill.scheduler import (
-            ProfileDistillScheduler,
-            load_distill_config,
-        )
-
-        distill_scheduler = ProfileDistillScheduler(
-            load_distill_config(),
-            _distill_paths.resolve_memory_root(),
-            app.state.proxy_base_url,
-            app.state.cc_settings_path,
-            resource_registry=resource_registry,
-        )
-        await distill_scheduler.start()
-        app.state.distill_scheduler = distill_scheduler
-    except Exception:
-        logger.warning(
-            "[memory] profile distill scheduler failed to start", exc_info=True
-        )
-        app.state.distill_scheduler = None
-    try:
-        from trowel_py.memory import paths as _tidy_paths
-        from trowel_py.memory.tidy_scheduler import TidyScheduler
-        from trowel_py.config import load_llm_config
-        from trowel_py.llm.client import AnthropicProvider
-
-        try:
-            tidy_llm_config = load_llm_config()
-        except FileNotFoundError:
-            logger.info("[memory] tidy scheduler off: no LLM config")
-            app.state.tidy_scheduler = None
-        else:
-
-            def _tidy_provider_factory():
-                """创建 Memory 整理任务调用模型所用的客户端。"""
-
-                return AnthropicProvider(tidy_llm_config)
-
-            tidy_scheduler = TidyScheduler(
-                _tidy_paths.resolve_memory_root(), _tidy_provider_factory
+        migrated_official_accounts = _migrate_official_account_slots()
+        if migrated_official_accounts:
+            logger.info(
+                "[codex] migrated %d official account slots",
+                migrated_official_accounts,
             )
-            await tidy_scheduler.start()
-            app.state.tidy_scheduler = tidy_scheduler
     except Exception:
-        logger.warning("[memory] tidy scheduler failed to start", exc_info=True)
-        app.state.tidy_scheduler = None
-    # manager 延迟拉起 app-server；未使用 Codex 时不创建子进程。
-    try:
-        from trowel_py.codex_host import CodexHostManager
+        logger.warning("[codex] official account slot migration failed", exc_info=True)
 
-        app.state.codex_host_manager = CodexHostManager(
-            resource_registry=resource_registry
+    # manager pool 延迟拉起 app-server；未使用 Codex 时不创建子进程。
+    try:
+        from trowel_py.application_paths import resolve_application_data_root
+        from trowel_py.codex_host import CodexHostManager
+        from trowel_py.codex_host.pool import CodexManagerPool
+
+        legacy_codex_manager = CodexHostManager(
+            resource_registry=resource_registry,
+            resource_namespace="legacy",
+        )
+        app.state.codex_host_manager = CodexManagerPool(
+            shared_state_root=resolve_application_data_root() / "codex-runtime",
+            legacy_manager=legacy_codex_manager,
+            resource_registry=resource_registry,
         )
     except Exception:
         logger.warning("[codex] host manager init failed", exc_info=True)
@@ -332,6 +317,7 @@ async def lifespan(app: FastAPI):
     try:
         from trowel_py.agent_host import (
             BindingStore,
+            DelegationTarget,
             Runtime,
             SessionBinding,
             SessionHub,
@@ -346,6 +332,126 @@ async def lifespan(app: FastAPI):
         from trowel_py.cc_host.routes import get_registry
         from trowel_py.memory.paths import resolve_memory_root
         from trowel_py.statistics.agent.repository import FileAgentObservationReader
+        from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
+        from trowel_py.configuration.models import TaskId
+        from trowel_py.configuration.repository import ConfigurationRepository
+        from trowel_py.configuration.service import ConfigurationService
+        from trowel_py.db.connection import create_db
+        from trowel_py.db.migrate import run_migrations
+
+        def resolve_connection_launch(
+            connection_id: str,
+            model: str,
+            effort: str | None,
+        ) -> RuntimeLaunchConfiguration:
+            """用短连接读取一次秘密启动配置，确保 secret 不进入应用状态。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                launch = service.resolve_runtime_launch(
+                    connection_id,
+                    model=model,
+                    effort=effort,
+                )
+                connection.commit()
+                return launch
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def record_connection_choice(launch: RuntimeLaunchConfiguration) -> None:
+            """只在连接 identity 未变化时写回原生会话已确认的最近选择。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                current = service.get_connection(launch.connection_id)
+                if current.identity_version != launch.connection_identity_version:
+                    return
+                service.record_last_session_choice(
+                    launch.connection_id,
+                    expected_version=current.version,
+                    model=launch.model,
+                    effort=launch.effort,
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def resolve_agent_defaults(
+            fallback: Mapping[str, Any] | None,
+        ) -> dict[str, Any] | None:
+            """从设置域读取新建 Agent 默认配置；显式默认缺失时不猜测回退。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                resolved = service.resolve_agent_session_defaults(fallback)
+                connection.commit()
+                return resolved
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        def has_agent_runtime_connections() -> bool:
+            """判断设置域是否已经接管普通 Agent 的 runtime 连接选择。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return bool(service.list_agent_connection_options())
+            finally:
+                connection.close()
+
+        def resolve_delegation_targets() -> tuple[DelegationTarget, ...]:
+            """用短连接冻结新父会话当前可调用的运行配置清单。"""
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return tuple(
+                    DelegationTarget(
+                        alias=item.stable_alias or "",
+                        configuration_id=item.id,
+                        configuration_identity_version=item.identity_version,
+                        runtime=Runtime(item.runtime.value),
+                        connection_id=item.connection_id,
+                        connection_identity_version=(item.connection_identity_version),
+                        model=item.model,
+                        effort=item.effort,
+                    )
+                    for item in service.list_agent_callable_configurations()
+                )
+            finally:
+                connection.close()
+
+        def resolve_task_launch(task_id: TaskId) -> RuntimeLaunchConfiguration:
+            """用短连接读取一次后台任务绑定并冻结秘密启动配置。
+
+            Args:
+                task_id: 即将开始的一次后台任务。
+            """
+
+            connection = create_db()
+            try:
+                run_migrations(connection)
+                service = ConfigurationService(ConfigurationRepository(connection))
+                return service.resolve_task_launch(task_id)
+            finally:
+                connection.close()
 
         cc_registry = get_registry()
         binding_store = BindingStore(resolve_bindings_path())
@@ -393,6 +499,10 @@ async def lifespan(app: FastAPI):
             if quota_observer is not None:
                 quota_observer(payload)
 
+        from trowel_py.configuration.claude_home import ClaudeConnectionHomeStore
+
+        claude_connection_homes = ClaudeConnectionHomeStore()
+
         app.state.agent_hub = SessionHub(
             binding_store,
             codex_manager=app.state.codex_host_manager,
@@ -412,12 +522,54 @@ async def lifespan(app: FastAPI):
             codex_history_root=codex_history_root,
             resource_registry=resource_registry,
             runtime_availability=detect_runtime_availability(),
+            configuration_resolver=resolve_connection_launch,
+            last_choice_recorder=record_connection_choice,
+            agent_defaults_resolver=resolve_agent_defaults,
+            delegation_targets_resolver=resolve_delegation_targets,
+            cc_connection_proxy_registry=app.state.cc_connection_proxy_registry,
+            require_configured_connections=has_agent_runtime_connections,
+            cc_history_projects_roots=claude_connection_homes.projects_roots,
         )
     except Exception:
         logger.warning("[agent] session hub init failed", exc_info=True)
         app.state.agent_hub = None
+
+    # 调度器每次执行才解析任务绑定；一次执行拿到的 runtime 快照不再随设置变化。
+    if app.state.agent_hub is not None:
+        try:
+            from trowel_py.configuration.background_runtime import (
+                BackgroundRuntimeManager,
+            )
+            from trowel_py.configuration.background_scheduling import (
+                build_background_schedulers,
+            )
+            from trowel_py.memory import paths as _background_paths
+
+            background_root = _background_paths.resolve_memory_root()
+            background_runtime = BackgroundRuntimeManager(
+                resolve_task_launch,
+                app.state.agent_hub,
+                asyncio.get_running_loop(),
+            )
+            schedulers = build_background_schedulers(
+                background_runtime,
+                background_root,
+                proxy_base_url=app.state.proxy_base_url,
+                settings_path=app.state.cc_settings_path,
+                resource_registry=resource_registry,
+            )
+            await schedulers.start()
+            app.state.memory_scheduler = schedulers.memory
+            app.state.distill_scheduler = schedulers.profile
+            app.state.tidy_scheduler = schedulers.tidy
+        except Exception:
+            logger.warning("[background] schedulers failed to start", exc_info=True)
     app.state.agent_delegation_broker = None
     app.state.agent_delegation_wakeup = None
+    app.state.discussion_events = None
+    app.state.discussion_coordinator = None
+    app.state.discussion_service = None
+    app.state.discussion_timeline = None
     if app.state.agent_hub is not None:
         from trowel_py.agent_host.delegation_wakeup import (
             DelegationWakeupCoordinator,
@@ -437,9 +589,65 @@ async def lifespan(app: FastAPI):
             headers=internal_headers,
             notifier=app.state.agent_delegation_wakeup.publish,
         )
+        from trowel_py.discussion.artifacts import DiscussionArtifactStore
+        from trowel_py.discussion.coordinator import DiscussionCoordinator
+        from trowel_py.discussion.events import DiscussionEventBus
+        from trowel_py.discussion.handoff import AgentHostHandoffSessionAdapter
+        from trowel_py.discussion.episode import DiscussionEpisodeWriter
+        from trowel_py.discussion.participant_sessions import (
+            AgentHostParticipantSessionAdapter,
+        )
+        from trowel_py.discussion.repository import open_discussion_repository
+        from trowel_py.discussion.timeline import DiscussionTimelineService
+        from trowel_py.discussion.service import (
+            DiscussionService,
+            SqliteSessionConfigurationCatalog,
+        )
+        from trowel_py.desktop.access import build_scoped_discussion_read_token
+
+        discussion_events = DiscussionEventBus()
+        discussion_artifacts = DiscussionArtifactStore()
+        discussion_episode_writer = DiscussionEpisodeWriter(discussion_artifacts)
+        participant_sessions = AgentHostParticipantSessionAdapter(app.state.agent_hub)
+        discussion_coordinator = DiscussionCoordinator(
+            open_discussion_repository,
+            discussion_artifacts,
+            participant_sessions,
+            discussion_events,
+            discussion_episode_writer,
+        )
+        app.state.discussion_events = discussion_events
+        app.state.discussion_coordinator = discussion_coordinator
+        app.state.discussion_timeline = DiscussionTimelineService(
+            open_discussion_repository,
+            participant_sessions,
+        )
+        app.state.discussion_service = DiscussionService(
+            open_discussion_repository,
+            discussion_artifacts,
+            discussion_coordinator,
+            discussion_events,
+            SqliteSessionConfigurationCatalog(),
+            handoff_sessions=AgentHostHandoffSessionAdapter(app.state.agent_hub),
+            transcript_access_token_factory=(
+                lambda path: (
+                    build_scoped_discussion_read_token(
+                        app.state.desktop_credential, path
+                    )
+                    if app.state.desktop_credential
+                    else None
+                )
+            ),
+        )
+        await discussion_coordinator.start()
     app.state.drain_coordinator = DrainCoordinator(
         resource_registry=resource_registry,
         agent_hub=app.state.agent_hub,
+        pre_session_components=tuple(
+            (("discussion_coordinator", app.state.discussion_coordinator),)
+            if app.state.discussion_coordinator is not None
+            else ()
+        ),
         schedulers=tuple(
             (name, component)
             for name, component in (
@@ -577,6 +785,8 @@ def create_app() -> FastAPI:
     app.include_router(desktop_router, prefix="/api/desktop")
     app.include_router(telemetry_router, prefix="/api/telemetry")
     app.include_router(statistics_router, prefix="/api/statistics")
+    app.include_router(configuration_router, prefix="/api/configuration")
+    app.include_router(discussion_router, prefix="/api/discussions")
 
     # 发布安装由后端托管构建产物；开发模式没有产物时由 Vite 独立提供前端。
     web_dist = _find_web_dist()

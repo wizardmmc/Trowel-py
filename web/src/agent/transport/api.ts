@@ -3,7 +3,11 @@
 import type { AgentEvent, Runtime } from "./agentEvent";
 import type { GoalStatus } from "./events";
 import { transportFetch } from "../../platform/transport";
-import { readHttpError } from "./httpError";
+import {
+  AgentTransportError,
+  readHttpProblem,
+  type AgentProblemCode,
+} from "./httpError";
 
 export type { Runtime } from "./agentEvent";
 
@@ -14,6 +18,20 @@ export type SessionTitleSource =
   "new" | "native" | "prompt" | "generated" | "manual";
 
 export type SessionKind = "user" | "delegate" | "probe";
+export type AgentResourceState =
+  | "connected"
+  | "closing"
+  | "needs_reconcile"
+  | "closed";
+export type AgentTurnState =
+  | "idle"
+  | "starting"
+  | "running"
+  | "awaiting_input"
+  | "completed"
+  | "interrupted"
+  | "failed"
+  | "unknown";
 
 export interface AgentSession {
   readonly session_id: string;
@@ -29,6 +47,8 @@ export interface AgentSession {
   readonly effective_approval?: string | null;
   readonly network_access?: boolean | null;
   readonly memory_enabled: boolean;
+  /** Memory MCP 的冻结挂载状态；连接会话可保留正文注入而关闭该工具。 */
+  readonly memory_mcp_enabled?: boolean;
   readonly profile_enabled: boolean;
   readonly capabilities: readonly string[];
   readonly capability_version?: number;
@@ -39,10 +59,22 @@ export interface AgentSession {
   readonly connected: boolean;
   readonly running: boolean;
   readonly session_kind?: SessionKind;
+  readonly resource_state?: AgentResourceState;
+  readonly turn_state?: AgentTurnState;
+  readonly current_turn_id?: string | null;
+  readonly state_generation?: number;
+  readonly last_event_seq?: number | null;
+  readonly connection_id?: string | null;
+  readonly connection_identity_version?: number | null;
+  readonly connection_name?: string | null;
+  readonly connection_kind?: string | null;
+  readonly configuration_capability_version?: string | null;
+  readonly configuration_capability_source?: string | null;
 }
 
 export interface CreateAgentSessionParams {
   readonly runtime: Runtime;
+  readonly connection_id?: string;
   readonly workdir: string;
   readonly resume_from?: string;
   readonly resume_title?: string;
@@ -54,16 +86,44 @@ export interface CreateAgentSessionParams {
   readonly permission_preset?: PermissionPreset;
   readonly memory_enabled?: boolean;
   readonly profile_enabled?: boolean;
+  readonly self_enabled?: boolean;
+  readonly agent_mcp_enabled?: boolean;
 }
 
 export interface AgentSessionDefaults {
   readonly runtime: Runtime;
+  readonly connection_id?: string;
   readonly model: string;
   readonly effort: string;
   readonly permission_mode: string;
   readonly permission_preset?: PermissionPreset;
   readonly memory_enabled: boolean;
   readonly profile_enabled: boolean;
+  readonly self_enabled?: boolean;
+}
+
+export interface AgentConnectionModelOption {
+  readonly id: string;
+  readonly display_name: string | null;
+  readonly available: boolean;
+  readonly disabled_reason: string | null;
+  readonly efforts: readonly string[];
+  readonly default_effort: string | null;
+}
+
+export interface AgentConnectionOption {
+  readonly id: string;
+  readonly name: string;
+  readonly runtime: Runtime;
+  readonly kind: string;
+  readonly identity_version: number;
+  readonly available: boolean;
+  readonly disabled_reason: string | null;
+  readonly last_session_choice: {
+    readonly model: string;
+    readonly effort: string | null;
+  } | null;
+  readonly models: readonly AgentConnectionModelOption[];
 }
 
 export interface AgentHistoryRow {
@@ -120,6 +180,20 @@ export interface CodexCommand {
   readonly available_while_running: boolean;
 }
 
+export type CodexSkillScope = "user" | "repo" | "system" | "admin";
+
+export interface CodexSkill {
+  readonly name: string;
+  readonly description: string;
+  readonly scope: CodexSkillScope;
+  readonly enabled: boolean;
+}
+
+export interface CodexSkillCatalog {
+  readonly skills: readonly CodexSkill[];
+  readonly errors: readonly string[];
+}
+
 export type CodexReviewTarget =
   | { readonly type: "uncommittedChanges" }
   | { readonly type: "baseBranch"; readonly branch: string }
@@ -159,7 +233,17 @@ export interface AgentSessionCloseResult {
 }
 
 const AGENT_API_BASE = "/api/agent";
-const MODEL_CATALOG_TIMEOUT_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const TURN_ACCEPT_TIMEOUT_MS = 30_000;
+const SESSION_CLOSE_TIMEOUT_MS = 30_000;
+const MODEL_CATALOG_TIMEOUT_MS = 30_000;
+
+interface RequestPolicy {
+  readonly operation: string;
+  readonly timeoutMs?: number;
+  readonly timeoutCode?: AgentProblemCode;
+  readonly timeoutMessage?: string;
+}
 
 interface ApiEnvelope<T, M = unknown> {
   readonly success: boolean;
@@ -171,31 +255,96 @@ interface ApiEnvelope<T, M = unknown> {
 async function requestEnvelope<T, M = unknown>(
   url: string,
   options?: RequestInit,
+  policy: RequestPolicy = { operation: "agent_request" },
 ): Promise<ApiEnvelope<T, M>> {
-  const response = await transportFetch(url, options);
-  if (!response.ok) {
-    throw new Error(await readHttpError(response, "Agent API error"));
+  const timeoutMs = policy.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutReason = Symbol("agent-request-timeout");
+  const forwardAbort = () => controller.abort(options?.signal?.reason);
+  if (options?.signal?.aborted) forwardAbort();
+  else options?.signal?.addEventListener("abort", forwardAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
+  try {
+    const response = await transportFetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new AgentTransportError(
+        await readHttpProblem(
+          response,
+          "Agent API error",
+          policy.operation,
+          timeoutMs,
+        ),
+      );
+    }
+    const result: ApiEnvelope<T, M> = await response.json();
+    if (!result.success || result.error) {
+      throw new Error(result.error ?? "Agent API call failed");
+    }
+    return result;
+  } catch (error) {
+    if (controller.signal.reason === timeoutReason) {
+      throw new AgentTransportError(
+        {
+          code: policy.timeoutCode ?? "request_timeout",
+          message:
+            policy.timeoutMessage ??
+            `${policy.operation} 超过 ${timeoutMs}ms，结果尚未确认`,
+          operation: policy.operation,
+          budgetMs: timeoutMs,
+          status: null,
+          occurredAt: new Date().toISOString(),
+        },
+        { cause: error },
+      );
+    }
+    if (!options?.signal?.aborted && error instanceof TypeError) {
+      throw new AgentTransportError(
+        {
+          code: "sidecar_unavailable",
+          message: "Agent Service 不可用",
+          operation: policy.operation,
+          budgetMs: timeoutMs,
+          status: null,
+          occurredAt: new Date().toISOString(),
+        },
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options?.signal?.removeEventListener("abort", forwardAbort);
   }
-  const result: ApiEnvelope<T, M> = await response.json();
-  if (!result.success || result.error) {
-    throw new Error(result.error ?? "Agent API call failed");
-  }
-  return result;
 }
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const result = await requestEnvelope<T>(url, options);
+async function request<T>(
+  url: string,
+  options?: RequestInit,
+  policy?: RequestPolicy,
+): Promise<T> {
+  const result = await requestEnvelope<T>(url, options, policy);
   return result.data as T;
 }
 
 export async function createAgentSession(
   params: CreateAgentSessionParams,
+  requestId?: string,
 ): Promise<AgentSession> {
-  return request<AgentSession>(`${AGENT_API_BASE}/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
+  return request<AgentSession>(
+    `${AGENT_API_BASE}/sessions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(requestId ? { "X-Trowel-Request-Id": requestId } : {}),
+      },
+      body: JSON.stringify(params),
+    },
+    { operation: "session_create", timeoutMs: 30_000 },
+  );
 }
 
 export async function getAgentSessionDefaults(): Promise<AgentSessionDefaults | null> {
@@ -213,7 +362,10 @@ export async function listActiveAgentSessions(): Promise<ActiveAgentListResult> 
   const data = await request<{
     sessions: readonly AgentSession[];
     active_id: string | null;
-  }>(`${AGENT_API_BASE}/sessions/active`);
+  }>(`${AGENT_API_BASE}/sessions/active`, undefined, {
+    operation: "active_session_snapshot",
+    timeoutMs: 10_000,
+  });
   return { sessions: data.sessions, activeId: data.active_id };
 }
 
@@ -269,6 +421,11 @@ export async function deleteAgentSession(
     {
       method: "DELETE",
     },
+    {
+      operation: "session_close",
+      timeoutMs: SESSION_CLOSE_TIMEOUT_MS,
+      timeoutCode: "close_needs_reconcile",
+    },
   );
 }
 
@@ -278,6 +435,11 @@ export async function interruptAgentSession(
   return request<{ interrupted: boolean }>(
     `${AGENT_API_BASE}/sessions/${sessionId}/interrupt`,
     { method: "POST" },
+    {
+      operation: "turn_interrupt",
+      timeoutMs: 15_000,
+      timeoutCode: "turn_state_unknown",
+    },
   );
 }
 
@@ -311,22 +473,26 @@ export async function listAgentRuntimes(): Promise<
   return request<readonly AgentRuntimeInfo[]>(`${AGENT_API_BASE}/runtimes`);
 }
 
+export async function listAgentConnectionOptions(): Promise<
+  readonly AgentConnectionOption[]
+> {
+  return request<readonly AgentConnectionOption[]>(
+    "/api/configuration/agent-options",
+  );
+}
+
 /** 读取可选模型目录，并在 sidecar 未响应时结束等待以免阻塞桌面启动。 */
 export async function listAgentModels(): Promise<readonly AgentModel[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error("Codex model catalog request timed out")),
-    MODEL_CATALOG_TIMEOUT_MS,
+  const data = await request<{ readonly models: readonly AgentModel[] }>(
+    `${AGENT_API_BASE}/models`,
+    undefined,
+    {
+      operation: "model_catalog",
+      timeoutMs: MODEL_CATALOG_TIMEOUT_MS,
+      timeoutMessage: "Codex model catalog request timed out",
+    },
   );
-  try {
-    const data = await request<{ readonly models: readonly AgentModel[] }>(
-      `${AGENT_API_BASE}/models`,
-      { signal: controller.signal },
-    );
-    return data.models;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return data.models;
 }
 
 export async function listCodexCommands(
@@ -338,6 +504,16 @@ export async function listCodexCommands(
     { signal },
   );
   return data.commands;
+}
+
+export async function listCodexSkills(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<CodexSkillCatalog> {
+  return request<CodexSkillCatalog>(
+    `${AGENT_API_BASE}/sessions/${sessionId}/skills`,
+    { signal },
+  );
 }
 
 export async function compactCodexSession(
@@ -447,20 +623,28 @@ export async function clearCodexGoal(
   );
 }
 
-export async function startCodexTurn(
+export async function startAgentTurn(
   sessionId: string,
   text: string,
-): Promise<{ turnId: string }> {
-  const data = await request<{ turn_id: string }>(
+): Promise<{ turnId: string | null }> {
+  const data = await request<{ turn_id: string | null }>(
     `${AGENT_API_BASE}/sessions/${sessionId}/turns`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     },
+    {
+      operation: "turn_start",
+      timeoutMs: TURN_ACCEPT_TIMEOUT_MS,
+      timeoutCode: "turn_acceptance_unknown",
+    },
   );
   return { turnId: data.turn_id };
 }
+
+/** @deprecated 普通 turn 已由双 runtime 共用入口启动。 */
+export const startCodexTurn = startAgentTurn;
 
 export async function updateAgentPermissionPreset(
   sessionId: string,
@@ -497,8 +681,8 @@ export function agentMessagesUrl(sessionId: string): string {
   return `${AGENT_API_BASE}/sessions/${sessionId}/messages`;
 }
 
-export function agentEventsUrl(sessionId: string): string {
-  return `${AGENT_API_BASE}/sessions/${sessionId}/events`;
+export function agentEventsUrl(): string {
+  return `${AGENT_API_BASE}/events`;
 }
 
 export async function getAgentHistory(
@@ -506,6 +690,8 @@ export async function getAgentHistory(
 ): Promise<readonly AgentEventLike[]> {
   return request<readonly AgentEventLike[]>(
     `${AGENT_API_BASE}/sessions/${sessionId}/history`,
+    undefined,
+    { operation: "session_history", timeoutMs: 15_000 },
   );
 }
 

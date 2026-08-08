@@ -2,11 +2,14 @@
 export {
   createAgentStore,
   getAgentSessionDefaults,
+  listRecentWorkspaces,
+  rememberRecentWorkspace,
   useActiveSession,
   useAgentStore,
   useAgentStoreFrameSelector,
   type AgentState,
   type PerSessionState,
+  type RecentWorkspace,
   type StartSessionParams,
 } from "./application";
 export {
@@ -22,4 +25,13 @@ export {
   type AgentSession,
   type Runtime,
 } from "./transport";
-export { AgentWorkspace, MessageList, SessionView, WorkdirPicker } from "./ui";
+export {
+  AgentWorkspace,
+  ConnectionSessionEditor,
+  MessageList,
+  SessionView,
+  WorkdirPicker,
+  WorkspaceChooser,
+  defaultConnectionSessionConfig,
+  type ConnectionSessionConfig,
+} from "./ui";

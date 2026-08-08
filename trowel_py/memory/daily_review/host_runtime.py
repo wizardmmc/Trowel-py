@@ -99,6 +99,6 @@ def review_derivation(
         pipeline_version=pipeline_version,
         run_id=str(run_id or uuid.uuid4().hex),
         generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        generator_runtime="claude_code",
+        generator_runtime=str(getattr(host, "runtime", "claude_code")),
         generator=generator,
     )

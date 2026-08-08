@@ -14,6 +14,7 @@ from tests.agent_host.routes.support import (
     parse_sse,
 )
 from trowel_py.agent_host.hub import SessionHub
+from trowel_py.codex_host.errors import ProtocolViolationError
 
 
 def _manager(hub: SessionHub) -> FakeCodexManager:
@@ -41,6 +42,57 @@ def test_codex_command_roster_is_session_scoped(
         "agent",
     ]
     assert rejected.status_code == 422
+
+
+def test_codex_skill_roster_uses_session_connection_and_workdir(
+    client: TestClient, workdir: Path
+) -> None:
+    """技能查询只能使用已保存的 Codex 会话身份与工作目录。"""
+
+    codex = create_session(client, codex_payload(workdir))
+    cc = create_session(client, cc_payload(workdir))
+
+    response = client.get(f"/api/agent/sessions/{codex['session_id']}/skills")
+    rejected = client.get(f"/api/agent/sessions/{cc['session_id']}/skills")
+
+    assert response.status_code == 200
+    catalog = response.json()["data"]
+    assert catalog["errors"] == []
+    assert catalog["skills"][0] == {
+        "name": "development-slice-workflow",
+        "description": f"{codex['session_id']} @ {workdir}",
+        "scope": "user",
+        "enabled": True,
+    }
+    assert rejected.status_code == 422
+
+
+def test_codex_skill_roster_top_level_error_does_not_expose_native_path(
+    client: TestClient,
+    hub: SessionHub,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """原生请求整体失败时，HTTP 502 也不能回显 error message 内嵌路径。"""
+
+    sid = create_session(client, codex_payload(workdir))["session_id"]
+    canary = "/private/users/example/.agents/skills/broken/SKILL.md"
+
+    async def fail_skills(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        """模拟 app-server 顶层错误把绝对路径拼进 message。"""
+
+        raise ProtocolViolationError(
+            f"skills/list failed at {canary}",
+            payload={"error": {"message": canary}},
+        )
+
+    monkeypatch.setattr(_manager(hub), "list_skills", fail_skills)
+
+    response = client.get(f"/api/agent/sessions/{sid}/skills")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "codex skill roster failed"
+    assert canary not in response.text
 
 
 def test_compact_and_review_call_native_manager_without_sending_message(
@@ -79,9 +131,15 @@ def test_review_target_validation_matches_generated_schema(
     sid = create_session(client, codex_payload(workdir))["session_id"]
     url = f"/api/agent/sessions/{sid}/commands/review"
 
-    assert client.post(url, json={"target": {"type": "uncommittedChanges"}}).status_code == 200
+    assert (
+        client.post(url, json={"target": {"type": "uncommittedChanges"}}).status_code
+        == 200
+    )
     assert client.post(url, json={"target": {"type": "baseBranch"}}).status_code == 422
-    assert client.post(url, json={"target": {"type": "commit", "sha": ""}}).status_code == 422
+    assert (
+        client.post(url, json={"target": {"type": "commit", "sha": ""}}).status_code
+        == 422
+    )
     assert client.post(url, json={"target": {"type": "custom"}}).status_code == 422
     assert client.post(url, json={"target": {"type": "unknown"}}).status_code == 422
 

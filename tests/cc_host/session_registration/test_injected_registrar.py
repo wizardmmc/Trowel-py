@@ -42,6 +42,31 @@ async def test_cchost_uses_injected_registrar(tmp_path: Path) -> None:
     assert record.trowel_session_id == "trowel-session"
 
 
+async def test_memory_ineligible_user_session_registers_as_non_user_source(
+    tmp_path: Path,
+) -> None:
+    """交接 Agent 保持用户会话 UI，同时整段 transcript 不进入提炼来源。"""
+
+    registrar = CapturingRegistrar()
+    jsonl = tmp_path / "handoff.jsonl"
+    process = FakeProc([line(init_event("cc-handoff")), line(result_event())])
+    host = CCHost(
+        "trowel-handoff",
+        tmp_path,
+        spawner=FakeSpawner([process]),
+        session_registrar=registrar,
+        session_kind="user",
+        memory_eligibility=False,
+    )
+    host._jsonl_path = lambda session_id: jsonl  # type: ignore[assignment]
+
+    async for _ in host.send("内部启动"):
+        pass
+
+    assert host.session_kind == "user"
+    assert registrar.registered[0].session_kind == "ineligible"
+
+
 def test_resumed_session_registers_before_first_turn(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

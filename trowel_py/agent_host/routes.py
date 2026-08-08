@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.capabilities import (
@@ -57,7 +58,44 @@ from trowel_py.agent_host.workspaces import (
 from trowel_py.telemetry.port import NoopTelemetryPort
 from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 
-router = APIRouter()
+
+class AgentPublicBoundaryRoute(APIRoute):
+    """阻止 renderer 按 ID 访问 discussion 领域私有会话。"""
+
+    def get_route_handler(self) -> Callable[[Request], Awaitable[Any]]:
+        """在公开 handler 前按持久 session_kind 执行 owner 边界检查。
+
+        Returns:
+            包含 discussion 私有会话过滤的 FastAPI handler。
+        """
+
+        original_handler = super().get_route_handler()
+
+        async def protected_handler(request: Request) -> Any:
+            """让 discussion binding 对公开 Agent API 表现为不存在。"""
+
+            session_id = request.path_params.get("session_id")
+            if isinstance(session_id, str):
+                hub = getattr(request.app.state, "agent_hub", None)
+                binding = hub.get(session_id) if hub is not None else None
+                if binding is not None and binding.session_kind == "discussion":
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": "session not found"},
+                    )
+            return await original_handler(request)
+
+        return protected_handler
+
+
+router = APIRouter(route_class=AgentPublicBoundaryRoute)
+
+# renderer 允许 30 秒；后端先结束并预留 5 秒传输结构化错误。
+MODEL_CATALOG_TIMEOUT_S = 25.0
+AGENT_LIVE_HEARTBEAT_S = 15.0
+TURN_ACCEPT_TIMEOUT_S = 25.0
+SESSION_CLOSE_TIMEOUT_S = 25.0
+TURN_INTERRUPT_TIMEOUT_S = 10.0
 
 _LOCAL_FILE_HEADERS = {
     "Cache-Control": "no-store",
@@ -104,6 +142,35 @@ def _http_exception(exc: SessionHubError) -> HTTPException:
         if isinstance(exc, error_type):
             return HTTPException(status_code=status_code, detail=str(exc))
     raise TypeError(f"unmapped SessionHubError: {type(exc).__name__}")
+
+
+def _timeout_response(
+    *, code: str, message: str, operation: str, timeout_s: float
+) -> JSONResponse:
+    """生成 renderer 可以稳定分类的超时错误信封。
+
+    Args:
+        code: 调用方用于决定恢复动作的稳定问题码。
+        message: 可直接显示且不包含用户输入的错误说明。
+        operation: 超时的后端操作名。
+        timeout_s: 后端实际采用的秒级预算。
+
+    Returns:
+        HTTP 504 的统一错误信封。
+    """
+
+    return JSONResponse(
+        status_code=504,
+        content={
+            "success": False,
+            "data": None,
+            "error": {"code": code, "message": message},
+            "meta": {
+                "operation": operation,
+                "timeout_ms": int(timeout_s * 1000),
+            },
+        },
+    )
 
 
 def _call_hub(operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
@@ -257,8 +324,52 @@ def _validated_interactive_child_body(
             detail="parent permission no longer allows full-access delegation",
         )
 
+    alias = submitted.get("delegation_configuration")
+    if alias is None and not parent.delegation_targets:
+        expected_legacy: dict[str, Any] = {
+            "runtime": "claude_code",
+            "workdir": str(Path(parent.workdir).expanduser().resolve()),
+            "memory_enabled": parent.memory_enabled,
+            "profile_enabled": parent.profile_enabled,
+            "self_enabled": parent.self_enabled,
+            "session_kind": "delegate",
+            "memory_eligibility": False,
+            "agent_mcp_enabled": False,
+            "parent_session_id": parent.session_id,
+            "delegation_depth": 1,
+            "permission_mode": "bypassPermissions",
+        }
+        for optional in ("model", "effort"):
+            value = submitted.get(optional)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"delegation child has invalid {optional}",
+                    )
+                expected_legacy[optional] = value
+        if submitted != expected_legacy:
+            raise HTTPException(
+                status_code=409,
+                detail="delegation child configuration does not match parent policy",
+            )
+        return expected_legacy
+    target = next(
+        (
+            item
+            for item in parent.delegation_targets
+            if isinstance(alias, str) and item.alias == alias
+        ),
+        None,
+    )
+    if target is None or target.runtime is not Runtime.CLAUDE_CODE:
+        raise HTTPException(
+            status_code=409,
+            detail="interactive delegation configuration is unavailable",
+        )
     expected: dict[str, Any] = {
         "runtime": "claude_code",
+        "connection_id": target.connection_id,
         "workdir": str(Path(parent.workdir).expanduser().resolve()),
         "memory_enabled": parent.memory_enabled,
         "profile_enabled": parent.profile_enabled,
@@ -269,16 +380,12 @@ def _validated_interactive_child_body(
         "parent_session_id": parent.session_id,
         "delegation_depth": 1,
         "permission_mode": "bypassPermissions",
+        "delegation_configuration": target.alias,
+        "expected_connection_identity_version": (target.connection_identity_version),
+        "model": target.model,
     }
-    for optional in ("model", "effort"):
-        value = submitted.get(optional)
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"delegation child has invalid {optional}",
-                )
-            expected[optional] = value
+    if target.effort is not None:
+        expected["effort"] = target.effort
     if submitted != expected:
         raise HTTPException(
             status_code=409,
@@ -342,35 +449,120 @@ def _sse(event: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def _named_sse(event_type: str, payload: dict[str, Any]) -> bytes:
+    """编码应用级实时流的 readiness 或局部缺口控制帧。
+
+    Args:
+        event_type: SSE event 字段使用的稳定控制类型。
+        payload: 不含用户正文的控制信息。
+
+    Returns:
+        包含 event 与 data 字段的 UTF-8 SSE 帧。
+    """
+
+    encoded = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {encoded}\n\n".encode("utf-8")
+
+
+@router.get("/events")
+async def stream_application_agent_events(
+    request: Request,
+    hub: SessionHub = Depends(get_hub),
+) -> StreamingResponse:
+    """用一条 SSE 向 renderer 发送本实例全部用户会话的实时事件。
+
+    首帧声明当前 sidecar 的连接代次。普通数据帧继续直接承载 AgentEvent；慢消费者
+    只收到受影响 session 的 gap 控制帧，其他会话仍可继续实时更新。断线期间的事实
+    由 active snapshot 和 history 对账，本接口不会重放用户 prompt。
+
+    Args:
+        request: 当前 HTTP 请求，用于记录应用级 SSE 连接质量。
+        hub: 提供多路复用事件和连接代次的 Session Hub。
+
+    Returns:
+        带 readiness、heartbeat、局部 gap 和 AgentEvent 的持续 SSE 响应。
+    """
+
+    observation = _observe_sse(
+        request,
+        "application-agent-events",
+        reconnect_eligible=True,
+    )
+    subscription = hub.subscribe_application_events()
+
+    async def gen():
+        """持续编码应用事件，并在客户端离开时只关闭自己的订阅。"""
+
+        stream_error = False
+        try:
+            observation.first_event()
+            yield _named_sse(
+                "ready",
+                {
+                    "generation": hub.live_generation,
+                    "heartbeat_interval_ms": int(AGENT_LIVE_HEARTBEAT_S * 1000),
+                },
+            )
+            while True:
+                delivery = await subscription.receive(AGENT_LIVE_HEARTBEAT_S)
+                if delivery.event is not None:
+                    yield _sse(delivery.event)
+                elif delivery.gapped_session_id is not None:
+                    yield _named_sse("gap", {"session_id": delivery.gapped_session_id})
+                else:
+                    yield b": heartbeat\n\n"
+        except asyncio.CancelledError:
+            stream_error = True
+            observation.disconnect()
+            raise
+        finally:
+            subscription.close()
+            observation.close(error=stream_error)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Trowel-Agent-Generation": hub.live_generation,
+        },
+    )
+
+
 @router.post("/sessions")
 async def create_session(
     req: CreateAgentSessionRequest,
+    request: Request,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
-    req = await _await_hub(hub.prepare_create_request, req)
-    explicit = req.model_fields_set
-    if req.resume_from is not None:
-        _call_hub(
-            hub.validate_resume,
-            Runtime(req.runtime),
-            req.resume_from,
-            memory_enabled=(
-                req.memory_enabled if "memory_enabled" in explicit else None
-            ),
-            profile_enabled=(
-                req.profile_enabled if "profile_enabled" in explicit else None
-            ),
-            self_enabled=req.self_enabled if "self_enabled" in explicit else None,
+    if req.session_kind == "discussion" or req.owner_ref is not None:
+        raise HTTPException(status_code=404, detail="session kind not found")
+    if req.resume_from is not None and hub.is_non_user_native_id(
+        Runtime(req.runtime),
+        req.resume_from,
+    ):
+        raise HTTPException(status_code=404, detail="session not found")
+
+    async def create_once() -> SessionBinding:
+        """执行一次完整创建，恢复失败时同步撤销已提交 binding。"""
+
+        return await _await_hub(hub.create_complete_session, req)
+
+    request_id = request.headers.get("x-trowel-request-id")
+    if request_id:
+        if len(request_id) > 128:
+            raise HTTPException(status_code=400, detail="request ID is too long")
+        binding = await _await_hub(
+            hub.coalesce_session_create,
+            request_id,
+            req.model_dump_json(),
+            create_once,
         )
-    binding = _call_hub(hub.create, req)
-    if req.resume_from is not None and req.runtime == "codex":
-        try:
-            binding = await _await_hub(hub.hydrate_resume, binding.session_id)
-        except HTTPException:
-            await hub.delete(binding.session_id)
-            raise
+    else:
+        binding = await create_once()
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
@@ -388,7 +580,7 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
 
     return {
         "success": True,
-        "data": hub.latest_session_defaults(),
+        "data": hub.new_session_defaults(),
         "error": None,
     }
 
@@ -425,7 +617,7 @@ def remember_workspace(
 
 
 @router.get("/sessions/active")
-def list_active(
+async def list_active(
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
     """返回用户直接管理的会话，以及各会话的连接、处理和选中状态。
@@ -754,16 +946,25 @@ async def delete_session(
         尚未关闭的资源数量、类型和去敏错误；closed 字段保留旧调用方兼容。
     """
 
-    wakeup = getattr(request.app.state, "agent_delegation_wakeup", None)
-    if wakeup is not None:
-        await wakeup.close_parent(session_id)
-    broker = getattr(request.app.state, "agent_delegation_broker", None)
-    if broker is not None:
-        try:
-            await broker.close_parent(session_id)
-        except InteractiveDelegationError as exc:
-            raise _interactive_error(exc) from exc
-    result = await hub.close_result(session_id)
+    try:
+        async with asyncio.timeout(SESSION_CLOSE_TIMEOUT_S):
+            wakeup = getattr(request.app.state, "agent_delegation_wakeup", None)
+            if wakeup is not None:
+                await wakeup.close_parent(session_id)
+            broker = getattr(request.app.state, "agent_delegation_broker", None)
+            if broker is not None:
+                try:
+                    await broker.close_parent(session_id)
+                except InteractiveDelegationError as exc:
+                    raise _interactive_error(exc) from exc
+            result = await hub.close_result(session_id)
+    except TimeoutError:
+        return _timeout_response(
+            code="close_needs_reconcile",
+            message="session close timed out; resource state needs reconciliation",
+            operation="session_close",
+            timeout_s=SESSION_CLOSE_TIMEOUT_S,
+        )
     return {
         "success": True,
         "data": {
@@ -784,7 +985,16 @@ async def interrupt_session(
 ) -> dict:
     """根据 binding 中断所属 runtime 的当前 turn。"""
 
-    await _await_hub(hub.interrupt, session_id)
+    try:
+        async with asyncio.timeout(TURN_INTERRUPT_TIMEOUT_S):
+            await _await_hub(hub.interrupt, session_id)
+    except TimeoutError:
+        return _timeout_response(
+            code="turn_state_unknown",
+            message="turn interrupt timed out; current turn state is unknown",
+            operation="turn_interrupt",
+            timeout_s=TURN_INTERRUPT_TIMEOUT_S,
+        )
     return {"success": True, "data": {"interrupted": True}, "error": None}
 
 
@@ -959,6 +1169,29 @@ async def list_codex_commands(
     return {"success": True, "data": {"commands": commands}, "error": None}
 
 
+@router.get("/sessions/{session_id}/skills")
+async def list_codex_skills(
+    session_id: str,
+    hub: SessionHub = Depends(get_hub),
+) -> dict:
+    """列出指定 Codex 会话真实可用的技能。
+
+    Args:
+        session_id: 要查询技能的 Codex 会话 ID。
+        hub: 用于定位冻结连接和读取原生技能目录的 Session Hub。
+
+    Returns:
+        统一响应。data.skills 为脱敏技能元数据，data.errors 为加载错误消息。
+
+    Raises:
+        HTTPException: 找不到会话时返回 404；Claude 会话返回 422；原生目录读取失败
+            返回 502；Codex 当前不可用时返回 503。
+    """
+
+    catalog = await _await_hub(hub.list_codex_skills, session_id)
+    return {"success": True, "data": catalog, "error": None}
+
+
 @router.post("/sessions/{session_id}/commands/compact")
 async def compact_codex_session(
     session_id: str,
@@ -1078,35 +1311,45 @@ def stream_agent_events(
 
 
 @router.post("/sessions/{session_id}/turns")
-async def start_codex_turn(
+async def start_agent_turn(
     session_id: str,
     body: SendMessageBody,
     hub: SessionHub = Depends(get_hub),
 ) -> dict:
-    """向指定 Codex 会话发送一段文字，并启动新一轮处理。
+    """向指定 Agent 会话发送一段文字，并启动新一轮处理。
 
-    接口在 Codex 接受输入并创建轮次后立即返回，不等待这一轮结束。回复文本、工具调用
-    和最终状态等后续事件通过 /events 接口发送；为了避免漏掉较早的事件，调用方应先
-    建立事件流连接，再启动轮次。
+    接口不等待整轮完成。两种 runtime 都在返回前确定稳定根 turn ID；Claude Code
+    由 Agent Host 后台消费原生流。回复文本、
+    工具调用和终态统一通过应用级 /events 发送。
 
     /compact、/review 等由 Trowel 单独处理的 Codex 命令不能作为普通文字发送，必须
     调用各自的接口。
 
     Args:
-        session_id: 要启动新一轮处理的 Codex 会话 ID。
-        body: 要发送给 Codex 的非空文字。
-        hub: 负责启动 Codex 轮次的 Session Hub。
+        session_id: 要启动新一轮处理的 Trowel 会话 ID。
+        body: 要发送给 Agent 的非空文字。
+        hub: 负责启动双 runtime 轮次的 Session Hub。
 
     Returns:
-        统一响应。data.turn_id 为 Codex 创建的轮次 ID；返回该 ID 不表示本轮已经结束。
+        统一响应。data.turn_id 为后续常驻事件流沿用的稳定根 turn ID。返回成功只
+        表示 Agent Host 已接管本次输入。
 
     Raises:
         HTTPException: 找不到会话时返回 404；当前已有轮次正在启动或运行时返回 409；
-            输入为空、会话由 Claude Code 运行或输入是专用命令时返回 422；Codex
-            未能接受输入或保存会话信息时返回 502；Codex 当前不可用时返回 503。
+            输入为空或是专用命令时返回 422；runtime 未能接受输入时返回 502；
+            runtime 当前不可用时返回 503。
     """
 
-    turn_id = await _await_hub(hub.start_codex_turn, session_id, body.text)
+    try:
+        async with asyncio.timeout(TURN_ACCEPT_TIMEOUT_S):
+            turn_id = await _await_hub(hub.start_turn, session_id, body.text)
+    except TimeoutError:
+        return _timeout_response(
+            code="turn_acceptance_unknown",
+            message="turn start timed out; acceptance state is unknown",
+            operation="turn_start",
+            timeout_s=TURN_ACCEPT_TIMEOUT_S,
+        )
     return {
         "success": True,
         "data": {"turn_id": turn_id},
@@ -1201,10 +1444,10 @@ def list_runtimes(
     return {"success": True, "data": runtimes, "error": None}
 
 
-@router.get("/models")
+@router.get("/models", response_model=dict)
 async def list_models(
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict | JSONResponse:
     """返回当前 Codex 提供的模型目录。
 
     Trowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。
@@ -1219,7 +1462,16 @@ async def list_models(
 
     if not hub.runtime_available(Runtime.CODEX):
         return {"success": True, "data": {"models": []}, "error": None}
-    models = await _await_hub(hub.list_codex_models)
+    try:
+        async with asyncio.timeout(MODEL_CATALOG_TIMEOUT_S):
+            models = await _await_hub(hub.list_codex_models)
+    except TimeoutError:
+        return _timeout_response(
+            code="request_timeout",
+            message="Codex model catalog request timed out",
+            operation="codex_model_catalog",
+            timeout_s=MODEL_CATALOG_TIMEOUT_S,
+        )
     return {"success": True, "data": {"models": models}, "error": None}
 
 

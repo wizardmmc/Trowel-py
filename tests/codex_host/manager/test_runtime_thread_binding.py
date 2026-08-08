@@ -10,6 +10,7 @@ from trowel_py.codex_host import (
     CodexSessionConfig,
 )
 from trowel_py.codex_host.session import TurnConflictError
+from trowel_py.resource_lifecycle import OwnerScope, ResourceRegistry
 from tests.codex_host._fake import FakeAppServer, Step
 from tests.codex_host.manager.support import (
     _behavior_server,
@@ -328,6 +329,158 @@ async def test_binding_callback_runs_before_native_turn_start() -> None:
 
     assert callback_methods == [["initialize", "initialized", "thread/start"]]
     assert any(message.get("method") == "turn/start" for message in fake.received)
+    await manager.close()
+
+
+async def test_binding_callback_failure_deletes_uncommitted_new_thread() -> None:
+    """冻结配置无法持久化时，新空 thread 必须删除且不能残留本地路由。"""
+
+    async def behavior():
+        initialize = yield Step.recv()
+        yield _init_resp(initialize["id"])
+        yield Step.recv()
+        start = yield Step.recv()
+        assert start["method"] == "thread/start"
+        yield Step.send({"id": start["id"], "result": _thread_result("orphan")})
+        delete = yield Step.recv()
+        assert delete["method"] == "thread/delete"
+        yield Step.send({"id": delete["id"], "result": {}})
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    manager = _manager(fake, resource_registry=registry)
+    session = CodexSession(_cfg("persist-fails"))
+    manager.register(session)
+
+    def fail_persistence(_attached: CodexSession) -> None:
+        raise OSError("archive unavailable")
+
+    with pytest.raises(OSError, match="archive unavailable"):
+        await manager.send(
+            session,
+            "hello",
+            before_turn_start=fail_persistence,
+        )
+
+    methods = [message["method"] for message in fake.received if "method" in message]
+    assert "thread/delete" in methods
+    assert "turn/start" not in methods
+    assert session.binding is None
+    assert session.session_id not in manager._attached_session_ids  # noqa: SLF001
+    assert manager.session_for_thread("orphan") is None
+    assert (
+        registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id=session.session_id,
+        ).live_resource_count
+        == 0
+    )
+    await manager.close()
+
+
+async def test_failed_attachment_compensation_enters_reconcile_state() -> None:
+    """原生删除也失败时，thread 必须留在账本中等待统一收敛。"""
+
+    async def behavior():
+        initialize = yield Step.recv()
+        yield _init_resp(initialize["id"])
+        yield Step.recv()
+        start = yield Step.recv()
+        yield Step.send({"id": start["id"], "result": _thread_result("orphan")})
+        delete = yield Step.recv()
+        assert delete["method"] == "thread/delete"
+        yield Step.send(
+            {
+                "id": delete["id"],
+                "error": {"code": -32000, "message": "delete failed"},
+            }
+        )
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    manager = _manager(fake, resource_registry=registry)
+    session = CodexSession(_cfg("reconcile-after-failed-delete"))
+    manager.register(session)
+
+    def fail_persistence(_attached: CodexSession) -> None:
+        raise OSError("archive unavailable")
+
+    with pytest.raises(OSError, match="archive unavailable"):
+        await manager.send(
+            session,
+            "hello",
+            before_turn_start=fail_persistence,
+        )
+
+    summary = registry.owner_summary(
+        OwnerScope.SESSION,
+        agent_session_id=session.session_id,
+    )
+    assert summary.status == "needs_reconcile"
+    assert summary.live_resource_count == 1
+    assert session.session_id in manager._attached_session_ids  # noqa: SLF001
+    assert manager.session_for_thread("orphan") is session
+    await manager.close()
+
+
+async def test_failed_resume_persistence_restores_placeholder_binding() -> None:
+    """历史 thread 挂载门禁失败后必须卸载，并恢复原来的 resume 占位绑定。"""
+
+    async def behavior():
+        initialize = yield Step.recv()
+        yield _init_resp(initialize["id"])
+        yield Step.recv()
+        resume = yield Step.recv()
+        assert resume["method"] == "thread/resume"
+        yield Step.send(
+            {"id": resume["id"], "result": _thread_result("thread-existing")}
+        )
+        archive = yield Step.recv()
+        assert archive["method"] == "thread/archive"
+        yield Step.send({"id": archive["id"], "result": {}})
+        unarchive = yield Step.recv()
+        assert unarchive["method"] == "thread/unarchive"
+        yield Step.send({"id": unarchive["id"], "result": {}})
+        yield Step.recv()
+
+    fake = FakeAppServer(behavior())
+    registry = ResourceRegistry(app_instance_id="test-instance")
+    manager = _manager(fake, resource_registry=registry)
+    session = CodexSession(
+        CodexSessionConfig(
+            "resume-persistence-fails",
+            "/tmp/x",
+            initial_thread_id="thread-existing",
+        )
+    )
+    manager.register(session)
+    placeholder = session.binding
+
+    def fail_persistence(_attached: CodexSession) -> None:
+        raise OSError("archive unavailable")
+
+    with pytest.raises(OSError, match="archive unavailable"):
+        await manager.send(
+            session,
+            "hello",
+            before_turn_start=fail_persistence,
+        )
+
+    methods = [message["method"] for message in fake.received if "method" in message]
+    assert methods[-3:] == ["thread/resume", "thread/archive", "thread/unarchive"]
+    assert "turn/start" not in methods
+    assert session.binding is placeholder
+    assert session.session_id not in manager._attached_session_ids  # noqa: SLF001
+    assert manager.session_for_thread("thread-existing") is None
+    assert (
+        registry.owner_summary(
+            OwnerScope.SESSION,
+            agent_session_id=session.session_id,
+        ).live_resource_count
+        == 0
+    )
     await manager.close()
 
 

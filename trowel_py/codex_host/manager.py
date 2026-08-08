@@ -14,6 +14,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from trowel_py.codex_host.catalog import parse_model_list_page
+from trowel_py.codex_host.account import parse_account_read, parse_device_code_login
 from trowel_py.codex_host.child_threads import ChildThreadRegistry
 from trowel_py.codex_host.commands import command_roster
 from trowel_py.codex_host.errors import (
@@ -28,9 +29,12 @@ from trowel_py.codex_host.events import (
 )
 from trowel_py.codex_host import manager_params
 from trowel_py.codex_host.session import CodexSession, ThreadBinding, TurnConflictError
+from trowel_py.codex_host.skills import parse_skill_catalog
 from trowel_py.codex_host.pending_requests import (
     PendingRequest,
     PendingRequestKind,
+    PendingRequestNotFoundError,
+    PendingRequestOwnershipError,
     PendingRequestRegistry,
 )
 from trowel_py.codex_host.translator import CodexTranslator
@@ -175,8 +179,7 @@ def _matches_rpc_error(
     if not isinstance(response_error, Mapping):
         return False
     return (
-        response_error.get("code") == code
-        and response_error.get("message") == message
+        response_error.get("code") == code and response_error.get("message") == message
     )
 
 
@@ -192,6 +195,7 @@ class CodexHostManager:
         resource_registry: ResourceRegistry | None = None,
         descendant_inventory: DescendantInventory = list_descendant_processes,
         descendant_poll_interval_s: float = 0.25,
+        resource_namespace: str = "codex",
     ) -> None:
         """初始化共享连接、会话路由和待决请求登记表。
 
@@ -202,6 +206,7 @@ class CodexHostManager:
             resource_registry: 登记 app-server 连接、thread 和 turn handle 的应用账本。
             descendant_inventory: 从进程表读取 app-server 后代身份的函数。
             descendant_poll_interval_s: 两次后代进程盘点之间的秒数。
+            resource_namespace: 多 manager 共用资源账本时使用的稳定隔离前缀。
         """
 
         self._client_factory: ClientFactory = (
@@ -231,6 +236,9 @@ class CodexHostManager:
         self._connection_resource_ids: dict[int, str] = {}
         self._thread_resource_ids: dict[tuple[str, int], str] = {}
         self._turn_resource_ids: dict[tuple[str, str], str] = {}
+        self._resource_namespace = resource_namespace
+        self._account_login_status: dict[str, str | None] | None = None
+        self._account_login_completions: dict[str, dict[str, str | None]] = {}
 
     @property
     def state(self) -> CodexHostManagerState:
@@ -392,10 +400,7 @@ class CodexHostManager:
                     self._resource_registry.reconcile_process_groups,
                     runtime_connection_id=connection_id,
                 )
-                if (
-                    process_report.remaining
-                    or process_report.errors
-                ):
+                if process_report.remaining or process_report.errors:
                     self._mark_connection_needs_reconcile(
                         self._active_generation,
                         "Codex descendant process groups need reconciliation",
@@ -439,6 +444,40 @@ class CodexHostManager:
             if cursor is None:
                 return rows
 
+    async def read_account(self) -> dict[str, str | None]:
+        """读取当前 ``CODEX_HOME`` 的脱敏账号摘要，不主动刷新 token。"""
+
+        client = await self.ensure_ready()
+        result = await client.request(
+            "account/read",
+            {"refreshToken": False},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        account = parse_account_read(result)
+        if self._account_login_status is not None:
+            account.update(self._account_login_status)
+        return account
+
+    async def start_account_login(self) -> dict[str, str]:
+        """启动由 Codex 自己持有和刷新凭据的 ChatGPT device-code 登录。"""
+
+        client = await self.ensure_ready()
+        result = await client.request(
+            "account/login/start",
+            {"type": "chatgptDeviceCode"},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        login = parse_device_code_login(result)
+        self._account_login_status = self._account_login_completions.pop(
+            login["login_id"],
+            {
+                "login_id": login["login_id"],
+                "login_status": "pending",
+                "login_error": None,
+            },
+        )
+        return login
+
     async def list_commands(self) -> list[dict[str, Any]]:
         """按当前已连接的 CLI 版本返回经过验证的命令能力。"""
 
@@ -446,12 +485,31 @@ class CodexHostManager:
         version = str(client.version) if client.version is not None else None
         return command_roster(version)
 
+    async def list_skills(self, *, cwd: str) -> dict[str, Any]:
+        """返回当前 manager 在指定会话工作目录真实发现的技能。
+
+        Args:
+            cwd: 已由上层会话绑定确定的工作目录，决定项目级技能来源。
+
+        Returns:
+            脱敏后的技能目录和加载错误；不暴露技能文件的本机绝对路径。
+        """
+
+        client = await self.ensure_ready()
+        result = await client.request(
+            "skills/list",
+            {"cwds": [cwd], "forceReload": False},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        return parse_skill_catalog(result, cwd=cwd)
+
     async def list_threads(
         self,
         *,
         cwd: str,
         limit: int,
         excluded_ids: frozenset[str] = frozenset(),
+        use_state_db_only: bool = False,
     ) -> list[dict[str, Any]]:
         """按更新时间列出指定 cwd 的默认交互 thread。
 
@@ -462,6 +520,8 @@ class CodexHostManager:
             cwd: 只读取该工作目录下的 Codex thread。
             limit: 最多返回的非排除 thread 数。
             excluded_ids: 已确认属于 Trowel 委派子会话的 Codex thread ID。
+            use_state_db_only: 为 True 时只查询共享 SQLite 状态库，不扫描
+                ``CODEX_HOME`` 下的 rollout 目录。
         """
 
         if limit <= 0:
@@ -477,6 +537,8 @@ class CodexHostManager:
                 "sortKey": "updated_at",
                 "sortDirection": "desc",
             }
+            if use_state_db_only:
+                params["useStateDbOnly"] = True
             if cursor is not None:
                 params["cursor"] = cursor
             result = await client.request(
@@ -591,7 +653,9 @@ class CodexHostManager:
         )
         cleared = result.get("cleared") if isinstance(result, Mapping) else None
         if not isinstance(cleared, bool):
-            raise ProtocolViolationError("thread/goal/clear result.cleared is not boolean")
+            raise ProtocolViolationError(
+                "thread/goal/clear result.cleared is not boolean"
+            )
         return cleared
 
     async def compact(
@@ -674,10 +738,17 @@ class CodexHostManager:
             session.abort_send()
             raise
 
-    async def attach(self, session: CodexSession) -> ThreadBinding:
+    async def attach(
+        self,
+        session: CodexSession,
+        *,
+        before_commit: BeforeTurnStart | None = None,
+    ) -> ThreadBinding:
         """在当前连接中 start 或 resume thread，但不启动 turn。
 
         同一会话在一个连接代际内只加载一次；已有 thread 不能同时归属其他会话。
+        ``before_commit`` 在取得原生 thread ID 后、登记本地路由与资源前执行；失败时
+        删除新空 thread，或 archive/unarchive 已有历史，使未持久化挂载不会变成孤儿。
         """
 
         self._require_registered(session)
@@ -687,9 +758,13 @@ class CodexHostManager:
             binding = session.binding
             if binding is None:
                 raise ProtocolViolationError("attached session has no thread binding")
+            if before_commit is not None:
+                before_commit(session)
             return binding
         reserved_thread_id: str | None = None
         binding = session.binding
+        attached: ThreadBinding | None = None
+        commit_gate_failed = False
         try:
             if binding is not None:
                 owner = self._thread_to_session.get(binding.thread_id)
@@ -715,18 +790,99 @@ class CodexHostManager:
                 )
             self._require_registered(session)
             attached = session.attach_thread_binding(result)
+            if before_commit is not None:
+                try:
+                    before_commit(session)
+                except BaseException:
+                    commit_gate_failed = True
+                    raise
             session.emit_session_started_if_first()
             self._attached_session_ids.add(session.session_id)
             self._thread_to_session[attached.thread_id] = session
             self._register_thread_resource(session, attached.thread_id)
             return attached
         except BaseException:
+            if commit_gate_failed and attached is not None:
+                compensated = await self._compensate_uncommitted_attachment(
+                    client,
+                    session,
+                    previous_binding=binding,
+                    attached=attached,
+                )
+                if not compensated:
+                    reserved_thread_id = None
             if (
                 reserved_thread_id is not None
                 and self._thread_to_session.get(reserved_thread_id) is session
             ):
                 self._thread_to_session.pop(reserved_thread_id, None)
             raise
+
+    async def _compensate_uncommitted_attachment(
+        self,
+        client: AppServerClient,
+        session: CodexSession,
+        *,
+        previous_binding: ThreadBinding | None,
+        attached: ThreadBinding,
+    ) -> bool:
+        """收口持久化门禁失败前已经由 app-server 创建或加载的 thread。
+
+        新 thread 尚无用户 turn，可直接删除；恢复的历史 thread 通过 archive 后立即
+        unarchive 卸载运行资源并保留历史。补偿自身失败时反向登记本地路由和资源，
+        让后续关闭或重启对账仍能发现它。
+
+        Args:
+            client: 创建或恢复当前 thread 的 app-server 客户端。
+            session: 挂载失败所属的 Trowel 会话。
+            previous_binding: 挂载前的新会话空值或恢复占位绑定。
+            attached: app-server 已返回的完整 thread 绑定。
+
+        Returns:
+            原生资源已确认收口并恢复旧绑定时为 True；补偿失败但资源已登记对账时为
+            False。
+        """
+
+        try:
+            if previous_binding is None:
+                await client.request(
+                    "thread/delete",
+                    {"threadId": attached.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+            else:
+                await client.request(
+                    "thread/archive",
+                    {"threadId": attached.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+                await client.request(
+                    "thread/unarchive",
+                    {"threadId": attached.thread_id},
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
+        except BaseException:  # noqa: BLE001 - 原异常优先，失败资源必须进入对账。
+            self._attached_session_ids.add(session.session_id)
+            self._thread_to_session[attached.thread_id] = session
+            self._register_thread_resource(session, attached.thread_id)
+            registry = self._resource_registry
+            if registry is not None:
+                summary = registry.owner_summary(
+                    OwnerScope.SESSION,
+                    agent_session_id=session.session_id,
+                )
+                registry.mark_owner_needs_reconcile(
+                    OwnerScope.SESSION,
+                    agent_session_id=session.session_id,
+                    remaining_resource_count=max(summary.live_resource_count, 1),
+                )
+            _log.exception(
+                "failed to compensate uncommitted Codex thread %s",
+                attached.thread_id,
+            )
+            return False
+        session.restore_thread_binding_after_failed_attach(previous_binding)
+        return True
 
     async def send(
         self,
@@ -761,13 +917,11 @@ class CodexHostManager:
             memory_eligible=memory_eligible,
         )
         try:
-            await self.attach(session)
+            await self.attach(session, before_commit=before_turn_start)
             client = await self.ensure_ready()
             assert session.binding is not None
             self._require_registered(session)
             self._thread_to_session[session.binding.thread_id] = session
-            if before_turn_start is not None:
-                before_turn_start(session)
             self._require_registered(session)
             model, effort = session.next_turn_settings()
             approval, sandbox = session.next_turn_permission_override()
@@ -1063,6 +1217,35 @@ class CodexHostManager:
             self._emit_request_event(session, request)
         return request
 
+    def decline_request(self, session_id: str, request_id: str) -> PendingRequest:
+        """为无人交互的内部会话立即自动拒绝待处理审批。
+
+        Args:
+            session_id: 审批所属 Trowel 会话 ID。
+            request_id: 待处理请求 ID。
+
+        Returns:
+            已标记自动拒绝并完成原生响应 Future 的请求。
+
+        Raises:
+            PendingRequestOwnershipError: 请求属于另一会话。
+        """
+
+        request = self._pending_requests.get(request_id)
+        if request is None:
+            raise PendingRequestNotFoundError(request_id)
+        if request.session_id != session_id:
+            raise PendingRequestOwnershipError(request_id)
+        request = self._pending_requests.resolve_automatically(
+            request_id,
+            "decline",
+            reason="internal discussion sessions do not accept approvals",
+        )
+        session = self._sessions.get(session_id)
+        if session is not None:
+            self._emit_request_event(session, request)
+        return request
+
     def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
         """返回指定会话保留的全部待决请求记录。"""
 
@@ -1163,9 +1346,7 @@ class CodexHostManager:
         return session
 
     @staticmethod
-    def _emit_request_event(
-        session: CodexSession, request: PendingRequest
-    ) -> None:
+    def _emit_request_event(session: CodexSession, request: PendingRequest) -> None:
         """将待决请求的当前状态发到所属会话。"""
 
         session.emit_translated(
@@ -1199,6 +1380,24 @@ class CodexHostManager:
         """在当前连接代际内同步路由通知；下游入队均为非阻塞操作。"""
 
         if generation is not None and generation != self._active_generation:
+            return
+        if method == "account/login/completed":
+            login_id = params.get("loginId")
+            success = params.get("success")
+            error = params.get("error")
+            if isinstance(login_id, str) and isinstance(success, bool):
+                completion = {
+                    "login_id": login_id,
+                    "login_status": "completed" if success else "failed",
+                    "login_error": error if isinstance(error, str) else None,
+                }
+                if (
+                    self._account_login_status is not None
+                    and self._account_login_status.get("login_id") == login_id
+                ):
+                    self._account_login_status = completion
+                else:
+                    self._account_login_completions = {login_id: completion}
             return
         if method in self._translator.ignored_methods:
             return  # 能力门控或回显，无需分发
@@ -1298,9 +1497,7 @@ class CodexHostManager:
             if item.turn_id is not None and not session.has_in_flight_turn:
                 self._mark_turn_resource_closed(session.session_id, item.turn_id)
 
-    def _dispatch_account_level(
-        self, method: str, params: Mapping[str, Any]
-    ) -> None:
+    def _dispatch_account_level(self, method: str, params: Mapping[str, Any]) -> None:
         """翻译无 ``threadId`` 的账户级通知，并广播给全部已注册 session。
 
         此类通知没有唯一归属；协议错误只记录日志，避免污染所有事件队列。
@@ -1457,9 +1654,9 @@ class CodexHostManager:
             seen.add(key)
             if key in self._descendant_resource_ids:
                 continue
-            resource_id = (
-                f"codex-descendant:{generation}:{identity.pid}:"
-                f"{identity.start_identity[:12]}"
+            resource_id = self._resource_id(
+                "descendant",
+                f"{generation}:{identity.pid}:{identity.start_identity[:12]}",
             )
             try:
                 registry.register_process_group(
@@ -1501,11 +1698,20 @@ class CodexHostManager:
         for session in self._sessions.values():
             session.emit_host_status(status, reason=reason)
 
-    @staticmethod
-    def _connection_id(generation: int) -> str:
+    def _resource_id(self, kind: str, suffix: str) -> str:
+        """返回兼容单 manager 旧 ID、同时支持连接池隔离的资源 ID。"""
+
+        prefix = (
+            "codex"
+            if self._resource_namespace == "codex"
+            else (f"codex-{self._resource_namespace}")
+        )
+        return f"{prefix}-{kind}:{suffix}"
+
+    def _connection_id(self, generation: int) -> str:
         """返回一个 Codex 连接代际在资源账本中的 owner ID。"""
 
-        return f"codex-connection:{generation}"
+        return self._resource_id("connection", str(generation))
 
     def _register_connection_resource(
         self,
@@ -1518,7 +1724,7 @@ class CodexHostManager:
         if registry is None:
             return
         connection_id = self._connection_id(generation)
-        resource_id = f"codex-app-server:{generation}"
+        resource_id = self._resource_id("app-server", str(generation))
         if client.pid is None:
             registry.register_handle(
                 resource_id=resource_id,
@@ -1555,7 +1761,7 @@ class CodexHostManager:
         key = (session.session_id, generation)
         if key in self._thread_resource_ids:
             return
-        resource_id = f"codex-thread:{session.session_id}:{generation}"
+        resource_id = self._resource_id("thread", f"{session.session_id}:{generation}")
         registry.register_handle(
             resource_id=resource_id,
             owner_scope=OwnerScope.SESSION,
@@ -1574,7 +1780,7 @@ class CodexHostManager:
         registry = self._resource_registry
         if registry is None:
             return
-        resource_id = f"codex-turn:{session.session_id}:{turn_id}"
+        resource_id = self._resource_id("turn", f"{session.session_id}:{turn_id}")
         registry.register_handle(
             resource_id=resource_id,
             owner_scope=OwnerScope.TURN,

@@ -43,7 +43,7 @@ export interface ToolItem {
   readonly toolUseId: string;
   readonly toolName: string;
   readonly input: Record<string, unknown>;
-  readonly status: "running" | "done" | "failed";
+  readonly status: "running" | "done" | "failed" | "missing";
   readonly elapsedSeconds: number | null;
   readonly result: string | null;
   /** 后端从 CC `structuredPatch` 提取的文件差异。 */
@@ -114,6 +114,7 @@ export interface ElicitationItem {
   readonly kind: "elicit";
   readonly toolUseId: string;
   readonly requestId: string;
+  readonly toolName: string;
   readonly questions: ReadonlyArray<Readonly<QuestionInput>>;
   readonly status: "pending" | "answered" | "declined";
   readonly resultText: string | null;

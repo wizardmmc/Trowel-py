@@ -26,6 +26,7 @@ from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.cc_host.workflow_watcher import parse_workflow_tree
 from trowel_py.cc_host.schemas import (
+    ContextUsageEvent,
     ElicitationRequestEvent,
     FinishedEvent,
     SessionStartedEvent,
@@ -133,7 +134,25 @@ def _close_pending_turn(
     events[index] = events[index].model_copy(update={"duration_seconds": duration})
 
 
-def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
+def parse_history(
+    workdir: str,
+    cc_session_id: str,
+) -> list[TrowelEvent]:
+    """从真实全局 Claude 根按 JSONL 顺序重建历史事件。"""
+
+    return parse_history_from_root(
+        workdir,
+        cc_session_id,
+        projects_root=cc_projects_root(),
+    )
+
+
+def parse_history_from_root(
+    workdir: str,
+    cc_session_id: str,
+    *,
+    projects_root: Path,
+) -> list[TrowelEvent]:
     """按 JSONL 记录顺序重建指定 Claude Code 会话的历史事件。
 
     无法解析的 JSON 行会被跳过。Workflow 快照按 ``startTime`` 和文件名排序，
@@ -142,6 +161,7 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     Args:
         workdir: 会话运行时的工作目录，用于定位 Claude Code 项目日志目录。
         cc_session_id: 要回放的 Claude Code 会话 ID。
+        projects_root: 会话所属 Claude 家的 projects 根。
 
     Returns:
         重建后的 Trowel 事件；会话 ID 不可用或日志文件不存在时为空列表。
@@ -153,7 +173,7 @@ def parse_history(workdir: str, cc_session_id: str) -> list[TrowelEvent]:
     slug = workdir_to_slug(workdir)
     if not _is_safe_session_id(cc_session_id):
         return []
-    path = cc_projects_root() / slug / f"{cc_session_id}.jsonl"
+    path = projects_root / slug / f"{cc_session_id}.jsonl"
     if not path.is_file():
         return []
 
@@ -337,17 +357,17 @@ def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
 
 
 def _translate_assistant(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent]:
-    """将一条历史 assistant 记录拆成文本、思考和工具事件。
+    """将一条历史 assistant 记录拆成用量、文本、思考和工具事件。
 
     Args:
         ev: Claude Code 历史中的 assistant 记录。
         prev_ts: 此前最近一条带时间戳记录的 ISO 时间；没有时为 None。
 
     Returns:
-        按内容块顺序生成的展示事件；消息内容不是列表时为空列表。
+        usage 存在时先生成原始用量事件，随后按内容块顺序生成展示事件。
     """
 
-    return _run_translate_assistant(
+    content_events = _run_translate_assistant(
         ev,
         prev_ts,
         compute_thinking_duration=_compute_thinking_duration,
@@ -356,3 +376,23 @@ def _translate_assistant(ev: dict[str, Any], prev_ts: str | None) -> list[Trowel
         elicitation_event_type=ElicitationRequestEvent,
         tool_call_event_type=ToolCallEvent,
     )
+    message = ev.get("message")
+    if not isinstance(message, dict):
+        return content_events
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return content_events
+    return [
+        ContextUsageEvent(
+            message_id=(
+                message.get("id") if isinstance(message.get("id"), str) else None
+            ),
+            model=(
+                message.get("model")
+                if isinstance(message.get("model"), str)
+                else None
+            ),
+            usage=usage,
+        ),
+        *content_events,
+    ]

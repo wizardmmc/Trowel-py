@@ -228,6 +228,34 @@ def test_low_level_cc_capacity_counts_user_and_delegate_separately(
         )
 
 
+def test_low_level_cc_discussion_pool_accepts_eight_and_rejects_ninth(
+    tmp_path: Path,
+) -> None:
+    """CC 原生 registry 层也必须给八位 participant 独立连接池。"""
+
+    registry = {
+        f"discussion-{index}": SimpleNamespace(session_kind="discussion")
+        for index in range(8)
+    }
+
+    with pytest.raises(
+        session_lifecycle.CcCapacityError,
+        match="当前研讨参与者数量已满：连接上限为 8",
+    ):
+        session_lifecycle.open_session(
+            CreateSessionRequest(workdir=str(tmp_path), session_kind="discussion"),
+            registry,
+            proxy_base_url=None,
+            settings_path=None,
+            workdir_index={},
+            session_names={},
+            max_connections=1,
+            max_delegate_connections=1,
+            max_discussion_connections=8,
+            host_factory=routes.CCHost,
+        )
+
+
 def test_low_level_cc_capacity_reads_real_host_session_kind(
     tmp_path: Path,
 ) -> None:

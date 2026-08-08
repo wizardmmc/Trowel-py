@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { listHistory } from "./ccStoreTestHarness";
+import { listHistory, mockCreate } from "./ccStoreTestHarness";
 import { createAgentStore } from "../agent";
 
 const row = (runtime: "claude_code" | "codex", id: string, time: number) => ({
@@ -72,5 +72,62 @@ describe("createAgentStore - history pagination", () => {
     expect(store.getState().historyWorkdir).toBe("/b");
     resolveNext({ rows: [], nextCursor: null });
     await refreshing;
+  });
+
+  it("clears only the matching history problem after a successful retry", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    listHistory.mockRejectedValueOnce(new Error("history unavailable"));
+
+    await store.getState().refreshHistory("/wd");
+
+    expect(store.getState().sessions.s1.transportProblem?.operation).toBe(
+      "history_list",
+    );
+    listHistory.mockResolvedValueOnce({ rows: [], nextCursor: null });
+
+    await store.getState().refreshHistory("/wd");
+
+    expect(store.getState().sessions.s1.transportError).toBeNull();
+    expect(store.getState().sessions.s1.transportProblem).toBeNull();
+  });
+
+  it("preserves a newer problem while an older operation retry completes", async () => {
+    const store = createAgentStore();
+    mockCreate("s1");
+    await store.getState().startSession({ workdir: "/wd" });
+    listHistory.mockRejectedValueOnce(new Error("history unavailable"));
+    await store.getState().refreshHistory("/wd");
+    let resolveRetry!: (value: { rows: []; nextCursor: null }) => void;
+    listHistory.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRetry = resolve; }),
+    );
+
+    const retry = store.getState().refreshHistory("/wd");
+    store.setState((state) => ({
+      ...state,
+      sessions: {
+        ...state.sessions,
+        s1: {
+          ...state.sessions.s1,
+          transportError: "newer failure",
+          transportProblem: {
+            code: "http_error",
+            message: "newer failure",
+            operation: "approval_answer",
+            budgetMs: null,
+            status: null,
+            occurredAt: "2026-08-05T00:00:01.000Z",
+          },
+        },
+      },
+    }));
+    resolveRetry({ rows: [], nextCursor: null });
+    await retry;
+
+    expect(store.getState().sessions.s1.transportProblem?.operation).toBe(
+      "approval_answer",
+    );
   });
 });

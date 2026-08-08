@@ -1,7 +1,7 @@
 import { act, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSession, CodexCommand } from "../agent/transport";
+import type { AgentSession, CodexCommand, CodexSkill } from "../agent/transport";
 import { SessionComposer } from "../components/cc/SessionComposer";
 import { createNewSessionState } from "../agent/application/store/sessionState";
 
@@ -82,6 +82,9 @@ function baseProps(
     activeSid: "s1",
     streaming: false,
     slashItems: [],
+    slashLoading: false,
+    slashError: null,
+    onRetrySlashItems: vi.fn(),
     ccModels: [
       {
         value: "alias",
@@ -110,6 +113,11 @@ function baseProps(
     codexCommandsLoading: false,
     codexCommandsError: null,
     onRetryCodexCommands: vi.fn(),
+    codexSkills: [] as CodexSkill[],
+    codexSkillsLoading: false,
+    codexSkillsError: null,
+    codexSkillWarnings: [],
+    onRetryCodexSkills: vi.fn(),
     onCodexCommand: vi.fn(),
     onRetryCodexCatalog: vi.fn(),
     onSend: vi.fn(),
@@ -243,5 +251,81 @@ describe("SessionComposer", () => {
     expect(probe.props?.slashItems).toEqual([
       expect.objectContaining({ name: "status", source: "codex" }),
     ]);
+  });
+
+  it("maps Codex skills to dollar autocomplete without mixing them into slash commands", () => {
+    const props = baseProps("codex");
+    props.codexSkills = [
+      {
+        name: "development-slice-workflow",
+        description: "推进开发 slice",
+        scope: "user",
+        enabled: true,
+      },
+      {
+        name: "repo-review",
+        description: "审查项目改动",
+        scope: "repo",
+        enabled: true,
+      },
+      {
+        name: "organization-policy",
+        description: "管理员下发策略",
+        scope: "admin",
+        enabled: true,
+      },
+      {
+        name: "system-helper",
+        description: "Codex 系统技能",
+        scope: "system",
+        enabled: true,
+      },
+    ];
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.slashItems).toEqual([]);
+    expect(probe.props?.skillItems).toEqual([
+      expect.objectContaining({ name: "development-slice-workflow", source: "user" }),
+      expect.objectContaining({ name: "repo-review", source: "project" }),
+      expect.objectContaining({ name: "organization-policy", source: "admin" }),
+      expect.objectContaining({ name: "system-helper", source: "system" }),
+    ]);
+    expect(probe.props?.skillContext).toContain("已加载 1 个已启用用户技能");
+    expect(probe.props?.slashContext).toContain("请输入 $");
+  });
+
+  it("keeps loading, failure, and truly empty skill states distinct", () => {
+    const codexProps = baseProps("codex");
+    codexProps.codexSkillsLoading = true;
+    const { unmount } = render(<SessionComposer {...codexProps} />);
+
+    expect(probe.props?.skillContext).toContain("正在读取");
+    expect(probe.props?.skillContext).not.toContain("没有用户技能");
+    unmount();
+
+    const claudeProps = baseProps("claude_code");
+    render(<SessionComposer {...claudeProps} slashError="catalog unavailable" />);
+
+    expect(probe.props?.slashContext).toContain("读取失败");
+    expect(probe.props?.slashContext).not.toContain("没有用户");
+  });
+
+  it("does not count disabled user skills as loaded", () => {
+    const props = baseProps("codex");
+    props.codexSkills = [
+      {
+        name: "disabled-user-skill",
+        description: "已停用",
+        scope: "user",
+        enabled: false,
+      },
+    ];
+
+    render(<SessionComposer {...props} />);
+
+    expect(probe.props?.skillContext).toContain("没有已启用的用户技能");
+    expect(probe.props?.skillContext).toContain("1 个用户技能已停用");
+    expect(probe.props?.skillContext).not.toContain("已加载 1 个");
   });
 });

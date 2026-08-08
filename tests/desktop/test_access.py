@@ -5,6 +5,7 @@ import os
 from fastapi.testclient import TestClient
 
 from trowel_py.app import create_app
+from trowel_py.desktop.access import build_scoped_discussion_read_token
 
 
 def test_browser_mode_keeps_health_endpoint_open(monkeypatch) -> None:
@@ -31,6 +32,54 @@ def test_desktop_mode_requires_instance_credential(monkeypatch) -> None:
         "error": "desktop credential required",
     }
     assert wrong.status_code == 401
+
+
+def test_desktop_mode_lets_claude_use_its_scoped_runtime_lease(monkeypatch) -> None:
+    """Claude 子进程用租约令牌访问内部反代，不会携带 renderer Bearer。"""
+
+    monkeypatch.setenv("TROWEL_DESKTOP_CREDENTIAL", "desktop-secret")
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/cc-runtime/unknown-lease/v1/messages",
+            json={"model": "role-alias", "messages": []},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Claude connection lease not found"
+
+
+def test_desktop_mode_does_not_exempt_other_cc_runtime_paths(monkeypatch) -> None:
+    """租约前缀不能让未来的其他方法或管理路由绕过 Host 凭据。"""
+
+    monkeypatch.setenv("TROWEL_DESKTOP_CREDENTIAL", "desktop-secret")
+    with TestClient(create_app()) as client:
+        wrong_method = client.get("/api/cc-runtime/unknown-lease/v1/messages")
+        management_path = client.post("/api/cc-runtime/status")
+
+    assert wrong_method.status_code == 401
+    assert management_path.status_code == 401
+
+
+def test_desktop_scoped_token_only_opens_one_transcript_get(monkeypatch) -> None:
+    """交接 Agent 的路径级令牌不能读取或修改其他桌面 API。"""
+
+    credential = "desktop-secret"
+    path = "/api/discussions/discussion-1/transcript"
+    token = build_scoped_discussion_read_token(credential, path)
+    monkeypatch.setenv("TROWEL_DESKTOP_CREDENTIAL", credential)
+    client = TestClient(create_app())
+
+    allowed = client.get(f"{path}?access_token={token}")
+    other = client.get(
+        f"/api/discussions/discussion-2/transcript?access_token={token}"
+    )
+    write = client.post(f"{path}?access_token={token}")
+    health = client.get(f"/api/health?access_token={token}")
+
+    assert allowed.status_code != 401
+    assert other.status_code == 401
+    assert write.status_code == 401
+    assert health.status_code == 401
 
 
 def test_readiness_returns_the_started_instance_contract(monkeypatch) -> None:
@@ -63,9 +112,7 @@ def test_readiness_returns_the_started_instance_contract(monkeypatch) -> None:
 def test_desktop_mode_allows_only_the_host_renderer_origin(monkeypatch) -> None:
     """随机 Vite 端口可通过预检，其他网页来源仍拿不到 sidecar 响应。"""
     monkeypatch.setenv("TROWEL_DESKTOP_CREDENTIAL", "desktop-secret")
-    monkeypatch.setenv(
-        "TROWEL_DESKTOP_RENDERER_ORIGIN", "http://127.0.0.1:43124"
-    )
+    monkeypatch.setenv("TROWEL_DESKTOP_RENDERER_ORIGIN", "http://127.0.0.1:43124")
     client = TestClient(create_app())
     headers = {
         "Access-Control-Request-Method": "GET",

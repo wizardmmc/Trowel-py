@@ -51,6 +51,20 @@ class TestEnvelopeWrapping:
         assert ev.turn_id == "turn-42"
         assert ev.payload["revertible"] is True
 
+    def test_terminal_inherits_current_turn_identity(self) -> None:
+        """CC result 没有 turn_id 时仍能证明自己结束的是哪一轮。"""
+
+        adapter = ClaudeCodeEventAdapter(session_id="cc-1")
+        adapter.wrap(_dump(TurnStartEvent(turn_id="turn-42", revertible=True)))
+
+        terminal = adapter.wrap(
+            _dump(FinishedEvent(usage={}, total_cost_usd=0.001, num_turns=1))
+        )
+        after = adapter.wrap(_dump(TextEvent(text="later")))
+
+        assert terminal.turn_id == "turn-42"
+        assert after.turn_id is None
+
     def test_text_payload_carries_text(self) -> None:
         adapter = ClaudeCodeEventAdapter(session_id="cc-1")
         ev = adapter.wrap(_dump(TextEvent(text="hello ")))

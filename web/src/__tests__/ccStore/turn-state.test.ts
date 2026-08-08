@@ -125,6 +125,28 @@ describe("reduceEvent — terminal events", () => {
     expect(state.turns[0].status).toBe("done");
   });
 
+  it("finished marks a tool without tool_result as missing instead of running", () => {
+    const running = reduceEvent(withOpenTurn(), {
+      type: "tool_call",
+      tool_use_id: "tool-1",
+      tool_name: "Bash",
+      input: { command: "pwd" },
+    });
+
+    const state = reduceEvent(running, {
+      type: "finished",
+      usage: {},
+      total_cost_usd: 0,
+      num_turns: 1,
+    });
+
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "tool",
+      status: "missing",
+      result: null,
+    });
+  });
+
   it("error adds an error item with subclass and marks turn status error", () => {
     const state = reduceEvent(withOpenTurn(), {
       type: "error",

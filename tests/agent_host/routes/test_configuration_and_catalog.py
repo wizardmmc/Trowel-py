@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from tests.agent_host.routes.support import (
     codex_payload,
     create_session,
 )
+from trowel_py.agent_host import routes as agent_routes
 from trowel_py.agent_host.binding import Runtime, make_binding
 from trowel_py.agent_host.hub import SessionHub
 
@@ -104,9 +106,7 @@ def test_get_runtimes_reports_missing_cli_with_install_hint(
     response = client.get("/api/agent/runtimes")
 
     codex = next(
-        runtime
-        for runtime in response.json()["data"]
-        if runtime["runtime"] == "codex"
+        runtime for runtime in response.json()["data"] if runtime["runtime"] == "codex"
     )
     assert codex["connected"] is False
     assert codex["install_hint"] == "安装 Codex CLI 后重启 Trowel"
@@ -191,6 +191,46 @@ def test_get_models_returns_the_manager_catalog(
 
     assert response.status_code == 200
     assert response.json()["data"]["models"] == native
+
+
+def test_get_models_returns_structured_timeout_and_cancels_wait(
+    client: TestClient,
+    hub: SessionHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = False
+
+    async def list_models() -> list[dict[str, object]]:
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+
+    monkeypatch.setattr(hub._codex, "list_models", list_models)  # noqa: SLF001
+    assert agent_routes.MODEL_CATALOG_TIMEOUT_S == 25.0
+    monkeypatch.setattr(
+        agent_routes,
+        "MODEL_CATALOG_TIMEOUT_S",
+        0.01,
+    )
+
+    response = client.get("/api/agent/models")
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "success": False,
+        "data": None,
+        "error": {
+            "code": "request_timeout",
+            "message": "Codex model catalog request timed out",
+        },
+        "meta": {
+            "operation": "codex_model_catalog",
+            "timeout_ms": 10,
+        },
+    }
+    assert cancelled is True
 
 
 def test_get_models_returns_empty_catalog_when_codex_cli_is_missing(

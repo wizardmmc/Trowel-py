@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -20,10 +20,10 @@ from trowel_py.agent_capacity import (
 )
 from trowel_py.cc_host import checkpoint
 from trowel_py.cc_host import session_lifecycle
-from trowel_py.cc_host.history import parse_history
+from trowel_py.cc_host.history import parse_history, parse_history_from_root
 from trowel_py.cc_host.models import list_models
 from trowel_py.cc_host.service import CCHost
-from trowel_py.cc_host.session_scan import count_sessions, list_sessions
+from trowel_py.cc_host.session_scan import list_sessions
 from trowel_py.cc_host.slash_items import list_slash_items
 from trowel_py.resource_lifecycle.processes import ProcessController
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
@@ -43,9 +43,11 @@ _HISTORY_DROPDOWN_LIMIT = 10
 # registry 与派生索引由本模块持有；进程重启只清运行中状态，不影响磁盘历史。
 _REGISTRY: dict[str, CCHost] = {}
 
-_WORKDIR_INDEX: dict[str, set[str]] = {}   # workdir → {sid}（命名序号 + 按 workdir 查询）
-_SESSION_NAMES: dict[str, str] = {}         # sid → 显示名（basename + #N）
-_ACTIVE_SID: str | None = None              # 当前活跃 session（多开切换）
+_WORKDIR_INDEX: dict[
+    str, set[str]
+] = {}  # workdir → {sid}（命名序号 + 按 workdir 查询）
+_SESSION_NAMES: dict[str, str] = {}  # sid → 显示名（basename + #N）
+_ACTIVE_SID: str | None = None  # 当前活跃 session（多开切换）
 # MAX_RUNNING 仅保留公开兼容；当前路由只执行连接数门禁。
 MAX_RUNNING = USER_RUNNING_LIMIT
 MAX_CONNECTIONS = USER_CONNECTION_LIMIT
@@ -75,12 +77,31 @@ def set_active_session_id(session_id: str | None) -> None:
 
 
 def _require(sid: str, registry: dict[str, CCHost]) -> CCHost:
-    """返回已注册 host；未知 id 在进入流或执行副作用前抛出 404。"""
+    """只返回公开用户 host；内部 owner 会话与未知 id 都表现为 404。"""
 
     host = registry.get(sid)
-    if host is None:
+    if host is None or getattr(host, "session_kind", "user") == "discussion":
         raise HTTPException(status_code=404, detail=f"session {sid} not found")
     return host
+
+
+def _non_user_cc_session_ids(request: Request) -> frozenset[str]:
+    """读取 Agent Host 长期登记的非用户 CC 会话身份。
+
+    Args:
+        request: 用于取得应用唯一 Session Hub 的公开 HTTP 请求。
+
+    Returns:
+        必须从旧 CC 恢复入口和历史列表排除的原生会话 ID；独立路由测试未装配
+        Session Hub 时返回空集合。
+    """
+
+    hub = getattr(request.app.state, "agent_hub", None)
+    if hub is None:
+        return frozenset()
+    from trowel_py.agent_host.binding import Runtime
+
+    return hub.non_user_native_ids(Runtime.CLAUDE_CODE)
 
 
 def _sse(event: object) -> str:
@@ -146,9 +167,16 @@ def open_cc_session_configured(
     *,
     proxy_base_url: str | None = None,
     settings_path: str | Path | None = None,
+    claude_config_dir: str | Path | None = None,
+    claude_plugin_dir: str | Path | None = None,
     display_name: str | None = None,
     process_controller: ProcessController | None = None,
     resource_registry: ResourceRegistry | None = None,
+    owned_settings_path: bool = False,
+    close_callback: Any | None = None,
+    memory_mcp_enabled: bool | None = None,
+    bootstrap_context: str | None = None,
+    memory_eligibility: bool = True,
 ) -> OpenedCcSession:
     """使用显式代理和 settings 配置创建并注册 CC 会话。
 
@@ -159,16 +187,40 @@ def open_cc_session_configured(
         registry: 接收新会话的 registry；为 `None` 时使用模块共享 registry。
         proxy_base_url: CC 子进程使用的代理地址；为 `None` 时不配置代理。
         settings_path: 用于构造 CC 启动环境的 settings 文件；为 `None` 时不读取。
+        claude_config_dir: 该会话使用的 Claude 用户配置目录；`None` 表示
+            兼容旧会话，继续使用全局目录。
+        claude_plugin_dir: 该连接共享的 Claude 插件缓存目录。
         display_name: Agent Hub 已按双 runtime 可见集合分配的临时名称；为 `None`
             时只根据旧版 CC 路由当前已登记的用户会话分配。
         process_controller: 核验并终止 CC 独立进程组的实现。
         resource_registry: 登记 CC 会话临时资源的当前应用账本。
+        owned_settings_path: 是否由会话 host 删除传入的私有 settings。
+        close_callback: 会话清理后执行的一次性代理租约释放函数。
+        memory_mcp_enabled: 是否挂载 Memory MCP；None 时沿用正文注入开关。
+        bootstrap_context: 应用内部提供的系统级首轮背景。
+        memory_eligibility: 是否允许整个原生会话进入 Memory/Profile 来源。
 
     Returns:
         已注册会话的 ID、host 和显示名称。
     """
 
     target_registry = _REGISTRY if registry is None else registry
+    owned_resource_config: dict[str, Any] = {}
+    if owned_settings_path or close_callback is not None:
+        owned_resource_config = {
+            "owned_settings_path": owned_settings_path,
+            "close_callback": close_callback,
+        }
+    if memory_mcp_enabled is not None:
+        owned_resource_config["memory_mcp_enabled"] = memory_mcp_enabled
+    if bootstrap_context is not None:
+        owned_resource_config["bootstrap_context"] = bootstrap_context
+    if not memory_eligibility:
+        owned_resource_config["memory_eligibility"] = False
+    if claude_config_dir is not None:
+        owned_resource_config["claude_config_dir"] = claude_config_dir
+    if claude_plugin_dir is not None:
+        owned_resource_config["claude_plugin_dir"] = claude_plugin_dir
     sid, host, name = session_lifecycle.open_session(
         req,
         target_registry,
@@ -182,6 +234,7 @@ def open_cc_session_configured(
         display_name=display_name,
         process_controller=process_controller,
         resource_registry=resource_registry,
+        **owned_resource_config,
     )
     if req.session_kind == "user":
         set_active_session_id(sid)
@@ -195,6 +248,12 @@ def create_session(
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
     """创建新的 CC 会话，可通过原生会话 id 恢复已有会话。"""
+    if req.session_kind == "discussion":
+        raise HTTPException(status_code=404, detail="session kind not found")
+    if req.resume_from is not None and req.resume_from in _non_user_cc_session_ids(
+        request
+    ):
+        raise HTTPException(status_code=404, detail="session not found")
     opened = open_cc_session(req, request, registry)
     return {
         "success": True,
@@ -280,13 +339,17 @@ async def answer_elicit(
     body: AnswerElicitRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """回答或取消待处理的 AskUserQuestion；操作成功后 CC 继续执行。"""
+    """回答或取消待处理的提问或 plan mode 确认；成功后 CC 继续执行。"""
     host = _require(sid, registry)
     if body.cancel:
         ok = await host.cancel_elicit()
     else:
         ok = await host.answer_elicit(body.answers)
-    return {"success": ok, "data": {"answered": ok}, "error": None if ok else "no_pending_elicit"}
+    return {
+        "success": ok,
+        "data": {"answered": ok},
+        "error": None if ok else "no_pending_elicit",
+    }
 
 
 @router.post("/sessions/{sid}/revert")
@@ -302,11 +365,22 @@ async def revert_turn(
     """
     host = _require(sid, registry)
     try:
-        meta = checkpoint.revert(host.workdir, body.turn_id)
+        projects_root = getattr(host, "projects_root", None)
+        meta = (
+            checkpoint.revert(host.workdir, body.turn_id)
+            if projects_root is None
+            else checkpoint.revert(
+                host.workdir,
+                body.turn_id,
+                projects_root=projects_root,
+            )
+        )
     except checkpoint.NotAGitRepoError:
         raise HTTPException(status_code=400, detail="workdir is not a git repo")
     except checkpoint.UnknownCheckpointError:
-        raise HTTPException(status_code=404, detail=f"checkpoint {body.turn_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"checkpoint {body.turn_id} not found"
+        )
     # reload 丢弃内存进程；下一次发送从截断后的 jsonl 恢复。
     await host.reload()
     return {
@@ -322,15 +396,20 @@ async def revert_turn(
 
 @router.get("/sessions")
 def list_history(
+    request: Request,
     workdir: str = Query(..., min_length=1),
 ) -> dict:
     """列出工作目录最近 10 个可恢复 CC 会话，并在 meta.total 返回磁盘总数。"""
-    items = [asdict(s) for s in list_sessions(workdir, limit=_HISTORY_DROPDOWN_LIMIT)]
+    visible = list_sessions(
+        workdir,
+        excluded_ids=_non_user_cc_session_ids(request),
+    )
+    items = [asdict(s) for s in visible[:_HISTORY_DROPDOWN_LIMIT]]
     return {
         "success": True,
         "data": items,
         "error": None,
-        "meta": {"total": count_sessions(workdir), "limit": _HISTORY_DROPDOWN_LIMIT},
+        "meta": {"total": len(visible), "limit": _HISTORY_DROPDOWN_LIMIT},
     }
 
 
@@ -345,7 +424,16 @@ def get_history(
     cc_session_id = host.cc_session_id
     if not cc_session_id:
         return {"success": True, "data": [], "error": None}
-    events = parse_history(host.workdir, cc_session_id)
+    projects_root = getattr(host, "projects_root", None)
+    events = (
+        parse_history(host.workdir, cc_session_id)
+        if projects_root is None
+        else parse_history_from_root(
+            host.workdir,
+            cc_session_id,
+            projects_root=projects_root,
+        )
+    )
     return {"success": True, "data": [e.model_dump() for e in events], "error": None}
 
 
@@ -356,9 +444,7 @@ def list_models_endpoint() -> dict:
     return {"success": True, "data": items, "error": None}
 
 
-def _init_roster_for_workdir(
-    workdir: str, registry: dict[str, CCHost]
-) -> list[str]:
+def _init_roster_for_workdir(workdir: str, registry: dict[str, CCHost]) -> list[str]:
     """返回指定工作目录中可用的初始化命令。
 
     优先读取该目录当前选中会话的命令；该会话不属于目标目录或没有命令时，
@@ -382,11 +468,32 @@ def _init_roster_for_workdir(
 @router.get("/slash-items")
 def list_slash_items_endpoint(
     workdir: str = Query(..., min_length=1),
+    session_id: str | None = Query(default=None, min_length=1),
     registry: dict[str, CCHost] = Depends(get_registry),
 ) -> dict:
-    """返回工作目录可用的 slash command 与 skill，并合并同目录会话的初始化名单。"""
-    init_roster = _init_roster_for_workdir(workdir, registry)
-    items = [asdict(i) for i in list_slash_items(workdir, init_roster=init_roster)]
+    """返回工作目录可用的 slash command 与 skill。
+
+    传入 session_id 时，用户级配置和插件严格从该 Claude Code
+    会话的冻结目录读取。旧调用方没有会话身份时保持全局扫描。
+    """
+
+    if session_id is None:
+        init_roster = _init_roster_for_workdir(workdir, registry)
+        items = list_slash_items(workdir, init_roster=init_roster)
+    else:
+        host = _require(session_id, registry)
+        if Path(host.workdir).resolve() != Path(workdir).expanduser().resolve():
+            raise HTTPException(status_code=409, detail="session workdir mismatch")
+        config_home = host.claude_config_dir or (Path.home() / ".claude")
+        plugin_home = host.claude_plugin_dir or (Path.home() / ".claude" / "plugins")
+        items = list_slash_items(
+            workdir,
+            user_skills_dir=config_home / "skills",
+            user_commands_dir=config_home / "commands",
+            plugins_dir=plugin_home,
+            init_roster=list(host.init_roster),
+        )
+    items = [asdict(item) for item in items]
     return {"success": True, "data": items, "error": None}
 
 

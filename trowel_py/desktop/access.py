@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 from urllib.parse import urlsplit
+from urllib.parse import parse_qs
 
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class DesktopCredentialMiddleware:
-    """仅在 Host 提供凭据时保护本地 ``/api`` 路径。
+    """仅在 Host 提供凭据时保护 renderer 使用的本地 ``/api`` 路径。
+
+    Claude 子进程访问 ``POST /api/cc-runtime/<lease>/v1/...`` 时使用会话级
+    随机租约令牌，原生 runtime 无法附带 Electron Host 的 Bearer，因此只有这两条
+    内部反代路由租约自身鉴权。
 
     Attributes:
         app: 凭据通过后继续处理请求的下游 ASGI 应用。
@@ -49,6 +55,9 @@ class DesktopCredentialMiddleware:
         if supplied is not None and hmac.compare_digest(supplied, self.credential):
             await self.app(scope, receive, send)
             return
+        if _has_scoped_discussion_read_access(scope, self.credential):
+            await self.app(scope, receive, send)
+            return
 
         response = JSONResponse(
             status_code=401,
@@ -62,12 +71,37 @@ class DesktopCredentialMiddleware:
 
     def _requires_credential(self, scope: Scope) -> bool:
         """判断当前 ASGI 请求是否属于需要实例凭据的桌面 API。"""
+        path = str(scope.get("path", ""))
         return bool(
             self.credential
             and scope.get("type") == "http"
             and scope.get("method") != "OPTIONS"
-            and str(scope.get("path", "")).startswith("/api/")
+            and path.startswith("/api/")
+            and not _is_claude_runtime_lease_request(scope)
         )
+
+
+def _is_claude_runtime_lease_request(scope: Scope) -> bool:
+    """只识别 Claude 原生 runtime 实际使用的 POST 租约反代路由。
+
+    Args:
+        scope: 包含 HTTP 方法和解码后路径的 ASGI 请求范围。
+
+    Returns:
+        路径形如 ``/api/cc-runtime/<lease>/v1/<rest>`` 且方法为 POST 时返回
+        True；空租约、空代理路径或其他方法都返回 False。
+    """
+
+    if scope.get("type") != "http" or scope.get("method") != "POST":
+        return False
+    parts = str(scope.get("path", "")).split("/")
+    return bool(
+        len(parts) >= 6
+        and parts[1:3] == ["api", "cc-runtime"]
+        and parts[3]
+        and parts[4] == "v1"
+        and any(parts[5:])
+    )
 
 
 def _bearer_credential(scope: Scope) -> str | None:
@@ -80,6 +114,47 @@ def _bearer_credential(scope: Scope) -> str | None:
         if value.startswith(prefix) and value[len(prefix) :]:
             return value[len(prefix) :]
     return None
+
+
+def build_scoped_discussion_read_token(credential: str, path: str) -> str:
+    """生成只允许读取一个 transcript 路径的实例级能力令牌。
+
+    Args:
+        credential: Electron Host 为当前 sidecar 生成的随机凭据。
+        path: 形如 ``/api/discussions/<id>/transcript`` 的绝对 API 路径。
+
+    Returns:
+        不暴露 renderer Bearer 的十六进制 HMAC。
+    """
+
+    return hmac.new(
+        credential.encode("utf-8"),
+        f"GET:{path}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _has_scoped_discussion_read_access(scope: Scope, credential: str) -> bool:
+    """只接受绑定到一个 transcript GET 路径的查询令牌。"""
+
+    if scope.get("type") != "http" or scope.get("method") != "GET":
+        return False
+    path = str(scope.get("path", ""))
+    parts = path.split("/")
+    if not (
+        len(parts) == 5
+        and parts[1:3] == ["api", "discussions"]
+        and parts[3]
+        and parts[4] == "transcript"
+    ):
+        return False
+    raw_query = scope.get("query_string", b"")
+    query = parse_qs(raw_query.decode("latin-1"), keep_blank_values=True)
+    supplied = query.get("access_token", [None])
+    if len(supplied) != 1 or supplied[0] is None:
+        return False
+    expected = build_scoped_discussion_read_token(credential, path)
+    return hmac.compare_digest(supplied[0], expected)
 
 
 def validate_desktop_renderer_origin(origin: str) -> str:

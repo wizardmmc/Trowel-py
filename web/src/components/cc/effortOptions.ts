@@ -10,14 +10,9 @@ export const EFFORT_OPTIONS: readonly EffortOption[] = [
   { value: "low", description: "快速直接，简单改动" },
   { value: "medium", description: "平衡，标准测试覆盖" },
   { value: "high", description: "深入实现，详尽测试" },
+  { value: "xhigh", description: "更深入的推理与验证" },
   {
     value: "max",
-    description: "最强推理（Claude：Opus 专属，其它自动降级 high）",
-  },
-  { value: "auto", description: "用模型默认强度" },
-  {
-    value: "ultracode",
-    description: "xhigh + 自动多 Agent 编排（Claude 2.1.197+）",
-    tag: "GLM 后端 xhigh 支持性待实测 · Claude 自动降级兜底",
+    description: "Claude CLI 提供的最高推理强度",
   },
 ];

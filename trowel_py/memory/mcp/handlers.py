@@ -149,8 +149,7 @@ def handle_search(
         identity: 写入日志的会话身份，必须包含 Trowel、旧版 CC、运行端和原生
             会话 ID 四个键。
         toolUseId: 宿主提供的工具调用 ID；字段名沿用 Claude Code 协议。
-        retriever: 返回 Note stem 序列的检索器；为 None 时从当前 LLM 配置构造
-            ``LLMRetriever``。
+        retriever: 返回 Note stem 序列的检索器；协议 composition root 必须注入。
         now_fn: 生成每条访问日志时间的回调。
         hit_fn: 把 Note 和原始 rank 转成结果字典的回调。
         log_access_fn: 追加查询及命中记录的回调。
@@ -183,11 +182,7 @@ def handle_search(
             "hint": "run: trowel memory dict-rebuild --apply",
         }
     if retriever is None:
-        from trowel_py.config import load_llm_config
-        from trowel_py.llm.client import AnthropicProvider
-        from trowel_py.memory.retrievers import LLMRetriever
-
-        retriever = LLMRetriever(AnthropicProvider(load_llm_config()))
+        raise RuntimeError("memory search retriever dependency is required")
 
     from trowel_py.memory.dictionary_lock import dictionary_lock
     from trowel_py.memory.dictionary_state import load_state

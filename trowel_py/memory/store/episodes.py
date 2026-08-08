@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ from .episode_codec import (
 )
 
 _EPISODES_DIR = "episodes"
+_SAFE_EPISODE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class _EpisodeStore(_DiaryStore):
@@ -39,6 +42,94 @@ class _EpisodeStore(_DiaryStore):
     """
 
     root: Path
+
+    def write_aggregate_episode(
+        self,
+        *,
+        episode_id: str,
+        source_kind: str,
+        source_ref: str,
+        registered_at: str,
+        activity_date: str,
+        body: str,
+    ) -> str:
+        """幂等覆盖一个不冒充原生 Agent 会话的聚合 Episode。
+
+        该入口用于 discussion 等宿主级活动。它沿用 Episode 的 segment 和日期
+        投影格式，但 provenance 明确使用 ``source_kind/source_ref``，不会伪造
+        ``cc_session_id``、原生会话 ID 或模型身份。写入使用同目录唯一临时文件、
+        ``fsync`` 和原子替换；同一 ``episode_id`` 重试只会得到同一路径。
+
+        Args:
+            episode_id: 文件名和返回值使用的稳定身份，只允许安全文件名字符。
+            source_kind: 聚合来源类型，例如 discussion。
+            source_ref: 可回溯到原始记录的稳定引用。
+            registered_at: 活动在 Trowel 中登记的 ISO 时间。
+            activity_date: 进入 Daily 投影的日期。
+            body: 放在日期标题下的完整 Markdown 正文。
+
+        Returns:
+            输入的 ``episode_id``。
+
+        Raises:
+            ValueError: 身份、来源、日期或正文为空，或 ID 含路径字符。
+        """
+
+        if not episode_id or _SAFE_EPISODE_ID.fullmatch(episode_id) is None:
+            raise ValueError("aggregate episode id contains unsafe characters")
+        if not source_kind.strip() or not source_ref.strip():
+            raise ValueError("aggregate episode source must not be empty")
+        if not activity_date.strip() or not body.strip():
+            raise ValueError("aggregate episode date and body must not be empty")
+        segment_id = f"{source_kind}:{episode_id}"
+        block, content_hash, dates, _empty_reason = _render_segment(
+            segment_id,
+            (DraftDiary(date=activity_date, events=body.rstrip()),),
+        )
+        frontmatter: dict[str, Any] = {
+            "type": "episode",
+            "episode_id": episode_id,
+            "source_kind": source_kind,
+            "source_ref": source_ref,
+            "registered_at": registered_at,
+            "review_date": activity_date,
+            "activity_dates": dates,
+            "segments": [
+                {
+                    "segment_id": segment_id,
+                    "review_date": activity_date,
+                    "content_hash": content_hash,
+                    "activity_dates": dates,
+                    "source": {
+                        "kind": source_kind,
+                        "ref": source_ref,
+                    },
+                }
+            ],
+        }
+        path = self.root / _EPISODES_DIR / f"{episode_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = _dump_frontmatter(frontmatter, block).encode("utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{episode_id}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return episode_id
 
     def write_episode(
         self, context: PersistContext, diary_entries: tuple[DraftDiary, ...]

@@ -34,6 +34,11 @@ function makeSession(over: Partial<PerSessionState> = {}): PerSessionState {
     lastSeq: null,
     needsReplay: false,
     ...over,
+    resourceState: over.resourceState ?? "connected",
+    turnState: over.turnState ?? "idle",
+    liveState: over.liveState ?? "ready",
+    currentTurnId: over.currentTurnId ?? null,
+    stateGeneration: over.stateGeneration ?? 1,
     codexSubagents: over.codexSubagents ?? {},
   };
 }

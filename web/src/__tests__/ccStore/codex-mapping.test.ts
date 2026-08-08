@@ -121,6 +121,12 @@ describe("reduceEvent — Codex mapping (post-adapter)", () => {
     const state = run([
       { type: "user", text: "go" },
       {
+        type: "tool_call",
+        tool_use_id: "command-1",
+        tool_name: "shell",
+        input: { command: "pwd" },
+      } as TrowelEvent,
+      {
         type: "host_status",
         status: "host_exited",
         reason: "eof",
@@ -129,6 +135,10 @@ describe("reduceEvent — Codex mapping (post-adapter)", () => {
     expect(state.phase).toBe("error");
     expect(state.meta.hostDegraded).toBe(true);
     expect(state.turns[0].status).toBe("error");
+    expect(state.turns[0].items[0]).toMatchObject({
+      kind: "tool",
+      status: "missing",
+    });
   });
 
   it("host_status degraded flags without erroring a turn", () => {

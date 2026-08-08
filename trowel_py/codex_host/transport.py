@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -19,6 +20,7 @@ from trowel_py.codex_host.errors import (
     ServerRequestUnsupportedError,
     TransportClosedError,
 )
+from trowel_py.codex_host.config_overrides import app_server_args
 from trowel_py.codex_host.protocol import (
     APP_SERVER_ARGS,
     SUPPORTED_CODEX_VERSION,
@@ -99,6 +101,7 @@ class AppServerClient:
         spawner: Spawner | None = None,
         recorder_dir: Path | None = None,
         env: dict[str, str] | None = None,
+        config_overrides: Mapping[str, Any] | None = None,
         close_grace_s: float = _CLOSE_GRACE_S,
         close_term_s: float = _CLOSE_TERM_S,
         version_reader: Callable[[], Awaitable[CodexVersion]] | None = None,
@@ -115,6 +118,7 @@ class AppServerClient:
             recorder_dir: 录制文件目录；启用 ``TROWEL_CODEX_RECORD`` 后，消息追加到
                 该目录下的 ``codex-appserver-protocol.jsonl``。
             env: 覆盖到父环境之上的子进程环境变量。
+            config_overrides: 插入 ``app-server`` 子命令后的结构化 ``-c`` 覆盖项。
             close_grace_s: 关闭 stdin 后等待进程自行退出的秒数。
             close_term_s: 发送 TERM 后等待进程退出、再升级 KILL 的秒数。
             version_reader: 替代 ``codex --version`` 的无参数异步版本读取器。
@@ -128,6 +132,7 @@ class AppServerClient:
         self._allow_version_override = allow_version_override
         self._spawner = spawner or self._default_spawner
         self._env = env
+        self._config_overrides = dict(config_overrides or {})
         self._version_reader = version_reader
         self._process_controller = process_controller
         self._process_identity: ProcessIdentity | None = None
@@ -234,7 +239,13 @@ class AppServerClient:
         if self._env is not None:
             # 保留父环境中未显式覆盖的键；同名键以调用方传入值为准。
             kwargs["env"] = {**os.environ, **self._env}
-        args = [self._codex_bin, *APP_SERVER_ARGS]
+        subcommand, *tail = APP_SERVER_ARGS
+        args = [
+            self._codex_bin,
+            subcommand,
+            *app_server_args(self._config_overrides),
+            *tail,
+        ]
         self._process = await self._spawner(args, kwargs)
         if self._process_controller is not None and self.pid is not None:
             identity = self._process_controller.inspect(self.pid)

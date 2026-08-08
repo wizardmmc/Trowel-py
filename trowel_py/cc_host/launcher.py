@@ -30,6 +30,8 @@ def build_args(
     append_system_prompt: str | None = None,
     mcp_config: str | None = None,
     allowed_tools: Sequence[str] | None = None,
+    settings_path: str | os.PathLike | None = None,
+    setting_sources: str | None = None,
 ) -> list[str]:
     """构造 Claude Code stream-json 子进程的启动参数。
 
@@ -45,6 +47,8 @@ def build_args(
         append_system_prompt: 追加到 Claude Code 默认系统提示词的 Trowel 上下文。
         mcp_config: 本会话独占的 MCP 配置文件；提供时同时启用 strict 模式。
         allowed_tools: 预先授权并向 Claude Code 声明需要发现的工具全名。
+        settings_path: 当前会话独占的 Claude settings 文件。
+        setting_sources: 允许 Claude 额外读取的配置来源；空字符串表示全部禁用。
 
     Returns:
         可直接传给 ``asyncio.create_subprocess_exec`` 的 argv。
@@ -77,6 +81,10 @@ def build_args(
     if allowed_tools:
         # 单个逗号分隔值避免 Commander 的可变参数吞掉后续选项。
         args += ["--allowedTools", ",".join(allowed_tools)]
+    if settings_path is not None:
+        args += ["--settings", str(settings_path)]
+    if setting_sources is not None:
+        args += ["--setting-sources", setting_sources]
     # strict 模式隔离项目、用户和插件中的额外 MCP 配置。
     if mcp_config:
         args += ["--mcp-config", mcp_config, "--strict-mcp-config"]

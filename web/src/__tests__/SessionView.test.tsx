@@ -42,8 +42,47 @@ vi.mock("../agent/transport/api", () => ({
   listActiveAgentSessions: vi.fn().mockResolvedValue({ sessions: [], activeId: null }),
   getAgentSessionDefaults: vi.fn().mockResolvedValue(null),
   listAgentRuntimes: vi.fn().mockResolvedValue([]),
+  listAgentConnectionOptions: vi.fn().mockResolvedValue([
+    {
+      id: "claude-a",
+      name: "Claude A",
+      runtime: "claude_code",
+      kind: "claude_compatible",
+      identity_version: 1,
+      available: true,
+      disabled_reason: null,
+      last_session_choice: { model: "glm-5.2", effort: null },
+      models: [{
+        id: "glm-5.2",
+        display_name: "GLM 5.2",
+        available: true,
+        disabled_reason: null,
+        efforts: [],
+        default_effort: null,
+      }],
+    },
+    {
+      id: "codex-a",
+      name: "Codex A",
+      runtime: "codex",
+      kind: "codex_custom",
+      identity_version: 1,
+      available: true,
+      disabled_reason: null,
+      last_session_choice: { model: "deepseek-v4-flash", effort: "high" },
+      models: [{
+        id: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        available: true,
+        disabled_reason: null,
+        efforts: ["low", "medium", "high", "xhigh"],
+        default_effort: "high",
+      }],
+    },
+  ]),
   listAgentModels: vi.fn().mockResolvedValue([]),
   listCodexCommands: vi.fn().mockResolvedValue([]),
+  listCodexSkills: vi.fn().mockResolvedValue({ skills: [], errors: [] }),
   compactCodexSession: vi.fn().mockResolvedValue({ started: true }),
   startCodexReview: vi.fn().mockResolvedValue({
     reviewThreadId: "thread-1",
@@ -55,11 +94,12 @@ vi.mock("../agent/transport/api", () => ({
   setCodexGoal: vi.fn(),
   clearCodexGoal: vi.fn().mockResolvedValue({ cleared: true }),
   startCodexTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
+  startAgentTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   updateAgentSessionSettings: vi.fn(),
   interruptAgentSession: vi.fn().mockResolvedValue({ interrupted: true }),
   answerAgentRequest: vi.fn(),
   agentMessagesUrl: (sid: string) => `/api/agent/sessions/${sid}/messages`,
-  agentEventsUrl: (sid: string) => `/api/agent/sessions/${sid}/events`,
+  agentEventsUrl: () => "/api/agent/events",
 }));
 
 vi.mock("../agent/transport/stream", () => ({
@@ -68,9 +108,9 @@ vi.mock("../agent/transport/stream", () => ({
     (
       _url: string,
       _apply: unknown,
-      options?: { onOpen?: () => void },
+      options?: { onOpen?: (generation: string | null) => void },
     ) => {
-      options?.onOpen?.();
+      options?.onOpen?.("generation-1");
       return new Promise<void>(() => {});
     },
   ),
@@ -95,6 +135,8 @@ import {
   listAgentHistory as listSessions,
   listActiveAgentSessions as listActiveSessions,
   listAgentRuntimes,
+  listAgentConnectionOptions,
+  listAgentModels,
   listCodexCommands,
   compactCodexSession,
   getCodexSubagentHistory,
@@ -104,6 +146,15 @@ import {
   saveNewSessionPreferences,
 } from "../components/cc/newSessionPreferences";
 import { listSlashItems } from "../api/cc";
+
+/** 创建由测试控制完成顺序的 Promise。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,6 +180,12 @@ describe("SessionView", () => {
     render(<SessionView workdir="" emptyWorkspaceContent={<div>Start</div>} />);
 
     expect(vi.mocked(listSlashItems)).not.toHaveBeenCalled();
+  });
+
+  it("does not start the legacy Codex manager when the Agent page opens", () => {
+    render(<SessionView workdir="/wd" />);
+
+    expect(vi.mocked(listAgentModels)).not.toHaveBeenCalled();
   });
 
   it("opens a Codex child timeline without a composer and returns to the parent", async () => {
@@ -407,8 +464,45 @@ describe("SessionView", () => {
           workdir: "/wd",
           resume_from: "older-thread",
         }),
+        expect.any(String),
       );
     });
+  });
+
+  it("shows why an old history row cannot be resumed", async () => {
+    installCodexSession();
+    vi.mocked(listActiveSessions).mockResolvedValueOnce({
+      sessions: [codexLiveSession()],
+      activeId: "s1",
+    });
+    vi.mocked(listSessions).mockResolvedValueOnce({
+      rows: [
+        {
+          runtime: "codex",
+          native_session_id: "unknown-thread",
+          title: "缺少冻结配置的旧会话",
+          updated_at: "2026-08-01T10:00:00+00:00",
+        },
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(createSession).mockRejectedValueOnce(
+      new Error(
+        "该历史会话没有可用的冻结连接，暂时无法直接恢复；当前可先新建会话",
+      ),
+    );
+    render(<SessionView workdir="" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "历史会话" }));
+    fireEvent.click(
+      await screen.findByRole("option", { name: /缺少冻结配置的旧会话/ }),
+    );
+
+    expect(
+      await screen.findByText(
+        "历史会话无法直接恢复：该历史会话没有可用的冻结连接，暂时无法直接恢复；当前可先新建会话",
+      ),
+    ).toBeVisible();
   });
 
   it("updates the renderer workspace when a live session is selected", async () => {
@@ -476,7 +570,7 @@ describe("SessionView", () => {
       effort: "high",
       permission_mode: "",
       permission_preset: "workspace-write",
-      memory_enabled: false,
+      memory_enabled: true,
       profile_enabled: true,
     });
 
@@ -491,6 +585,51 @@ describe("SessionView", () => {
       "cc-dialog__option--selected",
     );
     expect(vi.mocked(createSession)).not.toHaveBeenCalled();
+  });
+
+  it("double-clicking new session reuses one defaults preparation", async () => {
+    const defaults = deferred<null>();
+    vi.mocked(getAgentSessionDefaults).mockReturnValueOnce(defaults.promise);
+    render(<SessionView workdir="/wd" />);
+
+    const open = screen.getByRole("button", { name: "同目录新开" });
+    fireEvent.click(open);
+    fireEvent.click(open);
+
+    expect(vi.mocked(getAgentSessionDefaults)).toHaveBeenCalledOnce();
+    expect(open).toBeDisabled();
+    defaults.resolve(null);
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+  });
+
+  it("ignores a late defaults response for an older workdir request", async () => {
+    const older = deferred<null>();
+    const newer = deferred<null>();
+    vi.mocked(getAgentSessionDefaults)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const { rerender } = render(
+      <SessionView
+        workdir=""
+        newSessionWorkdirRequest={{ id: 1, workdir: "/older" }}
+      />,
+    );
+    await waitFor(() => expect(getAgentSessionDefaults).toHaveBeenCalledOnce());
+    rerender(
+      <SessionView
+        workdir=""
+        newSessionWorkdirRequest={{ id: 2, workdir: "/newer" }}
+      />,
+    );
+    await waitFor(() => expect(getAgentSessionDefaults).toHaveBeenCalledTimes(2));
+
+    newer.resolve(null);
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+    older.resolve(null);
+    await Promise.resolve();
+
+    expect(screen.getByTitle("/newer")).toBeInTheDocument();
+    expect(screen.queryByTitle("/older")).toBeNull();
   });
 
   it("挂载时只恢复 live session 列表，不自动创建新 session", async () => {
@@ -576,6 +715,11 @@ describe("SessionView", () => {
           transportError: null,
           abort: null,
           connected: true,
+          resourceState: "connected",
+          turnState: "idle",
+          liveState: "ready",
+          currentTurnId: null,
+          stateGeneration: 1,
           memoryEnabled: true,
           profileEnabled: true,
           runtime: "codex",
@@ -664,6 +808,30 @@ describe("SessionView", () => {
       "aria-checked",
       "false",
     );
+  });
+
+  it("每次打开新会话前重新读取供应商设置", async () => {
+    vi.mocked(listAgentRuntimes).mockResolvedValue([
+      {
+        runtime: "codex",
+        label: "Codex",
+        native: "app-server",
+        capabilities: CODEX_CAPABILITIES,
+        connected: true,
+      },
+    ]);
+    render(<SessionView workdir="/wd" />);
+    expect(listAgentConnectionOptions).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+    expect(listAgentConnectionOptions).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    fireEvent.click(screen.getByRole("button", { name: "同目录新开" }));
+    await screen.findByRole("dialog", { name: "新建 Agent 会话" });
+
+    expect(listAgentConnectionOptions).toHaveBeenCalledTimes(2);
   });
 
   it("does not overwrite the previous config when explicit creation fails", async () => {

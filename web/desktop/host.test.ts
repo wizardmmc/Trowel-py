@@ -14,7 +14,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function runningSidecar(exit = deferred<{ code: number | null; signal: string | null }>()) {
+function runningSidecar(
+  exit = deferred<{ code: number | null; signal: string | null }>(),
+) {
   const running: RunningSidecar = {
     process: { pid: 42, exited: exit.promise, signal: vi.fn(), stop: vi.fn() },
     transport: {
@@ -96,12 +98,55 @@ it("shows diagnostics for startup failure and can retry", async () => {
   expect(host.diagnostics().status).toBe("ready");
 });
 
+it("blocks retry when readiness-timeout cleanup needs reconciliation", async () => {
+  const cleanupResult = {
+    status: "needs_reconcile" as const,
+    remainingResourceCount: 2,
+    forced: true,
+    exitMarkerRecorded: true,
+  };
+  const launch = vi
+    .fn()
+    .mockRejectedValue(
+      new SidecarStartError(
+        "readiness_timeout",
+        "sidecar timed out",
+        null,
+        cleanupResult,
+      ),
+    );
+  const loadDiagnostics = vi.fn().mockRejectedValue(new Error("navigation"));
+  const host = new DesktopHost(OPTIONS, {
+    launch,
+    loadRenderer: vi.fn(),
+    loadDiagnostics,
+  });
+
+  await expect(host.start()).resolves.toBeUndefined();
+  await expect(host.retry()).resolves.toBeUndefined();
+  await expect(host.start()).resolves.toBeUndefined();
+
+  expect(launch).toHaveBeenCalledOnce();
+  expect(loadDiagnostics).toHaveBeenCalledOnce();
+  expect(host.diagnostics()).toMatchObject({
+    status: "failed",
+    category: "reconcile_required",
+  });
+});
+
 it("moves a ready window to diagnostics if its current sidecar exits", async () => {
   const { running, exit } = runningSidecar();
   const loadDiagnostics = vi.fn();
   const onUnexpectedExit = vi.fn();
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: true,
+    exitMarkerRecorded: true,
+  });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),
+    shutdown,
     loadRenderer: vi.fn(),
     loadDiagnostics,
     onUnexpectedExit,
@@ -117,14 +162,120 @@ it("moves a ready window to diagnostics if its current sidecar exits", async () 
     exitCode: 9,
   });
   expect(onUnexpectedExit).toHaveBeenCalledWith({ code: 9, signal: null });
+  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS, "sidecar_abnormal");
+});
+
+it("stops a live process and opens diagnostics after readiness disappears", async () => {
+  const { running } = runningSidecar();
+  const checks: Array<() => Promise<void>> = [];
+  const loadDiagnostics = vi.fn();
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: true,
+    exitMarkerRecorded: true,
+  });
+  const host = new DesktopHost(
+    { ...OPTIONS, livenessFailureThreshold: 2 },
+    {
+      launch: vi.fn().mockResolvedValue(running),
+      shutdown,
+      loadRenderer: vi.fn(),
+      loadDiagnostics,
+      probeReadiness: vi.fn().mockResolvedValue(false),
+      scheduleHealthCheck: (check) => {
+        checks.push(check);
+        return vi.fn();
+      },
+    },
+  );
+  await host.start();
+
+  await checks.shift()?.();
+  expect(loadDiagnostics).not.toHaveBeenCalled();
+  await checks.shift()?.();
+  await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+
+  expect(host.diagnostics()).toMatchObject({
+    status: "failed",
+    category: "readiness_lost",
+    exitCode: null,
+  });
+  expect(loadDiagnostics).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledWith(
+    running,
+    { ...OPTIONS, livenessFailureThreshold: 2 },
+    "sidecar_abnormal",
+  );
+});
+
+it("blocks retry when readiness cleanup still needs reconciliation", async () => {
+  const { running } = runningSidecar();
+  const checks: Array<() => Promise<void>> = [];
+  const launch = vi.fn().mockResolvedValue(running);
+  const shutdownResult = deferred<{
+    status: "needs_reconcile";
+    remainingResourceCount: number;
+    forced: boolean;
+    exitMarkerRecorded: boolean;
+  }>();
+  const shutdown = vi.fn(() => shutdownResult.promise);
+  const loadDiagnostics = vi.fn();
+  const host = new DesktopHost(
+    { ...OPTIONS, livenessFailureThreshold: 1 },
+    {
+      launch,
+      shutdown,
+      loadRenderer: vi.fn(),
+      loadDiagnostics,
+      probeReadiness: vi.fn().mockResolvedValue(false),
+      scheduleHealthCheck: (check) => {
+        checks.push(check);
+        return vi.fn();
+      },
+    },
+  );
+  await host.start();
+  const healthCheck = checks.shift()?.();
+  await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(loadDiagnostics).toHaveBeenCalledOnce());
+
+  const retry = host.retry();
+  shutdownResult.resolve({
+    status: "needs_reconcile",
+    remainingResourceCount: 2,
+    forced: true,
+    exitMarkerRecorded: true,
+  });
+  await Promise.all([healthCheck, retry]);
+
+  expect(host.diagnostics()).toMatchObject({
+    status: "failed",
+    category: "reconcile_required",
+  });
+
+  expect(launch).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(loadDiagnostics).toHaveBeenCalledTimes(2);
+  expect(host.diagnostics()).toMatchObject({
+    status: "failed",
+    category: "reconcile_required",
+  });
 });
 
 it("keeps diagnostics in front when the sidecar exits during renderer loading", async () => {
   const { running, exit } = runningSidecar();
   const rendererGate = deferred<void>();
   const loadOrder: string[] = [];
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "closed",
+    remainingResourceCount: 0,
+    forced: true,
+    exitMarkerRecorded: true,
+  });
   const host = new DesktopHost(OPTIONS, {
     launch: vi.fn().mockResolvedValue(running),
+    shutdown,
     loadRenderer: vi.fn(async () => {
       await rendererGate.promise;
       loadOrder.push("renderer");
@@ -162,10 +313,46 @@ it("stops the sidecar if loading the renderer fails", async () => {
 
   await host.start();
 
-  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS);
+  expect(shutdown).toHaveBeenCalledWith(
+    running,
+    OPTIONS,
+    "sidecar_abnormal",
+  );
   expect(host.diagnostics()).toMatchObject({
     status: "failed",
     category: "early_exit",
+  });
+});
+
+it("blocks retry when renderer-failure cleanup needs reconciliation", async () => {
+  const { running } = runningSidecar();
+  const launch = vi.fn().mockResolvedValue(running);
+  const shutdown = vi.fn().mockResolvedValue({
+    status: "needs_reconcile",
+    remainingResourceCount: 1,
+    forced: true,
+    exitMarkerRecorded: true,
+  });
+  const host = new DesktopHost(OPTIONS, {
+    launch,
+    shutdown,
+    loadRenderer: vi.fn().mockRejectedValue(new Error("renderer failed")),
+    loadDiagnostics: vi.fn(),
+  });
+
+  await host.start();
+  await host.retry();
+
+  expect(launch).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledWith(
+    running,
+    OPTIONS,
+    "sidecar_abnormal",
+  );
+  expect(host.diagnostics()).toMatchObject({
+    status: "failed",
+    category: "reconcile_required",
   });
 });
 
@@ -197,7 +384,7 @@ it("waits for an in-progress launch and shuts down the late sidecar", async () =
   launch.resolve(running);
   await Promise.all([starting, stopping]);
 
-  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS);
+  expect(shutdown).toHaveBeenCalledWith(running, OPTIONS, "app_exit");
   expect(running.process.stop).not.toHaveBeenCalled();
 });
 

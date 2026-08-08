@@ -11,6 +11,7 @@ import {
   shell,
   Tray,
   type BrowserWindow,
+  type Session,
 } from "electron";
 import {
   applicationMenuTemplate,
@@ -59,17 +60,26 @@ const rendererUrl =
 const diagnosticUrl = pathToFileURL(diagnosticEntry).toString();
 const preloadPath = path.resolve(__dirname, "preload.js");
 const rendererSmoke = process.env.TROWEL_DESKTOP_SMOKE === "1";
+const settingsSmoke = process.env.TROWEL_DESKTOP_SETTINGS_SMOKE === "1";
 const diagnosticSmoke = process.env.TROWEL_DESKTOP_DIAGNOSTIC_SMOKE === "1";
 const residencySmoke = process.env.TROWEL_DESKTOP_RESIDENCY_SMOKE === "1";
 const singleInstanceSmoke =
   process.env.TROWEL_DESKTOP_SINGLE_INSTANCE_SMOKE === "1";
 const rendererCrashSmoke =
   process.env.TROWEL_DESKTOP_RENDERER_CRASH_SMOKE === "1";
+const agentTransportSmoke =
+  process.env.TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE === "1";
 const serviceDescriptorPath = process.env.TROWEL_DESKTOP_SERVICE_FILE;
 
 configureSafeStorageForSmoke(
   app.commandLine,
-  rendererSmoke || diagnosticSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke,
+  rendererSmoke ||
+    settingsSmoke ||
+    diagnosticSmoke ||
+    residencySmoke ||
+    singleInstanceSmoke ||
+    rendererCrashSmoke ||
+    agentTransportSmoke,
 );
 app.setName(PRODUCT_NAME);
 
@@ -130,6 +140,9 @@ async function startDesktopApplication(): Promise<void> {
 
   await app.whenReady();
   await configureRendererSession(session.defaultSession);
+  const agentStreamObservation = agentTransportSmoke
+    ? observeAgentStreams(session.defaultSession)
+    : null;
   let mainWindow: BrowserWindow | null = null;
   let removeIpcHandlers: (() => void) | null = null;
   let host: DesktopHost | null = null;
@@ -219,6 +232,8 @@ async function startDesktopApplication(): Promise<void> {
     const window = ensureWindow();
     if (process.env.TROWEL_RENDERER_URL) {
       await window.loadURL(rendererUrl);
+    } else if (settingsSmoke) {
+      await window.loadFile(rendererEntry, { query: { tool: "settings" } });
     } else {
       await window.loadFile(rendererEntry);
     }
@@ -239,7 +254,14 @@ async function startDesktopApplication(): Promise<void> {
       });
     const runRendererCrashSmoke =
       rendererCrashSmoke && !rendererCrashSmokeStarted;
-    if (rendererSmoke || residencySmoke || singleInstanceSmoke || rendererCrashSmoke) {
+    if (
+      rendererSmoke ||
+      settingsSmoke ||
+      residencySmoke ||
+      singleInstanceSmoke ||
+      rendererCrashSmoke ||
+      agentTransportSmoke
+    ) {
       try {
         await rendererReady;
       } catch (error) {
@@ -252,6 +274,16 @@ async function startDesktopApplication(): Promise<void> {
         console.log("TROWEL_DESKTOP_SMOKE_OK");
         app.quit();
       }
+      if (settingsSmoke) {
+        try {
+          await verifySettingsSmoke(window);
+          console.log("TROWEL_DESKTOP_SETTINGS_SMOKE_OK");
+        } catch (error) {
+          process.exitCode = 1;
+          console.error("TROWEL_DESKTOP_SETTINGS_SMOKE_FAILED", error);
+        }
+        app.quit();
+      }
       if (residencySmoke) {
         try {
           if (!host) throw new Error("desktop host is not initialized");
@@ -260,6 +292,19 @@ async function startDesktopApplication(): Promise<void> {
         } catch (error) {
           process.exitCode = 1;
           console.error("TROWEL_DESKTOP_RESIDENCY_SMOKE_FAILED", error);
+        }
+        app.quit();
+      }
+      if (agentTransportSmoke) {
+        try {
+          if (!agentStreamObservation) {
+            throw new Error("Agent stream observation was not initialized");
+          }
+          await verifyAgentTransportSmoke(window, agentStreamObservation);
+          console.log("TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE_OK");
+        } catch (error) {
+          process.exitCode = 1;
+          console.error("TROWEL_DESKTOP_AGENT_TRANSPORT_SMOKE_FAILED", error);
         }
         app.quit();
       }
@@ -325,27 +370,12 @@ async function startDesktopApplication(): Promise<void> {
       }
       sidecarReadyCount += 1;
     },
-    onUnexpectedExit: () => {
-      const requestedAt = new Date();
-      void (async () => {
-        const remainingResourceCount = await countLiveSnapshotResources(
-          sidecarOptions,
-        ).catch(() => 1);
-        await writeExitMarker(sidecarOptions, {
-          exitReason: "sidecar_abnormal",
-          requestedAt: requestedAt.toISOString(),
-          completedAt: new Date().toISOString(),
-          exitMode: "forced",
-          processTreeResult:
-            remainingResourceCount === 0 ? "closed" : "needs_reconcile",
-          remainingResourceCount,
-        });
-      })().catch((error) => {
-        logLifecycle(
-          "sidecar_exit_marker_failed",
-          error instanceof Error ? error.name : "unknown",
-        );
-      });
+    onUnexpectedExit: (exit) => {
+      // 资源快照和退出标记由 DesktopHost 的统一 shutdown 链路写入。
+      logLifecycle(
+        "sidecar_unexpected_exit",
+        exit.signal ?? String(exit.code ?? "unknown"),
+      );
     },
   });
   removeIpcHandlers = registerDesktopIpc({
@@ -589,6 +619,503 @@ async function waitForRendererReady(window: BrowserWindow): Promise<void> {
   throw new Error(
     `renderer did not settle its sidecar API requests: ${JSON.stringify(lastState)}`,
   );
+}
+
+/** 等待设置页真实 DTO 落地，并核对桌面平台专属布局与路径能力。 */
+async function verifySettingsSmoke(window: BrowserWindow): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastState: unknown = null;
+  while (Date.now() < deadline) {
+    try {
+      lastState = await window.webContents.executeJavaScript(
+        `(() => {
+          const workspace = document.querySelector('.settings-workspace');
+          const sidebar = document.querySelector('.settings-sidebar');
+          const dragRegion = document.querySelector('.settings-drag-region');
+          const labels = Array.from(
+            document.querySelectorAll('.settings-sidebar__item strong'),
+            (element) => element.textContent?.trim() ?? '',
+          );
+          const revealButtons = Array.from(
+            document.querySelectorAll('.settings-path-row button[aria-label^="打开"]'),
+          );
+          return {
+            tool: new URL(location.href).searchParams.get('tool'),
+            platform: document.documentElement.dataset.platform ?? null,
+            workspace: workspace !== null,
+            labels,
+            pathRows: document.querySelectorAll('.settings-path-row').length,
+            hasEnabledReveal: revealButtons.some((element) => !element.disabled),
+            secondaryWidth: sidebar?.getBoundingClientRect().width ?? 0,
+            dragRegionHeight: dragRegion?.getBoundingClientRect().height ?? 0,
+            dragRegionMode: dragRegion
+              ? getComputedStyle(dragRegion).getPropertyValue('-webkit-app-region')
+              : '',
+            horizontalOverflow:
+              document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          };
+        })()`,
+        true,
+      );
+    } catch {
+      lastState = "settings renderer unavailable";
+    }
+    if (
+      lastState &&
+      typeof lastState === "object" &&
+      "tool" in lastState &&
+      lastState.tool === "settings" &&
+      "platform" in lastState &&
+      lastState.platform === "desktop" &&
+      "workspace" in lastState &&
+      lastState.workspace === true &&
+      "labels" in lastState &&
+      Array.isArray(lastState.labels) &&
+      lastState.labels.join("|") ===
+        "存储与路径|模型连接|运行配置|后台任务|Agent 默认|连接诊断|关于" &&
+      "pathRows" in lastState &&
+      lastState.pathRows === 7 &&
+      "hasEnabledReveal" in lastState &&
+      lastState.hasEnabledReveal === true &&
+      "secondaryWidth" in lastState &&
+      lastState.secondaryWidth === 216 &&
+      "dragRegionHeight" in lastState &&
+      lastState.dragRegionHeight === 48 &&
+      "dragRegionMode" in lastState &&
+      lastState.dragRegionMode === "drag" &&
+      "horizontalOverflow" in lastState &&
+      lastState.horizontalOverflow === false
+    ) {
+      await verifyRuntimeConfigurationPopper(window);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `settings renderer did not reach the desktop contract: ${JSON.stringify(lastState)}`,
+  );
+}
+
+/** 在三种桌面窗口尺寸下核对运行配置下拉始终从触发框下沿展开。 */
+async function verifyRuntimeConfigurationPopper(
+  window: BrowserWindow,
+): Promise<void> {
+  const viewports = [
+    [1440, 900],
+    [1100, 720],
+    [820, 720],
+  ] as const;
+  for (const [width, height] of viewports) {
+    window.setSize(width, height);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const geometry = (await window.webContents.executeJavaScript(
+      `(async () => {
+        const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+        const runtimeButton = Array.from(
+          document.querySelectorAll('.settings-sidebar__item'),
+        ).find((element) => element.querySelector('strong')?.textContent?.trim() === '运行配置');
+        runtimeButton?.click();
+        await sleep(50);
+        const addButton = Array.from(document.querySelectorAll('button')).find(
+          (element) => element.textContent?.includes('添加配置'),
+        );
+        addButton?.click();
+        await sleep(50);
+        const trigger = document.querySelector(
+          '[role="combobox"][aria-label="运行配置模型连接"]',
+        );
+        if (!trigger) return { error: 'runtime configuration trigger missing' };
+        const before = trigger.getBoundingClientRect();
+        trigger.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const menu = document.querySelector('.popper-select__content[data-state="open"]');
+        if (!menu) return { error: 'runtime configuration menu missing' };
+        const after = trigger.getBoundingClientRect();
+        const popup = menu.getBoundingClientRect();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return {
+          before: { left: before.left, top: before.top, right: before.right, bottom: before.bottom },
+          after: { left: after.left, top: after.top, right: after.right, bottom: after.bottom },
+          popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
+          viewport: { width: innerWidth, height: innerHeight },
+        };
+      })()`,
+      true,
+    )) as {
+      error?: string;
+      before?: { left: number; top: number; right: number; bottom: number };
+      after?: { left: number; top: number; right: number; bottom: number };
+      popup?: { left: number; top: number; right: number; bottom: number };
+      viewport?: { width: number; height: number };
+    };
+    if (geometry.error || !geometry.before || !geometry.after || !geometry.popup || !geometry.viewport) {
+      throw new Error(
+        `runtime configuration Popper unavailable at ${width}x${height}: ${JSON.stringify(geometry)}`,
+      );
+    }
+    const triggerMoved = ["left", "top", "right", "bottom"].some(
+      (key) => Math.abs(
+        geometry.before![key as keyof typeof geometry.before]
+          - geometry.after![key as keyof typeof geometry.after],
+      ) > 0.5,
+    );
+    const triggerVisible =
+      geometry.after.left >= 0 &&
+      geometry.after.top >= 0 &&
+      geometry.after.right <= geometry.viewport.width &&
+      geometry.after.bottom <= geometry.viewport.height;
+    const popupBelow = geometry.popup.top > geometry.after.bottom;
+    const popupFitsHorizontally =
+      geometry.popup.left >= 0 && geometry.popup.right <= geometry.viewport.width;
+    if (triggerMoved || !triggerVisible || !popupBelow || !popupFitsHorizontally) {
+      throw new Error(
+        `runtime configuration Popper geometry failed at ${width}x${height}: ${JSON.stringify(geometry)}`,
+      );
+    }
+  }
+}
+
+interface AgentStreamObservation {
+  /** renderer 发起应用级事件流的累计次数。 */
+  eventStarts: number;
+  /** renderer 发起旧 session 级消息流的累计次数。 */
+  messageStarts: number;
+  /** renderer 发起旧 session 级事件流的累计次数。 */
+  sessionEventStarts: number;
+  /** 尚未完成的应用级事件流请求。 */
+  readonly activeEventIds: Set<number>;
+  /** 尚未完成的旧 session 级消息流请求。 */
+  readonly activeMessageIds: Set<number>;
+  /** 尚未完成的旧 session 级事件流请求。 */
+  readonly activeSessionEventIds: Set<number>;
+}
+
+/** 在 Electron 网络栈边界记录 Agent 长连接，不读取请求正文或凭据。 */
+function observeAgentStreams(browserSession: Session): AgentStreamObservation {
+  const observation: AgentStreamObservation = {
+    eventStarts: 0,
+    messageStarts: 0,
+    sessionEventStarts: 0,
+    activeEventIds: new Set<number>(),
+    activeMessageIds: new Set<number>(),
+    activeSessionEventIds: new Set<number>(),
+  };
+  const filter = {
+    urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"],
+  };
+
+  browserSession.webRequest.onBeforeRequest(filter, (details, callback) => {
+    const kind = agentStreamKind(details.url);
+    if (kind === "application_events") {
+      observation.eventStarts += 1;
+      observation.activeEventIds.add(details.id);
+    } else if (kind === "session_events") {
+      observation.sessionEventStarts += 1;
+      observation.activeSessionEventIds.add(details.id);
+    } else if (kind === "messages") {
+      observation.messageStarts += 1;
+      observation.activeMessageIds.add(details.id);
+    }
+    callback({ cancel: false });
+  });
+  const markFinished = (details: { readonly id: number; readonly url: string }) => {
+    const kind = agentStreamKind(details.url);
+    if (kind === "application_events") {
+      observation.activeEventIds.delete(details.id);
+    } else if (kind === "session_events") {
+      observation.activeSessionEventIds.delete(details.id);
+    } else if (kind === "messages") {
+      observation.activeMessageIds.delete(details.id);
+    }
+  };
+  browserSession.webRequest.onCompleted(filter, markFinished);
+  browserSession.webRequest.onErrorOccurred(filter, markFinished);
+  return observation;
+}
+
+/** 把网络请求路径归类为新应用流、旧 session 流或普通请求。 */
+function agentStreamKind(
+  url: string,
+): "application_events" | "session_events" | "messages" | null {
+  const pathname = new URL(url).pathname;
+  if (pathname === "/api/agent/events") return "application_events";
+  if (
+    pathname.startsWith("/api/agent/sessions/") &&
+    pathname.endsWith("/events")
+  ) {
+    return "session_events";
+  }
+  if (
+    pathname.startsWith("/api/agent/sessions/") &&
+    pathname.endsWith("/messages")
+  ) {
+    return "messages";
+  }
+  return null;
+}
+
+/**
+ * 从真实 Electron renderer 穿过 Chromium HTTP/1.1 栈验证单 SSE 与 20/5 容量。
+ *
+ * 所有会话都使用隔离目录和只保持进程存活的可控 runtime。返回结果只含计数和耗时，
+ * 不把临时 session ID、工作目录或输入正文写入日志。
+ */
+async function verifyAgentTransportSmoke(
+  window: BrowserWindow,
+  observation: AgentStreamObservation,
+): Promise<void> {
+  const result = (await window.webContents.executeJavaScript(
+    `(async () => {
+      const workdir = ${JSON.stringify(projectRoot)};
+      const context = await window.trowelDesktop.getContext();
+      const authHeaders = { Authorization: "Bearer " + context.transport.credential };
+      const api = async (path, options = {}, timeoutMs = 3000) => {
+        const headers = { ...authHeaders, ...(options.headers || {}) };
+        return fetch(context.transport.baseUrl + path, {
+          ...options,
+          headers,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      };
+      const json = async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error("request returned " + response.status);
+        return body.data;
+      };
+      const waitUntil = async (read, accept, label, timeoutMs = 8000) => {
+        const deadline = Date.now() + timeoutMs;
+        let value;
+        while (Date.now() < deadline) {
+          value = await read();
+          if (accept(value)) return value;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        throw new Error(
+          "condition timed out: " + label + "; last=" + JSON.stringify(value),
+        );
+      };
+      const createBody = JSON.stringify({
+        runtime: "claude_code",
+        workdir,
+        permission_mode: "bypassPermissions",
+        memory_enabled: false,
+        profile_enabled: false,
+        self_enabled: false,
+      });
+      const sessions = await Promise.all(
+        Array.from({ length: 20 }, async () => {
+          const response = await api("/api/agent/sessions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Trowel-Request-Id": crypto.randomUUID(),
+            },
+            body: createBody,
+          });
+          return json(response);
+        }),
+      );
+      await Promise.all(
+        sessions.map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/title", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "Smoke" }),
+          }).then(json),
+        ),
+      );
+      const turn = (sessionId, text) =>
+        api("/api/agent/sessions/" + sessionId + "/turns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        }, 5000);
+      const active = () =>
+        api("/api/agent/sessions/active").then(json).then((data) => data.sessions);
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { count: rows.length };
+        },
+        (facts) => facts.count === 20,
+        "twenty registered sessions",
+      );
+      for (let offset = 0; offset < sessions.length; offset += 5) {
+        const warmed = await Promise.all(
+          sessions.slice(offset, offset + 5).map((session) =>
+            turn(session.session_id, "warm"),
+          ),
+        );
+        if (warmed.some((response) => !response.ok)) {
+          throw new Error("session warm-up was not accepted");
+        }
+        await waitUntil(
+          async () => {
+            const rows = await active();
+            return { running: rows.filter((row) => row.running).length };
+          },
+          (facts) => facts.running === 0,
+          "warm-up batch completed",
+        );
+      }
+      const connectedFacts = await waitUntil(
+        async () => {
+          const rows = await active();
+          return {
+            count: rows.length,
+            connected: rows.filter((row) => row.connected).length,
+          };
+        },
+        (facts) => facts.count === 20 && facts.connected === 20,
+        "twenty connected sessions",
+      );
+      document.querySelector('button[aria-label="Agent"]')?.click();
+      window.dispatchEvent(new Event("focus"));
+      const rendered = await waitUntil(
+        async () => document.querySelectorAll(".cc-multibar__item").length,
+        (count) => count >= 7,
+        "at least seven rendered sessions",
+      );
+
+      const firstFive = sessions.slice(0, 5);
+      const accepted = await Promise.all(
+        firstFive.map((session) => turn(session.session_id, "hold")),
+      );
+      if (accepted.some((response) => response.status !== 200)) {
+        throw new Error("five turns were not accepted");
+      }
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 5,
+        "five running sessions",
+      );
+
+      const sixthStartedAt = performance.now();
+      const sixth = await turn(sessions[5].session_id, "hold");
+      const sixthElapsedMs = performance.now() - sixthStartedAt;
+      if (sixth.status !== 409 || sixthElapsedMs >= 2000) {
+        throw new Error("sixth turn did not receive a bounded capacity rejection");
+      }
+      const overflowStartedAt = performance.now();
+      const overflow = await api("/api/agent/sessions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Trowel-Request-Id": crypto.randomUUID(),
+        },
+        body: createBody,
+      });
+      const overflowElapsedMs = performance.now() - overflowStartedAt;
+      if (overflow.status !== 409 || overflowElapsedMs >= 2000) {
+        throw new Error("twenty-first session did not receive a bounded capacity rejection");
+      }
+
+      const readsStartedAt = performance.now();
+      const reads = await Promise.all([
+        api("/api/agent/session-defaults"),
+        ...sessions.slice(0, 6).map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/history"),
+        ),
+      ]);
+      const readsElapsedMs = performance.now() - readsStartedAt;
+      if (reads.some((response) => !response.ok) || readsElapsedMs >= 2000) {
+        throw new Error("seven concurrent reads exceeded the renderer budget");
+      }
+
+      await Promise.all(
+        firstFive.map((session) =>
+          api("/api/agent/sessions/" + session.session_id + "/interrupt", {
+            method: "POST",
+          }, 8000).then(json),
+        ),
+      );
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 0,
+        "interrupt released running capacity",
+      );
+      const replacement = await turn(sessions[5].session_id, "hold");
+      if (!replacement.ok) throw new Error("capacity was not released after interrupt");
+      await waitUntil(
+        async () => {
+          const rows = await active();
+          return { running: rows.filter((row) => row.running).length };
+        },
+        (facts) => facts.running === 1,
+        "replacement turn running",
+      );
+
+      const closed = await Promise.all(
+        sessions.map((session) =>
+          api("/api/agent/sessions/" + session.session_id, {
+            method: "DELETE",
+          }, 12000),
+        ),
+      );
+      if (closed.some((response) => !response.ok)) {
+        throw new Error("session cleanup failed");
+      }
+      await waitUntil(
+        async () => ({ count: (await active()).length }),
+        (facts) => facts.count === 0,
+        "all sessions closed",
+      );
+      return {
+        connected: connectedFacts.connected,
+        rendered,
+        running: firstFive.length,
+        reads: reads.length,
+        sixthElapsedMs,
+        overflowElapsedMs,
+        readsElapsedMs,
+      };
+    })()`,
+    true,
+  )) as {
+    readonly connected: number;
+    readonly rendered: number;
+    readonly running: number;
+    readonly reads: number;
+    readonly sixthElapsedMs: number;
+    readonly overflowElapsedMs: number;
+    readonly readsElapsedMs: number;
+  };
+
+  if (
+    result.connected !== 20 ||
+    result.rendered < 7 ||
+    result.running !== 5 ||
+    result.reads !== 7 ||
+    observation.eventStarts < 1 ||
+    observation.activeEventIds.size !== 1 ||
+    observation.sessionEventStarts !== 0 ||
+    observation.activeSessionEventIds.size !== 0 ||
+    observation.messageStarts !== 0 ||
+    observation.activeMessageIds.size !== 0
+  ) {
+    throw new Error(
+      `Agent transport facts did not match the 20/5 single-stream contract: ${JSON.stringify(
+        {
+          connected: result.connected,
+          rendered: result.rendered,
+          running: result.running,
+          reads: result.reads,
+          eventStarts: observation.eventStarts,
+          activeEvents: observation.activeEventIds.size,
+          sessionEventStarts: observation.sessionEventStarts,
+          activeSessionEvents: observation.activeSessionEventIds.size,
+          messageStarts: observation.messageStarts,
+          activeMessages: observation.activeMessageIds.size,
+        },
+      )}`,
+    );
+  }
 }
 
 async function verifyTelemetrySmoke(host: DesktopHost): Promise<void> {

@@ -70,8 +70,6 @@ def test_codex_turn_start_conflicts_with_goal_continuation(
     session = manager.sessions[sid]
     session.record_native_turn_started("turn-auto")
 
-    response = client.post(
-        f"/api/agent/sessions/{sid}/turns", json={"text": "race"}
-    )
+    response = client.post(f"/api/agent/sessions/{sid}/turns", json={"text": "race"})
 
     assert response.status_code == 409

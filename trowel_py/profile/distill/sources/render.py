@@ -27,11 +27,12 @@ def _render_group(items: tuple[ProfileJournalSlice, ...]) -> str:
 
 def render_profile_source(source: ProfileDistillSource) -> str:
     """明确展示只供理解的 context 和唯一允许取证的 target。"""
-    runtime_rule = (
-        "Claude Code：context 和 target 是同一 transcript 中连续的字节区间。"
-        if source.runtime == "claude_code"
-        else "Codex：各 journal 属于同一 thread，列表顺序就是 turn 完成顺序。"
-    )
+    runtime_rules = {
+        "claude_code": "Claude Code：context 和 target 是同一 transcript 中连续的字节区间。",
+        "codex": "Codex：各 journal 属于同一 thread，列表顺序就是 turn 完成顺序。",
+        "discussion": "研讨：每个 JSON 文件只含一条 Trowel 顶层用户原话；参与者发言不在来源中。",
+    }
+    runtime_rule = runtime_rules[source.runtime]
     return (
         f"- 来源身份：{source.source_id}\n"
         f"- 来源运行时：{source.runtime}\n"

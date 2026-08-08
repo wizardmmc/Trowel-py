@@ -20,6 +20,19 @@ interface Props {
 const OTHER_VALUE = "__other__";
 
 export function ElicitationBlock({ item, onAnswer, onCancel, disabled }: Props) {
+  if (
+    item.toolName === "EnterPlanMode" ||
+    item.toolName === "ExitPlanMode"
+  ) {
+    return (
+      <PlanModeConfirmation
+        item={item}
+        onAnswer={onAnswer}
+        onCancel={onCancel}
+        disabled={disabled}
+      />
+    );
+  }
   if (item.status === "answered") {
     return (
       <div className="cc-elicit cc-elicit--answered">
@@ -44,6 +57,69 @@ export function ElicitationBlock({ item, onAnswer, onCancel, disabled }: Props) 
       onCancel={onCancel}
       disabled={disabled}
     />
+  );
+}
+
+/** 展示 plan mode 的明确批准与拒绝操作，不提供会被误当成批准的自由输入。 */
+function PlanModeConfirmation({
+  item,
+  onAnswer,
+  onCancel,
+  disabled,
+}: Props) {
+  if (item.status === "answered") {
+    return (
+      <div className="cc-elicit cc-elicit--answered">
+        <div className="cc-elicit__head">● Plan mode request approved</div>
+        {item.resultText && (
+          <div className="cc-elicit__result">{item.resultText}</div>
+        )}
+      </div>
+    );
+  }
+  if (item.status === "declined") {
+    return (
+      <div className="cc-elicit cc-elicit--declined">
+        <div className="cc-elicit__head">● Plan mode request declined</div>
+      </div>
+    );
+  }
+
+  const question = item.questions[0];
+  const approveOption = question?.options[0];
+  const approveLabel = approveOption?.label ?? "批准";
+  const approve = (): void => {
+    if (disabled || !question) return;
+    onAnswer?.({ [question.question]: approveLabel });
+  };
+
+  return (
+    <div className="cc-elicit">
+      <div className="cc-elicit__title">{question?.question}</div>
+      {approveOption?.description && (
+        <div className="cc-elicit__hint">{approveOption.description}</div>
+      )}
+      <div className="cc-elicit__actions">
+        <button
+          type="button"
+          className="cc-btn cc-btn--primary"
+          onClick={approve}
+          disabled={disabled || !question}
+        >
+          {approveLabel}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            className="cc-btn"
+            onClick={onCancel}
+            disabled={disabled}
+          >
+            拒绝
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -155,14 +231,16 @@ function PendingElicit({
           >
             Submit answers
           </button>
-          <button
-            type="button"
-            className="cc-btn"
-            onClick={handleCancel}
-            disabled={disabled}
-          >
-            Cancel
-          </button>
+          {onCancel && (
+            <button
+              type="button"
+              className="cc-btn"
+              onClick={handleCancel}
+              disabled={disabled}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </div>
     );
@@ -210,16 +288,18 @@ function PendingElicit({
         />
       </div>
       <div className="cc-elicit__divider" />
-      <button
-        type="button"
-        className="cc-elicit__footer"
-        onClick={handleCancel}
-        disabled={disabled}
-        title="Skip the options and reply in natural language"
-      >
-        <span className="cc-elicit__opt-num">{q.options.length + 2}.</span>{" "}
-        Chat about this
-      </button>
+      {onCancel && (
+        <button
+          type="button"
+          className="cc-elicit__footer"
+          onClick={handleCancel}
+          disabled={disabled}
+          title="Skip the options and reply in natural language"
+        >
+          <span className="cc-elicit__opt-num">{q.options.length + 2}.</span>{" "}
+          Chat about this
+        </button>
+      )}
       <div className="cc-elicit__actions">
         {currentIdx > 0 && (
           <button
@@ -243,14 +323,16 @@ function PendingElicit({
         >
           {isLast && hideSubmitTab ? "Submit" : "Next →"}
         </button>
-        <button
-          type="button"
-          className="cc-btn cc-btn--ghost"
-          onClick={handleCancel}
-          disabled={disabled}
-        >
-          Cancel
-        </button>
+        {onCancel && (
+          <button
+            type="button"
+            className="cc-btn cc-btn--ghost"
+            onClick={handleCancel}
+            disabled={disabled}
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );

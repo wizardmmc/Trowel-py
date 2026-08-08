@@ -4,5 +4,7 @@ export * from "./AgentWorkspace";
 export * from "./SessionView";
 export * from "./WorkdirPicker";
 export * from "./WorkspaceChooser";
+export * from "./ConnectionSessionEditor";
+export * from "./connectionSessionConfig";
 export * from "./WorkspaceHome";
 export * from "./WorkspaceStart";

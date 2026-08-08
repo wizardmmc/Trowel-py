@@ -47,17 +47,44 @@ function renderPicker(
 }
 
 describe("SlashAutocomplete", () => {
+  it("labels admin skills separately from system skills", () => {
+    const adminItems: readonly SlashItem[] = [
+      {
+        name: "organization-policy",
+        description: "管理员下发策略",
+        source: "admin",
+        type: "skill",
+      },
+    ];
+    render(
+      <SlashAutocomplete
+        groups={groupSlashItems(adminItems, "")}
+        searching={false}
+        collapsed={noCollapse}
+        selectedIndex={0}
+        onSelect={() => {}}
+        onToggleGroup={() => {}}
+        trigger="$"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /admin 组/ })).toHaveTextContent(
+      "管理员技能 · 1",
+    );
+    expect(screen.getAllByText("管理员技能")).not.toHaveLength(0);
+  });
+
   it("groups by source in fixed order when query is empty", () => {
     renderPicker("");
     const labels = screen
       .getAllByRole("button")
       .map((b) => b.textContent?.replace(/[▾▸]/g, "").trim());
     expect(labels).toEqual([
-      "builtin · 1",
-      "bundled · 1",
-      "user · 1",
-      "project · 1",
-      "plugin · 1",
+      "内置 · 1",
+      "内置技能 · 1",
+      "用户技能 · 1",
+      "项目技能 · 1",
+      "插件 · 1",
     ]);
   });
 
@@ -108,9 +135,9 @@ describe("SlashAutocomplete", () => {
     renderPicker("");
     expect(screen.getByText("切换模型")).toBeInTheDocument();
     expect(screen.getByText("Expert code review")).toBeInTheDocument();
-    expect(screen.getByText("builtin")).toBeInTheDocument();
-    expect(screen.getByText("user")).toBeInTheDocument();
-    expect(screen.getByText("plugin")).toBeInTheDocument();
+    expect(screen.getAllByText("内置")).not.toHaveLength(0);
+    expect(screen.getAllByText("用户技能")).not.toHaveLength(0);
+    expect(screen.getAllByText("插件")).not.toHaveLength(0);
   });
 
   it("dims the plugin prefix in its own span (C-4 visual)", () => {

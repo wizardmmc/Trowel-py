@@ -4,6 +4,7 @@ import type { ModelOption, SlashItem } from "../../api/cc";
 import type {
   AgentModel,
   CodexCommand,
+  CodexSkill,
 } from "../../agent/transport";
 import type { PerSessionState } from "../../agent/application";
 import {
@@ -13,11 +14,47 @@ import {
 import { Composer } from "./Composer";
 import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
 
+const CODEX_SKILL_SOURCE: Readonly<Record<CodexSkill["scope"], SlashItem["source"]>> = {
+  user: "user",
+  repo: "project",
+  admin: "admin",
+  system: "system",
+};
+
+/** 根据真实加载状态生成不混淆停用、失败和空目录的技能摘要。 */
+function describeCodexSkills(
+  skills: readonly CodexSkill[],
+  warnings: readonly string[],
+): string {
+  const enabledUsers = skills.filter(
+    (skill) => skill.scope === "user" && skill.enabled,
+  ).length;
+  const disabledUsers = skills.filter(
+    (skill) => skill.scope === "user" && !skill.enabled,
+  ).length;
+  const disabledSuffix = disabledUsers
+    ? `；另有 ${disabledUsers} 个用户技能已停用`
+    : "";
+  const warningSuffix = warnings.length
+    ? `；另有 ${warnings.length} 个配置加载警告`
+    : "";
+  if (enabledUsers > 0) {
+    return `当前连接已加载 ${enabledUsers} 个已启用用户技能${disabledSuffix}${warningSuffix}。`;
+  }
+  if (disabledUsers > 0) {
+    return `当前连接没有已启用的用户技能；${disabledUsers} 个用户技能已停用${warningSuffix}。系统技能、管理员技能和项目技能仍会如实显示。`;
+  }
+  return `当前连接没有用户技能${warningSuffix}；系统技能、管理员技能和项目技能仍会如实显示。`;
+}
+
 interface SessionComposerProps {
   readonly active: PerSessionState | null;
   readonly activeSid: string | null;
   readonly streaming: boolean;
   readonly slashItems: readonly SlashItem[];
+  readonly slashLoading: boolean;
+  readonly slashError: string | null;
+  readonly onRetrySlashItems: () => void;
   readonly ccModels: readonly ModelOption[];
   readonly codexModels: readonly AgentModel[];
   readonly codexCatalogError: string | null;
@@ -25,6 +62,11 @@ interface SessionComposerProps {
   readonly codexCommandsLoading: boolean;
   readonly codexCommandsError: string | null;
   readonly onRetryCodexCommands: () => void;
+  readonly codexSkills: readonly CodexSkill[];
+  readonly codexSkillsLoading: boolean;
+  readonly codexSkillsError: string | null;
+  readonly codexSkillWarnings: readonly string[];
+  readonly onRetryCodexSkills: () => void;
   readonly onCodexCommand: (command: CodexCommand, rawText: string) => void;
   readonly onRetryCodexCatalog: () => void;
   readonly onSend: (text: string) => void;
@@ -40,6 +82,9 @@ export function SessionComposer({
   activeSid,
   streaming,
   slashItems,
+  slashLoading,
+  slashError,
+  onRetrySlashItems,
   ccModels,
   codexModels,
   codexCatalogError,
@@ -47,6 +92,11 @@ export function SessionComposer({
   codexCommandsLoading,
   codexCommandsError,
   onRetryCodexCommands,
+  codexSkills,
+  codexSkillsLoading,
+  codexSkillsError,
+  codexSkillWarnings,
+  onRetryCodexSkills,
   onCodexCommand,
   onRetryCodexCatalog,
   onSend,
@@ -67,6 +117,7 @@ export function SessionComposer({
   const usesSessionPatch = composerActions?.modelSelection === "session_patch";
   const usesCodexCommands = composerActions?.slashSource === "codex";
   const usesClaudeRoster = composerActions?.slashSource === "claude_code";
+  const usesCodexSkills = presentation?.runtime === "codex";
   const visibleCodexCommands =
     presentation && usesCodexCommands
       ? filterCodexCommands(presentation, codexCommands)
@@ -118,6 +169,17 @@ export function SessionComposer({
         ? "当前 turn 结束后可用"
         : null,
   }));
+  const codexSkillItems: readonly SlashItem[] = codexSkills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    source: CODEX_SKILL_SOURCE[skill.scope],
+    type: "skill",
+    disabled: !skill.enabled,
+    disabledReason: skill.enabled ? null : "当前 Codex 配置已停用此技能",
+  }));
+  const claudeUserItemCount = slashItems.filter(
+    (item) => item.source === "user",
+  ).length;
 
   function pickCodexModel(modelId: string): void {
     const next = codexModels.find((model) => model.id === modelId);
@@ -135,6 +197,7 @@ export function SessionComposer({
       streaming={streaming}
       disabled={
         !activeSid ||
+        active?.resourceState !== "connected" ||
         phase === "awaiting_input" ||
         active?.commandPending != null
       }
@@ -144,10 +207,41 @@ export function SessionComposer({
       slashItems={
         usesClaudeRoster ? slashItems : usesCodexCommands ? codexSlashItems : []
       }
-      slashLoading={usesCodexCommands && codexCommandsLoading}
-      slashError={usesCodexCommands ? codexCommandsError : null}
+      slashLoading={usesClaudeRoster ? slashLoading : usesCodexCommands && codexCommandsLoading}
+      slashError={usesClaudeRoster ? slashError : usesCodexCommands ? codexCommandsError : null}
       onRetrySlashItems={
-        usesCodexCommands ? onRetryCodexCommands : undefined
+        usesClaudeRoster
+          ? onRetrySlashItems
+          : usesCodexCommands
+            ? onRetryCodexCommands
+            : undefined
+      }
+      slashContext={
+        usesCodexCommands
+          ? "斜杠菜单是 Codex 会话命令；要调用技能，请输入 $。"
+          : usesClaudeRoster
+            ? slashLoading
+              ? "正在读取当前 Claude 会话的 skill / command。"
+              : slashError
+                ? "skill / command 读取失败，暂时无法判断当前会话加载了哪些用户项。"
+                : claudeUserItemCount > 0
+                  ? `当前会话已加载 ${claudeUserItemCount} 项用户 skill / command。`
+                  : "当前会话没有用户 skill / command；内置项和项目项仍会如实显示。"
+            : null
+      }
+      skillItems={usesCodexSkills ? codexSkillItems : undefined}
+      skillLoading={usesCodexSkills && codexSkillsLoading}
+      skillError={usesCodexSkills ? codexSkillsError : null}
+      onRetrySkillItems={usesCodexSkills ? onRetryCodexSkills : undefined}
+      skillTriggerEnabled={usesCodexSkills}
+      skillContext={
+        usesCodexSkills
+          ? codexSkillsLoading
+            ? "正在读取当前连接的技能目录。"
+            : codexSkillsError
+              ? "技能目录读取失败，暂时无法判断这项连接加载了哪些技能。"
+              : describeCodexSkills(codexSkills, codexSkillWarnings)
+          : null
       }
       onLocalCommand={
         usesCodexCommands

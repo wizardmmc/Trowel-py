@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.cc_host.routes import OpenedCcSession
 from trowel_py.codex_host.commands import command_roster
+from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
 from trowel_py.schemas.agent_host import AGENT_EVENT_SCHEMA
 
 
@@ -98,7 +99,13 @@ class FakeCodexManager:
             },
         ]
 
-    def register(self, session: Any) -> None:
+    def register(
+        self,
+        session: Any,
+        *,
+        launch: RuntimeLaunchConfiguration | None = None,
+    ) -> None:
+        del launch
         self.sessions[session.session_id] = session
 
     def get_session(self, sid: str) -> Any | None:
@@ -183,6 +190,21 @@ class FakeCodexManager:
     async def list_commands(self) -> list[dict[str, Any]]:
         return command_roster("0.144.0")
 
+    async def list_skills(self, session: Any, *, cwd: str) -> dict[str, Any]:
+        """返回可辨认连接与工作目录的测试技能目录。"""
+
+        return {
+            "skills": [
+                {
+                    "name": "development-slice-workflow",
+                    "description": f"{session.session_id} @ {cwd}",
+                    "scope": "user",
+                    "enabled": True,
+                }
+            ],
+            "errors": [],
+        }
+
     async def list_threads(
         self,
         *,
@@ -199,7 +221,7 @@ class FakeCodexManager:
         self.read_thread_calls.append(thread_id)
         return self.thread_reads[thread_id]
 
-    async def attach(self, session: Any) -> Any:
+    async def attach(self, session: Any, *, before_commit=None) -> Any:
         thread_id = session.config.initial_thread_id
         self.attached.append(session.session_id)
         result = self.attach_results.get(thread_id)
@@ -212,7 +234,10 @@ class FakeCodexManager:
                 "sandbox": {"mode": "read-only"},
                 "approvalPolicy": "never",
             }
-        return session.attach_thread_binding(result)
+        binding = session.attach_thread_binding(result)
+        if before_commit is not None:
+            before_commit(session)
+        return binding
 
     def answer_request(self, session_id: str, request_id: str, decision: str) -> Any:
 
@@ -319,6 +344,9 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         display_name: str | None = None,
         process_controller: Any | None = None,
         resource_registry: Any | None = None,
+        memory_mcp_enabled: bool | None = None,
+        bootstrap_context: str | None = None,
+        memory_eligibility: bool = True,
     ) -> OpenedCcSession:
         del proxy_base_url, settings_path, process_controller, resource_registry
         sid = "cc-" + uuid.uuid4().hex[:8]
@@ -330,6 +358,13 @@ def make_cc_opener(registry: dict[str, FakeCcHost], name_counts: dict[str, int])
         )
         host.session_kind = req.session_kind
         host.agent_mcp_enabled = req.agent_mcp_enabled
+        host.bootstrap_context = bootstrap_context
+        host.memory_eligibility = memory_eligibility
+        host.memory_mcp_enabled = (
+            req.memory_enabled
+            if memory_mcp_enabled is None
+            else memory_mcp_enabled
+        )
         target = reg if reg is not None else registry
         target[sid] = host
         registry[sid] = host

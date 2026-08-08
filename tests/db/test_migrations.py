@@ -47,6 +47,53 @@ def test_run_migrations_creates_tracking_table(
     assert "_migrations" in _table_names(db_connection)
 
 
+def test_discussion_participants_freeze_runtime_permission(
+    db_connection: sqlite3.Connection,
+) -> None:
+    """研讨参与者表必须保存两种 runtime 各自的创建权限。"""
+
+    run_migrations(db_connection)
+
+    assert {
+        "permission_mode",
+        "permission_preset",
+    } <= _column_names(db_connection, "discussion_participants")
+
+
+def test_discussion_records_display_identity_and_activity(
+    db_connection: sqlite3.Connection,
+) -> None:
+    """历史研讨必须冻结连接身份，并持久化每轮去敏活动摘要。"""
+
+    run_migrations(db_connection)
+
+    assert {"connection_name", "effective_model"} <= _column_names(
+        db_connection, "discussion_participants"
+    )
+    assert "activity_json" in _column_names(
+        db_connection, "discussion_round_participants"
+    )
+    assert "activity_json" in _column_names(db_connection, "discussion_attempts")
+
+
+def test_runtime_configurations_store_aliases_and_claude_memory_policy(
+    db_connection: sqlite3.Connection,
+) -> None:
+    """运行配置必须保存独立启动版本、调用别名和 Claude 原生记忆策略。"""
+
+    run_migrations(db_connection)
+
+    assert "claude_auto_memory_disabled" in _column_names(
+        db_connection, "configuration_connections"
+    )
+    assert {
+        "identity_version",
+        "stable_alias",
+        "agent_callable",
+    } <= _column_names(db_connection, "configuration_session_configs")
+    assert "configuration_session_aliases" in _table_names(db_connection)
+
+
 def test_run_migrations_is_idempotent(
     db_connection: sqlite3.Connection,
     tmp_path: Path,
