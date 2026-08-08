@@ -2,6 +2,24 @@
 
 本文件只记录当前仍影响实现的边界。历史来源和修复过程见归档 slice 与 git 历史。
 
+## 项目说明加载
+
+- 2026-08-08 的四格验证只覆盖 macOS 26.5.2 和 Trowel Agent Host 当时的启动装配：
+  Claude 使用 Anthropic 兼容的 GLM 连接、`opus` 模型别名、`dontAsk` 权限且无 effort；
+  Codex 使用原生连接、`gpt-5.6-sol`、`high` effort 和只读权限。两边均关闭 Memory、
+  Profile 与 Self，分别从仓库根和 `trowel_py/discussion/` 启动。结论不得外推到其他
+  连接家、模型、权限、上下文开关或启动目录。
+- 该矩阵使用 Claude Code 2.1.197 与 Codex CLI 0.144.0 实测：Claude Code 从仓库根
+  启动时先加载根 `CLAUDE.md`，访问模块
+  源文件时再按 `nested_traversal` 加载模块 `CLAUDE.md`；从模块目录启动时，两层说明都
+  在开场加载。
+- 同一环境下，Codex 从仓库根启动只注入根 `AGENTS.md`，后续读取模块源文件不会动态
+  追加模块 AGENTS；从模块目录启动时，根与模块 AGENTS 在开场合并注入。因此根知识索引
+  必须显式链接已发布的模块入口，不能把“读过源码”当成“模块说明已经加载”。
+- 根和模块 `CLAUDE.md` 只用 `@AGENTS.md` 桥接共同事实。两种 runtime 不维护内容相近的
+  两套项目手册。升级任一 runtime，或修改 Trowel 启动参数、项目上下文来源/桥接、
+  连接家策略后，必须按同一四格矩阵重新验证加载边界再修改说明。
+
 ## 事件边界
 
 - 前端只消费 Trowel 事件和统一 `AgentEvent` envelope，不直接消费 Claude Code 或 Codex 原始事件。

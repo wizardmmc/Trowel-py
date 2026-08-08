@@ -56,7 +56,8 @@ bun run build
 - Claude Code 真集成测试会启动 `claude -p`，默认被 `integration` marker 排除，只在
   普通终端显式运行；
 - 第三方事件 shape 必须来自真实录制或上游源码，手写 fixture 不能证明未知协议；
-- FastAPI 全局异常处理统一返回错误 envelope，端点不要各自吞掉 LLM 异常；
+- FastAPI 全局异常处理是统一错误 envelope 的通用 fallback，端点不要各自吞掉 LLM 异常；
+  需要更严格隐私脱敏的领域可在 route class 统一映射，但必须保持同一 envelope；
 - 展示组件保持纯 props，store 订阅和 transport 放在容器或 store 层；
 - 未经人确认不提交、合并或推送，不直接修改稳定分支。
 
@@ -66,6 +67,7 @@ bun run build
 |---|---|
 | Claude Code、Codex、SSE、会话恢复、workflow | [Agent runtime 运行约束](docs/reference/agent-runtime.md) |
 | Memory 写入、检索、watermark、MCP | [Memory 运行约束](docs/reference/memory-runtime.md) |
+| Discussion、多参与者同步轮次、恢复、交接 | [Discussion 后端领域上下文](trowel_py/discussion/AGENTS.md) |
 | Model OS、Task、Episode、lease、WorkBroker | [仓库地图的 Model OS 条目](directory.md#后端) |
 | 前端生产界面 | [Trowel 前端设计语言](docs/foundation/front-end-design-language.md) |
 | 项目流程、spec、注释 | [开发流程](docs/foundation/development.md) |
