@@ -1789,13 +1789,51 @@ class SessionHub:
         """
 
         binding = self._require(session_id)
-        native_session_id = binding.native_session_id
-        if not native_session_id:
+        if not binding.native_session_id:
             return []
-        if binding.runtime is Runtime.CLAUDE_CODE:
+        return await self.history_by_native(
+            session_id=session_id,
+            runtime=binding.runtime,
+            native_session_id=binding.native_session_id,
+            workdir=binding.workdir,
+        )
+
+    async def history_by_native(
+        self,
+        *,
+        session_id: str,
+        runtime: Runtime,
+        native_session_id: str,
+        workdir: str,
+        root_turn_id: str | None = None,
+        input_hash: str | None = None,
+        input_occurrence: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """不依赖仍存活 binding，从原生记录回放全部历史或一个 attempt。
+
+        Args:
+            session_id: 回放 AgentEvent 使用的 Trowel 会话身份。
+            runtime: 历史来自 Claude Code 还是 Codex。
+            native_session_id: Claude session ID 或 Codex thread ID。
+            workdir: Claude Code 定位 project JSONL 使用的工作目录。
+            root_turn_id: 指定 Codex 根 turn；省略时回放完整会话。
+            input_hash: 指定 Claude Code 用户输入哈希；省略时回放完整会话。
+            input_occurrence: 相同 Claude Code 输入在原生会话中的目标出现次序。
+
+        Returns:
+            每次从 1 编号的统一 AgentEvent 列表。
+
+        Raises:
+            RuntimeUnavailableError: Codex 既无本地 journal 也无可读 manager。
+        """
+
+        if runtime is Runtime.CLAUDE_CODE:
             from trowel_py.cc_host.history import (
                 parse_history,
                 parse_history_from_root,
+            )
+            from trowel_py.agent_host.history_turn import (
+                select_cc_turn_by_input_hash,
             )
 
             live_host = self._cc_registry.get(session_id)
@@ -1816,27 +1854,30 @@ class SessionHub:
             events = await (
                 asyncio.to_thread(
                     parse_history,
-                    binding.workdir,
+                    workdir,
                     native_session_id,
                 )
                 if projects_root is None
                 else asyncio.to_thread(
                     parse_history_from_root,
-                    binding.workdir,
+                    workdir,
                     native_session_id,
                     projects_root=projects_root,
                 )
             )
+            if input_hash is not None:
+                events = select_cc_turn_by_input_hash(
+                    events,
+                    input_hash,
+                    occurrence=input_occurrence,
+                )
             cc_adapter = ClaudeCodeEventAdapter(session_id)
+            if root_turn_id is not None:
+                cc_adapter.begin_turn(root_turn_id)
             return [
                 cc_adapter.wrap(event.model_dump()).model_dump(by_alias=True)
                 for event in events
             ]
-        if self._codex is None:
-            raise RuntimeUnavailableError("codex host unavailable")
-        from trowel_py.codex_host.history import events_from_thread
-
-        thread = await self._codex.read_thread(native_session_id)
         turn_event_overrides = {}
         if self._codex_history_root is not None:
             from trowel_py.memory.codex_journal import read_thread_journal_events
@@ -1855,6 +1896,19 @@ class SessionHub:
                     native_session_id,
                     exc_info=True,
                 )
+        if root_turn_id is not None and root_turn_id in turn_event_overrides:
+            codex_adapter = CodexEventAdapter(session_id)
+            envelopes = []
+            for event in turn_event_overrides[root_turn_id]:
+                envelope = codex_adapter.wrap(event)
+                if envelope is not None:
+                    envelopes.append(envelope.model_dump(by_alias=True))
+            return envelopes
+        if self._codex is None:
+            raise RuntimeUnavailableError("codex host unavailable")
+        from trowel_py.codex_host.history import events_from_thread
+
+        thread = await self._codex.read_thread(native_session_id)
         codex_adapter = CodexEventAdapter(session_id)
         envelopes = []
         for event in events_from_thread(
@@ -1864,7 +1918,8 @@ class SessionHub:
         ):
             envelope = codex_adapter.wrap(event)
             if envelope is not None:
-                envelopes.append(envelope.model_dump(by_alias=True))
+                if root_turn_id is None or envelope.turn_id == root_turn_id:
+                    envelopes.append(envelope.model_dump(by_alias=True))
         return envelopes
 
     async def child_history(
@@ -2658,6 +2713,36 @@ class SessionHub:
             raise SessionNotFoundError(f"cc session {session_id} not live")
         cancelled = await host.cancel_elicit()
         if not cancelled:
+            raise SessionOperationError("CC elicitation is no longer pending")
+        return True
+
+    async def answer_elicitation(
+        self,
+        session_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """把用户答案交回 CC 会话当前待处理的 AskUserQuestion。
+
+        Args:
+            session_id: Trowel 会话 ID。
+            answers: 问题正文到用户答案的对应表。
+
+        Returns:
+            回答控制消息已经写入时为 True。
+
+        Raises:
+            SessionNotFoundError: 找不到会话或 CC host 不在线。
+            SessionOperationError: 会话不是 Claude Code，或提问已经结束。
+        """
+
+        binding = self._require(session_id)
+        if binding.runtime is not Runtime.CLAUDE_CODE:
+            raise SessionOperationError("only CC sessions support elicitation")
+        host = self._cc_registry.get(session_id)
+        if host is None:
+            raise SessionNotFoundError(f"cc session {session_id} not live")
+        answered = await host.answer_elicit(answers)
+        if not answered:
             raise SessionOperationError("CC elicitation is no longer pending")
         return True
 

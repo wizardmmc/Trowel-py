@@ -34,6 +34,7 @@ export interface DiscussionParticipant {
 
 export interface DiscussionRoundParticipant {
   readonly participant_id: string;
+  readonly current_attempt_id: string | null;
   readonly position: number;
   readonly name: string;
   readonly status: string;
@@ -164,3 +165,26 @@ export interface DiscussionEvent {
   readonly version: number;
   readonly round_number: number | null;
 }
+
+export interface DiscussionAttemptEvent {
+  readonly type: "attempt_event";
+  readonly discussion_id: string;
+  readonly round_number: number;
+  readonly participant_id: string;
+  readonly attempt_id: string;
+  readonly attempt_sequence: number;
+  readonly event: import("../../agent/transport/agentEvent").AgentEvent;
+}
+
+export interface DiscussionAttemptGap {
+  readonly type: "attempt_gap";
+  readonly discussion_id: string;
+  readonly round_number: number;
+  readonly participant_id: string;
+  readonly attempt_id: string;
+}
+
+export type DiscussionStreamEvent =
+  | DiscussionEvent
+  | DiscussionAttemptEvent
+  | DiscussionAttemptGap;

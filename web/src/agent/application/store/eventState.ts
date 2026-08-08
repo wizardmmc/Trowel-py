@@ -25,7 +25,7 @@ export function reduceAgentEvent(
   ) {
     return { kind: "duplicate" };
   }
-  const baseline = current;
+  const baseline = ensureRootTurnContainer(current, event);
   const gapped =
     baseline.lastSeq !== null && event.seq > baseline.lastSeq + 1;
 
@@ -166,6 +166,56 @@ export function reduceAgentEvent(
   }
 
   return { kind: "updated", session: next };
+}
+
+const ROOT_TURN_CONTENT_EVENTS = new Set([
+  "text",
+  "thinking",
+  "thinking_progress",
+  "tool_call",
+  "tool_progress",
+  "tool_result",
+  "elicit_request",
+  "approval_request",
+  "retrying",
+  "stalled_warning",
+  "subagent_activity",
+  "finished",
+  "interrupted",
+  "error",
+]);
+
+/** 首个 turn_start 已错过时，只在首条可见根事件到达前补建承载容器。 */
+function ensureRootTurnContainer(
+  session: PerSessionState,
+  event: AgentEvent,
+): PerSessionState {
+  if (
+    session.turns.length > 0 ||
+    session.currentTurnId === null ||
+    !ROOT_TURN_CONTENT_EVENTS.has(event.type) ||
+    !isRootEvent(session, event)
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    ...reduceEvent(session, {
+      type: "turn_start",
+      turn_id: session.currentTurnId,
+      autonomous: true,
+      revertible: false,
+    }),
+  };
+}
+
+/** 判断事件是否属于会话根线程，避免子线程内容误建父轮次。 */
+function isRootEvent(session: PerSessionState, event: AgentEvent): boolean {
+  if (event.runtime === "claude_code") return event.thread_id === null;
+  return (
+    session.nativeSessionId !== null &&
+    event.thread_id === session.nativeSessionId
+  );
 }
 
 function isRootTerminal(

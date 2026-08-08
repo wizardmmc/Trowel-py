@@ -215,6 +215,27 @@ class MarkDiscussionResultRequest(VersionedCommand):
     marked: bool = Field(strict=True)
 
 
+class AnswerParticipantQuestionRequest(BaseModel):
+    """回答某个运行中 attempt 明确发出的 AskUserQuestion。
+
+    Attributes:
+        participant_id: 发问参与者的稳定 ID。
+        attempt_id: 发问所属物理尝试 ID。
+        request_id: 实时 elicit_request 携带的请求 ID。
+        answers: 问题正文到用户填写答案的对应表。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    participant_id: NonEmptyText
+    attempt_id: NonEmptyText
+    request_id: NonEmptyText
+    answers: dict[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
+    ] = Field(min_length=1, max_length=20)
+
+
 class HandoffAgentRequest(BaseModel):
     """创建普通 Agent 接受研讨现场所需的运行条件。
 

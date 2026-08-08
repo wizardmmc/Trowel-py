@@ -19,9 +19,21 @@ export interface AgentEvent {
 }
 
 export function agentEventToTrowel(event: AgentEvent): TrowelEvent {
+  const payload = { ...event.payload };
+  if (
+    event.type === "thinking" &&
+    !isValidDuration(payload.thinking_duration_seconds)
+  ) {
+    delete payload.thinking_duration_seconds;
+  }
   return {
-    ...event.payload,
+    ...payload,
     type: event.type,
     turn_id: event.turn_id ?? undefined,
   } as unknown as TrowelEvent;
+}
+
+/** 线协议允许空值；领域 reducer 只接收可展示的非负有限秒数。 */
+function isValidDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }

@@ -108,14 +108,16 @@ function PlanModeConfirmation({
         >
           {approveLabel}
         </button>
-        <button
-          type="button"
-          className="cc-btn"
-          onClick={onCancel}
-          disabled={disabled}
-        >
-          拒绝
-        </button>
+        {onCancel && (
+          <button
+            type="button"
+            className="cc-btn"
+            onClick={onCancel}
+            disabled={disabled}
+          >
+            拒绝
+          </button>
+        )}
       </div>
     </div>
   );
@@ -229,14 +231,16 @@ function PendingElicit({
           >
             Submit answers
           </button>
-          <button
-            type="button"
-            className="cc-btn"
-            onClick={handleCancel}
-            disabled={disabled}
-          >
-            Cancel
-          </button>
+          {onCancel && (
+            <button
+              type="button"
+              className="cc-btn"
+              onClick={handleCancel}
+              disabled={disabled}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </div>
     );
@@ -284,16 +288,18 @@ function PendingElicit({
         />
       </div>
       <div className="cc-elicit__divider" />
-      <button
-        type="button"
-        className="cc-elicit__footer"
-        onClick={handleCancel}
-        disabled={disabled}
-        title="Skip the options and reply in natural language"
-      >
-        <span className="cc-elicit__opt-num">{q.options.length + 2}.</span>{" "}
-        Chat about this
-      </button>
+      {onCancel && (
+        <button
+          type="button"
+          className="cc-elicit__footer"
+          onClick={handleCancel}
+          disabled={disabled}
+          title="Skip the options and reply in natural language"
+        >
+          <span className="cc-elicit__opt-num">{q.options.length + 2}.</span>{" "}
+          Chat about this
+        </button>
+      )}
       <div className="cc-elicit__actions">
         {currentIdx > 0 && (
           <button
@@ -317,14 +323,16 @@ function PendingElicit({
         >
           {isLast && hideSubmitTab ? "Submit" : "Next →"}
         </button>
-        <button
-          type="button"
-          className="cc-btn cc-btn--ghost"
-          onClick={handleCancel}
-          disabled={disabled}
-        >
-          Cancel
-        </button>
+        {onCancel && (
+          <button
+            type="button"
+            className="cc-btn cc-btn--ghost"
+            onClick={handleCancel}
+            disabled={disabled}
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );

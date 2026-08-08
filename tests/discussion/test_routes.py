@@ -21,6 +21,7 @@ from trowel_py.discussion.events import DiscussionEventBus
 from trowel_py.discussion.repository import open_discussion_repository
 from trowel_py.discussion.routes import router
 from trowel_py.discussion.service import DiscussionService
+from trowel_py.discussion.timeline import DiscussionTimelineService
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -42,10 +43,11 @@ def _client(tmp_path: Path) -> TestClient:
 
     artifacts = DiscussionArtifactStore(tmp_path / "data")
     events = DiscussionEventBus()
+    sessions = FakeParticipantSessions()
     coordinator = DiscussionCoordinator(
         opener,
         artifacts,
-        FakeParticipantSessions(),
+        sessions,
         events,
         DiscussionEpisodeWriter(artifacts, memory_root=tmp_path / "memory"),
     )
@@ -59,6 +61,8 @@ def _client(tmp_path: Path) -> TestClient:
     app = FastAPI()
     app.state.discussion_service = service
     app.state.discussion_events = events
+    app.state.discussion_coordinator = coordinator
+    app.state.discussion_timeline = DiscussionTimelineService(opener, sessions)
     app.include_router(router, prefix="/api/discussions")
     return TestClient(app)
 
@@ -171,6 +175,37 @@ def test_start_route_runs_coordinator_on_application_event_loop(
     assert transcript_response.status_code == 200
     assert transcript_response.headers["content-type"].startswith("text/markdown")
     assert "answer-glm-round-1" in transcript_response.text
+
+
+def test_attempt_history_route_returns_only_the_selected_participant_turn(
+    tmp_path: Path,
+) -> None:
+    """公开 snapshot 的 attempt ID 可以恢复对应原生单轮事件。"""
+
+    with _client(tmp_path) as client:
+        created = client.post("/api/discussions", json=_create_payload()).json()["data"]
+        client.post(
+            f"/api/discussions/{created['id']}/start",
+            json={"command_id": "history-start", "expected_version": created["version"]},
+        )
+        deadline = time.monotonic() + 2
+        while True:
+            snapshot = client.get(f"/api/discussions/{created['id']}").json()["data"]
+            if snapshot["status"] == "waiting_user":
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("discussion did not publish")
+            time.sleep(0.01)
+        slot = snapshot["rounds"][0]["participants"][0]
+        response = client.get(
+            f"/api/discussions/{created['id']}/attempts/"
+            f"{slot['current_attempt_id']}/events"
+        )
+
+    assert response.status_code == 200
+    timeline = response.json()["data"]
+    assert timeline["attempt_id"] == slot["current_attempt_id"]
+    assert [event["type"] for event in timeline["events"]] == ["user", "text"]
 
 
 def test_validation_error_uses_safe_envelope_without_echoing_body(

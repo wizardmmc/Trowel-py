@@ -26,6 +26,7 @@ from trowel_py.cc_host.session_scan import cc_projects_root, workdir_to_slug
 from trowel_py.cc_host.tool_use_result import write_diff_from_cc_result
 from trowel_py.cc_host.workflow_watcher import parse_workflow_tree
 from trowel_py.cc_host.schemas import (
+    ContextUsageEvent,
     ElicitationRequestEvent,
     FinishedEvent,
     SessionStartedEvent,
@@ -356,17 +357,17 @@ def _translate_user(ev: dict[str, Any]) -> list[TrowelEvent]:
 
 
 def _translate_assistant(ev: dict[str, Any], prev_ts: str | None) -> list[TrowelEvent]:
-    """将一条历史 assistant 记录拆成文本、思考和工具事件。
+    """将一条历史 assistant 记录拆成用量、文本、思考和工具事件。
 
     Args:
         ev: Claude Code 历史中的 assistant 记录。
         prev_ts: 此前最近一条带时间戳记录的 ISO 时间；没有时为 None。
 
     Returns:
-        按内容块顺序生成的展示事件；消息内容不是列表时为空列表。
+        usage 存在时先生成原始用量事件，随后按内容块顺序生成展示事件。
     """
 
-    return _run_translate_assistant(
+    content_events = _run_translate_assistant(
         ev,
         prev_ts,
         compute_thinking_duration=_compute_thinking_duration,
@@ -375,3 +376,23 @@ def _translate_assistant(ev: dict[str, Any], prev_ts: str | None) -> list[Trowel
         elicitation_event_type=ElicitationRequestEvent,
         tool_call_event_type=ToolCallEvent,
     )
+    message = ev.get("message")
+    if not isinstance(message, dict):
+        return content_events
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return content_events
+    return [
+        ContextUsageEvent(
+            message_id=(
+                message.get("id") if isinstance(message.get("id"), str) else None
+            ),
+            model=(
+                message.get("model")
+                if isinstance(message.get("model"), str)
+                else None
+            ),
+            usage=usage,
+        ),
+        *content_events,
+    ]

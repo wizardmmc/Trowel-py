@@ -4,11 +4,12 @@ import { transportFetch } from "../../platform/transport";
 import type {
   CreateDiscussionInput,
   Discussion,
-  DiscussionEvent,
+  DiscussionStreamEvent,
   DiscussionSessionConfiguration,
   HandoffAgentInput,
   HandoffResult,
 } from "../domain";
+import type { AgentEvent, AgentRuntime } from "../../agent/transport/agentEvent";
 
 const API = "/api/discussions";
 
@@ -157,7 +158,7 @@ export function listDiscussionSessionConfigurations(): Promise<
 export async function watchDiscussionEvents(
   id: string,
   after: number,
-  onEvent: (event: DiscussionEvent) => void,
+  onEvent: (event: DiscussionStreamEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
   const response = await transportFetch(
@@ -185,18 +186,91 @@ export async function watchDiscussionEvents(
 
 function dispatchFrame(
   frame: string,
-  onEvent: (event: DiscussionEvent) => void,
+  onEvent: (event: DiscussionStreamEvent) => void,
 ): void {
   const line = frame.split("\n").find((item) => item.startsWith("data:"));
   if (!line) return;
   try {
-    const value = JSON.parse(line.slice(5).trim()) as DiscussionEvent;
-    if (typeof value.sequence === "number" && typeof value.type === "string") {
-      onEvent(value);
+    const value = JSON.parse(line.slice(5).trim()) as unknown;
+    if (!value || typeof value !== "object") return;
+    if (
+      "type" in value && value.type === "attempt_event" &&
+      "attempt_id" in value && typeof value.attempt_id === "string" &&
+      "participant_id" in value && typeof value.participant_id === "string" &&
+      "attempt_sequence" in value && typeof value.attempt_sequence === "number" &&
+      "event" in value && isAgentEvent(value.event)
+    ) {
+      onEvent(value as unknown as DiscussionStreamEvent);
+      return;
+    }
+    if (
+      "type" in value && value.type === "attempt_gap" &&
+      "attempt_id" in value && typeof value.attempt_id === "string" &&
+      "participant_id" in value && typeof value.participant_id === "string"
+    ) {
+      onEvent(value as unknown as DiscussionStreamEvent);
+      return;
+    }
+    if (
+      "sequence" in value && typeof value.sequence === "number" &&
+      "type" in value && typeof value.type === "string"
+    ) {
+      onEvent(value as unknown as DiscussionStreamEvent);
     }
   } catch {
     // 持久 sequence 和后续 GET 会恢复损坏帧，不中断整条订阅。
   }
+}
+
+export interface DiscussionAttemptHistory {
+  readonly attempt_id: string;
+  readonly participant_id: string;
+  readonly round_number: number;
+  readonly runtime: AgentRuntime;
+  readonly status: string;
+  readonly availability: "available" | "unavailable";
+  readonly events: readonly AgentEvent[];
+}
+
+export function getDiscussionAttemptEvents(
+  discussionId: string,
+  attemptId: string,
+): Promise<DiscussionAttemptHistory> {
+  return request<DiscussionAttemptHistory>(
+    `${API}/${encodeURIComponent(discussionId)}/attempts/${encodeURIComponent(attemptId)}/events`,
+  );
+}
+
+export function answerDiscussionParticipantQuestion(
+  discussionId: string,
+  participantId: string,
+  attemptId: string,
+  requestId: string,
+  answers: Readonly<Record<string, string>>,
+): Promise<{ readonly answered: boolean }> {
+  return request<{ readonly answered: boolean }>(
+    `${API}/${encodeURIComponent(discussionId)}/participant-questions/answer`,
+    jsonRequest("POST", {
+      participant_id: participantId,
+      attempt_id: attemptId,
+      request_id: requestId,
+      answers,
+    }),
+  );
+}
+
+function isAgentEvent(value: unknown): value is AgentEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<AgentEvent>;
+  return (
+    event.schema === "agent-event-v1" &&
+    (event.runtime === "claude_code" || event.runtime === "codex") &&
+    typeof event.session_id === "string" &&
+    typeof event.seq === "number" &&
+    typeof event.type === "string" &&
+    event.payload !== null &&
+    typeof event.payload === "object"
+  );
 }
 
 function versionedCommand(

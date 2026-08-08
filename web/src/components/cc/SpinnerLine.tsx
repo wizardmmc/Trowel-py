@@ -20,6 +20,16 @@ const FALLBACK_VERB = "Working";
 const SHOW_STATS_AFTER_MS = 5000;
 const TICK_MS = 200;
 
+interface ThinkingSpinnerProps {
+  readonly thinkingStartedAt: number | null;
+  readonly thinkingTokens: number | null;
+  readonly stallWarning: {
+    readonly severity: "mild" | "severe";
+    readonly elapsed_s: number;
+  } | null;
+  readonly effort: string | null;
+}
+
 function pickVerb(): string {
   return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)] ?? FALLBACK_VERB;
 }
@@ -46,22 +56,37 @@ export function SpinnerLine() {
     }),
   );
 
+  return (
+    <ThinkingSpinner
+      thinkingStartedAt={phase === "thinking" ? thinkingStartedAt : null}
+      thinkingTokens={thinkingTokens}
+      stallWarning={stallWarning}
+      effort={effort}
+    />
+  );
+}
+
+/** 只依赖显式属性的思考反馈，可由 Agent 会话和研讨 participant 共同复用。 */
+export function ThinkingSpinner({
+  thinkingStartedAt,
+  thinkingTokens,
+  stallWarning,
+  effort,
+}: ThinkingSpinnerProps) {
   const displayVerb = useMemo(
     () => thinkingStartedAt === null ? FALLBACK_VERB : pickVerb(),
     [thinkingStartedAt],
   );
-
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (phase !== "thinking") return;
+    if (thinkingStartedAt === null) return;
     const id = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(id);
-  }, [phase]);
+  }, [thinkingStartedAt]);
 
-  if (phase !== "thinking" || thinkingStartedAt === null) return null;
+  if (thinkingStartedAt === null) return null;
 
-  const elapsedMs =
-    thinkingStartedAt !== null ? Math.max(0, now - thinkingStartedAt) : 0;
+  const elapsedMs = Math.max(0, now - thinkingStartedAt);
   const showStats = elapsedMs >= SHOW_STATS_AFTER_MS;
   const seconds = Math.floor(elapsedMs / 1000);
   const effortSuffix = reasoningEffortLabel(effort);

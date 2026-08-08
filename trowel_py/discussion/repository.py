@@ -23,6 +23,7 @@ from trowel_py.discussion.models import (
     Discussion,
     DiscussionParticipant,
     DiscussionRound,
+    ParticipantAttemptHistoryRequest,
     ParticipantResult,
     UserMessage,
 )
@@ -290,6 +291,77 @@ class DiscussionRepository:
             (owner_ref,),
         ).fetchone()
         return self._participant_from_row(row) if row is not None else None
+
+    def get_attempt_history_request(
+        self,
+        discussion_id: str,
+        attempt_id: str,
+    ) -> ParticipantAttemptHistoryRequest:
+        """读取原生历史定位需要的 attempt 与 participant 联接事实。
+
+        Args:
+            discussion_id: URL 中已经授权查看的研讨 ID。
+            attempt_id: 要恢复单轮轨迹的 attempt ID。
+
+        Returns:
+            不含 prompt 正文、工具正文和连接凭据的历史定位请求。
+
+        Raises:
+            DiscussionNotFoundError: attempt 不存在或属于另一场研讨。
+        """
+
+        row = self.connection.execute(
+            """
+            SELECT a.id, a.input_hash, a.root_turn_id, a.status,
+                   r.discussion_id, r.number AS round_number,
+                   p.id AS participant_id, p.runtime, p.agent_session_id,
+                   p.native_session_id, d.workdir,
+                   1 + (
+                       SELECT COUNT(*)
+                       FROM discussion_attempts previous
+                       JOIN discussion_rounds previous_round
+                         ON previous_round.id=previous.round_id
+                       WHERE previous.participant_id=a.participant_id
+                         AND previous.input_hash=a.input_hash
+                         AND previous.root_turn_id IS NOT NULL
+                         AND (
+                           previous_round.number < r.number
+                           OR (
+                             previous_round.number = r.number
+                             AND previous.ordinal < a.ordinal
+                           )
+                         )
+                   ) AS input_occurrence
+            FROM discussion_attempts a
+            JOIN discussion_rounds r ON r.id=a.round_id
+            JOIN discussions d ON d.id=r.discussion_id
+            JOIN discussion_participants p ON p.id=a.participant_id
+            WHERE a.id=? AND r.discussion_id=? AND d.status!='deleted'
+            """,
+            (attempt_id, discussion_id),
+        ).fetchone()
+        if row is None:
+            raise DiscussionNotFoundError()
+        return ParticipantAttemptHistoryRequest(
+            id=str(row["id"]),
+            discussion_id=str(row["discussion_id"]),
+            round_number=int(row["round_number"]),
+            participant_id=str(row["participant_id"]),
+            runtime=Runtime(str(row["runtime"])),
+            agent_session_id=(
+                str(row["agent_session_id"]) if row["agent_session_id"] else None
+            ),
+            native_session_id=(
+                str(row["native_session_id"]) if row["native_session_id"] else None
+            ),
+            workdir=str(row["workdir"]),
+            input_hash=str(row["input_hash"]),
+            input_occurrence=int(row["input_occurrence"]),
+            root_turn_id=(
+                str(row["root_turn_id"]) if row["root_turn_id"] else None
+            ),
+            status=str(row["status"]),
+        )
 
     def bind_participant_session(
         self,

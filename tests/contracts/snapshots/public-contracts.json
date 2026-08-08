@@ -7327,6 +7327,60 @@
           }
         }
       },
+      "/api/discussions/{discussion_id}/attempts/{attempt_id}/events": {
+        "get": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Get Discussion Attempt Events",
+          "description": "从 participant 原生记录恢复一个 attempt 的单轮轨迹。",
+          "operationId": "get_discussion_attempt_events_api_discussions__discussion_id__attempts__attempt_id__events_get",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            },
+            {
+              "name": "attempt_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Attempt Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Discussion Attempt Events Api Discussions  Discussion Id  Attempts  Attempt Id  Events Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/discussions/{discussion_id}/start": {
         "post": {
           "tags": [
@@ -7475,6 +7529,61 @@
                     "type": "object",
                     "additionalProperties": true,
                     "title": "Response Mark Discussion Result Api Discussions  Discussion Id  Marks Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/discussions/{discussion_id}/participant-questions/answer": {
+        "post": {
+          "tags": [
+            "discussions"
+          ],
+          "summary": "Answer Participant Question",
+          "description": "只把用户答案交给发问的当前 attempt。",
+          "operationId": "answer_participant_question_api_discussions__discussion_id__participant_questions_answer_post",
+          "parameters": [
+            {
+              "name": "discussion_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Discussion Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerParticipantQuestionRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Answer Participant Question Api Discussions  Discussion Id  Participant Questions Answer Post"
                   }
                 }
               }
@@ -8633,6 +8742,48 @@
           "type": "object",
           "title": "AnswerElicitRequest",
           "description": "提交对待处理提问或 plan mode 确认的回答，或取消该请求。\n\nAttributes:\n    answers: 按问题文本索引的答案；默认为空映射。AskUserQuestion 允许后写入\n        `control_response.updatedInput.answers`，plan mode 确认只把它作为批准信号。\n    cancel: 是否取消请求；默认为 `False`。为 `True` 时忽略 `answers`，并发送\n        deny `control_response`。"
+        },
+        "AnswerParticipantQuestionRequest": {
+          "properties": {
+            "participant_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Participant Id"
+            },
+            "attempt_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Attempt Id"
+            },
+            "request_id": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Request Id"
+            },
+            "answers": {
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              },
+              "propertyNames": {
+                "minLength": 1
+              },
+              "type": "object",
+              "maxProperties": 20,
+              "minProperties": 1,
+              "title": "Answers"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "participant_id",
+            "attempt_id",
+            "request_id",
+            "answers"
+          ],
+          "title": "AnswerParticipantQuestionRequest",
+          "description": "回答某个运行中 attempt 明确发出的 AskUserQuestion。\n\nAttributes:\n    participant_id: 发问参与者的稳定 ID。\n    attempt_id: 发问所属物理尝试 ID。\n    request_id: 实时 elicit_request 携带的请求 ID。\n    answers: 问题正文到用户填写答案的对应表。"
         },
         "ApiEnvelope_AgentStatisticsData_": {
           "properties": {

@@ -157,6 +157,7 @@ function result(
 ) {
   return {
     participant_id: participantId,
+    current_attempt_id: null,
     position,
     name,
     status: "succeeded",

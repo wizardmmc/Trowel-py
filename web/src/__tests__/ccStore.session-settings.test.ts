@@ -582,6 +582,53 @@ describe("createAgentStore — backend session reconciliation", () => {
     ]);
   });
 
+  it("creates a turn container when a handoff snapshot arrives before its first visible event", async () => {
+    const store = createAgentStore();
+    listActiveSessions.mockResolvedValueOnce({
+      sessions: [
+        {
+          ...liveSession("handoff"),
+          runtime: "codex",
+          native_session_id: "thread-handoff",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          capabilities: CODEX_CAPABILITIES,
+          running: true,
+          turn_state: "running",
+          current_turn_id: "turn-handoff",
+          last_event_seq: null,
+        },
+      ],
+      activeId: null,
+    });
+
+    await store.getState().refreshActiveSessions();
+    stream.eventApply!(
+      ev(
+        "tool_call",
+        { tool_use_id: "tool-1", tool_name: "Read", input: {} },
+        {
+          session_id: "handoff",
+          runtime: "codex",
+          thread_id: "thread-handoff",
+          turn_id: "turn-handoff",
+          item_id: "tool-1",
+          seq: 1,
+        },
+      ),
+    );
+
+    const handoff = store.getState().sessions.handoff;
+    expect(handoff.turns).toHaveLength(1);
+    expect(handoff.turns[0].items).toEqual([
+      expect.objectContaining({ kind: "tool", toolName: "Read" }),
+    ]);
+    expect([handoff.meta.model, handoff.effort]).toEqual([
+      "gpt-5.6-sol",
+      "high",
+    ]);
+  });
+
   it.each([
     {
       eventCount: 128,

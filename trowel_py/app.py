@@ -569,6 +569,7 @@ async def lifespan(app: FastAPI):
     app.state.discussion_events = None
     app.state.discussion_coordinator = None
     app.state.discussion_service = None
+    app.state.discussion_timeline = None
     if app.state.agent_hub is not None:
         from trowel_py.agent_host.delegation_wakeup import (
             DelegationWakeupCoordinator,
@@ -597,6 +598,7 @@ async def lifespan(app: FastAPI):
             AgentHostParticipantSessionAdapter,
         )
         from trowel_py.discussion.repository import open_discussion_repository
+        from trowel_py.discussion.timeline import DiscussionTimelineService
         from trowel_py.discussion.service import (
             DiscussionService,
             SqliteSessionConfigurationCatalog,
@@ -606,15 +608,20 @@ async def lifespan(app: FastAPI):
         discussion_events = DiscussionEventBus()
         discussion_artifacts = DiscussionArtifactStore()
         discussion_episode_writer = DiscussionEpisodeWriter(discussion_artifacts)
+        participant_sessions = AgentHostParticipantSessionAdapter(app.state.agent_hub)
         discussion_coordinator = DiscussionCoordinator(
             open_discussion_repository,
             discussion_artifacts,
-            AgentHostParticipantSessionAdapter(app.state.agent_hub),
+            participant_sessions,
             discussion_events,
             discussion_episode_writer,
         )
         app.state.discussion_events = discussion_events
         app.state.discussion_coordinator = discussion_coordinator
+        app.state.discussion_timeline = DiscussionTimelineService(
+            open_discussion_repository,
+            participant_sessions,
+        )
         app.state.discussion_service = DiscussionService(
             open_discussion_repository,
             discussion_artifacts,

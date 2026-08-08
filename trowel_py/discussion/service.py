@@ -544,7 +544,7 @@ class DiscussionService:
             after_sequence: 客户端已经看到的最大 sequence。
 
         Returns:
-            不含正文的事件摘要；round_published 由客户端随后 GET 最新快照。
+            不含正文的事件摘要；客户端据此重新读取最新公开快照。
         """
 
         with self._open_repository() as repository:
@@ -1275,6 +1275,7 @@ class DiscussionService:
                 slots.append(
                     {
                         "participant_id": result.participant_id,
+                        "current_attempt_id": result.current_attempt_id,
                         "position": result.position,
                         "name": participant_by_id[result.participant_id].name,
                         "status": public_status,
@@ -1287,7 +1288,9 @@ class DiscussionService:
                             round_record.number, result.participant_id
                         ) in marked_sources,
                         "started_at": result.started_at,
-                        "completed_at": result.completed_at if published else None,
+                        # 观察者需要在共同公开前把成功轨迹折叠并显示真实耗时；
+                        # 正文仍只来自 attempt 实时流，不从未公开 artifact 读取。
+                        "completed_at": result.completed_at,
                     }
                 )
             rounds.append(

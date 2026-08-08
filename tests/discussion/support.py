@@ -13,6 +13,7 @@ from trowel_py.configuration.models import (
     SessionConfigurationView,
 )
 from trowel_py.discussion.models import DiscussionParticipant
+from trowel_py.discussion.models import ParticipantAttemptHistoryRequest
 from trowel_py.discussion.participant_sessions import ParticipantSession
 from trowel_py.discussion.service import ParticipantRuntimeIdentity
 
@@ -193,6 +194,42 @@ class FakeParticipantSessions:
             capability_source="真实测试替身",
         )
 
+    async def read_attempt_history(
+        self,
+        request: ParticipantAttemptHistoryRequest,
+    ) -> list[dict[str, Any]]:
+        """返回已建立统一契约的最小单轮回放。"""
+
+        session_id = request.agent_session_id or f"attempt-{request.id}"
+        return [
+            {
+                "schema": "agent-event-v1",
+                "session_id": session_id,
+                "runtime": request.runtime.value,
+                "seq": 1,
+                "type": "user",
+                "thread_id": request.native_session_id
+                if request.runtime is Runtime.CODEX
+                else None,
+                "turn_id": request.root_turn_id,
+                "item_id": None,
+                "payload": {"text": "测试公共输入"},
+            },
+            {
+                "schema": "agent-event-v1",
+                "session_id": session_id,
+                "runtime": request.runtime.value,
+                "seq": 2,
+                "type": "text",
+                "thread_id": request.native_session_id
+                if request.runtime is Runtime.CODEX
+                else None,
+                "turn_id": request.root_turn_id,
+                "item_id": None,
+                "payload": {"text": "测试历史回答"},
+            },
+        ]
+
     def run_turn(
         self,
         agent_session_id: str,
@@ -324,6 +361,16 @@ class FakeParticipantSessions:
         """
 
         del agent_session_id
+        return True
+
+    async def answer_elicitation(
+        self,
+        agent_session_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """默认测试端口没有等待提问，返回已接收以满足窄接口。"""
+
+        del agent_session_id, answers
         return True
 
     def decline_approval(self, agent_session_id: str, request_id: str) -> None:

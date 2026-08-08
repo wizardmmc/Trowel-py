@@ -43,6 +43,7 @@ export function DiscussionWorkspace({
   const catalogLoading = useDiscussionStore((state) => state.catalogLoading);
   const commandPending = useDiscussionStore((state) => state.commandPending);
   const error = useDiscussionStore((state) => state.error);
+  const attemptTimelines = useDiscussionStore((state) => state.attemptTimelines);
   const store = useDiscussionStore;
   const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
@@ -135,6 +136,7 @@ export function DiscussionWorkspace({
           discussion={discussion}
           pendingCommand={commandPending}
           error={error}
+          attemptTimelines={attemptTimelines}
           onStart={() => void store.getState().start()}
           onContinue={(progressionMode, additionalRounds) =>
             void store.getState().continueRound(progressionMode, additionalRounds)
@@ -146,6 +148,11 @@ export function DiscussionWorkspace({
           onAddMessage={(body, targetId) => store.getState().addMessage(body, targetId)}
           onMark={(roundNumber, participantId, marked) =>
             void store.getState().mark(roundNumber, participantId, marked)
+          }
+          onAnswerQuestion={(participantId, attemptId, requestId, answers) =>
+            void store
+              .getState()
+              .answerQuestion(participantId, attemptId, requestId, answers)
           }
           onHandoff={() => setHandoffOpen(true)}
           onClearError={() => store.getState().clearError()}

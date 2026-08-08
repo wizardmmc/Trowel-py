@@ -130,6 +130,39 @@ class ParticipantResult:
 
 
 @dataclass(frozen=True)
+class ParticipantAttemptHistoryRequest:
+    """保存从原生历史定位一个 discussion attempt 所需的最小事实。
+
+    Attributes:
+        id: attempt 稳定 ID。
+        discussion_id: 所属研讨 ID。
+        round_number: 所属逻辑轮号。
+        participant_id: 所属参与者 ID。
+        runtime: 原生历史来源。
+        agent_session_id: AgentEvent 回放使用的 Trowel 会话 ID。
+        native_session_id: Claude session ID 或 Codex thread ID。
+        workdir: Claude Code 定位 project JSONL 使用的工作目录。
+        input_hash: 精确公共输入的 SHA-256，用于切分 Claude Code user turn。
+        input_occurrence: 该参与者原生会话中同一输入第几次被 runtime 接受，从 1 开始。
+        root_turn_id: Codex journal 与实时根事件的稳定 turn ID。
+        status: attempt 当前或最终状态。
+    """
+
+    id: str
+    discussion_id: str
+    round_number: int
+    participant_id: str
+    runtime: Runtime
+    agent_session_id: str | None
+    native_session_id: str | None
+    workdir: str
+    input_hash: str
+    input_occurrence: int
+    root_turn_id: str | None
+    status: str
+
+
+@dataclass(frozen=True)
 class DiscussionRound:
     """记录一次同步盲答轮及其稳定参与者槽位。
 

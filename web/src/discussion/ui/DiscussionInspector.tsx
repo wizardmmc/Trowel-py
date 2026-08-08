@@ -32,7 +32,7 @@ export function DiscussionInspector({
         )}
       </header>
       <div className="discussion-inspector__body">
-        <section className="discussion-inspector__section">
+        <section className="discussion-inspector__section discussion-inspector__roster">
           <h2>参与者</h2>
           <div className="discussion-inspector__participants">
             {discussion.participants.map((participant) => (

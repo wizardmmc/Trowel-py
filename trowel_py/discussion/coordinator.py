@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import datetime
@@ -13,9 +14,9 @@ from typing import Any
 
 from trowel_py.agent_host.binding import Runtime
 from trowel_py.discussion.artifacts import DiscussionArtifactStore
-from trowel_py.discussion.events import DiscussionEventBus
+from trowel_py.discussion.events import AttemptLiveEventPublisher, DiscussionEventBus
 from trowel_py.discussion.episode import DiscussionEpisodeWriter
-from trowel_py.discussion.errors import DiscussionRuntimeError
+from trowel_py.discussion.errors import DiscussionRuntimeError, DiscussionStateError
 from trowel_py.discussion.models import (
     Discussion,
     DiscussionParticipant,
@@ -29,9 +30,29 @@ from trowel_py.discussion.state_machine import (
     should_automatically_continue,
     status_after_publication,
 )
+from trowel_py.discussion.turn_projection import FinalAnswerProjection
+from trowel_py.discussion.usage import AttemptUsageAccumulator
 
 RepositoryOpener = Callable[[], AbstractContextManager[DiscussionRepository]]
 Clock = Callable[[], str]
+_ANSWER_RECEIPT_LIMIT = 1024
+
+
+class _PendingElicitation:
+    """保存一个只允许当前 attempt 回答的 AskUserQuestion 身份。"""
+
+    def __init__(
+        self,
+        *,
+        participant_id: str,
+        agent_session_id: str,
+        request_id: str,
+    ) -> None:
+        """创建不复制问题正文的控制面记录。"""
+
+        self.participant_id = participant_id
+        self.agent_session_id = agent_session_id
+        self.request_id = request_id
 
 
 def _now() -> str:
@@ -78,7 +99,92 @@ class DiscussionCoordinator:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_sessions: dict[str, set[str]] = {}
+        self._pending_elicitations: dict[
+            tuple[str, str, str], _PendingElicitation
+        ] = {}
+        self._answered_elicitations: OrderedDict[
+            tuple[str, str, str, str], str
+        ] = OrderedDict()
+        # 只串行 HTTP 回答侧的查验与投递；pending 的生产/清理由同一事件循环任务负责。
+        self._interaction_lock = asyncio.Lock()
         self._accepting = True
+
+    async def answer_elicitation(
+        self,
+        *,
+        discussion_id: str,
+        participant_id: str,
+        attempt_id: str,
+        request_id: str,
+        answers: dict[str, str],
+    ) -> bool:
+        """验证 attempt 归属后只回答 AskUserQuestion，不放开其他交互。
+
+        Args:
+            discussion_id: 当前打开的研讨 ID。
+            participant_id: 发问参与者的稳定 ID。
+            attempt_id: 发问所属物理尝试 ID。
+            request_id: 实时事件携带的提问请求 ID。
+            answers: 问题正文到用户答案的对应表。
+
+        Returns:
+            首次交付或相同答案重复提交时为 True。
+
+        Notes:
+            本锁只防止两次用户提交并发投递，不宣称保护协调任务侧的 pending 生命周期；
+            后者依赖 coordinator 与路由运行在同一 asyncio 事件循环。
+
+        Raises:
+            DiscussionStateError: attempt、参与者或提问已经变化。
+            DiscussionRuntimeError: runtime 未确认收到回答。
+        """
+
+        receipt_key = (discussion_id, participant_id, attempt_id, request_id)
+        pending_key = (discussion_id, attempt_id, request_id)
+        answer_hash = hashlib.sha256(
+            json.dumps(
+                answers,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        async with self._interaction_lock:
+            prior = self._answered_elicitations.get(receipt_key)
+            if prior is not None:
+                if prior != answer_hash:
+                    raise DiscussionStateError("这项提问已经使用另一份答案提交")
+                self._answered_elicitations.move_to_end(receipt_key)
+                return True
+            pending = self._pending_elicitations.get(pending_key)
+            if pending is None or pending.participant_id != participant_id:
+                raise DiscussionStateError("这项参与者提问已经结束或不属于当前回答")
+            with self._open_repository() as repository:
+                discussion = repository.get_discussion(discussion_id)
+            current_attempt = next(
+                (
+                    result.current_attempt_id
+                    for round_record in discussion.rounds
+                    for result in round_record.results
+                    if result.participant_id == participant_id
+                    and result.current_attempt_id == attempt_id
+                    and result.status == "running"
+                ),
+                None,
+            )
+            if current_attempt is None:
+                raise DiscussionStateError("这项参与者提问所属回答已经结束")
+            delivered = await self._sessions.answer_elicitation(
+                pending.agent_session_id,
+                answers,
+            )
+            if not delivered:
+                raise DiscussionRuntimeError("参与者运行工具未确认收到回答")
+            self._pending_elicitations.pop(pending_key, None)
+            self._answered_elicitations[receipt_key] = answer_hash
+            while len(self._answered_elicitations) > _ANSWER_RECEIPT_LIMIT:
+                self._answered_elicitations.popitem(last=False)
+            return True
 
     async def start(self) -> None:
         """扫描应用上次退出时未完成的研讨并自动继续同一逻辑轮。"""
@@ -662,7 +768,15 @@ class DiscussionCoordinator:
                     participant,
                     session.agent_session_id,
                     prompt,
+                    discussion_id=discussion.id,
+                    round_number=round_record.number,
                     attempt_id=attempt_id,
+                )
+                outcome.usage = await self._resolve_attempt_usage(
+                    discussion_id=discussion.id,
+                    attempt_id=attempt_id,
+                    runtime=participant.runtime,
+                    live_usage=outcome.usage,
                 )
             except asyncio.CancelledError:
                 try:
@@ -710,6 +824,7 @@ class DiscussionCoordinator:
                     text=outcome.text,
                 )
             binding = self._sessions.binding(session.agent_session_id)
+            completed_at = self._clock()
             with self._open_repository() as repository, repository.transaction():
                 repository.update_attempt_event_artifact(
                     attempt_id,
@@ -721,10 +836,10 @@ class DiscussionCoordinator:
                         attempt_id,
                         outcome.root_turn_id,
                     )
-                repository.complete_attempt(
+                completed = repository.complete_attempt(
                     attempt_id=attempt_id,
                     status=outcome.status,
-                    completed_at=self._clock(),
+                    completed_at=completed_at,
                     output_artifact=(
                         output_ref.relative_path if output_ref is not None else None
                     ),
@@ -747,6 +862,14 @@ class DiscussionCoordinator:
                         sort_keys=True,
                     ),
                 )
+                if completed:
+                    repository.append_event(
+                        discussion.id,
+                        "participant_completed",
+                        discussion.version,
+                        created_at=completed_at,
+                        round_number=round_record.number,
+                    )
                 if binding is not None and binding.native_session_id is not None:
                     effective_model = participant.effective_model
                     if binding.model is not None and (
@@ -760,6 +883,7 @@ class DiscussionCoordinator:
                         effective_model=effective_model,
                         updated_at=self._clock(),
                     )
+            self._events.publish(discussion.id)
 
     def _rebuild_transcript(self, discussion: Discussion) -> None:
         """重建派生记录，并把任何 artifact 读取漂移登记为 durable outbox。
@@ -793,6 +917,8 @@ class DiscussionCoordinator:
         agent_session_id: str,
         prompt: str,
         *,
+        discussion_id: str,
+        round_number: int,
         attempt_id: str,
     ) -> _TurnOutcome:
         """只接受当前根 turn 的终态，并始终把运行流读取到自然 EOF。
@@ -801,6 +927,8 @@ class DiscussionCoordinator:
             participant: 当前 participant，用于 runtime 根线程核对。
             agent_session_id: 当前 Trowel 会话 ID。
             prompt: 与 input artifact 完全一致的普通输入。
+            discussion_id: 当前研讨 ID，用于实时事件归属。
+            round_number: 当前逻辑轮号。
             attempt_id: 当前 durable attempt ID，用于及时保存 runtime 接受事实。
 
         Returns:
@@ -808,12 +936,22 @@ class DiscussionCoordinator:
         """
 
         root_turn_id: str | None = None
-        text_parts: list[str] = []
-        usage: dict[str, Any] | None = None
+        final_answer = FinalAnswerProjection()
+        usage = AttemptUsageAccumulator(participant.runtime)
         tool_calls: dict[str, str] = {}
         subagent_ids: set[str] = set()
         audit_events: list[dict[str, Any]] = []
         terminal: tuple[str, str | None, str | None] | None = None
+        live_terminal_status: str | None = None
+        answer = ""
+        resolved_terminal: tuple[str, str | None, str | None]
+        live_events = AttemptLiveEventPublisher(
+            self._events,
+            discussion_id=discussion_id,
+            round_number=round_number,
+            participant_id=participant.id,
+            attempt_id=attempt_id,
+        )
         stream = self._sessions.run_turn(agent_session_id, prompt)
         try:
             async for event in stream:
@@ -841,6 +979,7 @@ class DiscussionCoordinator:
                         audit_events.append(
                             {"type": "turn_start", "turn_id": root_turn_id}
                         )
+                        live_events.publish(event)
                     continue
                 matches_root = (
                     root_turn_id is not None
@@ -852,6 +991,43 @@ class DiscussionCoordinator:
                     and event_type == "error"
                     and event_turn_id is None
                 )
+                if matches_root:
+                    if event_type == "elicit_request":
+                        payload = event.get("payload")
+                        tool_name = (
+                            payload.get("tool_name")
+                            if isinstance(payload, dict)
+                            else None
+                        )
+                        request_id = (
+                            payload.get("request_id")
+                            if isinstance(payload, dict)
+                            else None
+                        )
+                        if (
+                            participant.runtime is Runtime.CLAUDE_CODE
+                            and tool_name == "AskUserQuestion"
+                            and isinstance(request_id, str)
+                            and request_id
+                        ):
+                            self._pending_elicitations[
+                                (discussion_id, attempt_id, request_id)
+                            ] = _PendingElicitation(
+                                participant_id=participant.id,
+                                agent_session_id=agent_session_id,
+                                request_id=request_id,
+                            )
+                    live_events.publish(event)
+                    observed_terminal = _observer_terminal_from_event(event)
+                    if observed_terminal is not None:
+                        live_terminal_status = observed_terminal
+                    payload = event.get("payload")
+                    usage.observe(event_type, payload)
+                    if terminal is None:
+                        final_answer.observe(
+                            event_type,
+                            payload.get("text") if isinstance(payload, dict) else None,
+                        )
                 if event_type == "tool_call" and matches_root:
                     payload = event.get("payload")
                     tool_name = (
@@ -883,6 +1059,27 @@ class DiscussionCoordinator:
                             subagent_ids.add(subagent_id)
                     continue
                 if event_type == "elicit_request" and matches_root:
+                    payload = event.get("payload")
+                    tool_name = (
+                        payload.get("tool_name")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    request_id = (
+                        payload.get("request_id")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if (
+                        participant.runtime is Runtime.CLAUDE_CODE
+                        and tool_name == "AskUserQuestion"
+                        and isinstance(request_id, str)
+                        and request_id
+                    ):
+                        audit_events.append(
+                            {"type": "elicit_request", "action": "user_answer"}
+                        )
+                        continue
                     try:
                         cancelled = await self._sessions.cancel_elicitation(
                             agent_session_id
@@ -951,15 +1148,8 @@ class DiscussionCoordinator:
                 if event_type == "text" and matches_root:
                     if terminal is not None:
                         continue
-                    payload = event.get("payload")
-                    text = payload.get("text") if isinstance(payload, dict) else None
-                    if isinstance(text, str):
-                        text_parts.append(text)
                     continue
                 if event_type in {"usage_updated", "context_usage"} and matches_root:
-                    payload = event.get("payload")
-                    if isinstance(payload, dict):
-                        usage = _safe_usage(payload)
                     continue
                 if event_type == "finished" and matches_root:
                     if terminal is None:
@@ -1022,36 +1212,97 @@ class DiscussionCoordinator:
                         )
                         audit_events.append({"type": "host_exited"})
                         continue
+        except DiscussionRuntimeError:
+            if terminal is None:
+                raise
+            # 根终态已成立，后续异常只说明 runtime 的 drain 连接断开；
+            # 覆盖已完成结果会让 live 与 durable 再次分叉并丢掉成型回答。
+            audit_events.append({"type": "post_terminal_stream_error"})
         finally:
-            close = getattr(stream, "aclose", None)
-            if close is not None:
-                await close()
+            try:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+            finally:
+                for key in tuple(self._pending_elicitations):
+                    if key[0] == discussion_id and key[1] == attempt_id:
+                        self._pending_elicitations.pop(key, None)
+                answer = final_answer.answer()
+                resolved_terminal = _resolve_turn_terminal(terminal, answer)
+                try:
+                    final_observer_status = _observer_terminal_from_status(
+                        resolved_terminal[0]
+                    )
+                    if final_observer_status != live_terminal_status:
+                        live_events.publish(
+                            _authoritative_terminal_event(
+                                agent_session_id=agent_session_id,
+                                runtime=participant.runtime,
+                                root_turn_id=root_turn_id,
+                                terminal=resolved_terminal,
+                            )
+                        )
+                finally:
+                    live_events.close()
+        status, error_code, error_message = resolved_terminal
+        outcome_events = list(audit_events)
         if terminal is None:
-            return _TurnOutcome(
-                status="host_lost",
-                text="",
-                root_turn_id=root_turn_id,
-                usage=usage,
-                activity=_summarize_activity(tool_calls, subagent_ids),
-                error_code="STREAM_ENDED_WITHOUT_TERMINAL",
-                error_message="参与者事件流结束，但没有收到完成或错误终态",
-                events=tuple(audit_events + [{"type": "stream_ended"}]),
-            )
-        status, error_code, error_message = terminal
-        answer = "".join(text_parts).strip()
-        if status == "succeeded" and not answer:
-            status = "failed"
-            error_code = "EMPTY_ANSWER"
-            error_message = "参与者已结束，但没有形成可公开的文字回答"
+            outcome_events.append({"type": "stream_ended"})
         return _TurnOutcome(
             status=status,
             text=answer,
             root_turn_id=root_turn_id,
-            usage=usage,
+            usage=usage.summary(),
             activity=_summarize_activity(tool_calls, subagent_ids),
             error_code=error_code,
             error_message=error_message,
-            events=tuple(audit_events),
+            events=tuple(outcome_events),
+        )
+
+    async def _resolve_attempt_usage(
+        self,
+        *,
+        discussion_id: str,
+        attempt_id: str,
+        runtime: Runtime,
+        live_usage: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """必要时用已封口原生历史纠正实时流中的缺失或零值 usage。
+
+        Claude 兼容服务可能在 stream-json 中只回报零值，但 transcript 会保存
+        服务端最终 usage；Codex normalized journal 同样是断线后的事实来源。完整
+        的实时摘要无需重复读盘，降级读取失败也不能覆盖已经形成的回答。
+
+        Args:
+            discussion_id: 当前 attempt 所属研讨。
+            attempt_id: 已写入根 turn 身份的物理尝试。
+            runtime: 当前参与者冻结的运行工具。
+            live_usage: 根事件流已经归一化的用量摘要。
+
+        Returns:
+            优先采用带正数总量的实时摘要；否则采用原生历史重放摘要，历史不可用
+            时保留实时结果。
+        """
+
+        if _has_positive_total(live_usage):
+            return live_usage
+        with self._open_repository() as repository:
+            request = repository.get_attempt_history_request(
+                discussion_id,
+                attempt_id,
+            )
+        try:
+            events = await self._sessions.read_attempt_history(request)
+        except DiscussionRuntimeError:
+            return live_usage
+        replay = AttemptUsageAccumulator(runtime)
+        for event in events:
+            replay.observe(event.get("type"), event.get("payload"))
+        history_usage = replay.summary()
+        return (
+            history_usage
+            if _usage_weight(history_usage) > _usage_weight(live_usage)
+            else live_usage
         )
 
     @staticmethod
@@ -1118,10 +1369,144 @@ class _TurnOutcome:
         self.events = events
 
 
+def _resolve_turn_terminal(
+    terminal: tuple[str, str | None, str | None] | None,
+    answer: str,
+) -> tuple[str, str | None, str | None]:
+    """把 runtime 终态和最终回答边界收敛成唯一持久终态。
+
+    Args:
+        terminal: 根 turn 事件流报告的终态；静默结束时为空。
+        answer: 最后一个工作事件之后的连续文字。
+
+    Returns:
+        attempt 状态、稳定错误码和脱敏错误说明。
+    """
+
+    if terminal is None:
+        return (
+            "host_lost",
+            "STREAM_ENDED_WITHOUT_TERMINAL",
+            "参与者事件流结束，但没有收到完成或错误终态",
+        )
+    status, error_code, error_message = terminal
+    if status == "succeeded" and not answer:
+        return (
+            "failed",
+            "EMPTY_ANSWER",
+            "参与者已结束，但没有形成可公开的文字回答",
+        )
+    return status, error_code, error_message
+
+
+def _observer_terminal_from_status(status: str) -> str:
+    """把细粒度持久终态映射成前端 reducer 的三类观察终态。"""
+
+    if status == "succeeded":
+        return "succeeded"
+    if status == "interrupted":
+        return "interrupted"
+    return "failed"
+
+
+def _observer_terminal_from_event(event: dict[str, Any]) -> str | None:
+    """返回一条已外发 AgentEvent 会让前端 reducer 进入的终态。"""
+
+    event_type = event.get("type")
+    if event_type == "finished":
+        return "succeeded"
+    if event_type == "interrupted":
+        return "interrupted"
+    if event_type == "error":
+        return "failed"
+    if event_type != "host_status":
+        return None
+    payload = event.get("payload")
+    if isinstance(payload, dict) and payload.get("status") == "host_exited":
+        return "failed"
+    return None
+
+
+def _authoritative_terminal_event(
+    *,
+    agent_session_id: str,
+    runtime: Runtime,
+    root_turn_id: str | None,
+    terminal: tuple[str, str | None, str | None],
+) -> dict[str, Any]:
+    """构造只用于校正实时观察者的标准 AgentEvent 终态。
+
+    Args:
+        agent_session_id: 当前 Trowel 会话 ID。
+        runtime: 当前 participant 的 runtime。
+        root_turn_id: 当前 attempt 根 turn；启动前失败时为空。
+        terminal: 已完成最终回答校验的权威终态。
+
+    Returns:
+        可直接交给公共 Agent reducer 的完整事件信封。
+    """
+
+    status, error_code, error_message = terminal
+    observer_status = _observer_terminal_from_status(status)
+    if observer_status == "succeeded":
+        event_type = "finished"
+        payload: dict[str, Any] = {}
+    elif observer_status == "interrupted":
+        event_type = "interrupted"
+        payload = {}
+    else:
+        event_type = "error"
+        payload = {
+            "subclass": error_code or "DISCUSSION_ATTEMPT_FAILED",
+            "errors": [error_message] if error_message else [],
+            "api_error_status": None,
+        }
+    return {
+        "schema": "agent-event-v1",
+        "session_id": agent_session_id,
+        "runtime": runtime.value,
+        "seq": 0,
+        "type": event_type,
+        "thread_id": None,
+        "turn_id": root_turn_id,
+        "item_id": None,
+        "payload": payload,
+    }
+
+
 def _empty_activity() -> dict[str, Any]:
     """返回没有工具活动时仍保持稳定 shape 的摘要。"""
 
     return {"tool_call_count": 0, "tool_names": {}, "subagent_count": 0}
+
+
+def _has_positive_total(usage: dict[str, Any] | None) -> bool:
+    """判断摘要是否已有 runtime 权威回报的正数总量。"""
+
+    return bool(
+        usage is not None
+        and isinstance(usage.get("total_tokens"), int)
+        and not isinstance(usage.get("total_tokens"), bool)
+        and usage["total_tokens"] > 0
+    )
+
+
+def _usage_weight(usage: dict[str, Any] | None) -> int:
+    """计算只用于选择更完整事实源的非负 token 权重。"""
+
+    if usage is None:
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        return total
+    return sum(
+        value
+        for key, value in usage.items()
+        if key.endswith("_tokens")
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
 
 
 def _summarize_activity(
@@ -1145,24 +1530,6 @@ def _summarize_activity(
         "tool_call_count": len(tool_calls),
         "tool_names": dict(sorted(names.items())),
         "subagent_count": len(subagent_ids),
-    }
-
-
-def _safe_usage(payload: dict[str, Any]) -> dict[str, Any]:
-    """只保留数值或短状态字段，避免 usage 旁路携带正文。
-
-    Args:
-        payload: AgentEvent 的 usage payload。
-
-    Returns:
-        只含标量的浅层用量摘要。
-    """
-
-    return {
-        key: value
-        for key, value in payload.items()
-        if isinstance(value, (int, float, bool))
-        or (isinstance(value, str) and len(value) <= 80)
     }
 
 

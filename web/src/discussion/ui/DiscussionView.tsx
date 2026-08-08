@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { PopperSelect } from "../../components/ui/PopperSelect";
-import type { Discussion } from "../domain";
+import type { Discussion, DiscussionAttemptTimeline } from "../domain";
 import { DiscussionInspector } from "./DiscussionInspector";
 import { DiscussionRoundTimeline } from "./DiscussionRoundTimeline";
 
@@ -10,6 +10,7 @@ interface DiscussionViewProps {
   readonly discussion: Discussion;
   readonly pendingCommand: string | null;
   readonly error: string | null;
+  readonly attemptTimelines?: Readonly<Record<string, DiscussionAttemptTimeline>>;
   readonly onStart: () => void;
   readonly onContinue: (
     progressionMode: "automatic" | "user_guided",
@@ -21,6 +22,12 @@ interface DiscussionViewProps {
   readonly onDelete: () => void;
   readonly onAddMessage: (body: string, participantId: string | null) => Promise<void>;
   readonly onMark: (roundNumber: number, participantId: string, marked: boolean) => void;
+  readonly onAnswerQuestion?: (
+    participantId: string,
+    attemptId: string,
+    requestId: string,
+    answers: Readonly<Record<string, string>>,
+  ) => void;
   readonly onHandoff: () => void;
   readonly onClearError: () => void;
 }
@@ -30,6 +37,7 @@ export function DiscussionView({
   discussion,
   pendingCommand,
   error,
+  attemptTimelines = {},
   onStart,
   onContinue,
   onFinish,
@@ -38,6 +46,7 @@ export function DiscussionView({
   onDelete,
   onAddMessage,
   onMark,
+  onAnswerQuestion,
   onHandoff,
   onClearError,
 }: DiscussionViewProps) {
@@ -143,6 +152,8 @@ export function DiscussionView({
               focusedParticipantId={focusedId}
               onFocusParticipant={setFocusedParticipantId}
               disabled={pending}
+              attemptTimelines={attemptTimelines}
+              onAnswerQuestion={onAnswerQuestion}
               onMark={onMark}
             />
           ) : (
