@@ -114,6 +114,52 @@ class _FakeManager:
         self.events.append(f"close:{self.name}")
 
 
+class _FakeHistoryReader:
+    """提供不依赖连接 manager 的共享 Codex 历史。"""
+
+    def __init__(
+        self,
+        events: list[str],
+        rows: list[dict[str, object]],
+        *,
+        fail_close: bool = False,
+    ) -> None:
+        """保存事件账本、共享历史和可选关闭失败。"""
+
+        self.events = events
+        self.rows = rows
+        self.fail_close = fail_close
+
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str],
+    ) -> list[dict[str, object]]:
+        """记录查询并在截断前排除非用户 thread。"""
+
+        self.events.append(f"history:{cwd}")
+        return [row for row in self.rows if row.get("id") not in excluded_ids][
+            :limit
+        ]
+
+    async def close(self) -> None:
+        """记录历史读取器已随池收敛。"""
+
+        self.events.append("history-close")
+        if self.fail_close:
+            raise RuntimeError("history close failed")
+
+    async def read_thread(self, thread_id: str) -> dict[str, object]:
+        """按 ID 返回共享状态中的 thread。"""
+
+        for row in self.rows:
+            if row.get("id") == thread_id:
+                return row
+        raise RuntimeError(f"unknown thread {thread_id}")
+
+
 class _SlowCloseManager(_FakeManager):
     """在测试放行前停住关闭过程，用于复现释放与新会话并发。"""
 
@@ -232,18 +278,48 @@ async def test_pool_reads_each_connection_model_catalog_from_its_own_manager(
 
 
 @pytest.mark.asyncio
-async def test_pool_routes_goal_and_isolates_history_failure(tmp_path: Path) -> None:
-    """单个连接失败不能拖垮其他历史，重复 thread 只保留最新记录。"""
+async def test_pool_reads_shared_history_before_any_connection_manager_exists(
+    tmp_path: Path,
+) -> None:
+    """冷启动历史不能依赖本次进程是否已经创建连接 manager。"""
 
     events: list[str] = []
-    legacy = _FakeManager(
-        "legacy",
-        events,
-        thread_rows=[{"id": "shared", "updatedAt": "2026-01-01"}],
-    )
+    created_connections: list[str] = []
+    target = {"id": "cold-thread", "updatedAt": "2026-08-08T04:18:30Z"}
 
     def manager_factory(launch: RuntimeLaunchConfiguration) -> _FakeManager:
-        """让 beta 历史失败，alpha 返回共享 thread 的较新版本。"""
+        """记录任何违反连接 manager 懒启动边界的创建。"""
+
+        created_connections.append(launch.connection_id)
+        return _FakeManager(launch.connection_id, events)
+
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=manager_factory,
+        prewarm_client_factory=lambda: _FakeClient(events),
+        history_reader=_FakeHistoryReader(events, [target]),
+    )
+
+    rows = await pool.list_threads(cwd="/workspace", limit=20)
+
+    assert rows == [target]
+    assert created_connections == []
+    assert "history:/workspace" in events
+    assert events[:2] == ["prewarm-start", "prewarm-close"]
+
+
+@pytest.mark.asyncio
+async def test_pool_routes_goal_independently_from_shared_history(
+    tmp_path: Path,
+) -> None:
+    """活跃会话路由和共享历史来源不能反向依赖彼此。"""
+
+    events: list[str] = []
+    legacy = _FakeManager("legacy", events)
+
+    def manager_factory(launch: RuntimeLaunchConfiguration) -> _FakeManager:
+        """让 beta 保留原有失败配置，证明 Goal 路由与历史读取相互独立。"""
 
         return _FakeManager(
             launch.connection_id,
@@ -257,6 +333,10 @@ async def test_pool_routes_goal_and_isolates_history_failure(tmp_path: Path) -> 
         legacy_manager=legacy,
         manager_factory=manager_factory,
         prewarm_client_factory=lambda: _FakeClient(events),
+        history_reader=_FakeHistoryReader(
+            events,
+            [{"id": "shared", "updatedAt": "2026-02-01"}],
+        ),
     )
     first = SimpleNamespace(session_id="first")
     second = SimpleNamespace(session_id="second")
@@ -269,6 +349,30 @@ async def test_pool_routes_goal_and_isolates_history_failure(tmp_path: Path) -> 
     assert goal == {"manager": "alpha"}
     assert rows == [{"id": "shared", "updatedAt": "2026-02-01"}]
     assert "goal:alpha:first" in events
+
+
+@pytest.mark.asyncio
+async def test_pool_close_still_closes_all_managers_when_history_close_fails(
+    tmp_path: Path,
+) -> None:
+    """历史读取器关闭失败不能跳过兼容和供应商 manager 的收敛。"""
+
+    events: list[str] = []
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda launch: _FakeManager(launch.connection_id, events),
+        prewarm_client_factory=lambda: _FakeClient(events),
+        history_reader=_FakeHistoryReader(events, [], fail_close=True),
+    )
+    pool.register(SimpleNamespace(session_id="active"), launch=_launch("alpha"))
+
+    with pytest.raises(ExceptionGroup, match="manager pool close failed"):
+        await pool.close()
+
+    assert "history-close" in events
+    assert "close:legacy" in events
+    assert "close:alpha" in events
 
 
 def test_pool_key_changes_when_connection_identity_changes() -> None:

@@ -7,6 +7,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from trowel_py.codex_host.history_reader import (
+    CodexThreadHistoryService,
+    CodexThreadHistoryReader,
+)
 from trowel_py.codex_host.manager import CodexHostManager
 from trowel_py.codex_host.transport import AppServerClient
 from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
@@ -30,6 +34,7 @@ class CodexManagerPool:
         legacy_manager: CodexHostManager | None = None,
         manager_factory: ManagerFactory | None = None,
         prewarm_client_factory: PrewarmClientFactory | None = None,
+        history_reader: CodexThreadHistoryReader | None = None,
         resource_registry: ResourceRegistry | None = None,
         max_managers: int = 25,
     ) -> None:
@@ -40,6 +45,7 @@ class CodexManagerPool:
             legacy_manager: 未绑定设置域连接的内部兼容 manager。
             manager_factory: 根据冻结连接构造 manager 的测试替换点。
             prewarm_client_factory: 串行初始化空状态库的 client 工厂。
+            history_reader: 从共享状态库读取全部 Codex thread 的窄接口替换点。
             resource_registry: 多 manager 共用的应用资源账本。
             max_managers: 同时保留的连接身份 manager 上限。
         """
@@ -56,6 +62,7 @@ class CodexManagerPool:
         self._prewarm_client_factory = (
             prewarm_client_factory or self._build_prewarm_client
         )
+        self._history_reader = history_reader or self._build_history_reader()
         self._max_managers = max_managers
         self._managers: dict[str, CodexHostManager] = {}
         self._manager_launches: dict[str, RuntimeLaunchConfiguration] = {}
@@ -320,60 +327,26 @@ class CodexManagerPool:
         limit: int,
         excluded_ids: frozenset[str] = frozenset(),
     ) -> list[dict[str, Any]]:
-        """合并当前已存在 manager 的历史列表并按更新时间截断。"""
+        """从共享状态库读取历史，不依赖已惰性创建的连接 manager。"""
 
         await self._ensure_prewarmed()
-        managers = self._all_managers()
-        results = await asyncio.gather(
-            *(
-                manager.list_threads(cwd=cwd, limit=limit, excluded_ids=excluded_ids)
-                for manager in managers
-            ),
-            return_exceptions=True,
+        return await self._history_reader.list_threads(
+            cwd=cwd,
+            limit=limit,
+            excluded_ids=excluded_ids,
         )
-        pages = [page for page in results if isinstance(page, list)]
-        if not pages:
-            failures = [
-                result for result in results if isinstance(result, BaseException)
-            ]
-            if failures:
-                raise failures[0]
-            return []
-        rows_by_id: dict[str, dict[str, Any]] = {}
-        anonymous_rows: list[dict[str, Any]] = []
-        for page in pages:
-            for row in page:
-                thread_id = row.get("id")
-                if isinstance(thread_id, str) and thread_id:
-                    current = rows_by_id.get(thread_id)
-                    if current is None or str(row.get("updatedAt", "")) > str(
-                        current.get("updatedAt", "")
-                    ):
-                        rows_by_id[thread_id] = row
-                else:
-                    anonymous_rows.append(row)
-        rows = [*rows_by_id.values(), *anonymous_rows]
-        rows.sort(key=lambda row: str(row.get("updatedAt", "")), reverse=True)
-        return rows[:limit]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
-        """在当前 manager 集合中查找指定原生 thread。"""
+        """通过共享状态读取器取得指定原生 thread。"""
 
         await self._ensure_prewarmed()
-        last_error: BaseException | None = None
-        for manager in self._all_managers():
-            try:
-                return await manager.read_thread(thread_id)
-            except Exception as exc:  # noqa: BLE001 - 另一个连接可能持有该 thread。
-                last_error = exc
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("no Codex manager is available")
+        return await self._history_reader.read_thread(thread_id)
 
     async def close(self) -> None:
-        """并发关闭所有相互独立的 manager，单个失败不跳过其他连接。"""
+        """并发关闭历史读取器和全部 manager，单个失败不跳过其他资源。"""
 
         results = await asyncio.gather(
+            self._history_reader.close(),
             *(manager.close() for manager in self._all_managers()),
             return_exceptions=True,
         )
@@ -443,6 +416,29 @@ class CodexManagerPool:
                 if self._resource_registry is not None
                 else None
             ),
+        )
+
+    def _build_history_reader(self) -> CodexThreadHistoryReader:
+        """创建固定连接共享状态根的专用历史读取器。"""
+
+        manager = CodexHostManager(
+            client_factory=lambda: AppServerClient(
+                env={
+                    "CODEX_HOME": str(self._shared_state_root),
+                    "CODEX_SQLITE_HOME": str(self._shared_state_root),
+                },
+                process_controller=(
+                    self._resource_registry.process_controller
+                    if self._resource_registry is not None
+                    else None
+                ),
+            ),
+            resource_registry=self._resource_registry,
+            resource_namespace="history",
+        )
+        return CodexThreadHistoryService(
+            manager,
+            legacy_manager=self._legacy,
         )
 
     def _build_manager(self, launch: RuntimeLaunchConfiguration) -> CodexHostManager:

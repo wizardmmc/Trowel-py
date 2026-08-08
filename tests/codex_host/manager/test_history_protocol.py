@@ -129,6 +129,38 @@ async def test_thread_list_keeps_paging_until_exclusions_are_replaced() -> None:
     await manager.close()
 
 
+async def test_thread_list_can_read_only_the_shared_state_database() -> None:
+    """专用历史 manager 必须把状态库单一来源选项传给 app-server。"""
+
+    async def behavior():
+        msg = yield Step.recv()
+        yield _init_resp(msg["id"])
+        yield Step.recv()
+
+        listed = yield Step.recv()
+        assert listed["method"] == "thread/list"
+        assert listed["params"] == {
+            "cwd": "/workspace",
+            "limit": 20,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+            "useStateDbOnly": True,
+        }
+        yield Step.send(
+            {"id": listed["id"], "result": {"data": [], "nextCursor": None}}
+        )
+        yield Step.hold(0.05)
+
+    manager = _manager(FakeAppServer(behavior()))
+
+    assert await manager.list_threads(
+        cwd="/workspace",
+        limit=20,
+        use_state_db_only=True,
+    ) == []
+    await manager.close()
+
+
 @pytest.mark.parametrize("next_cursor", [7, {"page": 2}])
 async def test_thread_list_rejects_non_string_cursor(next_cursor: object) -> None:
     async def behavior():

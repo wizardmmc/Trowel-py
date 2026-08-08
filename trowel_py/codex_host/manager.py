@@ -509,6 +509,7 @@ class CodexHostManager:
         cwd: str,
         limit: int,
         excluded_ids: frozenset[str] = frozenset(),
+        use_state_db_only: bool = False,
     ) -> list[dict[str, Any]]:
         """按更新时间列出指定 cwd 的默认交互 thread。
 
@@ -519,6 +520,8 @@ class CodexHostManager:
             cwd: 只读取该工作目录下的 Codex thread。
             limit: 最多返回的非排除 thread 数。
             excluded_ids: 已确认属于 Trowel 委派子会话的 Codex thread ID。
+            use_state_db_only: 为 True 时只查询共享 SQLite 状态库，不扫描
+                ``CODEX_HOME`` 下的 rollout 目录。
         """
 
         if limit <= 0:
@@ -534,6 +537,8 @@ class CodexHostManager:
                 "sortKey": "updated_at",
                 "sortDirection": "desc",
             }
+            if use_state_db_only:
+                params["useStateDbOnly"] = True
             if cursor is not None:
                 params["cursor"] = cursor
             result = await client.request(
