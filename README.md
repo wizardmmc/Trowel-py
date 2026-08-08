@@ -137,4 +137,19 @@ python -m pip install -e .
 
 开发与提交规则见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
-MIT License，见 [LICENSE](./LICENSE)。
+## 许可证与贡献
+
+Trowel 的版权人是 `hamxf`，具体声明见 [COPYRIGHT](./COPYRIGHT)。项目采用
+[GNU Affero General Public License v3.0 only](./LICENSE)。个人和组织可以使用、研究、
+修改和商业化 Trowel；分发修改版或通过网络向用户提供修改版时，需要按 AGPLv3 提供
+对应源码并保留许可证说明。
+
+项目维护者可以另行提供商业许可。外部贡献者保留自己贡献的版权，同时需要签署
+[个人贡献者许可协议](./CLA.md)，授权项目维护者继续以 AGPL 或其他条款发布这些贡献。
+签署通过 Pull Request 评论完成，不要求公开真实姓名或地址。
+
+代码许可证不授予 Trowel 名称和官方品牌的使用权。修改版应使用自己的名称和 Logo；
+真实描述来源、兼容性和社区活动的使用方式见[品牌使用政策](./TRADEMARKS.md)。
+
+在本次许可证变更之前已经按 MIT License 发布的版本和副本继续适用原有 MIT 授权；
+本次变更不追溯撤销已经授予的权利。

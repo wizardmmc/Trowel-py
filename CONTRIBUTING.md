@@ -3,6 +3,26 @@
 Trowel 使用 Issue、独立分支、Pull Request、自动检查和 Review 管理改动，
 最终通过 Squash merge 写入受保护分支。
 
+## 许可证与贡献授权
+
+Trowel 的公开源码采用 `AGPL-3.0-only`。贡献者保留自己提交内容的版权；为了让项目
+能够持续发布 AGPL 社区版本，并保留另行提供商业许可的能力，外部贡献者还需要签署
+[个人贡献者许可协议](./CLA.md)。
+
+签署由 Pull Request 中的 CLA 检查提示完成。首次贡献时，在 Pull Request 下评论：
+
+```text
+I have read the CLA Document and I hereby sign the CLA
+```
+
+签名记录包含 GitHub 账号、Pull Request 和签署时间，不要求公开真实姓名或地址。同一
+GitHub 账号只需签署一次；协议实质变化时会发布新版本并重新签署。代表公司或其他组织
+提交代码时，应在合并前联系维护者确认组织授权。
+
+提交内容应为贡献者原创或已经取得兼容的授权。引入第三方代码、设计、字体、数据或
+其他素材时，应在 Pull Request 中写明来源和许可证。代码许可证不授予 Trowel 名称和
+官方品牌的使用权，具体边界见[品牌使用政策](./TRADEMARKS.md)。
+
 ## 开始前
 
 先搜索已有 Issue，避免重复工作。Bug 应说明复现方式、预期结果、实际结果和
@@ -86,7 +106,8 @@ Commit message 包含简明标题和正文。正文说明本次改变了什么�
 
 Pull Request 标题和正文会成为最终 squash commit 的标题和正文。提交者应处理
 Review 意见、解决对话并保持目标分支为最新状态。所有自动检查通过后，贡献者的
-Pull Request 还需要一名具有写权限的协作者批准。
+Pull Request 还需要一名具有写权限的协作者批准。外部贡献者的 Pull Request 还需要
+通过 CLA 检查。
 
 仓库只允许 Squash merge，并在合并后自动删除远端功能分支。仓库管理员自己的
 Pull Request 仍须经过 PR 和自动检查；仅人工 approval 可以在 PR 内按维护者流程
