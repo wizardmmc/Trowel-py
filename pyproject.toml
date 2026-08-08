@@ -45,6 +45,7 @@ trowel_py = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "markdown-it-py>=4.2.0",
     "mypy>=1.13",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",

@@ -11,8 +11,7 @@ dist/
 
 # ── Secrets & local config (carries API keys / machine paths) ───────────────
 config.toml
-CLAUDE.md
-AGENTS.md
+CLAUDE.local.md
 CLAUDE-archived.md
 Learn.md
 
@@ -52,8 +51,19 @@ web/out/
 .claude/
 .DS_Store
 
-# ── Private notes (training log etc.) ───────────────────────────────────────
-docs/
+# ── 共享项目文档与私人规划
+# docs 默认私有，只版本化下列已审查的项目上下文。
+# Git 要求每层父目录都显式取消忽略。
+docs/*
+!docs/foundation/
+docs/foundation/*
+!docs/foundation/prd.md
+!docs/foundation/development.md
+!docs/foundation/front-end-design-language.md
+!docs/reference/
+docs/reference/*
+!docs/reference/agent-runtime.md
+!docs/reference/memory-runtime.md
 progress.txt
 tmp/
 *.log
