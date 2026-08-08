@@ -34,6 +34,8 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Install locked Python dependencies
         run: uv sync --locked
+      - name: Check shared project context
+        run: uv run --no-sync python scripts/shared_context_check.py
       - name: Run backend tests
         run: uv run --no-sync python -m pytest --ignore=tests/contracts
       - name: Run Python lint
