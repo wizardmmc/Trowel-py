@@ -14,7 +14,8 @@
 | `web/` | React 前端 |
 | `tests/` | Python 测试与公开契约快照 |
 
-本地设计文档、agent 指令、真实配置、数据库、日志和录制数据均被 gitignore，不属于公开仓库内容。
+经审查的根/模块 Agent 指令和 `docs/foundation`、`docs/reference` 公共资料跟随 Git；开发者
+自己的 slice、milestone、实验、临时补充、真实配置、数据库、日志和录制数据仍被 gitignore。
 
 ## 后端
 
