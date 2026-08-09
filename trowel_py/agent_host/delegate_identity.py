@@ -116,7 +116,10 @@ class NonUserIdentityStore:
     def _load(self) -> dict[Runtime, set[str]]:
         """读取并严格校验当前索引；文件不存在时返回两个空集合。"""
 
-        empty = {Runtime.CLAUDE_CODE: set(), Runtime.CODEX: set()}
+        empty: dict[Runtime, set[str]] = {
+            Runtime.CLAUDE_CODE: set(),
+            Runtime.CODEX: set(),
+        }
         if not self._path.exists():
             return empty
         try:

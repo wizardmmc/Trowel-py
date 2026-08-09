@@ -10,6 +10,8 @@ from trowel_py.model_os.types import (
     EpisodeStatus,
     EventEnvelope,
     PendingDescriptor,
+    ReconcileReason,
+    SnapshotRef,
     WaitingSubtype,
 )
 
@@ -35,20 +37,20 @@ class EpisodeFoldRuntime:
         state_replace: 复制 Episode 状态并覆盖指定字段的函数。
     """
 
-    find_episode: Callable[..., Any]
-    replace_episode: Callable[..., Any]
-    pending_from_payload: Callable[..., Any]
-    episode_status: Any
-    reconcile_reason: Callable[..., Any]
-    snapshot_ref: Callable[..., Any]
-    state_replace: Callable[..., Any]
+    find_episode: Callable[[Snapshot, str | None], EpisodeState | None]
+    replace_episode: Callable[[Snapshot, str | None, EpisodeState], Snapshot]
+    pending_from_payload: Callable[[dict[str, Any]], PendingDescriptor]
+    episode_status: type[EpisodeStatus]
+    reconcile_reason: type[ReconcileReason]
+    snapshot_ref: type[SnapshotRef]
+    state_replace: Callable[..., EpisodeState]
 
 
 def episode_from_created(
     event: EventEnvelope,
     *,
     episode_state_factory: Callable[..., EpisodeState],
-    episode_status: Any = EpisodeStatus,
+    episode_status: type[EpisodeStatus] = EpisodeStatus,
 ) -> EpisodeState:
     """从创建事件构造 Episode 的初始派生状态。
 
@@ -123,7 +125,7 @@ def _pending_from_payload(
     p: dict[str, Any],
     *,
     pending_descriptor_factory: Callable[..., PendingDescriptor] = PendingDescriptor,
-    waiting_subtype: Any = WaitingSubtype,
+    waiting_subtype: type[WaitingSubtype] = WaitingSubtype,
 ) -> PendingDescriptor:
     """从暂停事件 payload 还原原生会话的待决请求。
 

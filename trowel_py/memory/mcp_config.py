@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from trowel_py.agent_mcp.launch import build_agent_mcp_launch_spec
@@ -156,7 +157,7 @@ def write_mcp_config(
     return path
 
 
-def _write_private_config(path: Path, config: dict[str, object]) -> None:
+def _write_private_config(path: Path, config: Mapping[str, object]) -> None:
     """原子写入只允许当前账号读取的 MCP 配置。
 
     Agent MCP 配置可能包含桌面实例凭据。临时文件从创建起即使用 ``0600``，再原子

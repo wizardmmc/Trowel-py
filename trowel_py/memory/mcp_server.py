@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -42,6 +43,16 @@ from trowel_py.memory.mcp.retriever_factory import (
 )
 from trowel_py.memory.store import MemoryStore
 from trowel_py.memory.types import Note
+
+_ListToolsHandler = Callable[[], Awaitable[list[types.Tool]]]
+_ListToolsDecorator = Callable[[], Callable[[_ListToolsHandler], _ListToolsHandler]]
+
+
+def _register_list_tools(server: Server, handler: _ListToolsHandler) -> None:
+    """在单一边界内适配 MCP SDK 未声明类型的工具发现注册方法。"""
+
+    decorator = cast(_ListToolsDecorator, server.list_tools)
+    decorator()(handler)
 
 __all__ = [
     "_DICT_L0",
@@ -279,7 +290,6 @@ def _build_server(
     dictionary_path = root / _DICT_L0
     retriever = LazyRetriever(retriever_factory)
 
-    @server.list_tools()
     async def list_tools() -> list[types.Tool]:
         """返回 search、read、outcome 的客户端发现定义。
 
@@ -409,6 +419,7 @@ def _build_server(
 
     # Server.call_tool 只把 name/arguments 传给回调，会丢弃本模块需要的 _meta。
     server.request_handlers[types.CallToolRequest] = _handle_call_tool
+    _register_list_tools(server, list_tools)
     return server
 
 

@@ -1,5 +1,7 @@
 """读写默认玩家的宠物状态。"""
 
+from __future__ import annotations
+
 import sqlite3
 from datetime import datetime
 
@@ -7,7 +9,7 @@ from trowel_py.pet.models import Pet
 from trowel_py.player.repository import create_player_repository
 
 
-def create_pet_repository(conn: sqlite3.Connection):
+def create_pet_repository(conn: sqlite3.Connection) -> PetRepository:
     """创建宠物数据仓库并确保默认宠物已经存在。
 
     预建默认宠物，避免后续更新在缺行时静默失效。

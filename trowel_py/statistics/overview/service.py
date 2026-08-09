@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from trowel_py.statistics.agent.schemas import (
     AgentActivityData,
@@ -47,6 +48,10 @@ _SOURCE_UNAVAILABLE_TITLES = {
     "calls": "调用详情数据不可用",
     "session_problems": "会话问题数据不可用",
 }
+
+DatabaseName = Literal["sessions.db", "workspaces.db", "telemetry.db"]
+OverviewLevel = Literal["info", "warning", "error", "unavailable"]
+FreshnessStatus = Literal["fresh", "stale", "unavailable"]
 
 
 def compose_overview_statistics(
@@ -204,12 +209,12 @@ def _database_files(
 ) -> list[DatabaseFileStatistics]:
     """返回固定三行数据库体积，缺失行保持 unavailable。"""
 
-    known = (
+    known: dict[DatabaseName, DatabaseFileStatistics] = (
         {item.name: item for item in runtime.sqlite.files}
         if runtime is not None
         else {}
     )
-    owners = {
+    owners: dict[DatabaseName, str] = {
         "sessions.db": "memory.sessions",
         "workspaces.db": "desktop",
         "telemetry.db": "telemetry",
@@ -284,7 +289,7 @@ def _statuses(
             )
     if agent is not None:
         agent_freshness = sources["agent"].freshness
-        status_specs = (
+        status_specs: tuple[tuple[str, OverviewLevel, int, str, str], ...] = (
             (
                 "agent_failed",
                 "error",
@@ -425,6 +430,7 @@ def _merged_freshness(values: dict[str, SourceFreshness]) -> SourceFreshness:
 
     timestamps = [item.updated_at for item in values.values() if item.updated_at]
     statuses = {item.status for item in values.values()}
+    status: FreshnessStatus
     if not values or statuses == {"unavailable"}:
         status = "unavailable"
     elif "stale" in statuses:

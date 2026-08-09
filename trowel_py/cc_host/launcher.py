@@ -19,7 +19,7 @@ CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
 def build_args(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     *,
     model: str | None = DEFAULT_MODEL,
     fallback_model: str | None = DEFAULT_FALLBACK_MODEL,
@@ -30,7 +30,7 @@ def build_args(
     append_system_prompt: str | None = None,
     mcp_config: str | None = None,
     allowed_tools: Sequence[str] | None = None,
-    settings_path: str | os.PathLike | None = None,
+    settings_path: str | os.PathLike[str] | None = None,
     setting_sources: str | None = None,
 ) -> list[str]:
     """构造 Claude Code stream-json 子进程的启动参数。
@@ -92,7 +92,7 @@ def build_args(
 
 
 def build_subprocess_kwargs(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     *,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:

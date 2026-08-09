@@ -70,3 +70,19 @@ markers = [
     "integration: tests that spawn a real `claude -p` subprocess (skip in nested interactive sessions; #46416)",
     "benchmark: slice-040 layer-2 quality checks that spawn a real cc distillation agent (run explicitly: pytest -m benchmark)",
 ]
+
+[tool.mypy]
+python_version = "3.13"
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true

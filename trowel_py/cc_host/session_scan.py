@@ -55,7 +55,7 @@ class SessionConfigSummary:
     permission_mode: str | None
 
 
-def cc_projects_root(config_home: str | os.PathLike | None = None) -> Path:
+def cc_projects_root(config_home: str | os.PathLike[str] | None = None) -> Path:
     """返回指定 Claude 用户家保存本地项目会话的根目录。
 
     Args:
@@ -66,7 +66,7 @@ def cc_projects_root(config_home: str | os.PathLike | None = None) -> Path:
     return home / "projects"
 
 
-def workdir_to_slug(workdir: str | os.PathLike) -> str:
+def workdir_to_slug(workdir: str | os.PathLike[str]) -> str:
     """将真实工作目录转换为 CC 使用的项目目录 slug。
 
     解析符号链接后，将每个非 ASCII 字母数字字符替换为连字符。
@@ -92,7 +92,7 @@ def _is_valid_uuid_session_id(stem: str) -> bool:
 
 
 def count_sessions(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     *,
     projects_root: Path | None = None,
 ) -> int:
@@ -108,7 +108,7 @@ def count_sessions(
 
 
 def read_session_config(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     cc_session_id: str,
     *,
     projects_root: Path | None = None,
@@ -198,7 +198,7 @@ def read_session_config(
 
 
 def list_sessions(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     *,
     limit: int | None = None,
     excluded_ids: frozenset[str] = frozenset(),
@@ -325,9 +325,12 @@ def _last_string_field(blob: str, field: str) -> str:
     if not matches:
         return ""
     raw = matches[-1]
+    if not isinstance(raw, str):
+        raise ValueError("title field pattern must contain exactly one capture group")
     try:
         # 正则只捕获 JSON 字符串体，这里补回引号以解码其中的转义。
-        return json.loads('"' + raw + '"')
+        decoded = json.loads('"' + raw + '"')
+        return decoded if isinstance(decoded, str) else raw
     except json.JSONDecodeError:
         return raw
 

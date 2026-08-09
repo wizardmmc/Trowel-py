@@ -19,6 +19,7 @@ from trowel_py.configuration.diagnostics import build_diagnostics
 from trowel_py.configuration.errors import ConfigurationError, version_conflict
 from trowel_py.configuration.migration import migrate_legacy_llm_config
 from trowel_py.configuration.models import (
+    CodexCatalogEntry,
     ConnectionKind,
     RuntimeKind,
     SecretKind,
@@ -83,7 +84,7 @@ class ConfigurationRoute(APIRoute):
         return safe_handler
 
 
-_ERROR_RESPONSES = {
+_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status_code: {"model": ErrorEnvelope}
     for status_code in (400, 401, 404, 409, 422, 502, 504)
 }
@@ -435,13 +436,14 @@ async def inherit_global_codex_config(
         raise version_conflict()
     hub = getattr(request.app.state, "agent_hub", None)
     starter = getattr(hub, "begin_codex_connection_maintenance", None)
-    maintenance_started = starter is not None
-    if maintenance_started and not await starter(connection_id):
-        raise ConfigurationError(
-            "CONNECTION_IN_USE",
-            "仍有会话使用这个 Codex 连接，请先关闭相关会话后再复制配置",
-            status_code=409,
-        )
+    ender = getattr(hub, "end_codex_connection_maintenance", None)
+    if starter is not None:
+        if not await starter(connection_id):
+            raise ConfigurationError(
+                "CONNECTION_IN_USE",
+                "仍有会话使用这个 Codex 连接，请先关闭相关会话后再复制配置",
+                status_code=409,
+            )
     try:
         connection = service.inherit_global_codex_config(
             connection_id,
@@ -449,8 +451,8 @@ async def inherit_global_codex_config(
         )
         return _success(connection.to_wire())
     finally:
-        if maintenance_started:
-            hub.end_codex_connection_maintenance(connection_id)
+        if starter is not None and ender is not None:
+            ender(connection_id)
 
 
 @router.put(
@@ -572,6 +574,12 @@ async def fetch_models(
                 status_code=502,
             )
     if kind is ConnectionKind.CODEX_OFFICIAL:
+        if native_models is None:
+            raise ConfigurationError(
+                "CODEX_CATALOG_UNAVAILABLE",
+                "Codex 原生模型列表读取失败",
+                status_code=502,
+            )
         result = service.record_native_codex_catalog(
             connection_id,
             expected_version=command.expected_version,
@@ -584,7 +592,7 @@ async def fetch_models(
             draft=draft,
             codex_native_models=native_models,
         )
-    codex_catalog = ()
+    codex_catalog: tuple[CodexCatalogEntry, ...] = ()
     if runtime is RuntimeKind.CODEX:
         assert native_models
         codex_catalog = merge_codex_catalog(

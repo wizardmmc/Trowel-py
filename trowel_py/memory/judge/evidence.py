@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from trowel_py.memory.access_log import AccessRecord, read_access_log
@@ -15,7 +16,7 @@ def _summarize_access_log(
     cc_session_id: str,
     index: AttributionIndex,
     *,
-    read_access_log_fn=read_access_log,
+    read_access_log_fn: Callable[[Path | str], list[AccessRecord]] = read_access_log,
 ) -> str:
     """汇总归属于指定 CC 会话的 Search 和 Read 记录。
 

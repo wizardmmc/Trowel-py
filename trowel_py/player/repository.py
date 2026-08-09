@@ -1,5 +1,7 @@
 """读写默认玩家及其库存。"""
 
+from __future__ import annotations
+
 import sqlite3
 import uuid
 from datetime import datetime
@@ -22,7 +24,7 @@ def _inventory_item_from_row(row: sqlite3.Row) -> InventoryItem:
     return InventoryItem(**data)
 
 
-def create_player_repository(conn: sqlite3.Connection):
+def create_player_repository(conn: sqlite3.Connection) -> PlayerRepository:
     """用指定数据库连接创建玩家数据仓库。"""
     return PlayerRepository(conn)
 

@@ -11,7 +11,9 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar
+
+_RecordT = TypeVar("_RecordT")
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +152,7 @@ def read_outcome_log(root: Path | str) -> list[OutcomeRecord]:
     return _read(Path(root) / _META_DIR / _OUTCOME_LOG, OutcomeRecord)
 
 
-def _append(path: Path, obj: dict) -> None:
+def _append(path: Path, obj: dict[str, Any]) -> None:
     """把一条记录编码为 JSON 并追加到日志文件。
 
     Args:
@@ -162,7 +164,7 @@ def _append(path: Path, obj: dict) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
-def _read(path: Path, cls: type) -> list:
+def _read(path: Path, cls: type[_RecordT]) -> list[_RecordT]:
     """读取能构造成指定记录类型的 JSON 行。
 
     无法解析为 JSON 或无法构造成 ``cls`` 的行会告警并跳过，不影响其余记录。
@@ -176,7 +178,7 @@ def _read(path: Path, cls: type) -> list:
     """
     if not path.exists():
         return []
-    out: list = []
+    out: list[_RecordT] = []
     for i, raw in enumerate(path.read_text(encoding="utf-8").splitlines()):
         line = raw.strip()
         if not line:

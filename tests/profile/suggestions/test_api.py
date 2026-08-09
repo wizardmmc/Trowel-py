@@ -15,7 +15,7 @@ _FUNCTION_SIGNATURES = {
     "_load_queue": "(root: 'Path') -> 'tuple[list[Suggestion], str]'",
     "_queue_path": "(root: 'Path') -> 'Path'",
     "_suggestion_from_dict": "(item: 'dict[str, object]') -> 'Suggestion'",
-    "_suggestions_lock": "(root: 'Path')",
+    "_suggestions_lock": "(root: 'Path') -> 'Iterator[None]'",
     "_write_queue": (
         "(root: 'Path', items: 'Sequence[Suggestion]', *, updated: 'str') -> 'None'"
     ),

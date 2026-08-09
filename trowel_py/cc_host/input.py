@@ -80,7 +80,7 @@ def user_commands_dir() -> Path:
     return Path.home() / ".claude" / "commands"
 
 
-def project_commands_dir(workdir: str | os.PathLike) -> Path:
+def project_commands_dir(workdir: str | os.PathLike[str]) -> Path:
     """返回指定工作目录下的项目级 Claude Code command 目录。
 
     Args:
@@ -132,7 +132,9 @@ def expand_command_file(md_path: Path, args: str) -> str:
     return body.replace("$ARGUMENTS", args)
 
 
-def _find_command_file(name: str, workdir: str | os.PathLike) -> Path | None:
+def _find_command_file(
+    name: str, workdir: str | os.PathLike[str]
+) -> Path | None:
     """按项目级、用户级顺序查找同名 command 文件。
 
     Args:
@@ -174,7 +176,7 @@ def _split_command(text: str) -> tuple[str, str] | None:
     return name, args
 
 
-def classify_input(text: str, workdir: str | os.PathLike) -> InputAction:
+def classify_input(text: str, workdir: str | os.PathLike[str]) -> InputAction:
     """按内置命令、command 文件和 Skill prompt 的顺序分类输入。
 
     内置命令优先于同名 command 文件；项目级 command 优先于用户级 command。

@@ -12,6 +12,7 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from trowel_py.memory.ids import uuid7
 from trowel_py.memory.store import _dump_frontmatter, _split_frontmatter
@@ -77,7 +78,7 @@ def migrate_memory(root: Path | str, *, apply: bool) -> MigrateReport:
         return MigrateReport(scanned=0, migrated=0, skipped=0, backed_up=None)
 
     # 先在内存中生成含 UUID 的完整计划，使两种模式共用筛选和计数。
-    plans: list[tuple[Path, dict, str]] = []
+    plans: list[tuple[Path, dict[str, Any], str]] = []
     scanned = 0
     skipped = 0
     for p in sorted(notes_dir.glob("*.md")):

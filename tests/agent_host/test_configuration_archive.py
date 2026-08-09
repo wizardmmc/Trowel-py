@@ -144,6 +144,47 @@ def test_archive_round_trips_claude_auto_memory_condition(tmp_path: Path) -> Non
     assert restored.claude_auto_memory_disabled is True
 
 
+def test_live_claude_binding_reads_auto_memory_condition_from_archive(
+    tmp_path: Path,
+) -> None:
+    """binding 尚在时也必须从私有档案恢复不会进入公开 binding 的原生条件。"""
+
+    store = BindingStore(tmp_path / "agent-sessions.json")
+    archive = SessionConfigurationArchive(
+        tmp_path / "agent-sessions-native-configurations.json"
+    )
+    binding = make_binding(
+        session_id="live-claude-session",
+        runtime=Runtime.CLAUDE_CODE,
+        native_session_id="live-native-claude-session",
+        workdir=str(tmp_path),
+        model="opus",
+        effort="max",
+        permission="bypassPermissions",
+        memory_enabled=True,
+        profile_enabled=True,
+        capabilities=("tools",),
+        name="project",
+    )
+    store.put(binding)
+    archive.put(binding, claude_auto_memory_disabled=True)
+    hub = SessionHub(
+        store,
+        codex_manager=_ConnectionPool(),
+        cc_registry={},
+        configuration_archive=archive,
+    )
+
+    assert (
+        hub._resume_claude_auto_memory(
+            binding,
+            "live-native-claude-session",
+            fallback=False,
+        )
+        is True
+    )
+
+
 def test_corrupt_archive_is_not_overwritten(tmp_path: Path) -> None:
     """整体 JSON 损坏后写入必须失败并保留原文件，不能静默抹掉其他会话。"""
 

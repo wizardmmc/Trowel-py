@@ -20,19 +20,30 @@ export function useSessionCatalogs(
   const [slashCatalog, setSlashCatalog] = useState<{
     readonly workdir: string;
     readonly sessionId: string | null;
+    readonly generation: number;
     readonly items: readonly SlashItem[];
     readonly loading: boolean;
     readonly error: string | null;
-  }>({ workdir: "", sessionId: null, items: [], loading: false, error: null });
+  }>({
+    workdir: "",
+    sessionId: null,
+    generation: -1,
+    items: [],
+    loading: false,
+    error: null,
+  });
   const [slashGeneration, setSlashGeneration] = useState(0);
   const slashItems =
     workdir.trim() &&
     slashCatalog.workdir === workdir &&
-    slashCatalog.sessionId === claudeSessionId
+    slashCatalog.sessionId === claudeSessionId &&
+    slashCatalog.generation === slashGeneration
       ? slashCatalog.items
       : [];
   const slashRequestMatches =
-    slashCatalog.workdir === workdir && slashCatalog.sessionId === claudeSessionId;
+    slashCatalog.workdir === workdir &&
+    slashCatalog.sessionId === claudeSessionId &&
+    slashCatalog.generation === slashGeneration;
   const slashLoading = Boolean(claudeSessionId) && (!slashRequestMatches || slashCatalog.loading);
   const slashError = slashRequestMatches ? slashCatalog.error : null;
   const [models, setModels] = useState<readonly ModelOption[]>([]);
@@ -114,23 +125,24 @@ export function useSessionCatalogs(
       return;
     }
     let cancelled = false;
-    setSlashCatalog({
-      workdir,
-      sessionId: claudeSessionId,
-      items: [],
-      loading: true,
-      error: null,
-    });
     listSlashItems(workdir, claudeSessionId)
       .then((items) => {
         if (cancelled) return;
-        setSlashCatalog({ workdir, sessionId: claudeSessionId, items, loading: false, error: null });
+        setSlashCatalog({
+          workdir,
+          sessionId: claudeSessionId,
+          generation: slashGeneration,
+          items,
+          loading: false,
+          error: null,
+        });
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         setSlashCatalog({
           workdir,
           sessionId: claudeSessionId,
+          generation: slashGeneration,
           items: [],
           loading: false,
           error: error instanceof Error ? error.message : String(error),

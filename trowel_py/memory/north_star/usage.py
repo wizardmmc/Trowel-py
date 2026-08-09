@@ -455,6 +455,8 @@ def _judgement_source(
     )
 
     def as_timestamp(value: date) -> str:
+        """把活动日期转换为所选本地时区的当天起点。"""
+
         return datetime.combine(value, time.min, tzinfo=local_tz).isoformat()
 
     return {

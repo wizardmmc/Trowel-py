@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 try:
@@ -20,7 +21,7 @@ _DICT_LOCK_REL = "meta/.dictionary.lock"
 
 
 @contextlib.contextmanager
-def dictionary_lock(root: Path | str, *, exclusive: bool):
+def dictionary_lock(root: Path | str, *, exclusive: bool) -> Iterator[None]:
     """在支持 ``fcntl`` 的平台阻塞等待并持有 Dictionary 共享锁或排他锁。
 
     锁文件固定为 Memory 根目录下的 ``meta/.dictionary.lock``。调用 ``flock``

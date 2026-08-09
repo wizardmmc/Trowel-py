@@ -68,7 +68,7 @@ class ClaudeSessionsRepository:
     ) -> list[ClaudeSessionRecord]:
         """返回指定日期尚未提炼的 CC 会话，按注册时间排序。"""
         clauses = ["date = ?", "extracted_at IS NULL"]
-        params: list = [date]
+        params: list[object] = [date]
         if exclude_workdir_substr:
             clauses.append("workdir NOT LIKE ?")
             params.append(f"%{exclude_workdir_substr}%")

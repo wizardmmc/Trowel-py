@@ -1,6 +1,6 @@
 /** 展示单个 turn 的事件序列，并限制超大 turn 的初始挂载量。 */
 
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 
 import type { PerSessionState } from "../../agent/application";
 import type { ToolItem, TurnItem } from "../../agent/domain";
@@ -121,31 +121,24 @@ export function EventTimeline({
   ).length;
   // 正在屏幕上逐步增长的 turn 不会突然换样式；只在返回/恢复一个已经很大的
   // turn 时先把旧 Markdown 作为轻量原文挂载，避免重建上百棵 Markdown 子树。
-  const [extremeMode, setExtremeMode] = useState<ExtremeMode>(
-    () => diffToolCount > EXTREME_DIFF_THRESHOLD ? "compact" : "normal",
+  const [initiallyExtreme] = useState(
+    () => diffToolCount > EXTREME_DIFF_THRESHOLD,
   );
-  const [renderDeferredMarkdown, setRenderDeferredMarkdown] = useState(
-    () => diffToolCount <= EXTREME_DIFF_THRESHOLD,
-  );
+  const extremeMode: ExtremeMode =
+    initiallyExtreme ||
+    (allowExtremeCompaction && diffToolCount > EXTREME_DIFF_THRESHOLD)
+    ? "compact"
+    : diffToolCount > EXTREME_DIFF_THRESHOLD
+      ? "preserve-reading"
+      : "normal";
+  const [deferredMarkdownOverride, setDeferredMarkdownOverride] = useState<
+    boolean | null
+  >(null);
+  const renderDeferredMarkdown =
+    deferredMarkdownOverride ?? extremeMode === "normal";
   const [openedOlderDiffs, setOpenedOlderDiffs] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  useEffect(() => {
-    if (
-      diffToolCount <= EXTREME_DIFF_THRESHOLD ||
-      extremeMode === "compact"
-    ) {
-      return;
-    }
-    if (allowExtremeCompaction) {
-      setExtremeMode("compact");
-      if (extremeMode === "normal") setRenderDeferredMarkdown(false);
-    } else if (extremeMode === "normal") {
-      // 用户正在旧内容处阅读：保留既有详情，只把阈值后的新增内容轻量化。
-      setExtremeMode("preserve-reading");
-      setRenderDeferredMarkdown(false);
-    }
-  }, [allowExtremeCompaction, diffToolCount, extremeMode]);
   let deferredTextBoundary = 0;
   if (extremeMode === "compact") {
     let remaining = EXTREME_AUTO_OPEN_DIFF_DETAILS;
@@ -179,7 +172,11 @@ export function EventTimeline({
         className="cc-timeline__older-text-toggle"
         key="older-text-toggle"
         aria-pressed={renderDeferredMarkdown}
-        onClick={() => setRenderDeferredMarkdown((rendered) => !rendered)}
+        onClick={() =>
+          setDeferredMarkdownOverride((rendered) =>
+            !(rendered ?? false)
+          )
+        }
       >
         {renderDeferredMarkdown
           ? `${deferredLabel}文字使用轻量显示`

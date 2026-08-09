@@ -476,7 +476,7 @@ def binding_from_dict(data: dict[str, object]) -> SessionBinding:
             data.get("memory_mcp_enabled", memory_enabled and not has_connection)
         ),
         profile_enabled=bool(data.get("profile_enabled", True)),
-        capabilities=tuple(str(c) for c in capabilities)  # type: ignore[arg-type]
+        capabilities=tuple(str(c) for c in capabilities)
         if isinstance(capabilities, (list, tuple))
         else (),
         name=str(data["name"]),

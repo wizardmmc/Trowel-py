@@ -3,6 +3,8 @@
 import logging
 import random
 import sqlite3
+from collections.abc import Iterator
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_conn():
+def _get_conn() -> Iterator[sqlite3.Connection]:
     """为一次请求提供数据库连接。
 
     请求结束时提交并关闭连接，异常路径也不回滚。
@@ -47,7 +49,9 @@ def _get_brain() -> PetBrain:
 
 @router.get("")
 @router.get("/")
-def get_pet_route(pet_repo: PetRepository = Depends(_get_pet_repo)) -> dict:
+def get_pet_route(
+    pet_repo: PetRepository = Depends(_get_pet_repo),
+) -> dict[str, Any]:
     """返回宠物当前状态。"""
     logger.info("GET /api/pet")
     pet = get_pet(pet_repo)
@@ -59,7 +63,7 @@ def feed_route(
     request: FeedRequest,
     pet_repo: PetRepository = Depends(_get_pet_repo),
     player_repo: PlayerRepository = Depends(_get_player_repo),
-) -> dict:
+) -> dict[str, Any]:
     """消耗一件库存食物喂养宠物。"""
     logger.info("POST /api/pet/feed item=%s", request.item_id)
     try:
@@ -75,7 +79,7 @@ def feed_route(
 def interact_route(
     pet_repo: PetRepository = Depends(_get_pet_repo),
     brain: PetBrain = Depends(_get_brain),
-) -> dict:
+) -> dict[str, Any]:
     """与宠物互动，使其心情变好并返回一句回应。"""
     logger.info("POST /api/pet/interact")
     result = interact(pet_repo, brain, random.Random())
@@ -96,7 +100,7 @@ def equip_route(
     request: EquipRequest,
     pet_repo: PetRepository = Depends(_get_pet_repo),
     player_repo: PlayerRepository = Depends(_get_player_repo),
-) -> dict:
+) -> dict[str, Any]:
     """为宠物装备一件库存帽子。"""
     logger.info("PUT /api/pet/equip item=%s", request.item_id)
     try:

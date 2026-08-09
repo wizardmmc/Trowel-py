@@ -3,10 +3,12 @@
 import { useState } from "react";
 import type { WorkflowAgentInfo, WorkflowPhaseInfo } from "../../transport";
 import {
-  briefWorkflowText,
-  formatWorkflowTokens,
   WorkflowCaret,
 } from "./WorkflowSummary";
+import {
+  briefWorkflowText,
+  formatWorkflowTokens,
+} from "./workflowFormatting";
 
 function AgentNode({
   agent,

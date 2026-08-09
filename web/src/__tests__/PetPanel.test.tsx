@@ -198,6 +198,36 @@ describe("PetPanel", () => {
     expect(screen.getByText(/\+20XP/)).toBeInTheDocument();
   });
 
+  it("does not erase an action error when event history finishes later", async () => {
+    let finishHistory: ((events: EventLog[]) => void) | undefined;
+    vi.mocked(fetchEventHistory).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishHistory = resolve;
+        }),
+    );
+    const feed = vi.fn().mockRejectedValue(new Error("喂食失败"));
+    usePetStore.setState({ pet: testPet, feed });
+    usePlayerStore.setState({
+      player: testPlayer,
+      inventory: [
+        makeItem({
+          id: "food-row-1",
+          item_id: "food_basic",
+          item_type: "food",
+        }),
+      ],
+    });
+    render(<PetPanel open={true} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText("基础食物").closest("button")!);
+    await screen.findByText("喂食失败");
+
+    finishHistory?.([]);
+
+    await waitFor(() => expect(fetchEventHistory).toHaveBeenCalledOnce());
+    expect(screen.getByText("喂食失败")).toBeInTheDocument();
+  });
+
   it("closes on ESC", () => {
     const onClose = vi.fn();
     render(<PetPanel open={true} onClose={onClose} />);

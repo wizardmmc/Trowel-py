@@ -1,7 +1,6 @@
 /** 按工作目录分组展示历史会话，并把选择结果交给恢复流程。 */
 
 import {
-  useEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -62,10 +61,8 @@ export function SessionSwitcher({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    setActiveIndex((current) => Math.min(current, Math.max(history.length - 1, 0)));
-  }, [history.length, open]);
+  const lastHistoryIndex = Math.max(history.length - 1, 0);
+  const visibleActiveIndex = Math.min(activeIndex, lastHistoryIndex);
 
   function openModal(): void {
     setActiveIndex(0);
@@ -89,7 +86,11 @@ export function SessionSwitcher({
       event.preventDefault();
       const direction = event.key === "ArrowDown" ? 1 : -1;
       setActiveIndex((current) => {
-        const next = Math.max(0, Math.min(history.length - 1, current + direction));
+        const visibleCurrent = Math.min(current, lastHistoryIndex);
+        const next = Math.max(
+          0,
+          Math.min(lastHistoryIndex, visibleCurrent + direction),
+        );
         const element = document.getElementById(`history-row-${next}`);
         if (typeof element?.scrollIntoView === "function") {
           element.scrollIntoView({ block: "nearest" });
@@ -100,7 +101,7 @@ export function SessionSwitcher({
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      const row = history[activeIndex];
+      const row = history[visibleActiveIndex];
       if (row) choose(row);
     }
   }
@@ -206,7 +207,7 @@ export function SessionSwitcher({
                       type="button"
                       className="history-row"
                       role="option"
-                      aria-selected={index === activeIndex}
+                      aria-selected={index === visibleActiveIndex}
                       disabled={!row.native_session_id}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => choose(row)}

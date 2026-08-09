@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from trowel_py.cards.jsonl_parser import ChatMessage
 from trowel_py.cards.repository import CardRepository
@@ -33,7 +34,7 @@ def _draft_from_extracted(extracted: ExtractedCard) -> CardDraft:
 
 def _card_from_review(
     draft: CardDraft,
-    edits: dict | None,
+    edits: dict[str, Any] | None,
 ) -> Card:
     """用草稿和字段修改创建一张新卡片，但不写入数据库。
 

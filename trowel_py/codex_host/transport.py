@@ -610,12 +610,12 @@ class AppServerClient:
 
         kind = classify_server_message(message)
         if kind is MessageKind.RESPONSE:
-            self._on_response(message)  # type: ignore[arg-type]
+            self._on_response(message)
         elif kind is MessageKind.NOTIFICATION:
-            self._on_notification(message)  # type: ignore[arg-type]
+            self._on_notification(message)
         elif kind is MessageKind.SERVER_REQUEST:
             task = asyncio.create_task(
-                self._handle_server_request(message),  # type: ignore[arg-type]
+                self._handle_server_request(message),
                 name="codex-server-request",
             )
             self._server_request_tasks.add(task)

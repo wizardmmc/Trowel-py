@@ -1021,7 +1021,7 @@ class WorkBroker:
 
         assert self._conn is not None
         now_iso = self._now().isoformat()
-        row = self._conn.execute(
+        row: sqlite3.Row | None = self._conn.execute(
             "SELECT * FROM work_leases WHERE lease_id=? AND released_at IS NULL",
             (lease_id,),
         ).fetchone()

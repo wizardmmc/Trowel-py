@@ -5,7 +5,6 @@ from __future__ import annotations
 from trowel_py.model_os.types import (
     EpisodeSnapshot,
     EventEnvelope,
-    EventKind,
     SideEffectRecord,
     SnapshotRef,
     SnapshotSource,
@@ -23,7 +22,7 @@ def build_recovery_partial(
     snapshot_type: type[EpisodeSnapshot],
     side_effect_type: type[SideEffectRecord],
     recovery_source: SnapshotSource,
-    side_effect_event_kind: EventKind,
+    side_effect_event_kind: str,
 ) -> EpisodeSnapshot:
     """用上次快照和后续 journal 事实构造保守的恢复快照。
 

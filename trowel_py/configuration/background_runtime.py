@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol, TypeVar
 
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.agent_host.binding import SessionBinding
 from trowel_py.configuration.models import RuntimeKind, TaskId
 from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
 from trowel_py.configuration.text_provider import (
@@ -34,7 +35,7 @@ class SessionHubPort(Protocol):
         request: CreateAgentSessionRequest,
         *,
         bootstrap_context: str | None = None,
-    ) -> Any:
+    ) -> SessionBinding:
         """创建完整会话并返回持久 binding。"""
 
     def stream(self, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
@@ -143,7 +144,7 @@ class ManagedAgentHost:
         """在应用主循环执行完整 Agent 轮次并转发兼容事件对象。"""
 
         await self._open()
-        events = await _await_on_loop(
+        events: list[dict[str, Any]] = await _await_on_loop(
             self._runtime.main_loop,
             _collect_events(self._runtime.hub, self.session_id, prompt),
         )
@@ -170,7 +171,7 @@ class ManagedAgentHost:
         if self._opened:
             return
         request = _background_request(self._runtime.launch, self._workdir)
-        binding = await _await_on_loop(
+        binding: SessionBinding = await _await_on_loop(
             self._runtime.main_loop,
             self._runtime.hub.create_complete_session(
                 request,
@@ -274,7 +275,7 @@ async def _collect_events(
 
 async def _await_on_loop(
     loop: asyncio.AbstractEventLoop,
-    coroutine: Any,
+    coroutine: Coroutine[Any, Any, _T],
 ) -> _T:
     """从任意 worker 事件循环安全等待应用主循环上的协程。"""
 

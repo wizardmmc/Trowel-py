@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -14,8 +16,8 @@ def _read_yaml(path: Path) -> dict[str, object]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def test_manifest_registers_current_checks_without_promoting_known_debt() -> None:
-    """登记当前检查，但不让已知红项制造默认 Gate 永久红灯。"""
+def test_manifest_promotes_cleared_baseline_checks_to_gate() -> None:
+    """清零后的基础检查必须由默认 Gate 在本地与 CI 共同执行。"""
     root = _read_yaml(REPO_ROOT / "moon.yml")
     web = _read_yaml(REPO_ROOT / "web" / "moon.yml")
     root_tasks = root["tasks"]
@@ -58,14 +60,40 @@ def test_manifest_registers_current_checks_without_promoting_known_debt() -> Non
     } <= set(web_tasks)
 
     gate_dependencies = set(root_tasks["gate"]["deps"])
-    assert "root:backend.docstrings" not in gate_dependencies
-    assert "root:backend.mypy" not in gate_dependencies
-    assert "web:frontend.eslint" not in gate_dependencies
+    assert "root:backend.docstrings" in gate_dependencies
+    assert "root:backend.mypy" in gate_dependencies
+    assert "web:frontend.eslint" in gate_dependencies
     assert "root:desktop.agent-transport" not in gate_dependencies
     assert "root:docs.context" in gate_dependencies
     assert "root:quality.selftest" in gate_dependencies
     assert "root:backend.pytest" in gate_dependencies
     assert "web:frontend.vitest" in gate_dependencies
+
+
+def test_mypy_strictness_and_eslint_warnings_are_frozen() -> None:
+    """工具升级不能静默改变 strict 集合，ESLint warning 也不能通过。"""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    mypy = pyproject["tool"]["mypy"]
+    strict_options = {
+        "disallow_any_generics",
+        "disallow_subclassing_any",
+        "disallow_untyped_calls",
+        "disallow_untyped_defs",
+        "disallow_incomplete_defs",
+        "check_untyped_defs",
+        "disallow_untyped_decorators",
+        "warn_redundant_casts",
+        "warn_unused_ignores",
+        "warn_return_any",
+        "no_implicit_reexport",
+        "strict_equality",
+        "extra_checks",
+    }
+    assert {option for option in strict_options if mypy.get(option) is True} == strict_options
+    assert mypy.get("strict") is not True
+
+    package = json.loads((REPO_ROOT / "web" / "package.json").read_text(encoding="utf-8"))
+    assert package["scripts"]["lint"] == "eslint . --max-warnings=0"
 
 
 def test_contracts_depend_on_the_authoritative_frontend_build_leaf() -> None:

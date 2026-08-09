@@ -5,10 +5,10 @@ import type { WorkflowAgentInfo } from "../../transport";
 import type { WorkflowItem } from "../../domain";
 import { WorkflowPhaseRow } from "./WorkflowPhaseRow";
 import {
-  briefWorkflowText,
   WorkflowCaret,
   WorkflowSummary,
 } from "./WorkflowSummary";
+import { briefWorkflowText } from "./workflowFormatting";
 
 interface WorkflowTreeProps {
   readonly workflow: WorkflowItem;

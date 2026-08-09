@@ -3,15 +3,49 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, Protocol, TypeVar, cast
 
 
-def is_compact_boundary(event: Any) -> bool:
+class CcContextEvent(Protocol):
+    """描述上下文计算实际读取的 CC 事件字段。"""
+
+    @property
+    def type(self) -> str:
+        """返回 CC 顶层事件类型。"""
+        ...
+
+    @property
+    def subtype(self) -> str | None:
+        """返回可选的 CC 事件子类型。"""
+        ...
+
+    @property
+    def model(self) -> str | None:
+        """返回事件报告的模型名。"""
+        ...
+
+    @property
+    def turn_id(self) -> str | None:
+        """返回事件所属的轮次 ID。"""
+        ...
+
+    @property
+    def message_id(self) -> str | None:
+        """返回用于合并流式更新的消息 ID。"""
+        ...
+
+
+_SampleT = TypeVar("_SampleT")
+
+
+def is_compact_boundary(event: CcContextEvent) -> bool:
     """判断 CC 标准事件是否为上下文压缩边界。"""
     return event.type == "system" and event.subtype == "compact_boundary"
 
 
-def is_synthetic_assistant(event: Any, *, synthetic_model: object) -> bool:
+def is_synthetic_assistant(
+    event: CcContextEvent, *, synthetic_model: object
+) -> bool:
     """判断 assistant 事件是否来自本地命令而非模型调用。
 
     Args:
@@ -58,7 +92,7 @@ def as_int(
 
 
 def sample_from_event(
-    event: Any,
+    event: CcContextEvent,
     *,
     generation: int,
     native_session_id: str,
@@ -67,14 +101,14 @@ def sample_from_event(
     window: int | None,
     usage: Mapping[str, int] | None,
     mapping_type: object,
-    sample_type: Callable[..., Any],
+    sample_type: Callable[..., _SampleT],
     confidence_type: Any,
     unavailable_reason_type: Any,
     isinstance_fn: Callable[..., bool],
     as_int_fn: Callable[[object], int],
     round_fn: Callable[[float, int], float],
     dict_fn: Callable[..., dict[str, Any]],
-) -> Any:
+) -> _SampleT:
     """把一条 CC assistant 事件转换为上下文占用样本。
 
     usage 缺失或上下文窗口未知时仍返回样本，并明确记录不可用原因。

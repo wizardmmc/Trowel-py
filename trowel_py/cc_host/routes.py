@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -101,7 +102,10 @@ def _non_user_cc_session_ids(request: Request) -> frozenset[str]:
         return frozenset()
     from trowel_py.agent_host.binding import Runtime
 
-    return hub.non_user_native_ids(Runtime.CLAUDE_CODE)
+    raw_ids = hub.non_user_native_ids(Runtime.CLAUDE_CODE)
+    if not isinstance(raw_ids, frozenset):
+        return frozenset()
+    return frozenset(item for item in raw_ids if isinstance(item, str))
 
 
 def _sse(event: object) -> str:
@@ -246,7 +250,7 @@ def create_session(
     req: CreateSessionRequest,
     request: Request,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """创建新的 CC 会话，可通过原生会话 id 恢复已有会话。"""
     if req.session_kind == "discussion":
         raise HTTPException(status_code=404, detail="session kind not found")
@@ -274,7 +278,7 @@ def create_session(
 @router.get("/sessions/active")
 def list_active_sessions(
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """列出当前进程注册的 CC 会话及 active id。
 
     `connected` 表示 CC 子进程是否仍存活。
@@ -291,7 +295,7 @@ def list_active_sessions(
 def activate_session(
     sid: str,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """切换当前选中的 CC 会话，不关闭其他会话。"""
     _require(sid, registry)
     set_active_session_id(sid)
@@ -326,7 +330,7 @@ async def send_message(
 async def interrupt(
     sid: str,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """中断当前 turn；会话仍保留供后续发送。"""
     host = _require(sid, registry)
     await host.interrupt()
@@ -338,7 +342,7 @@ async def answer_elicit(
     sid: str,
     body: AnswerElicitRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """回答或取消待处理的提问或 plan mode 确认；成功后 CC 继续执行。"""
     host = _require(sid, registry)
     if body.cancel:
@@ -357,7 +361,7 @@ async def revert_turn(
     sid: str,
     body: RevertRequest,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """恢复到指定轮次开始前的工作树和 CC 历史。
 
     恢复后结束当前 CC 子进程，下一次发送将从恢复后的历史启动。找不到恢复点时
@@ -398,7 +402,7 @@ async def revert_turn(
 def list_history(
     request: Request,
     workdir: str = Query(..., min_length=1),
-) -> dict:
+) -> dict[str, Any]:
     """列出工作目录最近 10 个可恢复 CC 会话，并在 meta.total 返回磁盘总数。"""
     visible = list_sessions(
         workdir,
@@ -417,7 +421,7 @@ def list_history(
 def get_history(
     sid: str,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """将已保存的 CC 历史回放为 Trowel 事件。
     原生会话 id 缺失或历史文件不存在时返回空列表。"""
     host = _require(sid, registry)
@@ -426,10 +430,10 @@ def get_history(
         return {"success": True, "data": [], "error": None}
     projects_root = getattr(host, "projects_root", None)
     events = (
-        parse_history(host.workdir, cc_session_id)
+        parse_history(os.fspath(host.workdir), cc_session_id)
         if projects_root is None
         else parse_history_from_root(
-            host.workdir,
+            os.fspath(host.workdir),
             cc_session_id,
             projects_root=projects_root,
         )
@@ -438,7 +442,7 @@ def get_history(
 
 
 @router.get("/models")
-def list_models_endpoint() -> dict:
+def list_models_endpoint() -> dict[str, Any]:
     """返回 CC settings 中可用的模型别名及其实际模型。"""
     items = [asdict(m) for m in list_models()]
     return {"success": True, "data": items, "error": None}
@@ -470,7 +474,7 @@ def list_slash_items_endpoint(
     workdir: str = Query(..., min_length=1),
     session_id: str | None = Query(default=None, min_length=1),
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """返回工作目录可用的 slash command 与 skill。
 
     传入 session_id 时，用户级配置和插件严格从该 Claude Code
@@ -493,14 +497,14 @@ def list_slash_items_endpoint(
             plugins_dir=plugin_home,
             init_roster=list(host.init_roster),
         )
-    items = [asdict(item) for item in items]
-    return {"success": True, "data": items, "error": None}
+    wire_items = [asdict(item) for item in items]
+    return {"success": True, "data": wire_items, "error": None}
 
 
 @router.get("/list-dir")
 def list_dir(
     path: str = Query(..., min_length=1),
-) -> dict:
+) -> dict[str, Any]:
     """列出指定目录的直接非隐藏子目录；路径无效时返回 400。"""
     p = Path(path).expanduser()
     if not p.is_dir():
@@ -565,7 +569,7 @@ def discard_unstarted_cc_session(
 async def delete_session(
     sid: str,
     registry: dict[str, CCHost] = Depends(get_registry),
-) -> dict:
+) -> dict[str, Any]:
     """关闭并移除已注册的 CC 会话；未知 id 返回 404。"""
     _require(sid, registry)  # HTTP 路由保留 404；facade 直接调用则返回 False。
     closed = await close_cc_session(sid, registry)

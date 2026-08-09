@@ -222,7 +222,7 @@ class ProfileDistillScheduler:
 
     async def _run_once(self, *, label: str = "run") -> None:
         """在线程中派发一次提炼；代理信息随事件传递，失败不影响应用。"""
-        event = {
+        event: dict[str, Any] = {
             "date": date.today().isoformat(),
             "root": str(self._memory_root),
             "proxy_base_url": self._proxy_base_url,

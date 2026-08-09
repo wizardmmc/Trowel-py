@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from trowel_py.model_os.types import EventEnvelope
 
 
 if TYPE_CHECKING:
-    from trowel_py.model_os.reducer import Snapshot
+    from trowel_py.model_os.context_observer import ContextSample
+    from trowel_py.model_os.reducer import ContextObservationState, Snapshot
 
 
 @dataclass(frozen=True)
@@ -24,9 +25,9 @@ class ContextFoldRuntime:
         snapshot_replace: 复制原快照，替换 ``context_observations`` 并返回新快照。
     """
 
-    decode_sample: Callable[..., Any]
-    context_state_factory: Callable[..., Any]
-    snapshot_replace: Callable[..., Any]
+    decode_sample: Callable[[Mapping[str, object], str], ContextSample]
+    context_state_factory: Callable[..., ContextObservationState]
+    snapshot_replace: Callable[..., Snapshot]
 
 
 def apply_context_sample(

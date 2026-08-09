@@ -1,6 +1,7 @@
 """花园视图的数据映射与查询编排。"""
 
 import logging
+from typing import Any, TypedDict
 
 from trowel_py.garden.repository import GardenRepository
 from trowel_py.review.scheduler import get_plant_stage
@@ -8,7 +9,20 @@ from trowel_py.review.scheduler import get_plant_stage
 logger = logging.getLogger(__name__)
 
 
-def _plant_from_row(row: dict) -> dict:
+class PlantData(TypedDict):
+    """表示花园接口返回的一株植物及其复习状态。"""
+
+    card_id: object
+    title: object
+    category: object
+    explanation: object
+    plant_stage: str
+    fsrs_state: object
+    due: object
+    reps: object
+
+
+def _plant_from_row(row: dict[str, Any]) -> PlantData:
     """将卡片和复习状态的联表结果转换成植物数据。"""
     state = row.get("state")
     plant_stage = get_plant_stage(state) if state is not None else "seed"
@@ -24,7 +38,7 @@ def _plant_from_row(row: dict) -> dict:
     }
 
 
-def get_plants(garden_repo: GardenRepository) -> list[dict]:
+def get_plants(garden_repo: GardenRepository) -> list[PlantData]:
     """读取卡片与复习状态，并映射为前端使用的植物数据。"""
     rows = garden_repo.get_all_plants()
     plants = [_plant_from_row(row) for row in rows]
@@ -32,7 +46,7 @@ def get_plants(garden_repo: GardenRepository) -> list[dict]:
     return plants
 
 
-def get_stats(garden_repo: GardenRepository) -> dict:
+def get_stats(garden_repo: GardenRepository) -> dict[str, int | float]:
     """读取并原样返回花园聚合统计。"""
     stats = garden_repo.get_stats()
     logger.info(

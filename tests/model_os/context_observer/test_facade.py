@@ -7,7 +7,9 @@ from trowel_py.model_os import context_adapters, context_codec, context_observer
 
 def test_context_codec_and_adapter_facades_keep_signatures_and_identity() -> None:
     expected = {
-        "context_sample_to_dict": "(sample: 'ContextSample') -> 'dict'",
+        "context_sample_to_dict": (
+            "(sample: 'ContextSample') -> 'dict[str, object]'"
+        ),
         "context_sample_from_dict": (
             "(d: 'Mapping[str, object]', native_session_id: 'str') -> 'ContextSample'"
         ),

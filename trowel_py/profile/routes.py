@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
@@ -52,7 +53,9 @@ def _to_suggestion_dto(s: Suggestion) -> SuggestionDTO:
 
 @router.get("")
 @router.get("/")
-def get_profile(store: ProfileRepository = Depends(get_profile_store)) -> dict:
+def get_profile(
+    store: ProfileRepository = Depends(get_profile_store),
+) -> dict[str, Any]:
     """读取当前用户画像；没有可用画像时，五个维度和更新时间为空，来源为 ``user-edit``。"""
     logger.info("get /api/profile")
     profile = store.load_profile()
@@ -64,7 +67,7 @@ def get_profile(store: ProfileRepository = Depends(get_profile_store)) -> dict:
 def put_profile(
     update: ProfileUpdate,
     store: ProfileRepository = Depends(get_profile_store),
-) -> dict:
+) -> dict[str, Any]:
     """用请求内容完整替换五个画像维度；未传入的维度按空字符串写入。"""
     logger.info("put /api/profile (source=%s)", update.source)
     try:
@@ -76,7 +79,9 @@ def put_profile(
 
 
 @router.get("/suggestions")
-def get_suggestions(store: ProfileRepository = Depends(get_profile_store)) -> dict:
+def get_suggestions(
+    store: ProfileRepository = Depends(get_profile_store),
+) -> dict[str, Any]:
     """返回当前画像提炼策略生成且仍待用户审核的建议。"""
     logger.info("get /api/profile/suggestions")
     try:
@@ -97,7 +102,7 @@ def patch_suggestion(
     suggestion_id: str,
     update: SuggestionStatusUpdate,
     store: ProfileRepository = Depends(get_profile_store),
-) -> dict:
+) -> dict[str, Any]:
     """把指定 ID 的全部建议标记为已接受或已丢弃，不写入画像正文。"""
     logger.info("patch /api/profile/suggestions/%s -> %s", suggestion_id, update.status)
     try:

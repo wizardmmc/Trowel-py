@@ -12,6 +12,7 @@ from trowel_py.codex_host.history_reader import (
     CodexThreadHistoryReader,
 )
 from trowel_py.codex_host.manager import CodexHostManager
+from trowel_py.codex_host.pending_requests import PendingRequest
 from trowel_py.codex_host.transport import AppServerClient
 from trowel_py.configuration.runtime_launch import RuntimeLaunchConfiguration
 from trowel_py.resource_lifecycle.registry import ResourceRegistry
@@ -133,14 +134,21 @@ class CodexManagerPool:
 
         await self._require_manager(session.session_id).close_session(session, **kwargs)
 
-    def answer_request(self, session_id: str, request_id: str, decision: str) -> Any:
+    def answer_request(
+        self, session_id: str, request_id: str, decision: str
+    ) -> PendingRequest:
         """把审批答复路由到 session 所属 manager。"""
 
         return self._require_manager(session_id).answer_request(
             session_id, request_id, decision
         )
 
-    def list_requests(self, session_id: str) -> tuple[Any, ...]:
+    def decline_request(self, session_id: str, request_id: str) -> PendingRequest:
+        """立即拒绝 session 所属 manager 中的待决审批。"""
+
+        return self._require_manager(session_id).decline_request(session_id, request_id)
+
+    def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
         """读取 session 所属 manager 保存的待决审批。"""
 
         return self._require_manager(session_id).list_requests(session_id)
@@ -242,7 +250,7 @@ class CodexManagerPool:
                     self._managers.pop(key, None)
                     self._manager_launches.pop(key, None)
             if failures:
-                raise ExceptionGroup(
+                raise BaseExceptionGroup(
                     "Codex connection maintenance close failed",
                     failures,
                 )
@@ -352,7 +360,7 @@ class CodexManagerPool:
         )
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:
-            raise ExceptionGroup("Codex manager pool close failed", failures)
+            raise BaseExceptionGroup("Codex manager pool close failed", failures)
 
     def _manager_for_launch(
         self, launch: RuntimeLaunchConfiguration

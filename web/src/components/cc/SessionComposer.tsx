@@ -12,7 +12,10 @@ import {
   getRuntimePresentation,
 } from "../../agent/runtimes";
 import { Composer } from "./Composer";
-import { ACTIVE_SESSION_PRESETS, type PermissionPreset } from "./PermissionFactsChip";
+import {
+  ACTIVE_SESSION_PRESETS,
+  type PermissionPreset,
+} from "./permissionPresets";
 
 const CODEX_SKILL_SOURCE: Readonly<Record<CodexSkill["scope"], SlashItem["source"]>> = {
   user: "user",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -81,7 +81,7 @@ class ReviewRequest(BaseModel):
     """
 
     action: Literal["accept", "edit", "reject"]
-    edits: dict | None = None
+    edits: dict[str, Any] | None = None
 
 
 class CardListResponse(BaseModel):

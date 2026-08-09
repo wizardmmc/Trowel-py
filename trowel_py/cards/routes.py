@@ -1,5 +1,8 @@
 """提供卡片草稿提取、候选解释、审核、查重、搜索和列表查询接口。"""
 
+from collections.abc import Iterator
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from trowel_py.cards.repository import CardRepository, create_card_repository
 from trowel_py.cards.service import (
@@ -25,7 +28,7 @@ router = APIRouter()
 _draft_store: dict[str, CardDraft] = {}
 
 
-def _get_conn():
+def _get_conn() -> Iterator[sqlite3.Connection]:
     """创建请求使用的数据库连接；请求结束时提交并关闭，异常路径也提交、不回滚。"""
     conn = create_db()
     try:
@@ -58,7 +61,7 @@ def _get_llm_service() -> LLMService:
 @router.post("/extract")
 def extract(
     request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)
-) -> dict:
+) -> dict[str, Any]:
     """从原始文本生成卡片草稿，并保存到进程内草稿池。"""
 
     logger.info("Extract request received, content length: %d", len(request.content))
@@ -76,7 +79,7 @@ def extract(
 @router.post("/extract-conversation")
 def extract_conversation(
     request: ExtractRequest, llm_service: LLMService = Depends(_get_llm_service)
-) -> dict:
+) -> dict[str, Any]:
     """从 Claude Code JSONL 对话记录中提取草稿，并保存到进程内草稿池。"""
     logger.info(
         "extract-conversation request received, content length: %d",
@@ -101,7 +104,7 @@ def extract_conversation(
 def re_explain_card(
     request: ReExplainRequest,
     llm_service: LLMService = Depends(_get_llm_service),
-) -> dict:
+) -> dict[str, Any]:
     """为草稿生成一版候选解释，不修改草稿或数据库。
 
     候选解释只在响应中返回，是否保留由调用方决定。
@@ -131,7 +134,7 @@ def review(
     request: ReviewRequest,
     card_repo: CardRepository = Depends(_get_card_repo),
     review_repo: ReviewRepository = Depends(_get_review_repo),
-) -> dict:
+) -> dict[str, Any]:
     """根据审核动作拒绝草稿，或保存卡片和初始复习状态。
 
     无论审核结果如何，进程内草稿池都不会删除这份草稿。草稿不存在时仍返回
@@ -152,11 +155,11 @@ def review(
         return {"success": True, "data": {"card": card.model_dump()}, "error": None}
 
 
-@router.get("/{draft_id}/dedup")
+@router.get("/{draft_id}/dedup", response_model=None)
 def de_duplicate(
     draft_id: str,
     card_repo: CardRepository = Depends(_get_card_repo),
-):
+) -> dict[str, Any]:
     """为尚未保存的草稿查找重复卡片。
 
     路径参数是草稿 ID，不是卡片 ID。草稿不存在时仍返回 HTTP 200，
@@ -175,7 +178,9 @@ def de_duplicate(
 
 
 @router.get("/search")
-def search_cards(q: str, card_repo: CardRepository = Depends(_get_card_repo)) -> dict:
+def search_cards(
+    q: str, card_repo: CardRepository = Depends(_get_card_repo)
+) -> dict[str, Any]:
     """按 FTS5 查询表达式搜索卡片的标题、解释和标签。"""
     logger.info("Search cards, query: %s", q)
     cards = card_repo.search_by_fts5(q)
@@ -192,7 +197,7 @@ def get_all_cards(
     page: int = 1,
     limit: int = 20,
     card_repo: CardRepository = Depends(_get_card_repo),
-) -> dict:
+) -> dict[str, Any]:
     """按从 1 开始的页码和每页数量返回卡片列表及总数。"""
 
     cards = card_repo.find_all()

@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ _SNAPSHOTS_DIR = "meta/snapshots"
 
 
 @contextlib.contextmanager
-def _tidy_lock(root: Path):
+def _tidy_lock(root: Path) -> Iterator[None]:
     """尝试独占同一记忆目录的 Tidy 流程。
 
     不支持 ``fcntl`` 的平台不加锁；支持时采用非阻塞文件锁，锁已被占用会

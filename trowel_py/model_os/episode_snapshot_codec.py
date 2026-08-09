@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
+
+
+_PendingT = TypeVar("_PendingT")
+_SnapshotT = TypeVar("_SnapshotT")
 
 
 def pending_to_payload(pending: Any) -> dict[str, Any]:
@@ -31,9 +35,9 @@ def pending_to_payload(pending: Any) -> dict[str, Any]:
 def pending_from_payload(
     payload: dict[str, Any],
     *,
-    pending_type: Callable[..., Any],
+    pending_type: Callable[..., _PendingT],
     waiting_subtype: Callable[[Any], Any],
-) -> Any:
+) -> _PendingT:
     """从快照字段构造 Episode 的等待请求。
 
     Args:
@@ -169,12 +173,12 @@ def snapshot_from_payload(
     payload: dict[str, Any],
     *,
     decode_pending: Callable[[dict[str, Any]], Any],
-    snapshot_type: Callable[..., Any],
+    snapshot_type: Callable[..., _SnapshotT],
     side_effect_type: Callable[..., Any],
     artifact_type: Callable[..., Any],
     snapshot_ref_type: Callable[..., Any],
     snapshot_source: Callable[[Any], Any],
-) -> Any:
+) -> _SnapshotT:
     """从持久化字段构造 EpisodeSnapshot 及其嵌套对象。
 
     缺少顶层字段时使用历史缺省值，未知顶层字段会被忽略。空的

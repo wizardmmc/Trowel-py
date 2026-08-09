@@ -18,6 +18,18 @@ tasks:
     command: ['python3', 'fixture_task.py', '--id', 'backend.contracts', '--contracts']
     deps: ['root:frontend.build']
 
+  frontend.eslint:
+    description: '前端规则错误由 frontend owner 处理，详情见 web/src/BadComponent.tsx。'
+    command: ['python3', 'fixture_task.py', '--id', 'frontend.eslint', '--fail', '21']
+
+  backend.docstrings:
+    description: 'Python 说明缺失由 docstring owner 处理，详情见 package/missing.py。'
+    command: ['python3', 'fixture_task.py', '--id', 'backend.docstrings', '--fail', '22']
+
+  backend.mypy:
+    description: '生产类型错误由 mypy owner 处理，详情见 package/typed.py。'
+    command: ['python3', 'fixture_task.py', '--id', 'backend.mypy', '--fail', '23']
+
   independent.fail-a:
     description: '第一条独立失败分支。'
     command: ['python3', 'fixture_task.py', '--id', 'independent.fail-a', '--fail', '11']
@@ -68,3 +80,11 @@ tasks:
       - 'web:frontend.cwd'
       - 'root:platform.linux-only'
       - 'root:platform.mac-only'
+
+  gate-basics:
+    description: '聚合三个基础质量反向分支。'
+    command: 'true'
+    deps:
+      - 'root:frontend.eslint'
+      - 'root:backend.docstrings'
+      - 'root:backend.mypy'

@@ -31,7 +31,7 @@ tasks:
     command: ['.venv/bin/python', 'scripts/docstring_coverage.py', 'trowel_py']
 
   backend.mypy:
-    description: '报告全后端当前 mypy 债务；清零并验证稳定前不进入默认 Gate。'
+    description: '严格检查生产 Python 包的静态类型契约。'
     command: ['.venv/bin/python', '-m', 'mypy', 'trowel_py']
 
   quality.selftest:
@@ -47,6 +47,9 @@ tasks:
       - 'root:backend.pytest'
       - 'root:backend.contracts'
       - 'root:backend.ruff'
+      - 'root:backend.docstrings'
+      - 'root:backend.mypy'
+      - 'web:frontend.eslint'
       - 'web:frontend.typecheck'
       - 'web:frontend.agent-boundaries'
       - 'web:frontend.module-comments'

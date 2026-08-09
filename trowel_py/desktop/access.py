@@ -107,6 +107,8 @@ def _is_claude_runtime_lease_request(scope: Scope) -> bool:
 def _bearer_credential(scope: Scope) -> str | None:
     """从 ASGI 请求头读取大小写不敏感的 Bearer 凭据。"""
     for raw_name, raw_value in scope.get("headers", []):
+        if not isinstance(raw_name, bytes) or not isinstance(raw_value, bytes):
+            continue
         if raw_name.lower() != b"authorization":
             continue
         value = raw_value.decode("latin-1")

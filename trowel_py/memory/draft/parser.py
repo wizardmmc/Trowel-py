@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
+
+_DraftT = TypeVar("_DraftT")
+_NoteT = TypeVar("_NoteT")
+_DiaryT = TypeVar("_DiaryT")
+_EpisodeItemT = TypeVar("_EpisodeItemT")
 
 
 def parse_draft(
     text: str,
     *,
     loads: Callable[[str], Any],
-    draft_type: Callable[..., Any],
-    parse_note: Callable[[dict[str, Any]], Any],
-    parse_diary: Callable[[dict[str, Any]], Any],
-) -> Any:
+    draft_type: Callable[..., _DraftT],
+    parse_note: Callable[[dict[str, Any]], _NoteT],
+    parse_diary: Callable[[dict[str, Any]], _DiaryT],
+) -> _DraftT:
     """用调用方提供的解码器和构造器解析完整草稿。
 
     ``notes``、``diary`` 的缺失或假值按空序列处理，``reflection`` 的缺失
@@ -47,8 +52,8 @@ def parse_draft(
 def parse_note(
     note: dict[str, Any],
     *,
-    note_type: Callable[..., Any],
-) -> Any:
+    note_type: Callable[..., _NoteT],
+) -> _NoteT:
     """按旧协议的宽松规则构造一条候选知识。
 
     文本字段缺失时使用各自默认值，显式 ``None`` 会由 ``str()`` 转成
@@ -85,10 +90,10 @@ def parse_note(
 def parse_diary(
     diary: dict[str, Any],
     *,
-    diary_type: Callable[..., Any],
+    diary_type: Callable[..., _DiaryT],
     str_list: Callable[[Any], tuple[str, ...]],
-    parse_episode_item: Callable[[dict[str, Any]], Any],
-) -> Any:
+    parse_episode_item: Callable[[dict[str, Any]], _EpisodeItemT],
+) -> _DiaryT:
     """按 ``items`` 是否非 None 解析新旧两种经历草稿。
 
     非 None 的 ``items`` 启用结构化模式：值必须是列表，且映射只能含

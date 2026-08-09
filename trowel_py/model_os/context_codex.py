@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, TypeVar
+
+
+_SampleT = TypeVar("_SampleT")
 
 
 def sample_from_usage(
@@ -12,12 +15,12 @@ def sample_from_usage(
     generation: int,
     native_session_id: str,
     source_version: str | None,
-    sample_type: Callable[..., Any],
+    sample_type: Callable[..., _SampleT],
     confidence_type: Any,
     unavailable_reason_type: Any,
     dict_fn: Callable[..., dict[str, Any]],
     round_fn: Callable[[float, int], float],
-) -> Any:
+) -> _SampleT:
     """把一条 Codex usage 观测转换为上下文占用样本。
 
     当前占用只取 ``last_total_tokens``，不使用累计的 ``total_total_tokens``。

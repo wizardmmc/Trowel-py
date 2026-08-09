@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from trowel_py.application_paths import has_application_data_root_override
@@ -76,8 +77,8 @@ class LazyRetriever:
         return list(
             self.factory()(
                 query,
-                corpus_dir=corpus_dir,
-                dictionary_path=dictionary_path,
+                corpus_dir=Path(corpus_dir),
+                dictionary_path=Path(dictionary_path),
             )
         )
 

@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence, cast as cast
@@ -56,7 +57,7 @@ _VALID_STATUSES: frozenset[str] = frozenset({"pending", "accepted", "discarded"}
 
 
 @contextlib.contextmanager
-def _suggestions_lock(root: Path):
+def _suggestions_lock(root: Path) -> Iterator[None]:
     """在支持 ``flock`` 的平台独占建议队列读改写周期。
 
     锁文件是 ``<root>/meta/.suggestions.lock``。不支持 ``fcntl`` 时直接进入

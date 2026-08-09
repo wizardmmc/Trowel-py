@@ -9,7 +9,7 @@ import asyncio
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +94,7 @@ from trowel_py.cc_host.session_lifecycle import (
 )
 from trowel_py.codex_host.commands import reserved_command_name
 from trowel_py.codex_host.pending_requests import (
+    PendingRequest,
     PendingRequestConflictError,
     PendingRequestDecisionError,
     PendingRequestNotFoundError,
@@ -147,6 +148,127 @@ class AgentTurnObserver(Protocol):
 
     def abort_turn(self, session_id: str, observation_id: str) -> None:
         """只收口指定代次中没有正常 terminal 的观察状态。"""
+
+
+class CodexManagerPort(Protocol):
+    """声明 Session Hub 使用的 Codex manager 与多连接池共同接口。"""
+
+    def register(
+        self,
+        session: Any,
+        *,
+        launch: RuntimeLaunchConfiguration | None = None,
+    ) -> None:
+        """把会话登记到兼容 manager 或指定冻结连接。"""
+        ...
+
+    def get_session(self, session_id: str) -> Any | None:
+        """按 Trowel 会话 ID 返回 Codex 会话。"""
+        ...
+
+    async def attach(self, session: Any, **kwargs: Any) -> Any:
+        """连接或恢复会话的原生 thread。"""
+        ...
+
+    async def send(self, session: Any, text: str, **kwargs: Any) -> str:
+        """启动一轮 Codex 输入并返回 turn ID。"""
+        ...
+
+    async def interrupt(self, session: Any) -> None:
+        """中断会话当前运行中的 Codex turn。"""
+        ...
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """读取兼容连接可见的原生模型目录。"""
+        ...
+
+    async def list_models_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> list[dict[str, Any]]:
+        """读取指定冻结连接可见的原生模型目录。"""
+        ...
+
+    async def read_account_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> dict[str, str | None]:
+        """读取指定 Official 连接的脱敏账号状态。"""
+        ...
+
+    async def start_account_login_for_launch(
+        self, launch: RuntimeLaunchConfiguration
+    ) -> dict[str, str]:
+        """启动指定 Official 连接的 device-code 登录。"""
+        ...
+
+    async def release_launch(self, launch: RuntimeLaunchConfiguration) -> bool:
+        """释放没有会话引用的冻结连接 manager。"""
+        ...
+
+    async def begin_connection_maintenance(self, connection_id: str) -> bool:
+        """隔离连接并关闭它的空闲 manager。"""
+        ...
+
+    def end_connection_maintenance(self, connection_id: str) -> None:
+        """解除连接维护期间建立的创建门禁。"""
+        ...
+
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        excluded_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """按工作目录读取共享 Codex 历史摘要。"""
+        ...
+
+    async def read_thread(self, thread_id: str) -> dict[str, Any]:
+        """读取一个原生 Codex thread 的完整历史。"""
+        ...
+
+    async def list_commands(self) -> list[dict[str, Any]]:
+        """返回当前 Codex 版本已验证的命令目录。"""
+        ...
+
+    async def list_skills(self, session: Any, *, cwd: str) -> dict[str, Any]:
+        """读取会话冻结连接和工作目录可加载的技能。"""
+        ...
+
+    async def get_goal(self, session: Any) -> dict[str, Any] | None:
+        """读取会话当前 Goal；未设置时返回 None。"""
+        ...
+
+    async def set_goal(self, session: Any, **fields: Any) -> dict[str, Any]:
+        """创建或更新会话 Goal 并返回完整状态。"""
+        ...
+
+    async def clear_goal(self, session: Any) -> bool:
+        """清除会话当前 Goal 并报告是否成功。"""
+        ...
+
+    async def compact(self, session: Any, **kwargs: Any) -> None:
+        """请求压缩会话当前 thread 的上下文。"""
+        ...
+
+    async def start_review(
+        self, session: Any, target: dict[str, Any], **kwargs: Any
+    ) -> dict[str, str]:
+        """按指定范围启动原生代码审查。"""
+        ...
+
+    def answer_request(
+        self, session_id: str, request_id: str, decision: str
+    ) -> PendingRequest:
+        """回答会话所属 manager 中的待决审批。"""
+        ...
+
+    def decline_request(self, session_id: str, request_id: str) -> PendingRequest:
+        """自动拒绝会话所属 manager 中的待决审批。"""
+        ...
+
+    def list_requests(self, session_id: str) -> tuple[PendingRequest, ...]:
+        """返回会话仍保留的全部待决审批。"""
+        ...
 
 
 class SessionHubError(Exception):
@@ -241,7 +363,7 @@ class SessionHub:
     def __init__(
         self,
         store: BindingStore,
-        codex_manager: Any | None = None,
+        codex_manager: CodexManagerPort | None = None,
         *,
         cc_registry: dict[str, Any] | None = None,
         cc_opener: CcOpener | None = None,
@@ -424,7 +546,7 @@ class SessionHub:
         self,
         request_id: str,
         fingerprint: str,
-        operation: Callable[[], Awaitable[SessionBinding]],
+        operation: Callable[[], Coroutine[Any, Any, SessionBinding]],
     ) -> SessionBinding:
         """按 renderer 请求 ID 合并可能因客户端超时而重试的会话创建。
 
@@ -956,10 +1078,10 @@ class SessionHub:
                     claude_config_dir=self._claude_config_dir_for_native(
                         req.resume_from
                     ),
-                    claude_auto_memory_disabled=(
-                        frozen.claude_auto_memory_disabled
-                        if frozen is not None
-                        else launch.claude_auto_memory_disabled
+                    claude_auto_memory_disabled=self._resume_claude_auto_memory(
+                        frozen,
+                        req.resume_from,
+                        fallback=launch.claude_auto_memory_disabled,
                     ),
                 )
             elif req.runtime == "codex":
@@ -1160,6 +1282,24 @@ class SessionHub:
         if binding is not None:
             return binding
         return self._configuration_archive.get(runtime, native_session_id)
+
+    def _resume_claude_auto_memory(
+        self,
+        frozen: SessionBinding | FrozenSessionConfiguration | None,
+        native_session_id: str,
+        *,
+        fallback: bool,
+    ) -> bool:
+        """从档案或现存 binding 读取 Claude 原生记忆冻结条件。"""
+
+        if isinstance(frozen, FrozenSessionConfiguration):
+            return frozen.claude_auto_memory_disabled
+        if isinstance(frozen, SessionBinding):
+            return self._claude_auto_memory_for_native(
+                frozen.session_id,
+                native_session_id,
+            )
+        return fallback
 
     def _claude_config_dir_for_native(self, native_session_id: str) -> str | None:
         """读取 Claude Code 原生会话冻结的配置目录。
@@ -1625,7 +1765,10 @@ class SessionHub:
 
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
-        reader = getattr(self._codex, "list_models_for_launch", None)
+        reader: Callable[
+            [RuntimeLaunchConfiguration],
+            Awaitable[list[dict[str, Any]]],
+        ] | None = getattr(self._codex, "list_models_for_launch", None)
         if reader is None:
             return await self._codex.list_models()
         return await reader(launch)
@@ -1637,7 +1780,10 @@ class SessionHub:
 
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
-        reader = getattr(self._codex, "read_account_for_launch", None)
+        reader: Callable[
+            [RuntimeLaunchConfiguration],
+            Awaitable[dict[str, str | None]],
+        ] | None = getattr(self._codex, "read_account_for_launch", None)
         if reader is None:
             raise RuntimeUnavailableError("codex account API unavailable")
         return await reader(launch)
@@ -1649,7 +1795,10 @@ class SessionHub:
 
         if self._codex is None:
             raise RuntimeUnavailableError("codex host unavailable")
-        starter = getattr(self._codex, "start_account_login_for_launch", None)
+        starter: Callable[
+            [RuntimeLaunchConfiguration],
+            Awaitable[dict[str, str]],
+        ] | None = getattr(self._codex, "start_account_login_for_launch", None)
         if starter is None:
             raise RuntimeUnavailableError("codex account API unavailable")
         return await starter(launch)
@@ -2302,7 +2451,7 @@ class SessionHub:
         session.apply_permission_override(approval=approval, sandbox=sandbox)
         return {"permission_preset": permission_preset}
 
-    def _require_codex_runtime(self) -> Any:
+    def _require_codex_runtime(self) -> CodexManagerPort:
         """返回已配置的 Codex 会话管理器；未配置时抛出 RuntimeUnavailableError。"""
 
         codex = self._codex
@@ -2854,12 +3003,14 @@ class SessionHub:
                 name=f"agent-session-close:{session_id}",
             )
             self._session_close_tasks[session_id] = task
-            task.add_done_callback(
-                lambda completed, key=session_id: self._discard_session_close_task(
-                    key,
-                    completed,
-                )
-            )
+            def discard_close_task(
+                completed: asyncio.Task[SessionCloseResult],
+            ) -> None:
+                """从共享关闭任务表移除当前会话已经完成的任务。"""
+
+                self._discard_session_close_task(session_id, completed)
+
+            task.add_done_callback(discard_close_task)
         result = await asyncio.shield(task)
         if (
             delete_binding
@@ -3373,11 +3524,12 @@ class SessionHub:
             self._capacity.release_turn(reservation)
             raise
         self._detached_turn_tasks[session_id] = task
-        task.add_done_callback(
-            lambda completed, key=session_id: self._discard_detached_turn_task(
-                key, completed
-            )
-        )
+        def discard_detached_turn(completed: asyncio.Task[None]) -> None:
+            """从后台轮次任务表移除当前会话已经完成的任务。"""
+
+            self._discard_detached_turn_task(session_id, completed)
+
+        task.add_done_callback(discard_detached_turn)
         assert turn_id is not None
         return turn_id
 

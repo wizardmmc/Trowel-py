@@ -43,7 +43,8 @@ def test_cc_calculator_facades_keep_signatures_and_identity() -> None:
     assert str(without_resolver_default) == (
         "(events: 'Sequence[NormalizedCcEvent]', *, native_session_id: 'str', "
         "main_or_subagent: 'MainOrSubagent', source_version: 'str | None' = None, "
-        "window_resolver) -> 'list[ContextSample]'"
+            "window_resolver: 'Callable[[str | None], int | None]') -> "
+            "'list[ContextSample]'"
     )
     assert extract.__module__ == context_observer.__name__
     assert extract.__qualname__ == "extract_cc_samples"

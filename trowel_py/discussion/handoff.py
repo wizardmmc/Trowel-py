@@ -8,11 +8,16 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import quote
 
+from trowel_py.agent_host.binding import SessionBinding
 from trowel_py.agent_host.hub import SessionHub, SessionHubError
 from trowel_py.agent_host.schemas import CreateAgentSessionRequest
 from trowel_py.discussion.artifacts import DiscussionArtifactStore
 from trowel_py.discussion.errors import DiscussionRuntimeError
-from trowel_py.discussion.models import Discussion, ParticipantResult
+from trowel_py.discussion.models import (
+    Discussion,
+    DiscussionParticipant,
+    ParticipantResult,
+)
 
 _TOPIC_LIMIT = 4_000
 _SUPPLEMENTS_LIMIT = 6_000
@@ -90,7 +95,7 @@ class AgentHostHandoffSessionAdapter:
         )
         resumed_accepted_cc_turn = False
 
-        async def create_once():
+        async def create_once() -> SessionBinding:
             """执行一次完整的普通 Agent 会话创建。"""
 
             return await self._hub.create_complete_session(
@@ -356,13 +361,15 @@ def _result_text(
     return f"[{result.status}] {result.error_message or result.error_code or '无更多信息'}"
 
 
-def _message_target(target_id: str | None, participants: dict[str, object]) -> str:
+def _message_target(
+    target_id: str | None, participants: dict[str, DiscussionParticipant]
+) -> str:
     """把顶层用户消息的目标 ID 转成可读名称。"""
 
     if target_id is None:
         return "全体"
     participant = participants.get(target_id)
-    return getattr(participant, "name", "未知参与者")
+    return participant.name if participant is not None else "未知参与者"
 
 
 def _clip(text: str, limit: int) -> str:

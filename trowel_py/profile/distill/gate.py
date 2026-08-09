@@ -240,11 +240,11 @@ def parse_and_gate_draft(
         accepted.append(
             Suggestion(
                 id=suggestion_id,
-                dimension=dim,  # type: ignore[arg-type]
+                dimension=dim,
                 body=body,
                 sources=sources,
                 date=date_str,
-                status="pending",  # type: ignore[arg-type]
+                status="pending",
                 policy_version=policy_version,
             )
         )

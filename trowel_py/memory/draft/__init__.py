@@ -17,14 +17,14 @@ from trowel_py.memory.draft.validation import validate_draft as _run_validation
 from trowel_py.memory.draft.episode import (
     DraftCorrection as DraftCorrection,
     DraftDecision as DraftDecision,
-    DraftEpisodeItem,
+    DraftEpisodeItem as DraftEpisodeItem,
     DraftEvidence as DraftEvidence,
     DraftOpenLoop as DraftOpenLoop,
     DraftOutcome as DraftOutcome,
-    episode_item_text,
+    episode_item_text as episode_item_text,
     episode_item_to_dict as episode_item_to_dict,
-    parse_episode_item,
-    project_episode_items,
+    parse_episode_item as parse_episode_item,
+    project_episode_items as project_episode_items,
 )
 from trowel_py.memory.prompt import (
     NOTE_KINDS,

@@ -52,8 +52,12 @@ def status_from_cc(cc_status: Any) -> WireStatus:
         处理。
     """
 
-    if cc_status in ("running", "completed", "killed", "failed"):
-        return cc_status  # type: ignore[return-value]
+    if cc_status == "completed":
+        return "completed"
+    if cc_status == "killed":
+        return "killed"
+    if cc_status == "failed":
+        return "failed"
     return "running"
 
 

@@ -311,6 +311,49 @@ def _verify_local_and_ci_share_leaf(
     assert observed_definitions[0]["command"] == observed_definitions[1]["command"]
 
 
+def _verify_baseline_gate_failures(
+    workspace: Path,
+    executable: Path,
+    root: Path,
+) -> None:
+    """验证三项基础门禁同时失败时均执行并指向各自 owner。
+
+    Args:
+        workspace: 本次自测使用的隔离 workspace。
+        executable: 经过固定哈希校验的 moon 2.4.6 路径。
+        root: 保存本组受控运行产物的临时目录。
+    """
+
+    run_dir = root / "baseline-gates"
+    code, report, graph, definitions = _execute(
+        workspace,
+        executable,
+        ":gate-basics",
+        run_dir,
+        "baseline-gates",
+    )
+    summary = normalize_moon_run(
+        report,
+        graph,
+        definitions,
+        current_os=current_moon_os(),
+        requested_target="gate-basics",
+        moon_exit_code=code,
+    )
+    expected_ids = {"frontend.eslint", "backend.docstrings", "backend.mypy"}
+    results = {
+        result.id: result for result in summary.results if result.id in expected_ids
+    }
+    assert code == 1
+    assert set(results) == expected_ids
+    assert all(result.status is QualityStatus.FAILED for result in results.values())
+    assert "frontend owner" in results["frontend.eslint"].hint
+    assert "docstring owner" in results["backend.docstrings"].hint
+    assert "mypy owner" in results["backend.mypy"].hint
+    executed = (run_dir / "executed.txt").read_text(encoding="utf-8").splitlines()
+    assert set(executed) == expected_ids
+
+
 def main() -> int:
     """在临时产物目录运行全部真实 moon 自测。"""
     executable = ensure_moon()
@@ -348,6 +391,7 @@ def main() -> int:
         _verify_positive(workspace, executable, run_root)
         _verify_fail_fast(workspace, executable, run_root)
         _verify_local_and_ci_share_leaf(workspace, executable, run_root)
+        _verify_baseline_gate_failures(workspace, executable, run_root)
     print("quality selftest passed")
     return 0
 

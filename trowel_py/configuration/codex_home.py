@@ -365,7 +365,7 @@ class CodexConnectionHomeStore:
             except BaseException as rollback_error:
                 raise CodexConnectionHomeError(
                     "Codex 配置发布失败且未能完整恢复；旧配置已保留在私有恢复副本中"
-                ) from ExceptionGroup(
+                ) from BaseExceptionGroup(
                     "Codex 配置发布与恢复同时失败",
                     [publish_error, rollback_error],
                 )

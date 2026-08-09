@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import asdict
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -33,7 +35,7 @@ class EvaluateRequest(BaseModel):
     answer: str = Field(min_length=1)
 
 
-def _get_conn():
+def _get_conn() -> Iterator[sqlite3.Connection]:
     """为一次请求提供数据库连接。
 
     请求结束时提交并关闭连接，异常路径也不回滚。
@@ -71,7 +73,7 @@ def generate(
     card_repo: CardRepository = Depends(_get_card_repo),
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
     llm_service: LLMService = Depends(_get_llm_service),
-) -> dict:
+) -> dict[str, Any]:
     """为指定卡片生成费曼问题并创建练习会话。"""
     logger.info("feynman generate for card: %s", request.card_id)
     result = generate_question(request.card_id, card_repo, feynman_repo, llm_service)
@@ -87,7 +89,7 @@ def evaluate(
     card_repo: CardRepository = Depends(_get_card_repo),
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
     llm_service: LLMService = Depends(_get_llm_service),
-) -> dict:
+) -> dict[str, Any]:
     """评估用户在费曼练习会话中的回答。"""
     logger.info("feynman evaluate for session: %s", request.session_id)
     result = evaluate_answer(
@@ -105,7 +107,7 @@ def evaluate(
 def history(
     card_id: str,
     feynman_repo: FeynmanRepository = Depends(_get_feynman_repo),
-) -> dict:
+) -> dict[str, Any]:
     """按时间倒序返回指定卡片的费曼练习会话。"""
     logger.info("feynman history for card: %s", card_id)
     sessions = feynman_repo.find_by_card_id(card_id)

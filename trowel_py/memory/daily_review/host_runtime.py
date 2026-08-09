@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from trowel_py.memory.daily_review.models import ReviewSessionLike
-from trowel_py.memory.provenance import DerivationProvenance, ModelIdentity
+from trowel_py.memory.provenance import (
+    DerivationProvenance,
+    GeneratorRuntime,
+    ModelIdentity,
+)
 
 ReviewHostFactory = Callable[[ReviewSessionLike, Path], Any]
 DEFAULT_REVIEW_MODEL = "glm-5.1"
@@ -94,11 +98,18 @@ def review_derivation(
         else None
     )
     run_id = getattr(host, "session_id", None)
+    raw_runtime = getattr(host, "runtime", "claude_code")
+    generator_runtime: GeneratorRuntime
+    match raw_runtime:
+        case "claude_code" | "codex" | "direct_api":
+            generator_runtime = raw_runtime
+        case _:
+            generator_runtime = "unknown"
     return DerivationProvenance(
         pipeline=pipeline,
         pipeline_version=pipeline_version,
         run_id=str(run_id or uuid.uuid4().hex),
         generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        generator_runtime=str(getattr(host, "runtime", "claude_code")),
+        generator_runtime=generator_runtime,
         generator=generator,
     )

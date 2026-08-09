@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
+
+
+_LeaseT = TypeVar("_LeaseT")
+_EventT = TypeVar("_EventT")
+_DecisionT = TypeVar("_DecisionT")
 
 
 def payload_json(
@@ -219,9 +224,9 @@ def decision_params(
 def lease_from_row(
     row: Any,
     *,
-    lease_type: Callable[..., Any],
+    lease_type: Callable[..., _LeaseT],
     int_fn: Callable[[Any], int],
-) -> Any:
+) -> _LeaseT:
     """把 leases 表行转换为调用方指定的 Lease 对象。
 
     Args:
@@ -248,11 +253,11 @@ def lease_from_row(
 def event_from_row(
     row: Any,
     *,
-    event_type: Callable[..., Any],
+    event_type: Callable[..., _EventT],
     provenance_type: Callable[[Any], Any],
     json_loads: Callable[[str], Any],
     int_fn: Callable[[Any], int],
-) -> Any:
+) -> _EventT:
     """把 events 表行转换为调用方指定的 Event 对象。
 
     Args:
@@ -292,9 +297,9 @@ def event_from_row(
 def decision_from_row(
     row: Any,
     *,
-    decision_type: Callable[..., Any],
+    decision_type: Callable[..., _DecisionT],
     json_loads: Callable[[str], Any],
-) -> Any:
+) -> _DecisionT:
     """把 decisions 表行转换为调用方指定的 Decision 对象。
 
     ``None`` 或空字符串预算按未记录处理；其他真值交给 JSON 解码器，因此

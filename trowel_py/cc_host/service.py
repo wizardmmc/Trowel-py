@@ -160,7 +160,7 @@ class CCHost:
     def __init__(
         self,
         session_id: str,
-        workdir: str | os.PathLike,
+        workdir: str | os.PathLike[str],
         *,
         model: str | None = None,
         effort: str | None = None,
@@ -250,7 +250,7 @@ class CCHost:
         # routes 与 hub 会读取；send 或断线 drain 持有 stdout reader 时为 True。
         self.running = False
         # 事件循环只弱引用 task；必须持有 drain，直到它在 finally 中自行释放。
-        self._drain_task: asyncio.Task | None = None
+        self._drain_task: asyncio.Task[None] | None = None
         self._model = model or DEFAULT_MODEL
         self._effective_model: str | None = None
         self.effort = effort or DEFAULT_EFFORT
@@ -1707,7 +1707,7 @@ class CCHost:
         if tev.status == "started":
             return tev
         path = subagent_transcript_path(
-            self.workdir,
+            os.fspath(self.workdir),
             self._cc_session_id,
             tev.task_id,
             projects_root=self.projects_root,

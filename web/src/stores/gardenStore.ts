@@ -110,6 +110,7 @@ export const useGardenStore = create<GardenState>((set, get) => ({
       const stats = await getGardenStats();
       set({ stats });
     } catch {
+      // 刷新失败时保留上一份统计快照，避免瞬时网络错误把已展示数据清空。
     }
   },
 }));

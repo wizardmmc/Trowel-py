@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, Protocol, TypeVar, runtime_checkable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.routing import APIRoute
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from trowel_py.agent_host.binding import Runtime, SessionBinding
 from trowel_py.agent_host.capabilities import (
@@ -49,7 +49,6 @@ from trowel_py.agent_host.schemas import (
     StartCodexReviewRequest,
     StartInteractiveDelegationRequest,
 )
-from trowel_py.agent_mcp.interactive import InteractiveBroker
 from trowel_py.agent_mcp.interactive_errors import InteractiveDelegationError
 from trowel_py.agent_host.workspaces import (
     RecentWorkspaceStore,
@@ -62,7 +61,9 @@ from trowel_py.telemetry.sse import SseConnectionTracker, SseObservation
 class AgentPublicBoundaryRoute(APIRoute):
     """阻止 renderer 按 ID 访问 discussion 领域私有会话。"""
 
-    def get_route_handler(self) -> Callable[[Request], Awaitable[Any]]:
+    def get_route_handler(
+        self,
+    ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         """在公开 handler 前按持久 session_kind 执行 owner 边界检查。
 
         Returns:
@@ -71,13 +72,13 @@ class AgentPublicBoundaryRoute(APIRoute):
 
         original_handler = super().get_route_handler()
 
-        async def protected_handler(request: Request) -> Any:
+        async def protected_handler(request: Request) -> Response:
             """让 discussion binding 对公开 Agent API 表现为不存在。"""
 
             session_id = request.path_params.get("session_id")
             if isinstance(session_id, str):
                 hub = getattr(request.app.state, "agent_hub", None)
-                binding = hub.get(session_id) if hub is not None else None
+                binding = hub.get(session_id) if isinstance(hub, SessionHub) else None
                 if binding is not None and binding.session_kind == "discussion":
                     return JSONResponse(
                         status_code=404,
@@ -86,6 +87,39 @@ class AgentPublicBoundaryRoute(APIRoute):
             return await original_handler(request)
 
         return protected_handler
+
+
+@runtime_checkable
+class InteractiveBrokerPort(Protocol):
+    """声明内部交互委派路由使用的最小 broker 接口。"""
+
+    async def start(
+        self,
+        *,
+        parent_session_id: str,
+        task: str,
+        create_body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """启动后台委派并返回初始句柄。"""
+        ...
+
+    def parent_session_id(self, delegation_id: str) -> str:
+        """返回委派句柄所属的父会话 ID。"""
+        ...
+
+    def status(self, delegation_id: str) -> dict[str, Any]:
+        """返回委派当前状态快照。"""
+        ...
+
+    async def respond(
+        self, delegation_id: str, answers: dict[str, str]
+    ) -> dict[str, Any]:
+        """提交子会话等待的用户回答。"""
+        ...
+
+    async def close(self, delegation_id: str) -> dict[str, Any]:
+        """关闭一个委派并返回最终快照。"""
+        ...
 
 
 router = APIRouter(route_class=AgentPublicBoundaryRoute)
@@ -237,12 +271,12 @@ def get_hub(request: Request) -> SessionHub:
     """
 
     hub = getattr(request.app.state, "agent_hub", None)
-    if hub is None:
+    if not isinstance(hub, SessionHub):
         raise HTTPException(status_code=503, detail="agent hub not initialized")
     return hub
 
 
-def get_interactive_broker(request: Request) -> InteractiveBroker:
+def get_interactive_broker(request: Request) -> InteractiveBrokerPort:
     """取得由 Agent Host 生命周期持有的交互委派 broker。
 
     Args:
@@ -256,7 +290,7 @@ def get_interactive_broker(request: Request) -> InteractiveBroker:
     """
 
     broker = getattr(request.app.state, "agent_delegation_broker", None)
-    if broker is None:
+    if not isinstance(broker, InteractiveBrokerPort):
         raise HTTPException(
             status_code=503, detail="agent delegation broker unavailable"
         )
@@ -264,7 +298,7 @@ def get_interactive_broker(request: Request) -> InteractiveBroker:
 
 
 def _require_interactive_owner(
-    broker: InteractiveBroker,
+    broker: InteractiveBrokerPort,
     delegation_id: str,
     parent_session_id: str,
 ) -> None:
@@ -431,7 +465,7 @@ def get_workspace_store(request: Request) -> RecentWorkspaceStore:
     """
 
     store = getattr(request.app.state, "recent_workspace_store", None)
-    if store is None:
+    if not isinstance(store, RecentWorkspaceStore):
         raise HTTPException(status_code=503, detail="workspace store not initialized")
     return store
 
@@ -490,7 +524,7 @@ async def stream_application_agent_events(
     )
     subscription = hub.subscribe_application_events()
 
-    async def gen():
+    async def gen() -> AsyncIterator[bytes]:
         """持续编码应用事件，并在客户端离开时只关闭自己的订阅。"""
 
         stream_error = False
@@ -535,7 +569,7 @@ async def create_session(
     req: CreateAgentSessionRequest,
     request: Request,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """创建指定 runtime 的会话；恢复请求会校验原生 id 的归属和冻结条件。"""
 
     if req.session_kind == "discussion" or req.owner_ref is not None:
@@ -567,7 +601,9 @@ async def create_session(
 
 
 @router.get("/session-defaults")
-def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
+def get_session_defaults(
+    hub: SessionHub = Depends(get_hub),
+) -> dict[str, Any]:
     """返回最近创建或使用的会话设置，供新建会话时预填。
 
     Args:
@@ -588,7 +624,7 @@ def get_session_defaults(hub: SessionHub = Depends(get_hub)) -> dict:
 @router.get("/workspaces/recent")
 def list_recent_workspaces(
     store: RecentWorkspaceStore = Depends(get_workspace_store),
-) -> dict:
+) -> dict[str, Any]:
     """按最近打开顺序返回工作区及其当前可用性。"""
 
     return {
@@ -602,7 +638,7 @@ def list_recent_workspaces(
 def remember_workspace(
     req: RememberWorkspaceRequest,
     store: RecentWorkspaceStore = Depends(get_workspace_store),
-) -> dict:
+) -> dict[str, Any]:
     """校验并记录用户确认打开的工作区。"""
 
     try:
@@ -619,7 +655,7 @@ def remember_workspace(
 @router.get("/sessions/active")
 async def list_active(
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """返回用户直接管理的会话，以及各会话的连接、处理和选中状态。
 
     列表不包含 Agent MCP 创建的委派子会话，但仍包含尚未连接或已经断开的用户
@@ -645,7 +681,7 @@ async def list_active(
 def activate_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """把指定用户会话设为工作台当前选中的会话。
 
     此操作只改变选中状态，不会启动、中断或关闭任何会话。
@@ -670,7 +706,7 @@ def activate_session(
 def get_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """返回指定会话保存的 ID、运行工具和配置。
 
     此端点不会重新检查实际连接和处理状态；需要实时状态时应使用
@@ -697,7 +733,7 @@ def get_session(
 async def start_interactive_delegation(
     body: StartInteractiveDelegationRequest,
     hub: SessionHub = Depends(get_hub),
-    broker: InteractiveBroker = Depends(get_interactive_broker),
+    broker: InteractiveBrokerPort = Depends(get_interactive_broker),
 ) -> dict[str, Any]:
     """复核父 binding 后，在 Agent Host 中原子登记跨 turn 交互委派。"""
 
@@ -729,7 +765,7 @@ async def start_interactive_delegation(
 def get_interactive_delegation(
     delegation_id: str,
     parent_session_id: str = Query(..., min_length=1),
-    broker: InteractiveBroker = Depends(get_interactive_broker),
+    broker: InteractiveBrokerPort = Depends(get_interactive_broker),
 ) -> dict[str, Any]:
     """立即返回属于指定父会话的交互委派快照。"""
 
@@ -744,7 +780,7 @@ def get_interactive_delegation(
 async def answer_interactive_delegation(
     delegation_id: str,
     body: AnswerInteractiveDelegationRequest,
-    broker: InteractiveBroker = Depends(get_interactive_broker),
+    broker: InteractiveBrokerPort = Depends(get_interactive_broker),
 ) -> dict[str, Any]:
     """把答案写回属于指定父会话的 Claude Code child。"""
 
@@ -764,7 +800,7 @@ async def close_interactive_delegation(
     delegation_id: str,
     request: Request,
     parent_session_id: str = Query(..., min_length=1),
-    broker: InteractiveBroker = Depends(get_interactive_broker),
+    broker: InteractiveBrokerPort = Depends(get_interactive_broker),
 ) -> dict[str, Any]:
     """收敛属于指定父会话的 child，并删除应用级委派句柄。"""
 
@@ -828,7 +864,7 @@ async def patch_session(
     session_id: str,
     body: PatchAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """设置指定 Codex 会话下一轮使用的模型、思考强度或权限。
 
     运行工具创建后不能更换。未提供或值为 None 的字段保持不变。模型和思考强度
@@ -881,7 +917,7 @@ def rename_session_title(
     session_id: str,
     body: RenameAgentSessionRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """保存用户手动指定的会话标题。
 
     Args:
@@ -905,7 +941,7 @@ async def generate_session_title(
     session_id: str,
     body: GenerateAgentSessionTitleRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """保存首条提示词预览，并尝试异步生成语义标题。
 
     标题模型失败不会使主会话请求失败，此时 data 中保留 prompt 来源的预览。
@@ -926,12 +962,12 @@ async def generate_session_title(
     return {"success": True, "data": binding.to_dict(), "error": None}
 
 
-@router.delete("/sessions/{session_id}")
+@router.delete("/sessions/{session_id}", response_model=dict)
 async def delete_session(
     session_id: str,
     request: Request,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any] | JSONResponse:
     """移除指定会话，使 Trowel 不再显示或管理它。
 
     两种 runtime 都会先收敛活动 turn 和会话临时资源；原生历史不会删除。资源未能
@@ -978,11 +1014,11 @@ async def delete_session(
     }
 
 
-@router.post("/sessions/{session_id}/interrupt")
+@router.post("/sessions/{session_id}/interrupt", response_model=dict)
 async def interrupt_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any] | JSONResponse:
     """根据 binding 中断所属 runtime 的当前 turn。"""
 
     try:
@@ -1002,7 +1038,7 @@ async def interrupt_session(
 async def list_session_requests(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """返回指定 Codex 会话的操作确认请求记录。
 
     操作确认请求是 Codex 在执行命令或修改文件前，请用户批准或拒绝的请求。结果既包含
@@ -1031,7 +1067,7 @@ async def answer_session_request(
     request_id: str,
     body: AnswerAgentRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """校验归属和 decision 后回答一个 connection-scoped Codex request。"""
 
     request = _call_hub(hub.answer_request, session_id, request_id, body.decision)
@@ -1046,7 +1082,7 @@ async def answer_session_request(
 async def get_codex_goal(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """读取指定 Codex 会话设置的 Codex Goal。
 
     Codex Goal 是绑定在 Codex 对话线程上的持续任务记录，包含任务内容、当前状态、
@@ -1076,7 +1112,7 @@ async def set_codex_goal(
     session_id: str,
     body: SetCodexGoalRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """创建指定 Codex 会话的 Codex Goal，或修改已有 Goal 中传入的字段。
 
     请求可以设置任务内容、当前状态和 token 数量上限，且至少要传入一个字段。没有传入
@@ -1117,7 +1153,7 @@ async def set_codex_goal(
 async def clear_codex_goal(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """清除指定 Codex 会话当前设置的整个 Codex Goal。
 
     清除后该会话不再设置 Codex Goal；这不是把 Goal 状态改为 complete。操作前会确保
@@ -1145,7 +1181,7 @@ async def clear_codex_goal(
 async def list_codex_commands(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """列出指定 Codex 会话支持的命令及其使用条件。
 
     这些命令包括 /status、/compact 和 /review 等针对当前会话的操作，不是 shell
@@ -1173,7 +1209,7 @@ async def list_codex_commands(
 async def list_codex_skills(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """列出指定 Codex 会话真实可用的技能。
 
     Args:
@@ -1196,7 +1232,7 @@ async def list_codex_skills(
 async def compact_codex_session(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """请求 Codex 压缩指定会话当前对话线程的上下文。
 
     压缩会把较早的对话内容整理成更短的摘要，减少后续轮次需要携带的上下文。此操作
@@ -1226,7 +1262,7 @@ async def start_codex_review(
     session_id: str,
     body: StartCodexReviewRequest,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """在指定 Codex 会话的当前对话线程中启动一次代码审查。
 
     审查目标可以是未提交的改动、当前代码与指定基础分支的差异、某个提交，或一段
@@ -1288,7 +1324,7 @@ def stream_agent_events(
     _call_hub(hub.require_event_session, session_id)
     observation = _observe_sse(request, session_id, reconnect_eligible=True)
 
-    async def gen():
+    async def gen() -> AsyncIterator[bytes]:
         """把订阅到的会话事件逐个编码为 SSE 数据帧，并在发生会话错误时用最后一帧报告错误。"""
 
         stream_error = False
@@ -1310,12 +1346,12 @@ def stream_agent_events(
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-@router.post("/sessions/{session_id}/turns")
+@router.post("/sessions/{session_id}/turns", response_model=dict)
 async def start_agent_turn(
     session_id: str,
     body: SendMessageBody,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any] | JSONResponse:
     """向指定 Agent 会话发送一段文字，并启动新一轮处理。
 
     接口不等待整轮完成。两种 runtime 都在返回前确定稳定根 turn ID；Claude Code
@@ -1381,7 +1417,7 @@ async def send_message(
 
     observation = _observe_sse(request, session_id, reconnect_eligible=False)
 
-    async def gen():
+    async def gen() -> AsyncIterator[bytes]:
         """把共享事件和运行错误编码为同一个 SSE 响应流。"""
 
         stream_error = False
@@ -1410,7 +1446,7 @@ async def send_message(
 @router.get("/runtimes")
 def list_runtimes(
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """列出 Claude Code 和 Codex 支持的功能及当前接入状态。
 
     connected 表示对应 CLI 已安装且 Host 已配置，不代表账号已登录或网络可用。
@@ -1447,7 +1483,7 @@ def list_runtimes(
 @router.get("/models", response_model=dict)
 async def list_models(
     hub: SessionHub = Depends(get_hub),
-) -> dict | JSONResponse:
+) -> dict[str, Any] | JSONResponse:
     """返回当前 Codex 提供的模型目录。
 
     Trowel 不维护静态回退名单，模型及其思考强度选项按 Codex 返回的顺序提供。
@@ -1479,7 +1515,7 @@ async def list_models(
 async def get_session_history(
     session_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """回放指定 Claude Code 或 Codex 会话的历史事件。
 
     读取方式由会话记录中的运行工具决定，返回结果统一为 AgentEvent，并从 1 重新
@@ -1505,7 +1541,7 @@ async def get_subagent_history(
     session_id: str,
     thread_id: str,
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """读取指定 Codex 子 Agent 对话线程自己产生的历史事件。
 
     读取前会沿父线程关系确认该线程以当前会话的主线程为根，并排除各级父线程已有的
@@ -1535,7 +1571,7 @@ async def list_history(
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None),
     hub: SessionHub = Depends(get_hub),
-) -> dict:
+) -> dict[str, Any]:
     """分页列出指定工作目录中的 Claude Code 和 Codex 历史会话。
 
     两种运行工具的记录合并后按更新时间从新到旧排列。未配置 Codex 会话管理器时

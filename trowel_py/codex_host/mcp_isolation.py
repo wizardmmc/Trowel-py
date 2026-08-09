@@ -26,7 +26,7 @@ _GIT_TIMEOUT_S = 5.0
 
 
 def resolve_codex_config_path(
-    codex_home: str | os.PathLike | None = None,
+    codex_home: str | os.PathLike[str] | None = None,
 ) -> Path:
     """解析 ``config.toml`` 路径：显式参数优先，其次 ``CODEX_HOME``，最后 ``~/.codex``。"""
 
@@ -54,8 +54,8 @@ class McpConflict:
 def find_conflicting_mcp_server(
     server_name: str = TROWEL_NOTE_SEARCH_SERVER_NAME,
     *,
-    codex_home: str | os.PathLike | None = None,
-    workdir: str | os.PathLike | None = None,
+    codex_home: str | os.PathLike[str] | None = None,
+    workdir: str | os.PathLike[str] | None = None,
 ) -> McpConflict | None:
     """按 global、当前 workdir、git root 的顺序查找同名 MCP server。
 
@@ -80,8 +80,8 @@ def find_conflicting_mcp_server(
 
 
 def _collect_config_paths(
-    codex_home: str | os.PathLike | None,
-    workdir: str | os.PathLike | None,
+    codex_home: str | os.PathLike[str] | None,
+    workdir: str | os.PathLike[str] | None,
 ) -> list[Path]:
     """收集当前检查覆盖的 global、workdir 与 git root 配置路径。
 
@@ -107,7 +107,7 @@ def _collect_config_paths(
     return unique
 
 
-def _git_root(workdir: str | os.PathLike) -> Path | None:
+def _git_root(workdir: str | os.PathLike[str]) -> Path | None:
     """探测 git root；进程启动失败、超时、非零退出或空输出时返回 None。
 
     返回 None 只会省略 git root 配置层；调用方仍检查 global 和 workdir 配置。

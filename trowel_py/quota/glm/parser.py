@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
+
+
+_SnapshotT = TypeVar("_SnapshotT")
 
 
 def as_float(value: Any) -> float | None:
@@ -157,8 +160,8 @@ def parse_quota(
         Mapping[str, Any] | None,
     ],
     build_window: Callable[[Any, Mapping[str, Any] | None], Any | None],
-    snapshot_without_windows: Callable[[str, int, Any], Any],
-    snapshot_type: Callable[..., Any],
+    snapshot_without_windows: Callable[[str, int, Any], _SnapshotT],
+    snapshot_type: Callable[..., _SnapshotT],
     provider: Any,
     ok_status: Any,
     no_data_status: Any,
@@ -168,7 +171,7 @@ def parse_quota(
     session_unit: int,
     weekly_unit: int,
     mapping_type: type[Any],
-) -> Any:
+) -> _SnapshotT:
     """把 GLM 响应解析为统一额度快照。
 
     按五小时会话、每周和月度搜索的顺序添加可解析窗口，并从额度项所在对象读取

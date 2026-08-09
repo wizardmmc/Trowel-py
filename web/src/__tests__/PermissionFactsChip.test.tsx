@@ -2,9 +2,9 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  ACTIVE_SESSION_PRESETS,
   PermissionFactsChip,
 } from "../components/cc/PermissionFactsChip";
+import { ACTIVE_SESSION_PRESETS } from "../components/cc/permissionPresets";
 
 describe("PermissionFactsChip", () => {
   it("keeps requested follow separate from native effective facts", () => {

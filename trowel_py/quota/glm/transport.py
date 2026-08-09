@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
+
+
+_ResponseT = TypeVar("_ResponseT")
 
 
 async def fetch(
@@ -16,9 +19,9 @@ async def fetch(
     timeout: float,
     http_error_type: type[BaseException],
     network_error_type: type[BaseException],
-    response_type: Callable[..., Any],
+    response_type: Callable[..., _ResponseT],
     mapping_type: type[Any],
-) -> Any:
+) -> _ResponseT:
     """发送 GLM 额度请求，并用调用方提供的类型构造返回值。
 
     只有 ``client.get`` 抛出的 ``http_error_type`` 会转换为

@@ -16,6 +16,7 @@ from pathlib import Path
 from trowel_py.memory.draft import Draft, parse_draft
 from trowel_py.memory.daily_review.workspace import review_workdir_root
 from trowel_py.memory.sessions_repo import (
+    ClaudeSessionRecord,
     create_sessions_repository,
     open_sessions_db,
 )
@@ -99,7 +100,9 @@ class RepairReport:
         return self.episodes_created == sum(1 for p in self.planned if p.has_draft)
 
 
-def _scan(memory_root: Path, date_str: str) -> tuple[list[RepairPlan], list[str], dict]:
+def _scan(
+    memory_root: Path, date_str: str
+) -> tuple[list[RepairPlan], list[str], dict[str, ClaudeSessionRecord]]:
     """扫描指定日期的 draft 与 sessions 登记。
 
     sessions 数据库会以可写方式打开并按需初始化。每个存在的 ``draft.json``

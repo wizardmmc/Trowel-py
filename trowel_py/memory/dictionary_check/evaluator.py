@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Pattern, Protocol
 
 from trowel_py.memory.types import Note
 
@@ -90,8 +90,8 @@ def parse_l0(
 def parse_l1_stems(
     l1_text: str,
     *,
-    anchor_pattern: Any,
-    legacy_pattern: Any,
+    anchor_pattern: Pattern[str],
+    legacy_pattern: Pattern[str],
 ) -> list[str]:
     """从 L1 解析 Note 文件名 stem，并兼容旧路径格式。
 
@@ -107,8 +107,13 @@ def parse_l1_stems(
     """
     anchored = anchor_pattern.findall(l1_text)
     if anchored:
-        return anchored
-    return legacy_pattern.findall(l1_text)
+        if all(isinstance(item, str) for item in anchored):
+            return anchored
+        raise ValueError("anchor pattern must contain exactly one capture group")
+    legacy = legacy_pattern.findall(l1_text)
+    if all(isinstance(item, str) for item in legacy):
+        return legacy
+    raise ValueError("legacy pattern must contain exactly one capture group")
 
 
 def evaluate(
