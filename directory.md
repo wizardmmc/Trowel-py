@@ -10,6 +10,7 @@
 | `pyproject.toml` / `uv.lock` | Python 包、依赖和测试配置 |
 | `config.example.toml` | 不含真实凭据的配置样例 |
 | `.github/` | CI workflow、Issue/PR 模板、CODEOWNERS 与 dependabot 配置 |
+| `scripts/shared_context_check.py` / `scripts/shared_context/` | 公共项目上下文的只读审计入口，以及权威命令 freshness 等可组合检查 |
 | `trowel_py/` | FastAPI 后端与本地运行时 |
 | `web/` | React 前端 |
 | `tests/` | Python 测试与公开契约快照 |
