@@ -32,11 +32,13 @@ Issue 或 Pull Request 给出；每个开发者自己的 milestone、slice 和�
 # 公开契约
 .venv/bin/python -m pytest tests/contracts
 
+# 公共项目上下文；未提交工作树使用宽松跟踪模式
+.venv/bin/python -m scripts.shared_context_check --allow-untracked
+
 # 前端
-cd web
-bun run typecheck
-bun run test
-bun run build
+bun run --cwd web typecheck
+bun run --cwd web test
+bun run --cwd web build
 ```
 
 公开契约确实需要变化时，先审查差异，再显式运行：

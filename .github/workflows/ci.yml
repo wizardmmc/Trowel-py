@@ -35,11 +35,11 @@ jobs:
       - name: Install locked Python dependencies
         run: uv sync --locked
       - name: Check shared project context
-        run: uv run --no-sync python scripts/shared_context_check.py
+        run: uv run --no-sync python -m scripts.shared_context_check
       - name: Run backend tests
         run: uv run --no-sync python -m pytest --ignore=tests/contracts
       - name: Run Python lint
-        run: uv run --no-sync ruff check trowel_py tests
+        run: uv run --no-sync ruff check trowel_py scripts tests
 
   frontend:
     name: Frontend

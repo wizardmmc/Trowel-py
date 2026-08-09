@@ -8,11 +8,14 @@ import pytest
 
 from scripts.shared_context_check import (
     AUDIT_CONTROL_FILES,
+    AUTHORITATIVE_COMMAND_SECTIONS,
+    MODULE_CONTEXT_POLICIES,
     MODULE_CONTEXT_REQUIRED_HEADINGS,
     MODULE_CONTEXT_REQUIRED_STATUS_GROUPS,
     MODULE_CONTEXT_ROOTS,
     ROOT_CONTEXT_FILES,
     SHARED_CONTEXT_FILES,
+    SHARED_CONTEXT_AUDIT_PACKAGE_FILES,
     audit_repository,
     claude_imports,
     markdown_links,
@@ -24,7 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_AUDIT_CONTROL_FILES = (
     Path(".gitignore"),
     Path(".worktreeinclude"),
+    Path("scripts/__init__.py"),
+    Path("scripts/shared_context/__init__.py"),
+    Path("scripts/shared_context/commands.py"),
+    Path("scripts/shared_context/markdown.py"),
+    Path("scripts/shared_context/models.py"),
     Path("scripts/shared_context_check.py"),
+    Path("tests/foundation/test_project_context_workflow.py"),
+    Path("tests/foundation/test_shared_context_commands.py"),
     Path("tests/foundation/test_shared_context.py"),
 )
 EXPECTED_DISCUSSION_HEADINGS = (
@@ -37,11 +47,14 @@ EXPECTED_DISCUSSION_HEADINGS = (
 )
 
 
-def _create_minimal_repository(repo_root: Path) -> None:
+def _create_minimal_repository(
+    repo_root: Path, *, copy_real_audit_files: bool = False
+) -> None:
     """建立只含公共上下文契约的隔离 Git 仓库。
 
     Args:
         repo_root: 用于创建并填充隔离仓库的测试目录。
+        copy_real_audit_files: 是否复制当前工作树的真实审计实现和测试闭包。
     """
 
     subprocess.run(("git", "init", "--quiet", str(repo_root)), check=True)
@@ -67,6 +80,8 @@ def _create_minimal_repository(repo_root: Path) -> None:
                     "| `unknown` | record=present; checked=public; gap=public; "
                     "do_not_claim=public; exit=public |"
                 )
+            elif heading == "权威测试入口":
+                body = "`.venv/bin/python -m pytest`"
             sections.append(f"## {heading}\n\n{body}")
         (repo_root / module_root / "AGENTS.md").write_text(
             f"# Public\n\n{'\n\n'.join(sections)}\n",
@@ -74,10 +89,14 @@ def _create_minimal_repository(repo_root: Path) -> None:
         )
     for relative_path in AUDIT_CONTROL_FILES:
         control_file = repo_root / relative_path
-        if control_file.exists():
+        if copy_real_audit_files:
+            control_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative_path, control_file)
+        elif control_file.exists():
             continue
-        control_file.parent.mkdir(parents=True, exist_ok=True)
-        control_file.write_text("# Test audit control\n", encoding="utf-8")
+        else:
+            control_file.parent.mkdir(parents=True, exist_ok=True)
+            control_file.write_text("# Test audit control\n", encoding="utf-8")
     entrypoint_links = "\n".join(
         (
             "1. [README](README.md)",
@@ -93,6 +112,7 @@ def _create_minimal_repository(repo_root: Path) -> None:
     )
     (repo_root / "AGENTS.md").write_text(
         f"# Public\n\n## 开工入口\n\n{entrypoint_links}"
+        "\n\n## 常用验证\n\n`.venv/bin/python -m pytest`\n"
         "\n\n## 按领域继续读\n\n"
         "| 任务范围 | 公共入口 |\n|---|---|\n"
         f"{module_rows}\n",
@@ -109,6 +129,26 @@ def _create_minimal_repository(repo_root: Path) -> None:
         ),
         cwd=repo_root,
         check=True,
+    )
+
+
+def _add_root_authoritative_command(repo_root: Path, command: str) -> None:
+    """向最小仓库已有的唯一权威章节加入一条命令。
+
+    Args:
+        repo_root: 已由 ``_create_minimal_repository`` 创建的仓库根目录。
+        command: 要写入权威章节的单行静态命令。
+    """
+
+    root_agents = repo_root / "AGENTS.md"
+    markdown = root_agents.read_text(encoding="utf-8")
+    root_agents.write_text(
+        markdown.replace(
+            "## 常用验证\n\n",
+            f"## 常用验证\n\n`{command}`\n\n",
+            1,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -139,6 +179,18 @@ def test_audit_control_files_are_explicit() -> None:
     assert AUDIT_CONTROL_FILES == EXPECTED_AUDIT_CONTROL_FILES
 
 
+def test_audit_control_closure_discovers_every_shared_context_module() -> None:
+    """新增审计模块必须自动进入严格 Git 闭包，不能依赖手工同步清单。"""
+
+    expected = tuple(
+        source_file.relative_to(REPO_ROOT)
+        for source_file in sorted((REPO_ROOT / "scripts/shared_context").rglob("*.py"))
+        if source_file.is_file()
+    )
+
+    assert SHARED_CONTEXT_AUDIT_PACKAGE_FILES == expected
+
+
 def test_repository_audit_rejects_missing_required_readme(tmp_path: Path) -> None:
     """固定根入口 README 缺失时不能靠删除索引链接绕过门禁。
 
@@ -155,6 +207,66 @@ def test_repository_audit_rejects_missing_required_readme(tmp_path: Path) -> Non
         "missing_shared_file",
         Path("README.md"),
     ) in [(finding.code, finding.path) for finding in findings]
+
+
+@pytest.mark.parametrize(
+    ("replacement", "code"),
+    (
+        ("## 已改名验证", "missing_authoritative_command_section"),
+        ("### 常用验证", "missing_authoritative_command_section"),
+        (
+            "## 常用验证\n\n## 常用验证",
+            "duplicate_authoritative_command_section",
+        ),
+    ),
+)
+def test_repository_audit_requires_one_authoritative_command_h2(
+    tmp_path: Path, replacement: str, code: str
+) -> None:
+    """根权威命令章节改名、降级或重复时不能静默跳过。
+
+    Args:
+        tmp_path: Pytest 为反例提供的隔离临时目录。
+        replacement: 用于替换正常二级标题的异常 Markdown。
+        code: 预期的稳定 finding 类别。
+    """
+
+    _create_minimal_repository(tmp_path)
+    root_agents = tmp_path / "AGENTS.md"
+    root_agents.write_text(
+        root_agents.read_text(encoding="utf-8").replace("## 常用验证", replacement),
+        encoding="utf-8",
+    )
+
+    findings = audit_repository(tmp_path)
+
+    assert code in {finding.code for finding in findings}
+
+
+def test_repository_audit_rejects_empty_authoritative_command_section(
+    tmp_path: Path,
+) -> None:
+    """保留权威章节标题但删除全部命令时不能保持假绿。
+
+    Args:
+        tmp_path: Pytest 为反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    root_agents = tmp_path / "AGENTS.md"
+    root_agents.write_text(
+        root_agents.read_text(encoding="utf-8").replace(
+            "## 常用验证\n\n`.venv/bin/python -m pytest`\n",
+            "## 常用验证\n",
+        ),
+        encoding="utf-8",
+    )
+
+    findings = audit_repository(tmp_path)
+
+    assert "empty_authoritative_command_section" in {
+        finding.code for finding in findings
+    }
 
 
 def test_repository_audit_rejects_missing_root_entrypoint_links(
@@ -240,6 +352,11 @@ def test_discussion_module_contract_is_explicit() -> None:
             ("unknown",),
         )
     }
+    assert len(MODULE_CONTEXT_POLICIES) == 1
+    assert MODULE_CONTEXT_POLICIES[0].root == discussion_root
+    assert AUTHORITATIVE_COMMAND_SECTIONS[discussion_root / "AGENTS.md"] == (
+        "权威测试入口",
+    )
 
 
 def test_repository_audit_rejects_empty_registered_module_context(
@@ -333,6 +450,41 @@ def test_repository_audit_rejects_invalid_fact_status_rows(
             "do_not_claim=public; exit=public |",
             "| `unknown` | record=present; checked=public; gap=public; "
             f"do_not_claim=public; exit=public |\n{bad_row}",
+        ),
+        encoding="utf-8",
+    )
+
+    findings = audit_repository(tmp_path)
+
+    assert (
+        "invalid_module_status_table",
+        module_agents,
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_repository_audit_rejects_second_runtime_fact_table(tmp_path: Path) -> None:
+    """同一运行事实章节不能用第二张表绕过状态重复检查。
+
+    Args:
+        tmp_path: Pytest 为反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    module_agents = Path("trowel_py/discussion/AGENTS.md")
+    module_file = tmp_path / module_agents
+    markdown = module_file.read_text(encoding="utf-8")
+    second_table = (
+        "\n\n| 状态 | 当前结论与证据边界 |\n"
+        "|---|---|\n"
+        "| `unknown` | record=present; checked=second; gap=second; "
+        "do_not_claim=second; exit=second |"
+    )
+    module_file.write_text(
+        markdown.replace(
+            "| `unknown` | record=present; checked=public; gap=public; "
+            "do_not_claim=public; exit=public |",
+            "| `unknown` | record=present; checked=public; gap=public; "
+            f"do_not_claim=public; exit=public |{second_table}",
         ),
         encoding="utf-8",
     )
@@ -961,7 +1113,9 @@ def test_repository_audit_rejects_unindexed_module_context(tmp_path: Path) -> No
         "1. [README](README.md)\n"
         "2. [directory](directory.md)\n"
         "3. [PRD](docs/foundation/prd.md)\n"
-        "4. [development](docs/foundation/development.md)\n",
+        "4. [development](docs/foundation/development.md)\n\n"
+        "## 常用验证\n\n"
+        "`.venv/bin/python -m pytest`\n",
         encoding="utf-8",
     )
 
@@ -1858,6 +2012,30 @@ def test_repository_audit_rejects_staged_worktree_mismatch(tmp_path: Path) -> No
     ) in [(finding.code, finding.path) for finding in findings]
 
 
+def test_repository_audit_snapshots_authoritative_command_targets(
+    tmp_path: Path,
+) -> None:
+    """严格门禁必须发现权威命令目标在暂存后又被修改。
+
+    Args:
+        tmp_path: Pytest 为本反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    target = Path("scripts/tracked-check.py")
+    (tmp_path / target).write_text("# staged\n", encoding="utf-8")
+    _add_root_authoritative_command(tmp_path, f".venv/bin/python {target}")
+    subprocess.run(("git", "add", "AGENTS.md", str(target)), cwd=tmp_path, check=True)
+    (tmp_path / target).write_text("# worktree\n", encoding="utf-8")
+
+    findings = audit_repository(tmp_path)
+
+    assert (
+        "staged_worktree_mismatch",
+        target,
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
 @pytest.mark.parametrize("index_flag", ("--assume-unchanged", "--skip-worktree"))
 def test_repository_audit_rejects_hidden_index_worktree_mismatch(
     tmp_path: Path, index_flag: str
@@ -1948,6 +2126,7 @@ def test_repository_audit_rejects_untracked_audit_control(
     "relative_path",
     (
         Path(".worktreeinclude"),
+        Path("scripts/shared_context/commands.py"),
         Path("scripts/shared_context_check.py"),
         Path("tests/foundation/test_shared_context.py"),
     ),
@@ -1975,6 +2154,27 @@ def test_repository_audit_rejects_symlink_audit_control(
     assert (
         "nonregular_audit_control",
         relative_path,
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_repository_audit_rejects_symlink_audit_package_root(tmp_path: Path) -> None:
+    """宽松模式也不能从符号链接包根加载本机审计实现。
+
+    Args:
+        tmp_path: Pytest 为反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    package_root = tmp_path / "scripts/shared_context"
+    private_package = tmp_path / "private-audit-package"
+    shutil.move(package_root, private_package)
+    package_root.symlink_to(private_package, target_is_directory=True)
+
+    findings = audit_repository(tmp_path, require_tracked=False)
+
+    assert (
+        "nonregular_audit_control",
+        Path("scripts/shared_context"),
     ) in [(finding.code, finding.path) for finding in findings]
 
 
@@ -2042,3 +2242,209 @@ def test_repository_audit_rejects_module_bridge_without_import(
         "missing_claude_bridge",
         module_bridge,
     ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_repository_audit_rejects_missing_authoritative_command_target(
+    tmp_path: Path,
+) -> None:
+    """权威验证命令引用的仓库路径失效时必须阻止上下文通过。
+
+    Args:
+        tmp_path: Pytest 为本反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    _add_root_authoritative_command(
+        tmp_path, ".venv/bin/python -m pytest tests/missing_authority.py"
+    )
+
+    findings = audit_repository(tmp_path)
+
+    assert (
+        "missing_authoritative_command_target",
+        Path("AGENTS.md"),
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_repository_audit_rejects_ignored_authoritative_command_target(
+    tmp_path: Path,
+) -> None:
+    """本机存在但被忽略的命令目标不能冒充 clean checkout 可用入口。
+
+    Args:
+        tmp_path: Pytest 为本反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    target = Path("scripts/local-check.py")
+    (tmp_path / target).write_text("# local only\n", encoding="utf-8")
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        f"{gitignore.read_text(encoding='utf-8')}{target}\n", encoding="utf-8"
+    )
+    _add_root_authoritative_command(tmp_path, f".venv/bin/python {target}")
+
+    findings = audit_repository(tmp_path, require_tracked=False)
+
+    assert (
+        "ignored_authoritative_command_target",
+        Path("AGENTS.md"),
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+@pytest.mark.parametrize("ignore_source", ("info", "global"))
+def test_repository_audit_rejects_machine_local_ignored_command_target(
+    tmp_path: Path, ignore_source: str
+) -> None:
+    """本机 exclude 和全局 ignore 都不能让宽松 freshness 对本地入口假绿。
+
+    Args:
+        tmp_path: Pytest 为反例提供的隔离临时目录。
+        ignore_source: 使用 `.git/info/exclude` 或仓库配置模拟全局 ignore。
+    """
+
+    _create_minimal_repository(tmp_path)
+    target = Path("scripts/machine-local.py")
+    (tmp_path / target).write_text("# local only\n", encoding="utf-8")
+    if ignore_source == "info":
+        exclude = tmp_path / ".git/info/exclude"
+        exclude.write_text(
+            f"{exclude.read_text(encoding='utf-8')}{target}\n", encoding="utf-8"
+        )
+    else:
+        global_ignore = tmp_path / "global-ignore"
+        global_ignore.write_text(f"{target}\n", encoding="utf-8")
+        subprocess.run(
+            ("git", "config", "core.excludesFile", str(global_ignore)),
+            cwd=tmp_path,
+            check=True,
+        )
+    _add_root_authoritative_command(tmp_path, f".venv/bin/python {target}")
+
+    findings = audit_repository(tmp_path, require_tracked=False)
+
+    assert (
+        "ignored_authoritative_command_target",
+        Path("AGENTS.md"),
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_repository_audit_rejects_untracked_authoritative_command_target(
+    tmp_path: Path,
+) -> None:
+    """严格模式必须拒绝没有进入 Git 索引的权威命令目标。
+
+    Args:
+        tmp_path: Pytest 为本反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path)
+    target = Path("scripts/untracked-check.py")
+    (tmp_path / target).write_text("# untracked\n", encoding="utf-8")
+    _add_root_authoritative_command(tmp_path, f".venv/bin/python {target}")
+
+    findings = audit_repository(tmp_path)
+
+    assert (
+        "untracked_authoritative_command_target",
+        Path("AGENTS.md"),
+    ) in [(finding.code, finding.path) for finding in findings]
+
+
+def test_strict_cli_accepts_tracked_authoritative_command_closure(
+    tmp_path: Path,
+) -> None:
+    """严格模块入口必须在隔离 Git 索引中复核完整命令闭包。
+
+    Args:
+        tmp_path: Pytest 为本反例提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path, copy_real_audit_files=True)
+    target = Path("scripts/tracked-check.py")
+    (tmp_path / target).write_text("# tracked\n", encoding="utf-8")
+    _add_root_authoritative_command(tmp_path, f".venv/bin/python {target}")
+    subprocess.run(("git", "add", "AGENTS.md", str(target)), cwd=tmp_path, check=True)
+
+    completed = subprocess.run(
+        (
+            str(REPO_ROOT / ".venv/bin/python"),
+            "-m",
+            "scripts.shared_context_check",
+        ),
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_repo_root_discovers_target_repository_audit_subpackages(
+    tmp_path: Path,
+) -> None:
+    """跨 checkout 审计必须从目标仓库发现新增的嵌套审计模块。
+
+    Args:
+        tmp_path: Pytest 为目标仓库提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path, copy_real_audit_files=True)
+    nested_module = Path("scripts/shared_context/dialects/python.py")
+    (tmp_path / nested_module).parent.mkdir(parents=True)
+    (tmp_path / nested_module).write_text(
+        "# untracked audit module\n", encoding="utf-8"
+    )
+
+    completed = subprocess.run(
+        (
+            str(REPO_ROOT / ".venv/bin/python"),
+            "-m",
+            "scripts.shared_context_check",
+            "--repo-root",
+            str(tmp_path),
+        ),
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert f"{nested_module}: untracked_audit_control" in completed.stdout
+
+
+def test_repo_root_keeps_required_audit_bootstrap_after_target_deletion(
+    tmp_path: Path,
+) -> None:
+    """跨 checkout 审计不能因目标仓库删除必需模块而缩小预期闭包。
+
+    Args:
+        tmp_path: Pytest 为目标仓库提供的隔离临时目录。
+    """
+
+    _create_minimal_repository(tmp_path, copy_real_audit_files=True)
+    required_module = Path("scripts/shared_context/commands.py")
+    subprocess.run(
+        ("git", "rm", "-f", "--quiet", str(required_module)),
+        cwd=tmp_path,
+        check=True,
+    )
+
+    completed = subprocess.run(
+        (
+            str(REPO_ROOT / ".venv/bin/python"),
+            "-m",
+            "scripts.shared_context_check",
+            "--repo-root",
+            str(tmp_path),
+        ),
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert f"{required_module}: untracked_audit_control" in completed.stdout
