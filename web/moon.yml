@@ -1,0 +1,129 @@
+language: 'javascript'
+
+toolchains:
+  default: 'system'
+
+taskOptions:
+  cache: false
+  inferInputs: false
+  outputStyle: 'buffer'
+
+tasks:
+  frontend.eslint:
+    description: '报告当前前端 ESLint 债务；清零并验证稳定前不进入默认 Gate。'
+    command: ['bun', 'run', 'lint']
+
+  frontend.typecheck:
+    description: '在 web 工程运行完整 TypeScript build graph 类型检查。'
+    command: ['bun', 'run', 'typecheck']
+
+  frontend.agent-boundaries:
+    description: '检查 Agent 前端模块所有权、依赖方向和相对 import 环。'
+    command: ['bun', 'run', 'check:agent-boundaries']
+
+  frontend.module-comments:
+    description: '检查生产 TypeScript 模块是否具有中文职责说明。'
+    command: ['bun', 'run', 'check:module-comments']
+
+  frontend.ui-contracts:
+    description: '检查生产界面的共享控件和原生控件客观约束。'
+    command: ['bun', 'run', 'check:ui-contracts']
+
+  frontend.vitest:
+    description: '运行前端 Vitest 测试，不重复执行三个结构检查。'
+    command: ['bun', 'run', 'vitest', 'run']
+
+  frontend.build:
+    description: '生成公开契约和桌面打包使用的本次前端产物。'
+    command: ['bun', 'run', 'build']
+    outputs: ['dist/**', 'desktop-dist/**']
+
+  desktop.renderer:
+    description: '在 macOS 运行 renderer、telemetry drain 和资源归零 smoke。'
+    command: ['bun', 'run', 'desktop:smoke']
+    options:
+      os: 'macos'
+
+  desktop.settings:
+    description: '在 macOS 运行设置页与资源归零 smoke。'
+    command: ['bun', 'run', 'desktop:settings-smoke']
+    options:
+      os: 'macos'
+
+  desktop.diagnostic:
+    description: '在 macOS 运行 Python 缺失诊断页 smoke。'
+    command: ['bun', 'run', 'desktop:diagnostic-smoke']
+    options:
+      os: 'macos'
+
+  desktop.single-instance:
+    description: '在 macOS 运行桌面单实例 smoke。'
+    command: ['bun', 'run', 'desktop:single-instance-smoke']
+    options:
+      os: 'macos'
+
+  desktop.sidecar-hang:
+    description: '在 macOS 运行 sidecar 卡住后的清理 smoke。'
+    command: ['bun', 'run', 'desktop:sidecar-hang-smoke']
+    options:
+      os: 'macos'
+
+  desktop.renderer-crash:
+    description: '在 macOS 运行 renderer 崩溃后的资源清理 smoke。'
+    command: ['bun', 'run', 'desktop:renderer-crash-smoke']
+    options:
+      os: 'macos'
+
+  desktop.shared-service:
+    description: '在 macOS 运行共享服务生命周期 smoke。'
+    command: ['bun', 'run', 'desktop:shared-service-smoke']
+    options:
+      os: 'macos'
+
+  desktop.agent-transport:
+    description: '报告 Agent transport smoke 当前失败；修复并验证稳定前不进入聚合入口。'
+    command: ['bun', 'run', 'desktop:agent-transport-smoke']
+    options:
+      os: 'macos'
+
+  packaged.app:
+    description: '在 macOS 对已构建应用运行基础 packaged smoke。'
+    command: ['bun', 'run', 'smoke:packaged-mac']
+    options:
+      os: 'macos'
+
+  packaged.settings:
+    description: '在 macOS 对已构建应用运行设置 packaged smoke。'
+    command: ['bun', 'run', 'smoke:packaged-settings-mac']
+    options:
+      os: 'macos'
+
+  packaged.default-paths:
+    description: '检查正式应用默认数据路径；脚本会拒绝非临时 CI 用户。'
+    command: ['bun', 'run', 'smoke:packaged-default-paths-mac']
+    options:
+      os: 'macos'
+
+  packaged.residency:
+    description: '在 macOS 检查 packaged 应用关闭与重开后的进程驻留。'
+    command: ['bun', 'run', 'smoke:packaged-residency-mac']
+    options:
+      os: 'macos'
+
+  packaged.renderer-crash:
+    description: '在 macOS 对已构建应用运行 renderer 崩溃 smoke。'
+    command: ['bun', 'run', 'smoke:packaged-renderer-crash-mac']
+    options:
+      os: 'macos'
+
+  packaged.agent-transport:
+    description: '在 macOS 对已构建应用运行 Agent transport smoke。'
+    command: ['bun', 'run', 'smoke:packaged-agent-transport-mac']
+    options:
+      os: 'macos'
+
+  packaged.dmg-install:
+    description: '在 macOS 运行 DMG 安装和覆盖 smoke。'
+    command: ['bun', 'run', 'smoke:dmg-install-mac']
+    options:
+      os: 'macos'

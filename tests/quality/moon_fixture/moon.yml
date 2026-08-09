@@ -1,0 +1,70 @@
+language: 'unknown'
+
+toolchains:
+  default: 'system'
+
+taskOptions:
+  cache: false
+  inferInputs: false
+  outputStyle: 'buffer'
+
+tasks:
+  frontend.build:
+    description: '反向场景的本次构建产物。'
+    command: ['python3', 'fixture_task.py', '--id', 'frontend.build', '--build']
+
+  backend.contracts:
+    description: '反向场景中只接受本次构建产物。'
+    command: ['python3', 'fixture_task.py', '--id', 'backend.contracts', '--contracts']
+    deps: ['root:frontend.build']
+
+  independent.fail-a:
+    description: '第一条独立失败分支。'
+    command: ['python3', 'fixture_task.py', '--id', 'independent.fail-a', '--fail', '11']
+
+  after.fail-a:
+    description: '只能被第一条失败分支阻断。'
+    command: ['python3', 'fixture_task.py', '--id', 'after.fail-a']
+    deps: ['root:independent.fail-a']
+
+  independent.fail-b:
+    description: '第二条独立失败分支。'
+    command: ['python3', 'fixture_task.py', '--id', 'independent.fail-b', '--fail', '12']
+
+  independent.pass:
+    description: '多个失败后仍应执行的无关分支。'
+    command: ['python3', 'fixture_task.py', '--id', 'independent.pass']
+
+  environment.missing-command:
+    description: '缺少可执行命令时必须成为普通失败。'
+    command: './missing-command'
+
+  environment.wrong-cwd:
+    description: '从仓库根启动 web 检查时必须暴露工作目录错误。'
+    command: ['python3', 'web/cwd_task.py']
+
+  platform.linux-only:
+    description: '只在 Linux 执行的平台叶。'
+    command: ['python3', 'fixture_task.py', '--id', 'platform.linux-only']
+    options:
+      os: 'linux'
+
+  platform.mac-only:
+    description: '只在 macOS 执行的平台叶。'
+    command: ['python3', 'fixture_task.py', '--id', 'platform.mac-only']
+    options:
+      os: 'macos'
+
+  gate:
+    description: '聚合全部反向分支。'
+    command: 'true'
+    deps:
+      - 'root:backend.contracts'
+      - 'root:after.fail-a'
+      - 'root:independent.fail-b'
+      - 'root:independent.pass'
+      - 'root:environment.missing-command'
+      - 'root:environment.wrong-cwd'
+      - 'web:frontend.cwd'
+      - 'root:platform.linux-only'
+      - 'root:platform.mac-only'

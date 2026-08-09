@@ -65,32 +65,35 @@ git switch -c fix/short-description
 
 ## 本地验证
 
-先运行与改动直接相关的测试，再运行对应的完整检查。
-
-后端：
-
-```bash
-uv run --no-sync python -m pytest --ignore=tests/contracts
-uv run --no-sync ruff check trowel_py tests
-```
-
-前端：
+开发中先运行与改动直接相关的测试。提交 Pull Request 前，从仓库根目录运行权威质量
+入口：
 
 ```bash
-cd web
-bun run typecheck
-bun run test
-bun run build
+.venv/bin/python -m scripts.quality gate
 ```
 
-公开契约依赖前端构建产物。在完成前端构建后，从仓库根目录运行：
+入口会使用仓库固定并经过 SHA-256 校验的 moon，按 `moon.yml` 和 `web/moon.yml` 中的
+依赖执行后端、前端、公开契约和公共项目上下文检查。首次运行会自动准备 moon，不要求
+全局安装。完整报告和逐项日志位于 `.quality-runs/`。
+
+失败摘要中的稳定任务 ID 可以通过同一入口独立重跑：
 
 ```bash
-uv run --no-sync python -m pytest tests/contracts
+.venv/bin/python -m scripts.quality backend.contracts
 ```
 
-依赖发生变化时，应提交对应的 `uv.lock` 或 `web/bun.lock`。公开契约确实需要变化
-时，应在 Pull Request 中单独说明变更内容和兼容性影响。
+公开契约任务会自动依赖本次前端构建，不接受旧构建产物。全仓 `mypy`、Python docstring
+和前端 ESLint 的现有债务已登记为显式叶子；进入默认 Gate 前，新改文件仍需运行对应的
+窄范围检查，不能增加债务。
+
+公开契约确实需要变化时，先审查差异，再显式更新快照：
+
+```bash
+.venv/bin/python -m tests.contracts.public_contracts --update
+```
+
+依赖发生变化时，应提交对应的 `uv.lock` 或 `web/bun.lock`。公开契约变化应在 Pull
+Request 中单独说明变更内容和兼容性影响。
 
 ## 提交与 Pull Request
 

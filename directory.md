@@ -10,6 +10,8 @@
 | `pyproject.toml` / `uv.lock` | Python 包、依赖和测试配置 |
 | `config.example.toml` | 不含真实凭据的配置样例 |
 | `.github/` | CI workflow、Issue/PR 模板、CODEOWNERS 与 dependabot 配置 |
+| `.moon/workspace.yml` / `moon.yml` / `web/moon.yml` | 固定 moon 版本，并定义本地与 CI 共用的质量任务、依赖、平台和聚合入口 |
+| `scripts/quality/` | 安装并校验固定 moon，执行质量目标，归一四态结果并保存逐项证据 |
 | `scripts/shared_context_check.py` / `scripts/shared_context/` | 公共项目上下文的只读审计入口，以及权威命令 freshness 等可组合检查 |
 | `trowel_py/` | FastAPI 后端与本地运行时 |
 | `web/` | React 前端 |
@@ -164,6 +166,8 @@
 - `tests/<domain>/` 对应后端领域，领域测试不平铺在一级目录；
 - `tests/integration/` 放跨领域端到端测试；
 - `tests/contracts/` 冻结 OpenAPI、CLI、SSE event type 和 SQLite schema；
+- `tests/quality/` 用隔离 moon workspace 反向验证失败汇总、依赖阻断、平台不适用、
+  旧产物和证据新鲜度；
 - `tests/fixtures/` 放跨领域共享 fixture；
 - `tests/` 一级只保留包入口与共享 `conftest.py`。
 
