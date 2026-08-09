@@ -1,0 +1,530 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/agent/ui/agent.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@media (max-width: 880px)|selector=.cc-workrail-backdrop|property=background|value=background=rgba(45, 59, 45, 0.22)",
+        "context=@media (max-width: 880px)|selector=.cc-workrail.cc-workrail--open|property=box-shadow|value=box-shadow=rgba(45, 59, 45, 0.2)",
+        "selector=.cc-ac__context|property=background|value=background=rgba(255, 255, 255, 0)",
+        "selector=.cc-agent__body|property=border-top|value=border-top=rgba(139, 115, 85, 0.25)",
+        "selector=.cc-agent-locator__row:hover|property=background|value=background=rgba(74, 124, 89, 0.08)",
+        "selector=.cc-agent|property=background|value=background=rgba(139, 115, 85, 0.06)",
+        "selector=.cc-approval__button--accept|property=color|value=color=#fff",
+        "selector=.cc-approval__command|property=background|value=background=#2f352f",
+        "selector=.cc-approval__command|property=color|value=color=#fffdf4",
+        "selector=.cc-approval|property=box-shadow|value=box-shadow=rgba(68, 55, 30, 0.07)",
+        "selector=.cc-command-diff__add|property=color|value=color=#a9d2b4",
+        "selector=.cc-command-diff__del|property=color|value=color=#efaaa0",
+        "selector=.cc-command-diff__file|property=color|value=color=#d8c9aa",
+        "selector=.cc-command-diff__hunk|property=color|value=color=#e8c875",
+        "selector=.cc-command-diff|property=background|value=background=#2f352f",
+        "selector=.cc-command-diff|property=color|value=color=#fffdf4",
+        "selector=.cc-command-modal__backdrop|property=background|value=background=rgba(45, 59, 45, 0.28)",
+        "selector=.cc-command-primary|property=color|value=color=#fff",
+        "selector=.cc-dialog__backdrop|property=background|value=background=rgba(45, 40, 30, 0.35)",
+        "selector=.cc-dialog__btn--danger|property=color|value=color=#fff",
+        "selector=.cc-dialog__btn--primary|property=color|value=color=#fff",
+        "selector=.cc-dialog__diag|property=color|value=color=#6c5315",
+        "selector=.cc-dialog|property=box-shadow|value=box-shadow=rgba(60, 50, 30, 0.22)",
+        "selector=.cc-goal-editor__actions button:last-child|property=color|value=color=#fff",
+        "selector=.cc-modal-backdrop|property=background|value=background=rgba(45, 59, 45, 0.25)",
+        "selector=.cc-picker|property=box-shadow|value=box-shadow=rgba(0, 0, 0, 0.12)",
+        "selector=.cc-rate-banner--reached|property=color|value=color=#8f3f34",
+        "selector=.cc-revert-scrim|property=background|value=background=rgba(45, 59, 45, 0.35)",
+        "selector=.cc-runtime-badge--claude_code|property=border-color|value=border-color=#c9aa8c",
+        "selector=.cc-runtime-badge--claude_code|property=color|value=color=#6b4934",
+        "selector=.cc-runtime-badge--codex|property=border-color|value=border-color=#a8a49c",
+        "selector=.cc-runtime-badge--codex|property=color|value=color=#343434",
+        "selector=.cc-session-notice__details|property=background|value=background=rgba(255, 255, 255, 0.32)",
+        "selector=.cc-session-notice__footer|property=background|value=background=rgba(255, 255, 255, 0.24)",
+        "selector=.cc-session-notice__issue i[data-tone=\"error\"]|property=background|value=background=#b85e50",
+        "selector=.cc-session-notice__issue i[data-tone=\"info\"]|property=background|value=background=#879a8b",
+        "selector=.cc-session-notice__issue i[data-tone=\"warning\"]|property=background|value=background=#d0ad39",
+        "selector=.cc-session-notice__primary-action:hover|property=background|value=background=#71342d",
+        "selector=.cc-session-notice__primary-action|property=background|value=background=#873e35",
+        "selector=.cc-session-notice--error|property=--cc-notice-border|value=--cc-notice-border=#cf8f84",
+        "selector=.cc-session-notice--error|property=--cc-notice-ink|value=--cc-notice-ink=#873e35",
+        "selector=.cc-session-notice--grouped.cc-session-notice--has-error|property=--cc-notice-border|value=--cc-notice-border=#cf8f84",
+        "selector=.cc-session-notice--grouped.cc-session-notice--has-error|property=--cc-notice-ink|value=--cc-notice-ink=#873e35",
+        "selector=.cc-session-notice--info, .cc-session-notice--grouped|property=--cc-notice-bg|value=--cc-notice-bg=#f7f4ed",
+        "selector=.cc-session-notice--info, .cc-session-notice--grouped|property=--cc-notice-border|value=--cc-notice-border=#c9bdac",
+        "selector=.cc-session-notice--info, .cc-session-notice--grouped|property=--cc-notice-ink|value=--cc-notice-ink=#4f4b43",
+        "selector=.cc-session-notice|property=--cc-notice-bg|value=--cc-notice-bg=#fff8e5",
+        "selector=.cc-session-notice|property=--cc-notice-border|value=--cc-notice-border=#d9bc58",
+        "selector=.cc-session-notice|property=--cc-notice-ink|value=--cc-notice-ink=#725c19",
+        "selector=.cc-subagent__children|property=border-top|value=border-top=rgba(139, 115, 85, 0.25)",
+        "selector=.cc-subagent__header[role=\"button\"]:hover|property=background|value=background=rgba(139, 115, 85, 0.1)",
+        "selector=.cc-subagent|property=background|value=background=rgba(139, 115, 85, 0.06)",
+        "selector=.cc-toggle::after|property=background|value=background=#fff",
+        "selector=.cc-toggle::after|property=box-shadow|value=box-shadow=rgba(0, 0, 0, 0.25)",
+        "selector=.cc-workflow__header|property=background|value=background=rgba(139, 115, 85, 0.06)",
+        "selector=.cc-workspace-chooser__list|property=border-block|value=border-block=#e7dfd3",
+        "selector=.cc-workspace-chooser__recent|property=border-bottom|value=border-bottom=#e7dfd3",
+        "selector=.cc-workspace-home__actions .cc-workspace-home__primary:hover|property=color|value=color=#fff",
+        "selector=.cc-workspace-home__actions .cc-workspace-home__primary|property=color|value=color=#fff",
+        "selector=.cc-workspace-home__history-row|property=border-bottom|value=border-bottom=#e7dfd3",
+        "selector=.cc-workspace-start__recent-row strong|property=color|value=color=#3f6f4c",
+        "selector=.cc-workspace-start__recent-row:first-of-type|property=border-top|value=border-top=#e7dfd3",
+        "selector=.cc-workspace-start__recent-row|property=border-bottom|value=border-bottom=#e7dfd3"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/events/EventModal.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.event-modal-overlay|property=background-color|value=background-color=rgba(0, 0, 0, 0.3)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/layout/AppLayout.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.sidebar-logo|property=background|value=background=#394a38",
+        "selector=.sidebar-logo|property=border|value=border=rgba(232, 184, 75, 0.34)",
+        "selector=.sidebar-nav__item--active|property=background-color|value=background-color=rgba(255, 255, 255, 0.08)",
+        "selector=.sidebar-nav__item:hover|property=background-color|value=background-color=rgba(255, 255, 255, 0.06)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/pet/PetPanel.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.pet-panel-overlay|property=background-color|value=background-color=rgba(0, 0, 0, 0.4)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/profile/SuggestionsModal.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.suggestion__sources span|property=background|value=background=rgba(0, 0, 0, 0.04)",
+        "selector=.suggestions-backdrop|property=background|value=background=rgba(0, 0, 0, 0.35)",
+        "selector=.suggestions-close:hover|property=background|value=background=rgba(0, 0, 0, 0.05)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/review/FeynmanOverlay.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.feynman-overlay|property=background|value=background=rgba(0, 0, 0, 0.5)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/review/ReviewCard.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.review-card__category|property=background|value=background=rgba(74, 124, 89, 0.1)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/review/ReviewSession.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.review-session__progress-bar|property=background|value=background=rgba(139, 115, 85, 0.2)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/ui/confirm-dialog.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.confirm-dialog footer button.is-danger|property=background|value=background=#a64c3f",
+        "selector=.confirm-dialog footer button.is-danger|property=border-color|value=border-color=#a64c3f",
+        "selector=.confirm-dialog footer button.is-danger|property=color|value=color=#fff",
+        "selector=.confirm-dialog__backdrop|property=background|value=background=rgba(28, 34, 27, 0.42)",
+        "selector=.confirm-dialog__mark.is-danger|property=background|value=background=#f8e7e2",
+        "selector=.confirm-dialog__mark.is-danger|property=color|value=color=#9b4438"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/ui/copy-button.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.ui-copy-button--brand:hover, .ui-copy-button--brand[data-state=\"copied\"]|property=border-color|value=border-color=rgba(74, 124, 89, 0.45)",
+        "selector=.ui-copy-button--neutral:hover, .ui-copy-button--neutral[data-state=\"copied\"]|property=background|value=background=rgba(255, 255, 255, 0.82)",
+        "selector=.ui-copy-button--neutral:hover, .ui-copy-button--neutral[data-state=\"copied\"]|property=border-color|value=border-color=rgba(92, 78, 64, 0.48)",
+        "selector=.ui-copy-button--neutral|property=background|value=background=rgba(255, 255, 255, 0.48)",
+        "selector=.ui-copy-button--neutral|property=border-color|value=border-color=rgba(92, 78, 64, 0.3)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/components/ui/popper-select.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.popper-select__trigger:hover, .popper-select__trigger[data-state=\"open\"]|property=border-color|value=border-color=rgba(74, 124, 89, 0.48)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/development/statistics-preview.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.statistics-preview__sample|property=border|value=border=rgba(74, 124, 89, 0.28)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/discussion/ui/discussion.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@keyframes discussion-status-pulse|selector=50%|property=box-shadow|value=box-shadow=rgba(232, 184, 75, 0)",
+        "selector=.discussion-command-bar|property=box-shadow|value=box-shadow=rgba(45, 48, 40, 0.13)",
+        "selector=.discussion-composer__targets|property=background|value=background=#fbf8f2",
+        "selector=.discussion-composer__targets|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.66)",
+        "selector=.discussion-history__head .discussion-history__new-button:hover|property=background|value=background=#365f42",
+        "selector=.discussion-history__head .discussion-history__new-button:hover|property=color|value=color=#fff",
+        "selector=.discussion-history__head .discussion-history__new-button|property=color|value=color=#fff",
+        "selector=.discussion-history__item:hover, .discussion-history__item[aria-current=\"page\"]|property=background|value=background=rgba(255, 253, 247, 0.78)",
+        "selector=.discussion-inspector__participants > button:hover, .discussion-inspector__participants > button[aria-pressed=\"true\"]|property=border-color|value=border-color=rgba(74, 124, 89, 0.55)",
+        "selector=.discussion-inspector__participants > button[data-participant-position=\"3\"] i|property=background|value=background=#6f7f96",
+        "selector=.discussion-inspector__participants > button[data-participant-position=\"4\"] i|property=background|value=background=#a46c84",
+        "selector=.discussion-modal-backdrop, .discussion-inspector-backdrop|property=background|value=background=rgba(30, 34, 29, 0.46)",
+        "selector=.discussion-progression__choices > button:hover|property=border-color|value=border-color=rgba(74, 124, 89, 0.48)",
+        "selector=.discussion-response > header > span|property=border|value=border=rgba(74, 124, 89, 0.35)",
+        "selector=.discussion-response__body|property=color|value=color=#3b3935",
+        "selector=.discussion-response[data-participant-position=\"1\"] > header > span|property=background|value=background=rgba(139, 115, 85, 0.12)",
+        "selector=.discussion-response[data-participant-position=\"1\"] > header > span|property=border-color|value=border-color=rgba(139, 115, 85, 0.35)",
+        "selector=.discussion-response[data-participant-position=\"1\"] > header > span|property=color|value=color=#69543f",
+        "selector=.discussion-response[data-participant-position=\"2\"] > header > span|property=border-color|value=border-color=rgba(232, 184, 75, 0.5)",
+        "selector=.discussion-response[data-participant-position=\"3\"] > header > span|property=background|value=background=rgba(111, 127, 150, 0.11)",
+        "selector=.discussion-response[data-participant-position=\"3\"] > header > span|property=border-color|value=border-color=rgba(111, 127, 150, 0.42)",
+        "selector=.discussion-response[data-participant-position=\"3\"] > header > span|property=color|value=color=#536176",
+        "selector=.discussion-response[data-participant-position=\"3\"]::before|property=background|value=background=#6f7f96",
+        "selector=.discussion-response[data-participant-position=\"4\"] > header > span|property=background|value=background=rgba(164, 108, 132, 0.11)",
+        "selector=.discussion-response[data-participant-position=\"4\"] > header > span|property=border-color|value=border-color=rgba(164, 108, 132, 0.42)",
+        "selector=.discussion-response[data-participant-position=\"4\"] > header > span|property=color|value=color=#7c4f62",
+        "selector=.discussion-response[data-participant-position=\"4\"]::before|property=background|value=background=#a46c84",
+        "selector=.discussion-response|property=box-shadow|value=box-shadow=rgba(57, 51, 42, 0.055)",
+        "selector=.discussion-search input|property=background|value=background=rgba(255, 253, 247, 0.7)",
+        "selector=.discussion-titlebar|property=background|value=background=#f7f4ef",
+        "selector=.discussion-titlebar|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.68)",
+        "selector=.discussion-titlebar|property=color|value=color=#4f4d48"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/settings/ui/settings-workspace.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.settings-account-card|property=background|value=background=rgba(245, 240, 232, 0.45)",
+        "selector=.settings-alias-input > span|property=background|value=background=rgba(245, 240, 232, 0.65)",
+        "selector=.settings-button:hover|property=border-color|value=border-color=rgba(74, 124, 89, 0.48)",
+        "selector=.settings-button.is-danger|property=border-color|value=border-color=rgba(196, 91, 74, 0.45)",
+        "selector=.settings-button.is-primary:hover|property=background|value=background=#3f6c4d",
+        "selector=.settings-connection-row:hover|property=background|value=background=rgba(74, 124, 89, 0.045)",
+        "selector=.settings-connection-row|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.64)",
+        "selector=.settings-diagnostic__endpoint|property=color|value=color=#4f4b45",
+        "selector=.settings-diagnostic__row|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.64)",
+        "selector=.settings-drag-region|property=background|value=background=#f7f4ef",
+        "selector=.settings-drag-region|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.68)",
+        "selector=.settings-drag-region|property=color|value=color=#4f4d48",
+        "selector=.settings-empty|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.7)",
+        "selector=.settings-form-block|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.7)",
+        "selector=.settings-form-section|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.7)",
+        "selector=.settings-icon-button:hover:not(:disabled)|property=border-color|value=border-color=rgba(74, 124, 89, 0.48)",
+        "selector=.settings-kind-choice-block|property=background|value=background=rgba(248, 246, 241, 0.72)",
+        "selector=.settings-path-row__value|property=color|value=color=#4f4b45",
+        "selector=.settings-preview pre|property=background|value=background=#f7f3ec",
+        "selector=.settings-preview pre|property=color|value=color=#4f4b45",
+        "selector=.settings-readonly-value|property=background|value=background=rgba(245, 240, 232, 0.55)",
+        "selector=.settings-readonly-value|property=border|value=border=rgba(212, 201, 184, 0.72)",
+        "selector=.settings-row|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.7)",
+        "selector=.settings-runtime-alias|property=border|value=border=rgba(74, 124, 89, 0.25)",
+        "selector=.settings-runtime-callable|property=background|value=background=rgba(245, 240, 232, 0.4)",
+        "selector=.settings-runtime-mark.is-direct_api|property=color|value=color=#7b654a",
+        "selector=.settings-runtime-mark|property=border|value=border=rgba(139, 115, 85, 0.25)",
+        "selector=.settings-runtime-preview pre|property=background|value=background=#f7f3ec",
+        "selector=.settings-runtime-preview pre|property=color|value=color=#4f4b45",
+        "selector=.settings-runtime-table__head|property=background|value=background=rgba(245, 240, 232, 0.65)",
+        "selector=.settings-runtime-table__row:hover|property=background|value=background=rgba(74, 124, 89, 0.055)",
+        "selector=.settings-runtime-table__row|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.66)",
+        "selector=.settings-segment button[aria-pressed=\"true\"]|property=box-shadow|value=box-shadow=rgba(45, 48, 40, 0.1)",
+        "selector=.settings-sidebar__group + .settings-sidebar__group|property=border-top|value=border-top=rgba(212, 201, 184, 0.72)",
+        "selector=.settings-sidebar__item:hover|property=background|value=background=rgba(255, 253, 247, 0.72)",
+        "selector=.settings-sidebar__item.is-active|property=border-color|value=border-color=rgba(74, 124, 89, 0.78)",
+        "selector=.settings-sidebar__summary|property=border-bottom|value=border-bottom=rgba(212, 201, 184, 0.72)",
+        "selector=.settings-status.is-available|property=border-color|value=border-color=rgba(74, 124, 89, 0.3)",
+        "selector=.settings-status.is-unavailable|property=border-color|value=border-color=rgba(196, 91, 74, 0.35)",
+        "selector=.settings-status.is-unsupported, .settings-status.is-not_applicable|property=border-color|value=border-color=rgba(139, 115, 85, 0.34)",
+        "selector=.settings-switch::after|property=box-shadow|value=box-shadow=rgba(45, 48, 40, 0.22)",
+        "selector=.settings-switch|property=background|value=background=#c6c9c2"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/agent-statistics.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@media (max-width: 1180px)|selector=.agent-statistics__fact:nth-child(-n + 2)|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "context=@media (max-width: 720px)|selector=.agent-statistics__fact|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "selector=.agent-statistics th, .agent-statistics td|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.agent-statistics th|property=background|value=background=rgba(139, 115, 85, 0.05)",
+        "selector=.agent-statistics__fact + .agent-statistics__fact::before|property=background|value=background=rgba(255, 255, 255, 0.12)",
+        "selector=.agent-statistics__fact > span|property=color|value=color=rgba(245, 240, 232, 0.65)",
+        "selector=.agent-statistics__fact small|property=color|value=color=rgba(245, 240, 232, 0.68)",
+        "selector=.agent-statistics__fact strong|property=color|value=color=#fffdf7",
+        "selector=.agent-statistics__facts|property=border|value=border=rgba(255, 255, 255, 0.12)",
+        "selector=.agent-statistics__metric|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.agent-statistics__usage-grid > div|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.agent-statistics__usage-grid > div|property=border-right|value=border-right=rgba(139, 115, 85, 0.12)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/call-statistics.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.call-statistics tbody tr:hover|property=background|value=background=rgba(139, 115, 85, 0.045)",
+        "selector=.call-statistics th, .call-statistics td|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.call-statistics__gaps|property=background|value=background=rgba(199, 154, 68, 0.07)",
+        "selector=.call-statistics__gaps|property=border-top|value=border-top=rgba(199, 154, 68, 0.25)",
+        "selector=.call-statistics__more|property=border-top|value=border-top=rgba(139, 115, 85, 0.14)",
+        "selector=.call-statistics__privacy|property=border-top|value=border-top=rgba(139, 115, 85, 0.14)",
+        "selector=.call-statistics__trace-summary|property=background|value=background=rgba(139, 115, 85, 0.15)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/memory-statistics.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@media (max-width: 1180px)|selector=.memory-statistics__fact:nth-child(-n + 2)|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "context=@media (max-width: 720px)|selector=.memory-statistics__fact, .memory-statistics__funnel-step|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "context=@media (max-width: 720px)|selector=.memory-statistics__funnel-step|property=border-bottom-color|value=border-bottom-color=rgba(139, 115, 85, 0.12)",
+        "selector=.memory-statistics th, .memory-statistics td|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.memory-statistics th|property=background|value=background=rgba(139, 115, 85, 0.05)",
+        "selector=.memory-statistics__explanation-popover|property=border-color|value=border-color=rgba(139, 115, 85, 0.28)",
+        "selector=.memory-statistics__explanation-popover|property=color|value=color=rgba(245, 240, 232, 0.88)",
+        "selector=.memory-statistics__explanation-trigger:hover|property=border-color|value=border-color=rgba(245, 240, 232, 0.52)",
+        "selector=.memory-statistics__explanation-trigger:hover|property=color|value=color=#fffdf7",
+        "selector=.memory-statistics__explanation-trigger|property=border|value=border=rgba(245, 240, 232, 0.28)",
+        "selector=.memory-statistics__explanation-trigger|property=color|value=color=rgba(245, 240, 232, 0.72)",
+        "selector=.memory-statistics__fact + .memory-statistics__fact::before|property=background|value=background=rgba(255, 255, 255, 0.12)",
+        "selector=.memory-statistics__fact > small|property=color|value=color=rgba(245, 240, 232, 0.68)",
+        "selector=.memory-statistics__fact > strong|property=color|value=color=#fffdf7",
+        "selector=.memory-statistics__fact-label|property=color|value=color=rgba(245, 240, 232, 0.65)",
+        "selector=.memory-statistics__facts|property=border|value=border=rgba(255, 255, 255, 0.12)",
+        "selector=.memory-statistics__metric|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.memory-statistics__surface-footer|property=border-top|value=border-top=rgba(139, 115, 85, 0.12)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/overview-statistics.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@media (max-width: 1180px)|selector=.overview-statistics__fact:nth-child(n + 3)|property=border-top|value=border-top=rgba(255, 255, 255, 0.12)",
+        "context=@media (max-width: 1180px)|selector=.overview-statistics__source-grid > div:nth-child(n + 4)|property=border-top|value=border-top=rgba(139, 115, 85, 0.12)",
+        "context=@media (max-width: 720px)|selector=.overview-statistics__fact:nth-child(n + 2), .overview-statistics__funnel > div + div, .overview-statistics__source-grid > div:nth-child(n + 2)|property=border-top|value=border-top=rgba(139, 115, 85, 0.12)",
+        "selector=.overview-statistics th, .overview-statistics td|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.overview-statistics th|property=background|value=background=rgba(245, 240, 232, 0.55)",
+        "selector=.overview-statistics__fact + .overview-statistics__fact::before|property=background|value=background=rgba(255, 255, 255, 0.12)",
+        "selector=.overview-statistics__fact > span|property=color|value=color=rgba(245, 240, 232, 0.66)",
+        "selector=.overview-statistics__fact small|property=color|value=color=rgba(245, 240, 232, 0.68)",
+        "selector=.overview-statistics__fact strong|property=color|value=color=#fffdf7",
+        "selector=.overview-statistics__facts|property=border|value=border=rgba(255, 255, 255, 0.12)",
+        "selector=.overview-statistics__funnel > div + div|property=border-left|value=border-left=rgba(139, 115, 85, 0.14)",
+        "selector=.overview-statistics__problems li|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.overview-statistics__source-grid > div + div|property=border-left|value=border-left=rgba(139, 115, 85, 0.12)",
+        "selector=.overview-statistics__statuses li|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/runtime-statistics.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "context=@media (max-width: 1180px)|selector=.runtime-statistics__summary-item:nth-child(-n + 2)|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "context=@media (max-width: 720px)|selector=.runtime-statistics__summary-item|property=border-bottom|value=border-bottom=rgba(255, 255, 255, 0.12)",
+        "selector=.runtime-statistics tbody tr:hover|property=background|value=background=rgba(139, 115, 85, 0.045)",
+        "selector=.runtime-statistics th, .runtime-statistics td|property=border-bottom|value=border-bottom=rgba(139, 115, 85, 0.12)",
+        "selector=.runtime-statistics th|property=background|value=background=rgba(139, 115, 85, 0.05)",
+        "selector=.runtime-statistics__gaps|property=background|value=background=rgba(199, 154, 68, 0.08)",
+        "selector=.runtime-statistics__gaps|property=border-color|value=border-color=rgba(199, 154, 68, 0.28)",
+        "selector=.runtime-statistics__rss-chart .rss-grid|property=stroke|value=stroke=rgba(139, 115, 85, 0.14)",
+        "selector=.runtime-statistics__rss-chart .rss-range|property=stroke|value=stroke=rgba(199, 154, 68, 0.3)",
+        "selector=.runtime-statistics__rss-facts|property=border-top|value=border-top=rgba(139, 115, 85, 0.12)",
+        "selector=.runtime-statistics__summary-item + .runtime-statistics__summary-item::before|property=background|value=background=rgba(255, 255, 255, 0.12)",
+        "selector=.runtime-statistics__summary-item > small|property=color|value=color=rgba(245, 240, 232, 0.68)",
+        "selector=.runtime-statistics__summary-item > span|property=color|value=color=rgba(245, 240, 232, 0.65)",
+        "selector=.runtime-statistics__summary-item > strong.is-muted|property=color|value=color=rgba(245, 240, 232, 0.5)",
+        "selector=.runtime-statistics__summary-item > strong|property=color|value=color=#fffdf7",
+        "selector=.runtime-statistics__summary|property=border|value=border=rgba(255, 255, 255, 0.12)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/statistics-date-range.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.statistics-date-range__calendar|property=background|value=background=rgba(245, 240, 232, 0.34)",
+        "selector=.statistics-date-range__days button.is-outside|property=color|value=color=rgba(107, 107, 107, 0.32)",
+        "selector=.statistics-date-range__days button.is-today:not(.is-endpoint)|property=box-shadow|value=box-shadow=rgba(74, 124, 89, 0.45)",
+        "selector=.statistics-date-range__field.is-active|property=box-shadow|value=box-shadow=rgba(74, 124, 89, 0.12)",
+        "selector=.statistics-date-range__field|property=background|value=background=rgba(245, 240, 232, 0.32)",
+        "selector=.statistics-date-range__field|property=border|value=border=rgba(139, 115, 85, 0.24)",
+        "selector=.statistics-date-range__trigger:hover, .statistics-date-range__trigger[aria-expanded=\"true\"]|property=border-color|value=border-color=rgba(74, 124, 89, 0.48)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/statistics/ui/statistics-workspace.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.statistics-workspace__quality.is-partial|property=border-color|value=border-color=rgba(232, 184, 75, 0.36)",
+        "selector=.statistics-workspace__quality.is-unavailable|property=border-color|value=border-color=rgba(107, 107, 107, 0.2)",
+        "selector=.statistics-workspace__quality|property=border|value=border=rgba(74, 124, 89, 0.28)"
+      ]
+    },
+    {
+      "ruleId": "css/raw-color",
+      "path": "src/styles/index.css",
+      "reason": "当前颜色尚无经审查的稳定语义 token；冻结结构身份，防止新增裸色。",
+      "subjects": [
+        "selector=.plant-modal__due|property=color|value=color=#3b82f6",
+        "selector=.plant-modal__overlay|property=background-color|value=background-color=rgba(0, 0, 0, 0.4)",
+        "selector=.review-modal__overlay|property=background|value=background=rgba(0, 0, 0, 0.4)"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/agent/ui/agent.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "context=@media (max-width: 880px)|selector=.cc-workrail-backdrop|property=z-index|value=155",
+        "context=@media (max-width: 880px)|selector=.cc-workrail.cc-workrail--open|property=z-index|value=160",
+        "selector=.cc-ac|property=z-index|value=20",
+        "selector=.cc-child-breadcrumb|property=z-index|value=4",
+        "selector=.cc-command-modal__backdrop|property=z-index|value=1200",
+        "selector=.cc-jump-latest|property=z-index|value=2",
+        "selector=.cc-md-codeblock__meta|property=z-index|value=1",
+        "selector=.cc-picker-backdrop|property=z-index|value=19",
+        "selector=.cc-picker|property=z-index|value=20",
+        "selector=.cc-revert-scrim|property=z-index|value=50",
+        "selector=.cc-turn__revert|property=z-index|value=2",
+        "selector=.cc-turn-context|property=z-index|value=4",
+        "selector=.cc-wd__dropdown|property=z-index|value=30",
+        "selector=.cc-wd__ghost|property=z-index|value=1",
+        "selector=.cc-wd__input|property=z-index|value=0"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/events/EventModal.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.event-modal-overlay|property=z-index|value=100"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/layout/AppLayout.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "context=@media (max-width: 1023px)|selector=.app-main__hamburger|property=z-index|value=150",
+        "context=@media (max-width: 1023px)|selector=.app-sidebar--open|property=z-index|value=200",
+        "selector=[data-platform=\"desktop\"] .app-main__drag-region|property=z-index|value=10"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/pet/PetOverlay.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.pet-overlay|property=z-index|value=10"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/pet/PetPanel.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.pet-panel-overlay|property=z-index|value=100"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/profile/SuggestionsModal.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.suggestions-backdrop|property=z-index|value=100"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/review/FeynmanOverlay.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.feynman-overlay|property=z-index|value=10"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/components/review/ReviewSession.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.review-session__close|property=z-index|value=20",
+        "selector=.review-session__drag-region|property=z-index|value=10",
+        "selector=.review-session|property=z-index|value=100"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/discussion/ui/discussion.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "context=@media (max-width: 1180px)|selector=.discussion-inspector--overlay|property=z-index|value=1002",
+        "context=@media (max-width: 1180px)|selector=.discussion-inspector-backdrop|property=z-index|value=1001",
+        "selector=.discussion-command-bar|property=z-index|value=15",
+        "selector=.discussion-response::before|property=z-index|value=1",
+        "selector=.discussion-search > svg|property=z-index|value=1",
+        "selector=.discussion-titlebar|property=z-index|value=30"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/perf/largeTurnHarness.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.large-turn-harness__controls|property=z-index|value=1000"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/statistics/ui/call-statistics.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.call-statistics th|property=z-index|value=1"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/statistics/ui/statistics-popover.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.statistics-popover__backdrop|property=z-index|value=240",
+        "selector=.statistics-popover__content|property=z-index|value=241"
+      ]
+    },
+    {
+      "ruleId": "css/z-index",
+      "path": "src/styles/index.css",
+      "reason": "当前层级无法在不改变可达叠放状态的前提下安全迁移；冻结结构身份，防止新增任意层级。",
+      "subjects": [
+        "selector=.plant-modal__overlay|property=z-index|value=100",
+        "selector=.review-modal__overlay|property=z-index|value=100"
+      ]
+    }
+  ]
+}

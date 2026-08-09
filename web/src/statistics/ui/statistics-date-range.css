@@ -161,7 +161,7 @@
 .statistics-date-range__calendar {
   min-width: 0;
   padding: 10px;
-  border: 1px solid rgba(139, 115, 85, 0.22);
+  border: 1px solid var(--soil-border-soft);
   border-radius: var(--radius-md);
   background: rgba(245, 240, 232, 0.34);
 }

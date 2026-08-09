@@ -1,6 +1,6 @@
 .confirm-dialog__backdrop {
   position: fixed;
-  z-index: var(--layer-nested-dialog, 1100);
+  z-index: var(--layer-nested-dialog);
   inset: 0;
   display: grid;
   place-items: center;

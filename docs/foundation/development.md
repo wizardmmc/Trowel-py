@@ -81,8 +81,8 @@ moon YAML 是任务命令、工作目录、依赖和平台条件的唯一任务�
 显式叶子存在，不能伪装成默认通过，也不能用其存量问题掩盖新改文件的回归。
 
 生产前端还必须遵守 [Trowel 前端设计语言](./front-end-design-language.md)。共享控件不能在
-业务页面重新绘制近似版本；`cd web && bun run check:ui-contracts` 检查原生下拉框和
-可见文件控件是否重新进入产品界面。
+业务页面重新绘制近似版本；`cd web && bun run check:ui-contracts` 检查颜色、token
+fallback、层叠、原生控件和已冻结共享组件 owner 的客观边界。
 
 ## 项目上下文分层与更新
 

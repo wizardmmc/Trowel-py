@@ -358,7 +358,7 @@
 .discussion-primary-button {
   border-color: var(--garden-green) !important;
   background: var(--garden-green) !important;
-  color: white !important;
+  color: var(--text-on-solid) !important;
   font-weight: 650;
 }
 
@@ -403,7 +403,7 @@
   align-items: center;
   gap: 7px;
   margin-bottom: 7px;
-  color: #365f42;
+  color: var(--garden-ink);
   font-size: 0.62rem;
   font-weight: 750;
 }
@@ -588,7 +588,7 @@
   border-radius: 6px;
   border: 1px solid rgba(74, 124, 89, 0.35);
   background: var(--garden-soft);
-  color: #365f42;
+  color: var(--garden-ink);
   font: 0.62rem/1 var(--font-mono);
   font-weight: 750;
 }
@@ -892,7 +892,7 @@
 }
 
 .discussion-command-bar .discussion-composer__targets button[aria-pressed="true"] {
-  color: #365f42;
+  color: var(--garden-ink);
   background: var(--garden-soft);
   font-weight: 650;
 }
@@ -1312,7 +1312,7 @@
 .discussion-inspector-backdrop {
   position: fixed;
   inset: 0;
-  z-index: var(--layer-dialog, 1000);
+  z-index: var(--layer-dialog);
   background: rgba(30, 34, 29, 0.46);
   backdrop-filter: blur(2px);
 }
@@ -1412,7 +1412,7 @@
   width: 100%;
   border: 1px solid var(--discussion-line);
   border-radius: 4px;
-  background: white;
+  background: var(--bg-control);
   color: var(--text-primary);
 }
 
@@ -1476,7 +1476,7 @@
 }
 
 .discussion-workspace-field b {
-  color: #365f42;
+  color: var(--garden-ink);
   font-size: 0.61rem;
   font-weight: 650;
 }

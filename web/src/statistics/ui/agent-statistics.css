@@ -169,7 +169,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 14px;
-  border-bottom: 1px solid rgba(139, 115, 85, 0.16);
+  border-bottom: 1px solid var(--soil-brown-soft);
 }
 
 .agent-statistics__surface > header strong {

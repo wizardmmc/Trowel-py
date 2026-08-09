@@ -180,7 +180,7 @@
 
 .rate-btn--again {
   background: var(--color-error);
-  color: white;
+  color: var(--text-on-solid);
 }
 
 .rate-btn--hard {
