@@ -1,0 +1,15 @@
+/* 定义 Statistics 图表传给 ECharts 的语义颜色。 */
+
+.overview-statistics__chart {
+  --chart-axis: var(--color-border);
+  --chart-label: var(--text-secondary);
+  --chart-name: var(--text-tertiary);
+  --chart-grid: rgba(139, 115, 85, 0.14);
+  --chart-series-primary: var(--garden-green);
+  --chart-area-primary: rgba(74, 124, 89, 0.28);
+  --chart-area-transparent: rgba(74, 124, 89, 0.025);
+  --chart-quality-reliable: var(--garden-green);
+  --chart-quality-partial: var(--sunshine);
+  --chart-quality-unavailable: var(--color-border);
+  --chart-point-border: var(--bg-card);
+}

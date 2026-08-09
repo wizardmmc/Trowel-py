@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { OverviewTokenTrendPoint } from "../../domain/overview";
 import type { StatisticsQuality } from "../../domain/types";
+import "./chart-palette.css";
 import type { StatisticsChart, StatisticsChartOption } from "./echarts";
 
 const QUALITY_LABELS: Readonly<Record<StatisticsQuality, string>> = {
@@ -153,9 +154,9 @@ function tokenTrendOption(
       boundaryGap: false,
       data: points.map((point) => shortDate(point.date)),
       axisTick: { show: false },
-      axisLine: { lineStyle: { color: "#d4c9b8" } },
+      axisLine: { lineStyle: { color: "var(--chart-axis)" } },
       axisLabel: {
-        color: "#6b6b6b",
+        color: "var(--chart-label)",
         fontSize: 10,
         hideOverlap: true,
         interval: labelInterval,
@@ -165,13 +166,17 @@ function tokenTrendOption(
       type: "value",
       min: 0,
       name: unit.label ? `Token（${unit.label}）` : "Token",
-      nameTextStyle: { color: "#8a8a8a", fontSize: 9, padding: [0, 0, 0, -8] },
+      nameTextStyle: {
+        color: "var(--chart-name)",
+        fontSize: 9,
+        padding: [0, 0, 0, -8],
+      },
       axisLabel: {
-        color: "#8a8a8a",
+        color: "var(--chart-name)",
         fontSize: 10,
         formatter: (value: number) => formatAxisValue(value, unit.divisor),
       },
-      splitLine: { lineStyle: { color: "rgba(139, 115, 85, 0.14)" } },
+      splitLine: { lineStyle: { color: "var(--chart-grid)" } },
     },
     series: [
       {
@@ -182,7 +187,7 @@ function tokenTrendOption(
         showSymbol: points.length <= 30,
         symbol: "circle",
         symbolSize: 6,
-        lineStyle: { width: 2.2, color: "#4a7c59" },
+        lineStyle: { width: 2.2, color: "var(--chart-series-primary)" },
         areaStyle: {
           color: {
             type: "linear",
@@ -191,8 +196,8 @@ function tokenTrendOption(
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: "rgba(74, 124, 89, 0.28)" },
-              { offset: 1, color: "rgba(74, 124, 89, 0.025)" },
+              { offset: 0, color: "var(--chart-area-primary)" },
+              { offset: 1, color: "var(--chart-area-transparent)" },
             ],
           },
         },
@@ -202,11 +207,11 @@ function tokenTrendOption(
           itemStyle: {
             color:
               point.quality === "reliable"
-                ? "#4a7c59"
+                ? "var(--chart-quality-reliable)"
                 : point.quality === "partial"
-                  ? "#e8b84b"
-                  : "#d4c9b8",
-            borderColor: "#fffdf7",
+                  ? "var(--chart-quality-partial)"
+                  : "var(--chart-quality-unavailable)",
+            borderColor: "var(--chart-point-border)",
             borderWidth: 1,
           },
         })),

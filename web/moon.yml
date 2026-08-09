@@ -26,7 +26,7 @@ tasks:
     command: ['bun', 'run', 'check:module-comments']
 
   frontend.ui-contracts:
-    description: '检查生产界面的共享控件和原生控件客观约束。'
+    description: '检查生产界面的颜色、层叠、原生控件和共享 owner 客观约束。'
     command: ['bun', 'run', 'check:ui-contracts']
 
   frontend.vitest:

@@ -159,6 +159,7 @@
 | `web/shared/telemetry-*` | Electron 与 renderer 共用的版本化批次和有界 batcher |
 | `web/src/__tests__/` | Vitest 组件和状态测试 |
 | `web/scripts/check-module-comments.mjs` | 检查生产 TypeScript 模块是否以中文职责说明开头 |
+| `web/scripts/check-ui-contracts.mjs` / `web/scripts/ui-contracts/` | 用 CSS 与 TypeScript AST 检查颜色、token fallback、层叠、原生控件和共享组件 owner，并对账精确 policy 与只减不增 baseline |
 | `web/scripts/guard-packaged-output.mjs` | 在 Forge 覆盖 `web/out` 前阻止仍从目标 App bundle 运行的进程 |
 
 ## 测试

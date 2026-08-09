@@ -6,10 +6,12 @@
   --bg-card: #FFFDF7;
   --bg-sidebar: #2D3B2D;
   --bg-rail: #F4F1EB;
+  --bg-control: white;
   --text-primary: #2C2C2C;
   --text-secondary: #6B6B6B;
   --text-tertiary: #8A8A8A;
   --text-inverse: #F5F0E8;
+  --text-on-solid: white;
   --color-success: #4A7C59;
   --color-warning: #E8B84B;
   --color-error: #C45B4A;
@@ -23,7 +25,9 @@
   --neutral-soft: rgba(107, 107, 107, 0.12);
   --soil-brown-soft: rgba(139, 115, 85, 0.16);
   --soil-border-soft: rgba(139, 115, 85, 0.22);
+  --soil-brown-hover: color-mix(in srgb, var(--soil-brown) 78%, black);
   --error-soft: rgba(196, 91, 74, 0.12);
+  --error-faint: rgba(196, 91, 74, 0.10);
   --error-soft-strong: rgba(196, 91, 74, 0.25);
   --sunshine-warn-soft: rgba(232, 184, 75, 0.25);
 
