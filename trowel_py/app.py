@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,7 +75,7 @@ def _migrate_official_account_slots() -> int:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """在应用生命周期内持有 CC 反向代理与可选后台组件。"""
     from trowel_py.resource_lifecycle import (
         DrainCoordinator,

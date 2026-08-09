@@ -4,11 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from trowel_py.memory.promotion_policy import PromotionPolicy
 from trowel_py.memory.recompute import NoteEffect
 from trowel_py.memory.types import Note
+
+
+class _Hash(Protocol):
+    """声明候选摘要函数使用的最小哈希接口。"""
+
+    def hexdigest(self) -> str:
+        """返回十六进制摘要。"""
+        ...
+
+
+class _JsonEncoder(Protocol):
+    """声明策略摘要使用的 JSON 编码接口。"""
+
+    def dumps(self, obj: Any, *, sort_keys: bool = ...) -> str:
+        """把值编码为 JSON 文本。"""
+        ...
 
 
 def candidates_dir(root: Path, directory: str) -> Path:
@@ -24,7 +40,7 @@ def candidates_dir(root: Path, directory: str) -> Path:
     return root / directory
 
 
-def hash_ids(ids: Iterable[str], hash_factory: Any) -> str:
+def hash_ids(ids: Iterable[str], hash_factory: Callable[[bytes], _Hash]) -> str:
     """对排序并拼接后的 ID 文本生成短摘要。
 
     重复 ID 会保留，``|`` 用作无转义分隔符，因此不同输入可能产生相同拼接
@@ -67,7 +83,12 @@ def safe_candidate_path(
     return candidates_dir_fn(root) / f"{memory_id}.md"
 
 
-def policy_hash(policy: PromotionPolicy, *, hash_factory: Any, json_module: Any) -> str:
+def policy_hash(
+    policy: PromotionPolicy,
+    *,
+    hash_factory: Callable[[bytes], _Hash],
+    json_module: _JsonEncoder,
+) -> str:
     """序列化完整策略并生成短摘要。
 
     Args:

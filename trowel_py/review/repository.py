@@ -1,5 +1,7 @@
 """读写复习状态和复习记录。"""
 
+from __future__ import annotations
+
 import sqlite3
 from datetime import datetime
 
@@ -23,7 +25,7 @@ def _fsrs_record(state: FSRSState) -> dict[str, object]:
     return data
 
 
-def create_review_repository(conn: sqlite3.Connection):
+def create_review_repository(conn: sqlite3.Connection) -> ReviewRepository:
     """用指定数据库连接创建复习数据仓库。"""
     return ReviewRepository(conn)
 
@@ -130,7 +132,7 @@ class ReviewRepository:
         rows = self.conn.execute("select * from fsrs_state").fetchall()
         return [self._row_to_fsrs_state(row) for row in rows]
 
-    def get_session_stats(self, since: str) -> dict:
+    def get_session_stats(self, since: str) -> dict[str, int | float]:
         """统计指定时间之后的复习次数、平均评分和正确率。"""
         row = self.conn.execute(
             "select count(*) as total, avg(rating) as avg_rating, "

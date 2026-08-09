@@ -2,34 +2,13 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import {
+  PRESET_LABELS,
+  PRESET_ORDER,
+  type PermissionPreset,
+} from "./permissionPresets";
 
-export type PermissionPreset =
-  | "follow"
-  | "read-only"
-  | "workspace-write"
-  | "danger-full-access";
-
-const PRESET_LABELS: Record<PermissionPreset, string> = {
-  follow: "Follow",
-  "read-only": "Read only",
-  "workspace-write": "Workspace write",
-  "danger-full-access": "Full access",
-};
-
-const PRESET_ORDER: readonly PermissionPreset[] = [
-  "follow",
-  "read-only",
-  "workspace-write",
-  "danger-full-access",
-];
-
-// 活动会话菜单不含 follow：会话内 Follow 在 sticky turn override 后没有
-// 确定的恢复语义。新会话对话框仍允许 follow 作为初始 preset。
-export const ACTIVE_SESSION_PRESETS: readonly PermissionPreset[] = [
-  "read-only",
-  "workspace-write",
-  "danger-full-access",
-];
+export type { PermissionPreset } from "./permissionPresets";
 
 interface PermissionFactsChipProps {
   readonly requested: string | null;

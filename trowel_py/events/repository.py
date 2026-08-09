@@ -1,5 +1,7 @@
 """读写事件日志和各类事件最近一次触发时间。"""
 
+from __future__ import annotations
+
 import sqlite3
 import uuid
 from datetime import datetime
@@ -34,7 +36,7 @@ def _event_log(
     )
 
 
-def create_event_repository(conn: sqlite3.Connection):
+def create_event_repository(conn: sqlite3.Connection) -> EventRepository:
     """为给定数据库连接创建事件数据读写对象。"""
 
     return EventRepository(conn)

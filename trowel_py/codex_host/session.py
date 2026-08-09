@@ -24,13 +24,13 @@ from trowel_py.codex_host.events import (
     immutable_payload,
 )
 from trowel_py.codex_host.session_types import (
-    CodexSessionConfig,
-    ThreadBinding,
+    CodexSessionConfig as CodexSessionConfig,
+    ThreadBinding as ThreadBinding,
     TrowelMemoryMcpConfig as TrowelMemoryMcpConfig,
     TrowelAgentMcpConfig as TrowelAgentMcpConfig,
     build_default_trowel_agent_mcp as build_default_trowel_agent_mcp,
     build_default_trowel_memory_mcp as build_default_trowel_memory_mcp,
-    parse_thread_binding,
+    parse_thread_binding as parse_thread_binding,
 )
 
 _log = logging.getLogger(__name__)

@@ -13,17 +13,16 @@ export function useAgentStoreFrameSelector<T>(
 ): T {
   const selectorRef = useRef(selector);
   const equalityRef = useRef(equality);
-  selectorRef.current = selector;
-  equalityRef.current = equality;
 
   const [selected, setSelected] = useState(() =>
     selector(useAgentStore.getState()),
   );
   const selectedRef = useRef(selected);
-  selectedRef.current = selected;
   const frameRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
+    selectorRef.current = selector;
+    equalityRef.current = equality;
     const latest = selectorRef.current(useAgentStore.getState());
     if (!equalityRef.current(selectedRef.current, latest)) {
       selectedRef.current = latest;

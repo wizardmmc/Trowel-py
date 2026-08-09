@@ -9,10 +9,21 @@ import {
   type GridComponentOption,
   type TooltipComponentOption,
 } from "echarts/components";
-import { init, use, type ComposeOption, type ECharts } from "echarts/core";
+import {
+  init,
+  use as registerEChartsModules,
+  type ComposeOption,
+  type ECharts,
+} from "echarts/core";
 import { SVGRenderer } from "echarts/renderers";
 
-use([LineChart, GridComponent, TooltipComponent, AriaComponent, SVGRenderer]);
+registerEChartsModules([
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  AriaComponent,
+  SVGRenderer,
+]);
 
 export type StatisticsChartOption = ComposeOption<
   | LineSeriesOption

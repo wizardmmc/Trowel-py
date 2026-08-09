@@ -1,5 +1,8 @@
 """提供玩家资料、库存和购买接口。"""
 
+from collections.abc import Iterator
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from trowel_py.player.service import get_profile, get_inventory, spend_coins
 from trowel_py.db.connection import create_db
@@ -13,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_conn():
+def _get_conn() -> Iterator[sqlite3.Connection]:
     """为一次请求提供数据库连接。
 
     请求结束时提交并关闭连接，异常路径也不回滚。
@@ -33,7 +36,9 @@ def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRep
 
 @router.get("")
 @router.get("/")
-def get_player(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
+def get_player(
+    player_repo: PlayerRepository = Depends(_get_player_repo),
+) -> dict[str, Any]:
     """返回默认玩家资料及派生等级字段。"""
     logger.info("get /api/player")
     profile = get_profile(player_repo)
@@ -41,7 +46,9 @@ def get_player(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dic
 
 
 @router.get("/inventory")
-def inventory(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict:
+def inventory(
+    player_repo: PlayerRepository = Depends(_get_player_repo),
+) -> dict[str, Any]:
     """返回默认玩家的全部库存物品。"""
     logger.info("get /api/player/inventory")
     items = get_inventory(player_repo)
@@ -55,7 +62,7 @@ def inventory(player_repo: PlayerRepository = Depends(_get_player_repo)) -> dict
 @router.post("/buy")
 def buy(
     request: BuyItemRequest, player_repo: PlayerRepository = Depends(_get_player_repo)
-) -> dict:
+) -> dict[str, Any]:
     """扣除金币购买商品并加入库存。"""
     logger.info("buy item: %s", request.item_id)
     try:

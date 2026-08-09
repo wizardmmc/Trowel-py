@@ -323,16 +323,20 @@ class NativeSessionTitleGenerator:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("Claude title response is not valid JSON") from exc
         structured = payload.get("structured_output")
-        if isinstance(structured, dict) and isinstance(structured.get("title"), str):
-            return structured["title"]
+        if isinstance(structured, dict):
+            title = structured.get("title")
+            if isinstance(title, str):
+                return title
         result = payload.get("result")
         if isinstance(result, str):
             try:
                 nested = json.loads(result)
             except json.JSONDecodeError:
                 return result
-            if isinstance(nested, dict) and isinstance(nested.get("title"), str):
-                return nested["title"]
+            if isinstance(nested, dict):
+                title = nested.get("title")
+                if isinstance(title, str):
+                    return title
         raise RuntimeError("Claude title response omitted title")
 
     def _mark_title_resource_closed_if_exited(self, resource_id: str | None) -> None:

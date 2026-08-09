@@ -250,7 +250,7 @@ class MemoryReviewScheduler:
                     requests = None
                 if requests is not None:
                     for request in requests:
-                        event = {
+                        event: dict[str, Any] = {
                             "date": request.requested_at[:10],
                             "root": str(self._memory_root),
                             "review_session_id": request.trowel_session_id,
@@ -280,7 +280,11 @@ class MemoryReviewScheduler:
                 if remaining == []:
                     retry_delay = IMMEDIATE_RETRY_MIN_SECONDS
                     break
-                wait_timeout = self._next_immediate_wait(remaining, retry_delay)
+                wait_timeout = (
+                    retry_delay
+                    if remaining is None
+                    else self._next_immediate_wait(remaining, retry_delay)
+                )
                 try:
                     await asyncio.wait_for(
                         self._immediate_wakeup.wait(),
@@ -329,7 +333,7 @@ class MemoryReviewScheduler:
         """在线程中派发一次 review；失败只记录日志，不能拖垮应用。"""
         now = self._local_wall_clock_now()
         cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        event = {
+        event: dict[str, Any] = {
             "date": (cutoff.date() - timedelta(days=1)).isoformat(),
             "eligible_before": cutoff.isoformat(),
             "root": str(self._memory_root),

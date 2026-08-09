@@ -30,7 +30,7 @@ from .daily_generation import (
     _source_hash as _source_hash,
 )
 from .rollup import (
-    BYPASS_CATEGORIES,
+    BYPASS_CATEGORIES as BYPASS_CATEGORIES,
     _INPUT_CAP as _INPUT_CAP,
     _MONTHLY_SYS as _MONTHLY_SYS,
     _MONTHLY_USER as _MONTHLY_USER,

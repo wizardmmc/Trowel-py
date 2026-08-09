@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import cast
 
 from trowel_py.cards.repository import CardRepository
 from trowel_py.feynman.repository import FeynmanRepository, FeynmanSession
@@ -65,13 +64,10 @@ def generate_question(
     if card is None:
         return None
 
-    result = cast(
+    result = llm_service.structured_call(
+        _question_prompt(card),
         FeynmanQuestionSchema,
-        llm_service.structured_call(
-            _question_prompt(card),
-            FeynmanQuestionSchema,
-            call_type="feynman-question",
-        ),
+        call_type="feynman-question",
     )
     session = FeynmanSession(
         id=uuid.uuid4().hex[:12], card_id=card_id, question=result.question
@@ -100,13 +96,10 @@ def evaluate_answer(
     if card is None:
         return None
 
-    result = cast(
+    result = llm_service.structured_call(
+        _evaluation_prompt(session, card, user_answer),
         FeynmanEvaluationSchema,
-        llm_service.structured_call(
-            _evaluation_prompt(session, card, user_answer),
-            FeynmanEvaluationSchema,
-            call_type="feynman-eval",
-        ),
+        call_type="feynman-eval",
     )
     feynman_repo.update_with_evaluation(
         session_id=session_id,

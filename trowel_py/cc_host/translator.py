@@ -115,6 +115,8 @@ class Translator:
         """
 
         top_type = cc_event.get("type")
+        if not isinstance(top_type, str):
+            return []
         handler = self._dispatch.get(top_type)
         if handler is None:
             return []

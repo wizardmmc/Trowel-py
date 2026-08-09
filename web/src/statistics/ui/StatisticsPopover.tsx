@@ -1,6 +1,7 @@
 /** 提供 Statistics 紧凑触发器下方的 portal 浮层和统一关闭行为。 */
 
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -64,13 +65,13 @@ export function StatisticsPopover({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const contentId = useId();
 
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
     setPosition(null);
     onOpenChange?.(false);
-  };
+  }, [onOpenChange]);
 
-  const updatePosition = () => {
+  const updatePosition = useCallback(() => {
     const bounds = triggerRef.current?.getBoundingClientRect();
     if (!bounds) return;
     const edge = 16;
@@ -86,7 +87,7 @@ export function StatisticsPopover({
       width,
       maxHeight: Math.max(180, window.innerHeight - bounds.bottom - edge - 6),
     });
-  };
+  }, [align, preferredWidth]);
 
   const toggle = () => {
     if (open) {
@@ -100,7 +101,7 @@ export function StatisticsPopover({
 
   useLayoutEffect(() => {
     if (open) updatePosition();
-  }, [open]);
+  }, [open, updatePosition]);
 
   useEffect(() => {
     if (!open) return;
@@ -118,7 +119,7 @@ export function StatisticsPopover({
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
     };
-  }, [open]);
+  }, [close, open, updatePosition]);
 
   const style: CSSProperties | undefined = position
     ? {

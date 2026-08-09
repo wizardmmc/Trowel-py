@@ -1,13 +1,14 @@
 """检查 completion manifest 引用的产物并恢复幂等跳过报告。"""
 
 from pathlib import Path
+from typing import Any
 
 from .models import PersistReport
 
 _SEGMENTS_META_DIR = "meta/persisted-segments"
 
 
-def _manifest_intact(root: Path, manifest: dict) -> bool:
+def _manifest_intact(root: Path, manifest: dict[str, Any]) -> bool:
     """检查 manifest 已声明的持久化产物是否仍存在。
 
     ``episode_file``、``reflection_file`` 和 ``escalation_file`` 仅在值为
@@ -39,7 +40,7 @@ def _manifest_intact(root: Path, manifest: dict) -> bool:
     return not escalation or (root / escalation).exists()
 
 
-def _report_from_manifest(manifest: dict) -> PersistReport:
+def _report_from_manifest(manifest: dict[str, Any]) -> PersistReport:
     """把已通过完整性检查的 manifest 转换为幂等跳过报告。
 
     ``notes_skipped`` 按 ``notes_created`` 后接 ``notes_updated`` 的顺序拼接，

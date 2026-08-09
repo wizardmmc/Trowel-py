@@ -7,6 +7,8 @@ from argparse import Namespace
 from collections.abc import Callable
 from pathlib import Path
 
+from trowel_py.memory.hooks import HookRegistry
+
 
 def run_tidy_command(
     args: Namespace,
@@ -15,7 +17,7 @@ def run_tidy_command(
     current_iso_week_fn: Callable[[], str],
     current_month_fn: Callable[[], str],
     ensure_dict_fn: Callable[[Path], None],
-    run_tidy_fn: Callable[[object, Path], int],
+    run_tidy_fn: Callable[[HookRegistry, Path], int],
 ) -> int:
     """根据已解析参数选择并执行一项 Memory tidy 操作。
 

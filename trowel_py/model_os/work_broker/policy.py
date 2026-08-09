@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from datetime import datetime, tzinfo
+from typing import Any, TypeVar
+
+
+_BudgetT = TypeVar("_BudgetT")
 
 
 def narrow_cap(
     policy_cap: Any,
     req_cap: Any | None,
     *,
-    budget_type: Callable[..., Any],
+    budget_type: Callable[..., _BudgetT],
     min_fn: Callable[[Any, Any], Any],
-) -> Any:
+) -> _BudgetT:
     """逐轴合并策略与请求预算，生成不超过两者的上限。
 
     单轴为 None 表示该来源不限制该轴；两边都不限制时结果仍为 None。
@@ -67,9 +71,9 @@ def slot_id(provider: Any, account: str, idx: int) -> str:
 def parse_iso(
     value: str,
     *,
-    fromisoformat: Callable[[str], Any],
-    utc_resolver: Callable[[], Any],
-) -> Any:
+    fromisoformat: Callable[[str], datetime],
+    utc_resolver: Callable[[], tzinfo],
+) -> datetime:
     """解析带时区的 ISO 时间并转换到 UTC。
 
     Args:
@@ -93,7 +97,7 @@ def parse_iso(
     return parsed.astimezone(utc_resolver())
 
 
-def utc_day(occurred_at: str, *, parse_iso: Callable[[str], Any]) -> str:
+def utc_day(occurred_at: str, *, parse_iso: Callable[[str], datetime]) -> str:
     """返回用量发生时刻所属的 UTC 日期。
 
     Args:

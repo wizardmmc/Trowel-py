@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
-def _review_lock(root: Path):
+def _review_lock(root: Path) -> Iterator[None]:
     """尝试独占同一 Memory 根目录的 review 进程锁。
 
     支持 ``flock`` 时以非阻塞方式锁定 ``meta/.review.lock``；锁文件会保留，

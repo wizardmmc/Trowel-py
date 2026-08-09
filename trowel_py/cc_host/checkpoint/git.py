@@ -13,7 +13,7 @@ _IDENTITY_NAME = "Checkpointer"
 _IDENTITY_EMAIL = "checkpointer@noreply"
 
 
-def is_git_repo(workdir: str | os.PathLike) -> bool:
+def is_git_repo(workdir: str | os.PathLike[str]) -> bool:
     """通过 Git 判断路径是否位于工作树中。"""
 
     process = subprocess.run(
@@ -23,7 +23,7 @@ def is_git_repo(workdir: str | os.PathLike) -> bool:
     return process.returncode == 0
 
 
-def top_level(workdir: str | os.PathLike) -> str:
+def top_level(workdir: str | os.PathLike[str]) -> str:
     """返回路径所属 Git 工作树的根目录。"""
 
     return _run_git(workdir, "rev-parse", "--show-toplevel").strip()
@@ -158,9 +158,9 @@ def read_checkpoint_message(root: str, commit_oid: str) -> str:
 
 
 def _run_git(
-    cwd: str | os.PathLike,
+    cwd: str | os.PathLike[str],
     *args: str,
-    env: dict | None = None,
+    env: dict[str, str] | None = None,
 ) -> str:
     """在指定目录运行 Git 命令并返回标准输出。
 

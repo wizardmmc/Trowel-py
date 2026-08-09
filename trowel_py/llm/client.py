@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from typing import Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 from trowel_py.llm.filter import filter_secrets
 from trowel_py.llm.prompts.registry import PROMPTS
 from trowel_py.llm.types import CallType
@@ -174,7 +174,7 @@ class AnthropicProvider(LLMProvider):
 
 def _call_with_retry(
     provider: LLMProvider, system_prompt: str, user_prompt: str, max_retries: int
-) -> dict:
+) -> dict[str, Any]:
     """重试模型调用，并将回复中的 JSON 对象解析为字典。
 
     每次失败后按 1、2、4……秒退避，最后一次失败后也会等待；所有尝试失败时
@@ -195,7 +195,12 @@ def _call_with_retry(
         try:
             raw = provider.complete(system_prompt, user_prompt)
             logger.info("LLM raw response (attempt %d): %s", attempt, raw)
-            return json.loads(_extract_json(raw))
+            payload: object = json.loads(_extract_json(raw))
+            if not isinstance(payload, dict) or not all(
+                isinstance(key, str) for key in payload
+            ):
+                raise ValueError("LLM response must be a JSON object with string keys")
+            return {key: value for key, value in payload.items() if isinstance(key, str)}
         except Exception as e:
             logger.warning("LLM call failed (attempt %d): %s", attempt, e)
             last_error = e

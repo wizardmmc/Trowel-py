@@ -12,7 +12,7 @@ from trowel_py.memory.daily_review.agent import (
     run_one_session,
 )
 from trowel_py.memory.daily_review.models import ReviewUnit
-from trowel_py.memory.draft import procedure_warnings
+from trowel_py.memory.draft import DraftDiary, procedure_warnings
 from trowel_py.memory.dualtrack import audit_draft
 from trowel_py.memory.judge import judge_session
 from trowel_py.memory.persist import persist_draft
@@ -149,7 +149,7 @@ async def process_review_units(
 
 
 def _out_of_range_dates(
-    diary: tuple,
+    diary: tuple[DraftDiary, ...],
     activity_dates: tuple[str, ...],
 ) -> tuple[str, ...]:
     """返回草稿中不属于当前来源片段活动日期的日期。"""

@@ -11,7 +11,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import httpx
 import mcp.types as types
@@ -33,6 +33,29 @@ _CLAUDE_ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
 _TOOL_DISCOVERY_TIMEOUT_SECONDS = 3.0
 _SUCCESS_TERMINALS = frozenset({"finished"})
 _ERROR_TERMINALS = frozenset({"error", "interrupted", "session_exited"})
+
+_ListToolsHandler = Callable[[], Awaitable[list[types.Tool]]]
+_CallToolHandler = Callable[
+    [str, dict[str, Any]], Awaitable[list[types.TextContent]]
+]
+_ListToolsDecorator = Callable[[], Callable[[_ListToolsHandler], _ListToolsHandler]]
+_CallToolDecorator = Callable[[], Callable[[_CallToolHandler], _CallToolHandler]]
+
+
+def _register_sdk_handlers(
+    server: Server,
+    *,
+    list_tools: _ListToolsHandler,
+    call_tool: _CallToolHandler,
+) -> None:
+    """在一个边界内适配 MCP SDK 尚未声明类型的注册方法。"""
+
+    list_tools_decorator = cast(_ListToolsDecorator, server.list_tools)
+    call_tool_decorator = cast(_CallToolDecorator, server.call_tool)
+    list_tools_decorator()(list_tools)
+    call_tool_decorator()(call_tool)
+
+
 _ALL_TERMINALS = _SUCCESS_TERMINALS | _ERROR_TERMINALS
 
 logger = logging.getLogger(__name__)
@@ -897,7 +920,6 @@ def _build_server(broker: InteractiveBrokerClient) -> Server:
 
     server = Server(_SERVER_NAME)
 
-    @server.list_tools()
     async def list_tools() -> list[types.Tool]:
         """返回当前 MCP 服务发布的全部委派工具。"""
 
@@ -913,7 +935,6 @@ def _build_server(broker: InteractiveBrokerClient) -> Server:
             )
             return _tools()
 
-    @server.call_tool()
     async def call_tool(
         name: str, arguments: dict[str, Any]
     ) -> list[types.TextContent]:
@@ -989,6 +1010,7 @@ def _build_server(broker: InteractiveBrokerClient) -> Server:
             )
         raise ValueError(f"unknown tool: {name}")
 
+    _register_sdk_handlers(server, list_tools=list_tools, call_tool=call_tool)
     return server
 
 

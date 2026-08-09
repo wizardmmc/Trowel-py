@@ -15,6 +15,7 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -364,7 +365,9 @@ _DECISION_INSERT_SQL = (
 )
 
 
-def _event_params(event: EventEnvelope, payload_text: str, payload_hash: str) -> tuple:
+def _event_params(
+    event: EventEnvelope, payload_text: str, payload_hash: str
+) -> tuple[Any, ...]:
     """按 events 表列顺序生成事件写入参数。"""
 
     return _run_event_params(
@@ -374,19 +377,21 @@ def _event_params(event: EventEnvelope, payload_text: str, payload_hash: str) ->
     )
 
 
-def _event_identity(event: EventEnvelope, payload_hash: str) -> tuple:
+def _event_identity(event: EventEnvelope, payload_hash: str) -> tuple[Any, ...]:
     """返回不含墙钟时间的事件语义身份。"""
 
     return _run_event_identity(event, payload_hash)
 
 
-def _event_row_identity(row: sqlite3.Row, payload_hash: str) -> tuple:
+def _event_row_identity(
+    row: sqlite3.Row, payload_hash: str
+) -> tuple[Any, ...]:
     """从 SQLite 行还原事件语义身份，忽略调用方本次计算的 payload 哈希。"""
 
     return _run_event_row_identity(row, payload_hash, int_fn=int)
 
 
-def _decision_params(decision: DecisionRecord) -> tuple:
+def _decision_params(decision: DecisionRecord) -> tuple[Any, ...]:
     """按 decisions 表列顺序生成脱敏决策写入参数。"""
 
     return _run_decision_params(
@@ -1157,7 +1162,7 @@ class ModelOsStore:
     # ``task_create_keys`` 保证完全幂等。
 
     @contextmanager
-    def _tx(self):
+    def _tx(self) -> Iterator[None]:
         """显式开启 IMMEDIATE 事务，使回放读取与后续写入共享同一快照。
 
         仅设置 ``isolation_level`` 会到首次 DML 才自动开始事务，命令开头的回放可能
@@ -1198,7 +1203,7 @@ class ModelOsStore:
                 raise
 
     @contextmanager
-    def _read_tx(self):
+    def _read_tx(self) -> Iterator[None]:
         """用 DEFERRED 事务让 replay、lease 和 foreground 读取共享同一快照。
 
         若三次 SELECT 分别自动提交，并发 claim 或 release 可返回割裂状态。DEFERRED
@@ -1628,11 +1633,12 @@ class ModelOsStore:
         """读取 Episode 当前未释放的 ownership lease 行。"""
 
         assert self._conn is not None
-        return self._conn.execute(
+        row: sqlite3.Row | None = self._conn.execute(
             "SELECT * FROM leases WHERE resource_type='episode_ownership' "
             "AND resource_id=? AND released_at IS NULL",
             (episode_id,),
         ).fetchone()
+        return row
 
     def _check_ownership_in_tx(
         self,

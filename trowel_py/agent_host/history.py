@@ -128,7 +128,7 @@ def merge_history_page(
         和 updated_at；没有下一页时游标为 None。
     """
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {
             "runtime": "claude_code",
             "native_session_id": summary.cc_session_id,

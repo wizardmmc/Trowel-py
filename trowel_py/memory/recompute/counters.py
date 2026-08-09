@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import tzinfo
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trowel_py.memory.recompute.effects import compute_note_effects
 from trowel_py.memory.store import MemoryStore
+
+if TYPE_CHECKING:
+    from trowel_py.memory.recompute import NoteEffect
 
 
 def recompute_counters(
     root: Path | str,
     *,
     local_tz: tzinfo | None = None,
-    store_cls: Any = MemoryStore,
-    compute_effects_fn=compute_note_effects,
+    store_cls: type[MemoryStore] = MemoryStore,
+    compute_effects_fn: Callable[..., dict[str, NoteEffect]] = compute_note_effects,
 ) -> dict[str, Any]:
     """重算并覆盖 note 的效果缓存字段。
 

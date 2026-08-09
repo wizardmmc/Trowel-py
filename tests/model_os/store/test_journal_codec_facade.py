@@ -63,11 +63,17 @@ def test_journal_codec_facades_keep_complete_contracts() -> None:
         "_dumps": "(value: 'Any') -> 'str'",
         "_event_params": (
             "(event: 'EventEnvelope', payload_text: 'str', "
-            "payload_hash: 'str') -> 'tuple'"
+            "payload_hash: 'str') -> 'tuple[Any, ...]'"
         ),
-        "_event_identity": ("(event: 'EventEnvelope', payload_hash: 'str') -> 'tuple'"),
-        "_event_row_identity": ("(row: 'sqlite3.Row', payload_hash: 'str') -> 'tuple'"),
-        "_decision_params": "(decision: 'DecisionRecord') -> 'tuple'",
+        "_event_identity": (
+            "(event: 'EventEnvelope', payload_hash: 'str') -> 'tuple[Any, ...]'"
+        ),
+        "_event_row_identity": (
+            "(row: 'sqlite3.Row', payload_hash: 'str') -> 'tuple[Any, ...]'"
+        ),
+        "_decision_params": (
+            "(decision: 'DecisionRecord') -> 'tuple[Any, ...]'"
+        ),
         "_lease_from_row": "(row: 'sqlite3.Row') -> 'Lease'",
         "_event_from_row": "(row: 'sqlite3.Row') -> 'EventEnvelope'",
         "_decision_from_row": "(row: 'sqlite3.Row') -> 'DecisionRecord'",

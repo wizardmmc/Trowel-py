@@ -115,10 +115,11 @@ class ConfigurationRepository:
         """按稳定 ID 读取连接，可选择保留软删除历史。"""
 
         suffix = "" if include_deleted else " AND deleted_at IS NULL"
-        return self.connection.execute(
+        row: sqlite3.Row | None = self.connection.execute(
             "SELECT * FROM configuration_connections WHERE id = ?" + suffix,
             (connection_id,),
         ).fetchone()
+        return row
 
     def list_connections(
         self, *, include_deleted: bool = False
@@ -292,10 +293,11 @@ class ConfigurationRepository:
 
         if request_identity is None:
             return None
-        return self.connection.execute(
+        row: sqlite3.Row | None = self.connection.execute(
             "SELECT * FROM configuration_model_catalogs WHERE request_identity = ?",
             (request_identity,),
         ).fetchone()
+        return row
 
     def insert_session_configuration(self, values: Mapping[str, Any]) -> None:
         """插入一项已经通过 catalog 和 capability 校验的会话配置。"""
@@ -317,10 +319,11 @@ class ConfigurationRepository:
         """按稳定 ID 读取会话配置。"""
 
         suffix = "" if include_deleted else " AND deleted_at IS NULL"
-        return self.connection.execute(
+        row: sqlite3.Row | None = self.connection.execute(
             "SELECT * FROM configuration_session_configs WHERE id = ?" + suffix,
             (configuration_id,),
         ).fetchone()
+        return row
 
     def list_session_configurations(self) -> tuple[sqlite3.Row, ...]:
         """返回所有未软删除的会话配置。"""
@@ -334,10 +337,11 @@ class ConfigurationRepository:
     def get_session_configuration_alias(self, alias: str) -> sqlite3.Row | None:
         """读取一个当前或已退役别名的永久归属。"""
 
-        return self.connection.execute(
+        row: sqlite3.Row | None = self.connection.execute(
             "SELECT * FROM configuration_session_aliases WHERE alias = ?",
             (alias,),
         ).fetchone()
+        return row
 
     def put_session_configuration_alias(
         self,
@@ -496,9 +500,10 @@ class ConfigurationRepository:
     def get_agent_defaults(self) -> sqlite3.Row | None:
         """读取唯一一份新建 Agent 默认条件。"""
 
-        return self.connection.execute(
+        row: sqlite3.Row | None = self.connection.execute(
             "SELECT * FROM configuration_agent_defaults WHERE id = 'default'"
         ).fetchone()
+        return row
 
     def put_agent_defaults(
         self,

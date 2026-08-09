@@ -2,9 +2,9 @@
 
 import logging
 import random
-from typing import Literal
+from typing import Literal, TypedDict
 
-from trowel_py.pet.brain import PetBrain, PetBrainInput
+from trowel_py.pet.brain import PetBrain, PetBrainInput, PetResponse
 from trowel_py.pet.repository import PetRepository
 from trowel_py.pet.types import MoodTrigger, PetMood
 from trowel_py.player.repository import PlayerRepository
@@ -30,6 +30,13 @@ _FOOD_RECOVERY: dict[str, int] = {
     "food_basic": 20,
     "food_premium": 50,
 }
+
+
+class PetInteraction(TypedDict):
+    """表示一次互动生成的宠物回应和更新后状态。"""
+
+    response: PetResponse
+    pet: Pet
 
 
 def _require_inventory_item(
@@ -82,7 +89,9 @@ def feed(item_id: str, pet_repo: PetRepository, player_repo: PlayerRepository) -
     return pet_repo.find_or_create()
 
 
-def interact(pet_repo: PetRepository, brain: PetBrain, rng: random.Random) -> dict:
+def interact(
+    pet_repo: PetRepository, brain: PetBrain, rng: random.Random
+) -> PetInteraction:
     """将宠物心情改为互动状态并生成一句回应。"""
     new_mood = resolve_mood("interaction")
     pet_repo.update_mood(new_mood)

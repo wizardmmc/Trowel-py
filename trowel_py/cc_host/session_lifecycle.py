@@ -266,8 +266,10 @@ def init_roster_for_workdir(
         if host is None or getattr(host, "session_kind", "user") != "user":
             continue
         roster = getattr(host, "_init_roster", None)
-        if roster:
-            return roster
+        if isinstance(roster, (list, tuple)) and all(
+            isinstance(item, str) for item in roster
+        ):
+            return list(roster)
     return []
 
 

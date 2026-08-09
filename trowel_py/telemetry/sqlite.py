@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from trowel_py.telemetry.events import emit_metric, emit_span
@@ -97,7 +98,9 @@ class ObservedSQLiteConnection(sqlite3.Connection):
             lambda: super(ObservedSQLiteConnection, self).executescript(sql_script),
         )
 
-    def _observe(self, sql: str, call: Any) -> sqlite3.Cursor:
+    def _observe(
+        self, sql: str, call: Callable[[], sqlite3.Cursor]
+    ) -> sqlite3.Cursor:
         """计时调用并只按领域、读写和 SQLite 错误码提交事实。
 
         Args:

@@ -1,10 +1,7 @@
 /** 汇总 Claude Code workflow 的状态、进度、耗时和 token 用量。 */
 
 import type { WorkflowItem } from "../../domain";
-
-export function formatWorkflowTokens(tokens: number): string {
-  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
-}
+import { briefWorkflowText, formatWorkflowTokens } from "./workflowFormatting";
 
 function formatDuration(durationMs: number): string {
   const seconds = Math.round(durationMs / 1000);
@@ -12,11 +9,6 @@ function formatDuration(durationMs: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return remainingSeconds ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
-}
-
-export function briefWorkflowText(text: string, max = 48): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 export function WorkflowCaret({ open }: { readonly open: boolean }) {

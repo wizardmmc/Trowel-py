@@ -8,9 +8,10 @@ import os
 import time
 import secrets
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
@@ -98,7 +99,7 @@ def _proxy_debug() -> bool:
     return bool(os.environ.get("PROXY_DEBUG"))
 
 
-def _summarize_body(raw: bytes) -> dict:
+def _summarize_body(raw: bytes) -> dict[str, Any]:
     """提取缓存诊断摘要，不展开 message 或 tool schema。
 
     system 文本和非法 JSON 只记录有限长度的前缀，但其中仍可能包含完整的短
@@ -113,7 +114,7 @@ def _summarize_body(raw: bytes) -> dict:
         return {"_parse_error": True, "head": raw[:200].decode("utf-8", "replace")}
     if not isinstance(body, dict):
         return {"_not_dict": True}
-    out: dict = {}
+    out: dict[str, Any] = {}
     sys_blocks = body.get("system")
     if isinstance(sys_blocks, list):
         blocks = []
@@ -190,7 +191,7 @@ def _is_billing_header_block(block: object) -> bool:
     return text.lstrip().startswith(_BILLING_HEADER_PREFIX)
 
 
-def replace_system_identity(body: dict) -> dict:
+def replace_system_identity(body: dict[str, Any]) -> dict[str, Any]:
     """删除所有 `-p` billing block，并将首个可识别的 identity 替换为 TUI identity。
 
     其他 system block、cache_control、tools 与 messages 保持原值，返回结果始终
@@ -234,7 +235,7 @@ _HOP_BY_HOP: set[str] = {
 }
 
 
-def _filter_headers(headers) -> dict[str, str]:
+def _filter_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """移除请求或响应中不能端到端透传的 header。
 
     Args:
@@ -297,7 +298,7 @@ async def _forward(
     content = _maybe_rewrite_system(raw, real_base_url)
 
     debug = _proxy_debug()
-    dump_rec: dict | None = None
+    dump_rec: dict[str, Any] | None = None
     if debug:
         _DUMP_DIR.mkdir(parents=True, exist_ok=True)
         dump_rec = {

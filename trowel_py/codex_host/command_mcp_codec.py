@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
+
+
+_TranslatedItemT = TypeVar("_TranslatedItemT")
 
 
 def mcp_tool_name(
@@ -87,7 +90,7 @@ def command_started_item(
     params: Mapping[str, Any],
     item: Mapping[str, Any],
     *,
-    translated_item_type: Callable[..., Any],
+    translated_item_type: Callable[..., _TranslatedItemT],
     event_type: Any,
     as_str_fn: Callable[[Any], str],
     require_fn: Callable[[Mapping[str, Any], str, str], Any],
@@ -97,7 +100,7 @@ def command_started_item(
         [Mapping[str, Any], str],
         tuple[dict[str, Any], ...],
     ],
-) -> Any:
+) -> _TranslatedItemT:
     """把 ``item/started`` 中的命令执行条目转为统一的工具启动条目。
 
     ``params`` 是通知参数，``item`` 是其中的 ``commandExecution`` 条目。
@@ -124,7 +127,7 @@ def command_completed_item(
     params: Mapping[str, Any],
     item: Mapping[str, Any],
     *,
-    translated_item_type: Callable[..., Any],
+    translated_item_type: Callable[..., _TranslatedItemT],
     event_type: Any,
     as_str_fn: Callable[[Any], str],
     require_fn: Callable[[Mapping[str, Any], str, str], Any],
@@ -134,7 +137,7 @@ def command_completed_item(
         [Mapping[str, Any], str],
         tuple[dict[str, Any], ...],
     ],
-) -> Any:
+) -> _TranslatedItemT:
     """把 ``item/completed`` 中的命令执行条目转为统一的工具完成条目。
 
     ``params`` 是通知参数，``item`` 是其中的 ``commandExecution`` 条目。
@@ -165,14 +168,14 @@ def mcp_tool_started_item(
     params: Mapping[str, Any],
     item: Mapping[str, Any],
     *,
-    translated_item_type: Callable[..., Any],
+    translated_item_type: Callable[..., _TranslatedItemT],
     event_type: Any,
     as_str_fn: Callable[[Any], str],
     require_fn: Callable[[Mapping[str, Any], str, str], Any],
     immutable_payload_fn: Callable[..., Any],
     item_kind: Any,
     mcp_tool_name_fn: Callable[[Any, Any], str],
-) -> Any:
+) -> _TranslatedItemT:
     """把 ``item/started`` 中的 MCP 调用转为统一的工具启动条目。
 
     ``params`` 是通知参数，``item`` 是其中的 ``mcpToolCall`` 条目。
@@ -211,14 +214,14 @@ def mcp_tool_completed_item(
     params: Mapping[str, Any],
     item: Mapping[str, Any],
     *,
-    translated_item_type: Callable[..., Any],
+    translated_item_type: Callable[..., _TranslatedItemT],
     event_type: Any,
     as_str_fn: Callable[[Any], str],
     require_fn: Callable[[Mapping[str, Any], str, str], Any],
     immutable_payload_fn: Callable[..., Any],
     item_kind: Any,
     mcp_tool_name_fn: Callable[[Any, Any], str],
-) -> Any:
+) -> _TranslatedItemT:
     """把 ``item/completed`` 中的 MCP 调用转为统一的工具完成条目。
 
     ``params`` 是通知参数，``item`` 是其中的 ``mcpToolCall`` 条目。

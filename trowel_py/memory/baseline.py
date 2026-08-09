@@ -108,7 +108,9 @@ def run_v0_baseline(
             retrieved_by_query[key] = val
             log.info("retrieved %d notes for a query", len(val))
 
-    def _memo(query: str, *, corpus_dir, dictionary_path) -> list[str]:
+    def _memo(
+        query: str, *, corpus_dir: Path, dictionary_path: Path
+    ) -> list[str]:
         """把并发阶段缓存的结果交给评估器，避免再次调用检索器。
 
         Args:

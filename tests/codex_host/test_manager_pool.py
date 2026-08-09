@@ -80,6 +80,16 @@ class _FakeManager:
         self.events.append(f"goal:{self.name}:{session.session_id}")
         return {"manager": self.name}
 
+    def decline_request(self, session_id: str, request_id: str) -> object:
+        """记录自动拒绝被路由到的 manager，并返回可识别结果。"""
+
+        self.events.append(f"decline:{self.name}:{session_id}:{request_id}")
+        return SimpleNamespace(
+            session_id=session_id,
+            request_id=request_id,
+            decision="decline",
+        )
+
     async def list_models(self) -> list[dict[str, object]]:
         """返回可识别 manager 归属的模型目录。"""
 
@@ -251,6 +261,25 @@ async def test_pool_routes_sessions_to_connection_manager_after_single_prewarm(
     assert events[:2] == ["prewarm-start", "prewarm-close"]
     assert "skills:alpha:/workspace/alpha" in events
     assert "send:beta:second:b" in events
+
+
+def test_pool_routes_decline_to_session_connection_manager(tmp_path: Path) -> None:
+    """自动拒绝审批必须进入会话冻结连接，不能落到兼容 manager。"""
+
+    events: list[str] = []
+    pool = CodexManagerPool(
+        shared_state_root=tmp_path,
+        legacy_manager=_FakeManager("legacy", events),
+        manager_factory=lambda launch: _FakeManager(launch.connection_id, events),
+        prewarm_client_factory=lambda: _FakeClient(events),
+    )
+    session = SimpleNamespace(session_id="alpha-session")
+    pool.register(session, launch=_launch("alpha"))
+
+    result = pool.decline_request(session.session_id, "approval-1")
+
+    assert result.decision == "decline"
+    assert events == ["decline:alpha:alpha-session:approval-1"]
 
 
 @pytest.mark.asyncio

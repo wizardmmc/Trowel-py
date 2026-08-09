@@ -1,10 +1,13 @@
 """查询花园展示所需的卡片、复习状态和统计。"""
 
+from __future__ import annotations
+
 import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
 
-def create_garden_repository(conn: sqlite3.Connection):
+def create_garden_repository(conn: sqlite3.Connection) -> GardenRepository:
     """用指定数据库连接创建花园数据仓库。"""
     return GardenRepository(conn)
 
@@ -16,7 +19,7 @@ class GardenRepository:
         """保存花园查询使用的数据库连接。"""
         self.conn = conn
 
-    def get_all_plants(self) -> list[dict]:
+    def get_all_plants(self) -> list[dict[str, Any]]:
         """联表返回所有卡片及其复习状态。
 
         保留尚无复习状态的卡片，其状态字段返回 `None`。
@@ -28,7 +31,7 @@ class GardenRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, int | float]:
         """统计植物总数、到期数和开花率。"""
         now = datetime.now(timezone.utc).isoformat()
         row = self.conn.execute(

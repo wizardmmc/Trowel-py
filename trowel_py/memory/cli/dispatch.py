@@ -6,6 +6,8 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
+from trowel_py.memory.hooks import HookRegistry
+
 from .commands import run_domain_command
 from .parser import build_parser
 from .tidy import run_tidy_command
@@ -17,8 +19,8 @@ def run_memory_cli(
     current_iso_week_fn: Callable[[], str],
     current_month_fn: Callable[[], str],
     ensure_dict_fn: Callable[[Path], None],
-    run_review_fn: Callable[[object, Path, str], int],
-    run_tidy_fn: Callable[[object, Path], int],
+    run_review_fn: Callable[[HookRegistry, Path, str], int],
+    run_tidy_fn: Callable[[HookRegistry, Path], int],
     run_repair_fn: Callable[..., int],
     run_backfill_fn: Callable[..., int],
 ) -> int:

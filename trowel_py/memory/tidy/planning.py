@@ -241,8 +241,7 @@ def _parse_operations(raw: str) -> tuple[TidyOperation, ...]:
             continue
         out.append(
             TidyOperation(
-                # 集合成员检查已限制取值，但 mypy 无法据此收窄到 OpType。
-                type=operation_type,  # type: ignore[arg-type]
+                type=operation_type,
                 target=target,
                 reason=str(op.get("reason", "")),
                 canonical=str(op.get("canonical", "")),

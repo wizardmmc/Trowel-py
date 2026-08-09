@@ -49,9 +49,15 @@ export function PetPanel({ open, onClose, triggerElement }: PetPanelProps) {
     interact();
     fetchEventHistory(5)
       .then((logs) => setEvents(logs))
-      .catch(() => setEvents([]));
-    setActionError(null);
+      .catch(() => {
+        setEvents([]);
+      });
   }, [open, fetchProfile, fetchInventory, interact]);
+
+  const handleClose = useCallback(() => {
+    setActionError(null);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +72,7 @@ export function PetPanel({ open, onClose, triggerElement }: PetPanelProps) {
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        handleClose();
         return;
       }
       if (event.key === "Tab" && panelRef.current) {
@@ -87,7 +93,7 @@ export function PetPanel({ open, onClose, triggerElement }: PetPanelProps) {
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open, onClose]);
+  }, [handleClose, open]);
 
   useEffect(() => {
     if (open) return;
@@ -157,7 +163,7 @@ export function PetPanel({ open, onClose, triggerElement }: PetPanelProps) {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          onClick={onClose}
+          onClick={handleClose}
         >
           <motion.div
             ref={panelRef}
@@ -180,7 +186,7 @@ export function PetPanel({ open, onClose, triggerElement }: PetPanelProps) {
               actionError={actionError}
               isLoading={petLoading || playerLoading}
               closeRef={closeRef}
-              onClose={onClose}
+              onClose={handleClose}
               onFeed={handleFeed}
               onEquipHat={handleEquipHat}
             />

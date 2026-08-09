@@ -6,8 +6,8 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable, Coroutine
-from typing import Any
+from collections.abc import AsyncIterator, Callable, Coroutine
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,6 +32,21 @@ from trowel_py.discussion.timeline import DiscussionTimelineService
 
 _HEARTBEAT_SECONDS = 15.0
 _logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class DiscussionEventReader(Protocol):
+    """声明 discussion SSE 读取持久快照和事件所需的窄接口。"""
+
+    def get(self, discussion_id: str) -> dict[str, Any]:
+        """返回当前公开 discussion 快照。"""
+        ...
+
+    def list_events(
+        self, discussion_id: str, *, after_sequence: int
+    ) -> tuple[dict[str, Any], ...]:
+        """返回指定 sequence 之后的持久事件。"""
+        ...
 
 
 class DiscussionRoute(APIRoute):
@@ -92,7 +107,7 @@ def get_discussion_service(request: Request) -> DiscussionService:
     """
 
     service = getattr(request.app.state, "discussion_service", None)
-    if service is None:
+    if not isinstance(service, DiscussionService):
         raise DiscussionError(
             "DISCUSSION_UNAVAILABLE",
             "研讨服务尚未初始化",
@@ -115,7 +130,7 @@ def get_discussion_events(request: Request) -> DiscussionEventBus:
     """
 
     events = getattr(request.app.state, "discussion_events", None)
-    if events is None:
+    if not isinstance(events, DiscussionEventBus):
         raise DiscussionError(
             "DISCUSSION_UNAVAILABLE",
             "研讨服务尚未初始化",
@@ -128,7 +143,7 @@ def get_discussion_coordinator(request: Request) -> DiscussionCoordinator:
     """从应用 lifespan 取得唯一 participant 协调器。"""
 
     coordinator = getattr(request.app.state, "discussion_coordinator", None)
-    if coordinator is None:
+    if not isinstance(coordinator, DiscussionCoordinator):
         raise DiscussionError(
             "DISCUSSION_UNAVAILABLE",
             "研讨服务尚未初始化",
@@ -141,13 +156,26 @@ def get_discussion_timeline(request: Request) -> DiscussionTimelineService:
     """从应用 lifespan 取得只读 participant 历史服务。"""
 
     timeline = getattr(request.app.state, "discussion_timeline", None)
-    if timeline is None:
+    if not isinstance(timeline, DiscussionTimelineService):
         raise DiscussionError(
             "DISCUSSION_UNAVAILABLE",
             "研讨服务尚未初始化",
             status_code=503,
         )
     return timeline
+
+
+def get_discussion_event_reader(request: Request) -> DiscussionEventReader:
+    """取得只供 SSE 重放使用的窄读取接口，并允许等价测试替身。"""
+
+    reader = getattr(request.app.state, "discussion_service", None)
+    if not isinstance(reader, DiscussionEventReader):
+        raise DiscussionError(
+            "DISCUSSION_UNAVAILABLE",
+            "研讨服务尚未初始化",
+            status_code=503,
+        )
+    return reader
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -385,7 +413,7 @@ async def delete_discussion(
 @router.get("/{discussion_id}/events")
 async def stream_discussion_events(
     discussion_id: str,
-    service: DiscussionService = Depends(get_discussion_service),
+    service: DiscussionEventReader = Depends(get_discussion_event_reader),
     events: DiscussionEventBus = Depends(get_discussion_events),
     after: int = Query(default=0, ge=0),
 ) -> StreamingResponse:
@@ -404,7 +432,7 @@ async def stream_discussion_events(
     service.get(discussion_id)
     subscription = events.subscribe(discussion_id)
 
-    async def generate():
+    async def generate() -> AsyncIterator[bytes]:
         """按 sequence 重查 SQLite，避免唤醒丢失造成事件缺口。"""
 
         cursor = after

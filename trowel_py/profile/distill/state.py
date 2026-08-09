@@ -94,7 +94,7 @@ def load_processed(root: Path) -> dict[str, ProcessedSession]:
             continue
         # 无法转换的 offset 不阻塞整批加载；没有其他可用记录时不保留该 ID。
         try:
-            end_offset = int(item.get("end_offset", 0))  # type: ignore[arg-type]
+            end_offset = int(item.get("end_offset", 0))
         except (TypeError, ValueError):
             logger.warning(
                 "distill state: corrupt end_offset %r for %s, skipping",

@@ -7,6 +7,10 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trowel_py.memory.hooks import HookRegistry
 
 
 def main() -> None:
@@ -127,7 +131,7 @@ def _run_memory_cli(argv: list[str]) -> int:
     )
 
 
-def _run_memory_review(registry: object, root: Path, date_str: str) -> int:
+def _run_memory_review(registry: HookRegistry, root: Path, date_str: str) -> int:
     """为指定工作日期登记并同步执行 Memory daily review。
 
     Args:
@@ -144,7 +148,7 @@ def _run_memory_review(registry: object, root: Path, date_str: str) -> int:
     return run_memory_review(registry, root, date_str)
 
 
-def _run_memory_tidy(registry: object, root: Path) -> int:
+def _run_memory_tidy(registry: HookRegistry, root: Path) -> int:
     """执行 hook registry 中已登记的 Memory 整理任务。
 
     Args:

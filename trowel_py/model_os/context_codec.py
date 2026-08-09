@@ -50,7 +50,7 @@ def sample_from_dict(
     confidence_type: Callable[[str], Any],
     unavailable_reason_type: Callable[[str], Any],
     str_fn: Callable[[object], str],
-    int_fn: Callable[[object], int],
+    int_fn: Callable[..., int],
 ) -> _Sample:
     """使用 payload 和调用方提供的会话 ID 恢复上下文占用样本。
 

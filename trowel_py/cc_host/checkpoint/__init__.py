@@ -49,14 +49,14 @@ def is_enabled() -> bool:
     return os.environ.get(_ENABLE_ENV) == "1"
 
 
-def is_git_repo(workdir: str | os.PathLike) -> bool:
+def is_git_repo(workdir: str | os.PathLike[str]) -> bool:
     """判断工作目录是否位于 Git 工作树中。"""
 
     return checkpoint_git.is_git_repo(workdir)
 
 
 def save(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     turn_id: str,
     *,
     cc_session_jsonl_path: str | None = None,
@@ -105,7 +105,7 @@ def save(
 
 
 def revert(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     turn_id: str,
     *,
     projects_root: Path | None = None,
@@ -157,7 +157,7 @@ def revert(
     return meta
 
 
-def list_checkpoints(workdir: str | os.PathLike) -> list[CheckpointMeta]:
+def list_checkpoints(workdir: str | os.PathLike[str]) -> list[CheckpointMeta]:
     """按创建时间从新到旧读取工作目录所属仓库的 checkpoint。
 
     路径不属于 Git 工作树时返回空列表。
@@ -184,7 +184,7 @@ def list_checkpoints(workdir: str | os.PathLike) -> list[CheckpointMeta]:
     return metas
 
 
-def gc(workdir: str | os.PathLike, *, keep: int = 50) -> int:
+def gc(workdir: str | os.PathLike[str], *, keep: int = 50) -> int:
     """删除超过保留数量的旧 checkpoint ref。
 
     Args:
@@ -206,7 +206,7 @@ def gc(workdir: str | os.PathLike, *, keep: int = 50) -> int:
     return checkpoint_git.prune_checkpoints(root, keep)
 
 
-def _require_repo(workdir: str | os.PathLike) -> str:
+def _require_repo(workdir: str | os.PathLike[str]) -> str:
     """取得工作目录所属 Git 工作树的根目录。
 
     Args:
@@ -242,7 +242,7 @@ def _session_id_from_path(jsonl_path: str | None) -> str | None:
 
 
 def _derive_jsonl_path(
-    workdir: str | os.PathLike,
+    workdir: str | os.PathLike[str],
     cc_session_id: str | None,
     *,
     projects_root: Path | None = None,

@@ -22,14 +22,17 @@ interface PetOverlayProps {
 
 export function PetOverlay({ onClick }: PetOverlayProps) {
   const [behavior, setBehavior] = useState<PetBehavior>("idle");
-  const [showBubble, setShowBubble] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pet = usePetStore((s) => s.pet);
   const lastResponse = usePetStore((s) => s.lastResponse);
+  const [dismissedResponse, setDismissedResponse] = useState<
+    typeof lastResponse
+  >(null);
   const fetchPet = usePetStore((s) => s.fetchPet);
   const interact = usePetStore((s) => s.interact);
   const currentEvent = useEventStore((s) => s.currentEvent);
+  const showBubble = lastResponse !== null && lastResponse !== dismissedResponse;
 
   useEffect(() => {
     fetchPet();
@@ -53,13 +56,15 @@ export function PetOverlay({ onClick }: PetOverlayProps) {
   }, []);
 
   useEffect(() => {
-    if (lastResponse) {
-      setShowBubble(true);
-      const timer = setTimeout(() => setShowBubble(false), BUBBLE_DISMISS_MS);
+    if (showBubble && lastResponse) {
+      const timer = setTimeout(
+        () => setDismissedResponse(lastResponse),
+        BUBBLE_DISMISS_MS,
+      );
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [lastResponse]);
+  }, [lastResponse, showBubble]);
 
   const handleClick = useCallback(() => {
     if (onClick) {

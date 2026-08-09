@@ -13,6 +13,7 @@ from trowel_py.statistics.agent.models import (
     Quality,
     SessionObservation,
     TokenUsage,
+    RuntimeName,
     combine_token_usage,
     quality_worst,
 )
@@ -278,7 +279,7 @@ def _model_summaries(
     """只使用模型事实切片生成 runtime/model 汇总。"""
 
     grouped: dict[
-        tuple[str, str | None], list[tuple[SessionObservation, ModelObservation]]
+        tuple[RuntimeName, str | None], list[tuple[SessionObservation, ModelObservation]]
     ] = {}
     for session in observations:
         for model in session.model_observations:

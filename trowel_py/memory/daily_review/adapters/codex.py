@@ -191,5 +191,5 @@ def _fragment_activity(fragment: CodexPendingFragment) -> ActivityDates:
         bases.add(activity.basis)
     for basis in ("registered_at", "completed_at", "jsonl_timestamp"):
         if basis in bases:
-            return ActivityDates(tuple(sorted(dates)), basis)  # type: ignore[arg-type]
+            return ActivityDates(tuple(sorted(dates)), basis)
     return ActivityDates(tuple(sorted(dates)), "jsonl_timestamp")

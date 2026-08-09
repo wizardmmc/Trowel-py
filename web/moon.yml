@@ -10,7 +10,7 @@ taskOptions:
 
 tasks:
   frontend.eslint:
-    description: '报告当前前端 ESLint 债务；清零并验证稳定前不进入默认 Gate。'
+    description: '以零 warning 检查前端代码和 React 行为规则。'
     command: ['bun', 'run', 'lint']
 
   frontend.typecheck:

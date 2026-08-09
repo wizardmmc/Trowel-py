@@ -13,7 +13,7 @@ from trowel_py.agent_host.hub import (
     SessionHubError,
     SessionNotFoundError,
 )
-from trowel_py.agent_host.schemas import CreateAgentSessionRequest
+from trowel_py.agent_host.schemas import CreateAgentSessionRequest, PermissionPreset
 from trowel_py.discussion.errors import DiscussionRuntimeError
 from trowel_py.discussion.models import (
     DiscussionParticipant,
@@ -124,6 +124,16 @@ class ParticipantSessionPort(
     """组合协调器当前需要的四个窄端口，便于替身按职责实现。"""
 
 
+def _permission_preset(value: str | None) -> PermissionPreset | None:
+    """校验持久化的 Codex 权限预设并收窄为会话创建契约。"""
+
+    match value:
+        case None | "follow" | "read-only" | "workspace-write" | "danger-full-access":
+            return value
+        case _:
+            raise DiscussionRuntimeError("研讨参与者保存了未知的 Codex 权限预设")
+
+
 class AgentHostParticipantSessionAdapter:
     """通过 Session Hub 内部接口管理 discussion participant 原生会话。"""
 
@@ -182,7 +192,7 @@ class AgentHostParticipantSessionAdapter:
             model=participant.model,
             effort=participant.effort,
             permission_mode=participant.permission_mode,
-            permission_preset=participant.permission_preset,
+            permission_preset=_permission_preset(participant.permission_preset),
             memory_enabled=participant.memory_enabled,
             profile_enabled=participant.profile_enabled,
             self_enabled=participant.self_enabled,

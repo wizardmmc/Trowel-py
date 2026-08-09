@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from trowel_py.model_os.types import (
     EventEnvelope,
@@ -34,21 +34,21 @@ class WorkItemFoldRuntime:
         state_replace: 复制 ``WorkItemState`` 并更新指定字段的函数。
     """
 
-    replace_work_item: Callable[..., Any]
-    provenance: Any
-    work_item_status: Any
-    state_replace: Callable[..., Any]
+    replace_work_item: Callable[[Snapshot, str, WorkItemState], Snapshot]
+    provenance: type[Provenance]
+    work_item_status: type[WorkItemStatus]
+    state_replace: Callable[..., WorkItemState]
 
 
 def _work_item_from_created(
     event: EventEnvelope,
     *,
     work_item_state_factory: Callable[..., WorkItemState],
-    work_item_kind: Any = WorkItemKind,
-    work_item_status: Any = WorkItemStatus,
-    provenance: Any = Provenance,
-    session_purpose: Any = SessionPurpose,
-    memory_eligibility: Any = MemoryEligibility,
+    work_item_kind: type[WorkItemKind] = WorkItemKind,
+    work_item_status: type[WorkItemStatus] = WorkItemStatus,
+    provenance: type[Provenance] = Provenance,
+    session_purpose: type[SessionPurpose] = SessionPurpose,
+    memory_eligibility: type[MemoryEligibility] = MemoryEligibility,
 ) -> WorkItemState:
     """从创建事件构造 WorkItem 的初始派生状态。
 

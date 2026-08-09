@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import Callable, Iterable, Literal, Mapping, Sequence
 
 from .context_adapters import cc_events_from_agent as _run_cc_events_from_agent
 from .context_adapters import codex_events_from_agent as _run_codex_events_from_agent
@@ -235,7 +235,7 @@ def extract_cc_samples(
     native_session_id: str,
     main_or_subagent: MainOrSubagent,
     source_version: str | None = None,
-    window_resolver=resolve_window,
+    window_resolver: Callable[[str | None], int | None] = resolve_window,
 ) -> list[ContextSample]:
     """从 CC 标准事件提取按消息去重的上下文占用样本。
 
@@ -378,7 +378,7 @@ def extract_codex_samples(
     )
 
 
-def context_sample_to_dict(sample: ContextSample) -> dict:
+def context_sample_to_dict(sample: ContextSample) -> dict[str, object]:
     """把上下文占用样本转换为不含会话 ID 的持久化 payload。
 
     Args:

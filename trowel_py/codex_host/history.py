@@ -127,14 +127,14 @@ def events_from_thread(
                             payload=immutable_payload(text=text),
                         )
                 elif item_type == "agentMessage":
-                    text = item.get("text")
-                    if isinstance(text, str) and text:
+                    agent_text = item.get("text")
+                    if isinstance(agent_text, str) and agent_text:
                         # Adapter 会丢弃实时最终消息；历史正文需作为 delta 才能显示。
                         append(
                             CodexEventType.ASSISTANT_DELTA,
                             turn_id=turn_id,
                             item_id=item_id,
-                            payload=immutable_payload(delta=text),
+                            payload=immutable_payload(delta=agent_text),
                         )
                 elif item_type == "reasoning":
                     reasoning = _reasoning_text(item)

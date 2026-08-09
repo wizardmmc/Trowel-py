@@ -45,7 +45,7 @@
     "make:mac:community": "bun run release:source-check && TROWEL_RELEASE_SOURCE=1 bun run make:mac",
     "perf:large-turn": "vite --host 127.0.0.1 --port 4174",
     "build": "tsc -b && vite build && bun run desktop:build",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
     "preview": "vite preview",
     "test": "bun run check:agent-boundaries && bun run check:module-comments && bun run check:ui-contracts && vitest run",
     "test:watch": "vitest",

@@ -73,6 +73,9 @@ export function installLargeTurnFetchMock(): void {
       return envelope([]);
     }
     if (path.endsWith("/commands")) return envelope({ commands: [] });
+    if (path.endsWith("/skills")) {
+      return envelope({ skills: [], errors: [] });
+    }
     if (path.endsWith("/requests")) return envelope({ requests: [] });
     if (path.endsWith("/goal")) return envelope({ goal: null });
     if (path.endsWith("/history")) return envelope([]);

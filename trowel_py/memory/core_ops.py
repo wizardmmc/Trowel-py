@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from trowel_py.memory.store import MemoryStore, _split_frontmatter
-from trowel_py.memory.types import CoreItem
+from trowel_py.memory.types import CoreItem, Note
 
 _SAFE_MEMORY_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -142,7 +142,9 @@ def activate_core_item(root: Path | str, memory_id: str) -> str:
     return memory_id
 
 
-def _find_note_by_memory_id(store: MemoryStore, memory_id: str):
+def _find_note_by_memory_id(
+    store: MemoryStore, memory_id: str
+) -> Note | None:
     """在可解析的 Note 文件中查找具有指定 ``memory_id`` 的记录。
 
     Args:

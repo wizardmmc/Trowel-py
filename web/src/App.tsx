@@ -66,12 +66,6 @@ function App() {
   const reviewActive = phase !== "idle";
 
   useEffect(() => {
-    if (drafts.length > 0 && !reviewOpen) {
-      setReviewOpen(true);
-    }
-  }, [drafts.length]);
-
-  useEffect(() => {
     const url = new URL(window.location.href);
     if (
       activeTool === "statistics" ||
@@ -105,14 +99,18 @@ function App() {
 
   const handleExtract = async (content: string) => {
     await extract(content);
-    if (drafts.length > 0) {
+    const result = useCardStore.getState();
+    if (result.error === null && result.drafts.length > 0) {
+      setReviewOpen(true);
       addNotification("卡片提取成功", "success");
     }
   };
 
   const handleExtractConversation = async (content: string) => {
     await extractConversation(content);
-    if (drafts.length > 0) {
+    const result = useCardStore.getState();
+    if (result.error === null && result.drafts.length > 0) {
+      setReviewOpen(true);
       addNotification("已从会话提取卡片", "success");
     }
   };

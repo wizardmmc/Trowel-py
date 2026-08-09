@@ -1,5 +1,7 @@
 """通过 SQLite 保存、查询、更新和全文搜索卡片。"""
 
+from __future__ import annotations
+
 import json
 import sqlite3
 
@@ -24,7 +26,7 @@ def _card_from_row(row: sqlite3.Row) -> Card:
     return Card(**data)
 
 
-def create_card_repository(conn: sqlite3.Connection):
+def create_card_repository(conn: sqlite3.Connection) -> CardRepository:
     """创建使用给定数据库连接的卡片仓储。
 
     ``conn`` 的事务和生命周期仍由调用方管理。

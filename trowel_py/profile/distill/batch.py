@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
-def _distill_lock(root: Path):
+def _distill_lock(root: Path) -> Iterator[None]:
     """在上下文期间非阻塞持有 Profile 提炼进程锁。
 
     支持 ``flock`` 时锁定 ``<root>/meta/.distill.lock``；锁文件会保留，退出

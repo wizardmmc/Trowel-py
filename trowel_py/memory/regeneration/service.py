@@ -7,6 +7,7 @@ import fcntl
 import os
 import shutil
 import uuid
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,7 +53,7 @@ def _default_provider() -> LLMProvider:
 
 
 @contextlib.contextmanager
-def _exclusive_lock(path: Path):
+def _exclusive_lock(path: Path) -> Iterator[None]:
     """创建锁文件并在上下文期间持有阻塞式进程独占锁。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
