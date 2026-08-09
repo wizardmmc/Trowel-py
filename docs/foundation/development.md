@@ -9,9 +9,11 @@
 | 角色 | 干什么 |
 |---|---|
 | 任务负责人 | 写 spec（钉死正确性、可观测、边界等质量下限）+ review 代码（看可读性、可维护性、AI 是否讲得通） |
-| AI | 按 spec 实现 + 跑 typecheck / test 验证 |
+| AI | 按 spec 实现 + 跑定向检查和权威质量 Gate 验证 |
 
-查代码质量（跑测试、typecheck、lint）是 AI 的活，不是人的活。人通过 spec 约束质量下限，通过 review 把关上限。这就是「产品为主、训练为方法」——产品靠 spec + review 把关，训练是写 spec 和读代码的过程本身。
+查代码质量（跑测试、typecheck、lint 和任务图反向用例）是 AI 的活，不是人的活。人通过
+spec 约束质量下限，通过 review 把关上限。这就是「产品为主、训练为方法」——产品靠
+spec + review 把关，训练是写 spec 和读代码的过程本身。
 
 ## SDD 闭环
 
@@ -21,7 +23,8 @@
    不进入 Git 的本地规划文件；
 2. **逐个决策点审查 spec**：消除歧义。spec 只钉死输入输出形态、不变量和通过标准，
    **不写实现细节**；
-3. **AI coding（TDD）**：按 spec 实现 → typecheck + test 全绿 → sub-agent CR → 修 CRITICAL / WARNING。
+3. **AI coding（TDD）**：按 spec 实现 → 定向检查通过 → 权威质量 Gate 通过 → 独立
+   AIRC → 修 Critical / Warning；
 4. **人 review + commit**：任务负责人确认行为、可维护性和验证证据后再授权提交。
 
 ## Git 分支与合并
@@ -66,6 +69,16 @@
 ## 开发铁律
 
 全仓安全边界见根 [AGENTS.md](../../AGENTS.md)。注释的详细判断原则见下。
+
+后端、前端、公开契约和公共项目上下文的权威收尾入口为：
+
+```bash
+.venv/bin/python -m scripts.quality gate
+```
+
+moon YAML 是任务命令、工作目录、依赖和平台条件的唯一任务图。CI 与本地入口调用同一
+任务定义；每次运行的原始报告、短摘要和逐叶日志保存在 `.quality-runs/`。已知红项先以
+显式叶子存在，不能伪装成默认通过，也不能用其存量问题掩盖新改文件的回归。
 
 生产前端还必须遵守 [Trowel 前端设计语言](./front-end-design-language.md)。共享控件不能在
 业务页面重新绘制近似版本；`cd web && bun run check:ui-contracts` 检查原生下拉框和

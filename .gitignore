@@ -46,6 +46,9 @@ web/out/
 .playwright-mcp/
 .playwright-cli/
 .gstack/
+**/.moon/cache/
+.moon/quality-run.lock
+.quality-runs/
 
 # ── Editor / OS ─────────────────────────────────────────────────────────────
 .claude/

@@ -1,0 +1,60 @@
+language: 'unknown'
+
+toolchains:
+  default: 'system'
+
+taskOptions:
+  cache: false
+  inferInputs: false
+  outputStyle: 'buffer'
+
+tasks:
+  docs.context:
+    description: '检查公共项目上下文、权威命令和跟踪状态。'
+    command: ['.venv/bin/python', '-m', 'scripts.quality.context_task']
+
+  backend.pytest:
+    description: '运行默认后端测试；真实 runtime integration 和 benchmark 保持显式调用。'
+    command: ['.venv/bin/python', '-m', 'pytest', '--ignore=tests/contracts']
+
+  backend.contracts:
+    description: '使用本次前端构建产物检查公开契约。'
+    command: ['.venv/bin/python', '-m', 'pytest', 'tests/contracts']
+    deps: ['web:frontend.build']
+
+  backend.ruff:
+    description: '检查后端、开发脚本和测试的新 Python lint 问题。'
+    command: ['.venv/bin/python', '-m', 'ruff', 'check', 'trowel_py', 'scripts', 'tests']
+
+  backend.docstrings:
+    description: '检查生产 Python 模块、类和函数是否具有 docstring。'
+    command: ['.venv/bin/python', 'scripts/docstring_coverage.py', 'trowel_py']
+
+  backend.mypy:
+    description: '报告全后端当前 mypy 债务；清零并验证稳定前不进入默认 Gate。'
+    command: ['.venv/bin/python', '-m', 'mypy', 'trowel_py']
+
+  quality.selftest:
+    description: '用隔离 workspace 真实验证 moon 的失败、阻断、平台、旧产物和 fail-fast 语义。'
+    command: ['.venv/bin/python', '-m', 'tests.quality.reverse_runner']
+
+  gate:
+    description: '运行当前快速、确定性并已通过的后端、前端和公开契约检查。'
+    command: 'true'
+    deps:
+      - 'root:docs.context'
+      - 'root:quality.selftest'
+      - 'root:backend.pytest'
+      - 'root:backend.contracts'
+      - 'root:backend.ruff'
+      - 'web:frontend.typecheck'
+      - 'web:frontend.agent-boundaries'
+      - 'web:frontend.module-comments'
+      - 'web:frontend.ui-contracts'
+      - 'web:frontend.vitest'
+      - 'web:frontend.build'
+
+  gate-full:
+    description: '完整质量入口；后续把验证成熟的桌面、行为和视觉叶子加入此任务。'
+    command: 'true'
+    deps: ['root:gate']

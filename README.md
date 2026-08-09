@@ -40,6 +40,19 @@ bun install --frozen-lockfile
 cd ..
 ```
 
+### 本地质量验证
+
+后端、前端、公开契约和公共项目上下文使用同一个质量入口：
+
+```bash
+.venv/bin/python -m scripts.quality gate
+```
+
+该入口使用 moon 任务运行器按依赖顺序执行检查。首次运行会自动下载仓库固定版本的
+moon，核对官方 SHA-256 后缓存到用户目录；不要求全局安装 moon。每次运行的短摘要、
+原始报告和逐项日志写入 `.quality-runs/`。单独复查某项时，把 `gate` 换成摘要中的稳定
+任务 ID，例如 `backend.pytest`。
+
 从 `config.example.toml` 创建不进入 Git 的本地配置：
 
 ```bash

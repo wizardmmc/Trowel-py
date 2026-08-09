@@ -26,20 +26,16 @@ Issue 或 Pull Request 给出；每个开发者自己的 milestone、slice 和�
 ## 常用验证
 
 ```bash
-# 后端；pyproject 已限制只收集 tests/
-.venv/bin/python -m pytest
-
-# 公开契约
-.venv/bin/python -m pytest tests/contracts
-
-# 公共项目上下文；未提交工作树使用宽松跟踪模式
-.venv/bin/python -m scripts.shared_context_check --allow-untracked
-
-# 前端
-bun run --cwd web typecheck
-bun run --cwd web test
-bun run --cwd web build
+# 后端、前端、公开契约和公共项目上下文的权威质量入口
+.venv/bin/python -m scripts.quality gate
 ```
+
+## 质量入口说明
+
+入口首次运行时自动下载仓库固定版本并校验 SHA-256 的 moon。完整证据写入
+`.quality-runs/`。定位失败时可用同一命令调用摘要中的稳定叶子 ID，例如
+`.venv/bin/python -m scripts.quality backend.pytest`；任务命令和依赖只在 `moon.yml` 与
+`web/moon.yml` 定义。
 
 公开契约确实需要变化时，先审查差异，再显式运行：
 
@@ -47,8 +43,9 @@ bun run --cwd web build
 .venv/bin/python -m tests.contracts.public_contracts --update
 ```
 
-全仓 `ruff` 与 `mypy` 仍有历史债务。新改文件必须做窄范围检查，不能用历史红项掩盖
-新增问题。分支、Pull Request 和提交规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+全仓 `mypy`、Python docstring 和前端 ESLint 仍有历史债务，已经登记为显式叶子但尚未
+进入默认 Gate。新改文件必须做窄范围检查，不能用历史红项掩盖新增问题。分支、Pull
+Request 和提交规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 不可破坏的边界
 

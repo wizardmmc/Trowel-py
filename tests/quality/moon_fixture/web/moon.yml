@@ -1,0 +1,14 @@
+language: 'unknown'
+
+toolchains:
+  default: 'system'
+
+taskOptions:
+  cache: false
+  inferInputs: false
+  outputStyle: 'buffer'
+
+tasks:
+  frontend.cwd:
+    description: '在 web 项目目录运行同一个工作目录检查。'
+    command: ['python3', 'cwd_task.py']

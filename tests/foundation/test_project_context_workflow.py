@@ -49,38 +49,47 @@ def test_development_defines_project_context_handoff() -> None:
     assert candidate["review"] == "接纳 | 修改 | 延后 | 拒绝"
 
 
-def test_root_verification_lists_context_freshness_command() -> None:
-    """fresh agent 必须从根验证入口找到未提交工作树的 freshness 命令。"""
+def test_root_verification_lists_authoritative_quality_gate() -> None:
+    """fresh agent 必须从根验证入口找到包含 freshness 的权威 Gate。"""
 
     root_agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    manifest = yaml.safe_load((REPO_ROOT / "moon.yml").read_text(encoding="utf-8"))
 
-    assert (
-        ".venv/bin/python -m scripts.shared_context_check --allow-untracked"
-        in root_agents
-    )
+    assert ".venv/bin/python -m scripts.quality gate" in root_agents
+    assert "root:docs.context" in manifest["tasks"]["gate"]["deps"]
 
 
-def test_ci_uses_module_entrypoint_and_lints_the_audit_package() -> None:
-    """CI 必须执行可发布的模块入口，并把新增 scripts 包纳入 Ruff。"""
+def test_quality_gate_keeps_context_entrypoint_and_scripts_lint() -> None:
+    """CI 经权威任务图执行严格 freshness，并继续 lint scripts 包。"""
 
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
-    backend_steps = {
+    quality_steps = {
         step["name"]: step
-        for step in workflow["jobs"]["backend"]["steps"]
+        for step in workflow["jobs"]["quality"]["steps"]
         if "name" in step
     }
+    manifest = yaml.safe_load((REPO_ROOT / "moon.yml").read_text(encoding="utf-8"))
+    tasks = manifest["tasks"]
 
-    assert backend_steps["Check shared project context"]["run"] == (
-        "uv run --no-sync python -m scripts.shared_context_check"
+    assert quality_steps["Run authoritative quality gate"]["run"] == (
+        ".venv/bin/python -m scripts.quality gate --ci --output .quality-runs/ci"
     )
-    assert (
-        "--allow-untracked" not in backend_steps["Check shared project context"]["run"]
-    )
-    assert backend_steps["Run Python lint"]["run"] == (
-        "uv run --no-sync ruff check trowel_py scripts tests"
-    )
+    assert tasks["docs.context"]["command"] == [
+        ".venv/bin/python",
+        "-m",
+        "scripts.quality.context_task",
+    ]
+    assert tasks["backend.ruff"]["command"] == [
+        ".venv/bin/python",
+        "-m",
+        "ruff",
+        "check",
+        "trowel_py",
+        "scripts",
+        "tests",
+    ]
 
 
 def test_context_freshness_module_entrypoint_is_runnable() -> None:

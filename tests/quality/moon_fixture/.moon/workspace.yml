@@ -1,0 +1,16 @@
+versionConstraint: '=2.4.6'
+
+projects:
+  root: '.'
+  web: 'web'
+
+defaultProject: 'root'
+
+vcs:
+  defaultBranch: 'main'
+
+pipeline:
+  syncWorkspace: false
+  syncProjects: false
+
+telemetry: false
