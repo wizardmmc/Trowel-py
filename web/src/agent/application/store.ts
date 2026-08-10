@@ -51,7 +51,9 @@ import {
   createNewSessionState,
   createReconciledSessionState,
   isRootTurnInFlight,
+  materializeCurrentRootTurn,
   promptSessionTitle,
+  reconcileCurrentRootTurn,
   transportIssueFromMessage,
   transportIssueFromProblem,
   type PerSessionState,
@@ -192,22 +194,8 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
           set((state) => {
             if (state.sessions[sid]) return state;
             let materialized = createReconciledSessionState(backend);
-            if (
-              firstEvent.type !== "turn_start" &&
-              backend.current_turn_id &&
-              (backend.turn_state === "starting" ||
-                backend.turn_state === "running" ||
-                backend.turn_state === "awaiting_input")
-            ) {
-              materialized = {
-                ...materialized,
-                ...reduceEvent(materialized, {
-                  type: "turn_start",
-                  turn_id: backend.current_turn_id,
-                  autonomous: true,
-                  revertible: false,
-                }),
-              };
+            if (firstEvent.type !== "turn_start") {
+              materialized = materializeCurrentRootTurn(materialized);
             }
             return {
               ...state,
@@ -251,6 +239,7 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
     async function recoverApprovalRequests(sid: string): Promise<void> {
       const session = get().sessions[sid];
       if (session?.runtime !== "codex") return;
+      patchSession(sid, materializeCurrentRootTurn);
       try {
         const requests = await listAgentRequests(sid);
         for (const request of requests) applyApprovalRequest(sid, request);
@@ -432,33 +421,34 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
           return state;
         }
         const replayed = replayAgentHistory(current, envelopes);
+        const reconciled = reconcileCurrentRootTurn({
+          ...replayed,
+          connected: snapshot.connected,
+          resourceState: snapshot.resource_state ?? current.resourceState,
+          turnState:
+            snapshot.turn_state ??
+            (snapshot.running ? "running" : current.turnState),
+          currentTurnId:
+            snapshot.current_turn_id !== undefined
+              ? snapshot.current_turn_id
+              : current.currentTurnId,
+          stateGeneration:
+            snapshot.state_generation ?? current.stateGeneration,
+          lastSeq: snapshotSeq,
+          liveState: current.liveState,
+          needsReplay: false,
+          transportError: isLiveTransportProblem(current.transportProblem)
+            ? null
+            : current.transportError,
+          transportProblem: isLiveTransportProblem(current.transportProblem)
+            ? null
+            : current.transportProblem,
+        });
         return {
           ...state,
           sessions: {
             ...state.sessions,
-            [sid]: {
-              ...replayed,
-              connected: snapshot.connected,
-              resourceState: snapshot.resource_state ?? current.resourceState,
-              turnState:
-                snapshot.turn_state ??
-                (snapshot.running ? "running" : current.turnState),
-              currentTurnId:
-                snapshot.current_turn_id !== undefined
-                  ? snapshot.current_turn_id
-                  : current.currentTurnId,
-              stateGeneration:
-                snapshot.state_generation ?? current.stateGeneration,
-              lastSeq: snapshotSeq,
-              liveState: current.liveState,
-              needsReplay: false,
-              transportError: isLiveTransportProblem(current.transportProblem)
-                ? null
-                : current.transportError,
-              transportProblem: isLiveTransportProblem(current.transportProblem)
-                ? null
-                : current.transportProblem,
-            },
+            [sid]: reconciled,
           },
         };
       });
@@ -762,7 +752,7 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
                       (incomingSeq !== null &&
                         incomingSeq !== existing.lastSeq));
                   if (requiresReplay) historyReplays.push(b);
-                  merged[b.session_id] = {
+                  merged[b.session_id] = reconcileCurrentRootTurn({
                     ...existing,
                     displayTitle,
                     titleSource,
@@ -803,7 +793,7 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
                       isLiveTransportProblem(existing.transportProblem)
                         ? null
                         : existing.transportProblem,
-                  };
+                  });
                 } else {
                   const materialized = createReconciledSessionState(b);
                   const requiresReplay = b.last_event_seq != null;
@@ -836,6 +826,16 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
             }
             await runWithConcurrency(historyReplays, 3, async (snapshot) =>
               reconcileSessionHistory(snapshot.session_id, snapshot),
+            );
+            await runWithConcurrency(
+              userSessions
+                .filter(
+                  (session) =>
+                    session.runtime === "codex" && session.connected,
+                )
+                .map((session) => session.session_id),
+              3,
+              recoverApprovalRequests,
             );
             if (
               liveReady &&
@@ -1044,6 +1044,9 @@ export function createAgentStore(options: AgentStoreOptions = {}) {
         if (!sid) return;
         const cur = get().sessions[sid];
         if (!cur) return;
+        // 活动快照比可能尚未封口的 history 更新；in-flight 时回放会抹掉
+        // 当前审批、提问或尚未落盘的局部输出。
+        if (isRootTurnInFlight(cur)) return;
         const liveSeqAtRequest = cur.lastSeq;
         let envelopes: readonly AgentEventLike[] = [];
         try {

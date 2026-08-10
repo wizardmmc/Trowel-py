@@ -3,6 +3,7 @@ versionConstraint: '=2.4.6'
 projects:
   root: '.'
   web: 'web'
+  e2e: 'e2e'
 
 defaultProject: 'root'
 

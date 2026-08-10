@@ -48,13 +48,13 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> CardRepository:
     """为请求创建卡片数据仓库。"""
     return create_card_repository(conn)
 
 
 def _get_feynman_repo(
-    conn: sqlite3.Connection = Depends(_get_conn),
+    conn: sqlite3.Connection = Depends(_get_conn, scope="function"),
 ) -> FeynmanRepository:
     """为请求创建费曼练习数据仓库。"""
     return create_feynman_repository(conn)

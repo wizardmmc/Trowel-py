@@ -1,7 +1,9 @@
 import sqlite3
+import threading
 from pathlib import Path
 
-from trowel_py.db.connection import create_db
+import trowel_py.db.connection as connection_module
+from trowel_py.db.connection import _requires_serialized_open_close, create_db
 
 
 def test_default_database_path_uses_application_root_without_chdir(
@@ -42,3 +44,53 @@ def test_create_db_returns_connection():
         assert isinstance(conn, sqlite3.Connection)
     finally:
         conn.close()
+
+
+def test_only_known_unix_sqlite_deadlock_versions_enable_compatibility_lock() -> None:
+    """兼容锁不能延伸到已修复版本或不受影响的平台。"""
+
+    assert _requires_serialized_open_close((3, 51, 0), "darwin") is True
+    assert _requires_serialized_open_close((3, 51, 1), "linux") is True
+    assert _requires_serialized_open_close((3, 50, 4), "darwin") is False
+    assert _requires_serialized_open_close((3, 51, 2), "darwin") is False
+    assert _requires_serialized_open_close((3, 51, 1), "win32") is False
+
+
+def test_known_sqlite_deadlock_versions_serialize_connection_open_and_close(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """已知缺陷版本必须阻止 SQLite 在不同线程同时打开和关闭主库。"""
+
+    class TrackingLock:
+        """记录数据库连接生命周期实际进入兼容锁的次数。"""
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self.enter_count = 0
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self.enter_count += 1
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            self._lock.release()
+
+    lock = TrackingLock()
+    monkeypatch.setattr(
+        connection_module,
+        "_SERIALIZE_SQLITE_OPEN_CLOSE",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        connection_module,
+        "_SQLITE_OPEN_CLOSE_LOCK",
+        lock,
+        raising=False,
+    )
+
+    connection = create_db(tmp_path / "deadlock-regression.db")
+    connection.close()
+
+    assert lock.enter_count == 2

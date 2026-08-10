@@ -34,21 +34,21 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
 
 
 def _get_player_repo(
-    conn: sqlite3.Connection = Depends(_get_conn),
+    conn: sqlite3.Connection = Depends(_get_conn, scope="function"),
 ) -> PlayerRepository:
     """为当前请求创建玩家数据读写对象。"""
 
     return create_player_repository(conn)
 
 
-def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> CardRepository:
     """为当前请求创建卡片数据读写对象。"""
 
     return create_card_repository(conn)
 
 
 def _get_review_repo(
-    conn: sqlite3.Connection = Depends(_get_conn),
+    conn: sqlite3.Connection = Depends(_get_conn, scope="function"),
 ) -> ReviewRepository:
     """为当前请求创建复习数据读写对象。"""
 
@@ -56,7 +56,7 @@ def _get_review_repo(
 
 
 def _get_event_repo(
-    conn: sqlite3.Connection = Depends(_get_conn),
+    conn: sqlite3.Connection = Depends(_get_conn, scope="function"),
 ) -> EventRepository:
     """为当前请求创建事件数据读写对象。"""
 

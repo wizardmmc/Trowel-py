@@ -243,6 +243,8 @@ interface RequestPolicy {
   readonly timeoutMs?: number;
   readonly timeoutCode?: AgentProblemCode;
   readonly timeoutMessage?: string;
+  readonly networkErrorCode?: AgentProblemCode;
+  readonly networkErrorMessage?: string;
 }
 
 interface ApiEnvelope<T, M = unknown> {
@@ -301,10 +303,15 @@ async function requestEnvelope<T, M = unknown>(
       );
     }
     if (!options?.signal?.aborted && error instanceof TypeError) {
+      const networkErrorCode = policy.networkErrorCode ?? "sidecar_unavailable";
       throw new AgentTransportError(
         {
-          code: "sidecar_unavailable",
-          message: "Agent Service 不可用",
+          code: networkErrorCode,
+          message:
+            policy.networkErrorMessage ??
+            (networkErrorCode === "sidecar_unavailable"
+              ? "Agent Service 不可用"
+              : `${policy.operation} 的传输已断开，结果尚未确认`),
           operation: policy.operation,
           budgetMs: timeoutMs,
           status: null,
@@ -638,6 +645,7 @@ export async function startAgentTurn(
       operation: "turn_start",
       timeoutMs: TURN_ACCEPT_TIMEOUT_MS,
       timeoutCode: "turn_acceptance_unknown",
+      networkErrorCode: "turn_acceptance_unknown",
     },
   );
   return { turnId: data.turn_id };

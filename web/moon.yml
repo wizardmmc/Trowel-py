@@ -38,6 +38,12 @@ tasks:
     command: ['bun', 'run', 'build']
     outputs: ['dist/**', 'desktop-dist/**']
 
+  desktop.electron-prepare:
+    description: '下载并核验锁文件固定版本的当前平台 Electron 可执行文件。'
+    command: ['bun', 'run', 'electron:prepare']
+    options:
+      os: 'macos'
+
   desktop.renderer:
     description: '在 macOS 运行 renderer、telemetry drain 和资源归零 smoke。'
     command: ['bun', 'run', 'desktop:smoke']

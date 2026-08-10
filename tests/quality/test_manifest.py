@@ -104,6 +104,27 @@ def test_contracts_depend_on_the_authoritative_frontend_build_leaf() -> None:
     assert contracts["deps"] == ["web:frontend.build"]
 
 
+def test_electron_behavior_prepares_the_pinned_runtime_binary() -> None:
+    """行为 E2E 启动前必须准备锁文件对应的 Electron 可执行文件。"""
+    web = _read_yaml(REPO_ROOT / "web" / "moon.yml")
+    e2e = _read_yaml(REPO_ROOT / "e2e" / "moon.yml")
+
+    assert web["tasks"]["desktop.electron-prepare"]["command"] == [
+        "bun",
+        "run",
+        "electron:prepare",
+    ]
+    assert web["tasks"]["desktop.electron-prepare"]["options"]["os"] == "macos"
+    assert "web:desktop.electron-prepare" in e2e["tasks"]["behavior.prepare"]["deps"]
+    behavior_tasks = {
+        name: task
+        for name, task in e2e["tasks"].items()
+        if name == "behavior" or name.startswith("behavior.")
+    }
+    assert behavior_tasks
+    assert all(task["options"]["os"] == "macos" for task in behavior_tasks.values())
+
+
 def test_quality_tasks_disable_moon_cache_by_default() -> None:
     """质量结果不得复用未完整声明环境和产物的历史成功。"""
     root = _read_yaml(REPO_ROOT / "moon.yml")
@@ -138,3 +159,16 @@ def test_ci_calls_one_authoritative_linux_gate() -> None:
     assert "python -m pytest --ignore=tests/contracts" not in workflow
     assert "bun run typecheck" not in workflow
     assert "python -m pytest tests/contracts" not in workflow
+
+
+def test_macos_behavior_ci_uploads_sanitized_leaf_diagnostics() -> None:
+    """行为 Gate 失败时必须保留去敏产物和稳定叶子诊断。"""
+    workflow = _read_yaml(REPO_ROOT / ".github" / "workflows" / "macos-behavior.yml")
+    upload = next(
+        step
+        for step in workflow["jobs"]["behavior"]["steps"]
+        if step.get("name") == "Upload sanitized behavior evidence"
+    )
+    paths = upload["with"]["path"].splitlines()
+
+    assert paths == [".quality-runs/e2e/artifacts/"]

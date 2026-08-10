@@ -92,6 +92,7 @@ import {
   getCodexSubagentHistory,
   listActiveAgentSessions,
   listAgentHistory,
+  listAgentRequests,
   getCodexGoal,
   setCodexGoal,
   clearCodexGoal,
@@ -114,6 +115,7 @@ export const apiGetAgentHistory = vi.mocked(getAgentHistory);
 export const apiGetCodexSubagentHistory = vi.mocked(getCodexSubagentHistory);
 export const listActiveSessions = vi.mocked(listActiveAgentSessions);
 export const listHistory = vi.mocked(listAgentHistory);
+export const apiListAgentRequests = vi.mocked(listAgentRequests);
 export const apiGetCodexGoal = vi.mocked(getCodexGoal);
 export const apiSetCodexGoal = vi.mocked(setCodexGoal);
 export const apiClearCodexGoal = vi.mocked(clearCodexGoal);

@@ -1,0 +1,64 @@
+name: macOS Behavior Gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-behavior.yml"
+      - ".moon/**"
+      - "moon.yml"
+      - "e2e/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "trowel_py/**"
+      - "web/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-behavior-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  behavior:
+    name: Isolated Electron behavior
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify arm64 runner
+        run: test "$(uname -m)" = "arm64"
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.3"
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.11"
+      - name: Install locked Python dependencies
+        run: uv sync --locked
+      - name: Install locked frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Install locked behavior dependencies
+        working-directory: e2e
+        run: bun install --frozen-lockfile
+      - name: Run isolated Electron behavior gate
+        run: .venv/bin/python -m scripts.quality behavior --ci --output .quality-runs/macos-behavior
+      - name: Upload sanitized behavior evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-behavior-evidence
+          path: .quality-runs/e2e/artifacts/
+          if-no-files-found: error
+          retention-days: 7

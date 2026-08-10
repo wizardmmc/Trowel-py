@@ -32,12 +32,12 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_pet_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PetRepository:
+def _get_pet_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> PetRepository:
     """为请求创建宠物数据仓库。"""
     return create_pet_repository(conn)
 
 
-def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRepository:
+def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> PlayerRepository:
     """为请求创建玩家数据仓库。"""
     return create_player_repository(conn)
 

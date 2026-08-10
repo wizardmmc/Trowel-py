@@ -35,12 +35,12 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> CardRepository:
     """为请求创建卡片数据仓库。"""
     return create_card_repository(conn)
 
 
-def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> ReviewRepository:
+def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> ReviewRepository:
     """为请求创建复习数据仓库。"""
     return create_review_repository(conn)
 

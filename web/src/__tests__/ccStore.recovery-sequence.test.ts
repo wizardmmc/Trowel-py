@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   apiAnswerAgentRequest,
+  apiCreateSession,
   apiGetAgentHistory,
+  apiListAgentRequests,
   apiStartAgentTurn,
   ev,
   mockCreate,
@@ -10,8 +12,215 @@ import {
   stream,
 } from "./ccStoreTestHarness";
 import { createAgentStore } from "../agent";
+import {
+  createReconciledSessionState,
+  materializeCurrentRootTurn,
+} from "../agent/application/store/sessionState";
 
 describe("createAgentStore — approval recovery", () => {
+  it("keeps awaiting_input when an empty history needs a root turn container", () => {
+    const snapshot = mockCreate("s1", {
+      connected: true,
+      running: true,
+      turn_state: "awaiting_input",
+      current_turn_id: "turn-1",
+    });
+
+    const materialized = materializeCurrentRootTurn(
+      createReconciledSessionState(snapshot),
+    );
+
+    expect(materialized.turns).toMatchObject([
+      { turnId: "turn-1", status: "active" },
+    ]);
+    expect(materialized.phase).toBe("awaiting_input");
+  });
+
+  it("rebuilds the active turn before restoring a pending approval after reload", async () => {
+    const store = createAgentStore();
+    const session = mockCreate("s1", {
+      runtime: "codex",
+      native_session_id: "thread-1",
+      model: "gpt-5.6-sol",
+      capabilities: ["tools", "approval"],
+      connected: true,
+      running: true,
+      turn_state: "awaiting_input",
+      current_turn_id: "turn-1",
+      state_generation: 2,
+      last_event_seq: 2,
+    });
+    apiCreateSession.mockReset();
+    listActiveSessions.mockResolvedValueOnce({ sessions: [session], activeId: "s1" });
+    apiGetAgentHistory.mockResolvedValueOnce([
+      ev("turn_start", {}, { session_id: "s1", turn_id: "turn-1", seq: 1 }),
+      ev(
+        "approval_request",
+        {
+          request_id: "7-0",
+          item_id: "exec-1",
+          approval_kind: "command_approval",
+          command: "pwd",
+          cwd: "/wd",
+          reason: "Allow it?",
+          available_decisions: ["accept", "cancel"],
+          status: "pending",
+          decision: null,
+          auto_resolved: false,
+          resolution_reason: null,
+        },
+        { session_id: "s1", runtime: "codex", turn_id: "turn-1", seq: 2 },
+      ),
+    ]);
+    apiListAgentRequests.mockResolvedValueOnce([
+      {
+        request_id: "7-0",
+        session_id: "s1",
+        thread_id: "thread-1",
+        turn_id: "turn-1",
+        item_id: "exec-1",
+        approval_kind: "command_approval",
+        command: "pwd",
+        cwd: "/wd",
+        reason: "Allow it?",
+        available_decisions: ["accept", "cancel"],
+        status: "pending",
+        decision: null,
+        auto_resolved: false,
+        resolution_reason: null,
+      },
+    ]);
+
+    await store.getState().refreshActiveSessions();
+    await store.getState().activateSession("s1");
+
+    expect(store.getState().sessions.s1.turns).toHaveLength(1);
+    expect(store.getState().sessions.s1.turns[0]).toMatchObject({
+      turnId: "turn-1",
+      status: "active",
+      items: [{ kind: "approval", requestId: "7-0", status: "pending" }],
+    });
+    expect(store.getState().sessions.s1).toMatchObject({
+      phase: "awaiting_input",
+      turnState: "awaiting_input",
+    });
+
+    const historyCalls = apiGetAgentHistory.mock.calls.length;
+    await store.getState().loadHistoryIntoView();
+    expect(apiGetAgentHistory).toHaveBeenCalledTimes(historyCalls);
+    expect(store.getState().sessions.s1.turns[0].items).toMatchObject([
+      { kind: "approval", requestId: "7-0", status: "pending" },
+    ]);
+  });
+
+  it("restores the approval again when activation races with history replay", async () => {
+    const store = createAgentStore();
+    const session = mockCreate("s1", {
+      runtime: "codex",
+      native_session_id: "thread-1",
+      capabilities: ["tools", "approval"],
+      connected: true,
+      running: true,
+      turn_state: "awaiting_input",
+      current_turn_id: "turn-1",
+      state_generation: 2,
+      last_event_seq: 2,
+    });
+    apiCreateSession.mockReset();
+    listActiveSessions.mockResolvedValueOnce({ sessions: [session], activeId: "s1" });
+    let resolveHistory!: (events: readonly ReturnType<typeof ev>[]) => void;
+    apiGetAgentHistory.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    const pendingRequest = {
+      request_id: "7-0",
+      session_id: "s1",
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      item_id: "exec-1",
+      approval_kind: "command_approval" as const,
+      command: "pwd",
+      cwd: "/wd",
+      reason: "Allow it?",
+      available_decisions: ["accept", "cancel"],
+      status: "pending" as const,
+      decision: null,
+      auto_resolved: false,
+      resolution_reason: null,
+    };
+    apiListAgentRequests.mockResolvedValue([pendingRequest]);
+
+    const refresh = store.getState().refreshActiveSessions();
+    await vi.waitFor(() => expect(store.getState().sessions.s1).toBeDefined());
+    const activation = store.getState().activateSession("s1");
+    resolveHistory([]);
+    await Promise.all([refresh, activation]);
+
+    expect(store.getState().sessions.s1.turns).toMatchObject([
+      {
+        turnId: "turn-1",
+        status: "active",
+        items: [{ kind: "approval", requestId: "7-0", status: "pending" }],
+      },
+    ]);
+    expect(store.getState().sessions.s1.phase).toBe("awaiting_input");
+    apiListAgentRequests.mockReset();
+    apiListAgentRequests.mockResolvedValue([]);
+  });
+
+  it("closes an active renderer turn when an equal-seq snapshot is terminal", async () => {
+    const store = createAgentStore();
+    const session = mockCreate("s1", {
+      runtime: "codex",
+      native_session_id: "thread-1",
+      capabilities: ["tools", "approval"],
+      connected: true,
+      running: true,
+      turn_state: "awaiting_input",
+      current_turn_id: "turn-1",
+      state_generation: 1,
+      last_event_seq: 1,
+    });
+    apiCreateSession.mockReset();
+    listActiveSessions
+      .mockResolvedValueOnce({ sessions: [session], activeId: "s1" })
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            ...session,
+            running: false,
+            turn_state: "completed",
+          },
+        ],
+        activeId: "s1",
+      });
+    apiGetAgentHistory.mockResolvedValueOnce([
+      ev("turn_start", {}, {
+        session_id: "s1",
+        runtime: "codex",
+        thread_id: "thread-1",
+        turn_id: "turn-1",
+        seq: 1,
+      }),
+    ]);
+
+    await store.getState().refreshActiveSessions();
+    expect(store.getState().sessions.s1.turns).toMatchObject([
+      { turnId: "turn-1", status: "active" },
+    ]);
+    const historyCalls = apiGetAgentHistory.mock.calls.length;
+    await store.getState().refreshActiveSessions();
+
+    expect(store.getState().sessions.s1).toMatchObject({
+      phase: "done",
+      turnState: "completed",
+      turns: [{ turnId: "turn-1", status: "done" }],
+    });
+    expect(apiGetAgentHistory).toHaveBeenCalledTimes(historyCalls);
+  });
+
   it("folds the answer response into the pending card when SSE is unavailable", async () => {
     const store = createAgentStore();
     mockCreate("s1", {
