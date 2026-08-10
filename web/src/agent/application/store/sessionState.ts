@@ -12,8 +12,10 @@ import type {
 import type { AgentTransportProblem } from "../../transport/httpError";
 import {
   INITIAL_REDUCER_STATE,
+  reduceEvent,
   type ReducerState,
 } from "../../domain/reducer";
+import { finalizeRunningTools } from "../../domain/reducer/terminal";
 
 export interface CodexSubagentThread {
   readonly threadId: string;
@@ -127,6 +129,97 @@ export function createReconciledSessionState(
     model: session.model,
     connected: session.connected,
   });
+}
+
+/**
+ * 按活动快照补出当前根 turn 容器。
+ *
+ * history 可能暂时为空或尚未封口，但 currentTurnId 与 turnState 是后端当前事实；
+ * 每次历史回放完成后都要再次执行本规则，才能承接随后恢复的审批和终态事件。
+ */
+export function materializeCurrentRootTurn(
+  session: PerSessionState,
+): PerSessionState {
+  if (!session.currentTurnId || !isRootTurnInFlight(session)) return session;
+  const existingIndex = session.turns.findIndex(
+    (turn) => turn.turnId === session.currentTurnId,
+  );
+  if (existingIndex !== -1) {
+    const existing = session.turns[existingIndex];
+    if (existing.status === "active") return session;
+    return {
+      ...session,
+      turns: session.turns.map((turn, index) =>
+        index === existingIndex ? { ...turn, status: "active" as const } : turn,
+      ),
+      phase: phaseForActiveTurn(session.turnState),
+    };
+  }
+  const materialized = reduceEvent(session, {
+    type: "turn_start",
+    turn_id: session.currentTurnId,
+    autonomous: true,
+    revertible: false,
+  });
+  return {
+    ...session,
+    ...materialized,
+    phase: phaseForActiveTurn(session.turnState),
+  };
+}
+
+/**
+ * 用活动快照把当前根 turn 的容器和终态一起收敛。
+ *
+ * 后端可能先持久化终态，再由下一次活动快照通知 renderer；当事件序号没有变化时，
+ * 不会触发 history replay，因此这里必须独立结束仍为 active 的 reducer turn。
+ */
+export function reconcileCurrentRootTurn(
+  session: PerSessionState,
+): PerSessionState {
+  if (isRootTurnInFlight(session)) return materializeCurrentRootTurn(session);
+  const terminal = ROOT_TURN_TERMINALS[session.turnState];
+  if (!terminal || !session.currentTurnId) return session;
+  const currentIndex = session.turns.findIndex(
+    (turn) => turn.turnId === session.currentTurnId,
+  );
+  if (currentIndex === -1 || session.turns[currentIndex].status !== "active") {
+    return session;
+  }
+  return {
+    ...session,
+    turns: session.turns.map((turn, index) =>
+      index === currentIndex
+        ? {
+            ...turn,
+            status: terminal.status,
+            items: finalizeRunningTools(turn.items),
+            startedAtMs: undefined,
+          }
+        : turn,
+    ),
+    phase: terminal.phase,
+    abort: null,
+    commandPending: null,
+  };
+}
+
+const ROOT_TURN_TERMINALS: Partial<
+  Record<AgentTurnState, {
+    readonly status: "done" | "error" | "interrupted";
+    readonly phase: "done" | "error" | "interrupted";
+  }>
+> = {
+  completed: { status: "done", phase: "done" },
+  failed: { status: "error", phase: "error" },
+  interrupted: { status: "interrupted", phase: "interrupted" },
+};
+
+/** 把后端活动 turn 状态映射为重建容器后的 renderer 阶段。 */
+function phaseForActiveTurn(turnState: AgentTurnState): ReducerState["phase"] {
+  if (turnState === "awaiting_input") return "awaiting_input";
+  if (turnState === "starting") return "awaiting_first";
+  return "generating";
 }
 
 interface SessionIdentity {

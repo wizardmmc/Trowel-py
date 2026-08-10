@@ -38,13 +38,13 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> CardRepository:
+def _get_card_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> CardRepository:
     """为当前请求创建卡片数据读写对象。"""
 
     return create_card_repository(conn)
 
 
-def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> ReviewRepository:
+def _get_review_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> ReviewRepository:
     """为当前请求创建复习数据读写对象。"""
 
     return create_review_repository(conn)

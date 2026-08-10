@@ -1,0 +1,117 @@
+{
+  "provenance": {
+    "source": "Claude Code 2.1.197 stream-json 实录的去敏字段投影",
+    "raw_sha256": "cccc38a80cd670930370f27f183d7946a48951959a5c42608639cd25706e6e95",
+    "failure_raw_sha256": "f5f595286e588682a1c9425924e02b2a3787254b05f77a69a015cda2d140eec0",
+    "recorded_version": "2.1.197",
+    "redaction": "删除本机路径、会话标识、模型用量与模型返回正文；动态标识改为占位符"
+  },
+  "events": {
+    "title_response": {
+      "structured_output": {
+        "title": "$TITLE"
+      }
+    },
+    "init": {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SESSION_ID",
+      "model": "glm-5.2",
+      "cwd": "$CWD",
+      "tools": [
+        "AskUserQuestion"
+      ],
+      "slash_commands": [],
+      "permissionMode": "bypassPermissions",
+      "claude_code_version": "2.1.197",
+      "output_style": "default"
+    },
+    "control_request": {
+      "type": "control_request",
+      "request_id": "$REQUEST_ID",
+      "request": {
+        "subtype": "can_use_tool",
+        "tool_name": "AskUserQuestion",
+        "display_name": "AskUserQuestion",
+        "input": {
+          "questions": [
+            {
+              "question": "Choose the deterministic E2E path?",
+              "header": "E2E path",
+              "options": [
+                {
+                  "label": "Continue",
+                  "description": "Recorded option"
+                },
+                {
+                  "label": "Stop",
+                  "description": "Recorded option"
+                }
+              ],
+              "multiSelect": false
+            }
+          ]
+        },
+        "tool_use_id": "$TOOL_USE_ID"
+      }
+    },
+    "assistant_text": {
+      "type": "assistant",
+      "session_id": "$SESSION_ID",
+      "message": {
+        "id": "$MESSAGE_ID",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "text",
+            "text": "$TEXT"
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    },
+    "result": {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "stop_reason": "end_turn",
+      "terminal_reason": "completed",
+      "session_id": "$SESSION_ID",
+      "total_cost_usd": 0,
+      "usage": {
+        "input_tokens": 1,
+        "output_tokens": 1
+      },
+      "num_turns": 1,
+      "duration_ms": 1
+    },
+    "error_result": {
+      "type": "result",
+      "subtype": "error_during_execution",
+      "duration_ms": 1,
+      "duration_api_ms": 1,
+      "is_error": true,
+      "num_turns": 1,
+      "stop_reason": "tool_use",
+      "session_id": "$SESSION_ID",
+      "total_cost_usd": 0,
+      "usage": {
+        "input_tokens": 1,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0
+      },
+      "modelUsage": {},
+      "permission_denials": [],
+      "terminal_reason": "aborted_streaming",
+      "fast_mode_state": "off",
+      "errors": [
+        "$ERROR"
+      ]
+    }
+  }
+}

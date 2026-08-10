@@ -1,0 +1,214 @@
+{
+  "provenance": {
+    "source": "Codex app-server 0.144.0 实录的去敏字段投影",
+    "recorded_at": "2026-08-09",
+    "thread_start_raw_sha256": "397959ae146807996cb0cac20150bd33406f72259e8f55adaacb282c535d3426",
+    "thread_read_raw_sha256": "a5746ae9d175a8c39dc95e0d636bba381f184622dc117d784039d7e7c2caae5a",
+    "thread_list_raw_sha256": "c116117d09a1e0462dbb18075d2141c52241f1cd154bcbae1e1bcfea0e7b5925",
+    "turn_start_raw_sha256": "f01901c9a89a4029f3260be96a1c26d63245839511954a2003cb715f5ef258e4",
+    "turn_notifications_raw_sha256": "b48d0704a5f26938dd9828b6c06c79bf996e09c69aee34bd693371f1de8ceec5",
+    "archive_unarchive_raw_sha256": "fcf4a1d7515db4949edb2546555316d9e01c260c71ab7a78f0e252912f934bb5",
+    "ephemeral_close_error_raw_sha256": "bde02d7181f27088af4d3deb50477e959548d42627f741d9dfd7ff6500770523",
+    "repository_recording_sha256": {
+      "initialize-response.jsonl": "37163a216b2ae02048ca7f873a2350281d2bb07c364044dd62975459cfa9712d",
+      "notifications.jsonl": "9ee48e789717ab903a9492fb4b15b40586a2a2ac8fc533d10bd0279d1d4a5c87",
+      "thread-read-0.144.0.json": "108b916d903409ebf07aec0fafc7fe96c292b51160896040c8d02c0ed0eadef4"
+    },
+    "redaction": "动态请求、thread、turn、item、目录、时间与正文改为占位符"
+  },
+  "events": {
+    "initialize_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "userAgent": "Codex Desktop/0.144.0 (<platform>) dumb (trowel_codex_host; 0.1.0)",
+        "codexHome": "<codex-home>",
+        "platformFamily": "unix",
+        "platformOs": "macos"
+      }
+    },
+    "thread_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "activePermissionProfile": null,
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "cwd": "$CWD",
+        "instructionSources": [],
+        "model": "gpt-5.6-sol",
+        "modelProvider": "openai",
+        "multiAgentMode": "explicitRequestOnly",
+        "reasoningEffort": "high",
+        "runtimeWorkspaceRoots": [],
+        "sandbox": {
+          "networkAccess": false,
+          "type": "readOnly"
+        },
+        "serviceTier": null,
+        "thread": {
+          "id": "$THREAD_ID",
+          "sessionId": "$THREAD_ID",
+          "preview": "",
+          "ephemeral": false,
+          "modelProvider": "openai",
+          "status": {
+            "type": "idle"
+          },
+          "cwd": "$CWD",
+          "cliVersion": "0.144.0",
+          "source": "vscode",
+          "turns": [],
+          "extra": null,
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "historyMode": "legacy",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null
+        }
+      }
+    },
+    "thread_list_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "data": [],
+        "nextCursor": null,
+        "backwardsCursor": null
+      }
+    },
+    "thread_read_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "thread": {
+          "id": "$THREAD_ID",
+          "sessionId": "$THREAD_ID",
+          "preview": "",
+          "ephemeral": false,
+          "modelProvider": "openai",
+          "status": {
+            "type": "idle"
+          },
+          "cwd": "$CWD",
+          "cliVersion": "0.144.0",
+          "source": "vscode",
+          "turns": [],
+          "extra": null,
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "historyMode": "legacy",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null
+        }
+      }
+    },
+    "turn_start_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "turn": {
+          "id": "$TURN_ID"
+        }
+      }
+    },
+    "turn_state": {
+      "id": "$TURN_ID",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "durationMs": null
+    },
+    "user_message_item": {
+      "id": "$ITEM_ID",
+      "type": "userMessage",
+      "content": [
+        {
+          "type": "text",
+          "text": "$TEXT",
+          "text_elements": []
+        }
+      ]
+    },
+    "agent_message_item": {
+      "type": "agentMessage",
+      "id": "$ITEM_ID",
+      "text": "$TEXT",
+      "phase": "final_answer",
+      "memoryCitation": null
+    },
+    "item_completed": {
+      "method": "item/completed",
+      "params": {
+        "threadId": "$THREAD_ID",
+        "turnId": "$TURN_ID",
+        "item": {
+          "type": "agentMessage",
+          "id": "$ITEM_ID",
+          "text": "$TEXT",
+          "phase": "final_answer",
+          "memoryCitation": null
+        }
+      }
+    },
+    "turn_completed": {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$THREAD_ID",
+        "turn": {
+          "id": "$TURN_ID",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "completed",
+          "error": null,
+          "durationMs": 1
+        }
+      }
+    },
+    "thread_archive_response": {
+      "id": "$REQUEST_ID",
+      "result": {}
+    },
+    "thread_archive_missing_rollout_error": {
+      "id": "$REQUEST_ID",
+      "error": {
+        "code": -32600,
+        "message": "no rollout found for thread id $THREAD_ID"
+      }
+    },
+    "thread_unarchive_response": {
+      "id": "$REQUEST_ID",
+      "result": {
+        "thread": {
+          "id": "$THREAD_ID",
+          "extra": null,
+          "sessionId": "$THREAD_ID",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "",
+          "ephemeral": false,
+          "historyMode": "legacy",
+          "modelProvider": "openai",
+          "createdAt": 0,
+          "updatedAt": 0,
+          "recencyAt": 0,
+          "status": {
+            "type": "notLoaded"
+          },
+          "path": "<rollout-path>",
+          "cwd": "$CWD",
+          "cliVersion": "0.144.0",
+          "source": "vscode",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": []
+        }
+      }
+    }
+  }
+}

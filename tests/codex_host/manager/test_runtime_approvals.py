@@ -7,6 +7,8 @@ from trowel_py.codex_host import (
     CodexEventType,
     CodexSession,
 )
+from trowel_py.resource_lifecycle.models import OwnerScope
+from trowel_py.resource_lifecycle.registry import ResourceRegistry
 from tests.codex_host._fake import FakeAppServer, Step
 from tests.codex_host.manager.support import (
     _cfg,
@@ -44,8 +46,9 @@ async def test_command_approval_waits_for_answer_and_reuses_native_id() -> None:
         )
         yield Step.recv()
 
+    registry = ResourceRegistry(app_instance_id="test-instance")
     fake = FakeAppServer(behavior())
-    manager = _manager(fake)
+    manager = _manager(fake, resource_registry=registry)
     session = CodexSession(_cfg("session-a"))
     manager.register(session)
     await manager.send(session, "run the probe")
@@ -69,6 +72,11 @@ async def test_command_approval_waits_for_answer_and_reuses_native_id() -> None:
         and event.payload["status"] == "answered"
         for event in session.drain()
     )
+    assert registry.owner_summary(
+        OwnerScope.TURN,
+        agent_session_id="session-a",
+        turn_id="turn-1",
+    ).live_resource_count == 0
     await manager.close()
 
 

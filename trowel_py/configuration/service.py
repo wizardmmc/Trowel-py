@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -844,21 +845,59 @@ class ConfigurationService:
                 models_url=effective.models_url,
             )
         except ConfigurationError as exc:
-            current = self.repository.get_connection(connection_id)
-            if current is not None and int(current["version"]) == expected_version:
-                self.repository.update_connection(
-                    connection_id,
-                    expected_version=expected_version,
-                    values={
-                        "version": expected_version + 1,
-                        "catalog_request_identity": None,
-                        "catalog_status": "error",
-                        "catalog_error_code": exc.code,
-                        "updated_at": _now(),
-                    },
-                )
-                exc.commit_state = True
+            await asyncio.to_thread(
+                self._record_catalog_fetch_error,
+                connection_id,
+                expected_version,
+                exc,
+            )
             raise
+        return await asyncio.to_thread(
+            self._save_fetched_catalog,
+            connection_id,
+            expected_version,
+            draft,
+            codex_native_models,
+            effective,
+            identity,
+            fetched,
+        )
+
+    def _record_catalog_fetch_error(
+        self,
+        connection_id: str,
+        expected_version: int,
+        exc: ConfigurationError,
+    ) -> None:
+        """在工作线程中保存仍与当前版本匹配的目录请求失败诊断。"""
+
+        current = self.repository.get_connection(connection_id)
+        if current is not None and int(current["version"]) == expected_version:
+            self.repository.update_connection(
+                connection_id,
+                expected_version=expected_version,
+                values={
+                    "version": expected_version + 1,
+                    "catalog_request_identity": None,
+                    "catalog_status": "error",
+                    "catalog_error_code": exc.code,
+                    "updated_at": _now(),
+                },
+            )
+            exc.commit_state = True
+
+    def _save_fetched_catalog(
+        self,
+        connection_id: str,
+        expected_version: int,
+        draft: ConnectionDraft | None,
+        codex_native_models: Sequence[Mapping[str, Any]] | None,
+        effective: ConnectionDraft,
+        identity: str,
+        fetched: FetchedCatalog,
+    ) -> CatalogView:
+        """在工作线程中复核请求身份，并原子保存一次上游模型目录。"""
+
         current = self.repository.get_connection(connection_id)
         if current is None or int(current["version"]) != expected_version:
             raise ConfigurationError(

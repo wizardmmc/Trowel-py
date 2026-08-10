@@ -58,6 +58,8 @@ tasks:
       - 'web:frontend.build'
 
   gate-full:
-    description: '完整质量入口；后续把验证成熟的桌面、行为和视觉叶子加入此任务。'
+    description: '完整质量入口；在 macOS 追加隔离 Electron 行为 E2E。'
     command: 'true'
-    deps: ['root:gate']
+    deps:
+      - 'root:gate'
+      - 'e2e:behavior'

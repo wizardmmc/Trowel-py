@@ -1,0 +1,108 @@
+language: 'javascript'
+
+toolchains:
+  default: 'system'
+
+taskOptions:
+  cache: false
+  inferInputs: false
+  outputStyle: 'buffer'
+
+tasks:
+  support:
+    description: '运行行为 E2E 启动、去敏和资源核验的快速测试。'
+    command: ['bun', 'run', 'support:test']
+
+  behavior.prepare:
+    description: '在整组行为叶子启动前清空上一轮累计证据。'
+    command: ['bun', 'run', 'behavior:prepare']
+    deps: ['web:desktop.electron-prepare']
+    options:
+      os: 'macos'
+
+  behavior:
+    description: '聚合全部 macOS Electron 行为 E2E 稳定叶子。'
+    command: ['bun', 'run', 'behavior:verify']
+    deps:
+      - 'e2e:behavior.agent.claude-question'
+      - 'e2e:behavior.agent.codex-command-approval'
+      - 'e2e:behavior.agent.renderer-reload-reconciliation'
+      - 'e2e:behavior.agent.turn-acceptance-reconciliation'
+      - 'e2e:behavior.discussion.history-and-handoff'
+      - 'e2e:behavior.discussion.participant-question'
+      - 'e2e:behavior.discussion.participant-terminal-isolation'
+      - 'e2e:behavior.discussion.process-restart-stop-delete'
+      - 'e2e:behavior.discussion.three-participant-publication'
+      - 'e2e:behavior.lifecycle.window-residency'
+    options:
+      os: 'macos'
+
+  behavior.agent.claude-question:
+    description: '运行 Claude 提问、回复、终态和资源归零行为链。'
+    command: ['bun', 'run', 'behavior', 'agent/claude-question/claude-question.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.agent.codex-command-approval:
+    description: '运行 Codex 原生命令审批、取消和资源归零行为链。'
+    command: ['bun', 'run', 'behavior', 'agent/codex-command-approval/codex-command-approval.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.agent.renderer-reload-reconciliation:
+    description: '运行 renderer 重载后的审批、history 和 live 对账链。'
+    command: ['bun', 'run', 'behavior', 'agent/renderer-reload-reconciliation/renderer-reload-reconciliation.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.agent.turn-acceptance-reconciliation:
+    description: '运行 turn 接受结果未知时的不重放和并发保护链。'
+    command: ['bun', 'run', 'behavior', 'agent/turn-acceptance-reconciliation/turn-acceptance-reconciliation.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.discussion.history-and-handoff:
+    description: '运行研讨历史详情、普通 Agent 交接和分别关闭行为链。'
+    command: ['bun', 'run', 'behavior', 'discussion/history-and-handoff/history-and-handoff.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.discussion.participant-question:
+    description: '运行参与者提问等待、回答和共同公开行为链。'
+    command: ['bun', 'run', 'behavior', 'discussion/participant-question/participant-question.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.discussion.participant-terminal-isolation:
+    description: '运行单参与者错误或额度终态不阻塞共同公开的行为链。'
+    command: ['bun', 'run', 'behavior', 'discussion/participant-terminal-isolation/participant-terminal-isolation.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.discussion.process-restart-stop-delete:
+    description: '运行研讨进程重启、attempt 恢复、停止和删除行为链。'
+    command: ['bun', 'run', 'behavior', 'discussion/process-restart-stop-delete/process-restart-stop-delete.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.discussion.three-participant-publication:
+    description: '运行三位参与者屏障和一次共同公开行为链。'
+    command: ['bun', 'run', 'behavior', 'discussion/three-participant-publication/three-participant-publication.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'
+
+  behavior.lifecycle.window-residency:
+    description: '运行 macOS 关窗驻留、重开和最终退出资源归零行为链。'
+    command: ['bun', 'run', 'behavior', 'lifecycle/window-residency/window-residency.spec.mjs']
+    deps: ['web:frontend.build', 'e2e:support', 'e2e:behavior.prepare']
+    options:
+      os: 'macos'

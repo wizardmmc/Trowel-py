@@ -29,7 +29,7 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> PlayerRepository:
+def _get_player_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> PlayerRepository:
     """为请求创建玩家数据仓库。"""
     return create_player_repository(conn)
 

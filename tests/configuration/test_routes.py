@@ -48,6 +48,23 @@ def _client(
     return TestClient(app)
 
 
+def test_configuration_transactions_finish_before_response_is_sent() -> None:
+    """全部配置端点都应在客户端收到成功响应前提交并关闭事务。"""
+
+    transaction_dependencies = [
+        dependency
+        for route in router.routes
+        if hasattr(route, "dependant")
+        for dependency in route.dependant.dependencies
+        if dependency.call is get_configuration_service
+    ]
+
+    assert transaction_dependencies
+    assert all(
+        dependency.scope == "function" for dependency in transaction_dependencies
+    )
+
+
 class _NativeCodexCatalogHub:
     """提供从真实 Codex 录制解析出的原生模型目录。"""
 

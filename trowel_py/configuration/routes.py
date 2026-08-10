@@ -105,6 +105,7 @@ def get_configuration_service() -> Iterator[ConfigurationService]:
 
     route 和集成测试必须通过 ``dependency_overrides`` 注入临时仓储；正式装配按
     当前应用数据根打开主库。Official 账号槽迁移由应用 lifespan 在并发请求前完成。
+    各 route 必须用 ``scope="function"`` 注入，确保成功响应发出前已提交并关闭事务。
     """
 
     connection = create_db()
@@ -189,8 +190,8 @@ def _finish_domain_error(
     response_model=ConfigurationEnvelope[list[AgentConnectionOptionResponse]],
 )
 @_transactional
-async def list_agent_connection_options(
-    service: ConfigurationService = Depends(get_configuration_service),
+def list_agent_connection_options(
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回 Agent 表单使用的已保存模型，不启动任何 runtime。"""
 
@@ -226,7 +227,7 @@ async def _read_native_codex_models(
 )
 @_transactional
 def list_connections(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回全部未删除连接的脱敏状态。"""
 
@@ -241,7 +242,7 @@ def list_connections(
 @_transactional
 def create_connection(
     request: ConnectionRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """创建一条不含 secret 的连接。"""
 
@@ -256,7 +257,7 @@ def create_connection(
 async def read_codex_official_account(
     connection_id: str,
     request: Request,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """读取一项 Official 供应商的邮箱、套餐和登录状态。"""
 
@@ -290,7 +291,7 @@ async def read_codex_official_account(
 async def start_codex_official_login(
     connection_id: str,
     request: Request,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """在该供应商的隔离账号槽位启动 Codex 原生 device-code 登录。"""
 
@@ -323,7 +324,7 @@ async def start_codex_official_login(
 @_transactional
 def get_connection(
     connection_id: str,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """读取指定连接的脱敏状态和生成预览。"""
 
@@ -338,7 +339,7 @@ def get_connection(
 def update_connection(
     connection_id: str,
     request: UpdateConnectionRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """按乐观版本完整替换连接的非 secret 字段。"""
 
@@ -351,6 +352,26 @@ def update_connection(
     )
 
 
+def _delete_connection_and_commit(
+    service: ConfigurationService,
+    connection_id: str,
+    expected_version: int,
+) -> None:
+    """在线程池内提交连接删除，并让私有目录与数据库采用同一裁决。"""
+
+    deletion = service.delete_connection(
+        connection_id,
+        expected_version=expected_version,
+    )
+    try:
+        service.repository.connection.commit()
+    except BaseException:
+        service.repository.connection.rollback()
+        service.restore_connection_storage_deletion(deletion)
+        raise
+    service.finalize_connection_storage_deletion(deletion)
+
+
 @router.delete(
     "/connections/{connection_id}", response_model=ConfigurationEnvelope[None]
 )
@@ -359,7 +380,7 @@ async def delete_connection(
     connection_id: str,
     request: Request,
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """软删除连接并删除所有 secret。"""
 
@@ -381,16 +402,12 @@ async def delete_connection(
             maintenance_connection_id = connection_id
             maintenance_hub = hub
     try:
-        deletion = service.delete_connection(
-            connection_id, expected_version=expected_version
+        await asyncio.to_thread(
+            _delete_connection_and_commit,
+            service,
+            connection_id,
+            expected_version,
         )
-        try:
-            service.repository.connection.commit()
-        except BaseException:
-            service.repository.connection.rollback()
-            service.restore_connection_storage_deletion(deletion)
-            raise
-        service.finalize_connection_storage_deletion(deletion)
         return _success(None)
     finally:
         if maintenance_connection_id is not None and maintenance_hub is not None:
@@ -404,10 +421,10 @@ async def delete_connection(
     response_model=ConfigurationEnvelope[ConnectionResponse],
 )
 @_transactional
-async def inherit_global_claude_config(
+def inherit_global_claude_config(
     connection_id: str,
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """覆盖式继承真实全局 Claude 用户配置并返回脱敏连接事实。"""
 
@@ -427,7 +444,7 @@ async def inherit_global_codex_config(
     connection_id: str,
     request: Request,
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """覆盖式继承两处全局 Codex 用户配置并返回脱敏连接事实。"""
 
@@ -445,7 +462,8 @@ async def inherit_global_codex_config(
                 status_code=409,
             )
     try:
-        connection = service.inherit_global_codex_config(
+        connection = await asyncio.to_thread(
+            service.inherit_global_codex_config,
             connection_id,
             expected_version=expected_version,
         )
@@ -464,7 +482,7 @@ async def write_secret(
     connection_id: str,
     secret_kind: SecretKind,
     request: Request,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any] | JSONResponse:
     """写入或删除 secret；自行解析请求，确保校验错误不回显原值。"""
 
@@ -509,7 +527,8 @@ async def write_secret(
                 "INVALID_SECRET_COMMAND", "secret 动作无效", status_code=422
             )
         )
-    updated = service.write_secret(
+    updated = await asyncio.to_thread(
+        service.write_secret,
         connection_id,
         expected_version=expected_version,
         kind=secret_kind,
@@ -552,7 +571,7 @@ async def fetch_models(
     connection_id: str,
     command: FetchModelsRequest,
     request: Request,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """获取上游模型，并为 Codex 附带原生排序和 effort 元数据。"""
 
@@ -580,7 +599,8 @@ async def fetch_models(
                 "Codex 原生模型列表读取失败",
                 status_code=502,
             )
-        result = service.record_native_codex_catalog(
+        result = await asyncio.to_thread(
+            service.record_native_codex_catalog,
             connection_id,
             expected_version=command.expected_version,
             native_models=native_models,
@@ -629,7 +649,7 @@ async def fetch_models(
 )
 @_transactional
 def list_session_configurations(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回设置、Agent 和研讨共用的会话配置 catalog。"""
 
@@ -644,7 +664,7 @@ def list_session_configurations(
 @_transactional
 def create_session_configuration(
     request: CreateSessionConfigurationRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """创建一项经过当前 catalog 和 capability 校验的会话配置。"""
 
@@ -662,7 +682,7 @@ def create_session_configuration(
 @_transactional
 def get_session_configuration(
     configuration_id: str,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """读取一项会话配置及其实时可用性。"""
 
@@ -677,7 +697,7 @@ def get_session_configuration(
 def update_session_configuration(
     configuration_id: str,
     request: UpdateSessionConfigurationRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """重新校验并完整替换一项会话配置。"""
 
@@ -698,7 +718,7 @@ def update_session_configuration(
 def delete_session_configuration(
     configuration_id: str,
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """软删除一项会话配置。"""
 
@@ -714,7 +734,7 @@ def delete_session_configuration(
 )
 @_transactional
 def list_task_bindings(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回 Memory/Profile 各后台任务的独立绑定。"""
 
@@ -738,7 +758,7 @@ def list_task_bindings(
 def put_task_binding(
     task_id: TaskId,
     request: PutTaskBindingRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """按任务级 capability 保存一项后台绑定。"""
 
@@ -764,7 +784,7 @@ def put_task_binding(
 def delete_task_binding(
     task_id: TaskId,
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """删除一项后台任务绑定。"""
 
@@ -784,7 +804,7 @@ def delete_task_binding(
 )
 @_transactional
 def get_agent_defaults(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回只影响之后新建会话的 Agent 默认条件。"""
 
@@ -798,7 +818,7 @@ def get_agent_defaults(
 @_transactional
 def put_agent_defaults(
     request: PutAgentDefaultsRequest,
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """按乐观版本保存 Agent 默认条件。"""
 
@@ -820,7 +840,7 @@ def put_agent_defaults(
 @_transactional
 def delete_agent_defaults(
     expected_version: int = Query(ge=1),
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """删除显式 Agent 默认条件并恢复兼容默认值。"""
 
@@ -835,7 +855,7 @@ def delete_agent_defaults(
 )
 @_transactional
 def get_configuration_catalog(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """返回三类前端共用的连接、会话配置、绑定和 Agent 默认事实。"""
 
@@ -881,7 +901,7 @@ def get_paths() -> dict[str, Any]:
 @router.get("/diagnostics", response_model=ConfigurationEnvelope[DiagnosticsResponse])
 @_transactional
 def get_diagnostics(
-    service: ConfigurationService = Depends(get_configuration_service),
+    service: ConfigurationService = Depends(get_configuration_service, scope="function"),
 ) -> dict[str, Any]:
     """分层返回连接网络、runtime 启动和 Trowel 反代状态。"""
 

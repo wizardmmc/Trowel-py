@@ -1,0 +1,15 @@
+{
+  "name": "trowel-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "support:test": "bun test support/*.test.mjs",
+    "behavior:prepare": "bun support/evidence.mjs prepare",
+    "behavior:verify": "bun support/evidence.mjs verify 11",
+    "behavior": "bun support/run-behavior.mjs",
+    "behavior:repeat": "bun support/run-behavior.mjs --clean-evidence --repeat-each=20 --max-failures=1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

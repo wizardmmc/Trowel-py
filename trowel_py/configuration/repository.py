@@ -76,13 +76,17 @@ class ConfigurationRepository:
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
-        """用外层事务和保存点保证领域写入可由请求统一提交或回滚。"""
+        """先排队取得写锁，再用保存点保证领域写入可统一提交或回滚。
+
+        ``BEGIN IMMEDIATE`` 会在任何业务读取前等待已有写者，避免普通延迟事务先读
+        后写时因锁升级冲突而绕过 busy timeout、直接抛出 ``database is locked``。
+        """
 
         self._savepoint_sequence += 1
         savepoint = f"configuration_operation_{self._savepoint_sequence}"
         started_transaction = not self.connection.in_transaction
         if started_transaction:
-            self.connection.execute("BEGIN")
+            self.connection.execute("BEGIN IMMEDIATE")
         self.connection.execute(f"SAVEPOINT {savepoint}")  # noqa: S608 - 名称只含内部计数。
         try:
             yield

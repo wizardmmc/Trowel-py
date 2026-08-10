@@ -28,7 +28,7 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _get_garden_repo(conn: sqlite3.Connection = Depends(_get_conn)) -> GardenRepository:
+def _get_garden_repo(conn: sqlite3.Connection = Depends(_get_conn, scope="function")) -> GardenRepository:
     """为请求创建花园数据仓库。"""
     return create_garden_repository(conn)
 

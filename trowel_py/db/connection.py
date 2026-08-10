@@ -2,12 +2,55 @@
 
 import sqlite3
 import stat
+import sys
+import threading
 from pathlib import Path
 
 from trowel_py.application_paths import (
     has_application_data_root_override,
     resolve_application_data_root,
 )
+
+_SQLITE_OPEN_CLOSE_LOCK = threading.Lock()
+
+
+def _requires_serialized_open_close(
+    sqlite_version: tuple[int, ...],
+    platform: str,
+) -> bool:
+    """判断当前 SQLite 是否命中 Unix 打开/关闭连接死锁缺陷。"""
+
+    return platform != "win32" and (3, 51, 0) <= sqlite_version < (3, 51, 2)
+
+
+_SERIALIZE_SQLITE_OPEN_CLOSE = _requires_serialized_open_close(
+    sqlite3.sqlite_version_info,
+    sys.platform,
+)
+
+
+class _TrowelConnection(sqlite3.Connection):
+    """在已知缺陷 SQLite 上把连接关闭纳入进程内生命周期锁。"""
+
+    def close(self) -> None:
+        """关闭连接，并避免与另一线程的数据库打开过程形成锁反转。"""
+
+        if not _SERIALIZE_SQLITE_OPEN_CLOSE:
+            super().close()
+            return
+        with _SQLITE_OPEN_CLOSE_LOCK:
+            super().close()
+
+
+def _open_connection(resolved_path: str | Path) -> _TrowelConnection:
+    """使用项目统一参数打开一条可受控关闭的 SQLite 连接。"""
+
+    return sqlite3.connect(
+        resolved_path,
+        timeout=10,
+        check_same_thread=False,
+        factory=_TrowelConnection,
+    )
 
 
 def resolve_database_path(db_path: str | Path | None = None) -> str | Path:
@@ -40,11 +83,11 @@ def create_db(db_path: str | Path | None = None) -> sqlite3.Connection:
     """
 
     resolved_path = resolve_database_path(db_path)
-    conn = sqlite3.connect(
-        resolved_path,
-        timeout=10,
-        check_same_thread=False,
-    )
+    if _SERIALIZE_SQLITE_OPEN_CLOSE:
+        with _SQLITE_OPEN_CLOSE_LOCK:
+            conn = _open_connection(resolved_path)
+    else:
+        conn = _open_connection(resolved_path)
     conn.row_factory = sqlite3.Row
     # WAL 允许读取与写入并行；外键检查是 SQLite 的连接级开关。
     conn.execute("PRAGMA journal_mode=WAL")

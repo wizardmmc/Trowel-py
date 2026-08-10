@@ -183,6 +183,19 @@ describe("api/agent", () => {
     }
   });
 
+  it("turn start transport failure also reports acceptance as unknown", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(
+      new TypeError("response connection closed"),
+    );
+
+    await expect(startAgentTurn("s1", "hello")).rejects.toMatchObject({
+      problem: {
+        code: "turn_acceptance_unknown",
+        operation: "turn_start",
+      },
+    });
+  });
+
   it("turn start deadline also covers a stalled response body", async () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => ({

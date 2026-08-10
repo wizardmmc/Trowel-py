@@ -37,7 +37,10 @@ import {
 } from "./serviceDescriptor";
 import { createDesktopWindow, focusDesktopWindow } from "./window";
 import { handleDesktopWindowClose } from "./windowClosePolicy";
-import { configureSafeStorageForSmoke } from "./safeStoragePolicy";
+import {
+  configureSafeStorageForSmoke,
+  isAutomatedDesktopRun,
+} from "./safeStoragePolicy";
 import type { SidecarLaunchCommand } from "./sidecar";
 import type { SidecarShutdownResult } from "./shutdown";
 import { createDesktopTelemetrySender } from "./telemetryPort";
@@ -73,13 +76,16 @@ const serviceDescriptorPath = process.env.TROWEL_DESKTOP_SERVICE_FILE;
 
 configureSafeStorageForSmoke(
   app.commandLine,
-  rendererSmoke ||
-    settingsSmoke ||
-    diagnosticSmoke ||
-    residencySmoke ||
-    singleInstanceSmoke ||
-    rendererCrashSmoke ||
-    agentTransportSmoke,
+  isAutomatedDesktopRun(
+    process.env,
+    rendererSmoke ||
+      settingsSmoke ||
+      diagnosticSmoke ||
+      residencySmoke ||
+      singleInstanceSmoke ||
+      rendererCrashSmoke ||
+      agentTransportSmoke,
+  ),
 );
 app.setName(PRODUCT_NAME);
 
