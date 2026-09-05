@@ -49,7 +49,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     # macOS/Windows 安装包用 onedir 模式冻结 Python sidecar 与解释器。
-    "pyinstaller==6.21.0",
+    "pyinstaller==6.22.2",
     "ruff>=0.8",
     # PyYAML 本身不附带 mypy stub。
     "types-PyYAML>=6.0",
